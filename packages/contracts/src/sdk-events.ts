@@ -1,21 +1,23 @@
-// SDK 流事件契约（estómago 归一化层）。
-// RawSdkEvent 是"SDK 形状"的输入（mock fixture 与真实 adapter 都产出它）；
-// SdkNormalizedEvent 是 normalizer 的唯一输出。二者都是本项目的内部契约，
-// 不冒充 SDK 官方类型；真实字段以锁定版本的 SDK fixture 核对为准（05 §5.1）。
+// SDK 流事件契约（estómago 归一化层）—— 按 @anthropic-ai/claude-agent-sdk@0.3.283 实际
+// sdk.d.ts 形状对齐（SDKPartialAssistantMessage / SDKAssistantMessage / SDKResult*）：
+//  - stream_event: {type:'stream_event', event: BetaRawMessageStreamEvent, parent_tool_use_id, session_id}
+//  - assistant:    {type:'assistant', message: BetaMessage(单块投递常见), parent_tool_use_id, session_id, request_id?}
+//  - result:       subtype 'success' | 'error_during_execution' | 'error_max_turns' | ...
+// RawSdkEvent 是 mock 夹具与真实 adapter 共同产出的输入；SdkNormalizedEvent 是唯一归一化输出。
 
 export type ContentBlockType = 'thinking' | 'text' | 'tool_use' | 'redacted_thinking';
 
 // —— 原始（SDK 形状）输入 ——————————————————————————————
 
 export type RawStreamEvent =
-  | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null }
-  | { type: 'assistant'; message: RawAssistantMessage; parent_tool_use_id?: string | null }
-  | { type: 'result'; subtype?: string; usage?: RawUsage; error?: string }
+  | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null; session_id?: string | null }
+  | { type: 'assistant'; message: RawAssistantMessage; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
+  | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string }
   | { type: 'error'; error: string };
 
 export type RawAnthropicEvent =
   | { type: 'message_start'; message: { id?: string; model?: string } }
-  | { type: 'content_block_start'; index: number; content_block: { type: ContentBlockType } }
+  | { type: 'content_block_start'; index: number; content_block: { type: ContentBlockType; thinking?: string; text?: string } }
   | { type: 'content_block_delta'; index: number; delta: RawDelta }
   | { type: 'content_block_stop'; index: number }
   | { type: 'message_stop' };
@@ -40,18 +42,31 @@ export type RawUsage = {
 
 // —— 归一化输出 ——————————————————————————————
 
+// channel: main = 主会话；subagent = parent_tool_use_id 非空（不投影进主私聊）
+export type EventChannel = 'main' | 'subagent';
+
+export type MatchedCompleteBlock = { block_index: number; block_type: ContentBlockType; text: string | null; tool_id: string | null; tool_name: string | null };
+export type UnmatchedCompleteBlock = { seq: number; block_type: ContentBlockType; text: string | null; reason: 'no_open_block' | 'ambiguous' };
+
 export type SdkNormalizedEvent =
-  | { kind: 'message_start'; sdk_message_id: string; model: string | null; source: 'stream' }
-  | { kind: 'content_block_start'; sdk_message_id: string; block_index: number; block_type: ContentBlockType }
-  | { kind: 'thinking_delta'; sdk_message_id: string; block_index: number; text: string }
-  // signature_delta 被有意归一化掉：不入 UI、不触发解析（05 §5.1）
-  | { kind: 'text_delta'; sdk_message_id: string; block_index: number; text: string }
-  | { kind: 'tool_input_delta'; sdk_message_id: string; block_index: number; tool_name: string | null; partial_json: string }
-  | { kind: 'content_block_stop'; sdk_message_id: string; block_index: number }
-  | { kind: 'message_stop'; sdk_message_id: string }
-  | { kind: 'complete_message'; sdk_message_id: string; blocks: Array<{ block_type: ContentBlockType; block_index: number; text: string | null; tool_id: string | null; tool_name: string | null }> }
+  | { kind: 'message_start'; sdk_message_id: string; model: string | null; session_id: string | null; channel: EventChannel }
+  | { kind: 'content_block_start'; sdk_message_id: string; block_index: number; block_type: ContentBlockType; channel: EventChannel }
+  | { kind: 'thinking_delta'; sdk_message_id: string; block_index: number; text: string; channel: EventChannel }
+  // signature_delta 被有意归一化掉：不入 UI、不触发解析
+  | { kind: 'text_delta'; sdk_message_id: string; block_index: number; text: string; channel: EventChannel }
+  | { kind: 'tool_input_delta'; sdk_message_id: string; block_index: number; tool_name: string | null; partial_json: string; channel: EventChannel }
+  | { kind: 'content_block_stop'; sdk_message_id: string; block_index: number; channel: EventChannel }
+  | { kind: 'message_stop'; sdk_message_id: string; channel: EventChannel }
+  | {
+      kind: 'complete_message';
+      sdk_message_id: string;
+      session_id: string | null;
+      channel: EventChannel;
+      matched: MatchedCompleteBlock[]; // 已匹配到流式开放块（按类型顺序匹配）
+      unmatched: UnmatchedCompleteBlock[]; // 无开放块可匹配：进 unmatched 路径，绝不猜下标
+    }
   | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream'; completeness: 'complete' | 'partial' }
-  | { kind: 'turn_end'; outcome: 'completed' | 'error'; error_classified: ErrorClass | null; error_message: string | null };
+  | { kind: 'turn_end'; outcome: 'completed' | 'error'; error_classified: ErrorClass | null; error_message: string | null; session_id: string | null; request_id: string | null };
 
 // 错误分类（10.1：普通拒绝、网络故障和明确路由分别归类；不确定归 unknown，不冒充路由）
 export type ErrorClass = 'refusal' | 'network' | 'route_signal' | 'unknown';

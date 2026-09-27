@@ -1,7 +1,6 @@
-// 事件层：持久信封（events 表，带 dedupe/lease）+ 可回放流（runtime_stream_events，
-// SSE 的唯一事实来源）+ 进程内慢客户端有界订阅（05 §5.3）。
-//
-// 隐私：payload 里不进签名/密钥；日志只记 ID/状态/计数。
+// 事件层 v0.2.2（AUD-14/29 配合）：persist（可在调用方事务内）与 dispatch（提交后内存分发）分离。
+// publish = tx{persist} + dispatch；reasoning 等需要原子性的调用方在自有事务里用
+// persistInTx + dispatchRow，保证"投影与回放事件同事务提交"（AUD-14）。
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, newDedupeKey } from '../util/id.ts';
@@ -22,11 +21,11 @@ export type StreamEventRow = {
   payload_ref: string;
 };
 
-const SUBSCRIBER_QUEUE_LIMIT = 256; // 慢客户端：超限断开，靠 cursor 重连（05 §5.3）
+const SUBSCRIBER_QUEUE_LIMIT = 256; // 慢客户端：超限断开，靠游标重连（05 §5.3）
 
 export type SseSubscriber = {
   id: string;
-  conversationId: string | null; // null = 全部
+  conversationId: string | null;
   queue: Array<{ sequence: number; kind: string; payload: string; eventRow: StreamEventRow }>;
   overflowed: boolean;
   onOverflow?: () => void;
@@ -34,22 +33,15 @@ export type SseSubscriber = {
 
 export class EventService {
   readonly streamId: string;
+  private db: Db;
   private subscribers = new Map<string, SseSubscriber>();
 
-  private db: Db;
   constructor(db: Db) {
     this.db = db;
     this.streamId = genId('stream');
   }
 
-  // —— 持久业务信封（幂等：source+dedupe_key 唯一）——
-  recordEnvelope(init: {
-    type: string;
-    source: string;
-    dedupeKey?: string;
-    conversationId?: string | null;
-    payload: unknown;
-  }): EventEnvelope {
+  recordEnvelope(init: { type: string; source: string; dedupeKey?: string; conversationId?: string | null; payload: unknown }): EventEnvelope {
     const envelope = makeEnvelope({
       id: genId('evt'),
       type: init.type,
@@ -71,8 +63,8 @@ export class EventService {
     return envelope;
   }
 
-  // —— 可回放流事件：持久化 + 即时分发。返回持久 sequence（前端回放游标）。——
-  publish(kind: string, opts: {
+  // —— 在调用方已有事务内持久（不自己开 tx；AUD-14 原子性的关键）——
+  persistInTx(kind: string, opts: {
     conversationId: string | null;
     turnId?: string | null;
     attemptId?: string | null;
@@ -83,31 +75,26 @@ export class EventService {
   }): StreamEventRow {
     const eventId = genId('se');
     const occurredAt = new Date().toISOString();
-    let row: StreamEventRow;
-    tx(this.db, () => {
-      this.db
-        .prepare(
-          `INSERT INTO runtime_stream_events(event_id, stream_id, kind, conversation_id, turn_id, attempt_id, entity_ref, entity_revision, scope, occurred_at, payload_ref)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-        )
-        .run(
-          eventId,
-          this.streamId,
-          kind,
-          opts.conversationId,
-          opts.turnId ?? null,
-          opts.attemptId ?? null,
-          opts.entityRef ?? null,
-          opts.entityRevision ?? null,
-          opts.scope ?? 'private',
-          occurredAt,
-          JSON.stringify(opts.payload),
-        );
-    });
-    const seqRow = this.db
-      .prepare('SELECT sequence FROM runtime_stream_events WHERE event_id = ?')
-      .get(eventId) as { sequence: number };
-    row = {
+    this.db
+      .prepare(
+        `INSERT INTO runtime_stream_events(event_id, stream_id, kind, conversation_id, turn_id, attempt_id, entity_ref, entity_revision, scope, occurred_at, payload_ref)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      )
+      .run(
+        eventId,
+        this.streamId,
+        kind,
+        opts.conversationId,
+        opts.turnId ?? null,
+        opts.attemptId ?? null,
+        opts.entityRef ?? null,
+        opts.entityRevision ?? null,
+        opts.scope ?? 'private',
+        occurredAt,
+        JSON.stringify(opts.payload),
+      );
+    const seqRow = this.db.prepare('SELECT sequence FROM runtime_stream_events WHERE event_id = ?').get(eventId) as { sequence: number };
+    return {
       sequence: seqRow.sequence,
       event_id: eventId,
       stream_id: this.streamId,
@@ -121,12 +108,29 @@ export class EventService {
       occurred_at: occurredAt,
       payload_ref: JSON.stringify(opts.payload),
     };
-    this.dispatch(row);
+  }
+
+  // —— 提交后分发（内存）——
+  dispatchRow(row: StreamEventRow): void {
+    for (const sub of this.subscribers.values()) {
+      if (sub.conversationId !== null && row.conversation_id !== null && row.conversation_id !== sub.conversationId) continue;
+      if (sub.queue.length >= SUBSCRIBER_QUEUE_LIMIT) {
+        sub.overflowed = true;
+        sub.onOverflow?.();
+        continue;
+      }
+      sub.queue.push({ sequence: row.sequence, kind: row.kind, payload: row.payload_ref, eventRow: row });
+    }
+  }
+
+  // 常规发布：单事件事务 + 分发
+  publish(kind: string, opts: Parameters<EventService['persistInTx']>[1]): StreamEventRow {
+    const row = tx(this.db, () => this.persistInTx(kind, opts));
+    this.dispatchRow(row);
     return row;
   }
 
-  replay(afterSequence: number, conversationId: string | null, limit = 1000): StreamEventRow[] {
-    // 回放只按持久 sequence；同文本不算重放依据（05 §5.2）
+  replayPage(afterSequence: number, conversationId: string | null, limit = 1000): StreamEventRow[] {
     if (conversationId === null) {
       return this.db
         .prepare('SELECT * FROM runtime_stream_events WHERE sequence > ? ORDER BY sequence LIMIT ?')
@@ -142,8 +146,6 @@ export class EventService {
     return row.m;
   }
 
-  // —— 订阅 ——
-
   subscribe(conversationId: string | null, onOverflow?: () => void): SseSubscriber {
     const sub: SseSubscriber = { id: genId('sub'), conversationId, queue: [], overflowed: false, onOverflow };
     this.subscribers.set(sub.id, sub);
@@ -152,17 +154,5 @@ export class EventService {
 
   unsubscribe(sub: SseSubscriber): void {
     this.subscribers.delete(sub.id);
-  }
-
-  private dispatch(row: StreamEventRow): void {
-    for (const sub of this.subscribers.values()) {
-      if (sub.conversationId !== null && row.conversation_id !== null && row.conversation_id !== sub.conversationId) continue;
-      if (sub.queue.length >= SUBSCRIBER_QUEUE_LIMIT) {
-        sub.overflowed = true;
-        sub.onOverflow?.();
-        continue;
-      }
-      sub.queue.push({ sequence: row.sequence, kind: row.kind, payload: row.payload_ref, eventRow: row });
-    }
   }
 }

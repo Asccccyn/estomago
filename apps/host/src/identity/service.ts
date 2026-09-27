@@ -1,17 +1,38 @@
-// 身份层（01 §6 / 05 §3）：Manifest 描述获准材料；Receipt 描述一次装载；Gate 只认证据。
-// 没有真实、已批准身份材料 → IDENTITY_BLOCKED；绝不提供默认人格顶替（02 §6.1）。
+// 身份层 v0.2.2（AUD-02/22 修复版）：Evidence Gate —— 期望(expected)与观测(observed)分离。
+// 配置只能声明 expected；READY 必须依赖观测证据：
+//  - 实装 SDK 包版本（node_modules 实测）=== manifest 声明 === 配置锁定值
+//  - manifest.cwd_realpath === workspaces 目录 realpath
+//  - manifest.settings_sources / requested_builtin_tools 与配置一致
+//  - capability_probes 表内关键探针 state=supported 且 sdk_version 与实装版本匹配
+// 任何关键观测为 null/unknown/mismatch/stale → IDENTITY_BLOCKED；
+// 没有批准身份材料 → 阻断，绝不提供默认人格。
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 import type { EstomagoPaths } from '../config/paths.ts';
 
+const require_ = createRequire(import.meta.url);
+export function defaultObservedSdkVersion(): string | null {
+  try {
+    // 包 exports 未暴露 ./package.json：从入口文件路径旁读取
+    const entry = require_.resolve('@anthropic-ai/claude-agent-sdk') as string;
+    const fs2 = require_('node:fs') as typeof import('node:fs');
+    const path2 = require_('node:path') as typeof import('node:path');
+    const pkg = JSON.parse(fs2.readFileSync(path2.join(path2.dirname(entry), 'package.json'), 'utf8')) as { version: string };
+    return pkg.version;
+  } catch {
+    return null;
+  }
+}
+
 export type IdentityManifestFile = {
   display_name: string;
   spec_version: string;
-  status: string; // TEMPLATE_NOT_LOADED（模板）/ APPROVED（批准后）
+  status: string;
   identity_version: string | null;
   approved_source_ref: string | null;
   approved_source_hash: string | null;
@@ -37,9 +58,15 @@ export type GateResult = {
   state: 'READY' | 'IDENTITY_BLOCKED';
   reasons: string[];
   manifest: IdentityManifestFile | null;
+  observed: {
+    installed_sdk_version: string | null;
+    cwd_realpath: string | null;
+    probes: Record<string, { state: string; sdk_version: string } | null>;
+  };
 };
 
 export type BootstrapReceipt = {
+  id: string;
   spec_version: string;
   status: string;
   window_id: string | null;
@@ -51,83 +78,139 @@ export type BootstrapReceipt = {
   activation_gate: { state: string; scope: string; reasons: string[] };
 };
 
+// READY 必须有匹配版本证据的关键探针（02 §5 + 05）
+export const REQUIRED_PROBES = [
+  'system_prompt_explicit',
+  'settings_sources_isolated',
+  'interrupt_supported',
+  'thinking_delta_observed',
+  'complete_block_mapping_verified',
+] as const;
+
 export class IdentityService {
   private config: Config;
   private paths: EstomagoPaths;
-  constructor(config: Config, paths: EstomagoPaths) {
+  private observedSdkVersion: () => string | null;
+  constructor(config: Config, paths: EstomagoPaths, observedSdkVersion: () => string | null = defaultObservedSdkVersion) {
     this.config = config;
     this.paths = paths;
+    this.observedSdkVersion = observedSdkVersion;
   }
 
   manifestPath(): string {
-    // 优先 config/identity-manifest.json（本机有效配置区）；模板不会自动充当正本
-    const live = path.join(this.paths.configDir, 'identity-manifest.json');
-    return live;
+    return path.join(this.paths.configDir, 'identity-manifest.json');
   }
 
   loadManifest(): { manifest: IdentityManifestFile | null; error: string | null } {
     const p = this.manifestPath();
     if (!fs.existsSync(p)) {
-      return { manifest: null, error: `身份 manifest 不存在：${p}（复制 config/identity-manifest.example.json 后按批准材料填写；没有批准材料即保持阻断）` };
+      return { manifest: null, error: `身份 manifest 不存在：${p}（没有批准材料即保持阻断；不提供默认人格）` };
     }
     try {
       const raw = JSON.parse(fs.readFileSync(p, 'utf8')) as IdentityManifestFile;
       return { manifest: raw, error: null };
-    } catch (err) {
-      return { manifest: null, error: `身份 manifest 解析失败：${(err as Error).message}` };
+    } catch {
+      return { manifest: null, error: 'CONFIG_ERROR: manifest_invalid_json' };
     }
   }
 
-  // 激活 gate（05 §3）：关键项未知或不满足 → BLOCKED；非关键不可观测 → not_observable，不阻断也不算通过
-  evaluateGate(): GateResult {
+  evaluateGate(db?: Db): GateResult {
     const reasons: string[] = [];
+    const installed = this.observedSdkVersion();
+    const cwdReal = fs.existsSync(this.paths.workspacesDir) ? fs.realpathSync(this.paths.workspacesDir) : null;
+    const probes: GateResult['observed']['probes'] = {};
     const { manifest, error } = this.loadManifest();
-    if (!manifest) return { state: 'IDENTITY_BLOCKED', reasons: [error ?? 'manifest 缺失'], manifest: null };
+    if (!manifest) {
+      return { state: 'IDENTITY_BLOCKED', reasons: [error ?? 'manifest 缺失'], manifest: null, observed: { installed_sdk_version: installed, cwd_realpath: cwdReal, probes } };
+    }
 
-    if (manifest.status !== 'APPROVED') reasons.push(`manifest.status=${manifest.status}（须为 APPROVED；模板/未批准不算身份正本）`);
-    if (!manifest.identity_version) reasons.push('identity_version 缺失');
-    if (!manifest.approved_source_ref) reasons.push('approved_source_ref 缺失');
-    if (!manifest.approved_source_hash) reasons.push('approved_source_hash 缺失');
+    // —— 声明完整性（I/规则版本现在是必填证据）——
+    if (manifest.status !== 'APPROVED') reasons.push(`manifest.status=${manifest.status}（须为 APPROVED）`);
+    for (const k of ['identity_version', 'i_version', 'runtime_rules_version'] as const) {
+      if (!manifest[k]) reasons.push(`manifest.${k} 缺失（ID evidence gate）`);
+    }
     if (manifest.system_prompt_mode !== 'explicit_custom') reasons.push('system_prompt_mode 须为 explicit_custom');
-
-    // 身份正本存在且 hash 匹配
     if (manifest.approved_source_ref && manifest.approved_source_hash) {
       const ref = path.resolve(this.paths.identityDir, manifest.approved_source_ref);
-      if (!fs.existsSync(ref)) {
-        reasons.push(`批准材料文件不存在：${manifest.approved_source_ref}（在 identity/ 下）`);
-      } else {
-        const actual = sha256Hex(fs.readFileSync(ref));
-        if (actual !== manifest.approved_source_hash) reasons.push('批准材料 hash 不符：拒绝装载（不自动改用缓存或默认人格）');
+      if (!fs.existsSync(ref)) reasons.push(`批准材料文件不存在：${manifest.approved_source_ref}`);
+      else if (sha256Hex(fs.readFileSync(ref)) !== manifest.approved_source_hash) reasons.push('批准材料 hash 不符（拒绝装载，不降级用缓存）');
+    } else {
+      reasons.push('approved_source_ref/hash 缺失');
+    }
+
+    // —— 期望 vs 批准观测：版本三键声明期望，manifest 为批准值，不一致即阻断（AUD-02）
+    const expect = this.config.identity as { expected_identity_version: string | null; expected_i_version: string | null; expected_rules_version: string | null };
+    if (expect.expected_identity_version && manifest.identity_version !== expect.expected_identity_version) {
+      reasons.push(`identity_version 不符：期望 ${expect.expected_identity_version} / 批准 ${manifest.identity_version}`);
+    }
+    if (expect.expected_i_version && manifest.i_version !== expect.expected_i_version) {
+      reasons.push(`i_version 不符：期望 ${expect.expected_i_version} / 批准 ${manifest.i_version}`);
+    }
+    if (expect.expected_rules_version && manifest.runtime_rules_version !== expect.expected_rules_version) {
+      reasons.push(`rules_version 不符：期望 ${expect.expected_rules_version} / 批准 ${manifest.runtime_rules_version}`);
+    }
+
+    // —— 期望 vs 观测（AUD-02 核心：配置自填 verified 不再是证据）——
+    if (!this.config.runtime.model) reasons.push('runtime.model=null（expected 未配置）');
+    if (!this.config.runtime.sdk_version) reasons.push('runtime.sdk_version=null（expected 未锁定）');
+    if (!this.config.runtime.auth_and_billing_verified) reasons.push('auth_and_billing_verified=false（认证/计费未确认）');
+    if (installed === null) {
+      reasons.push('observed: SDK 包未安装（无法观测版本）');
+    } else {
+      if (this.config.runtime.sdk_version && this.config.runtime.sdk_version !== installed) {
+        reasons.push(`sdk_version 不匹配：配置 ${this.config.runtime.sdk_version} / 实装 ${installed}`);
+      }
+      if (manifest.sdk_version && manifest.sdk_version !== installed) {
+        reasons.push(`manifest.sdk_version=${manifest.sdk_version} 与实装 ${installed} 不符（批准材料针对另一版本）`);
       }
     }
-
-    // 运行前提（现场未核实的一律阻断，不冒充支持）
-    if (!this.config.runtime.model) reasons.push('runtime.model 为 null：现场模型未核实');
-    if (!this.config.runtime.sdk_version) reasons.push('runtime.sdk_version 为 null：SDK 版本未锁定');
-    if (!this.config.runtime.auth_and_billing_verified) reasons.push('auth_and_billing_verified=false：认证与计费未确认（不得为跑通偷偷换 key/账号）');
-    if (this.config.runtime.thinking.require_capability_probe && this.config.runtime.capability_state !== 'verified') {
-      reasons.push(`runtime.capability_state=${this.config.runtime.capability_state}：能力矩阵未取得实机证据`);
+    if (!manifest.cwd_realpath || manifest.cwd_realpath !== cwdReal) {
+      reasons.push(`cwd 不符：manifest=${manifest.cwd_realpath} / 实测=${cwdReal}`);
+    }
+    if (JSON.stringify(manifest.settings_sources ?? []) !== JSON.stringify(this.config.runtime.setting_sources)) {
+      reasons.push('settings_sources 与配置不一致（观测≠期望）');
+    }
+    if (JSON.stringify(manifest.requested_builtin_tools ?? []) !== JSON.stringify(this.config.runtime.builtin_tools)) {
+      reasons.push('requested_builtin_tools 与配置不一致');
     }
 
-    return { state: reasons.length === 0 ? 'READY' : 'IDENTITY_BLOCKED', reasons, manifest };
+    // —— 能力探针证据（DB 观测，绑定实装版本）——
+    if (db) {
+      for (const key of REQUIRED_PROBES) {
+        const row = db
+          .prepare('SELECT state, sdk_version FROM capability_probes WHERE probe_key = ? AND sdk_version = ?')
+          .get(key, installed ?? '') as { state: string; sdk_version: string } | undefined;
+        probes[key] = row ?? null;
+        if (!row) reasons.push(`probe_missing:${key}（无匹配 ${installed ?? 'null'} 版本的实机证据）`);
+        else if (row.state !== 'supported') reasons.push(`probe_${row.state}:${key}`);
+      }
+    } else {
+      for (const key of REQUIRED_PROBES) probes[key] = null;
+      reasons.push('probe_store_unavailable（无法读取能力探针证据）');
+    }
+
+    return {
+      state: reasons.length === 0 ? 'READY' : 'IDENTITY_BLOCKED',
+      reasons,
+      manifest,
+      observed: { installed_sdk_version: installed, cwd_realpath: cwdReal, probes },
+    };
   }
 
-  // 读取批准身份正文（仅在 gate 通过后调用）
   readApprovedIdentityText(manifest: IdentityManifestFile): string | null {
     try {
-      const ref = path.resolve(this.paths.identityDir, manifest.approved_source_ref!);
-      return fs.readFileSync(ref, 'utf8');
+      return fs.readFileSync(path.resolve(this.paths.identityDir, manifest.approved_source_ref!), 'utf8');
     } catch {
       return null;
     }
   }
 
-  // Bootstrap Receipt（05 §3：desired/assembled/observed/probe 四层；unknown 不填 false/[]）
+  // Bootstrap Receipt（05 §3 四层证据）；返回真实主键（AUD-22：window.receipt_id 引用它）
   buildAndStoreReceipt(db: Db, opts: {
     windowId: string | null;
     manifest: IdentityManifestFile | null;
     gate: GateResult;
-    assembledOptions: Record<string, unknown>;
+    assembledOptions: Record<string, unknown> | null;
   }): BootstrapReceipt {
     const desired = {
       instruction_mode: 'explicit_custom',
@@ -137,38 +220,39 @@ export class IdentityService {
       auto_memory_enabled: !this.config.runtime.disable_auto_memory,
       automatic_connectors_enabled: !this.config.runtime.disable_claude_ai_connectors,
       thinking_display: this.config.runtime.thinking.display,
+      sdk_version: this.config.runtime.sdk_version,
     };
     const assembled = {
-      sdk_version: this.config.runtime.sdk_version,
-      runtime_version: this.config.runtime.runtime_version,
-      cwd_realpath: this.paths.workspacesDir,
+      sdk_version: this.observedSdkVersion(),
+      cwd_realpath: opts.gate.observed.cwd_realpath,
       system_prompt_hash: opts.manifest?.system_prompt_hash ?? null,
       identity_version: opts.manifest?.identity_version ?? null,
       i_version: opts.manifest?.i_version ?? null,
       runtime_rules_version: opts.manifest?.runtime_rules_version ?? null,
-      options_hash: sha256Hex(JSON.stringify(opts.assembledOptions)),
-      environment_profile_ref: null, // 环境白名单装配未实装：保持 null（unknown）
-      tool_schema_hash: null,
+      options_hash: opts.assembledOptions ? sha256Hex(JSON.stringify(opts.assembledOptions)) : null,
     };
     const observed = {
-      state: 'unknown',
+      state: opts.gate.state === 'READY' ? 'verified_local' : 'blocked_local',
       final_request_observable: false,
-      original_preset_included: null, // 无该层观测：null ≠ false（05 §3）
+      original_preset_included: null,
       effective_model: null,
       effective_tools: null,
       loaded_instruction_sources: null,
       managed_policy_summary: null,
       thinking_delta_seen: null,
       sdk_init_evidence_ref: null,
+      probes: opts.gate.observed.probes,
     };
     const probe = {
-      status: 'NOT_EXECUTED',
-      version_match: null,
-      evidence_refs: [] as string[],
+      status: 'RECORDED',
+      version_match: this.observedSdkVersion() === this.config.runtime.sdk_version,
+      evidence_refs: Object.entries(opts.gate.observed.probes).map(([k, v]) => `${k}:${v?.state ?? 'null'}`),
       blocking_unknowns: opts.gate.reasons.slice(),
-      non_observable_fields: ['original_preset_included', 'final_request_observable'] as string[],
+      non_observable_fields: ['original_preset_included', 'final_request_observable'],
     };
+    const id = genId('rcpt');
     const receipt: BootstrapReceipt = {
+      id,
       spec_version: this.config.project.spec_version,
       status: 'RECORDED_NOT_VERIFIED',
       window_id: opts.windowId,
@@ -183,25 +267,23 @@ export class IdentityService {
         reasons: opts.gate.reasons,
       },
     };
-    if (opts.windowId) {
-      tx(db, () => {
-        db.prepare(
-          `INSERT INTO bootstrap_receipts(id, window_id, manifest_ref, desired, assembled, observed, probe, gate_state, gate_reasons, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`,
-        ).run(
-          genId('rcpt'),
-          opts.windowId,
-          receipt.manifest_ref,
-          JSON.stringify(desired),
-          JSON.stringify(assembled),
-          JSON.stringify(observed),
-          JSON.stringify(probe),
-          opts.gate.state,
-          JSON.stringify(opts.gate.reasons),
-          new Date().toISOString(),
-        );
-      });
-    }
+    tx(db, () => {
+      db.prepare(
+        `INSERT INTO bootstrap_receipts(id, window_id, manifest_ref, desired, assembled, observed, probe, gate_state, gate_reasons, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        id,
+        opts.windowId,
+        receipt.manifest_ref,
+        JSON.stringify(desired),
+        JSON.stringify(assembled),
+        JSON.stringify(observed),
+        JSON.stringify(probe),
+        opts.gate.state,
+        JSON.stringify(opts.gate.reasons),
+        new Date().toISOString(),
+      );
+    });
     return receipt;
   }
 }

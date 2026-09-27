@@ -56,6 +56,9 @@ export type Config = {
     require_bootstrap_receipt: boolean;
     receipt_requires_evidence: boolean;
     unobservable_fields_are_unknown: boolean;
+    expected_identity_version: string | null;
+    expected_i_version: string | null;
+    expected_rules_version: string | null;
   };
   windows: {
     rotate_on_business_date_change: boolean;
@@ -196,6 +199,9 @@ export const CONFIG_DEFAULTS: Config = {
     require_bootstrap_receipt: true,
     receipt_requires_evidence: true,
     unobservable_fields_are_unknown: true,
+    expected_identity_version: null,
+    expected_i_version: null,
+    expected_rules_version: null,
   },
   windows: {
     rotate_on_business_date_change: true,
@@ -284,37 +290,78 @@ export const CONFIG_DEFAULTS: Config = {
   },
 };
 
-// —— 叶子类型说明（用于严格校验）——
-type Leaf =
-  | 'string'
-  | 'string?'
-  | 'number'
-  | 'number?'
-  | 'boolean'
-  | 'string[]'
-  | { section: Record<string, Leaf | SectionSpec> };
+// —— 显式类型树（AUD-19 修复）：每个叶子的类型显式声明，不从默认值推导 ——
+type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | { section: Record<string, Leaf> };
 type SectionSpec = { section: Record<string, Leaf> };
 
-const leaf = (t: Leaf): Leaf => t;
-
-function specFrom(value: unknown, path: string): SectionSpec | Leaf {
-  if (Array.isArray(value)) return 'string[]' as Leaf;
-  if (value === null || typeof value !== 'object') {
-    return leaf('string?');
-  }
-  const children: Record<string, Leaf | SectionSpec> = {};
-  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) children[k] = specFrom(v, `${path}.${k}`);
-    else if (Array.isArray(v)) children[k] = leaf('string[]');
-    else if (typeof v === 'number') children[k] = leaf('number?');
-    else if (typeof v === 'boolean') children[k] = leaf('boolean');
-    else children[k] = leaf('string?');
-  }
-  return { section: children as Record<string, Leaf> };
-}
-
-// 从默认值推导形状（默认值即 schema 真源；类型错配/未知键都在合并时发现）
-const SHAPE = specFrom(CONFIG_DEFAULTS, '') as SectionSpec;
+const SHAPE: SectionSpec = { section: {
+  project: { section: { display_name: 'string', slug: 'string', spec_version: 'string' } },
+  deployment: { section: {
+    target_os: 'string?', source_root: 'string?', state_root: 'string?', log_root: 'string?',
+    bind: 'string', port: 'number', public_origin: 'string?', public_enabled: 'boolean', supervisor: 'string?',
+  } },
+  runtime: { section: {
+    provider: 'string', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
+    model: 'string?', authentication_profile_ref: 'string?', system_prompt_mode: 'string', setting_sources: 'string[]',
+    require_identity_manifest: 'boolean', disable_auto_memory: 'boolean', strict_mcp_config: 'boolean',
+    automatic_flag_switch: 'boolean', automatic_availability_fallbacks: 'string[]', max_active_primary_runners: 'number?',
+    builtin_tools: 'string[]', mcp_servers_allowlist: 'string[]', skills: 'string[]', plugins: 'string[]',
+    disable_claude_ai_connectors: 'boolean', include_partial_messages: 'boolean',
+    thinking: { section: { mode: 'string', display: 'string', effort: 'number?', require_capability_probe: 'boolean' } },
+    config_isolation_root: 'string?', auth_and_billing_verified: 'boolean', capability_state: 'string?',
+  } },
+  identity: { section: {
+    approved_identity_ref: 'string?', approved_identity_hash: 'string?', i_source: 'string?',
+    allow_unverified_fallback: 'boolean', require_bootstrap_receipt: 'boolean',
+    receipt_requires_evidence: 'boolean', unobservable_fields_are_unknown: 'boolean',
+    expected_identity_version: 'string?', expected_i_version: 'string?', expected_rules_version: 'string?',
+  } },
+  windows: { section: {
+    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number?', output_reserve_tokens: 'number?',
+    handoff_reserve_tokens: 'number?', max_tool_result_tokens: 'number?', recent_dialogue_budget_tokens: 'number?',
+    model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',
+  } },
+  time: { section: {
+    business_timezone: 'string', persist_absolute_time_as: 'string?', refresh_before_every_turn: 'boolean',
+    use_device_timezone_to_rewrite_history: 'boolean', injection_channel: 'string?', depend_on_system_prompt_cache_boundary: 'boolean',
+  } },
+  routing: { section: {
+    require_owner_decision: 'boolean', decision_survives_restart: 'boolean',
+    unsupported_signal_behavior: 'string?', continue_capability: 'string?',
+  } },
+  archive: { section: {
+    enabled: 'boolean', continuous_grant_ref: 'string?', source_scope: 'string?',
+    semantic_auto_binding_threshold: 'number?', semantic_auto_binding_enabled: 'boolean',
+  } },
+  integrations: { section: {
+    mariposa: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
+    siren: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
+    superposition: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
+    zashidele: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
+  } },
+  notifications: { section: {
+    remote_enabled: 'boolean', provider: 'string?', credential_ref: 'string?', aggregate_by_turn: 'boolean',
+    include_sensitive_content: 'boolean', telegram_enabled: 'boolean',
+  } },
+  signals: { section: { enabled: 'boolean', consent_ref: 'string?', share_with_model: 'boolean', share_with_groups: 'boolean' } },
+  safety: { section: {
+    default_deny_unregistered_capabilities: 'boolean', allow_unrestricted_shell: 'boolean',
+    production_side_effects_enabled: 'boolean', test_root_must_differ_from_production: 'boolean',
+  } },
+  input: { section: {
+    multiline: 'boolean', enter_behavior: 'string', send_control: 'string', keyboard_send_shortcuts_enabled: 'boolean',
+    ime_composition_guard: 'boolean', normalize_newlines_to: 'string', split_user_message_on_newline: 'boolean',
+  } },
+  reasoning: { section: {
+    requested: 'boolean', label: 'string', label_is_design_proposal: 'boolean', default_expanded: 'boolean',
+    capture_source: 'string?', complete_block_action: 'string?', store_separately_from_messages: 'boolean',
+    persist_readable_projection: 'boolean', retention_policy: 'string?', auto_delete_days: 'number?',
+    maximum_buffer_bytes: 'number?', maximum_trace_bytes: 'number?', limits_status: 'string?',
+    signature_to_ui: 'boolean', archive_to_mariposa: 'boolean', include_in_handoff: 'boolean',
+    tts_enabled: 'boolean', push_enabled: 'boolean', auto_rewrite_with_model: 'boolean',
+    stop_transcript_main_capture: 'boolean', capability_state: 'string?',
+  } },
+} };
 
 export type ValidationIssue = { path: string; message: string };
 
