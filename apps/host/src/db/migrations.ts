@@ -253,6 +253,25 @@ CREATE TABLE audit_events(
 );
 `,
   },
+  {
+    version: 2,
+    name: 'v0.2.2-core-correctness',
+    sql: `
+CREATE TABLE capability_probes(
+  id TEXT PRIMARY KEY,
+  probe_key TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('supported','unsupported','blocked','unknown')),
+  sdk_version TEXT NOT NULL,
+  evidence_ref TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  UNIQUE (probe_key, sdk_version)
+);
+
+CREATE INDEX idx_route_decisions_conv_state ON route_decisions(conversation_id, state);
+CREATE INDEX idx_windows_sdk_session ON windows(sdk_session_id);
+CREATE INDEX idx_usage_turn_attempt ON usage_observations(turn_id, attempt_id);
+`,
+  },
 ];
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied: number[] } {

@@ -1,13 +1,16 @@
-// 消息服务：01 §4 的写入边界。
-// - 用户提交：权限/幂等键校验 → 同一事务内写 message + revision + 分配 sequence + outbox → 返回回执
-// - 换行规范化为 \n，保留行序/空行；多行正文是一条消息，绝不拆分（11.1 硬规则）
-// - 助手输出：pending 草稿不进正式表；只有正式发布边界才写 message + outbox
+// 消息服务 v0.2.2（AUD-15 修复版）：用户输入持久事务。
+// submitUserMessageWithTurn：同一事务内完成 message+revision+sequence+输入归档 outbox+
+// turn+attempt+turn_id 回填+幂等判定；commit 后才进 executor 队列。
+// 幂等自愈：同 key 重试不只查 message，还校验并补齐缺失 side effects（turn/attempt/outbox）。
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { isBlankContent, normalizeNewlines, type MessageDto, type MessageKind } from '../../../../packages/contracts/src/api.ts';
 
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
+export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: string; repaired: boolean };
+
+export class BlankMessageError extends Error {}
 
 export class MessageService {
   private db: Db;
@@ -22,36 +25,62 @@ export class MessageService {
         this.db
           .prepare('INSERT INTO conversations(id, owner_service, scope, title, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(conversationId, 'estomago', 'private', title, new Date().toISOString());
-        this.db
-          .prepare('INSERT INTO members(conversation_id, participant_id, role) VALUES (?, ?, ?)')
-          .run(conversationId, 'owner', 'owner');
+        this.db.prepare('INSERT INTO members(conversation_id, participant_id, role) VALUES (?, ?, ?)').run(conversationId, 'owner', 'owner');
       });
     }
   }
 
-  // 用户消息提交。幂等：同 (conversation, client_message_id) 返回原记录（duplicate=true）。
-  submitUserMessage(opts: {
+  // —— 用户输入 + turn 原子事务（AUD-15 核心）——
+  submitUserMessageWithTurn(opts: {
     conversationId: string;
-    content: string; // 原始正文，只做换行规范化
+    content: string;
     clientMessageId: string;
     occurredAt?: string | null;
     kind?: MessageKind;
-  }): SubmitResult {
+  }): SubmitWithTurnResult {
     const content = normalizeNewlines(opts.content);
-    if (isBlankContent(content)) {
-      throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
-    }
-    const dup = this.db
-      .prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?')
-      .get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
-    if (dup) return { message: this.getMessage(dup.id)!, duplicate: true };
-
+    if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
+    this.ensureConversation(opts.conversationId);
     const nowIso = new Date().toISOString();
     const occurredAt = opts.occurredAt ?? nowIso;
-    const messageId = genId('msg');
-    const receivedAt = nowIso;
 
-    tx(this.db, () => {
+    return tx(this.db, () => {
+      const dup = this.db
+        .prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?')
+        .get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
+      if (dup) {
+        // 幂等自愈：校验整套 side effects，缺什么补什么（同一事务）
+        let repaired = false;
+        const outbox = this.db
+          .prepare('SELECT 1 FROM outbox WHERE target = ? AND operation_key = ?')
+          .get('mariposa.archive', `archive:${dup.id}:1`);
+        if (!outbox) {
+          this.insertOutbox(`archive:${dup.id}:1`, { message_id: dup.id }, nowIso);
+          repaired = true;
+        }
+        let turn = this.db.prepare('SELECT id FROM turns WHERE input_message_id = ? ORDER BY created_at DESC LIMIT 1').get(dup.id) as { id: string } | undefined;
+        if (turn) {
+          const attempt = this.db.prepare('SELECT 1 FROM attempts WHERE turn_id = ?').get(turn.id);
+          if (!attempt) {
+            this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')")
+              .run(genId('att'), turn.id);
+            repaired = true;
+          }
+        } else {
+          const turnId = genId('turn');
+          this.db
+            .prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'user_message', 'pending', ?, ?)")
+            .run(turnId, opts.conversationId, dup.id, nowIso);
+          this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')").run(genId('att'), turnId);
+          this.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, dup.id);
+          turn = { id: turnId };
+          repaired = true;
+        }
+        const attemptRow = this.db.prepare('SELECT id FROM attempts WHERE turn_id = ? ORDER BY attempt_no LIMIT 1').get(turn.id) as { id: string };
+        return { message: this.getMessage(dup.id)!, duplicate: true, turnId: turn.id, attemptId: attemptRow.id, repaired };
+      }
+
+      const messageId = genId('msg');
       const seqRow = this.db
         .prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?')
         .get(opts.conversationId) as { next: number };
@@ -60,13 +89,21 @@ export class MessageService {
           `INSERT INTO messages(id, conversation_id, sequence, speaker, kind, client_message_id, current_revision, published_at, created_at)
            VALUES (?,?,?,?,?,?,1,?,?)`,
         )
-        .run(messageId, opts.conversationId, seqRow.next, 'owner', opts.kind ?? 'text', opts.clientMessageId, occurredAt, receivedAt);
-      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content, occurredAt, receivedAt, source: 'client_submit' });
+        .run(messageId, opts.conversationId, seqRow.next, 'owner', opts.kind ?? 'text', opts.clientMessageId, occurredAt, nowIso);
+      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content, occurredAt, receivedAt: nowIso, source: 'client_submit' });
+      this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
+      const turnId = genId('turn');
+      const attemptId = genId('att');
+      this.db
+        .prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'user_message', 'pending', ?, ?)")
+        .run(turnId, opts.conversationId, messageId, nowIso);
+      this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')").run(attemptId, turnId);
+      this.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, messageId);
+      return { message: this.getMessage(messageId)!, duplicate: false, turnId, attemptId, repaired: false };
     });
-    return { message: this.getMessage(messageId)!, duplicate: false };
   }
 
-  // 用户编辑：新 revision + supersedes；旧版本保留审计（4.2）
+  // 用户编辑：新 revision + supersedes + 归档 outbox 同事务（AUD-15/07）
   editUserMessage(messageId: string, newContent: string): MessageDto {
     const content = normalizeNewlines(newContent);
     if (isBlankContent(content)) throw new BlankMessageError('编辑后正文仅空白，拒绝');
@@ -76,7 +113,6 @@ export class MessageService {
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
       const nextRev = msg.current_revision + 1;
-      this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
       this.insertRevision({
         messageId,
         revision: nextRev,
@@ -87,18 +123,30 @@ export class MessageService {
         source: 'client_edit',
         supersedes: msg.current_revision,
       });
+      this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
+      this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
     });
     return this.getMessage(messageId)!;
   }
 
-  // 助手气泡正式发布（发布边界才落 message；pending 草稿只存在于运行缓冲 4.1）
-  publishAssistantMessage(opts: {
-    conversationId: string;
-    turnId: string;
-    content: string;
-    kind?: MessageKind;
-    windowId?: string | null;
-  }): MessageDto {
+  // 供路由事务内直接修订（同一外部 tx；AUD-06/07）
+  editMessageInTx(messageId: string, newContent: string): { revision: number; contentHash: string } {
+    const row = this.db
+      .prepare('SELECT current_revision, kind FROM messages WHERE id = ?')
+      .get(messageId) as { current_revision: number; kind: string } | undefined;
+    if (!row) throw new Error('message not found');
+    const content = normalizeNewlines(newContent);
+    if (isBlankContent(content)) throw new BlankMessageError('编辑后正文仅空白，拒绝');
+    const nowIso = new Date().toISOString();
+    const nextRev = row.current_revision + 1;
+    this.insertRevision({ messageId, revision: nextRev, kind: row.kind as MessageKind, content, occurredAt: nowIso, receivedAt: nowIso, source: 'route_edit', supersedes: row.current_revision });
+    this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
+    this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
+    return { revision: nextRev, contentHash: sha256Hex(content) };
+  }
+
+  // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
+  publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind }): MessageDto {
     const messageId = genId('msg');
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
@@ -112,16 +160,19 @@ export class MessageService {
         )
         .run(messageId, opts.conversationId, seqRow.next, 'assistant', opts.turnId, opts.kind ?? 'text', nowIso, nowIso);
       this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish' });
-      // 归档 outbox：区分"已保存到聊天库"与"已归档到记忆库"（4.3）；archive.enabled=false 时由分发器标 disabled
-      this.db
-        .prepare(
-          `INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at)
-           VALUES (?,?,?,?,'pending',?,?)
-           ON CONFLICT(target, operation_key) DO NOTHING`,
-        )
-        .run(genId('obx'), `archive:${messageId}:1`, 'mariposa.archive', JSON.stringify({ message_id: messageId }), nowIso, nowIso);
+      this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
     });
     return this.getMessage(messageId)!;
+  }
+
+  private insertOutbox(operationKey: string, payload: Record<string, unknown>, nowIso: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at)
+         VALUES (?,?,?,?, 'pending', ?, ?)
+         ON CONFLICT(target, operation_key) DO NOTHING`,
+      )
+      .run(genId('obx'), operationKey, 'mariposa.archive', JSON.stringify(payload), nowIso, nowIso);
   }
 
   private insertRevision(opts: {
@@ -139,18 +190,7 @@ export class MessageService {
         `INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, supersedes_revision, occurred_at, received_at, source)
          VALUES (?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(
-        genId('rev'),
-        opts.messageId,
-        opts.revision,
-        opts.kind,
-        opts.content,
-        sha256Hex(opts.content),
-        opts.supersedes ?? null,
-        opts.occurredAt,
-        opts.receivedAt,
-        opts.source,
-      );
+      .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source);
   }
 
   getMessage(messageId: string): MessageDto | null {
@@ -166,7 +206,7 @@ export class MessageService {
   }
 
   listMessages(opts: { conversationId: string; afterSequence?: number; limit?: number }): MessageDto[] {
-    const limit = Math.min(opts.limit ?? 100, 500);
+    const limit = Math.min(opts.limit ?? 100, 1000);
     const rows = this.db
       .prepare(
         `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
@@ -179,21 +219,11 @@ export class MessageService {
     return rows.map(rowToDto);
   }
 
-  lastMessageOf(opts: { conversationId: string; speaker?: 'owner' | 'assistant' }): MessageDto | null {
-    const rows = this.db
-      .prepare(
-        `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
-         FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-         WHERE m.conversation_id = ? AND (? IS NULL OR m.speaker = ?)
-         ORDER BY m.sequence DESC LIMIT 1`,
-      )
-      .all(opts.conversationId, opts.speaker ?? null, opts.speaker ?? null) as MessageRow[];
-    return rows[0] ? rowToDto(rows[0]) : null;
+  currentRevisionHash(messageId: string): string | null {
+    const row = this.db.prepare('SELECT content_hash FROM message_revisions WHERE message_id = ? AND revision = (SELECT current_revision FROM messages WHERE id = ?)').get(messageId, messageId) as { content_hash: string } | undefined;
+    return row?.content_hash ?? null;
   }
 }
-
-export class BlankMessageError extends Error {}
 
 type MessageRow = {
   id: string;
