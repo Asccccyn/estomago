@@ -5,6 +5,14 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { guardCheck } from './test-guard.mjs';
+
+// AUD-31：正式测试入口必须先过保险丝（凭据/生产根/生产配置），不过不许跑
+const guard = guardCheck();
+if (!guard.ok) {
+  console.error('[test] 保险丝拒绝：\n  - ' + guard.issues.join('\n  - '));
+  process.exit(2);
+}
 
 const REPO = path.resolve(import.meta.dirname, '..');
 const PROD_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
@@ -49,7 +57,10 @@ function runOne(file) {
       cwd: REPO,
       stdio: 'inherit',
       env: {
-        ...process.env,
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        TMPDIR: process.env.TMPDIR,
+        LANG: process.env.LANG,
         ESTOMAGO_TEST_MODE: '1',
         ESTOMAGO_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'estomago-test-home-')),
       },

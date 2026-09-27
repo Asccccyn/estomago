@@ -1,30 +1,72 @@
 #!/usr/bin/env node
-// 恢复到隔离目录（默认关闭副作用）：必须显式 --into <dir>；绝不直接覆盖在用数据库。
-// 恢复验证完成后才允许人工切换（18.2）。
+// restore v0.2.2（AUD-16 修复）：只允许恢复到"新的空隔离目录"。
+// 校验链：源存在 → 是 SQLite → integrity_check → schema 兼容 → 目标 realpath 非生产根/非空 →
+// 无活动实例占用目标 → 拷贝 + 校验和。无效备份 non-zero exit。正式 promote 到生产根是独立显式流程，本脚本不做。
 import fs from 'node:fs';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 const args = process.argv.slice(2);
 const fileIdx = args.findIndex((a) => !a.startsWith('--'));
 const intoIdx = args.indexOf('--into');
+const fail = (code, msg) => { console.error(`[restore] 拒绝（${code}）：${msg}`); process.exit(2); };
+
 if (fileIdx < 0 || intoIdx < 0 || !args[intoIdx + 1]) {
-  console.error('用法: node scripts/restore.mjs <backup.sqlite3> --into <隔离目录>');
-  console.error('说明: 恢复区只用于验证；切换正式库需人工确认，本脚本不做。');
+  console.error('用法: node scripts/restore.mjs <backup.sqlite3> --into <新的空隔离目录>');
   process.exit(2);
 }
 const src = path.resolve(args[fileIdx]);
-const destDir = path.resolve(args[intoIdx + 1]);
-if (!fs.existsSync(src)) {
-  console.error(`[restore] 备份不存在：${src}`);
-  process.exit(1);
+const destDirInput = path.resolve(args[intoIdx + 1]);
+if (!fs.existsSync(src)) fail('SOURCE_MISSING', `备份不存在：${src}`);
+
+const prodRoot = path.resolve(`${process.env.HOME ?? ''}/Library/Application Support/estomago`);
+const destReal = fs.existsSync(destDirInput) ? fs.realpathSync(destDirInput) : path.resolve(destDirInput);
+if (destReal === prodRoot || destReal.startsWith(prodRoot + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向生产状态根');
+if (fs.existsSync(destDirInput)) {
+  const entries = fs.readdirSync(destDirInput);
+  if (entries.some((e) => e !== '.DS_Store')) fail('DEST_NOT_EMPTY', '目标目录必须不存在或为空（隔离恢复目录）');
+} else {
+  fs.mkdirSync(destDirInput, { recursive: true });
 }
-const prodLike = `${path.join(process.env.HOME ?? '', 'Library', 'Application Support')}/estomago`;
-if (path.resolve(destDir) === path.resolve(prodLike)) {
-  console.error('[restore] 拒绝：--into 指向生产状态根；恢复必须先到隔离目录验证。');
-  process.exit(2);
+// 活动实例检查：目标若含 instance.lock 且持有者存活 → 拒绝
+const existingLock = path.join(destDirInput, 'run/instance.lock');
+if (fs.existsSync(existingLock)) fail('DEST_IN_USE', '目标目录存在实例锁（可能有活动实例）');
+
+// 备份有效性
+let db;
+try {
+  db = new DatabaseSync(src, { readOnly: true });
+} catch (e) {
+  fail('BACKUP_NOT_SQLITE', `无法以 SQLite 打开备份：${String(e.message).slice(0, 80)}`);
 }
-fs.mkdirSync(path.join(destDir, 'data'), { recursive: true });
-const dest = path.join(destDir, 'data', 'chat.sqlite3');
-fs.copyFileSync(src, dest);
-console.log(`[restore] 已恢复到隔离目录：${dest}`);
-console.log('[restore] 副作用默认关闭：验证时不要配置推送/归档/模型凭据。');
+try {
+  const integrity = db.prepare('PRAGMA integrity_check').get();
+  if (String(integrity?.integrity_check ?? integrity ?? '') !== 'ok') fail('BACKUP_CORRUPT', `integrity_check 未通过：${JSON.stringify(integrity).slice(0, 80)}`);
+  const version = db.prepare("SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations").get()?.v ?? 0;
+  const walMode = db.prepare('PRAGMA journal_mode').get();
+  console.log(`[restore] 备份校验 OK：schema v${version}，journal=${JSON.stringify(walMode)}`);
+  if (version > 2) fail('BACKUP_INCOMPATIBLE', `备份 schema v${version} 高于当前代码支持的版本`);
+  db.close();
+} catch (e) {
+  if (String(e.message).includes('拒绝') || String(e.message).includes('BACKUP')) throw e;
+  fail('BACKUP_INVALID', `备份校验失败：${String(e.message).slice(0, 80)}`);
+}
+
+// 拷贝 + 校验和
+const { createHash } = await import('node:crypto');
+const hashOf = (f) => createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+const srcHash = hashOf(src);
+const dest = path.join(destDirInput, 'data');
+fs.mkdirSync(dest, { recursive: true });
+const destFile = path.join(dest, 'chat.sqlite3');
+fs.copyFileSync(src, destFile);
+if (hashOf(destFile) !== srcHash) {
+  fs.rmSync(destFile, { force: true });
+  fail('COPY_MISMATCH', '拷贝后校验和不一致，已删除半成品');
+}
+fs.writeFileSync(destFile.replace(/\.sqlite3$/, '') + '.restore-manifest.json', JSON.stringify({
+  restored_at: new Date().toISOString(), source: src, source_sha256: srcHash,
+  side_effects: 'DISABLED', promote: '正式启用需单独显式流程（本脚本不 promote）',
+}, null, 2));
+console.log(`[restore] 已恢复到隔离目录：${destFile}`);
+console.log('[restore] 副作用默认关闭：验证时不要配置推送/归档/模型凭据；promote 生产是独立显式流程。');
