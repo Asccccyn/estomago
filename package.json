@@ -1,9 +1,9 @@
 {
   "name": "estomago",
-  "version": "0.1.0-skeleton",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
-  "description": "estómago · 自建聊天宿主（架构规格 v0.2.1 的实现骨架；166 项产品验收仍为 NOT_EXECUTED）",
+  "description": "est\u00f3mago \u00b7 \u81ea\u5efa\u804a\u5929\u5bbf\u4e3b\uff08\u67b6\u6784\u89c4\u683c v0.2.1 \u7684\u5b9e\u73b0\u9aa8\u67b6\uff1b166 \u9879\u4ea7\u54c1\u9a8c\u6536\u4ecd\u4e3a NOT_EXECUTED\uff09",
   "engines": {
     "node": ">=22.18"
   },
@@ -16,5 +16,8 @@
     "backup": "node scripts/backup.mjs",
     "restore": "node scripts/restore.mjs",
     "install-launchagent": "node scripts/install-launchagent.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.283"
   }
 }
