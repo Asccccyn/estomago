@@ -91,7 +91,7 @@ export class Host {
     const runnerSelection = await selectRunner(opts.config);
     const reasoning = new ReasoningService(db, events);
     const usage = new UsageCollector(db);
-    const routing = new RoutingService(db, events);
+    const routing = new RoutingService(db, events, messages);
     const windows = new WindowManager(db, events, identity, paths.handoffsDir);
     const supervisor = new TurnSupervisor({
       db,
@@ -152,6 +152,7 @@ export class Host {
   }
 
   async stop(): Promise<void> {
+    await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
     await new Promise<void>((resolve) => {
       this.server.close(() => resolve());

@@ -1,14 +1,17 @@
-// HTTP 路由 + SSE（01 §17 拟新增接口的 v0 子集）。
-// 纪律：401/403 不泄露原因细节；POST 校验 Origin；SSE 按持久 sequence 回放去重；
-// 错误统一 {error:{code,message}}；/health 只给脱敏状态。
+// HTTP 路由 + SSE v0.2.2（AUD-06/08/09/29/15/28 修复）：
+//  - 提交走 submitUserMessageWithTurn（单事务：消息+outbox+turn+attempt；幂等含自愈）。
+//  - SSE：Last-Event-ID 优先于 query cursor；回放到连接时高水位分页追平后进 live，无空洞；
+//    res.write 背压（drain 等待 + 待发字节上限 + 超时断开）。
+//  - route-decisions：先验证后事务消费；非法请求不消耗票据。
+//  - 错误日志只记稳定错误码（AUD-28）。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Config } from '../config/schema.ts';
 import type { EstomagoPaths } from '../config/paths.ts';
 import type { Db } from '../db/connection.ts';
-import { tx } from '../db/connection.ts';
 import type { Logger } from '../observability/logging.ts';
+import { stableErrorCode } from '../observability/errors.ts';
 import type { EventService, SseSubscriber } from '../events/service.ts';
 import type { MessageService } from '../messages/service.ts';
 import type { IdentityService } from '../identity/service.ts';
@@ -45,25 +48,24 @@ export type RequestDeps = {
 };
 
 const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
+const SSE_PAGE_LIMIT = 1000;
+const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开重连）
+const SSE_DRAIN_TIMEOUT_MS = 20_000;
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse, d: RequestDeps): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const route = `${req.method} ${url.pathname}`;
   try {
-    // —— 无鉴权端点 ——
     if (route === 'GET /health/live') return json(res, 200, { status: 'ok' });
     if (route === 'GET /health/ready') {
       const report = buildReadyReport({
-        config: d.config,
-        gate: d.identity.evaluateGate(),
-        runnerSelection: d.runnerSelection,
-        capabilities: d.capabilities,
-        db: d.db,
+        config: d.config, gate: d.identity.evaluateGate(d.db),
+        runnerSelection: d.runnerSelection, capabilities: d.capabilities, db: d.db,
       });
       return json(res, 200, report);
     }
     if (route === 'POST /api/v1/auth/login') {
-      const body = (await readJson(req)) as { token?: string };
+      const body = (await readJson(req, d)) as { token?: string };
       if (!d.auth.verifyToken(typeof body.token === 'string' ? body.token : null)) {
         return json(res, 401, { error: { code: 'unauthorized', message: 'token 不正确' } });
       }
@@ -74,9 +76,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return serveStatic(res, url.pathname);
     }
 
-    // —— 鉴权 ——
     if (!d.auth.isAuthorized(req)) {
-      return json(res, 401, { error: { code: 'unauthorized', message: '需要认证（POST /api/v1/auth/login 或 Authorization: Bearer）' } });
+      return json(res, 401, { error: { code: 'unauthorized', message: '需要认证' } });
     }
     const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
     if (mutating && !d.auth.originAllowed(req, String(req.headers.host ?? ''))) {
@@ -100,28 +101,25 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     if (postMsgs) {
       const conversationId = decodeURIComponent(postMsgs[1]!);
       const idempotencyKey = String(req.headers['idempotency-key'] ?? '');
-      const body = (await readJson(req)) as Partial<SubmitMessageRequest>;
+      const body = (await readJson(req, d)) as Partial<SubmitMessageRequest>;
       const clientMessageId = body.client_message_id ?? idempotencyKey;
       if (!clientMessageId) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 client_message_id / Idempotency-Key' } });
       if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串（多行正文整体提交，不拆分）' } });
       d.messages.ensureConversation(conversationId);
       let submitted;
       try {
-        submitted = d.messages.submitUserMessage({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null });
+        submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null });
       } catch (err) {
         if ((err as Error).message.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: (err as Error).message } });
         throw err;
       }
-      let turnId: string | null = null;
       if (!submitted.duplicate) {
-        turnId = await createTurnForMessage(d, conversationId, submitted.message.id, submitted.message.current_revision);
-      } else {
-        const t = d.db.prepare('SELECT id FROM turns WHERE input_message_id = ? ORDER BY created_at DESC LIMIT 1').get(submitted.message.id) as { id: string } | undefined;
-        turnId = t?.id ?? null;
+        const message = d.messages.getMessage(submitted.message.id)!;
+        d.events.publish('message.persisted', { conversationId, turnId: submitted.turnId, entityRef: message.id, entityRevision: message.sequence, payload: { message } });
+        d.events.publish('turn.started', { conversationId, turnId: submitted.turnId, attemptId: submitted.attemptId, payload: {} });
+        d.supervisor.enqueue(submitted.turnId);
       }
-      // 建 turn 后重取 DTO：响应里的 turn_id 与库一致
-      const message = d.messages.getMessage(submitted.message.id) ?? submitted.message;
-      return json(res, submitted.duplicate ? 200 : 201, { message, duplicate: submitted.duplicate, turn_id: turnId });
+      return json(res, submitted.duplicate ? 200 : 201, { message: submitted.message, duplicate: submitted.duplicate, turn_id: submitted.turnId, repaired: submitted.repaired });
     }
 
     if (route === 'GET /api/v1/events') {
@@ -148,21 +146,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const win = d.windows.get(windowId);
       if (!win) return json(res, 404, { error: { code: 'not_found', message: '窗口不存在' } });
       const maxRow = d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(win.conversation_id) as { m: number };
-      const result = d.windows.rotate({ conversationId: win.conversation_id, gate: d.identity.evaluateGate(), maxSequence: maxRow.m });
+      const result = d.windows.rotate({ conversationId: win.conversation_id, gate: d.identity.evaluateGate(d.db), maxSequence: maxRow.m });
       return json(res, result.ok ? 200 : 409, result.ok ? { window: result.window } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
     const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);
     if (runtime) {
       const conversationId = decodeURIComponent(runtime[1]!);
-      const gate = d.identity.evaluateGate();
+      const gate = d.identity.evaluateGate(d.db);
       const active = d.windows.activeWindow(conversationId);
       return json(res, 200, {
         conversation_id: conversationId,
         identity: { state: gate.state, reasons: gate.reasons, manifest_status: gate.manifest?.status ?? null },
         runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
         capabilities: d.capabilities.describe(),
-        active_window: active ? { id: active.id, status: active.status } : null,
+        active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
         thresholds: { status: d.config.windows.threshold_status, model_context_capacity: d.config.windows.model_context_capacity },
         reasoning_label: d.config.reasoning.label,
       });
@@ -171,41 +169,24 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     const routeDecision = /^POST \/api\/v1\/route-decisions\/([^/]+)$/.exec(route);
     if (routeDecision) {
       const decisionId = decodeURIComponent(routeDecision[1]!);
-      const body = (await readJson(req)) as { choice?: string; content?: string; client_message_id?: string };
+      const body = (await readJson(req, d)) as { choice?: string; content?: string };
       if (body.choice !== 'approve' && body.choice !== 'edit' && body.choice !== 'cancel') {
         return json(res, 400, { error: { code: 'bad_choice', message: 'choice 必须是 approve/edit/cancel' } });
       }
-      const decision = d.routing.get(decisionId);
-      if (!decision) return json(res, 404, { error: { code: 'not_found', message: '票据不存在' } });
-      const consumed = d.routing.consume(decisionId, body.choice);
-      if (!consumed.ok) return json(res, 409, { error: { code: 'already_consumed', message: consumed.reason } });
-
-      if (body.choice === 'cancel') {
-        tx(d.db, () => {
-          d.db.prepare("UPDATE attempts SET state = 'blocked', blocked_reason = 'route_cancelled', completed_at = ? WHERE id = ?").run(new Date().toISOString(), decision.attempt_id);
-          d.db.prepare("UPDATE turns SET state = 'blocked', completed_at = ? WHERE id = ?").run(new Date().toISOString(), decision.turn_id);
-        });
-        d.events.publish('turn.status', { conversationId: decision.conversation_id, turnId: decision.turn_id, attemptId: decision.attempt_id, payload: { state: 'blocked', reason: 'route_cancelled' } });
-        return json(res, 200, { resolved: 'cancel' });
-      }
-
+      // AUD-06：先完整验证（RoutingService.validateAndConsume），非法请求票据不受影响
+      const consumed = d.routing.validateAndConsume(decisionId, body.choice === 'edit' ? { choice: 'edit', content: String(body.content ?? '') } : { choice: body.choice });
+      if (!consumed.ok) return json(res, consumed.status, { error: { code: consumed.code, message: consumed.reason } });
+      // 决议完成：重新驱动该房间排队的 turn（AUD-05）
+      d.supervisor.requeueConversationQueuedTurns(consumed.row.conversation_id);
       if (body.choice === 'edit') {
-        if (typeof body.content !== 'string' || !body.client_message_id) {
-          return json(res, 400, { error: { code: 'bad_edit', message: 'edit 需要 content 与 client_message_id' } });
-        }
-        const turn = d.db.prepare('SELECT input_message_id FROM turns WHERE id = ?').get(decision.turn_id) as { input_message_id: string | null } | undefined;
-        if (!turn?.input_message_id) return json(res, 409, { error: { code: 'no_input_message', message: '无原始输入消息可编辑' } });
-        const edited = d.messages.editUserMessage(turn.input_message_id, body.content);
-        const attemptId = d.supervisor.createAttempt(decision.turn_id, edited.current_revision);
-        d.supervisor.enqueue(decision.turn_id);
-        return json(res, 200, { resolved: 'edit', message: edited, attempt_id: attemptId });
+        const turn = d.db.prepare('SELECT input_message_id FROM turns WHERE id = ?').get(consumed.turnId) as { input_message_id: string | null };
+        const message = turn?.input_message_id ? d.messages.getMessage(turn.input_message_id) : null;
+        return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision });
       }
-
-      // approve：continue_capability=unknown —— 只能创建新 attempt 重跑本轮输入，不假装调用了平台级"继续"
-      const attempt = d.db.prepare('SELECT input_revision FROM attempts WHERE id = ?').get(decision.attempt_id) as { input_revision: number | null } | undefined;
-      const attemptId = d.supervisor.createAttempt(decision.turn_id, attempt?.input_revision ?? null);
-      d.supervisor.enqueue(decision.turn_id);
-      return json(res, 200, { resolved: 'approve', attempt_id: attemptId, note: 'continue_capability=unknown：按新 attempt 重跑，不代表平台级路由动作已执行' });
+      if (body.choice === 'approve') {
+        return json(res, 200, { resolved: 'approve', attempt_id: consumed.newAttemptId, note: 'continue_capability=unknown：按新 attempt 重跑本输入，不代表平台级路由动作已执行' });
+      }
+      return json(res, 200, { resolved: 'cancel' });
     }
 
     if (route === 'GET /api/v1/time/context') {
@@ -215,7 +196,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
     const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);
     if (usageTurn) {
-      return json(res, 200, { usage: d.usage.summaryForTurn(decodeURIComponent(usageTurn[1]!)) });
+      return json(res, 200, d.usage.summaryForTurn(decodeURIComponent(usageTurn[1]!)));
     }
 
     const getTurn = /^GET \/api\/v1\/turns\/([^/]+)$/.exec(route);
@@ -224,41 +205,33 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const turn = d.db.prepare('SELECT id, conversation_id, state, trigger, input_message_id, generation, created_at, completed_at FROM turns WHERE id = ?').get(turnId);
       if (!turn) return json(res, 404, { error: { code: 'not_found', message: 'turn 不存在' } });
       const attempts = d.db.prepare('SELECT id, attempt_no, state, blocked_reason, input_revision, window_id FROM attempts WHERE turn_id = ? ORDER BY attempt_no').all(turnId);
-      const pendingDecision = d.db.prepare("SELECT id, state, target_model, source_evidence FROM route_decisions WHERE turn_id = ? AND state = 'pending'").get(turnId) ?? null;
+      const pendingDecision = d.db.prepare("SELECT id, state, target_model FROM route_decisions WHERE turn_id = ? AND state = 'pending'").get(turnId) ?? null;
       return json(res, 200, { turn, attempts, pending_route_decision: pendingDecision });
     }
 
     return json(res, 404, { error: { code: 'not_found', message: `未知路由：${route}` } });
   } catch (err) {
-    d.logger.error('route_error', { route, error: (err as Error).message });
-    if (!res.headersSent) return json(res, 500, { error: { code: 'internal', message: '内部错误（详情见日志）' } });
+    // AUD-28：日志只记稳定错误码 + 路由，不落原始异常文本
+    d.logger.error('route_error', { route, code: stableErrorCode(err) });
+    if (!res.headersSent) return json(res, 500, { error: { code: 'internal', message: '内部错误（错误码见日志）' } });
     res.end();
   }
 }
 
-async function createTurnForMessage(d: RequestDeps, conversationId: string, messageId: string, revision: number): Promise<string> {
-  const turnId = genId('turn');
-  const attemptId = genId('att');
-  const now = new Date().toISOString();
-  tx(d.db, () => {
-    d.db
-      .prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'user_message', 'pending', ?, ?)")
-      .run(turnId, conversationId, messageId, now);
-    d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,?, 'pending')").run(attemptId, turnId, revision);
-    d.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, messageId);
-  });
-  const message = d.messages.getMessage(messageId)!;
-  d.events.publish('message.persisted', { conversationId, turnId, entityRef: messageId, entityRevision: message.sequence, payload: { message } });
-  d.events.publish('turn.started', { conversationId, turnId, attemptId, payload: {} });
-  d.supervisor.enqueue(turnId);
-  return turnId;
-}
-
-// —— SSE：先按 cursor 回放持久事件，再订阅实时；id= 持久 sequence，断线以 Last-Event-ID 续 ——
+// —— SSE v0.2.2 ——
+// 优先级（AUD-09）：Last-Event-ID（浏览器自动重连的标准恢复游标） > query cursor（仅显式初始化）。
+// 回放（AUD-08）：连接时记录高水位，分页追平到高水位后才进 live；期间新事件由订阅队列承接
+//（先订阅后回放），客户端以 sequence 去重 → 无漏、无重复、无空洞。
+// 背压（AUD-29）：res.write false → 等 drain（带超时）；待发字节超上限 → 断开（客户端按游标重连）。
 function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, url: URL): void {
   const conversationId = url.searchParams.get('conversation_id');
-  const lastEventId = req.headers['last-event-id'];
-  let cursor = Number(url.searchParams.get('cursor') ?? (typeof lastEventId === 'string' ? lastEventId : '0')) || 0;
+  const lastEventIdHeader = req.headers['last-event-id'];
+  let cursor: number;
+  if (typeof lastEventIdHeader === 'string' && lastEventIdHeader !== '') {
+    cursor = Number(lastEventIdHeader) || 0; // 标准恢复游标优先
+  } else {
+    cursor = Number(url.searchParams.get('cursor') ?? '0') || 0;
+  }
 
   res.writeHead(200, {
     'Content-Type': 'text/event-stream; charset=utf-8',
@@ -266,15 +239,10 @@ function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, ur
     Connection: 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  res.write(`retry: 3000\n`);
+  res.write('retry: 3000\n');
 
-  for (const row of d.events.replay(cursor, conversationId)) {
-    writeSseFrame(res, row.sequence, row.kind, row.payload_ref, row);
-    cursor = row.sequence;
-  }
-  res.write(`: replayed cursor=${cursor}\n\n`);
-
-  let sub: SseSubscriber;
+  let pendingBytes = 0;
+  let writeBlocked = false;
   let closed = false;
   const finish = (): void => {
     if (closed) return;
@@ -282,41 +250,77 @@ function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, ur
     if (sub) d.events.unsubscribe(sub);
     clearInterval(flushTimer);
     clearInterval(beat);
-    res.end();
+    try { res.end(); } catch { /* 已断 */ }
   };
-  sub = d.events.subscribe(conversationId, () => {
-    // 慢客户端溢出：断开，客户端按 cursor 重连（05 §5.3）
-    res.write(`: overflow, reconnect with cursor\n\n`);
+
+  // 先订阅（承接回放期间的 live 事件），再分页追平到高水位
+  const sub: SseSubscriber = d.events.subscribe(conversationId, () => {
+    res.write(': overflow\n\n');
     finish();
   });
+  const highWater = d.events.maxSequence();
+
+  const writeFrame = (row: { sequence: number; kind: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): boolean => {
+    if (closed) return true;
+    const payloadRaw = row.payload_ref ?? row.payload ?? '{}';
+    const body = JSON.stringify({
+      sequence: row.sequence, kind: row.kind,
+      conversation_id: row.conversation_id, turn_id: row.turn_id, attempt_id: row.attempt_id,
+      ...JSON.parse(payloadRaw),
+    });
+    const frame = `id: ${row.sequence}\ndata: ${body}\n\n`;
+    const ok = res.write(frame);
+    if (!ok) {
+      writeBlocked = true;
+      pendingBytes += frame.length;
+      const onDrain = (): void => { writeBlocked = false; };
+      res.once('drain', onDrain);
+      setTimeout(() => { res.removeListener('drain', onDrain); }, SSE_DRAIN_TIMEOUT_MS); // 超时兜底：仍阻塞则由字节上限/心跳断开
+    } else {
+      pendingBytes += frame.length;
+    }
+    if (pendingBytes > SSE_MAX_PENDING_BYTES) {
+      res.write(': slow_client_disconnect\n\n');
+      finish();
+      return false;
+    }
+    return true;
+  };
+
+  // 回放追平（分页，AUD-08）
+  let replayCursor = cursor;
+  for (;;) {
+    const page = d.events.replayPage(replayCursor, conversationId, SSE_PAGE_LIMIT);
+    for (const row of page) {
+      if (row.sequence > highWater) break; // 只追平到连接时高水位，之后的由订阅队列承接
+      if (!writeFrame(row)) { finish(); return; }
+      replayCursor = row.sequence;
+    }
+    if (page.length < SSE_PAGE_LIMIT || replayCursor >= highWater) break;
+  }
+  res.write(`: replayed cursor=${replayCursor}\n\n`);
+
   const flushTimer = setInterval(() => {
+    if (writeBlocked || closed) return; // 背压：等 drain，不向 socket 无限堆数据（AUD-29）
     while (sub.queue.length > 0) {
       const item = sub.queue.shift()!;
-      writeSseFrame(res, item.sequence, item.kind, item.payload, item.eventRow);
+      if (item.sequence <= replayCursor) continue; // 已在回放中发过
+      if (!writeFrame(item)) return;
+      replayCursor = item.sequence;
     }
+    pendingBytes = Math.max(0, pendingBytes - 65536); // 粗略回收：socket 已 flush 的部分
   }, 25);
   const beat = setInterval(() => {
-    res.write(`: ping\n\n`);
+    if (!closed) {
+      const ok = res.write(': ping\n\n');
+      if (!ok) pendingBytes += 8;
+    }
   }, 15000);
   req.on('close', finish);
 }
 
-function writeSseFrame(res: ServerResponse, sequence: number, kind: string, payload: string, row: { conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): void {
-  const body = {
-    sequence,
-    kind,
-    conversation_id: row.conversation_id,
-    turn_id: row.turn_id,
-    attempt_id: row.attempt_id,
-    ...JSON.parse(payload),
-  };
-  // event: 字段省略（统一 message 类型，data 内带 kind），EventSource onmessage 即可
-  res.write(`id: ${sequence}\ndata: ${JSON.stringify(body)}\n\n`);
-}
-
 function serveStatic(res: ServerResponse, pathname: string): void {
-  const file =
-    pathname === '/' ? path.join(WEB_DIR, 'index.html') : path.join(WEB_DIR, path.basename(pathname));
+  const file = pathname === '/' ? path.join(WEB_DIR, 'index.html') : path.join(WEB_DIR, path.basename(pathname));
   try {
     const content = fs.readFileSync(file);
     const type = file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : file.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'application/octet-stream';
@@ -328,12 +332,12 @@ function serveStatic(res: ServerResponse, pathname: string): void {
   }
 }
 
-async function readJson(req: IncomingMessage): Promise<unknown> {
+async function readJson(req: IncomingMessage, d: RequestDeps): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 5 * 1024 * 1024) throw new Error('body 过大（>5MB）：附件上传走独立通道，不在这里堆内存');
+    if (size > 5 * 1024 * 1024) throw new Error('PAYLOAD_TOO_LARGE');
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};

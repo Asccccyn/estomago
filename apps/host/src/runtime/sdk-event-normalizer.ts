@@ -1,120 +1,173 @@
-// SDK 事件归一化（05 §5.1 接收矩阵）：RawSdkEvent → SdkNormalizedEvent。
-// 关键纪律：
-// - signature_delta 不向 UI 分发（吞掉）
-// - text_delta 走正文，绝不进 reasoning
-// - 完整 AssistantMessage 只用于核对/补齐（发 complete_message），不重复追加
-// - message_stop ≠ 产品 turn 结束；content_block_stop ≠ 工具成功
-// - 模型消息身份绑定 message_start 的 sdk_message_id；无法绑定的事件按序挂到最近消息并标记
-import { classifyError, type ContentBlockType, type RawStreamEvent, type SdkNormalizedEvent } from '../../../../packages/contracts/src/sdk-events.ts';
+// SDK 事件归一化（AUD-11/12/24 修复版）—— 按 0.3.283 真实消息形状：
+//  - 完整 AssistantMessage 常为"单块投递"且多个包共用同一 message.id；
+//    匹配策略 = 按类型顺序匹配该 message 的"开放流式块"，绝不把 content[0] 当 block 0；
+//    无开放块可匹配 → unmatched 路径（独立 seq 身份），不覆盖任何已有块。
+//  - parent_tool_use_id 非null → channel='subagent'，宿主不得投影进主私聊。
+//  - content_block_start 自带初始 thinking/text → 归一化为一次性初始 delta（只发一次）。
+//  - result.subtype 严格映射：success→completed；error_*/is_error→error。
+//  - session_id 从任何消息捕获并透传（会话连续性用）。
+import {
+  classifyError,
+  type ContentBlockType,
+  type ErrorClass,
+  type EventChannel,
+  type MatchedCompleteBlock,
+  type RawStreamEvent,
+  type SdkNormalizedEvent,
+  type UnmatchedCompleteBlock,
+} from '../../../../packages/contracts/src/sdk-events.ts';
+
+type OpenBlock = { index: number; type: ContentBlockType; hasInitial: boolean };
 
 export class SdkEventNormalizer {
   private currentMessageId: string | null = null;
   private currentModel: string | null = null;
-  private blockTypes = new Map<number, ContentBlockType>();
-  private toolNames = new Map<number, string | null>();
+  private session_id: string | null = null;
+  private request_id: string | null = null;
+  private lastChannel: EventChannel = 'main';
+  private openBlocks = new Map<string, Map<number, OpenBlock>>(); // msgId -> index -> block
+  private unmatchedSeq = 0;
   private unboundCount = 0;
+  private sawSuccessResult = false;
+  private lastError: { classified: ErrorClass; message: string } | null = null;
+
+  /** 本轮是否观察到 success result（supervisor 终态判定依据，AUD-25） */
+  get observedSuccess(): boolean {
+    return this.sawSuccessResult;
+  }
+
+  get lastErrorInfo(): { classified: ErrorClass; message: string } | null {
+    return this.lastError;
+  }
+
+  get sessionId(): string | null {
+    return this.session_id;
+  }
 
   normalize(raw: RawStreamEvent): SdkNormalizedEvent[] {
     const out: SdkNormalizedEvent[] = [];
     switch (raw.type) {
       case 'stream_event': {
         const ev = raw.event;
+        const channel: EventChannel = raw.parent_tool_use_id ? 'subagent' : 'main';
+        this.lastChannel = channel;
+        if (raw.session_id) this.session_id = raw.session_id;
         switch (ev.type) {
           case 'message_start': {
-            // SDK 未提供稳定 message id 时：绑定本连接本地步标识，并标出来源（05 §4）
             this.currentMessageId = ev.message?.id ?? `local_${++this.unboundCount}`;
             this.currentModel = ev.message?.model ?? this.currentModel;
-            this.blockTypes.clear();
-            this.toolNames.clear();
-            out.push({ kind: 'message_start', sdk_message_id: this.currentMessageId, model: this.currentModel, source: 'stream' });
+            this.openBlocks.set(this.currentMessageId, new Map());
+            out.push({ kind: 'message_start', sdk_message_id: this.currentMessageId, model: this.currentModel, session_id: this.session_id, channel });
             break;
           }
           case 'content_block_start': {
-            const id = this.requireMessageId(out, ev.index);
-            this.blockTypes.set(ev.index, ev.content_block.type);
-            if (ev.content_block.type === 'tool_use') this.toolNames.set(ev.index, null);
-            out.push({ kind: 'content_block_start', sdk_message_id: id, block_index: ev.index, block_type: ev.content_block.type });
+            const id = this.requireMessageId(out, channel);
+            this.openBlocks.get(id)!.set(ev.index, { index: ev.index, type: ev.content_block.type, hasInitial: false });
+            out.push({ kind: 'content_block_start', sdk_message_id: id, block_index: ev.index, block_type: ev.content_block.type, channel });
+            // AUD-24：起始自带正文只接收一次（归一化为初始 delta）
+            const initial = ev.content_block.type === 'thinking' ? ev.content_block.thinking : ev.content_block.type === 'text' ? ev.content_block.text : undefined;
+            if (typeof initial === 'string' && initial.length > 0) {
+              const block = this.openBlocks.get(id)!.get(ev.index)!;
+              if (!block.hasInitial) {
+                block.hasInitial = true;
+                if (ev.content_block.type === 'thinking') out.push({ kind: 'thinking_delta', sdk_message_id: id, block_index: ev.index, text: initial, channel });
+                else out.push({ kind: 'text_delta', sdk_message_id: id, block_index: ev.index, text: initial, channel });
+              }
+            }
             break;
           }
           case 'content_block_delta': {
-            const id = this.requireMessageId(out, ev.index);
-            const bt = this.blockTypes.get(ev.index);
+            const id = this.requireMessageId(out, channel);
             switch (ev.delta.type) {
               case 'thinking_delta':
-                out.push({ kind: 'thinking_delta', sdk_message_id: id, block_index: ev.index, text: ev.delta.thinking });
+                out.push({ kind: 'thinking_delta', sdk_message_id: id, block_index: ev.index, text: ev.delta.thinking, channel });
                 break;
               case 'signature_delta':
-                // 吞掉：不分发、不解析、不入库（协议态由 SDK 自己维护）
-                break;
+                break; // 吞掉：不分发、不解析、不入库
               case 'text_delta':
-                out.push({ kind: 'text_delta', sdk_message_id: id, block_index: ev.index, text: ev.delta.text });
+                out.push({ kind: 'text_delta', sdk_message_id: id, block_index: ev.index, text: ev.delta.text, channel });
                 break;
               case 'input_json_delta':
-                out.push({
-                  kind: 'tool_input_delta',
-                  sdk_message_id: id,
-                  block_index: ev.index,
-                  tool_name: this.toolNames.get(ev.index) ?? null,
-                  partial_json: ev.delta.partial_json,
-                });
+                out.push({ kind: 'tool_input_delta', sdk_message_id: id, block_index: ev.index, tool_name: null, partial_json: ev.delta.partial_json, channel });
                 break;
-            }
-            if (bt === undefined) {
-              // 未见 block_start 的 delta：仍按 delta 自身类型归一（不猜身份，block_index 原样保留）
             }
             break;
           }
           case 'content_block_stop': {
-            const id = this.requireMessageId(out, ev.index);
-            out.push({ kind: 'content_block_stop', sdk_message_id: id, block_index: ev.index });
+            const id = this.requireMessageId(out, channel);
+            out.push({ kind: 'content_block_stop', sdk_message_id: id, block_index: ev.index, channel });
             break;
           }
           case 'message_stop': {
-            if (this.currentMessageId) out.push({ kind: 'message_stop', sdk_message_id: this.currentMessageId });
+            if (this.currentMessageId) out.push({ kind: 'message_stop', sdk_message_id: this.currentMessageId, channel });
             break;
           }
         }
         break;
       }
       case 'assistant': {
-        // 完整块：可能早于 block_stop 到达；多块可共用同一 model message ID（05 §5.1）
+        const channel: EventChannel = raw.parent_tool_use_id ? 'subagent' : 'main';
+        if (raw.session_id) this.session_id = raw.session_id;
+        if (raw.request_id) this.request_id = raw.request_id;
         const id = raw.message.id ?? this.currentMessageId ?? `local_assistant_${++this.unboundCount}`;
-        const blocks = (raw.message.content ?? []).map((b, idx) => ({
-          block_type: b.type,
-          block_index: idx, // 完整块的数组下标仅作初核对键；映射歧义由 reconciler 处理，不冒充供应商 ID
-          text: b.type === 'thinking' || b.type === 'text' ? (b.text ?? b.thinking ?? null) : null,
-          tool_id: b.type === 'tool_use' ? (b.id ?? null) : null,
-          tool_name: b.type === 'tool_use' ? (b.name ?? null) : null,
-        }));
-        out.push({ kind: 'complete_message', sdk_message_id: id, blocks });
+        if (!this.openBlocks.has(id)) this.openBlocks.set(id, new Map());
+        const open = this.openBlocks.get(id)!;
+        // 按类型顺序匹配开放块（thinking→剩余 thinking 开放块；text→text；redacted→redacted）
+        const matched: MatchedCompleteBlock[] = [];
+        const unmatched: UnmatchedCompleteBlock[] = [];
+        const consumeOpen = (type: ContentBlockType): number | null => {
+          const idxs = [...open.values()].filter((b) => b.type === type).sort((a, b) => a.index - b.index);
+          if (idxs.length === 0) return null;
+          const first = idxs[0]!;
+          open.delete(first.index);
+          return first.index;
+        };
+        for (const b of raw.message.content ?? []) {
+          const text = b.type === 'thinking' || b.type === 'text' ? (b.text ?? b.thinking ?? null) : null;
+          if (b.type === 'tool_use') {
+            matched.push({ block_index: consumeOpen('tool_use') ?? -1, block_type: b.type, text: null, tool_id: b.id ?? null, tool_name: b.name ?? null });
+            continue;
+          }
+          const target = consumeOpen(b.type);
+          if (target !== null) {
+            matched.push({ block_index: target, block_type: b.type, text, tool_id: null, tool_name: null });
+          } else {
+            unmatched.push({ seq: --this.unmatchedSeq, block_type: b.type, text, reason: 'no_open_block' });
+          }
+        }
+        out.push({ kind: 'complete_message', sdk_message_id: id, session_id: this.session_id, channel, matched, unmatched });
         break;
       }
       case 'result': {
+        if (raw.session_id) this.session_id = raw.session_id;
         if (raw.usage) {
-          out.push({
-            kind: 'usage',
-            scope: 'turn', // result.usage 是本轮口径；累计 modelUsage 另有 scope=cumulative（01 §9）
-            usage: raw.usage,
-            source: 'sdk_result',
-            completeness: 'complete',
-          });
+          out.push({ kind: 'usage', scope: 'turn', usage: raw.usage, source: 'sdk_result', completeness: 'complete' });
         }
-        out.push({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: raw.error ?? null });
+        const isSuccess = raw.subtype === 'success' && raw.is_error !== true;
+        if (isSuccess) {
+          this.sawSuccessResult = true;
+          out.push({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: this.session_id, request_id: this.request_id });
+        } else {
+          const message = raw.error ?? `result subtype=${raw.subtype ?? 'unknown'} is_error=${raw.is_error ?? false}`;
+          this.lastError = { classified: classifyError(message), message };
+          out.push({ kind: 'turn_end', outcome: 'error', error_classified: this.lastError.classified, error_message: message, session_id: this.session_id, request_id: this.request_id });
+        }
         break;
       }
       case 'error': {
-        out.push({ kind: 'turn_end', outcome: 'error', error_classified: classifyError(raw.error), error_message: raw.error });
+        this.lastError = { classified: classifyError(raw.error), message: raw.error };
+        out.push({ kind: 'turn_end', outcome: 'error', error_classified: this.lastError.classified, error_message: raw.error, session_id: this.session_id, request_id: this.request_id });
         break;
       }
     }
     return out;
   }
 
-  private requireMessageId(out: SdkNormalizedEvent[], blockIndex: number): string {
+  private requireMessageId(out: SdkNormalizedEvent[], channel: EventChannel): string {
     if (this.currentMessageId) return this.currentMessageId;
-    // message_start 缺失：本地步标识兜底，并在流上标记（不伪造供应商 ID）
     this.currentMessageId = `local_${++this.unboundCount}`;
-    out.push({ kind: 'message_start', sdk_message_id: this.currentMessageId, model: null, source: 'stream' });
+    this.openBlocks.set(this.currentMessageId, new Map());
+    out.push({ kind: 'message_start', sdk_message_id: this.currentMessageId, model: null, session_id: this.session_id, channel });
     return this.currentMessageId;
   }
 }

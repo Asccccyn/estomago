@@ -15,6 +15,13 @@ export function candidateConfigPaths(argv: string[], env: NodeJS.ProcessEnv, pat
   return out;
 }
 
+export function explicitConfigPath(argv: string[], env: NodeJS.ProcessEnv): string | null {
+  const idx = argv.indexOf('--config');
+  if (idx >= 0 && argv[idx + 1]) return path.resolve(argv[idx + 1]!);
+  if (env.ESTOMAGO_CONFIG) return path.resolve(env.ESTOMAGO_CONFIG);
+  return null;
+}
+
 export function findConfigFile(argv: string[], env: NodeJS.ProcessEnv, paths: EstomagoPaths): string | null {
   for (const p of candidateConfigPaths(argv, env, paths)) {
     if (fs.existsSync(p)) return p;
@@ -25,6 +32,11 @@ export function findConfigFile(argv: string[], env: NodeJS.ProcessEnv, paths: Es
 export function loadConfig(opts: { argv?: string[]; env?: NodeJS.ProcessEnv; paths: EstomagoPaths }): { config: Config; sourcePath: string } {
   const argv = opts.argv ?? [];
   const env = opts.env ?? process.env;
+  // AUD-26：显式指定的配置必须存在，禁止静默回落默认
+  const explicit = explicitConfigPath(argv, env);
+  if (explicit && !fs.existsSync(explicit)) {
+    throw new Error(`CONFIG_ERROR: 显式指定的配置不存在：${explicit}（不静默回落默认配置）`);
+  }
   const sourcePath = findConfigFile(argv, env, opts.paths);
   if (!sourcePath) {
     throw new Error(

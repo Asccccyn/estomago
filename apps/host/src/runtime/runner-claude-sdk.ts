@@ -1,81 +1,138 @@
-// 真实 Claude Agent SDK Runner（TypeScript query 接口；不采用已移除的 V2 会话 API [T18]）。
-//
-// ⚠ 状态如实声明：本文件按官方公开文档形状编写，尚未在实机对锁定版本核对、
-// 也未在 Mac 上真实调用过 —— 在能力矩阵取得证据前，selectRunner 只会返回 blocked
-// 或在包缺失时明确报 sdk_package_not_installed。不把"代码存在"冒充"已验证"。
+// 真实 Claude Agent SDK Runner（AUD-01/03 修复版）。
+// 契约依据：node_modules/@anthropic-ai/claude-agent-sdk@0.3.283/sdk.d.ts
+//  - query({ prompt, options })：除 prompt 外全部在 options 内
+//  - options.abortController?: AbortController（真控制器，非 signal）
+//  - options.cwd / resume / settings / settingSources / tools / mcpServers /
+//    strictMcpConfig / includePartialMessages / thinking({type:'adaptive',display}) / env
+//  - 流消息：{type:'stream_event'|'assistant'|'result', ...}，session_id 在每条消息上
+// 状态如实：尚未以真实凭据运行；真实 acceptance 见 BLOCKED 记录，不因代码存在冒充已验证。
+import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { Config } from '../config/schema.ts';
 import type { RawStreamEvent } from '../../../../packages/contracts/src/sdk-events.ts';
 import { SdkEventNormalizer } from './sdk-event-normalizer.ts';
 import type { AgentRunner, RunnerRunRequest, RunnerRunResult, RunnerSelection } from './runner.ts';
-import { buildSdkOptions } from './build-options.ts';
+
+const require_ = createRequire(import.meta.url);
+
+export function installedSdkVersion(): string | null {
+  try {
+    const entry = require_.resolve('@anthropic-ai/claude-agent-sdk') as string;
+    const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(entry), 'package.json'), 'utf8')) as { version: string };
+    return pkg.version;
+  } catch {
+    return null;
+  }
+}
 
 export async function tryLoadClaudeSdkRunner(config: Config): Promise<RunnerSelection> {
   const reasons: string[] = [];
-  let sdk: unknown;
-  try {
-    // 动态 import：包未安装时不让宿主崩掉，而是诚实 blocked
-    sdk = await import(/* webpackIgnore: true */ '@anthropic-ai/claude-agent-sdk');
-  } catch {
-    return { status: 'blocked', reasons: ['sdk_package_not_installed：未安装 @anthropic-ai/claude-agent-sdk（按锁定版本实装后再启用）'] };
+  const installed = installedSdkVersion();
+  if (installed === null) {
+    return { status: 'blocked', reasons: ['sdk_package_not_installed：未安装 @anthropic-ai/claude-agent-sdk'] };
   }
-  if (!config.runtime.sdk_version) reasons.push('runtime.sdk_version 未锁定：先实机核实再启用真实 runner');
+  if (!config.runtime.sdk_version) reasons.push('runtime.sdk_version 未锁定');
+  else if (config.runtime.sdk_version !== installed) {
+    reasons.push(`sdk_version 不匹配：配置 ${config.runtime.sdk_version} / 实装 ${installed}`);
+  }
   if (!config.runtime.auth_and_billing_verified) reasons.push('认证/计费未确认（不得为跑通悄悄换 key 或账号）');
   if (reasons.length > 0) return { status: 'blocked', reasons };
-  return { status: 'ok', runner: new ClaudeSdkRunner(sdk as SdkModule) };
+  let sdk: { query: (p: unknown) => AsyncIterable<unknown> };
+  try {
+    sdk = (await import('@anthropic-ai/claude-agent-sdk')) as { query: (p: unknown) => AsyncIterable<unknown> };
+  } catch {
+    return { status: 'blocked', reasons: ['sdk_import_failed: MODULE_NOT_FOUND'] };
+  }
+  return { status: 'ok', runner: new ClaudeSdkRunner(sdk.query.bind(sdk)) };
 }
 
-// 我们不 import SDK 类型（未安装时无法编译校验），只声明我们实际用到的最小面。
-interface SdkModule {
-  query: (opts: Record<string, unknown>) => AsyncIterable<Record<string, unknown>>;
+interface RealOptionsShape {
+  // 与 0.3.283 Options 字段一一对应（我们只填这些）
+  model: string;
+  systemPrompt: string;
+  settingSources: [];
+  tools: [];
+  mcpServers: Record<string, never>;
+  strictMcpConfig: true;
+  includePartialMessages: true;
+  thinking: { type: 'adaptive'; display: 'summarized' };
+  cwd: string;
+  settings: Record<string, unknown>;
+  env: Record<string, string>;
+  abortController: AbortController;
+  resume?: string;
 }
 
-class ClaudeSdkRunner implements AgentRunner {
+export class ClaudeSdkRunner implements AgentRunner {
   readonly kind = 'claude-agent-sdk' as const;
-  interruptSupport = 'unknown' as const; // 待实机证据（fence 兜底由宿主管）
+  interruptSupport = 'claimed' as const; // 0.3.283 Options.abortController 官方支持
 
-  private sdk: SdkModule;
-  constructor(sdk: SdkModule) {
-    this.sdk = sdk;
+  query: (p: { prompt: string; options: RealOptionsShape }) => AsyncIterable<unknown>;
+  constructor(query: (p: { prompt: string; options: RealOptionsShape }) => AsyncIterable<unknown>) {
+    this.query = query;
   }
 
   async run(req: RunnerRunRequest): Promise<RunnerRunResult> {
     const normalizer = new SdkEventNormalizer();
-    const o = req.options;
+    const o = req.options.options;
+    const options: RealOptionsShape = {
+      model: o.model,
+      systemPrompt: o.systemPrompt,
+      settingSources: o.settingSources,
+      tools: o.tools,
+      mcpServers: o.mcpServers,
+      strictMcpConfig: o.strictMcpConfig,
+      includePartialMessages: o.includePartialMessages,
+      thinking: o.thinking,
+      cwd: o.cwd,
+      settings: o.settings,
+      env: o.env,
+      abortController: req.abortController, // 真控制器原样传入（AUD-01）
+      ...(req.resumeSessionId ? { resume: req.resumeSessionId } : {}), // 会话连续性（AUD-03）
+    };
     try {
-      const iterable = this.sdk.query({
-        model: o.options.model,
-        systemPrompt: o.options.systemPrompt,
-        settingSources: o.options.settingSources,
-        tools: o.options.tools,
-        mcpServers: o.options.mcpServers,
-        strictMcpConfig: o.options.strictMcpConfig,
-        includePartialMessages: o.options.includePartialMessages,
-        thinking: o.options.thinking,
-        options: { ...o.inlineSettings, env: o.env },
-        abortController: req.signal,
-        prompt: req.prompt,
-        // 能力矩阵取证点：thinking_delta 是否真实出现、完整块映射是否与流块一致
-      });
-      let lastError: string | null = null;
+      const iterable = this.query({ prompt: req.prompt, options });
       for await (const raw of iterable) {
-        if (req.signal.aborted) return { outcome: 'interrupted', errorClassified: null, errorMessage: null };
+        if (req.abortController.signal.aborted) {
+          return final(normalizer, 'interrupted');
+        }
         for (const ev of normalizer.normalize(raw as RawStreamEvent)) req.onEvent(ev);
       }
-      if (lastError) return { outcome: 'error', errorClassified: 'unknown', errorMessage: lastError };
-      return { outcome: 'completed', errorClassified: null, errorMessage: null };
+      // AUD-25：无 success result 的正常迭代结束不得报 completed
+      if (normalizer.observedSuccess) return final(normalizer, 'completed');
+      if (normalizer.lastErrorInfo) return final(normalizer, 'error', normalizer.lastErrorInfo);
+      return final(normalizer, 'no_final_result');
     } catch (err) {
-      if (req.signal.aborted) return { outcome: 'interrupted', errorClassified: null, errorMessage: null };
-      const message = (err as Error).message ?? String(err);
+      if (req.abortController.signal.aborted) return final(normalizer, 'interrupted');
+      const message = String((err as Error)?.message ?? err);
       const cls: RunnerRunResult['errorClassified'] = /route_signal|model_switch_requested/i.test(message)
         ? 'route_signal'
-        : /network|timeout|fetch/i.test(message)
+        : /network|timeout|fetch|ECONN/i.test(message)
           ? 'network'
           : /refus|permission/i.test(message)
             ? 'refusal'
             : 'unknown';
-      return { outcome: 'error', errorClassified: cls, errorMessage: message };
+      return final(normalizer, 'error', { classified: cls, message });
     }
   }
 }
 
-export { buildSdkOptions };
+function final(n: SdkEventNormalizer, outcome: RunnerRunResult['outcome'], err?: { classified: NonNullable<RunnerRunResult['errorClassified']>; message: string }): RunnerRunResult {
+  return {
+    outcome,
+    errorClassified: err?.classified ?? null,
+    errorCode: err ? stableCode(err.classified, err.message) : null,
+    errorMessage: err?.message ?? null, // 只入 DB 调试字段；日志走 errorCode（AUD-28）
+    sessionId: n.sessionId,
+    requestId: null,
+  };
+}
+
+function stableCode(cls: string, message: string): string {
+  if (cls === 'route_signal') return 'SDK_ROUTE_SIGNAL';
+  if (cls === 'network') return 'SDK_STREAM_ERROR';
+  if (cls === 'refusal') return 'SDK_REFUSAL';
+  if (/auth|401|403|api key/i.test(message)) return 'SDK_AUTH_ERROR';
+  return 'SDK_ERROR';
+}
