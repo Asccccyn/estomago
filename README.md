@@ -1,5 +1,7 @@
 # estómago
 
+> **v0.2.2 · Core Correctness Remediation**（2026-09-27）：EST-AUD-01~32 复审缺陷 + AUD-33/34 已按机制修复；22 测试文件 / 100 用例全绿（mock 层 + 真实浏览器 E2E 五场景）。真实 Claude Agent SDK acceptance 保持 **BLOCKED**（待用户批准身份材料与认证，且涉及 Claude 的操作须二次确认）。修复明细见 `docs/v0.2.2-remediation-selftest.md`。
+
 自建聊天宿主：统一聊天入口 + Claude Agent SDK 运行宿主。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
 
 - 架构规格：`docs/architecture/v0.2.1/`（v0.2.1 设计包原件，含 166 项验收矩阵 `03_*.json`）
@@ -12,8 +14,8 @@
 | 范围 | 状态 |
 |---|---|
 | 仓库结构 / 配置层 / DB schema / 消息幂等修订 / SSE / 时间感知 / 身份 gate / 思考流核对 / 路由票据 / 窗口状态机 / 用量口径 / 输入硬规则 | **代码已实现**，本项目 11 个测试文件 54 个用例全绿（`npm test`，合成夹具，mock runner） |
-| 真实 Claude Agent SDK 调用 | **未安装、未实测**（`@anthropic-ai/claude-agent-sdk` 未装包；能力矩阵全项 `unknown`；装配代码已写好但未对锁定版本核对） |
-| 身份正本 / I | **未加载**（无批准材料 → `IDENTITY_BLOCKED`；没有默认人格顶替） |
+| 真实 Claude Agent SDK 调用 | **包已锁定安装（0.3.283 + lockfile）；装配/会话/终止契约按实装类型重写并有契约回归**。真实调用未执行（无授权凭据）→ acceptance **BLOCKED**；能力矩阵默认 unknown，待授权后由 `scripts/probe-capabilities.mjs` 实测写证 |
+| 身份正本 / I | **未加载**（无批准材料 → `IDENTITY_BLOCKED`；Evidence Gate 要求 manifest+实装版本+cwd+探针证据全匹配才 READY） |
 | 166 项产品验收（03 矩阵） | **全部 NOT_EXECUTED**（mock 全绿 ≠ 实机通过；doctor 报告只是环境证据） |
 | Mariposa / Siren / 许愿星 / 扎西德勒 接入 | 未接（配置项全 null，如实 blocked/disabled） |
 | 公网 / 推送 / Telegram | 不在本版范围（disabled） |
