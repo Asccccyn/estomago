@@ -1,0 +1,149 @@
+# estómago v0.2.1 应用配置草案；不是 SDK 原始 options。所有现场 null 必须核实。
+# 明确映射 options / inline settings / env 并探测实际生效；未知不得冒充 false 或已支持。
+# effort、返回摘要、UI展开独立；私有材料和凭据不在此包。
+project:
+  display_name: estómago
+  slug: estomago
+  spec_version: '0.2.1'
+deployment:
+  target_os: macOS
+  source_root: ~/Projects/estomago
+  state_root: ~/Library/Application Support/estomago
+  log_root: ~/Library/Logs/estomago
+  bind: 127.0.0.1
+  port: 18787
+  public_origin: null
+  public_enabled: false
+  supervisor: launchagent
+runtime:
+  provider: claude-agent-sdk
+  language: typescript
+  node_version: null
+  sdk_version: null
+  runtime_version: null
+  model: null
+  authentication_profile_ref: null
+  system_prompt_mode: explicit_custom
+  setting_sources: []
+  require_identity_manifest: true
+  disable_auto_memory: true
+  strict_mcp_config: true
+  automatic_flag_switch: false
+  automatic_availability_fallbacks: []
+  max_active_primary_runners: 1
+  builtin_tools: []
+  mcp_servers_allowlist: []
+  skills: []
+  plugins: []
+  disable_claude_ai_connectors: true
+  include_partial_messages: true
+  thinking:
+    mode: adaptive
+    display: summarized
+    effort: null
+    require_capability_probe: true
+  config_isolation_root: null
+  auth_and_billing_verified: false
+  capability_state: unknown
+identity:
+  approved_identity_ref: null
+  approved_identity_hash: null
+  i_source: mariposa
+  allow_unverified_fallback: false
+  require_bootstrap_receipt: true
+  receipt_requires_evidence: true
+  unobservable_fields_are_unknown: true
+windows:
+  rotate_on_business_date_change: true
+  soft_limit_tokens: null
+  output_reserve_tokens: null
+  handoff_reserve_tokens: null
+  max_tool_result_tokens: null
+  recent_dialogue_budget_tokens: null
+  model_context_capacity: null
+  threshold_status: awaiting_measurement
+  normal_rotation_uses_new_session: true
+time:
+  business_timezone: Asia/Shanghai
+  persist_absolute_time_as: UTC
+  refresh_before_every_turn: true
+  use_device_timezone_to_rewrite_history: false
+  injection_channel: per_turn_context_or_verified_hook
+  depend_on_system_prompt_cache_boundary: false
+routing:
+  require_owner_decision: true
+  decision_survives_restart: true
+  unsupported_signal_behavior: unknown_no_claim
+  continue_capability: unknown
+archive:
+  enabled: false
+  continuous_grant_ref: null
+  source_scope: null
+  semantic_auto_binding_threshold: null
+  semantic_auto_binding_enabled: false
+integrations:
+  mariposa:
+    base_url: null
+    credential_ref: null
+    contract_version: null
+  siren:
+    base_url: null
+    credential_ref: null
+    contract_version: null
+  superposition:
+    base_url: null
+    credential_ref: null
+    contract_version: null
+  zashidele:
+    base_url: null
+    credential_ref: null
+    contract_version: null
+notifications:
+  remote_enabled: false
+  provider: null
+  credential_ref: null
+  aggregate_by_turn: true
+  include_sensitive_content: false
+  telegram_enabled: false
+signals:
+  enabled: false
+  consent_ref: null
+  share_with_model: false
+  share_with_groups: false
+safety:
+  default_deny_unregistered_capabilities: true
+  allow_unrestricted_shell: false
+  production_side_effects_enabled: false
+  test_root_must_differ_from_production: true
+
+input:
+  multiline: true
+  enter_behavior: newline
+  send_control: dedicated_button
+  keyboard_send_shortcuts_enabled: false
+  ime_composition_guard: true
+  normalize_newlines_to: LF
+  split_user_message_on_newline: false
+
+reasoning:
+  requested: true
+  label: 思考
+  label_is_design_proposal: true
+  default_expanded: false
+  capture_source: sdk_partial_events
+  complete_block_action: reconcile_not_append
+  store_separately_from_messages: true
+  persist_readable_projection: true
+  retention_policy: with_conversation_local_only
+  auto_delete_days: null
+  maximum_buffer_bytes: null
+  maximum_trace_bytes: null
+  limits_status: awaiting_measurement
+  signature_to_ui: false
+  archive_to_mariposa: false
+  include_in_handoff: false
+  tts_enabled: false
+  push_enabled: false
+  auto_rewrite_with_model: false
+  stop_transcript_main_capture: false
+  capability_state: unknown

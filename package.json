@@ -1,0 +1,20 @@
+{
+  "name": "estomago",
+  "version": "0.1.0-skeleton",
+  "private": true,
+  "type": "module",
+  "description": "estómago · 自建聊天宿主（架构规格 v0.2.1 的实现骨架；166 项产品验收仍为 NOT_EXECUTED）",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "start": "node scripts/start.mjs",
+    "stop": "node scripts/stop.mjs",
+    "status": "node scripts/stop.mjs --status",
+    "test": "node scripts/run-tests.mjs",
+    "backup": "node scripts/backup.mjs",
+    "restore": "node scripts/restore.mjs",
+    "install-launchagent": "node scripts/install-launchagent.mjs"
+  }
+}

@@ -1,0 +1,295 @@
+// 建库迁移：01 §16 最小数据表。迁移前记录 code_hash；不可逆变更需先备份（18.2）。
+import type { Db } from './connection.ts';
+import { tx } from './connection.ts';
+
+const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
+  {
+    version: 1,
+    name: 'base-schema',
+    sql: `
+CREATE TABLE conversations(
+  id TEXT PRIMARY KEY,
+  owner_service TEXT NOT NULL DEFAULT 'estomago',
+  origin_room_id TEXT,
+  scope TEXT NOT NULL DEFAULT 'private',
+  title TEXT,
+  active_window_id TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE members(
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  participant_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member',
+  PRIMARY KEY (conversation_id, participant_id)
+);
+
+CREATE TABLE messages(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  sequence INTEGER NOT NULL,
+  speaker TEXT NOT NULL CHECK (speaker IN ('owner','assistant','system')),
+  turn_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('text','sticker','voice','system')),
+  client_message_id TEXT,
+  current_revision INTEGER NOT NULL DEFAULT 1,
+  published_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (conversation_id, sequence)
+);
+CREATE UNIQUE INDEX idx_messages_client_id
+  ON messages(conversation_id, client_message_id) WHERE client_message_id IS NOT NULL;
+
+CREATE TABLE message_revisions(
+  id TEXT PRIMARY KEY,
+  message_id TEXT NOT NULL REFERENCES messages(id),
+  revision INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  supersedes_revision INTEGER,
+  occurred_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  source TEXT NOT NULL,
+  UNIQUE (message_id, revision)
+);
+
+CREATE TABLE turns(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  trigger TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','running','completed','interrupted','blocked','failed','route_pending')),
+  input_message_id TEXT,
+  time_context_json TEXT,
+  generation INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE attempts(
+  id TEXT PRIMARY KEY,
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  attempt_no INTEGER NOT NULL,
+  input_revision INTEGER,
+  input_hash TEXT,
+  state TEXT NOT NULL CHECK (state IN ('pending','running','completed','interrupted','blocked','failed','route_pending')),
+  blocked_reason TEXT,
+  window_id TEXT,
+  sdk_session_id TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  UNIQUE (turn_id, attempt_no)
+);
+
+CREATE TABLE windows(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  status TEXT NOT NULL CHECK (status IN
+    ('NEW','PREPARING','IDENTITY_VERIFIED','READY','ACTIVE','ROTATION_REQUESTED','DRAINING','HANDOFF_READY','CLOSED','BLOCKED','DEGRADED')),
+  sdk_session_id TEXT,
+  manifest_ref TEXT,
+  receipt_id TEXT,
+  cutoff_sequence INTEGER,
+  active_generation INTEGER NOT NULL DEFAULT 0,
+  blocked_reason TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE events(
+  id TEXT PRIMARY KEY,
+  type TEXT NOT NULL,
+  conversation_id TEXT,
+  source TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  received_at TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'queued'
+    CHECK (state IN ('queued','claimed','done','expired','failed','unknown_outcome')),
+  lease_owner TEXT,
+  lease_expires_at TEXT,
+  fence INTEGER,
+  UNIQUE (source, dedupe_key)
+);
+
+CREATE TABLE outbox(
+  id TEXT PRIMARY KEY,
+  operation_key TEXT NOT NULL,
+  target TEXT NOT NULL,
+  payload_ref TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending'
+    CHECK (state IN ('pending','sent','acked','failed','disabled','unknown_outcome')),
+  attempt INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (target, operation_key)
+);
+
+CREATE TABLE runtime_stream_events(
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  stream_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  conversation_id TEXT,
+  turn_id TEXT,
+  attempt_id TEXT,
+  entity_ref TEXT,
+  entity_revision INTEGER,
+  scope TEXT NOT NULL DEFAULT 'private',
+  occurred_at TEXT NOT NULL,
+  payload_ref TEXT NOT NULL
+);
+CREATE INDEX idx_stream_turn ON runtime_stream_events(turn_id);
+
+CREATE TABLE reasoning_blocks(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  window_id TEXT,
+  sdk_session_id TEXT,
+  sdk_message_id TEXT NOT NULL,
+  block_index INTEGER NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'stream' CHECK (origin IN ('stream','complete_message','snapshot')),
+  visibility TEXT NOT NULL DEFAULT 'summary'
+    CHECK (visibility IN ('summary','omitted','redacted','no_block','unavailable','unknown')),
+  state TEXT NOT NULL DEFAULT 'streaming'
+    CHECK (state IN ('streaming','complete','partial','interrupted','failed','truncated','conflict')),
+  received_text TEXT NOT NULL DEFAULT '',
+  final_text TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  completeness TEXT NOT NULL DEFAULT 'partial',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (attempt_id, sdk_message_id, block_index)
+);
+
+CREATE TABLE bootstrap_receipts(
+  id TEXT PRIMARY KEY,
+  window_id TEXT NOT NULL,
+  manifest_ref TEXT,
+  desired TEXT NOT NULL,
+  assembled TEXT NOT NULL,
+  observed TEXT NOT NULL,
+  probe TEXT NOT NULL,
+  gate_state TEXT NOT NULL,
+  gate_reasons TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE usage_observations(
+  id TEXT PRIMARY KEY,
+  request_id TEXT,
+  attempt_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN ('request','turn','cumulative')),
+  model TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cache_read_input_tokens INTEGER,
+  cache_creation_input_tokens INTEGER,
+  source TEXT NOT NULL,
+  completeness TEXT NOT NULL DEFAULT 'complete',
+  observed_at TEXT NOT NULL
+);
+
+CREATE TABLE route_decisions(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  target_model TEXT,
+  source_evidence TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','consumed','expired','superseded')),
+  choice TEXT CHECK (choice IN ('approve','edit','cancel') OR choice IS NULL),
+  consumed_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  expires_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE wakeups(
+  id TEXT PRIMARY KEY,
+  task_type TEXT NOT NULL CHECK (task_type IN ('agreed_reminder','autonomous_contact','module_event')),
+  reason TEXT,
+  source_ref TEXT,
+  due_at TEXT NOT NULL,
+  timezone TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  dedupe_key TEXT NOT NULL,
+  expiry_policy TEXT,
+  catch_up_policy TEXT,
+  notification_policy TEXT,
+  state TEXT NOT NULL DEFAULT 'scheduled',
+  last_attempt_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (conversation_id, dedupe_key)
+);
+
+CREATE TABLE effects(
+  id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  intent TEXT NOT NULL,
+  state TEXT NOT NULL,
+  external_ref TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE audit_events(
+  id TEXT PRIMARY KEY,
+  who TEXT NOT NULL,
+  what TEXT NOT NULL,
+  scope TEXT,
+  result TEXT NOT NULL,
+  trace_id TEXT,
+  detail_ref TEXT,
+  created_at TEXT NOT NULL
+);
+`,
+  },
+];
+
+export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied: number[] } {
+  db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations(
+    version INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    applied_at TEXT NOT NULL,
+    code_hash TEXT NOT NULL
+  )`);
+  const rows = db.prepare('SELECT version, code_hash FROM schema_migrations ORDER BY version').all() as Array<{
+    version: number;
+    code_hash: string;
+  }>;
+  const have = new Map(rows.map((r) => [r.version, r.code_hash]));
+  const applied: number[] = [];
+  for (const m of MIGRATIONS) {
+    if (have.has(m.version)) {
+      if (have.get(m.version) !== codeHashOf(m.sql)) {
+        throw new Error(`迁移 v${m.version} code_hash 与历史不一致：不可逆 schema 变更需按 18.2 走备份/兼容验证，不许原地改`);
+      }
+      continue;
+    }
+    tx(db, () => {
+      db.exec(m.sql);
+      db.prepare('INSERT INTO schema_migrations(version, name, applied_at, code_hash) VALUES (?,?,?,?)').run(
+        m.version,
+        m.name,
+        new Date().toISOString(),
+        codeHashOf(m.sql),
+      );
+    });
+    applied.push(m.version);
+  }
+  return { applied };
+}
+
+export function schemaVersion(db: Db): number {
+  const row = db.prepare('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations').get() as { v: number };
+  return row.v;
+}
