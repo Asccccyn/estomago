@@ -1,0 +1,10 @@
+node_modules/
+reports/
+*.log
+.DS_Store
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# 私人参考材料保留在磁盘（docs/architecture/v0.2.1/references/user/）但不进版本库
+docs/architecture/v0.2.1/references/user/

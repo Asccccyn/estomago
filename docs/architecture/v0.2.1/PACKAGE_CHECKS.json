@@ -1,0 +1,102 @@
+{
+  "scope": "artifact_files_only",
+  "date": "2026-09-24",
+  "spec_version": "0.2.1",
+  "product_validation": "NOT_EXECUTED",
+  "product_tests": {
+    "total": 166,
+    "NOT_EXECUTED": 166,
+    "PASS": 0
+  },
+  "mac_access_performed": false,
+  "application_source_modified": false,
+  "word_pages": 10,
+  "checks": [
+    {
+      "name": "requirements_count",
+      "status": "PASS",
+      "detail": "166 unique IDs; prior 161 retained + 5 INPUT"
+    },
+    {
+      "name": "application_tests_not_executed",
+      "status": "PASS",
+      "detail": "All 166 product/runtime tests remain NOT_EXECUTED"
+    },
+    {
+      "name": "json_parse",
+      "status": "PASS",
+      "detail": "All JSON files parsed"
+    },
+    {
+      "name": "yaml_parse",
+      "status": "PASS",
+      "detail": "YAML parses; input Enter/newline policy present"
+    },
+    {
+      "name": "input_behavior_spec",
+      "status": "PASS",
+      "detail": "Enter=newline; dedicated send control; IME guard; multiline not split"
+    },
+    {
+      "name": "word_render_pages",
+      "status": "PASS",
+      "detail": "render_docx.py produced 10 pages"
+    },
+    {
+      "name": "word_visual_review",
+      "status": "PASS",
+      "detail": "All 10 rendered pages inspected; no clipping, overlap, missing glyphs or broken tables observed"
+    },
+    {
+      "name": "docx_integrity",
+      "status": "PASS",
+      "detail": "DOCX opens and rendered successfully"
+    },
+    {
+      "name": "standalone_zhou_document",
+      "status": "PASS",
+      "detail": "Dedicated Zhou architecture retained and input rule added"
+    },
+    {
+      "name": "no_runtime_claim",
+      "status": "PASS",
+      "detail": "No Mac deployment or SDK execution claimed"
+    },
+    {
+      "name": "fences_01_estomago_架构与接口_v0.2.1.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    },
+    {
+      "name": "fences_02_estomago_实现路径与执行规章_v0.2.1.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    },
+    {
+      "name": "fences_05_estomago_SDK装配与思考流实现细则_v0.2.1.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    },
+    {
+      "name": "fences_README.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    },
+    {
+      "name": "fences_04_estomago_给周家明看的架构_v0.2.1.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    },
+    {
+      "name": "fences_06_estomago_v0.2.1修订与来源核对.md",
+      "status": "PASS",
+      "detail": "Markdown code fences balanced"
+    }
+  ],
+  "exclusions": [
+    "No Node/SDK/runtime compilation or installation",
+    "No model calls or Mac deployment",
+    "No identity-body validation against real materials",
+    "No module integration, push or Telegram execution"
+  ]
+}

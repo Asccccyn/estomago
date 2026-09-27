@@ -1,0 +1,51 @@
+{
+  "spec_version": "0.2.1",
+  "status": "TEMPLATE_NOT_EXECUTED",
+  "window_id": null,
+  "manifest_ref": null,
+  "desired": {
+    "instruction_mode": "explicit_custom",
+    "original_preset_included": false,
+    "builtin_tools": [],
+    "setting_sources": [],
+    "auto_memory_enabled": false,
+    "automatic_connectors_enabled": false,
+    "thinking_display": "summarized"
+  },
+  "assembled": {
+    "sdk_version": null,
+    "runtime_version": null,
+    "cwd_realpath": null,
+    "system_prompt_hash": null,
+    "identity_version": null,
+    "i_version": null,
+    "runtime_rules_version": null,
+    "options_hash": null,
+    "settings_hash": null,
+    "environment_profile_ref": null,
+    "tool_schema_hash": null
+  },
+  "observed": {
+    "state": "unknown",
+    "final_request_observable": false,
+    "original_preset_included": null,
+    "effective_model": null,
+    "effective_tools": null,
+    "loaded_instruction_sources": null,
+    "managed_policy_summary": null,
+    "thinking_delta_seen": null,
+    "sdk_init_evidence_ref": null
+  },
+  "probe": {
+    "status": "NOT_EXECUTED",
+    "version_match": null,
+    "evidence_refs": [],
+    "blocking_unknowns": [],
+    "non_observable_fields": []
+  },
+  "activation_gate": {
+    "state": "NOT_EVALUATED",
+    "scope": "local identity and required runtime capability readiness; not complete provider internals",
+    "reasons": []
+  }
+}

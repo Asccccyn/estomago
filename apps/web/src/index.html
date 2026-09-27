@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>estómago</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">estómago</span>
+    <span id="runtime-badge" class="badge">连接中…</span>
+    <button id="login-btn" class="ghost" hidden>登录</button>
+  </header>
+
+  <div id="login-panel" class="login-panel" hidden>
+    <p>首次使用：请打开服务器上的 token 文件粘贴一次（文件路径见启动日志；内容不会出现在日志里）。</p>
+    <input id="token-input" type="password" placeholder="auth.token 内容" autocomplete="off" />
+    <button id="token-submit">配对</button>
+    <p id="login-error" class="error" hidden></p>
+  </div>
+
+  <main id="chat" hidden>
+    <section id="timeline" class="timeline" aria-live="polite"></section>
+
+    <div class="composer-wrap">
+      <textarea id="composer" rows="3" placeholder="输入…（Enter 换行；发送用右侧按钮）" spellcheck="false"></textarea>
+      <button id="send-btn" class="send" disabled>发送</button>
+    </div>
+    <div class="composer-hint">Enter 只换行；多行正文将作为一条消息完整保存</div>
+  </main>
+
+  <dialog id="route-dialog">
+    <h3>模型路由待决</h3>
+    <p id="route-detail"></p>
+    <div class="route-actions">
+      <button id="route-edit" class="ghost">重新编辑</button>
+      <button id="route-approve">同意本次路由</button>
+      <button id="route-cancel" class="danger">取消</button>
+    </div>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
