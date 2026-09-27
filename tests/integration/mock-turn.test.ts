@@ -86,11 +86,12 @@ test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对
 
   // 用量：turn 口径
   const usage = (await (await api('GET', `/api/v1/turns/${turn_id}/usage`)).json()) as {
-    usage: Array<{ scope: string; input_tokens: number | null; output_tokens: number | null }>;
+    attempts: Array<{ input_tokens: number | null; output_tokens: number | null }>;
+    totals: { input_tokens: number | null; output_tokens: number | null };
   };
-  const turnUsage = usage.usage.find((u) => u.scope === 'turn')!;
-  assert.equal(turnUsage.input_tokens, 120);
-  assert.equal(turnUsage.output_tokens, 48);
+  assert.equal(usage.attempts.length, 1);
+  assert.equal(usage.totals.input_tokens, 120);
+  assert.equal(usage.totals.output_tokens, 48);
 });
 
 test('幂等（HTTP 层）：同 client_message_id 重发 → duplicate 且不新增消息/turn', async () => {
@@ -182,7 +183,7 @@ test('health：ready 分项（identity/runtime/archive/push/db）', async () => 
   assert.equal(report.status, 'degraded');
 });
 
-test('SSE：token query 认证 + 持久 sequence 帧 + Last-Event-ID 语义', async () => {
+test('SSE：token query 认证 + 持久 sequence 帧 + Last-Event-ID 优先语义（AUD-09 新契约）', async () => {
   const controller = new AbortController();
   const res = await fetch(`${base}/api/v1/events?cursor=0&token=${encodeURIComponent(token)}`, { signal: controller.signal });
   assert.equal(res.status, 200);
