@@ -57,10 +57,16 @@ export function writeApprovedIdentity(root: string, opts: { sdkVersion?: string;
   const identityText = '（测试）经批准身份正文——合成内容，非真实身份';
   fs.writeFileSync(path.join(paths.identityDir, 'approved-identity.md'), identityText);
   const sdk = opts.sdkVersion ?? OBSERVED_SDK;
+  const iContent = '（测试）I 快照合成内容';
+  const rulesContent = '（测试）运行规则合成内容';
+  fs.writeFileSync(path.join(paths.identityDir, 'i-snapshot.md'), iContent);
+  fs.writeFileSync(path.join(paths.identityDir, 'runtime-rules.md'), rulesContent);
   const manifest = {
     display_name: 'estómago', spec_version: '0.2.1', status: 'APPROVED', identity_version: 'test-v1',
     approved_source_ref: 'approved-identity.md', approved_source_hash: sha256Hex(identityText),
-    i_version: 'test-i-1', runtime_rules_version: 'test-rules-1', system_prompt_mode: 'explicit_custom',
+    i_version: 'test-i-1', i_hash: sha256Hex(iContent),
+    runtime_rules_version: 'test-rules-1', rules_hash: sha256Hex(rulesContent),
+    system_prompt_mode: 'explicit_custom',
     system_prompt_hash: sha256Hex(identityText), sdk_version: sdk, runtime_version: 'node-test',
     cwd_realpath: fs.realpathSync(paths.workspacesDir), settings_sources: [],
     effective_model: null, effective_tools: [], effective_mcp_servers: null, managed_policy_summary: null,

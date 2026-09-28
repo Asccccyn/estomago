@@ -17,7 +17,7 @@ test('身份不通过 → 窗口 BLOCKED、指针不动，receipt 仍留证据�
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
 
@@ -38,7 +38,7 @@ test('READY → ACTIVE；轮转 prepare→原子切换；旧窗 CLOSED；交接�
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'hi', clientMessageId: 'w1' });
@@ -70,7 +70,7 @@ test('AUD-20：handoff 写失败 → 轮转整体失败，旧窗保持 ACTIVE（
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   const gate = identity.evaluateGate(db);
@@ -93,9 +93,10 @@ test('身份退回 BLOCKED → 拒绝轮转，旧窗 ACTIVE（降级路径）', 
   writeApprovedIdentity(root);
   const { db } = makeDb(root);
   const paths = makePaths(root);
-  const identityGood = new IdentityService(buildConfig(readyRuntimePatch()), paths);
+  const config = buildConfig(readyRuntimePatch());
+  const identityGood = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identityGood, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identityGood, paths.handoffsDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   const gate = identityGood.evaluateGate(db);
