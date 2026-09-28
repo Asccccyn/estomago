@@ -36,7 +36,7 @@ function compose(root: string, runner: AgentRunner) {
   const reasoning = new ReasoningService(db, events);
   const usage = new UsageCollector(db);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities, runnerSelection: { status: 'ok', runner }, reasoning, usage, routing, windows, logger });
   messages.ensureConversation('c1');
   return { db, messages, supervisor };
@@ -151,8 +151,8 @@ test('AUD-05 附：route signal 后 fence 生效——迟到气泡/思考不发�
   const t = submit(ctx, 'r1');
   await ctx.supervisor.waitIdle();
   const s = states(ctx, t.turnId);
-  assert.equal(s.attempt.state, 'route_pending');
-  assert.equal(s.turn.state, 'route_pending');
+  assert.equal(s.attempt.state, 'route_owner_pending');
+  assert.equal(s.turn.state, 'route_owner_pending');
   const lateBubble = ctx.db.prepare("SELECT COUNT(*) n FROM message_revisions r JOIN messages m ON m.id=r.message_id WHERE r.content LIKE '%AFTER-ROUTE%'").get() as { n: number };
   assert.equal(lateBubble.n, 0, 'fence 后迟到气泡不得发布');
   const lateThink = ctx.db.prepare("SELECT received_text FROM reasoning_blocks WHERE turn_id=?").get(t.turnId) as { received_text: string };

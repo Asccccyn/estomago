@@ -8,6 +8,23 @@
 // 没有批准身份材料 → 阻断，绝不提供默认人格。
 import fs from 'node:fs';
 import path from 'node:path';
+// 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与
+export function contextFingerprint(config: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } }, manifest: IdentityManifestFile | null): string {
+  const parts = [
+    manifest?.identity_version ?? null,
+    manifest?.approved_source_hash ?? null,
+    manifest?.i_version ?? null,
+    manifest?.i_hash ?? null,
+    manifest?.runtime_rules_version ?? null,
+    manifest?.rules_hash ?? null,
+    config.runtime.sdk_version,
+    JSON.stringify(config.runtime.setting_sources),
+    JSON.stringify(config.runtime.builtin_tools),
+    JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
+  ];
+  return sha256Hex(parts.join('\u0001'));
+}
+
 import { createRequire } from 'node:module';
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
@@ -37,7 +54,9 @@ export type IdentityManifestFile = {
   approved_source_ref: string | null;
   approved_source_hash: string | null;
   i_version: string | null;
+  i_hash: string | null;
   runtime_rules_version: string | null;
+  rules_hash: string | null;
   system_prompt_mode: string;
   system_prompt_hash: string | null;
   sdk_version: string | null;
@@ -129,6 +148,9 @@ export class IdentityService {
     for (const k of ['identity_version', 'i_version', 'runtime_rules_version'] as const) {
       if (!manifest[k]) reasons.push(`manifest.${k} 缺失（ID evidence gate）`);
     }
+    // v0.3（AUD-02 fail-closed 收紧）：I/rules 的内容 hash 也是关键证据
+    if (!manifest.i_hash) reasons.push('manifest.i_hash 缺失');
+    if (!manifest.rules_hash) reasons.push('manifest.rules_hash 缺失');
     if (manifest.system_prompt_mode !== 'explicit_custom') reasons.push('system_prompt_mode 须为 explicit_custom');
     if (manifest.approved_source_ref && manifest.approved_source_hash) {
       const ref = path.resolve(this.paths.identityDir, manifest.approved_source_ref);
@@ -172,6 +194,12 @@ export class IdentityService {
     }
     if (JSON.stringify(manifest.requested_builtin_tools ?? []) !== JSON.stringify(this.config.runtime.builtin_tools)) {
       reasons.push('requested_builtin_tools 与配置不一致');
+    }
+    // v0.3：effective MCP 观测（当前边界=空 allowlist；接入获准 MCP 后须逐项对照）
+    const expectedMcp = this.config.runtime.mcp_servers_allowlist;
+    const observedMcp = manifest.effective_mcp_servers ?? [];
+    if (JSON.stringify([...observedMcp].sort()) !== JSON.stringify([...expectedMcp].sort())) {
+      reasons.push(`effective_mcp_servers 不符：manifest=${JSON.stringify(observedMcp)} / 配置=${JSON.stringify(expectedMcp)}`);
     }
 
     // —— 能力探针证据（DB 观测，绑定实装版本）——

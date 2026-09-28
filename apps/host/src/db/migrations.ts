@@ -272,7 +272,76 @@ CREATE INDEX idx_windows_sdk_session ON windows(sdk_session_id);
 CREATE INDEX idx_usage_turn_attempt ON usage_observations(turn_id, attempt_id);
 `,
   },
-];
+  {
+    version: 3,
+    name: 'v0.3-route-states-context-boundary',
+    sql: `
+CREATE TABLE attempts_v3(
+  id TEXT PRIMARY KEY,
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  attempt_no INTEGER NOT NULL,
+  input_revision INTEGER,
+  input_hash TEXT,
+  state TEXT NOT NULL CHECK (state IN
+    ('pending','running','waiting_route_gate','route_owner_pending','ready_after_route','completed','interrupted','blocked','failed')),
+  blocked_reason TEXT,
+  window_id TEXT,
+  sdk_session_id TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  UNIQUE (turn_id, attempt_no)
+);
+INSERT INTO attempts_v3 SELECT id, turn_id, attempt_no, input_revision, input_hash,
+  CASE WHEN state = 'route_pending' THEN 'route_owner_pending' ELSE state END,
+  blocked_reason, window_id, sdk_session_id, started_at, completed_at FROM attempts;
+DROP TABLE attempts;
+ALTER TABLE attempts_v3 RENAME TO attempts;
+
+CREATE TABLE turns_v3(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  trigger TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN
+    ('pending','running','route_owner_pending','completed','interrupted','blocked','failed')),
+  input_message_id TEXT,
+  time_context_json TEXT,
+  generation INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,
+  completed_at TEXT,
+  created_at TEXT NOT NULL
+);
+INSERT INTO turns_v3 SELECT id, conversation_id, trigger,
+  CASE WHEN state = 'route_pending' THEN 'route_owner_pending' ELSE state END,
+  input_message_id, time_context_json, generation, started_at, completed_at, created_at FROM turns;
+DROP TABLE turns;
+ALTER TABLE turns_v3 RENAME TO turns;
+
+CREATE TABLE windows_v3(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  status TEXT NOT NULL CHECK (status IN
+    ('NEW','PREPARING','IDENTITY_VERIFIED','READY','ACTIVE','ROTATION_REQUESTED','DRAINING','HANDOFF_READY','CLOSED','BLOCKED','DEGRADED','CONTEXT_STALE')),
+  sdk_session_id TEXT,
+  manifest_ref TEXT,
+  receipt_id TEXT,
+  cutoff_sequence INTEGER,
+  active_generation INTEGER NOT NULL DEFAULT 0,
+  blocked_reason TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  context_fingerprint TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO windows_v3 SELECT id, conversation_id, status, sdk_session_id, manifest_ref, receipt_id,
+  cutoff_sequence, active_generation, blocked_reason, revision, NULL, created_at, updated_at FROM windows;
+DROP TABLE windows;
+ALTER TABLE windows_v3 RENAME TO windows;
+
+ALTER TABLE route_decisions ADD COLUMN message_id TEXT;
+ALTER TABLE route_decisions ADD COLUMN input_revision INTEGER;
+`,
+  },
+];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied: number[] } {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations(

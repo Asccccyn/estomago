@@ -1,9 +1,9 @@
-// 路由服务 v0.2.2（AUD-05/06/23 修复版）：
-//  - validateAndConsume：先完整验证（存在/pending/未过期/会话/turn/attempt/输入hash/载荷），
-//    全部合法后在同一事务里 consume+（edit 时）revision+supersedes+outbox+新 attempt+turn 复位。
-//    任何失败：回滚，票据保持可用。
-//  - pendingForConversation：会话级 gate（AUD-05）。
-//  - 过期票据在验证时标记 expired 并拒绝。
+// 路由服务 v0.3（AUD-05/06/23/36/37）：
+//  - 状态拆分：只有触发票据的 attempt 是 route_owner_pending；被会话 gate 挡住的是 waiting_route_gate。
+//  - 票据绑定全维度：conversation/turn/attempt/message/revision/input_hash/route_version/expiry；
+//    跨 turn/跨消息/修订不符/非绑定 attempt 一律拒绝。
+//  - 决议单事务（14 步）：consume+验证+（edit）revision/outbox+新 attempt+释放 waiting+durable route.resolved；
+//    事件在事务内持久、提交后广播——广播失败不否定已提交事实，可按 durable 事件重放。
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
@@ -15,6 +15,8 @@ export type RouteDecisionRow = {
   conversation_id: string;
   turn_id: string;
   attempt_id: string;
+  message_id: string | null;
+  input_revision: number | null;
   input_hash: string;
   target_model: string | null;
   source_evidence: string;
@@ -32,8 +34,14 @@ export type ConsumeInput =
   | { choice: 'edit'; content: string };
 
 export type ConsumeResult =
-  | { ok: true; row: RouteDecisionRow; editRevision: number | null; newAttemptId: string | null; turnId: string }
+  | { ok: true; row: RouteDecisionRow; editRevision: number | null; newAttemptId: string | null; turnId: string; releasedWaiting: number }
   | { ok: false; status: number; code: string; reason: string };
+
+export type PendingTicketInput = {
+  conversationId: string; turnId: string; attemptId: string;
+  inputHash: string; targetModel: string | null; evidenceCode: string;
+  messageId?: string | null; inputRevision?: number | null;
+};
 
 export class RoutingService {
   private db: Db;
@@ -45,38 +53,23 @@ export class RoutingService {
     this.messages = messages;
   }
 
-  // 事务内插入（不自开事务、不发事件）——供 supervisor 的单事务控制序列使用
-  createPendingInTx(o: { conversationId: string; turnId: string; attemptId: string; inputHash: string; targetModel: string | null; evidenceCode: string }): RouteDecisionRow {
+  // 事务内插入（无自开事务/无事件）——supervisor 控制序列与测试用
+  createPendingInTx(o: PendingTicketInput): RouteDecisionRow {
     const id = genId('rt');
     this.db
       .prepare(
-        `INSERT INTO route_decisions(id, conversation_id, turn_id, attempt_id, input_hash, target_model, source_evidence, state, created_at)
-         VALUES (?,?,?,?,?,?,?, 'pending', ?)`,
+        `INSERT INTO route_decisions(id, conversation_id, turn_id, attempt_id, message_id, input_revision, input_hash, target_model, source_evidence, state, version, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?, 'pending', 1, ?)`,
       )
-      .run(id, o.conversationId, o.turnId, o.attemptId, o.inputHash, o.targetModel, o.evidenceCode, new Date().toISOString());
+      .run(id, o.conversationId, o.turnId, o.attemptId, o.messageId ?? null, o.inputRevision ?? null, o.inputHash, o.targetModel, o.evidenceCode, new Date().toISOString());
     return this.get(id)!;
   }
 
-  createPending(o: { conversationId: string; turnId: string; attemptId: string; inputHash: string; targetModel: string | null; evidenceCode: string }): RouteDecisionRow {
-    const id = genId('rt');
-    const now = new Date().toISOString();
-    this.db
-      .prepare(
-        `INSERT INTO route_decisions(id, conversation_id, turn_id, attempt_id, input_hash, target_model, source_evidence, state, created_at)
-         VALUES (?,?,?,?,?,?,?, 'pending', ?)`,
-      )
-      .run(id, o.conversationId, o.turnId, o.attemptId, o.inputHash, o.targetModel, o.evidenceCode, now);
-    const row = this.get(id)!;
+  createPending(o: PendingTicketInput): RouteDecisionRow {
+    const row = this.createPendingInTx(o);
     this.events.publish('route.pending', {
       conversationId: o.conversationId, turnId: o.turnId, attemptId: o.attemptId, scope: 'private',
-      payload: {
-        decision_id: id,
-        current_model: null,
-        target_model: o.targetModel,
-        evidence_code: o.evidenceCode, // 稳定码，不含 SDK 原文（AUD-28）
-        already_switched: false,
-        affects_future_sessions: null,
-      },
+      payload: { decision_id: row.id, current_model: null, target_model: o.targetModel, evidence_code: o.evidenceCode, already_switched: false, affects_future_sessions: null },
     });
     return row;
   }
@@ -91,14 +84,13 @@ export class RoutingService {
       .get(turnId) as RouteDecisionRow | undefined) ?? null;
   }
 
-  // 会话级待决（AUD-05）：房间内任一 pending 票据都冻结新模型执行
   pendingForConversation(conversationId: string): RouteDecisionRow | null {
     return (this.db
       .prepare("SELECT * FROM route_decisions WHERE conversation_id = ? AND state = 'pending' ORDER BY created_at DESC LIMIT 1")
       .get(conversationId) as RouteDecisionRow | undefined) ?? null;
   }
 
-  // 先验证后事务消费（AUD-06/23）
+  // —— 先全量验证，后单事务执行（AUD-06/23/36/37）——
   validateAndConsume(decisionId: string, input: ConsumeInput): ConsumeResult {
     const row = this.get(decisionId);
     if (!row) return { ok: false, status: 404, code: 'ROUTE_NOT_FOUND', reason: '票据不存在' };
@@ -110,37 +102,46 @@ export class RoutingService {
       });
       return { ok: false, status: 409, code: 'ROUTE_EXPIRED', reason: '票据已过期并标记 expired' };
     }
-    // 载荷验证（edit 必须带非空正文；校验发生在任何状态变更之前）
-    if (input.choice === 'edit' && (!input.content || /^[\s\u00A0\uFEFF\u3000]*$/.test(input.content))) {
+    if (input.choice === 'edit' && (!input.content || /^[\\s\\u00A0\\uFEFF\\u3000]*$/.test(input.content))) {
       return { ok: false, status: 400, code: 'ROUTE_INVALID_EDIT', reason: 'edit 需要非空 content' };
     }
-    // 输入 hash 绑定：票据必须仍对应当前有效输入修订
-    const turn = this.db.prepare('SELECT input_message_id FROM turns WHERE id = ?').get(row.turn_id) as { input_message_id: string | null } | undefined;
-    if (!turn?.input_message_id) return { ok: false, status: 409, code: 'ROUTE_NO_INPUT', reason: 'turn 无输入消息' };
+    // 绑定验证：turn/conversation/message/attempt/revision 全链
+    const turn = this.db.prepare('SELECT id, conversation_id, input_message_id FROM turns WHERE id = ?').get(row.turn_id) as
+      | { id: string; conversation_id: string; input_message_id: string | null }
+      | undefined;
+    if (!turn) return { ok: false, status: 409, code: 'ROUTE_TURN_GONE', reason: '票据绑定的 turn 不存在' };
+    if (turn.conversation_id !== row.conversation_id) return { ok: false, status: 409, code: 'ROUTE_CONV_MISMATCH', reason: 'turn 与票据会话不符' };
+    if (!turn.input_message_id) return { ok: false, status: 409, code: 'ROUTE_NO_INPUT', reason: 'turn 无输入消息' };
+    if (row.message_id && row.message_id !== turn.input_message_id) {
+      return { ok: false, status: 409, code: 'ROUTE_MESSAGE_MISMATCH', reason: '票据绑定的消息与 turn 当前输入不符' };
+    }
+    const attemptRow = this.db.prepare('SELECT id, turn_id FROM attempts WHERE id = ?').get(row.attempt_id) as { id: string; turn_id: string } | undefined;
+    if (!attemptRow) return { ok: false, status: 409, code: 'ROUTE_ATTEMPT_GONE', reason: '票据绑定的 attempt 不存在' };
+    if (attemptRow.turn_id !== row.turn_id) return { ok: false, status: 409, code: 'ROUTE_ATTEMPT_CROSS_TURN', reason: 'attempt 不属于票据绑定的 turn（跨 turn 拒绝）' };
     const currentHash = this.messages.currentRevisionHash(turn.input_message_id);
     if (!currentHash || currentHash !== row.input_hash) {
-      return { ok: false, status: 409, code: 'ROUTE_INPUT_STALE', reason: '票据绑定的输入 hash 与当前修订不符（票据作废前需重新确认）' };
+      return { ok: false, status: 409, code: 'ROUTE_INPUT_STALE', reason: '票据绑定的输入 hash 与当前修订不符' };
     }
-    // attempt 存在性
-    const attempt = this.db.prepare('SELECT id FROM attempts WHERE id = ?').get(row.attempt_id) as { id: string } | undefined;
-    if (!attempt) return { ok: false, status: 409, code: 'ROUTE_ATTEMPT_GONE', reason: '票据绑定的 attempt 不存在' };
+    const msg = this.db.prepare('SELECT current_revision FROM messages WHERE id = ?').get(turn.input_message_id) as { current_revision: number };
+    if (row.input_revision != null && row.input_revision !== msg.current_revision) {
+      return { ok: false, status: 409, code: 'ROUTE_REVISION_MISMATCH', reason: '票据绑定的修订不是当前有效修订' };
+    }
 
-    // —— 全部验证通过：单事务 consume + 动作 ——
+    let editRevision: number | null = null;
+    let newAttemptId: string | null = null;
+    let releasedWaiting = 0;
+    let resolvedEventRow: import('../events/service.ts').StreamEventRow | null = null;
     try {
-      const result = tx(this.db, () => {
+      tx(this.db, () => {
         const consumed = this.db
           .prepare("UPDATE route_decisions SET state = 'consumed', choice = ?, consumed_at = ? WHERE id = ? AND state = 'pending'")
           .run(input.choice, new Date().toISOString(), decisionId);
         if (consumed.changes === 0) throw new Error('consume_conflict');
-        let editRevision: number | null = null;
-        let newAttemptId: string | null = null;
         if (input.choice === 'edit') {
-          // 真修订：原 message_id 不变，revision+1，supersedes，归档 outbox（AUD-07）
           const r = this.messages.editMessageInTx(turn.input_message_id!, input.content);
           editRevision = r.revision;
         }
         if (input.choice === 'edit' || input.choice === 'approve') {
-          // 新 attempt：edit 用新修订；approve 用原修订（continue 能力 unknown，如实重跑本输入）
           const maxNo = this.db.prepare('SELECT COALESCE(MAX(attempt_no),0)+1 AS n FROM attempts WHERE turn_id = ?').get(row.turn_id) as { n: number };
           const revRow = this.db.prepare('SELECT current_revision FROM messages WHERE id = ?').get(turn.input_message_id) as { current_revision: number };
           newAttemptId = genId('att');
@@ -155,15 +156,26 @@ export class RoutingService {
             .run(new Date().toISOString(), row.attempt_id);
           this.db.prepare("UPDATE turns SET state = 'blocked', completed_at = ? WHERE id = ?").run(new Date().toISOString(), row.turn_id);
         }
-        return { editRevision, newAttemptId };
+        // 释放会话 gate 挡住的 waiting attempts（同一事务；AUD-36/37）
+        releasedWaiting = Number(
+          this.db
+            .prepare(
+              `UPDATE attempts SET state = 'pending'
+               WHERE state = 'waiting_route_gate' AND turn_id IN (SELECT id FROM turns WHERE conversation_id = ?)`,
+            )
+            .run(row.conversation_id).changes,
+        );
+        // durable route.resolved：事务内持久（广播失败不丢，可重放）
+        resolvedEventRow = this.events.persistInTx('route.resolved', {
+          conversationId: row.conversation_id, turnId: row.turn_id, attemptId: row.attempt_id, scope: 'private',
+          payload: { decision_id: decisionId, choice: input.choice, edit_revision: editRevision, new_attempt_id: newAttemptId, released_waiting: releasedWaiting },
+        });
       });
-      this.events.publish('route.resolved', {
-        conversationId: row.conversation_id, turnId: row.turn_id, attemptId: row.attempt_id, scope: 'private',
-        payload: { decision_id: decisionId, choice: input.choice, edit_revision: result.editRevision, new_attempt_id: result.newAttemptId },
-      });
-      return { ok: true, row: this.get(decisionId)!, editRevision: result.editRevision, newAttemptId: result.newAttemptId, turnId: row.turn_id };
     } catch {
       return { ok: false, status: 409, code: 'ROUTE_CONSUME_CONFLICT', reason: '并发消费冲突（事务回滚，票据仍可用）' };
     }
+    // 提交后广播（失败不影响已提交事实；durable 事件可重放）
+    if (resolvedEventRow) this.events.dispatchRow(resolvedEventRow);
+    return { ok: true, row: this.get(decisionId)!, editRevision, newAttemptId, turnId: row.turn_id, releasedWaiting };
   }
 }

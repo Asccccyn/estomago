@@ -231,6 +231,17 @@ export class ReasoningService {
     this.dispatchPending(o.attemptId, '', 'reasoning.completed');
   }
 
+  // v0.3：turn 成功结束时仍未收尾的 streaming 块 → complete/stream_only（流结束但无完整块核对，不伪装已核对）
+  markAttemptStreamEnded(o: { attemptId: string }): void {
+    const rows = this.db.prepare("SELECT id, state FROM reasoning_blocks WHERE attempt_id = ? AND state = 'streaming'").all(o.attemptId) as Array<{ id: string }>;
+    const now = new Date().toISOString();
+    for (const b of rows) {
+      tx(this.db, () => {
+        this.db.prepare("UPDATE reasoning_blocks SET state = 'complete', completeness = 'stream_only', updated_at = ? WHERE id = ?").run(now, b.id);
+      });
+    }
+  }
+
   // turn 级 no_block（05 §4）：无思考块时如实记录
   markTurnNoBlock(o: { conversationId: string; turnId: string; attemptId: string; generation: number }): void {
     const any = this.db.prepare('SELECT 1 FROM reasoning_blocks WHERE attempt_id = ?').get(o.attemptId);

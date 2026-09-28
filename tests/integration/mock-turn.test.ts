@@ -129,7 +129,7 @@ test('redacted 场景：可见性=redacted，不还原、不编替代文本', as
 test('路由：待决 → 用户取消 → turn blocked；重复消费 409', async () => {
   process.env.ESTOMAGO_MOCK_SCENARIO = 'route';
   const { turn_id } = await submit('路由场景', 'int-route-1');
-  await pollUntil(async () => (await turnState(turn_id)).state === 'route_pending');
+  await pollUntil(async () => (await turnState(turn_id)).state === 'route_owner_pending');
   const st = await turnState(turn_id);
   const decision = st.pending as { id: string; target_model: string | null } | null;
   assert.ok(decision, '应产生待决票据');

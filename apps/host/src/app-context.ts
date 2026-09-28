@@ -92,7 +92,7 @@ export class Host {
     const reasoning = new ReasoningService(db, events);
     const usage = new UsageCollector(db);
     const routing = new RoutingService(db, events, messages);
-    const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+    const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config);
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,
@@ -148,7 +148,9 @@ export class Host {
     });
     const addr = this.server.address();
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.opts.port;
-    this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status });
+    // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
+    const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
+    this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
   async stop(): Promise<void> {
