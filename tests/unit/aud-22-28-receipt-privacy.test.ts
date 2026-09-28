@@ -19,7 +19,7 @@ test('AUD-22：READY 开窗 → receipt_id 可解析且 assembled 含真实 opti
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   const gate = identity.evaluateGate(db);

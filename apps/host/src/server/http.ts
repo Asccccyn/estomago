@@ -146,7 +146,17 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const win = d.windows.get(windowId);
       if (!win) return json(res, 404, { error: { code: 'not_found', message: '窗口不存在' } });
       const maxRow = d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(win.conversation_id) as { m: number };
-      const result = d.windows.rotate({ conversationId: win.conversation_id, gate: d.identity.evaluateGate(d.db), maxSequence: maxRow.m });
+      const gate = d.identity.evaluateGate(d.db);
+      // §22：candidate receipt 必须携带真实 assembled options hash——先装配再轮转
+      let assembledOptions: Record<string, unknown> | null = null;
+      if (gate.state === 'READY' && gate.manifest) {
+        const { buildSdkOptions } = await import('../runtime/build-options.ts');
+        const identityText = d.identity.readApprovedIdentityText(gate.manifest);
+        const { buildPaths, resolveStateRoot } = await import('../config/paths.ts');
+        const built = buildSdkOptions({ config: d.config, gate, identityText, cwd: buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir });
+        if (built.status === 'ok') assembledOptions = built.assembled as unknown as Record<string, unknown>;
+      }
+      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions });
       return json(res, result.ok ? 200 : 409, result.ok ? { window: result.window } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
@@ -181,7 +191,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (body.choice === 'edit') {
         const turn = d.db.prepare('SELECT input_message_id FROM turns WHERE id = ?').get(consumed.turnId) as { input_message_id: string | null };
         const message = turn?.input_message_id ? d.messages.getMessage(turn.input_message_id) : null;
-        return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision });
+        return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision, released_waiting: consumed.releasedWaiting });
       }
       if (body.choice === 'approve') {
         return json(res, 200, { resolved: 'approve', attempt_id: consumed.newAttemptId, note: 'continue_capability=unknown：按新 attempt 重跑本输入，不代表平台级路由动作已执行' });

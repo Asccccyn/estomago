@@ -9,7 +9,7 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
 import type { EventService } from '../events/service.ts';
-import type { GateResult, IdentityService } from '../identity/service.ts';
+import { contextFingerprint, type GateResult, type IdentityService } from '../identity/service.ts';
 
 export type WindowRow = {
   id: string;
@@ -22,21 +22,24 @@ export type WindowRow = {
   active_generation: number;
   blocked_reason: string | null;
   revision: number;
+  context_fingerprint: string | null;
   created_at: string;
   updated_at: string;
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string) {
+  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } }) {
     this.db = db;
     this.events = events;
     this.identity = identity;
     this.handoffsDir = handoffsDir;
+    this.config = config ?? null;
   }
   private db: Db;
   private events: EventService;
   private identity: IdentityService;
   private handoffsDir: string;
+  private config: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } } | null;
 
   activeWindow(conversationId: string): WindowRow | null {
     const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(conversationId) as
@@ -65,16 +68,24 @@ export class WindowManager {
         .run(id, o.conversationId, now, now);
     });
     this.setStatus(id, 'PREPARING');
-    // Receipt：即使 blocked 也留证据；receipt_id 存真实主键（AUD-22）
-    const receipt = this.identity.buildAndStoreReceipt(this.db, {
-      windowId: id,
-      manifest: o.gate.manifest,
-      gate: o.gate,
-      assembledOptions: o.gate.state === 'READY' ? (o.assembledOptions ?? null) : null,
-    });
-    tx(this.db, () => {
-      this.db.prepare('UPDATE windows SET receipt_id = ?, manifest_ref = ?, updated_at = ? WHERE id = ?').run(receipt.id, receipt.manifest_ref, new Date().toISOString(), id);
-    });
+    // Receipt：即使 blocked 也留证据；写失败本身 → candidate 终态 BLOCKED（AUD-38，不悬挂 PREPARING）
+    let fingerprint: string;
+    try {
+      fingerprint = contextFingerprint(this.identityConfig(), o.gate.manifest);
+      const receipt = this.identity.buildAndStoreReceipt(this.db, {
+        windowId: id,
+        manifest: o.gate.manifest,
+        gate: o.gate,
+        assembledOptions: o.gate.state === 'READY' ? (o.assembledOptions ?? null) : null,
+      });
+      tx(this.db, () => {
+        this.db.prepare('UPDATE windows SET receipt_id = ?, manifest_ref = ?, context_fingerprint = ?, updated_at = ? WHERE id = ?').run(receipt.id, receipt.manifest_ref, fingerprint, new Date().toISOString(), id);
+      });
+    } catch (err) {
+      this.setStatus(id, 'BLOCKED', `receipt_write_failed: ${String((err as Error).message).slice(0, 60)}`);
+      this.emitChanged(id, o.conversationId, 'BLOCKED', 'receipt_write_failed');
+      return { window: this.get(id)!, blockedReason: 'receipt 写失败（candidate 已落终态 BLOCKED）' };
+    }
 
     if (o.gate.state !== 'READY') {
       const reason = o.gate.reasons.join('; ');
@@ -114,17 +125,18 @@ export class WindowManager {
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'PREPARING', ?, ?)")
         .run(candidateId, o.conversationId, now, now);
     });
-    const receipt = this.identity.buildAndStoreReceipt(this.db, {
-      windowId: candidateId,
-      manifest: o.gate.manifest,
-      gate: o.gate,
-      assembledOptions: o.assembledOptions ?? null,
-    });
     let handoffPath: string;
     try {
+      const fingerprint = contextFingerprint(this.identityConfig(), o.gate.manifest);
+      const receipt = this.identity.buildAndStoreReceipt(this.db, {
+        windowId: candidateId,
+        manifest: o.gate.manifest,
+        gate: o.gate,
+        assembledOptions: o.assembledOptions ?? null,
+      });
       handoffPath = this.writeHandoff(current, o.maxSequence, candidateId);
       tx(this.db, () => {
-        this.db.prepare('UPDATE windows SET receipt_id = ?, manifest_ref = ?, updated_at = ? WHERE id = ?').run(receipt.id, receipt.manifest_ref, new Date().toISOString(), candidateId);
+        this.db.prepare('UPDATE windows SET receipt_id = ?, manifest_ref = ?, context_fingerprint = ?, updated_at = ? WHERE id = ?').run(receipt.id, receipt.manifest_ref, fingerprint, new Date().toISOString(), candidateId);
       });
       this.setStatus(candidateId, 'READY');
     } catch (err) {
@@ -170,6 +182,20 @@ export class WindowManager {
     };
     fs.writeFileSync(file, JSON.stringify(handoff, null, 2));
     return file;
+  }
+
+  /** §7：人格/运行边界指纹变化 → 窗口 CONTEXT_STALE，禁止继续 resume 旧 session */
+  markContextStale(windowId: string, reason: string): void {
+    tx(this.db, () => {
+      this.db
+        .prepare("UPDATE windows SET status = 'CONTEXT_STALE', blocked_reason = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'")
+        .run(reason, new Date().toISOString(), windowId);
+    });
+  }
+
+  private identityConfig(): { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } } {
+    if (!this.config) throw new Error('CONFIG_ERROR: WindowManager 未收到 config，无法计算上下文指纹');
+    return this.config;
   }
 
   get(id: string): WindowRow | null {

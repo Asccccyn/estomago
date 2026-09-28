@@ -23,6 +23,7 @@ import type { RoutingService } from '../routing/service.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import type { Logger } from '../observability/logging.ts';
 import { buildTimeContext } from '../time/context.ts';
+import { contextFingerprint } from '../identity/service.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
@@ -41,6 +42,8 @@ export type SupervisorDeps = {
   windows: WindowManager;
   logger: Logger;
 };
+
+const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
 
 type ActiveRun = {
   token: { cancelled: boolean };
@@ -83,7 +86,28 @@ export class TurnSupervisor {
     if (!run) return { stopped: false, generation: null };
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort();
+    // AUD-10（§11）：不合作 runner 的有界终止——grace 后强制落终态，即使底层 promise 永不 resolve
+    setTimeout(() => this.forceFinalizeIfStuck(turnId, run), RUNNER_GRACE_MS).unref?.();
     return { stopped: true, generation: run.generation };
+  }
+
+  private forceFinalizeIfStuck(turnId: string, run: ActiveRun): void {
+    const cur = this.active.get(turnId);
+    if (cur !== run) return; // 已正常收尾
+    this.active.delete(turnId);
+    try {
+      const now = new Date().toISOString();
+      tx(this.d.db, () => {
+        const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state = 'running'").get(turnId) as { id: string } | undefined;
+        this.d.db.prepare("UPDATE turns SET state = 'interrupted', completed_at = ? WHERE id = ? AND state = 'running'").run(now, turnId);
+        if (att) {
+          this.d.db.prepare("UPDATE attempts SET state = 'interrupted', blocked_reason = 'RUNNER_GRACE_TIMEOUT', completed_at = ? WHERE id = ?").run(now, att.id);
+          this.d.db.prepare("UPDATE reasoning_blocks SET state = 'interrupted', updated_at = ? WHERE attempt_id = ? AND state = 'streaming'").run(now, att.id);
+        }
+      });
+      this.d.events.publish('turn.interrupted', { conversationId: null, turnId, attemptId: null, payload: { generation: run.generation, reason: 'RUNNER_GRACE_TIMEOUT' } });
+      this.d.logger.warn('runner_grace_timeout', { turn_id: turnId, code: 'RUNNER_GRACE_TIMEOUT' });
+    } catch { /* 尽力 */ }
   }
 
   async stopAll(timeoutMs = 8000): Promise<void> {
@@ -106,23 +130,30 @@ export class TurnSupervisor {
     return attemptId;
   }
 
-  // AUD-10：启动恢复——孤儿 running/streaming 落确定状态，不重跑模型
-  static recoveryPass(db: Db, logger: { warn: (e: string, f: Record<string, unknown>) => void }): { turns: number; attempts: number; blocks: number } {
+  // AUD-10/38（§10）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型
+  static recoveryPass(db: Db, logger: { warn: (e: string, f: Record<string, unknown>) => void }): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number } {
     const now = new Date().toISOString();
-    const turns = (tx(db, () => {
-      const r = db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now);
-      return Number(r.changes);
-    }));
-    const attempts = (tx(db, () => {
-      const r = db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now);
-      return Number(r.changes);
-    }));
-    const blocks = (tx(db, () => {
-      const r = db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE state = 'streaming'").run(now);
-      return Number(r.changes);
-    }));
-    if (turns + attempts + blocks > 0) logger.warn('recovery_pass', { turns, attempts, blocks, code: 'RECOVERY_HOST_RESTART' });
-    return { turns, attempts, blocks };
+    const turns = tx(db, () => Number(db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now).changes));
+    const attempts = tx(db, () => Number(db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now).changes));
+    const blocks = tx(db, () => Number(db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE state = 'streaming'").run(now).changes));
+    // 孤儿 candidate 窗口（AUD-38）：PREPARING 悬挂 → 终态 BLOCKED
+    const staleWindows = tx(db, () => Number(db.prepare("UPDATE windows SET status = 'BLOCKED', blocked_reason = 'RECOVERY_ORPHAN_CANDIDATE', updated_at = ? WHERE status = 'PREPARING'").run(now).changes));
+    // waiting_route_gate 但房间已无 pending 票据 → 释放回 pending（可被调度恢复接管）
+    const releasedWaiting = tx(db, () => Number(db.prepare(
+      `UPDATE attempts SET state = 'pending', blocked_reason = NULL
+       WHERE state = 'waiting_route_gate'
+         AND turn_id IN (SELECT t.id FROM turns t WHERE NOT EXISTS (
+           SELECT 1 FROM route_decisions rd WHERE rd.conversation_id = t.conversation_id AND rd.state = 'pending'))`,
+    ).run().changes));
+    // route_owner_pending 但票据已消失（被并发消费后崩溃等）→ failed（防悬挂 owner）
+    const failedOwners = tx(db, () => Number(db.prepare(
+      `UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_ORPHAN_ROUTE_OWNER', completed_at = ?
+       WHERE state = 'route_owner_pending'
+         AND NOT EXISTS (SELECT 1 FROM route_decisions rd WHERE rd.attempt_id = attempts.id AND rd.state = 'pending')`,
+    ).run(now).changes));
+    const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners;
+    if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, code: 'RECOVERY_HOST_RESTART' });
+    return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners };
   }
 
   private async runTurn(turnId: string): Promise<void> {
@@ -136,11 +167,16 @@ export class TurnSupervisor {
       | undefined;
     if (!attempt) return;
 
-    // —— 会话级路由 gate（AUD-05）：待决期间不启动任何新模型执行 ——
+    // —— 会话级路由 gate（AUD-05/36/37 拆分）：挡住的是 waiting_route_gate，不是票据 owner ——
     const roomPending = d.routing.pendingForConversation(turn.conversation_id);
-    if (roomPending) {
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, `ROUTE_ROOM_PENDING:${roomPending.id}`, 'route_pending');
-      return; // 决议后由 route-resolved 流程重新 enqueue 该房间排队的 turn
+    if (roomPending && roomPending.attempt_id !== attempt.id) {
+      // 普通排队输入：可持久化，但绝不启动模型执行；决议事务会批量释放回 pending
+      tx(d.db, () => {
+        d.db.prepare("UPDATE attempts SET state = 'waiting_route_gate', blocked_reason = ? WHERE id = ? AND state = 'pending'")
+          .run(`WAITING_ROUTE_GATE:${roomPending.id}`, attempt.id);
+      });
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'waiting_route_gate', reason: 'ROUTE_ROOM_PENDING' } });
+      return;
     }
 
     // —— 每轮实际执行前刷新 Time Context（按当前输入 sequence 取前驱，AUD-21） ——
@@ -177,14 +213,26 @@ export class TurnSupervisor {
         return;
       }
     }
+    // §7 AUD：人格/运行边界指纹变化 → 旧窗 CONTEXT_STALE，禁止 resume 旧 session
+    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
+    if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
+      d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');
+      return;
+    }
     const resumeSessionId = window.sdk_session_id;
 
-    // —— fence + running ——
+    // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
-    tx(d.db, () => {
-      d.db.prepare('UPDATE turns SET generation = ?, state = ? WHERE id = ?').run(generation, 'running', turnId);
-      d.db.prepare("UPDATE attempts SET state = 'running', window_id = ?, started_at = ? WHERE id = ?").run(window.id, new Date().toISOString(), attempt.id);
+    const claimed = tx(d.db, () => {
+      const c = d.db.prepare("UPDATE attempts SET state = 'running', window_id = ?, started_at = ? WHERE id = ? AND state = 'pending'")
+        .run(window.id, new Date().toISOString(), attempt.id);
+      if (Number(c.changes) === 1) {
+        d.db.prepare('UPDATE turns SET generation = ?, state = ? WHERE id = ?').run(generation, 'running', turnId);
+      }
+      return Number(c.changes);
     });
+    if (claimed !== 1) return; // 已被其他执行路径占有：跳过（数据库是真源）
     d.events.publish('turn.status', {
       conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id,
       payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(resumeSessionId) },
@@ -239,11 +287,12 @@ export class TurnSupervisor {
           const ticket = d.routing.createPendingInTx({
             conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
             inputHash, targetModel: null, evidenceCode: 'SDK_ROUTE_SIGNAL',
+            messageId: inputMessage?.id ?? null, inputRevision: effective.revision,
           });
           ticketId = ticket.id;
           d.db.prepare('UPDATE turns SET generation = ? WHERE id = ?').run(generation + 1, turnId);
-          d.db.prepare("UPDATE attempts SET state = 'route_pending', completed_at = ? WHERE id = ?").run(new Date().toISOString(), attempt.id);
-          d.db.prepare("UPDATE turns SET state = 'route_pending' WHERE id = ?").run(turnId);
+          d.db.prepare("UPDATE attempts SET state = 'route_owner_pending', completed_at = ? WHERE id = ?").run(new Date().toISOString(), attempt.id);
+          d.db.prepare("UPDATE turns SET state = 'route_owner_pending' WHERE id = ?").run(turnId);
         });
       } catch (err) {
         d.logger.error('route_signal_tx_failed', { turn_id: turnId, code: stableCode(err) });
@@ -340,8 +389,8 @@ export class TurnSupervisor {
     if (runToken.token.cancelled && routeSignalHandled) {
       segmenter.drop();
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
-      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_pending', generation } });
-      return; // attempt/turn 已在 handleRouteSignal 的事务里置 route_pending
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_owner_pending', generation } });
+      return; // attempt/turn 已在 handleRouteSignal 的事务里置 route_owner_pending
     }
     if (runToken.token.cancelled || result.outcome === 'interrupted') {
       segmenter.drop();
@@ -371,6 +420,7 @@ export class TurnSupervisor {
 
     // completed（仅当观察到 success result，runner 契约保证）
     publishSegments(([segmenter.flushTail()].filter(Boolean) as string[]));
+    d.reasoning.markAttemptStreamEnded({ attemptId: attempt.id }); // 仍 streaming 的块 → complete/stream_only（无完整块核对，不伪装已核对）
     if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
     tx(d.db, () => {
       d.db.prepare("UPDATE attempts SET state = 'completed', completed_at = ? WHERE id = ?").run(now, attempt.id);
@@ -379,18 +429,27 @@ export class TurnSupervisor {
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
   }
 
-  // 决议后重新驱动房间（AUD-05 补）：把被房间 gate 挡住的 pending turn 重新入队
+  // 决议后重新驱动房间（AUD-05/36/37）：waiting 已被决议事务释放为 pending；此处入队全部可跑 turn
   requeueConversationQueuedTurns(conversationId: string): void {
     const rows = this.d.db
-      .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state = 'pending' WHERE t.conversation_id = ? AND t.state IN ('pending','route_pending')")
+      .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state IN ('pending','ready_after_route') WHERE t.conversation_id = ? AND t.state = 'pending'")
       .all(conversationId) as Array<{ id: string }>;
     for (const r of rows) this.enqueue(r.id);
   }
 
-  private blockAttempt(attemptId: string, turnId: string, conversationId: string, reason: string, turnState: 'blocked' | 'route_pending'): void {
+  // AUD-15/37（§9）：启动调度恢复——数据库是真源，committed-but-not-dispatched 一律重新入队
+  static recoverSchedule(deps: SupervisorDeps): { redispatched: number } {
+    const rows = deps.db
+      .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id WHERE t.state = 'pending' AND a.state IN ('pending','ready_after_route')")
+      .all() as Array<{ id: string }>;
+    for (const r of rows) deps.supervisor.enqueue(r.id);
+    return { redispatched: rows.length };
+  }
+
+  private blockAttempt(attemptId: string, turnId: string, conversationId: string, reason: string, turnState: 'blocked' | 'route_owner_pending'): void {
     const now = new Date().toISOString();
     tx(this.d.db, () => {
-      this.d.db.prepare("UPDATE attempts SET state = ?, blocked_reason = ?, completed_at = ? WHERE id = ?").run(turnState === 'route_pending' ? 'route_pending' : 'blocked', reason, now, attemptId);
+      this.d.db.prepare("UPDATE attempts SET state = ?, blocked_reason = ?, completed_at = ? WHERE id = ?").run(turnState === 'route_owner_pending' ? 'route_owner_pending' : 'blocked', reason, now, attemptId);
       this.d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(turnState, now, turnId);
     });
     this.d.events.publish('turn.status', { conversationId, turnId, attemptId, entityRef: attemptId, payload: { state: turnState, reason } });
