@@ -264,6 +264,16 @@ export class TurnSupervisor {
 
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;
+    // §16（AUD-24）：完整 text 块与流式正文统一核对——published 跟踪 + 前缀补尾；冲突不覆盖已发布气泡
+    const publishedByMessage = new Map<string, string>();
+    const publishText = (sdkMessageId: string, text: string): void => {
+      const prev = publishedByMessage.get(sdkMessageId) ?? '';
+      if (!text.startsWith(prev)) return; // 冲突：已发布气泡不可改写；仅记码
+      const tail = text.slice(prev.length);
+      if (tail.length === 0) return;
+      publishedByMessage.set(sdkMessageId, text);
+      publishSegments(segmenter.push(tail));
+    };
     let routeSignalHandled = false;
     const publishSegments = (segs: string[]): void => {
       for (const seg of segs) {
@@ -333,7 +343,7 @@ export class TurnSupervisor {
               break;
             case 'text_delta':
               if (ev.channel === 'subagent') break;
-              publishSegments(segmenter.push(ev.text));
+              publishText(ev.sdk_message_id, (publishedByMessage.get(ev.sdk_message_id) ?? '') + ev.text);
               break;
             case 'content_block_stop':
               if (ev.channel === 'subagent') break;
@@ -342,6 +352,14 @@ export class TurnSupervisor {
             case 'complete_message':
               if (ev.channel === 'subagent') break;
               if (ev.matched.some((b) => b.block_type === 'thinking') || ev.matched.some((b) => b.block_type === 'redacted_thinking')) sawReasoningBlock = true;
+              for (const b of ev.matched) {
+                if (b.block_type === 'text' && typeof b.text === 'string') publishText(ev.sdk_message_id, b.text); // §16：完整正文核对入通道
+              }
+              for (const u of ev.unmatched) {
+                if (u.block_type === 'text' && typeof u.text === 'string' && u.text.length > 0 && !(publishedByMessage.get(ev.sdk_message_id))) {
+                  publishText(ev.sdk_message_id, u.text); // 无流式正文的完整 text（唯一候选歧义时不猜，仅 no_open_block 情况可安全发布）
+                }
+              }
               d.reasoning.reconcileCompleteMessage({
                 conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
                 sdkMessageId: ev.sdk_message_id, matched: ev.matched, unmatched: ev.unmatched, generation,

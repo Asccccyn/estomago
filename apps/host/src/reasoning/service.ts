@@ -63,38 +63,57 @@ export class ReasoningService {
 
   startBlock(o: { conversationId: string; turnId: string; attemptId: string; sdkMessageId: string; blockIndex: number; generation: number }): void {
     if (this.getBlock(o.attemptId, o.sdkMessageId, o.blockIndex)) return;
-    const block = this.ensureBlock({ ...o, origin: 'stream', visibility: 'summary' });
-    this.emitAtomic(block, o.generation, 'reasoning.started', { visibility: block.visibility as ReasoningVisibility }, () => {});
+    tx(this.db, () => {
+      const block = this.ensureBlock({ ...o, origin: 'stream', visibility: 'summary' }); // §14：投影 INSERT 与事件同事务
+      this.events.persistInTx('reasoning.started', {
+        conversationId: block.conversation_id, turnId: block.turn_id, attemptId: block.attempt_id,
+        entityRef: block.id, entityRevision: block.revision, scope: 'private',
+        payload: this.envelopeBody(block, o.generation, 'reasoning.started', { visibility: block.visibility as ReasoningVisibility }),
+      });
+    });
+    this.dispatchPending(o.attemptId, '', 'reasoning.started');
   }
 
-  appendDelta(o: { conversationId: string; turnId: string; attemptId: string; sdkMessageId: string; blockIndex: number; text: string; generation: number }): void {
-    const emit = { delta: '' as string, state: '' as ReasoningState };
+  appendDelta(o: {
+    conversationId: string; turnId: string; attemptId: string; sdkMessageId: string; blockIndex: number; text: string; generation: number;
+  }): void {
+    const emit = { delta: '' as string, state: '' as ReasoningState, statusOnly: false };
     tx(this.db, () => {
       const block = this.ensureBlock({ conversationId: o.conversationId, turnId: o.turnId, attemptId: o.attemptId, sdkMessageId: o.sdkMessageId, blockIndex: o.blockIndex, origin: 'stream', visibility: 'summary' });
-      let nextText = block.received_text + o.text;
-      let state: ReasoningState = block.state === 'truncated' ? 'truncated' : 'streaming';
-      let limited = o.text;
-      if (nextText.length > STORAGE_LIMIT) {
-        nextText = nextText.slice(0, STORAGE_LIMIT);
-        limited = nextText.slice(block.received_text.length); // 事件只记录实际持久部分（AUD-13）
-        state = 'truncated';
-      }
-      if (limited.length === 0) return; // 已达限额：不再追加也不发事件（状态已 truncated）
+      const nextText = block.received_text + o.text;
+      const persistText = nextText.slice(0, STORAGE_LIMIT); // 实际持久
+      const limitedDelta = persistText.slice(block.received_text.length); // 本轮真正新增持久部分
+      const overLimit = nextText.length > STORAGE_LIMIT; // §13：恰好==MAX 后再来任何字符都算溢出证据
+      const nextState: ReasoningState = overLimit || block.state === 'truncated' ? 'truncated' : 'streaming';
       const rev = block.revision + 1;
+      if (limitedDelta.length === 0) {
+        // 全部溢出：不追加文本，但必须留下 truncation 状态与事件（不得静默 return）
+        if (block.state !== 'truncated') {
+          this.db.prepare('UPDATE reasoning_blocks SET state = ?, revision = ?, updated_at = ? WHERE id = ?').run('truncated', rev, new Date().toISOString(), block.id);
+          const fresh = this.getBlock(o.attemptId, o.sdkMessageId, o.blockIndex)!;
+          this.events.persistInTx('reasoning.status_changed', {
+            conversationId: fresh.conversation_id, turnId: fresh.turn_id, attemptId: fresh.attempt_id,
+            entityRef: fresh.id, entityRevision: fresh.revision, scope: 'private',
+            payload: this.envelopeBody(fresh, o.generation, 'reasoning.status_changed', { state: 'truncated' }),
+          });
+          emit.statusOnly = true;
+          emit.state = 'truncated';
+        }
+        return;
+      }
       this.db
         .prepare('UPDATE reasoning_blocks SET received_text = ?, revision = ?, state = ?, updated_at = ? WHERE id = ?')
-        .run(nextText, rev, state, new Date().toISOString(), block.id);
-      emit.delta = limited;
-      emit.state = state;
+        .run(persistText, rev, nextState, new Date().toISOString(), block.id);
+      emit.delta = limitedDelta;
+      emit.state = nextState;
       const fresh = this.getBlock(o.attemptId, o.sdkMessageId, o.blockIndex)!;
       this.events.persistInTx('reasoning.delta', {
         conversationId: fresh.conversation_id, turnId: fresh.turn_id, attemptId: fresh.attempt_id,
         entityRef: fresh.id, entityRevision: fresh.revision, scope: 'private',
-        payload: this.envelopeBody(fresh, o.generation, 'reasoning.delta', { delta: limited, state }),
+        payload: this.envelopeBody(fresh, o.generation, 'reasoning.delta', { delta: limitedDelta, state: nextState }),
       });
     });
-    // 提交后统一补发（若 tx 内持久了事件则这里 dispatch 对应行）
-    this.dispatchPending(o.attemptId, emit.delta, 'reasoning.delta');
+    this.dispatchPending(o.attemptId, emit.delta, emit.statusOnly ? 'reasoning.status_changed' : 'reasoning.delta');
   }
 
   markRedactedOrOmitted(o: { conversationId: string; turnId: string; attemptId: string; sdkMessageId: string; blockIndex: number; visibility: 'redacted' | 'omitted'; generation: number }): void {
@@ -184,6 +203,21 @@ export class ReasoningService {
         });
       });
       this.dispatchPending(o.attemptId, '', 'reasoning.completed');
+      return;
+    }
+    // §15（AUD-39/THINK-13）：流式块存在但最终完整 thinking 为空 → omitted（"没有可读摘要"≠"没有思考"）
+    if (finalText === '' && existing) {
+      tx(this.db, () => {
+        this.db.prepare("UPDATE reasoning_blocks SET visibility = 'omitted', final_text = '', state = 'complete', completeness = 'complete', updated_at = ? WHERE id = ?")
+          .run(new Date().toISOString(), existing.id);
+        const fresh = this.getBlock(o.attemptId, o.sdkMessageId, blockIndex)!;
+        this.events.persistInTx('reasoning.status_changed', {
+          conversationId: fresh.conversation_id, turnId: fresh.turn_id, attemptId: fresh.attempt_id,
+          entityRef: fresh.id, entityRevision: fresh.revision, scope: 'private',
+          payload: this.envelopeBody(fresh, o.generation, 'reasoning.status_changed', { visibility: 'omitted', state: 'complete' }),
+        });
+      });
+      this.dispatchPending(o.attemptId, '', 'reasoning.status_changed');
       return;
     }
     const outcome = reconcile(existing.received_text, finalText);
