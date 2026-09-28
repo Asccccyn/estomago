@@ -32,9 +32,13 @@ const manifest = {
   message_sequence_watermark: watermark?.m ?? 0,
   source: dbFile,
   file: target,
+  source_sha256: snapHash,
   contains_credentials: false,
   note: '本地恢复点；异机/外置备份需另行配置并加密（18.2）',
 };
+// §21：先快照后 hash（快照文件与 manifest 一致）
+const { createHash } = await import('node:crypto');
+const snapHash = createHash('sha256').update(fs.readFileSync(target)).digest('hex');
 const manifestPath = target.replace(/\.sqlite3$/, '.manifest.json');
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 console.log(`[backup] ${target}`);

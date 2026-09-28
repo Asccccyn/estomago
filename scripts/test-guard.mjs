@@ -5,6 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
+// §27：凭据名模式 + 显式安全 allowlist（不写死一批就完）
+const CREDENTIAL_NAME_PATTERNS = [
+  /^(ANTHROPIC|CLAUDE|OPENAI|GEMINI|GOOGLE|AWS|AZURE|GCP)_(API_?KEY|AUTH_?TOKEN|TOKEN|OAUTH_TOKEN|SECRET_?(ACCESS)?_?KEY?|ACCESS_?KEY_?ID|CREDENTIALS?|APPLICATION_CREDENTIALS)$/i,
+  /^(AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN)$/i,
+  /_(API_?KEY|SECRET|PASSWORD|PRIVATE_?KEY)$/i, // 通用后缀模式
+];
+const TEST_SAFE_ALLOWLIST = new Set([
+  'PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'TZ', 'NODE_ENV', 'NODE_OPTIONS',
+  'ESTOMAGO_HOME', 'ESTOMAGO_TEST_MODE', 'ESTOMAGO_MOCK_SCENARIO', 'ESTOMAGO_PORT', 'ESTOMAGO_CONFIG', 'ESTOMAGO_SSE_DRAIN_TIMEOUT_MS',
+  'CI', 'NO_COLOR', 'FORCE_COLOR', 'SHELL', 'USER', 'LOGNAME', 'PWD', 'OLDPWD', 'XPC_FLAGS', 'XPC_SERVICE_NAME',
+  '__CF_USER_TEXT_ENCODING', 'SECURITYSESSIONID', 'TERM_PROGRAM', 'TERM', 'SSH_AUTH_SOCK', 'Apple_PubSub_Socket_Render',
+]);
+
 export function guardCheck(env = process.env, home = os.homedir()) {
   const prodRoot = path.join(home, 'Library', 'Application Support', 'estomago');
   const issues = [];
@@ -12,10 +25,12 @@ export function guardCheck(env = process.env, home = os.homedir()) {
     issues.push(`ESTOMAGO_HOME 指向生产根：${prodRoot}`);
   }
   for (const key of Object.keys(env)) {
-    if (/^(ANTHROPIC|CLAUDE|OPENAI|GEMINI|GOOGLE)_(API_?KEY|TOKEN|AUTH|CREDENTIALS?)$/i.test(key) && String(env[key]).length > 0) {
-      issues.push(`环境存在真实凭据变量 ${key}（测试不得携带生产凭据）`);
+    if (TEST_SAFE_ALLOWLIST.has(key)) continue;
+    const value = String(env[key] ?? '');
+    if (CREDENTIAL_NAME_PATTERNS.some((re) => re.test(key)) && value.length > 0) {
+      issues.push(`环境存在凭据类变量 ${key}（名称匹配凭据模式；测试不得携带——只报告名称，不打印值）`);
     }
-    if (/^(ANTHROPIC_BASE_URL|ANTHROPIC_AUTH_TOKEN)$/i.test(key)) issues.push(`环境存在 ${key}（可能指向非官方网关）`);
+    if (/^(ANTHROPIC_BASE_URL)$/i.test(key)) issues.push(`环境存在 ${key}（可能指向非官方网关）`);
   }
   const prodConfig = path.join(prodRoot, 'config', 'estomago.yaml');
   if (env.ESTOMAGO_HOME === undefined && fs.existsSync(prodConfig)) {

@@ -71,7 +71,8 @@ test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对
   const bubbles = msgs.messages.filter((m) => m.speaker === 'assistant');
   assert.deepEqual(
     bubbles.map((b) => b.revision.content),
-    ['这是第一段合成回复。', `这是第二段合成回复，包含第二行\n换行仍在同一条消息里。`],
+    ['这是第一段合成回复。\n', // v0.3：段保留尾换行
+     `这是第二段合成回复，包含第二行\n换行仍在同一条消息里。`],
   );
 
   // 思考：完整块核对后 = THINKING_FULL，签名绝不出现
