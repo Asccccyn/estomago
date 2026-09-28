@@ -30,16 +30,27 @@ function setup() {
   return { db, reasoning, norm, apply, feed: (raw: ReturnType<typeof fixtureScenario>[number]) => { for (const ev of norm.normalize(raw)) apply(ev); } };
 }
 
-test('AUD-11：同 id 多个单块完整包按开放块顺序匹配；多余包 unmatched，绝不覆盖 block0', () => {
+test('AUD-11（v0.3 歧义不猜）：多个同类型开放块时完整包一律 AMBIGUOUS-unmatched，绝不取最小 index', () => {
   const { db, feed } = setup();
   for (const raw of fixtureScenario('multi_complete', '')) feed(raw);
+  // 两开放 thinking 块 → 三个完整包全部 ambiguous-unmatched（不猜归属）
+  const unmatched = db.prepare("SELECT received_text, completeness FROM reasoning_blocks WHERE block_index < 0 AND attempt_id='a1' ORDER BY id").all() as Array<{ received_text: string; completeness: string }>;
+  assert.equal(unmatched.length, 3, '三个完整包都不得匹配到开放块');
+  assert.ok(unmatched.every((u) => /FIRST-RECEIVED|THIRD-RECEIVED|EXTRA-UNMATCHED/.test(u.received_text)));
+  // 原开放块不被覆盖：received 保留流式文本
+  const b0 = db.prepare("SELECT received_text FROM reasoning_blocks WHERE block_index = 0 AND attempt_id='a1'").get() as { received_text: string };
+  assert.equal(b0.received_text, 'FIRST-RECEIVED', 'block0 绝不被完整包覆盖（取最小 index 的错配已消除）');
+  const b2 = db.prepare("SELECT received_text FROM reasoning_blocks WHERE block_index = 2 AND attempt_id='a1'").get() as { received_text: string };
+  assert.equal(b2.received_text, 'THIRD-RECEIVED');
+  db.close();
+});
+
+test('AUD-11（v0.3 唯一候选可匹配）：单个同类型开放块时完整包正常核对', () => {
+  const { db, feed } = setup();
+  for (const raw of fixtureScenario('consistent', '')) feed(raw);
   const b0 = db.prepare("SELECT final_text, state FROM reasoning_blocks WHERE block_index = 0 AND attempt_id='a1'").get() as { final_text: string; state: string };
-  const b2 = db.prepare("SELECT final_text, state FROM reasoning_blocks WHERE block_index = 2 AND attempt_id='a1'").get() as { final_text: string; state: string };
-  const extra = db.prepare("SELECT final_text, completeness FROM reasoning_blocks WHERE block_index < 0 AND attempt_id='a1'").get() as { final_text: string; completeness: string } | undefined;
-  assert.equal(b0.final_text, 'FIRST-RECEIVED');
+  assert.equal(b0.final_text?.includes('整理今天的时间线'), true);
   assert.equal(b0.state, 'complete');
-  assert.equal(b2.final_text, 'THIRD-RECEIVED', '真实 index 2 必须被第二个完整包核对');
-  assert.ok(extra && extra.final_text === 'EXTRA-UNMATCHED' && extra.completeness === 'unmatched_complete', '多余包进 unmatched 独立身份');
   db.close();
 });
 

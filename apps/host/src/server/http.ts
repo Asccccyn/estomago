@@ -49,8 +49,9 @@ export type RequestDeps = {
 
 const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 const SSE_PAGE_LIMIT = 1000;
-const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开重连）
+const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开，游标重连）
 const SSE_DRAIN_TIMEOUT_MS = 20_000;
+const sseDrainTimeoutMs = (): number => Number(process.env.ESTOMAGO_SSE_DRAIN_TIMEOUT_MS) || SSE_DRAIN_TIMEOUT_MS; // 测试可覆盖；生产默认不变
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse, d: RequestDeps): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -228,17 +229,29 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
   }
 }
 
-// —— SSE v0.2.2 ——
-// 优先级（AUD-09）：Last-Event-ID（浏览器自动重连的标准恢复游标） > query cursor（仅显式初始化）。
-// 回放（AUD-08）：连接时记录高水位，分页追平到高水位后才进 live；期间新事件由订阅队列承接
-//（先订阅后回放），客户端以 sequence 去重 → 无漏、无重复、无空洞。
-// 背压（AUD-29）：res.write false → 等 drain（带超时）；待发字节超上限 → 断开（客户端按游标重连）。
-function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, url: URL): void {
+// —— SSE v0.3（AUD-35/29 §17/§18）——
+// toSseDto 是 replay 与 live 的唯一序列化函数（契约：同一 event row → 同一 DTO）。
+// 优先级：Last-Event-ID > query cursor。回放分页追平到连接时高水位后转 live（先订阅后回放，无空洞）。
+// 背压：res.write false → await drain（超时断开）；待发字节超上限断开；客户端按游标重连。
+
+export function toSseDto(row: { sequence: number; kind: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): Record<string, unknown> {
+  const payloadRaw = row.payload_ref ?? row.payload ?? '{}';
+  return {
+    sequence: row.sequence,
+    kind: row.kind,
+    conversation_id: row.conversation_id,
+    turn_id: row.turn_id,
+    attempt_id: row.attempt_id,
+    ...JSON.parse(payloadRaw),
+  };
+}
+
+export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, url: URL): void { // 导出供组件级背压回归（AUD-29）
   const conversationId = url.searchParams.get('conversation_id');
   const lastEventIdHeader = req.headers['last-event-id'];
   let cursor: number;
   if (typeof lastEventIdHeader === 'string' && lastEventIdHeader !== '') {
-    cursor = Number(lastEventIdHeader) || 0; // 标准恢复游标优先
+    cursor = Number(lastEventIdHeader) || 0; // 标准恢复游标优先（AUD-09）
   } else {
     cursor = Number(url.searchParams.get('cursor') ?? '0') || 0;
   }
@@ -251,82 +264,83 @@ function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestDeps, ur
   });
   res.write('retry: 3000\n');
 
-  let pendingBytes = 0;
-  let writeBlocked = false;
   let closed = false;
+  let pendingBytes = 0;
+  let drained = true;
+  let drainWaiter: (() => void) | null = null;
+  res.on('drain', () => {
+    drained = true;
+    pendingBytes = 0; // socket 已 flush
+    drainWaiter?.();
+    drainWaiter = null;
+  });
+  const sub: SseSubscriber = d.events.subscribe(conversationId, () => finish());
   const finish = (): void => {
     if (closed) return;
     closed = true;
-    if (sub) d.events.unsubscribe(sub);
-    clearInterval(flushTimer);
+    d.events.unsubscribe(sub);
     clearInterval(beat);
+    drainWaiter?.(); // 唤醒挂起的 waitDrain，防 pump 协程悬挂
+    drainWaiter = null;
     try { res.end(); } catch { /* 已断 */ }
+    // 停滞客户端：FIN 可能被满窗口内核队列卡住——硬关闭保证断开可观测（客户端按游标重连）
+    try { res.destroy?.(); } catch { /* 已断 */ }
   };
-
-  // 先订阅（承接回放期间的 live 事件），再分页追平到高水位
-  const sub: SseSubscriber = d.events.subscribe(conversationId, () => {
-    res.write(': overflow\n\n');
-    finish();
-  });
-  const highWater = d.events.maxSequence();
-
-  const writeFrame = (row: { sequence: number; kind: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): boolean => {
-    if (closed) return true;
-    const payloadRaw = row.payload_ref ?? row.payload ?? '{}';
-    const body = JSON.stringify({
-      sequence: row.sequence, kind: row.kind,
-      conversation_id: row.conversation_id, turn_id: row.turn_id, attempt_id: row.attempt_id,
-      ...JSON.parse(payloadRaw),
-    });
-    const frame = `id: ${row.sequence}\ndata: ${body}\n\n`;
-    const ok = res.write(frame);
-    if (!ok) {
-      writeBlocked = true;
-      pendingBytes += frame.length;
-      const onDrain = (): void => { writeBlocked = false; };
-      res.once('drain', onDrain);
-      setTimeout(() => { res.removeListener('drain', onDrain); }, SSE_DRAIN_TIMEOUT_MS); // 超时兜底：仍阻塞则由字节上限/心跳断开
-    } else {
-      pendingBytes += frame.length;
-    }
-    if (pendingBytes > SSE_MAX_PENDING_BYTES) {
-      res.write(': slow_client_disconnect\n\n');
-      finish();
-      return false;
-    }
-    return true;
-  };
-
-  // 回放追平（分页，AUD-08）
-  let replayCursor = cursor;
-  for (;;) {
-    const page = d.events.replayPage(replayCursor, conversationId, SSE_PAGE_LIMIT);
-    for (const row of page) {
-      if (row.sequence > highWater) break; // 只追平到连接时高水位，之后的由订阅队列承接
-      if (!writeFrame(row)) { finish(); return; }
-      replayCursor = row.sequence;
-    }
-    if (page.length < SSE_PAGE_LIMIT || replayCursor >= highWater) break;
-  }
-  res.write(`: replayed cursor=${replayCursor}\n\n`);
-
-  const flushTimer = setInterval(() => {
-    if (writeBlocked || closed) return; // 背压：等 drain，不向 socket 无限堆数据（AUD-29）
-    while (sub.queue.length > 0) {
-      const item = sub.queue.shift()!;
-      if (item.sequence <= replayCursor) continue; // 已在回放中发过
-      if (!writeFrame(item)) return;
-      replayCursor = item.sequence;
-    }
-    pendingBytes = Math.max(0, pendingBytes - 65536); // 粗略回收：socket 已 flush 的部分
-  }, 25);
-  const beat = setInterval(() => {
-    if (!closed) {
-      const ok = res.write(': ping\n\n');
-      if (!ok) pendingBytes += 8;
-    }
-  }, 15000);
   req.on('close', finish);
+
+  const writeFrame = (row: Parameters<typeof toSseDto>[0]): 'ok' | 'blocked' | 'cap' => {
+    if (closed) return 'blocked';
+    const frame = `id: ${row.sequence}\ndata: ${JSON.stringify(toSseDto(row))}\n\n`; // §17：唯一 DTO 函数
+    pendingBytes += frame.length; // 自上次 drain 事件以来累计；读端停滞时只增不减（§18 保护服务端内存）
+    if (pendingBytes > SSE_MAX_PENDING_BYTES) return 'cap'; // 无论 write 返回值：累计超限即断开（内核缓冲吞不掉了）
+    drained = res.write(frame); // false = 内部缓冲已满 → 必须等 drain（§18）
+    return drained ? 'ok' : 'blocked';
+  };
+  const waitDrain = async (): Promise<boolean> => {
+    if (drained) return true;
+    return await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), sseDrainTimeoutMs());
+      timer.unref?.(); // 不因等待 drain 拖延进程退出
+      drainWaiter = () => { clearTimeout(timer); resolve(true); };
+    });
+  };
+
+  const highWater = d.events.maxSequence();
+  let replayCursor = cursor;
+  const beat = setInterval(() => { if (!closed) res.write(': ping\n'); }, 15000);
+
+  // 单一 pump：回放分页 → live 队列；写满即等 drain，超时/超量断开
+  const pump = (async () => {
+    for (;;) {
+      if (closed) return;
+      // 回放阶段：追平到 highWater
+      const page = d.events.replayPage(replayCursor, conversationId, SSE_PAGE_LIMIT);
+      for (const row of page) {
+        if (row.sequence > highWater) break;
+        if (closed) return;
+        const wr = writeFrame(row);
+        if (wr === 'cap') { finish(); return; } // §18：累计超限立即断开（客户端按游标重连）
+        if (wr === 'blocked' && !(await waitDrain())) { finish(); return; } // 等 drain，超时断开
+        replayCursor = row.sequence;
+      }
+      if (page.length < SSE_PAGE_LIMIT || replayCursor >= highWater) break;
+    }
+    if (closed) return;
+    res.write(`: replayed cursor=${replayCursor}\n\n`);
+    // live 阶段
+    for (;;) {
+      if (closed) return;
+      while (sub.queue.length > 0) {
+        const item = sub.queue.shift()!;
+        if (item.sequence <= replayCursor) continue; // 回放已覆盖（客户端另以 sequence 去重）
+        const wr = writeFrame(item.eventRow);
+        if (wr === 'cap') { finish(); return; }
+        if (wr === 'blocked' && !(await waitDrain())) { finish(); return; }
+        replayCursor = item.sequence;
+      }
+      await new Promise((r) => setTimeout(r, 25));
+    }
+  })();
 }
 
 function serveStatic(res: ServerResponse, pathname: string): void {

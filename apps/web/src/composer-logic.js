@@ -36,3 +36,15 @@ export function newClientMessageId(cryptoObj = globalThis.crypto) {
 export function shouldSendOnKeydown() {
   return false;
 }
+
+// §19（AUD-17）：DraftRevisionGuard —— 普通发送与 route edit 共用同一规则：
+// 回执到达时，只有草稿修订仍等于提交时修订才允许清空；否则不得触碰用户当前草稿。
+export function makeDraftGuard() {
+  let revision = 0;
+  return {
+    touch() { revision += 1; return revision; },
+    current() { return revision; },
+    freeze() { return revision; },
+    mayClear(submittedRevision) { return revision === submittedRevision; },
+  };
+}
