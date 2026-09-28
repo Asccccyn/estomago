@@ -8,6 +8,7 @@ import { openDatabase, type Db } from './db/connection.ts';
 import { migrate, schemaVersion } from './db/migrations.ts';
 import { sha256Hex } from './util/id.ts';
 import { Logger } from './observability/logging.ts';
+import { stableErrorCode } from './observability/errors.ts';
 import { EventService } from './events/service.ts';
 import { MessageService } from './messages/service.ts';
 import { IdentityService } from './identity/service.ts';
@@ -128,7 +129,10 @@ export class Host {
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {
-        logger.error('request_unhandled', { error: (err as Error).message, url: req.url ?? null });
+        // §26（AUD-28）：不记录 req.url（query 可能带秘密）——只记方法与 pathname
+        let pathname: string | null = null;
+        try { pathname = new URL(req.url ?? '/', 'http://localhost').pathname; } catch { pathname = null; }
+        logger.error('request_unhandled', { code: stableErrorCode(err), method: req.method, pathname });
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
           res.end(JSON.stringify({ error: { code: 'internal', message: '内部错误（详情见日志，不含敏感内容）' } }));

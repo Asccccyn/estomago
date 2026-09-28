@@ -59,10 +59,10 @@ test('用量未知不填零；重试消耗不静默覆盖', () => {
   assert.equal(s.totals.unknown_present, true);
 });
 
-test('分句：段落边界发布、围栏内不切、尾部 flush、打断丢弃', () => {
+test('分句 v0.3：段落边界（保留行结构）、围栏内不切、尾部 flush、打断丢弃', () => {
   const s = new TextSegmenter();
   assert.deepEqual(s.push('第一段'), []);
-  assert.deepEqual(s.push('\n\n第二段开始'), ['第一段']);
+  assert.deepEqual(s.push('\n\n第二段开始'), ['第一段\n']); // v0.3：段保留尾换行（正文结构保真）
   const forced = new TextSegmenter(20);
   forced.push('第二段开始');
   const f = forced.push('很长很长很长很长很长很长很长很长');

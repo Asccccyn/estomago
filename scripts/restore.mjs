@@ -20,8 +20,25 @@ const destDirInput = path.resolve(args[intoIdx + 1]);
 if (!fs.existsSync(src)) fail('SOURCE_MISSING', `备份不存在：${src}`);
 
 const prodRoot = path.resolve(`${process.env.HOME ?? ''}/Library/Application Support/estomago`);
-const destReal = fs.existsSync(destDirInput) ? fs.realpathSync(destDirInput) : path.resolve(destDirInput);
-if (destReal === prodRoot || destReal.startsWith(prodRoot + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向生产状态根');
+// §21：父目录链 realpath 检查——不能通过 symlink 父目录绕过隔离规则
+const destParentReal = fs.realpathSync(path.dirname(destDirInput));
+const destReal = path.resolve(destParentReal, path.basename(destDirInput));
+if (destReal === prodRoot || destReal.startsWith(prodRoot + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向（或经 symlink 指向）生产状态根');
+// manifest hash 校验（§21）：backup.manifest.json / *.manifest.json 若提供 sha256 则必须匹配
+const manifestCandidate = src.replace(/\.sqlite3$/, '') + '.manifest.json';
+if (fs.existsSync(manifestCandidate)) {
+  try {
+    const m = JSON.parse(fs.readFileSync(manifestCandidate, 'utf8'));
+    if (typeof m.source_sha256 === 'string') {
+      const actual = (await import('node:crypto')).createHash('sha256').update(fs.readFileSync(src)).digest('hex');
+      if (actual !== m.source_sha256) fail('BACKUP_HASH_MISMATCH', `manifest sha256 与备份文件不符（期望 ${m.source_sha256.slice(0, 12)}… / 实际 ${actual.slice(0, 12)}…）`);
+      console.log('[restore] manifest sha256 校验 OK');
+    }
+  } catch (e) {
+    if (String(e.message).includes('拒绝')) throw e;
+    fail('BACKUP_MANIFEST_INVALID', `manifest 读取失败：${String(e.message).slice(0, 60)}`);
+  }
+}
 if (fs.existsSync(destDirInput)) {
   const entries = fs.readdirSync(destDirInput);
   if (entries.some((e) => e !== '.DS_Store')) fail('DEST_NOT_EMPTY', '目标目录必须不存在或为空（隔离恢复目录）');
