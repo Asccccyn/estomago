@@ -5,10 +5,12 @@
 //  - 刷新/换端回看：boot 拉取 messages + 每个 turn 的 reasoning
 //  - sequence 纪律：只应用 sequence > lastAppliedSequence 的事件；重连靠 Last-Event-ID
 //  - 路由"重新编辑"走真修订端点：原消息 revision+1，不新建 owner 消息
-import { canSend, buildOutgoingDraft, newClientMessageId, shouldSendOnKeydown } from './composer-logic.js';
+import { canSend, buildOutgoingDraft, newClientMessageId, shouldSendOnKeydown, makeDraftGuard } from './composer-logic.js';
 
 const CONVERSATION = 'primary';
 const $ = (id) => document.getElementById(id);
+
+const draftGuard = makeDraftGuard(); // §19：普通发送与 route edit 共享同一草稿守卫
 
 const state = {
   authorized: false,
@@ -48,7 +50,7 @@ $('token-submit').onclick = async () => {
 const composer = $('composer');
 composer.addEventListener('compositionstart', () => { state.composing = true; refreshSendButton(); });
 composer.addEventListener('compositionend', () => { state.composing = false; refreshSendButton(); });
-composer.addEventListener('input', () => { state.draftRevision += 1; refreshSendButton(); });
+composer.addEventListener('input', () => { state.draftRevision = draftGuard.touch(); refreshSendButton(); });
 void shouldSendOnKeydown; // 无任何按键发送路径（规则单一事实源在 composer-logic.js）
 
 function refreshSendButton() {
@@ -64,6 +66,7 @@ async function send() {
   if (state.pendingRouteEdit) {
     const { decisionId } = state.pendingRouteEdit;
     const content = composer.value;
+    const submitted = draftGuard.freeze(); // §19：与普通发送同一守卫
     try {
       const res = await fetch(`/api/v1/route-decisions/${decisionId}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
@@ -73,8 +76,10 @@ async function send() {
       const data = await res.json();
       if (data.message) absorbMessage(data.message, { update: true });
       state.pendingRouteEdit = null;
-      state.draftRevision += 1;
-      composer.value = '';
+      if (draftGuard.mayClear(submitted)) { // 回执期间用户没继续写才清空
+        composer.value = '';
+        state.draftRevision = draftGuard.touch();
+      }
       refreshSendButton();
       composer.focus();
     } catch (err) {
@@ -85,7 +90,7 @@ async function send() {
   if (!state.pendingClientMessageId) {
     state.pendingClientMessageId = newClientMessageId();
     state.pendingDraft = composer.value;
-    state.submittedDraftRevision = state.draftRevision; // AUD-17：冻结提交时修订
+    state.submittedDraftRevision = draftGuard.freeze(); // §19：共享守卫冻结
   }
   const draft = buildOutgoingDraft(state.pendingDraft, state.pendingClientMessageId);
   try {
@@ -100,10 +105,10 @@ async function send() {
     absorbMessage(data.message, { update: true });
     state.pendingClientMessageId = null;
     state.pendingDraft = null;
-    // AUD-17：只有用户没继续输入时才清空
-    if (state.draftRevision === state.submittedDraftRevision) {
+    // §19：只有用户没继续输入时才清空（共享守卫）
+    if (draftGuard.mayClear(state.submittedDraftRevision)) {
       composer.value = '';
-      state.draftRevision += 1;
+      state.draftRevision = draftGuard.touch();
     }
     refreshSendButton();
     composer.focus();
@@ -368,7 +373,7 @@ $('route-edit').onclick = () => {
     original: orig?.revision.content ?? '',
   };
   composer.value = state.originalPlaceholderGuard(state.pendingRouteEdit.original);
-  state.draftRevision += 1;
+  state.draftRevision = draftGuard.touch();
   $('route-dialog').close(); // 票据仍 pending，直到修订发送成功
   setRoomBadge('编辑模式：修改后点"重新发送（修订）"');
   refreshSendButton();

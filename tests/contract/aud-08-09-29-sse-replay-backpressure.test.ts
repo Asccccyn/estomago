@@ -148,31 +148,67 @@ test('AUD-09：Last-Event-ID 优先于 query cursor', async () => {
   await host.stop();
 });
 
-test('AUD-29：完全不读的慢客户端被服务端断开（待发字节上限）', async () => {
-  const root = tempRoot('aud29-');
-  const db = openDatabase(path.join(root, 'data'));
-  migrate(db, sha256);
-  const events = new EventService(db);
-  const blob = 'z'.repeat(48 * 1024);
-  for (let i = 0; i < 400; i++) events.publish('message.persisted', { conversationId: null, payload: { blob } }); // ~19MB
-  db.close();
-  seedIdentity(root);
-  const { Host } = await import('../../apps/host/src/app-context.ts');
-  const config = buildConfig({
-    deployment: { port: 0 },
-    runtime: { model: 'fixture-model', sdk_version: OBSERVED, runtime_version: 'node-test', auth_and_billing_verified: true, capability_state: 'verified' },
-  });
-  const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
-  await host.start();
-  const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
-  const outcome = await new Promise((resolve) => {
-    const sock = net.connect(host.port, '127.0.0.1');
-    sock.on('connect', () => sock.write(`GET /api/v1/events?cursor=0&token=${encodeURIComponent(token)} HTTP/1.1\r\nHost: x\r\n\r\n`));
-    sock.on('data', () => {});
-    sock.on('close', () => resolve('closed'));
-    sock.on('end', () => resolve('ended'));
-    setTimeout(() => resolve('timeout'), 20000);
-  });
-  assert.ok(outcome === 'closed' || outcome === 'ended', `慢客户端应被服务端断开（实际 ${outcome}）`);
-  await host.stop();
+test('AUD-29（组件级·确定性）：drain 超时与累计字节上限都必然断开', async () => {
+  process.env.ESTOMAGO_SSE_DRAIN_TIMEOUT_MS = '400';
+  const { handleSse } = await import('../../apps/host/src/server/http.ts');
+  const { openDatabase } = await import('../../apps/host/src/db/connection.ts');
+  const { migrate } = await import('../../apps/host/src/db/migrations.ts');
+  const { EventService } = await import('../../apps/host/src/events/service.ts');
+  const { createHash } = await import('node:crypto');
+  const sha = (x: string) => createHash('sha256').update(x).digest('hex');
+  const makeDeps = (events: InstanceType<typeof EventService>) => ({ events } as unknown as import('../../apps/host/src/server/http.ts').RequestDeps);
+
+  // 场景1：res.write 恒 false 且永不 drain → drain 超时 → destroy 必然被调
+  {
+    const root = tempRoot('aud29u-');
+    const db = openDatabase(path.join(root, 'data'));
+    migrate(db, sha);
+    const events = new EventService(db);
+    events.publish('message.persisted', { conversationId: null, payload: { i: 1 } });
+    let destroyed = false;
+    const fakeRes = new (await import('node:events')).EventEmitter() as unknown as import('node:http').ServerResponse;
+    Object.assign(fakeRes, {
+      writeHead: () => fakeRes, write: () => false, end: () => fakeRes, destroy: () => { destroyed = true; return fakeRes; }, headersSent: false,
+    });
+    const fakeReq = new (await import('node:events')).EventEmitter() as unknown as import('node:http').IncomingMessage;
+    (fakeReq as unknown as { headers: Record<string, string> }).headers = {};
+    const url = new URL('http://x/api/v1/events?cursor=0');
+    handleSse(fakeReq, fakeRes, makeDeps(events), url);
+    const t0 = Date.now();
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => { if (destroyed) { clearInterval(check); resolve(); } }, 50);
+      setTimeout(() => { clearInterval(check); resolve(); }, 5000).unref?.();
+    });
+    assert.equal(destroyed, true, '写恒阻塞且无 drain → 超时必须 destroy 断开');
+    assert.ok(Date.now() - t0 < 4000, '应在短于 5s 内断开（drain 超时生效）');
+    db.close();
+  }
+
+  // 场景2：res.write 恒 true（内核全吸收）且无 drain 事件 → 累计字节超上限 → destroy 必然被调
+  {
+    const root = tempRoot('aud29c-');
+    const db = openDatabase(path.join(root, 'data'));
+    migrate(db, sha);
+    const events = new EventService(db);
+    const blob = 'z'.repeat(1024 * 1024); // 1MB/条 × 12 条 = 12MB > 8MB 上限
+    for (let i = 0; i < 12; i++) events.publish('message.persisted', { conversationId: null, payload: { blob } });
+    let destroyed = false;
+    let wrote = 0;
+    const fakeRes = new (await import('node:events')).EventEmitter() as unknown as import('node:http').ServerResponse;
+    Object.assign(fakeRes, {
+      writeHead: () => fakeRes, write: (d: string | Buffer) => { wrote += String(d).length; return true; }, end: () => fakeRes,
+      destroy: () => { destroyed = true; return fakeRes; }, headersSent: false,
+    });
+    const fakeReq = new (await import('node:events')).EventEmitter() as unknown as import('node:http').IncomingMessage;
+    (fakeReq as unknown as { headers: Record<string, string> }).headers = {};
+    handleSse(fakeReq, fakeRes, makeDeps(events), new URL('http://x/api/v1/events?cursor=0'));
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => { if (destroyed) { clearInterval(check); resolve(); } }, 20);
+      setTimeout(() => { clearInterval(check); resolve(); }, 3000).unref?.();
+    });
+    assert.equal(destroyed, true, '即使 write 恒 true，累计写入超 8MB 上限也必须断开（应用层无界缓冲被禁止）');
+    assert.ok(wrote < 12 * 1024 * 1024 + 64 * 1024, `不得把全部 12MB 无界写入（实际 ${Math.round(wrote / 1024)}KB）`);
+    db.close();
+  }
+  delete process.env.ESTOMAGO_SSE_DRAIN_TIMEOUT_MS;
 });
