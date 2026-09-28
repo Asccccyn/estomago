@@ -34,7 +34,7 @@ export function acquireInstanceLock(stateRoot: string): InstanceLock {
 
   const tryAcquire = (): InstanceLock => {
     const fd = fs.openSync(lockPath, 'wx'); // O_EXCL
-    fs.writeSync(fd, JSON.stringify({ pid, nonce, startTime, argv1: process.argv[1], acquiredAt: new Date().toISOString() }));
+    fs.writeSync(fd, JSON.stringify({ pid, nonce, startTime, argv1: process.argv[1], stateRoot: fs.realpathSync(path.dirname(lockPath)), acquiredAt: new Date().toISOString() }));
     fs.closeSync(fd);
     let released = false;
     return {

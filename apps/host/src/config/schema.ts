@@ -1,10 +1,13 @@
 // 配置 schema：类型 + 默认值 + 严格校验（05 §2.1：必要参数缺失阻止启动；未知参数不忽略）。
 // estomago.example.yaml 是应用配置，不是 SDK options；映射在 runtime/build-options.ts。
 
+// §29（AUD-40）：effort 枚举与 @anthropic-ai/claude-agent-sdk@0.3.283 EffortLevel 一致
+export const THINKING_EFFORT_ENUM = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type ThinkingEffort = (typeof THINKING_EFFORT_ENUM)[number];
 export type ThinkingConfig = {
   mode: string;
   display: string;
-  effort: number | string | null;
+  effort: ThinkingEffort | null;
   require_capability_probe: boolean;
 };
 
@@ -307,7 +310,7 @@ const SHAPE: SectionSpec = { section: {
     automatic_flag_switch: 'boolean', automatic_availability_fallbacks: 'string[]', max_active_primary_runners: 'number?',
     builtin_tools: 'string[]', mcp_servers_allowlist: 'string[]', skills: 'string[]', plugins: 'string[]',
     disable_claude_ai_connectors: 'boolean', include_partial_messages: 'boolean',
-    thinking: { section: { mode: 'string', display: 'string', effort: 'number?', require_capability_probe: 'boolean' } },
+    thinking: { section: { mode: 'string', display: 'string', effort: 'string?', require_capability_probe: 'boolean' } },
     config_isolation_root: 'string?', auth_and_billing_verified: 'boolean', capability_state: 'string?',
   } },
   identity: { section: {
@@ -432,6 +435,11 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];
   checkType(raw, SHAPE, '', issues);
+  // §29：effort 非法枚举直接拒绝（SDK 不认识的值不得静默通过）
+  const effort = (raw as { runtime?: { thinking?: { effort?: unknown } } })?.runtime?.thinking?.effort;
+  if (effort !== undefined && effort !== null && !(typeof effort === 'string' && (THINKING_EFFORT_ENUM as readonly string[]).includes(effort))) {
+    issues.push({ path: 'runtime.thinking.effort', message: `必须是 ${THINKING_EFFORT_ENUM.join('|')} 或 null（SDK EffortLevel 契约）` });
+  }
   if (issues.length > 0) return { config: structuredClone(CONFIG_DEFAULTS), issues };
   const config = deepMergeConfig(raw as Record<string, unknown>);
   checkHardRules(config, issues);

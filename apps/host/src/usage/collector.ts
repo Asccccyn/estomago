@@ -62,6 +62,7 @@ export class UsageCollector {
     }));
     let inSum = 0, outSum = 0, inUnknown = false, outUnknown = false;
     for (const a of attempts) {
+      if (a.scope === 'cumulative') continue; // §20：累计口径是基线快照，不与 request/turn 相加
       if (a.input_tokens == null) inUnknown = true; else inSum += a.input_tokens;
       if (a.output_tokens == null) outUnknown = true; else outSum += a.output_tokens;
     }

@@ -1,102 +1,96 @@
-// 分句器 v0.2.2（AUD-27 修复）：
-//  - Markdown 围栏内不按空行切泡；超硬上限时按 Unicode 安全边界拆并补全围栏（成对可恢复）。
-//  - 切点永不在代理对中间；组合附加字符（\p{M}）跟随前一字符。
-//  - 缓冲有上限；turn 结束 flush 尾段；打断丢弃未发布缓冲。
+// 分句器 v0.3（AUD-27 §25）：行感知围栏状态机。
+// 围栏=行结构：行首（缩进≤3）≥3 个 ` 或 ~ 开栏；闭合需同字符、长度≥开栏、该行余下仅空白。
+// 代码内容中的 ``` / ~~~ 字符串不改变状态；两种字符互不闭合。
+// 代码块内不按空行切泡；超硬上限按 Unicode 安全边界强切并补全围栏。
 export class TextSegmenter {
-  private buffer = '';
-  private inFence = false;
-  private fenceLang = '';
-
   maxBufferChars: number;
+  private seg = '';      // 当前段（已判定的完整行，含换行）
+  private rest = '';     // 未完成行
+  private fence: { char: '`' | '~'; len: number } | null = null;
+
   constructor(maxBufferChars = 4000) {
     this.maxBufferChars = maxBufferChars;
   }
 
   push(text: string): string[] {
-    this.buffer += text;
+    this.rest += text;
     const out: string[] = [];
     for (;;) {
-      const seg = this.extractSegment();
-      if (seg === null) break;
-      if (seg.trim().length > 0) out.push(seg);
+      const nl = this.rest.indexOf('\n');
+      if (nl < 0) break;
+      const line = this.rest.slice(0, nl);
+      this.rest = this.rest.slice(nl + 1);
+      const consumed = this.consumeLine(line);
+      if (consumed !== undefined && consumed.trim().length > 0) out.push(consumed);
+      // 行级硬上限：围栏打开时立即切（此刻状态机仍在栏内，补全围栏才正确）
+      if (this.fence && this.seg.length > this.maxBufferChars) {
+        const head = this.seg;
+        this.seg = '';
+        const marker = this.fence.char.repeat(this.fence.len);
+        // 行结构安全：整段作为头段发出（内容本就是完整行，Unicode 天然安全），围栏补全成对
+        out.push(head.replace(/\n?$/, '\n') + marker + '\n');
+        this.rest = marker + '\n' + this.rest; // 尾段重开围栏，继续行循环
+        this.fence = null;
+      }
     }
-    if (this.buffer.length > this.maxBufferChars) {
-      const forced = this.forceSplit(this.buffer, this.maxBufferChars);
-      this.buffer = forced.rest;
-      this.inFence = countFences(forced.head) % 2 === 1 ? true : this.inFence;
-      if (forced.head.trim().length > 0) out.push(forced.head);
+    // 非围栏溢出（Unicode 安全切）
+    if (!this.fence && this.seg.length + this.rest.length > this.maxBufferChars) {
+      const joined = this.seg + this.rest;
+      let cut = Math.min(this.maxBufferChars, joined.length);
+      while (cut > 0 && cut < joined.length && !isSafeBoundary(joined, cut)) cut -= 1;
+      if (cut <= 0) cut = 1;
+      const head = joined.slice(0, cut);
+      this.seg = '';
+      this.rest = joined.slice(cut);
+      if (head.trim().length > 0) out.push(head);
     }
     return out;
   }
 
   flushTail(): string | null {
-    const tail = this.buffer;
-    this.buffer = '';
-    this.inFence = false;
+    const tail = this.seg + this.rest;
+    this.seg = '';
+    this.rest = '';
+    this.fence = null;
     return tail.trim().length > 0 ? tail : null;
   }
 
   drop(): void {
-    this.buffer = '';
-    this.inFence = false;
+    this.seg = '';
+    this.rest = '';
+    this.fence = null;
   }
 
-  // 提取一个完整可发布段：段落边界必须不在围栏内（先判定边界位置再切，AUD-27）
-  private extractSegment(): string | null {
-    let searchFrom = 0;
-    for (;;) {
-      const idx = this.buffer.indexOf('\n\n', searchFrom);
-      if (idx < 0) return null;
-      const before = this.buffer.slice(0, idx);
-      const fencesBefore = countFences(before);
-      if (fencesBefore % 2 === 1) {
-        // 边界在围栏内：跳过，找围栏闭合之后的下一个边界
-        searchFrom = idx + 2;
-        continue;
+  // 处理一条完整行；返回"可发布段"（仅在非围栏空行边界）
+  private consumeLine(line: string): string | undefined {
+    const m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+    if (this.fence) {
+      if (m && m[2]![0] === this.fence.char && m[2]!.length >= this.fence.len && m[3]!.trim() === '') {
+        this.fence = null; // 正常闭合
       }
-      const seg = before;
-      this.buffer = this.buffer.slice(idx + 2);
-      this.inFence = false;
-      return seg;
+      this.seg += line + '\n';
+      return undefined;
     }
-  }
-
-  // Unicode 安全强切（AUD-27）：不在代理对中间、组合字符跟随前字符；围栏未闭则补 ```\n / 重开 ```lang\n
-  private forceSplit(text: string, limit: number): { head: string; rest: string } {
-    let cut = Math.min(limit, text.length);
-    while (cut > 0 && cut < text.length && !isSafeBoundary(text, cut)) cut -= 1;
-    if (cut <= 0) cut = 1;
-    let head = text.slice(0, cut);
-    let rest = text.slice(cut);
-    const fenceOpen = countFences(text.slice(0, cut)) % 2 === 1;
-    if (fenceOpen) {
-      head = head.replace(/\n?$/, '\n') + '```\n';
-      rest = '```' + (this.fenceLang || '') + '\n' + rest;
+    if (m) {
+      this.fence = { char: m[2]![0] as '`' | '~', len: m[2]!.length };
+      this.seg += line + '\n';
+      return undefined;
     }
-    return { head, rest };
+    if (line.trim() === '') {
+      const seg = this.seg;
+      this.seg = '';
+      return seg; // 段边界（围栏外空行）
+    }
+    this.seg += line + '\n';
+    return undefined;
   }
-}
-
-function countFences(s: string): number {
-  return (s.match(/```/g) ?? []).length;
-}
-
-function findFenceEnd(s: string): number {
-  // 返回"最后一个闭合 ``` 之后"的位置；无闭合返回 -1
-  const first = s.indexOf('```');
-  if (first < 0) return -1;
-  const second = s.indexOf('```', first + 3);
-  if (second < 0) return -1;
-  return second + 3;
 }
 
 function isSafeBoundary(text: string, idx: number): boolean {
   const prev = text.charCodeAt(idx - 1);
   const next = text.charCodeAt(idx);
-  // 不切断代理对
-  if (prev >= 0xd800 && prev <= 0xdbff) return false;
+  if (prev >= 0xd800 && prev <= 0xdbff) return false; // 不切断代理对
   if (next >= 0xdc00 && next <= 0xdfff) return false;
-  // 组合附加字符跟随前字符
-  if (/\p{M}/u.test(text[idx] ?? '')) return false;
+  if (/\p{M}/u.test(text[idx] ?? '')) return false; // 组合字符跟随前字符
   return true;
 }

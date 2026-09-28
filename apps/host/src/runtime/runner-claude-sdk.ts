@@ -56,7 +56,7 @@ interface RealOptionsShape {
   mcpServers: Record<string, never>;
   strictMcpConfig: true;
   includePartialMessages: true;
-  thinking: { type: 'adaptive'; display: 'summarized' };
+  thinking: { type: 'adaptive'; display: 'summarized'; effort?: string };
   cwd: string;
   settings: Record<string, unknown>;
   env: Record<string, string>;
