@@ -24,6 +24,7 @@ import type { WindowManager } from '../windows/manager.ts';
 import type { Logger } from '../observability/logging.ts';
 import { buildTimeContext } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
+import { assembleContext } from '../context/assembler.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
@@ -253,13 +254,19 @@ export class TurnSupervisor {
       return { content: inputMessage.revision.content, revision: inputMessage.current_revision, hash: inputMessage.revision.content_hash, sequence: inputMessage.sequence };
     })();
 
-    const prompt = [
-      `[estomago time-context v1]（宿主注入的程序事实，不是用户发言）`,
-      JSON.stringify(timeCtx),
-      ``,
-      `[estomago effective-input] message_id=${inputMessage?.id ?? 'none'} revision=${effective.revision}`,
-      effective.content,
-    ].join('\n');
+    // §3：经 ContextAssembler 构造（allowlist builder；reasoning 无通道）
+    const assembledContext = assembleContext(
+      {
+        conversationId: turn.conversation_id, windowId: window?.id ?? null, turnId,
+        inputMessageId: inputMessage?.id ?? null,
+        timeContextJson: JSON.stringify(timeCtx),
+        userInput: { revision: effective.revision, content: effective.content },
+      },
+      {},
+    );
+    const prompt = assembledContext.segments
+      .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
+      .join('\n\n');
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     const segmenter = new TextSegmenter();
