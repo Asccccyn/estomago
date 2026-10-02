@@ -58,6 +58,19 @@ export class WindowManager {
     });
   }
 
+  /** fresh_session 重跑完成后的改绑（CAS 旧值）：旧 session 含被替代输入，弃用并指向新 session */
+  rebindSession(windowId: string, expectedOld: string | null, sdkSessionId: string): void {
+    tx(this.db, () => {
+      if (expectedOld === null) {
+        this.db.prepare('UPDATE windows SET sdk_session_id = ?, updated_at = ? WHERE id = ? AND sdk_session_id IS NULL')
+          .run(sdkSessionId, new Date().toISOString(), windowId);
+      } else {
+        this.db.prepare('UPDATE windows SET sdk_session_id = ?, updated_at = ? WHERE id = ? AND sdk_session_id = ?')
+          .run(sdkSessionId, new Date().toISOString(), windowId, expectedOld);
+      }
+    });
+  }
+
   // 创建并尝试激活新窗：NEW → PREPARING(+receipt) → READY → [tx 原子切换] ACTIVE | BLOCKED
   createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null }): { window: WindowRow; blockedReason: string | null } {
     const id = genId('win');
@@ -110,15 +123,21 @@ export class WindowManager {
   }
 
   // 手动轮转（AUD-20 修复版）：prepare 全部成功 → 一个事务切换；任何失败旧窗保持 ACTIVE
-  // F09：生成中（fenceActive>0）拒绝轮转——旧窗保持 ACTIVE，旧代不会越 cutoff 发布
-  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; fenceActive?: (conversationId: string) => number }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  // F09：安全检查在 Manager 内部（数据库是真源）——生成中 turn 或待决路由票据都拒绝轮转，
+  // 不依赖可选 HTTP callback；HTTP 与直接服务调用无法绕过
+  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
     if (o.gate.state !== 'READY') {
       return { ok: false, reason: `IDENTITY_BLOCKED：${o.gate.reasons.join('; ')}（旧窗保持 ACTIVE）` };
     }
-    if (o.fenceActive && o.fenceActive(o.conversationId) > 0) {
+    const running = (this.db.prepare("SELECT COUNT(*) n FROM turns WHERE conversation_id = ? AND state = 'running'").get(o.conversationId) as { n: number }).n;
+    if (running > 0) {
       return { ok: false, reason: 'FENCE_ACTIVE：该房间有生成中的 turn，拒绝换窗（先停止或等待完成；旧窗保持 ACTIVE）' };
+    }
+    const pendingRoute = (this.db.prepare("SELECT COUNT(*) n FROM route_decisions WHERE conversation_id = ? AND state = 'pending'").get(o.conversationId) as { n: number }).n;
+    if (pendingRoute > 0) {
+      return { ok: false, reason: 'ROUTE_PENDING：该房间有待决路由票据，拒绝换窗（先处理票据；旧窗保持 ACTIVE）' };
     }
 
     // —— prepare：candidate + receipt + handoff（旧窗仍是 ACTIVE）——

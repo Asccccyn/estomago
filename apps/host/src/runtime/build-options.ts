@@ -36,19 +36,22 @@ export function buildSdkOptions(opts: {
   config: Config;
   gate: GateResult;
   identityText: string | null;
+  approvedRulesText: string | null; // F04：manifest 引用并经 hash 校验的运行规则正文（不再是硬编码替身）
   cwd: string;
 }): BuildOptionsResult {
   const reasons: string[] = [];
   if (opts.gate.state !== 'READY') reasons.push(...opts.gate.reasons.map((r) => `identity: ${r}`));
   if (!opts.config.runtime.model) reasons.push('runtime.model 未配置');
   if (!opts.identityText) reasons.push('无经批准身份正文（不提供默认人格）');
+  if (!opts.approvedRulesText) reasons.push('无经批准运行规则正文（校验过的 rules 材料必须实际进入 systemPrompt）');
   if (opts.config.runtime.mcp_servers_allowlist.length > 0) {
     reasons.push('mcp_servers_allowlist 非空但映射器未实装：获准 MCP 需逐项映射后装配');
   }
   if (reasons.length > 0) return { status: 'blocked', reasons };
 
-  const runtimeRules = [
-    '运行规则（宿主注入）：',
+  // 宿主注入的运行边界声明（程序事实，非人格/规则材料——与批准规则分开，均可审计）
+  const hostBoundaryRules = [
+    '运行边界（宿主注入）：',
     '- 当前时间由每轮时间上下文提供，不要自行猜测日期时间。',
     '- 思考摘要是独立展示通道；不是你说过的正式发言。',
     '- 需要外部动作时使用已注册的业务工具；不要假设拥有 shell/文件等工程能力。',
@@ -67,7 +70,7 @@ export function buildSdkOptions(opts: {
     assembled: {
       options: {
         model: opts.config.runtime.model!,
-        systemPrompt: `${opts.identityText}\n\n${runtimeRules}`,
+        systemPrompt: `${opts.identityText}\n\n${opts.approvedRulesText}\n\n${hostBoundaryRules}`,
         settingSources: [],
         tools: [],
         mcpServers: {},

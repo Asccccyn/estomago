@@ -2,6 +2,7 @@
 // 不读未来/当前消息；两个"多久"继续分开；助手主动消息不重置用户沉默。
 import type { Db } from '../db/connection.ts';
 import type { Config } from '../config/schema.ts';
+import { validateAbsoluteIso } from '../util/time.ts';
 
 export type TimeContext = {
   now_at_utc: string;
@@ -71,9 +72,23 @@ export function buildTimeContext(
   const eventAt = opts.eventOccurredAt ?? lastUser?.occurred_at ?? null;
   const previousUserAt = prevUser?.occurred_at ?? null;
 
+  // F14：存量无效时间不得让整轮构建抛 RangeError——逐个验证，无效者按"未知"处理（间隔 null、跨日无法判定）
+  const validIso = (v: string | null | undefined): string | null => (v != null && validateAbsoluteIso(v).ok ? v : null);
+  const eventAtSafe = validIso(eventAt);
+  const previousUserAtSafe = validIso(previousUserAt);
+  const lastUserAtSafe = validIso(lastUser?.occurred_at ?? null);
+  const lastAssistantAtSafe = validIso(lastAssistant?.published_at ?? null);
+  const elapsed = (from: string | null, to: string | null): string | null => {
+    if (!from || !to) return null;
+    const ms = new Date(to).getTime() - new Date(from).getTime();
+    return Number.isFinite(ms) ? isoDuration(ms) : null;
+  };
+
   let crossedBusinessDate = false;
-  if (previousUserAt && eventAt) {
-    crossedBusinessDate = localDateOf(previousUserAt, tz) !== localDateOf(eventAt, tz);
+  if (previousUserAtSafe && eventAtSafe) {
+    const a = localDateOf(previousUserAtSafe, tz);
+    const b = localDateOf(eventAtSafe, tz);
+    crossedBusinessDate = a !== null && b !== null && a !== b;
   }
 
   return {
@@ -84,22 +99,26 @@ export function buildTimeContext(
     daypart,
     event_occurred_at: eventAt,
     processing_at: nowIso,
-    previous_user_message_at: previousUserAt,
-    elapsed_before_current_user_message: previousUserAt && eventAt ? isoDuration(new Date(eventAt).getTime() - new Date(previousUserAt).getTime()) : null,
-    last_user_message_at: lastUser?.occurred_at ?? null,
-    elapsed_since_last_user_message: lastUser ? isoDuration(now.getTime() - new Date(lastUser.occurred_at).getTime()) : null,
-    last_assistant_published_at: lastAssistant?.published_at ?? null,
-    elapsed_since_last_assistant_message: lastAssistant?.published_at ? isoDuration(now.getTime() - new Date(lastAssistant.published_at).getTime()) : null,
+    previous_user_message_at: previousUserAtSafe,
+    elapsed_before_current_user_message: elapsed(previousUserAtSafe, eventAtSafe),
+    last_user_message_at: lastUserAtSafe,
+    elapsed_since_last_user_message: lastUserAtSafe ? isoDuration(now.getTime() - new Date(lastUserAtSafe).getTime()) : null,
+    last_assistant_published_at: lastAssistantAtSafe,
+    elapsed_since_last_assistant_message: lastAssistantAtSafe ? isoDuration(now.getTime() - new Date(lastAssistantAtSafe).getTime()) : null,
     conversation_id: opts.conversationId,
     window_started_at: opts.windowStartedAt ?? null,
     crossed_business_date: crossedBusinessDate,
   };
 }
 
-function localDateOf(iso: string, tz: string): string {
-  const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-  const p = Object.fromEntries(f.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
-  return `${p.year}-${p.month}-${p.day}`;
+function localDateOf(iso: string, tz: string): string | null {
+  try {
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const p = Object.fromEntries(f.formatToParts(new Date(iso)).map((x) => [x.type, x.value]));
+    return `${p.year}-${p.month}-${p.day}`;
+  } catch {
+    return null; // F14：无效日期不抛 RangeError，跨日判定退化为"无法判定"（false）
+  }
 }
 
 function isoDuration(ms: number): string {

@@ -15,7 +15,8 @@ const statusOnly = process.argv.includes('--status');
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; } };
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const pidStart = (pid) => { try { return execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8' }).trim(); } catch { return null; } };
-const looksEstomago = (pid) => { try { const c = execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }); return c.includes('main.ts') && c.includes('estomago'); } catch { return false; } };
+// 归属与 instance-lock 同规则：锁元数据（stateRoot realpath + pid + 进程启动时刻）三因子，
+// 绝不用命令行 substring 猜测——检出目录名不含 estomago 时曾因此误判 STALE 并拒停
 
 const lock = readJson(lockPath);
 const pidfilePid = fs.existsSync(pidFile) ? Number(fs.readFileSync(pidFile, 'utf8').trim()) : null;
@@ -26,15 +27,12 @@ function resolveInstance() {
     if (!pidAlive(lock.pid)) return { status: 'STALE_LOCK', pid: lock.pid };
     const start = pidStart(lock.pid);
     if (lock.startTime && start && start !== lock.startTime) return { status: 'STALE_LOCK', pid: lock.pid };
-    if (!looksEstomago(lock.pid)) return { status: 'STALE_OR_INVALID_LOCK', pid: lock.pid };
-    if (lock.stateRoot && path.resolve(lock.stateRoot) !== path.resolve(fs.realpathSync(stateRoot))) {
+    if (lock.stateRoot !== undefined && lock.stateRoot !== fs.realpathSync(stateRoot)) {
       return { status: 'STALE_OR_INVALID_LOCK', pid: lock.pid, note: 'lock 属于其他 stateRoot 实例' };
     }
     return { status: 'RUNNING', pid: lock.pid };
   }
-  if (pidfilePid && pidAlive(pidfilePid) && looksEstomago(pidfilePid)) {
-    return { status: 'RUNNING', pid: pidfilePid, note: '无锁文件，按 pidfile 双因子判定（降级）' };
-  }
+  // 无锁文件：锁是归属唯一真源，pidfile 无归属信息——不可确认即不视为本根实例（不降级猜测）
   return { status: 'NOT_RUNNING' };
 }
 
@@ -57,4 +55,4 @@ if (inst.status !== 'RUNNING') {
   process.exit(2);
 }
 process.kill(inst.pid, 'SIGTERM');
-console.log(`[stop] 已发送 SIGTERM 给 pid ${inst.pid}（归属校验通过：lock 元数据 + 进程启动时刻 + 命令行）`);
+console.log(`[stop] 已发送 SIGTERM 给 pid ${inst.pid}（归属校验通过：lock stateRoot + pid + 进程启动时刻）`);
