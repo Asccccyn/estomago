@@ -45,14 +45,18 @@ test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT
   const win1 = windows.activeWindow('c1')!;
   assert.ok(win1.sdk_session_id, '首轮绑定 session');
 
-  // 篡改 manifest 的 i_hash（gate 仍 READY——非空即可；指纹参与字段变化）
+  // 模拟"批准材料升级"：manifest 版本字段变化（F04 后伪 hash 已无法保持 READY——那是被消灭的逃逸口）。
+  // 期望不锁版本（expected_*=null）→ gate 仍 READY，但指纹参与字段已变
   const mf = path.join(root, 'config/identity-manifest.json');
   const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
-  m.i_hash = 'deadbeef'.repeat(8);
+  m.i_version = 'test-i-2';
   fs.writeFileSync(mf, JSON.stringify(m));
+  const config2 = buildConfig({ ...readyRuntimePatch(), identity: { expected_identity_version: null, expected_i_version: null, expected_rules_version: null } });
+  const identity2 = new IdentityService(config2, paths); // gate 必须按新期望评估（旧服务锁着 test-i-1 会先阻断）
+  const supervisor2 = new TurnSupervisor({ db, config: config2, messages, events, identity: identity2, capabilities: new CapabilityMatrix(config2), runnerSelection: { status: 'ok', runner: new MockRunner() }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(null) });
   const t2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第二轮', clientMessageId: 'fp2' });
-  supervisor.enqueue(t2.turnId);
-  await supervisor.waitIdle();
+  supervisor2.enqueue(t2.turnId);
+  await supervisor2.waitIdle();
   const winAfter = windows.get(win1.id)!;
   assert.equal(winAfter.status, 'CONTEXT_STALE', '旧窗必须 CONTEXT_STALE');
   const att2 = db.prepare("SELECT state, blocked_reason FROM attempts WHERE turn_id = ?").get(t2.turnId) as { state: string; blocked_reason: string };

@@ -42,43 +42,95 @@ const installedVersion = (() => {
 })();
 if (!installedVersion) { console.error('[probe] BLOCKED：SDK 未安装'); process.exit(2); }
 
+// F05：共享探针骨架——认证/服务错误返回 'blocked'（不是能力否定，也不是 supported）；
+// 判定函数返回 'supported' | 'unsupported' | 'unknown' | null（null=继续迭代）。
+const isAuthOrServerError = (msg) => /api key|unauthorized|authentication|forbidden|quota|billing|overloaded|rate.?limit/i.test(msg);
+// 'aborted' 在非 interrupt 探针属意外中断 → blocked；null → unsupported
+const mapVerdict = (v) => (v === 'aborted' ? 'blocked' : v ?? 'unsupported');
+async function runProbe(iterFactory, judge) {
+  let carried = null; // 认证/服务错误信息（result error 或迭代异常）
+  try {
+    for await (const msg of iterFactory()) {
+      if (msg.type === 'result' && msg.is_error === true) {
+        carried = msg.error ?? `result subtype=${msg.subtype}`;
+        if (isAuthOrServerError(String(carried))) return 'blocked';
+        continue; // 非认证类 error result 交给 judge（探针可能自带预期失败语义）
+      }
+      const verdict = judge(msg);
+      if (verdict !== null) return verdict;
+    }
+  } catch (err) {
+    const msgText = String(err?.message ?? err);
+    if (/abort|interrupt/i.test(msgText)) return 'aborted'; // 正常的 abort 终止路径，由调用方按 signal 判定
+    if (isAuthOrServerError(msgText)) return 'blocked';
+    throw err; // 意外异常按 blocked 处理（外层 catch）
+  }
+  if (carried) return 'blocked'; // 以 error result 结束且无能力证据
+  return null;
+}
+
 const PROBES = [
   { key: 'system_prompt_explicit', test: async (query) => {
-      const iter = query({ prompt: 'Reply with exactly: PROBE_OK', options: { systemPrompt: 'You are a probe. Reply only with PROBE_OK.', maxTurns: 1, settingSources: [] } });
-      for await (const msg of iter) {
-        if (msg.type === 'result' && msg.subtype === 'success') return 'supported';
-        if (msg.type === 'assistant' && msg.message?.content?.some(b => b.type === 'text' && b.text?.includes('PROBE_OK'))) return 'supported';
-      }
-      return 'unsupported';
+      // F05：必须看到正文含 PROBE_OK 才算 systemPrompt 生效；仅 result success 不构成证据
+      const verdict = await runProbe(
+        () => query({ prompt: 'Reply with exactly: PROBE_OK', options: { systemPrompt: 'You are a probe. Reply only with PROBE_OK.', maxTurns: 1, settingSources: [] } }),
+        (msg) => {
+          if (msg.type === 'assistant' && msg.message?.content?.some((b) => b.type === 'text' && typeof b.text === 'string' && b.text.includes('PROBE_OK'))) return 'supported';
+          return null;
+        },
+      );
+      return mapVerdict(verdict);
     } },
-  { key: 'settings_sources_isolated', test: async (query) => {
-      // 省略实机验证——需要更复杂的探针；返回 unknown 而不是假 supported
+  { key: 'settings_sources_isolated', test: async () => {
+      // F05：无可靠断言路径——恒 unknown（诚实状态），由写库覆盖旧 supported（见写库逻辑）
       return 'unknown';
     } },
   { key: 'interrupt_supported', test: async (query) => {
+      // F05：需要 SDK 真正在跑（观察到流事件）且 abort 被接受（signal.aborted）才 supported；
+      // 认证失败（第一个消息就是 error result / 抛错）由 runProbe 判 blocked，不再无条件 supported
       const ctrl = new AbortController();
-      const iter = query({ prompt: 'Count from 1 to 100 slowly', options: { abortController: ctrl, maxTurns: 1 } });
-      setTimeout(() => ctrl.abort(), 1000);
-      try { for await (const _ of iter); } catch { /* abort */ }
-      return 'supported'; // abort 没抛未处理异常即 supported
+      let sawActivity = false;
+      const verdict = await runProbe(
+        () => {
+          const iter = query({ prompt: 'Count from 1 to 100 slowly', options: { abortController: ctrl, maxTurns: 1 } });
+          setTimeout(() => ctrl.abort(), 1000);
+          return iter;
+        },
+        (msg) => {
+          if (msg.type === 'stream_event' || msg.type === 'assistant' || msg.type === 'message_start') sawActivity = true;
+          return null;
+        },
+      );
+      if (verdict === 'blocked' || verdict === 'supported') return verdict;
+      return ctrl.signal.aborted && sawActivity ? 'supported' : 'unsupported';
     } },
   { key: 'thinking_delta_observed', test: async (query) => {
-      const iter = query({ prompt: 'What is 17*23? Think step by step.', options: { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' }, maxTurns: 1 } });
-      for await (const msg of iter) {
-        if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta' && msg.event?.delta?.type === 'thinking_delta') return 'supported';
-      }
-      return 'unsupported';
+      const verdict = await runProbe(
+        () => query({ prompt: 'What is 17*23? Think step by step.', options: { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' }, maxTurns: 1 } }),
+        (msg) => {
+          if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta' && msg.event?.delta?.type === 'thinking_delta') return 'supported';
+          return null;
+        },
+      );
+      return mapVerdict(verdict);
     } },
   { key: 'complete_block_mapping_verified', test: async (query) => {
-      const iter = query({ prompt: 'Say hello', options: { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' }, maxTurns: 1 } });
-      let sawDelta = false;
-      for await (const msg of iter) {
-        if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta' && msg.event?.delta?.type === 'thinking_delta') sawDelta = true;
-        if (msg.type === 'assistant' && msg.message?.content?.some(b => b.type === 'thinking')) {
-          return sawDelta ? 'supported' : 'unsupported'; // 有 delta 也有完整块 → 映射可验
-        }
-      }
-      return 'unknown';
+      // F05：delta 与完整 thinking 块必须属于同一 SDK message id 才算映射可验
+      let deltaMessageId = null;
+      let currentMessageId = null;
+      const verdict = await runProbe(
+        () => query({ prompt: 'Say hello', options: { includePartialMessages: true, thinking: { type: 'adaptive', display: 'summarized' }, maxTurns: 1 } }),
+        (msg) => {
+          if (msg.type === 'stream_event' && msg.event?.type === 'message_start') currentMessageId = msg.event?.message?.id ?? currentMessageId;
+          if (msg.type === 'stream_event' && msg.event?.type === 'content_block_delta' && msg.event?.delta?.type === 'thinking_delta') deltaMessageId = currentMessageId;
+          if (msg.type === 'assistant' && msg.message?.content?.some((b) => b.type === 'thinking')) {
+            if (deltaMessageId && (msg.message.id ?? deltaMessageId) === deltaMessageId) return 'supported';
+            return 'unsupported'; // delta 与完整块不同消息——映射未获证据
+          }
+          return null;
+        },
+      );
+      return mapVerdict(verdict) === 'unsupported' ? 'unknown' : mapVerdict(verdict);
     } },
 ];
 
@@ -95,12 +147,12 @@ for (const probe of PROBES) {
   }
 }
 
-// 仅对 supported 项写入证据
+// F05：所有结果如实写库（INSERT OR REPLACE 覆盖同 (key, sdk_version) 旧行）——
+// 失败/unknown 作废旧 supported 证据，gate 只认 supported，不会因残留行误放行
 const { randomBytes } = await import('node:crypto');
 for (const [key, state] of Object.entries(results)) {
-  if (state !== 'supported') continue;
   db.prepare('INSERT OR REPLACE INTO capability_probes(id, probe_key, state, sdk_version, evidence_ref, observed_at) VALUES (?,?,?,?,?,?)')
-    .run('prb_' + randomBytes(4).toString('hex'), key, 'supported', installedVersion, 'real-probe', new Date().toISOString());
+    .run('prb_' + randomBytes(4).toString('hex'), key, state, installedVersion, 'real-probe', new Date().toISOString());
 }
-console.log('[probe] 完成。supported 项已写入 capability_probes 表。');
+console.log('[probe] 完成。全部结果（含 unsupported/unknown/blocked）已如实写入 capability_probes 表。');
 process.exit(0);

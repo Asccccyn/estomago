@@ -110,11 +110,15 @@ export class WindowManager {
   }
 
   // 手动轮转（AUD-20 修复版）：prepare 全部成功 → 一个事务切换；任何失败旧窗保持 ACTIVE
-  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  // F09：生成中（fenceActive>0）拒绝轮转——旧窗保持 ACTIVE，旧代不会越 cutoff 发布
+  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; fenceActive?: (conversationId: string) => number }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
     if (o.gate.state !== 'READY') {
       return { ok: false, reason: `IDENTITY_BLOCKED：${o.gate.reasons.join('; ')}（旧窗保持 ACTIVE）` };
+    }
+    if (o.fenceActive && o.fenceActive(o.conversationId) > 0) {
+      return { ok: false, reason: 'FENCE_ACTIVE：该房间有生成中的 turn，拒绝换窗（先停止或等待完成；旧窗保持 ACTIVE）' };
     }
 
     // —— prepare：candidate + receipt + handoff（旧窗仍是 ACTIVE）——

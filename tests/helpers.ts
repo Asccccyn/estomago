@@ -64,8 +64,8 @@ export function writeApprovedIdentity(root: string, opts: { sdkVersion?: string;
   const manifest = {
     display_name: 'estómago', spec_version: '0.2.1', status: 'APPROVED', identity_version: 'test-v1',
     approved_source_ref: 'approved-identity.md', approved_source_hash: sha256Hex(identityText),
-    i_version: 'test-i-1', i_hash: sha256Hex(iContent),
-    runtime_rules_version: 'test-rules-1', rules_hash: sha256Hex(rulesContent),
+    i_version: 'test-i-1', i_hash: sha256Hex(iContent), i_snapshot_ref: 'i-snapshot.md',
+    runtime_rules_version: 'test-rules-1', rules_hash: sha256Hex(rulesContent), runtime_rules_ref: 'runtime-rules.md',
     system_prompt_mode: 'explicit_custom',
     system_prompt_hash: sha256Hex(identityText), sdk_version: sdk, runtime_version: 'node-test',
     cwd_realpath: fs.realpathSync(paths.workspacesDir), settings_sources: [],
