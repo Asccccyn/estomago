@@ -42,15 +42,14 @@ export class MessageService {
     if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
     this.ensureConversation(opts.conversationId);
     const nowIso = new Date().toISOString();
-    // F14：occurred_at 必须是合法 ISO 时间或 null（无效值直接拒绝，不静默入库）
+    // F14：occurred_at 必须是带时区的 ISO 8601 绝对时间字符串或 null（数字/无时区相对值直接拒绝，不静默入库）
     let occurredAt = opts.occurredAt ?? nowIso;
+    const ISO_ABSOLUTE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
     if (opts.occurredAt !== null && opts.occurredAt !== undefined && opts.occurredAt !== '') {
-      const parsed = new Date(opts.occurredAt);
-      if (isNaN(parsed.getTime())) {
-        throw new Error(`INVALID_OCCURRED_AT: 客户端时间 "${opts.occurredAt.slice(0, 30)}" 不是合法日期`);
+      if (typeof opts.occurredAt !== 'string' || !ISO_ABSOLUTE.test(opts.occurredAt) || Number.isNaN(Date.parse(opts.occurredAt))) {
+        throw new Error(`INVALID_OCCURRED_AT: 客户端时间必须是带时区的 ISO 8601 字符串（收到 "${String(opts.occurredAt).slice(0, 30)}"）`);
       }
-      // F14：有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
-      occurredAt = opts.occurredAt;
+      occurredAt = opts.occurredAt; // 有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
     }
 
     return tx(this.db, () => {

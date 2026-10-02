@@ -54,8 +54,10 @@ export function buildSdkOptions(opts: {
     '- 需要外部动作时使用已注册的业务工具；不要假设拥有 shell/文件等工程能力。',
   ].join('\n');
 
+  // F06：显式白名单（绝不整环境复制）。PATH/HOME/TMPDIR 之外透传 Anthropic 认证/端点键，
+  // 让宿主注入的凭证能到达 SDK 子进程；键不存在则不进白名单
   const env: Record<string, string> = {};
-  for (const key of ['PATH', 'HOME', 'TMPDIR']) {
+  for (const key of ['PATH', 'HOME', 'TMPDIR', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL']) {
     const v = process.env[key];
     if (typeof v === 'string' && v.length > 0) env[key] = v;
   }

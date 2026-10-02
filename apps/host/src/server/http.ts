@@ -124,8 +124,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (startedExists.n === 0) {
         d.events.publish('turn.started', { conversationId, turnId: submitted.turnId, attemptId: submitted.attemptId, payload: {} });
       }
-      if (!submitted.duplicate || submitted.repaired || eventExists.n === 0) {
-        d.supervisor.enqueue(submitted.turnId); // F12：duplicate 但事件缺失时也重入队
+      // F12：duplicate 但任一事件缺失（提交后事件写入失败）→ 补事件并重新入队，turn 不得滞留 pending
+      if (!submitted.duplicate || submitted.repaired || eventExists.n === 0 || startedExists.n === 0) {
+        d.supervisor.enqueue(submitted.turnId);
       }
       return json(res, submitted.duplicate ? 200 : 201, { message: submitted.message, duplicate: submitted.duplicate, turn_id: submitted.turnId, repaired: submitted.repaired });
     }

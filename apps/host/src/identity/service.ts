@@ -55,8 +55,10 @@ export type IdentityManifestFile = {
   approved_source_hash: string | null;
   i_version: string | null;
   i_hash: string | null;
+  i_snapshot_ref: string | null; // F04：I 快照文件引用（与 i_hash 成对，缺一即阻断）
   runtime_rules_version: string | null;
   rules_hash: string | null;
+  runtime_rules_ref: string | null; // F04：运行规则文件引用（与 rules_hash 成对，缺一即阻断）
   system_prompt_mode: string;
   system_prompt_hash: string | null;
   sdk_version: string | null;
@@ -151,9 +153,12 @@ export class IdentityService {
     // v0.3 + F04：I/rules 的内容 hash 必须非空且能验证到实际文件
     if (!manifest.i_hash) reasons.push('manifest.i_hash 缺失');
     if (!manifest.rules_hash) reasons.push('manifest.rules_hash 缺失');
-    // F04：i_snapshot_ref / runtime_rules_ref 如果存在，hash 必须匹配实际文件
+    // F04：引用与 hash 必须成对且验证到实际文件——没有"ref 可选"的逃逸口
     const verifyFile = (ref: string | null | undefined, expectedHash: string | null | undefined, label: string): void => {
-      if (!ref || !expectedHash) return; // 引用和 hash 都没给就不校验内容（但上面已检查 hash 非空）
+      if (!ref || !expectedHash) {
+        reasons.push(`${label} 引用或 hash 缺失（ref 与 hash 必须成对提供，缺一即阻断）`);
+        return;
+      }
       const refPath = path.resolve(this.paths.identityDir, ref);
       if (!fs.existsSync(refPath)) {
         reasons.push(`${label} 文件不存在：${ref}`);
@@ -164,14 +169,16 @@ export class IdentityService {
         reasons.push(`${label} 内容 hash 不符：期望 ${expectedHash.slice(0, 8)}… / 实际 ${actual.slice(0, 8)}…`);
       }
     };
-    // F04：I 快照和运行规则如有引用，验证实际内容 hash
-    const iRef = (manifest as Record<string, unknown>).i_snapshot_ref as string | undefined;
-    const rulesRef = (manifest as Record<string, unknown>).runtime_rules_ref as string | undefined;
-    verifyFile(iRef, manifest.i_hash, 'I 快照');
-    verifyFile(rulesRef, manifest.rules_hash, '运行规则');
-    // F04：verification_evidence 至少一条非空
-    if (!manifest.verification_evidence || manifest.verification_evidence.length === 0) {
-      reasons.push('verification_evidence 为空（F04：批准材料至少要有一条证据引用）');
+    // F04：I 快照和运行规则必须提供引用并验证实际内容 hash
+    verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
+    verifyFile(manifest.runtime_rules_ref, manifest.rules_hash, '运行规则');
+    // F04：verification_evidence 至少一条，且每条必须是非空白字符串（空串不算证据）
+    if (
+      !Array.isArray(manifest.verification_evidence) ||
+      manifest.verification_evidence.length === 0 ||
+      manifest.verification_evidence.some((e) => typeof e !== 'string' || e.trim() === '')
+    ) {
+      reasons.push('verification_evidence 缺少非空条目（F04：批准材料至少要有一条真实证据引用）');
     }
     if (manifest.system_prompt_mode !== 'explicit_custom') reasons.push('system_prompt_mode 须为 explicit_custom');
     if (manifest.approved_source_ref && manifest.approved_source_hash) {
@@ -275,7 +282,11 @@ export class IdentityService {
     const assembled = {
       sdk_version: this.observedSdkVersion(),
       cwd_realpath: opts.gate.observed.cwd_realpath,
-      system_prompt_hash: opts.manifest?.system_prompt_hash ?? null,
+      // F04：prompt hash 从实际组装值计算，不复制 manifest 声明（声明与组装可以不一致）
+      system_prompt_hash: (() => {
+        const prompt = (opts.assembledOptions as { options?: { systemPrompt?: unknown } } | null)?.options?.systemPrompt;
+        return typeof prompt === 'string' && prompt.length > 0 ? sha256Hex(prompt) : null;
+      })(),
       identity_version: opts.manifest?.identity_version ?? null,
       i_version: opts.manifest?.i_version ?? null,
       runtime_rules_version: opts.manifest?.runtime_rules_version ?? null,

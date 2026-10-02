@@ -86,29 +86,8 @@ export class TurnSupervisor {
     const run = this.active.get(turnId);
     if (!run) return { stopped: false, generation: null };
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
-    run.controller.abort();
-    // AUD-10（§11）：不合作 runner 的有界终止——grace 后强制落终态，即使底层 promise 永不 resolve
-    setTimeout(() => this.forceFinalizeIfStuck(turnId, run), RUNNER_GRACE_MS).unref?.();
+    run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
     return { stopped: true, generation: run.generation };
-  }
-
-  private forceFinalizeIfStuck(turnId: string, run: ActiveRun): void {
-    const cur = this.active.get(turnId);
-    if (cur !== run) return; // 已正常收尾
-    this.active.delete(turnId);
-    try {
-      const now = new Date().toISOString();
-      tx(this.d.db, () => {
-        const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state = 'running'").get(turnId) as { id: string } | undefined;
-        this.d.db.prepare("UPDATE turns SET state = 'interrupted', completed_at = ? WHERE id = ? AND state = 'running'").run(now, turnId);
-        if (att) {
-          this.d.db.prepare("UPDATE attempts SET state = 'interrupted', blocked_reason = 'RUNNER_GRACE_TIMEOUT', completed_at = ? WHERE id = ?").run(now, att.id);
-          this.d.db.prepare("UPDATE reasoning_blocks SET state = 'interrupted', updated_at = ? WHERE attempt_id = ? AND state = 'streaming'").run(now, att.id);
-        }
-      });
-      this.d.events.publish('turn.interrupted', { conversationId: null, turnId, attemptId: null, payload: { generation: run.generation, reason: 'RUNNER_GRACE_TIMEOUT' } });
-      this.d.logger.warn('runner_grace_timeout', { turn_id: turnId, code: 'RUNNER_GRACE_TIMEOUT' });
-    } catch { /* 尽力 */ }
   }
 
   async stopAll(timeoutMs = 8000): Promise<void> {
@@ -326,8 +305,8 @@ export class TurnSupervisor {
 
     const runner = d.runnerSelection.runner;
     let result: import('./runner.ts').RunnerRunResult;
-    // F08：race 宽限——runner Promise 不 resolve 也不永久卡队列
-    const RUNNER_HARD_DEADLINE = RUNNER_GRACE_MS + 3000; // forceFinalize 后再多等 3s，然后 race 超时
+    // §11：不合作 runner 的有界终止——宽限只在 abort 之后才计时（正常生成寿命不受限），
+    // grace 期满仍未收尾 → 合成 interrupted 终态，会话队列释放
     try {
       result = await Promise.race([
         runner.run({
@@ -367,9 +346,10 @@ export class TurnSupervisor {
                 if (b.block_type === 'text' && typeof b.text === 'string') publishText(ev.sdk_message_id, b.block_index, b.text); // §16+F11
               }
               for (const u of ev.unmatched) {
-                if (u.block_type === 'text' && typeof u.text === 'string' && u.text.length > 0 && !(publishedByMessage.get(ev.sdk_message_id))) {
-                  publishText(ev.sdk_message_id, u.text); // 无流式正文的完整 text（唯一候选歧义时不猜，仅 no_open_block 情况可安全发布）
-                }
+                // §16+F11：只有无开放块对应的完整 text 才安全发布；ambiguous 不猜归属（reasoning 侧仍核对）。
+                // u.seq < 0 与流式块下标（≥0）键空间天然隔离，同块重投幂等
+                if (u.reason !== 'no_open_block' || u.block_type !== 'text' || typeof u.text !== 'string' || u.text.length === 0) continue;
+                publishText(ev.sdk_message_id, u.seq, u.text);
               }
               d.reasoning.reconcileCompleteMessage({
                 conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
@@ -396,20 +376,33 @@ export class TurnSupervisor {
             case 'turn_end':
               if (ev.outcome === 'error' && ev.error_classified === 'route_signal') handleRouteSignal();
               break;
+            case 'system_notice':
+              // F10：结构化 system 事件落观测日志（只记 subtype/模型，不落 content 正文——隐私纪律）
+              d.logger.info('sdk_system_notice', { turn_id: turnId, subtype: ev.subtype, original_model: ev.original_model, fallback_model: ev.fallback_model });
+              break;
             default:
               break;
           }
         },
         }),
-        new Promise<import('./runner.ts').RunnerRunResult>((_, reject) =>
-          setTimeout(() => reject(new Error('RUNNER_DEADLINE_EXCEEDED')), RUNNER_HARD_DEADLINE).unref?.()
-        ),
+        new Promise<never>((_, reject) => {
+          const arm = (): void => {
+            setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();
+          };
+          if (runToken.controller.signal.aborted) arm();
+          else runToken.controller.signal.addEventListener('abort', arm, { once: true });
+        }),
       ]);
     } catch (err) {
-      // AUD-10 + F08：runner 异常/超时也走统一终态（队列不卡死）
-      const isDeadline = String((err as Error)?.message ?? '').includes('RUNNER_DEADLINE_EXCEEDED');
-      d.logger.error(isDeadline ? 'runner_deadline' : 'runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
-      result = { outcome: isDeadline ? 'interrupted' : 'error', errorClassified: null, errorCode: isDeadline ? 'RUNNER_DEADLINE_EXCEEDED' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
+      const isGrace = String((err as Error)?.message ?? '').includes('RUNNER_GRACE_TIMEOUT');
+      if (isGrace) {
+        // 不变式：grace 超时离开 await 时 runner 可能仍活着——旧代一律 fence + abort（迟到回调不得再发布）
+        // 普通 throw 不需要：run() 已 settle，不会再有回调
+        runToken.token.cancelled = true;
+        runToken.controller.abort();
+      }
+      d.logger.error(isGrace ? 'runner_grace_exceeded' : 'runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
+      result = { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
     }
     this.active.delete(turnId);
 

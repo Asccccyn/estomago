@@ -343,6 +343,17 @@ ALTER TABLE route_decisions ADD COLUMN message_id TEXT;
 ALTER TABLE route_decisions ADD COLUMN input_revision INTEGER;
 `,
   },
+  {
+    version: 4,
+    name: 'v0.3.1-occurred-at-repair',
+    // F14：存量坏时间修复——历史入库的非 ISO occurred_at（如数字 0/相对值）统一回填为宿主接收时间，
+    // 否则下一轮读取/排序会抛 Invalid time value
+    sql: `
+UPDATE message_revisions SET occurred_at = received_at
+WHERE occurred_at IS NULL
+   OR occurred_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*';
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied: number[] } {
@@ -366,16 +377,20 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied:
       continue;
     }
     if (m.preSql) db.exec(m.preSql); // F01：事务外 PRAGMA
-    tx(db, () => {
-      db.exec(m.sql);
-      db.prepare('INSERT INTO schema_migrations(version, name, applied_at, code_hash) VALUES (?,?,?,?)').run(
-        m.version,
-        m.name,
-        new Date().toISOString(),
-        codeHashOf(m.sql),
-      );
-    });
-    if (m.postSql) db.exec(m.postSql);
+    try {
+      tx(db, () => {
+        db.exec(m.sql);
+        db.prepare('INSERT INTO schema_migrations(version, name, applied_at, code_hash) VALUES (?,?,?,?)').run(
+          m.version,
+          m.name,
+          new Date().toISOString(),
+          codeHashOf(m.sql),
+        );
+      });
+    } finally {
+      // 迁移事务回滚后也必须恢复 PRAGMA（否则同连接 FK 保持 OFF，孤儿写入可成功）
+      if (m.postSql) db.exec(m.postSql);
+    }
     applied.push(m.version);
   }
   return { applied };

@@ -40,7 +40,7 @@ export class UsageCollector {
       );
   }
 
-  // 账本视图：每个 attempt 一行（取该 attempt 最新观测）+ 汇总（已知值求和；任一未知则该项标 unknown）
+  // 账本视图：每个 attempt 一行 + 汇总（已知值求和；任一未知则该项标 unknown）
   summaryForTurn(turnId: string): {
     attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }>;
     totals: { input_tokens: number | null; output_tokens: number | null; unknown_present: boolean };
@@ -52,33 +52,54 @@ export class UsageCollector {
       input_tokens: number | null; output_tokens: number | null;
       cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string;
     }>;
-    // F15：同 attempt 聚合全部 request（非 cumulative）；cumulative 单列
-    const perAttempt = new Map<string, { attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }>();
+    // F15：request 与 turn 是同一消耗的两种口径——每个 attempt 只呈现一种：
+    // 有 request 观测用其求和；否则用 turn 最新观测；都没有只剩 cumulative 快照。
+    // 绝不把 request 合计与 turn 汇总相加（同轮两者并存会双倍虚增）。
+    type Row = (typeof rows)[number];
+    const buckets = new Map<string, { requests: Row[]; turnLatest: Row | null; cumulativeLatest: Row | null }>();
     for (const r of rows) {
-      if (r.scope === 'cumulative') continue; // cumulative 是基线快照，单独列
-      const cur = perAttempt.get(r.attempt_id);
-      if (!cur) {
-        perAttempt.set(r.attempt_id, { ...r });
-      } else {
-        // 同 attempt 多 request：求和（同维度有 null 则保留 null）
-        cur.input_tokens = cur.input_tokens == null || r.input_tokens == null ? null : cur.input_tokens + r.input_tokens;
-        cur.output_tokens = cur.output_tokens == null || r.output_tokens == null ? null : cur.output_tokens + r.output_tokens;
-        cur.cache_read_input_tokens = cur.cache_read_input_tokens == null || r.cache_read_input_tokens == null ? null : cur.cache_read_input_tokens + r.cache_read_input_tokens;
-        cur.cache_creation_input_tokens = cur.cache_creation_input_tokens == null || r.cache_creation_input_tokens == null ? null : cur.cache_creation_input_tokens + r.cache_creation_input_tokens;
-        cur.completeness = cur.completeness === 'complete' && r.completeness === 'complete' ? 'complete' : 'partial';
+      let b = buckets.get(r.attempt_id);
+      if (!b) {
+        b = { requests: [], turnLatest: null, cumulativeLatest: null };
+        buckets.set(r.attempt_id, b);
+      }
+      if (r.scope === 'request') b.requests.push(r);
+      else if (r.scope === 'turn') b.turnLatest = r;
+      else b.cumulativeLatest = r;
+    }
+    const sumOf = (rs: Row[], f: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens'): number | null =>
+      rs.some((r) => r[f] == null) ? null : rs.reduce((s, r) => s + (r[f] ?? 0), 0);
+    const attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }> = [];
+    let inSum = 0, outSum = 0, inUnknown = false, outUnknown = false;
+    const seen = new Set<string>();
+    for (const [attemptId, b] of buckets) {
+      seen.add(attemptId);
+      const useRequests = b.requests.length > 0;
+      const src: Row[] = useRequests ? b.requests : b.turnLatest ? [b.turnLatest] : b.cumulativeLatest ? [b.cumulativeLatest] : [];
+      const scope = useRequests ? 'request' : b.turnLatest ? 'turn' : 'cumulative';
+      const completeness = src.length === 0 ? 'missing' : src.every((r) => r.completeness === 'complete') ? 'complete' : 'partial';
+      attempts.push({
+        attempt_id: attemptId, scope, model: src[0]?.model ?? null,
+        input_tokens: sumOf(src, 'input_tokens'),
+        output_tokens: sumOf(src, 'output_tokens'),
+        cache_read_input_tokens: sumOf(src, 'cache_read_input_tokens'),
+        cache_creation_input_tokens: sumOf(src, 'cache_creation_input_tokens'),
+        completeness,
+      });
+      if (scope !== 'cumulative') {
+        const a = attempts[attempts.length - 1]!;
+        if (a.input_tokens == null) inUnknown = true; else inSum += a.input_tokens;
+        if (a.output_tokens == null) outUnknown = true; else outSum += a.output_tokens;
+        if (completeness !== 'complete') { inUnknown = true; outUnknown = true; } // F15：partial/missing 不冒充完整总额
       }
     }
-    const attempts = [...perAttempt.values()].map((r) => ({
-      attempt_id: r.attempt_id, scope: r.scope, model: r.model,
-      input_tokens: r.input_tokens, output_tokens: r.output_tokens,
-      cache_read_input_tokens: r.cache_read_input_tokens, cache_creation_input_tokens: r.cache_creation_input_tokens,
-      completeness: r.completeness,
-    }));
-    let inSum = 0, outSum = 0, inUnknown = false, outUnknown = false;
-    for (const a of attempts) {
-      if (a.scope === 'cumulative') continue; // §20：累计口径是基线快照，不与 request/turn 相加
-      if (a.input_tokens == null) inUnknown = true; else inSum += a.input_tokens;
-      if (a.output_tokens == null) outUnknown = true; else outSum += a.output_tokens;
+    // F15：该 turn 存在但完全没有 usage 观测的 attempt（如 failed 早退）→ 如实列 null 行并置 unknown
+    const declared = this.db.prepare('SELECT id FROM attempts WHERE turn_id = ?').all(turnId) as Array<{ id: string }>;
+    for (const m of declared) {
+      if (seen.has(m.id)) continue;
+      attempts.push({ attempt_id: m.id, scope: 'none', model: null, input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null, completeness: 'missing' });
+      inUnknown = true;
+      outUnknown = true;
     }
     const empty = attempts.length === 0;
     return {
