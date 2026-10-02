@@ -18,7 +18,7 @@ test('query() 收到的参数：顶层仅 prompt+options；全部关键字段在
   const { db } = makeDb(root);
   const gate = identity.evaluateGate(db);
   assert.equal(gate.state, 'READY');
-  const built = buildSdkOptions({ config, gate, identityText: identity.readApprovedIdentityText(gate.manifest!), cwd: paths.workspacesDir });
+  const built = buildSdkOptions({ config, gate, identityText: identity.readApprovedIdentityText(gate.manifest!), approvedRulesText: identity.loadVerifiedMaterials(gate.manifest!)!.rulesText, cwd: paths.workspacesDir });
   assert.equal(built.status, 'ok');
 
   const captured: Array<{ prompt: string; options: Record<string, unknown> }> = [];
@@ -58,7 +58,7 @@ test('无 resume 时 options 不含 resume 键（首轮新 session）', async ()
   const identity = new IdentityService(config, paths);
   const { db } = makeDb(root);
   const gate = identity.evaluateGate(db);
-  const built = buildSdkOptions({ config, gate, identityText: 'x', cwd: paths.workspacesDir });
+  const built = buildSdkOptions({ config, gate, identityText: 'x', approvedRulesText: 'rules', cwd: paths.workspacesDir });
   const captured: Array<Record<string, unknown>> = [];
   const runner = new ClaudeSdkRunner((p) => {
     captured.push(p as Record<string, unknown>);
