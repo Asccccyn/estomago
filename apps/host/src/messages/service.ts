@@ -6,6 +6,7 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { isBlankContent, normalizeNewlines, type MessageDto, type MessageKind } from '../../../../packages/contracts/src/api.ts';
+import { validateAbsoluteIso } from '../util/time.ts';
 
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
 export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: string; repaired: boolean };
@@ -42,14 +43,15 @@ export class MessageService {
     if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
     this.ensureConversation(opts.conversationId);
     const nowIso = new Date().toISOString();
-    // F14：occurred_at 必须是带时区的 ISO 8601 绝对时间字符串或 null（数字/无时区相对值直接拒绝，不静默入库）
+    // F14：occurred_at 必须是逐项日历校验通过的带时区 ISO 8601 绝对时间字符串或 null
+    // （拒绝数字/空串/无时区/2月30日/99月——Date.parse 的宽松归一化不作依据）
     let occurredAt = opts.occurredAt ?? nowIso;
-    const ISO_ABSOLUTE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
     if (opts.occurredAt !== null && opts.occurredAt !== undefined && opts.occurredAt !== '') {
-      if (typeof opts.occurredAt !== 'string' || !ISO_ABSOLUTE.test(opts.occurredAt) || Number.isNaN(Date.parse(opts.occurredAt))) {
-        throw new Error(`INVALID_OCCURRED_AT: 客户端时间必须是带时区的 ISO 8601 字符串（收到 "${String(opts.occurredAt).slice(0, 30)}"）`);
+      const v = validateAbsoluteIso(opts.occurredAt);
+      if (!v.ok) {
+        throw new Error(`INVALID_OCCURRED_AT: 客户端时间必须是带时区的合法 ISO 8601 日历日期（拒绝原因 ${v.reason}；收到 "${String(opts.occurredAt).slice(0, 30)}"）`);
       }
-      occurredAt = opts.occurredAt; // 有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
+      occurredAt = v.iso; // 有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
     }
 
     return tx(this.db, () => {

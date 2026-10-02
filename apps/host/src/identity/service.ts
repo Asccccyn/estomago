@@ -233,13 +233,20 @@ export class IdentityService {
 
     // —— 能力探针证据（DB 观测，绑定实装版本）——
     if (db) {
+      const maxAgeDays = (this.config.identity as { probe_evidence_max_age_days: number | null }).probe_evidence_max_age_days;
       for (const key of REQUIRED_PROBES) {
         const row = db
-          .prepare('SELECT state, sdk_version FROM capability_probes WHERE probe_key = ? AND sdk_version = ?')
-          .get(key, installed ?? '') as { state: string; sdk_version: string } | undefined;
+          .prepare('SELECT state, sdk_version, evidence_ref, observed_at FROM capability_probes WHERE probe_key = ? AND sdk_version = ?')
+          .get(key, installed ?? '') as { state: string; sdk_version: string; evidence_ref: string; observed_at: string } | undefined;
         probes[key] = row ?? null;
         if (!row) reasons.push(`probe_missing:${key}（无匹配 ${installed ?? 'null'} 版本的实机证据）`);
         else if (row.state !== 'supported') reasons.push(`probe_${row.state}:${key}`);
+        else if (!row.evidence_ref || row.evidence_ref.trim() === '') reasons.push(`probe_evidence_missing:${key}（supported 但证据引用为空）`);
+        else if (maxAgeDays != null) {
+          // F04：观测陈旧按明确配置策略判定（probe_evidence_max_age_days；null=不按时间过期）
+          const ageDays = (Date.now() - new Date(row.observed_at).getTime()) / 86_400_000;
+          if (Number.isFinite(ageDays) && ageDays > maxAgeDays) reasons.push(`probe_stale:${key}（观测于 ${row.observed_at}，超出 ${maxAgeDays} 天有效期）`);
+        }
       }
     } else {
       for (const key of REQUIRED_PROBES) probes[key] = null;
@@ -260,6 +267,25 @@ export class IdentityService {
     } catch {
       return null;
     }
+  }
+
+  // F04：已验证材料的单一装载入口——校验（hash）与装配读同一份字节，绝不"校验后再读另一份内容"。
+  // 返回 null 表示装载失败（gate 未 READY 或文件读失败），调用方必须阻断，不得回退硬编码正文
+  loadVerifiedMaterials(manifest: IdentityManifestFile): { identityText: string; rulesText: string; iText: string | null; iStatus: string } | null {
+    const read = (ref: string | null | undefined): string | null => {
+      if (!ref) return null;
+      try {
+        return fs.readFileSync(path.resolve(this.paths.identityDir, ref), 'utf8');
+      } catch {
+        return null;
+      }
+    };
+    const identityText = read(manifest.approved_source_ref);
+    const rulesText = read(manifest.runtime_rules_ref);
+    if (identityText === null || rulesText === null) return null;
+    // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）
+    const iText = read(manifest.i_snapshot_ref);
+    return { identityText, rulesText, iText, iStatus: iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved' };
   }
 
   // Bootstrap Receipt（05 §3 四层证据）；返回真实主键（AUD-22：window.receipt_id 引用它）
@@ -291,6 +317,9 @@ export class IdentityService {
       i_version: opts.manifest?.i_version ?? null,
       runtime_rules_version: opts.manifest?.runtime_rules_version ?? null,
       options_hash: opts.assembledOptions ? sha256Hex(JSON.stringify(opts.assembledOptions)) : null,
+      // F04：各材料装载状态如实记录——rules 材料必须进入 systemPrompt；I 留在开窗包通道（策略未批准不装载）
+      rules_material_loaded: Boolean((opts.assembledOptions as { options?: { systemPrompt?: unknown } } | null)?.options?.systemPrompt),
+      i_material_status: opts.manifest?.i_snapshot_ref ? 'verified_not_projected_policy_unapproved' : 'not_referenced',
     };
     const observed = {
       state: opts.gate.state === 'READY' ? 'verified_local' : 'blocked_local',

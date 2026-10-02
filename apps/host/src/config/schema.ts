@@ -62,6 +62,8 @@ export type Config = {
     expected_identity_version: string | null;
     expected_i_version: string | null;
     expected_rules_version: string | null;
+    // F04：能力探针证据有效期（天）——明确策略声明，过期观测按 stale 阻断；null=不按时间过期
+    probe_evidence_max_age_days: number | null;
   };
   windows: {
     rotate_on_business_date_change: boolean;
@@ -205,6 +207,7 @@ export const CONFIG_DEFAULTS: Config = {
     expected_identity_version: null,
     expected_i_version: null,
     expected_rules_version: null,
+    probe_evidence_max_age_days: 30,
   },
   windows: {
     rotate_on_business_date_change: true,
@@ -318,6 +321,7 @@ const SHAPE: SectionSpec = { section: {
     allow_unverified_fallback: 'boolean', require_bootstrap_receipt: 'boolean',
     receipt_requires_evidence: 'boolean', unobservable_fields_are_unknown: 'boolean',
     expected_identity_version: 'string?', expected_i_version: 'string?', expected_rules_version: 'string?',
+    probe_evidence_max_age_days: 'number?',
   } },
   windows: { section: {
     rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number?', output_reserve_tokens: 'number?',

@@ -56,15 +56,18 @@ void shouldSendOnKeydown; // 无任何按键发送路径（规则单一事实源
 function refreshSendButton() {
   const editing = Boolean(state.pendingRouteEdit);
   $('send-btn').textContent = editing ? '重新发送（修订）' : '发送';
-  // F13：有未完成发送（失败待重试）时按钮必须可点——重试入口不能因 composer 为空而死
-  $('send-btn').disabled = !(canSend(composer.value, { composing: state.composing }) || Boolean(state.pendingSend));
+  // 输入硬规则：IME 合成期不得发送；有失败待重试的发送时按钮保持可点（重试入口不能死）
+  $('send-btn').disabled = state.composing || !(canSend(composer.value, { composing: false }) || Boolean(state.pendingSend));
 }
 $('send-btn').addEventListener('click', () => void send());
 
 async function send() {
+  // 输入硬规则第一条：IME 合成期（composing=true）不发送——对普通发送/修订/pending 重试统一生效，
+  // 候选确认不能变成发送；重试路径不得覆盖该边界
+  if (state.composing) return;
   // F13：composer 为空但存在失败待重试的发送 → 按原内容同幂等键重试；composer 有新内容则发新请求（旧失败项作废）
   const retryPending = Boolean(state.pendingSend) && (composer.value === '' || composer.value === state.pendingSend.draft);
-  if (!canSend(composer.value, { composing: state.composing }) && !retryPending) return;
+  if (!canSend(composer.value, { composing: false }) && !retryPending) return;
   // 路由编辑流（AUD-07）：走真修订端点，原消息 revision+1
   if (state.pendingRouteEdit) {
     const { decisionId } = state.pendingRouteEdit;
@@ -320,12 +323,20 @@ function handleEvent(data) {
       state.routePending = { decisionId: data.decision_id, turnId };
       showRouteDialog(data);
       break;
+    case 'route.observed':
+      // F10：SDK 观测到的路由事实（fallback 已发生/拒绝未切换）——时间线可见，不依赖弹窗
+      setRoomBadge(data.already_switched
+        ? `模型已切换：${data.actual_model ?? '未知'}（原 ${data.original_model ?? '未知'}）——本回合已暂停`
+        : '模型拒绝且未切换（无 fallback）——本回合按失败处理');
+      break;
     case 'route.resolved':
       state.routePending = null;
       clearTimeout(state.routeCloseTimer); // F18：票据已决，旧计时器作废
       state.routeCloseTimer = null;
       $('route-dialog').close();
       setRoomBadge(null);
+      // 跨端修订同步：按 message ID + revision 吸收（旧 revision 不覆盖新 revision）
+      if (data.message) absorbMessage(data.message, { update: true });
       break;
     default:
       break;
@@ -362,7 +373,7 @@ function showRouteDialog(data) {
   const target = data.target_model ?? '未知（平台未给出目标模型）';
   $('route-detail').textContent =
     `本轮模型请求被平台标记为可能切换路由。目标模型：${target}。是否已切换：${data.already_switched ? '是' : '否/未知'}。` +
-    `选择"重新编辑"后请在输入框修改并点"重新发送（修订）"——它会更新原消息（revision+1），不会新建消息。`;
+    `「同意本次路由」暂不可用（平台级路由动作未验证）；请选择"重新编辑"（更新原消息 revision+1，不新建消息）或"取消"。`;
   $('route-dialog').showModal();
 }
 $('route-cancel').onclick = async () => {
@@ -374,24 +385,8 @@ $('route-cancel').onclick = async () => {
 };
 $('route-approve').onclick = async () => {
   if (!state.routePending) return;
-  const decidedId = state.routePending.decisionId; // F18：note 与计时器都绑定本张票据
-  const res = await fetch(`/api/v1/route-decisions/${decidedId}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-    body: JSON.stringify({ choice: 'approve' }),
-  });
-  // F18：读取响应正文，如实展示限制——只在弹窗仍开着且票据未变时写入（route.resolved 可能已先关掉）
-  if (res.ok) {
-    const data = await res.json();
-    if (data.note && $('route-dialog').open && state.routePending?.decisionId === decidedId) {
-      $('route-detail').textContent = `已同意。注意：${data.note}`;
-      clearTimeout(state.routeCloseTimer);
-      state.routeCloseTimer = setTimeout(() => {
-        state.routeCloseTimer = null;
-        // F18：close 前核对仍是同一票据——期间到达的新 decision 不得被旧回调关闭
-        if (state.routePending?.decisionId === decidedId) $('route-dialog').close();
-      }, 2000);
-    }
-  }
+  // F18：无已验证的继续动作——点击前明确告知不支持，不发请求、不消耗票据
+  $('route-detail').textContent = '「同意本次路由」暂不可用：平台级路由动作未经验证，宿主不会执行任何切换。请选择"重新编辑"或"取消"。';
 };
 $('route-edit').onclick = () => {
   if (!state.routePending) return;

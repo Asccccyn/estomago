@@ -21,13 +21,17 @@ const target = path.join(backupDir, `chat-${ts}.sqlite3`);
 const db = new DatabaseSync(dbFile);
 db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
 db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
-const schema = db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
-const watermark = db.prepare('SELECT COUNT(*) AS n, MAX(sequence) AS m FROM messages').get();
 db.close();
 
 // §21：先快照后 hash（快照文件与 manifest 一致）——F02 修复：声明必须在引用之前
 const { createHash } = await import('node:crypto');
 const snapHash = createHash('sha256').update(fs.readFileSync(target)).digest('hex');
+// 水位修复：schema/计数/水位一律从快照本身读取（VACUUM 后源库可能已被并发写入改掉，
+// 快照元数据必须描述快照，而不是描述"读取时刻的源库"）
+const snap = new DatabaseSync(target, { readOnly: true });
+const schema = snap.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
+const watermark = snap.prepare('SELECT COUNT(*) AS n, MAX(sequence) AS m FROM messages').get();
+snap.close();
 const manifest = {
   created_at: new Date().toISOString(),
   schema_version: schema?.v ?? 0,
