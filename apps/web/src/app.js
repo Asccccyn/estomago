@@ -87,12 +87,15 @@ async function send() {
     }
     return;
   }
+  // F13：每次发送独立跟踪（旧回执不清空新提交的幂等键）
+  const thisRequestId = state.pendingClientMessageId ?? newClientMessageId();
+  const thisDraft = state.pendingDraft ?? composer.value;
   if (!state.pendingClientMessageId) {
-    state.pendingClientMessageId = newClientMessageId();
-    state.pendingDraft = composer.value;
+    state.pendingClientMessageId = thisRequestId;
+    state.pendingDraft = thisDraft;
     state.submittedDraftRevision = draftGuard.freeze(); // §19：共享守卫冻结
   }
-  const draft = buildOutgoingDraft(state.pendingDraft, state.pendingClientMessageId);
+  const draft = buildOutgoingDraft(thisDraft, thisRequestId);
   try {
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages`, {
       method: 'POST',
@@ -103,8 +106,11 @@ async function send() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     absorbMessage(data.message, { update: true });
-    state.pendingClientMessageId = null;
-    state.pendingDraft = null;
+    // F13：只有仍是同一个请求的 pending 才清除（新提交不受旧回执影响）
+    if (state.pendingClientMessageId === thisRequestId) {
+      state.pendingClientMessageId = null;
+      state.pendingDraft = null;
+    }
     // §19：只有用户没继续输入时才清空（共享守卫）
     if (draftGuard.mayClear(state.submittedDraftRevision)) {
       composer.value = '';
@@ -125,7 +131,7 @@ function ensureTurnState(turnId) {
     const element = document.createElement('div');
     element.className = 'turn';
     $('timeline').appendChild(element); // 立即挂载，绝不 detached
-    ts = { element, reasoningPanel: null, reasoningBody: null, dirty: false, inflight: false, usageEl: null };
+    ts = { element, reasoningPanel: null, reasoningBody: null, dirty: false, inflight: false, usageEl: null, lastAttemptId: null };
     state.turns.set(turnId, ts);
   }
   return ts;
@@ -193,9 +199,11 @@ function renderReasoningBlock(block) {
       ? `（${block.visibility === 'redacted' ? '已删隐' : '未返回可读摘要'}）`
       : block.state === 'streaming' ? '…'
       : block.state === 'conflict' ? '（已按完整块更正）'
-      : block.state === 'truncated' ? '（超存储上限已截断）'
-      : block.visibility === 'no_block' ? '（本轮未返回可读摘要）'
+      : block.state === 'truncated' || block.completeness === 'storage_limited' ? '（超存储上限已截断）'
+      : block.state === 'interrupted' ? '（已中断）'
+      : block.state === 'partial' ? '（部分接收）'
       : block.state === 'failed' ? '（本轮未完成）'
+      : block.visibility === 'no_block' ? '（本轮未返回可读摘要）'
       : '';
   el.textContent = block.text ? block.text + badge : badge || '（等待摘要…）';
   scrollBottom();
@@ -204,6 +212,8 @@ function renderReasoningBlock(block) {
 // AUD-30：按 turn 的 dirty/inflight 刷新状态机——终帧/快照永不因"刷新中"而丢
 function scheduleReasoningRefresh(turnId, attemptId) {
   const ts = ensureTurnState(turnId);
+  // F16：记录最新 attemptId——新 attempt 的事件到达时更新，pump 闭包使用最新值
+  ts.lastAttemptId = attemptId ?? ts.lastAttemptId ?? null;
   ts.dirty = true;
   if (ts.inflight) return;
   ts.inflight = true;
@@ -211,7 +221,8 @@ function scheduleReasoningRefresh(turnId, attemptId) {
     try {
       while (ts.dirty) {
         ts.dirty = false;
-        const url = attemptId ? `/api/v1/turns/${turnId}/reasoning?attempt_id=${encodeURIComponent(attemptId)}` : `/api/v1/turns/${turnId}/reasoning`;
+        const aid = ts.lastAttemptId; // F16：每次循环取最新，不用旧闭包
+        const url = aid ? `/api/v1/turns/${turnId}/reasoning?attempt_id=${encodeURIComponent(aid)}` : `/api/v1/turns/${turnId}/reasoning`;
         const res = await fetch(url, { credentials: 'same-origin' });
         if (res.ok) {
           const data = await res.json();
@@ -289,6 +300,7 @@ function handleEvent(data) {
     case 'turn.completed':
       setTurnState(turnId, 'completed');
       setRoomBadge(null);
+      scheduleReasoningRefresh(turnId, data.attempt_id); // F17：完成时主动刷新终态投影
       break;
     case 'turn.interrupted':
       setTurnState(turnId, 'interrupted');
@@ -357,10 +369,18 @@ $('route-cancel').onclick = async () => {
 };
 $('route-approve').onclick = async () => {
   if (!state.routePending) return;
-  await fetch(`/api/v1/route-decisions/${state.routePending.decisionId}`, {
+  const res = await fetch(`/api/v1/route-decisions/${state.routePending.decisionId}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
     body: JSON.stringify({ choice: 'approve' }),
   });
+  // F18：读取响应正文，如实展示限制
+  if (res.ok) {
+    const data = await res.json();
+    if (data.note) {
+      $('route-detail').textContent = `已同意。注意：${data.note}`;
+      setTimeout(() => $('route-dialog').close(), 2000);
+    }
+  }
 };
 $('route-edit').onclick = () => {
   if (!state.routePending) return;

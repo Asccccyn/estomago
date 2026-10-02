@@ -42,7 +42,16 @@ export class MessageService {
     if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
     this.ensureConversation(opts.conversationId);
     const nowIso = new Date().toISOString();
-    const occurredAt = opts.occurredAt ?? nowIso;
+    // F14：occurred_at 必须是合法 ISO 时间或 null（无效值直接拒绝，不静默入库）
+    let occurredAt = opts.occurredAt ?? nowIso;
+    if (opts.occurredAt !== null && opts.occurredAt !== undefined && opts.occurredAt !== '') {
+      const parsed = new Date(opts.occurredAt);
+      if (isNaN(parsed.getTime())) {
+        throw new Error(`INVALID_OCCURRED_AT: 客户端时间 "${opts.occurredAt.slice(0, 30)}" 不是合法日期`);
+      }
+      // F14：有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
+      occurredAt = opts.occurredAt;
+    }
 
     return tx(this.db, () => {
       const dup = this.db

@@ -16,7 +16,8 @@ export type AssembledSdkOptions = {
     mcpServers: Record<string, never>;
     strictMcpConfig: true;
     includePartialMessages: true;
-    thinking: { type: 'adaptive'; display: 'summarized'; effort?: import('../config/schema.ts').ThinkingEffort };
+    thinking: { type: 'adaptive'; display: 'summarized' };
+    effort?: import('../config/schema.ts').ThinkingEffort; // F07：SDK 契约是 options.effort 顶层
     cwd: string; // SDK 子进程工作目录（隔离 workspaces，绝不指向源码仓库）
     settings: {
       autoMemoryEnabled: false;
@@ -70,15 +71,14 @@ export function buildSdkOptions(opts: {
         mcpServers: {},
         strictMcpConfig: true,
         includePartialMessages: true,
-        thinking: opts.config.runtime.thinking.effort
-          ? { type: 'adaptive', display: 'summarized', effort: opts.config.runtime.thinking.effort }
-          : { type: 'adaptive', display: 'summarized' },
+        thinking: { type: 'adaptive', display: 'summarized' },
         cwd: opts.cwd,
         settings: {
           autoMemoryEnabled: false,
           disableClaudeAiConnectors: true,
           switchModelsOnFlag: false,
         },
+        ...(opts.config.runtime.thinking.effort ? { effort: opts.config.runtime.thinking.effort } : {}), // F07：顶层
         env,
       },
     },

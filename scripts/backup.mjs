@@ -25,6 +25,9 @@ const schema = db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get
 const watermark = db.prepare('SELECT COUNT(*) AS n, MAX(sequence) AS m FROM messages').get();
 db.close();
 
+// §21：先快照后 hash（快照文件与 manifest 一致）——F02 修复：声明必须在引用之前
+const { createHash } = await import('node:crypto');
+const snapHash = createHash('sha256').update(fs.readFileSync(target)).digest('hex');
 const manifest = {
   created_at: new Date().toISOString(),
   schema_version: schema?.v ?? 0,
@@ -36,9 +39,6 @@ const manifest = {
   contains_credentials: false,
   note: '本地恢复点；异机/外置备份需另行配置并加密（18.2）',
 };
-// §21：先快照后 hash（快照文件与 manifest 一致）
-const { createHash } = await import('node:crypto');
-const snapHash = createHash('sha256').update(fs.readFileSync(target)).digest('hex');
 const manifestPath = target.replace(/\.sqlite3$/, '.manifest.json');
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 console.log(`[backup] ${target}`);
