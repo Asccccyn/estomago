@@ -275,6 +275,8 @@ CREATE INDEX idx_usage_turn_attempt ON usage_observations(turn_id, attempt_id);
   {
     version: 3,
     name: 'v0.3-route-states-context-boundary',
+    preSql: 'PRAGMA foreign_keys=OFF', // F01：FK 开关只能在事务外设置
+    postSql: 'PRAGMA foreign_keys=ON',
     sql: `
 CREATE TABLE attempts_v3(
   id TEXT PRIMARY KEY,
@@ -363,6 +365,7 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied:
       }
       continue;
     }
+    if (m.preSql) db.exec(m.preSql); // F01：事务外 PRAGMA
     tx(db, () => {
       db.exec(m.sql);
       db.prepare('INSERT INTO schema_migrations(version, name, applied_at, code_hash) VALUES (?,?,?,?)').run(
@@ -372,6 +375,7 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied:
         codeHashOf(m.sql),
       );
     });
+    if (m.postSql) db.exec(m.postSql);
     applied.push(m.version);
   }
   return { applied };

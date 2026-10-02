@@ -43,6 +43,7 @@ test('query() 收到的参数：顶层仅 prompt+options；全部关键字段在
   assert.deepEqual(o.settingSources, []);
   assert.deepEqual(o.tools, []);
   assert.deepEqual(o.thinking, { type: 'adaptive', display: 'summarized' });
+  // F07：effort 在顶层（如有配置）
   assert.equal((o.settings as Record<string, unknown>).autoMemoryEnabled, false);
   assert.equal((o.settings as Record<string, unknown>).disableClaudeAiConnectors, true);
   assert.equal((o.settings as Record<string, unknown>).switchModelsOnFlag, false);

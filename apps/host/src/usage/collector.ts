@@ -52,8 +52,22 @@ export class UsageCollector {
       input_tokens: number | null; output_tokens: number | null;
       cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string;
     }>;
-    const perAttempt = new Map<string, (typeof rows)[number]>();
-    for (const r of rows) perAttempt.set(r.attempt_id, r); // 同 attempt 取最新
+    // F15：同 attempt 聚合全部 request（非 cumulative）；cumulative 单列
+    const perAttempt = new Map<string, { attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }>();
+    for (const r of rows) {
+      if (r.scope === 'cumulative') continue; // cumulative 是基线快照，单独列
+      const cur = perAttempt.get(r.attempt_id);
+      if (!cur) {
+        perAttempt.set(r.attempt_id, { ...r });
+      } else {
+        // 同 attempt 多 request：求和（同维度有 null 则保留 null）
+        cur.input_tokens = cur.input_tokens == null || r.input_tokens == null ? null : cur.input_tokens + r.input_tokens;
+        cur.output_tokens = cur.output_tokens == null || r.output_tokens == null ? null : cur.output_tokens + r.output_tokens;
+        cur.cache_read_input_tokens = cur.cache_read_input_tokens == null || r.cache_read_input_tokens == null ? null : cur.cache_read_input_tokens + r.cache_read_input_tokens;
+        cur.cache_creation_input_tokens = cur.cache_creation_input_tokens == null || r.cache_creation_input_tokens == null ? null : cur.cache_creation_input_tokens + r.cache_creation_input_tokens;
+        cur.completeness = cur.completeness === 'complete' && r.completeness === 'complete' ? 'complete' : 'partial';
+      }
+    }
     const attempts = [...perAttempt.values()].map((r) => ({
       attempt_id: r.attempt_id, scope: r.scope, model: r.model,
       input_tokens: r.input_tokens, output_tokens: r.output_tokens,

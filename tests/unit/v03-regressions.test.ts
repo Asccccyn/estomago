@@ -122,14 +122,14 @@ test('§29 effort：枚举校验 + buildOptions → runner options.effort 全贯
   const { db } = makeDb(root);
   const gate = identity.evaluateGate(db);
   const built = buildSdkOptions({ config, gate, identityText: 'x', cwd: paths.workspacesDir });
-  assert.ok(built.status === 'ok' && built.assembled.options.thinking.effort === 'xhigh');
+  assert.ok(built.status === 'ok' && (built.assembled.options as Record<string, unknown>).effort === 'xhigh'); // F07：顶层
   const captured: Array<{ prompt: string; options: Record<string, unknown> }> = [];
   const runner = new ClaudeSdkRunner((p) => {
     captured.push(p as { prompt: string; options: Record<string, unknown> });
     return (async function* () { yield { type: 'result', subtype: 'success' }; })();
   });
   await runner.run({ prompt: 'p', options: built.assembled!, resumeSessionId: null, abortController: new AbortController(), onEvent: () => {} });
-  assert.equal((captured[0]!.options.thinking as { effort?: string }).effort, 'xhigh', 'SDK options.effort 必须收到');
+  assert.equal((captured[0]!.options as Record<string, unknown>).effort, 'xhigh', 'SDK options.effort 必须收到（F07 顶层）');
   db.close();
 });
 

@@ -148,9 +148,31 @@ export class IdentityService {
     for (const k of ['identity_version', 'i_version', 'runtime_rules_version'] as const) {
       if (!manifest[k]) reasons.push(`manifest.${k} 缺失（ID evidence gate）`);
     }
-    // v0.3（AUD-02 fail-closed 收紧）：I/rules 的内容 hash 也是关键证据
+    // v0.3 + F04：I/rules 的内容 hash 必须非空且能验证到实际文件
     if (!manifest.i_hash) reasons.push('manifest.i_hash 缺失');
     if (!manifest.rules_hash) reasons.push('manifest.rules_hash 缺失');
+    // F04：i_snapshot_ref / runtime_rules_ref 如果存在，hash 必须匹配实际文件
+    const verifyFile = (ref: string | null | undefined, expectedHash: string | null | undefined, label: string): void => {
+      if (!ref || !expectedHash) return; // 引用和 hash 都没给就不校验内容（但上面已检查 hash 非空）
+      const refPath = path.resolve(this.paths.identityDir, ref);
+      if (!fs.existsSync(refPath)) {
+        reasons.push(`${label} 文件不存在：${ref}`);
+        return;
+      }
+      const actual = sha256Hex(fs.readFileSync(refPath));
+      if (actual !== expectedHash) {
+        reasons.push(`${label} 内容 hash 不符：期望 ${expectedHash.slice(0, 8)}… / 实际 ${actual.slice(0, 8)}…`);
+      }
+    };
+    // F04：I 快照和运行规则如有引用，验证实际内容 hash
+    const iRef = (manifest as Record<string, unknown>).i_snapshot_ref as string | undefined;
+    const rulesRef = (manifest as Record<string, unknown>).runtime_rules_ref as string | undefined;
+    verifyFile(iRef, manifest.i_hash, 'I 快照');
+    verifyFile(rulesRef, manifest.rules_hash, '运行规则');
+    // F04：verification_evidence 至少一条非空
+    if (!manifest.verification_evidence || manifest.verification_evidence.length === 0) {
+      reasons.push('verification_evidence 为空（F04：批准材料至少要有一条证据引用）');
+    }
     if (manifest.system_prompt_mode !== 'explicit_custom') reasons.push('system_prompt_mode 须为 explicit_custom');
     if (manifest.approved_source_ref && manifest.approved_source_hash) {
       const ref = path.resolve(this.paths.identityDir, manifest.approved_source_ref);

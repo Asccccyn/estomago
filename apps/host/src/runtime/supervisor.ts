@@ -271,14 +271,15 @@ export class TurnSupervisor {
 
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;
-    // §16（AUD-24）：完整 text 块与流式正文统一核对——published 跟踪 + 前缀补尾；冲突不覆盖已发布气泡
-    const publishedByMessage = new Map<string, string>();
-    const publishText = (sdkMessageId: string, text: string): void => {
-      const prev = publishedByMessage.get(sdkMessageId) ?? '';
-      if (!text.startsWith(prev)) return; // 冲突：已发布气泡不可改写；仅记码
+    // §16 + F11：正文按 (messageId, blockIndex) 跟踪——同一消息多个 text 块各自独立
+    const publishedByKey = new Map<string, string>();
+    const publishText = (sdkMessageId: string, blockIndex: number, text: string): void => {
+      const key = `${sdkMessageId}:${blockIndex}`;
+      const prev = publishedByKey.get(key) ?? '';
+      if (!text.startsWith(prev)) return; // 冲突：已发布气泡不可改写
       const tail = text.slice(prev.length);
       if (tail.length === 0) return;
-      publishedByMessage.set(sdkMessageId, text);
+      publishedByKey.set(key, text);
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
@@ -325,8 +326,11 @@ export class TurnSupervisor {
 
     const runner = d.runnerSelection.runner;
     let result: import('./runner.ts').RunnerRunResult;
+    // F08：race 宽限——runner Promise 不 resolve 也不永久卡队列
+    const RUNNER_HARD_DEADLINE = RUNNER_GRACE_MS + 3000; // forceFinalize 后再多等 3s，然后 race 超时
     try {
-      result = await runner.run({
+      result = await Promise.race([
+        runner.run({
         prompt,
         options: built.assembled,
         resumeSessionId,
@@ -350,7 +354,7 @@ export class TurnSupervisor {
               break;
             case 'text_delta':
               if (ev.channel === 'subagent') break;
-              publishText(ev.sdk_message_id, (publishedByMessage.get(ev.sdk_message_id) ?? '') + ev.text);
+              publishText(ev.sdk_message_id, ev.block_index, (publishedByKey.get(`${ev.sdk_message_id}:${ev.block_index}`) ?? '') + ev.text);
               break;
             case 'content_block_stop':
               if (ev.channel === 'subagent') break;
@@ -360,7 +364,7 @@ export class TurnSupervisor {
               if (ev.channel === 'subagent') break;
               if (ev.matched.some((b) => b.block_type === 'thinking') || ev.matched.some((b) => b.block_type === 'redacted_thinking')) sawReasoningBlock = true;
               for (const b of ev.matched) {
-                if (b.block_type === 'text' && typeof b.text === 'string') publishText(ev.sdk_message_id, b.text); // §16：完整正文核对入通道
+                if (b.block_type === 'text' && typeof b.text === 'string') publishText(ev.sdk_message_id, b.block_index, b.text); // §16+F11
               }
               for (const u of ev.unmatched) {
                 if (u.block_type === 'text' && typeof u.text === 'string' && u.text.length > 0 && !(publishedByMessage.get(ev.sdk_message_id))) {
@@ -396,11 +400,16 @@ export class TurnSupervisor {
               break;
           }
         },
-      });
+        }),
+        new Promise<import('./runner.ts').RunnerRunResult>((_, reject) =>
+          setTimeout(() => reject(new Error('RUNNER_DEADLINE_EXCEEDED')), RUNNER_HARD_DEADLINE).unref?.()
+        ),
+      ]);
     } catch (err) {
-      // AUD-10：runner 异常也走统一终态
-      d.logger.error('runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
-      result = { outcome: 'error', errorClassified: 'unknown', errorCode: 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
+      // AUD-10 + F08：runner 异常/超时也走统一终态（队列不卡死）
+      const isDeadline = String((err as Error)?.message ?? '').includes('RUNNER_DEADLINE_EXCEEDED');
+      d.logger.error(isDeadline ? 'runner_deadline' : 'runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
+      result = { outcome: isDeadline ? 'interrupted' : 'error', errorClassified: null, errorCode: isDeadline ? 'RUNNER_DEADLINE_EXCEEDED' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
     }
     this.active.delete(turnId);
 

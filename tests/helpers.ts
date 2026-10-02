@@ -70,7 +70,7 @@ export function writeApprovedIdentity(root: string, opts: { sdkVersion?: string;
     system_prompt_hash: sha256Hex(identityText), sdk_version: sdk, runtime_version: 'node-test',
     cwd_realpath: fs.realpathSync(paths.workspacesDir), settings_sources: [],
     effective_model: null, effective_tools: [], effective_mcp_servers: null, managed_policy_summary: null,
-    verification_evidence: [], requested_builtin_tools: [], requested_settings_sources: [], bootstrap_receipt_ref: null,
+    verification_evidence: ['test-evidence-ref'], requested_builtin_tools: [], requested_settings_sources: [], bootstrap_receipt_ref: null,
   };
   fs.writeFileSync(path.join(paths.configDir, 'identity-manifest.json'), JSON.stringify(manifest, null, 2));
   // 探针证据：与实装版本绑定（gate 单测用途；可用 seedProbes:false 关闭以测“无证据”路径）

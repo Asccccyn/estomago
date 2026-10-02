@@ -114,11 +114,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         if ((err as Error).message.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: (err as Error).message } });
         throw err;
       }
-      if (!submitted.duplicate) {
-        const message = d.messages.getMessage(submitted.message.id)!;
+      // F12：无论 duplicate 与否，都确保事件已发 + 入队（duplicate 的 turn 可能因事件失败而 pending）
+      const message = d.messages.getMessage(submitted.message.id)!;
+      const eventExists = d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('message.persisted', submitted.turnId) as { n: number };
+      if (eventExists.n === 0) {
         d.events.publish('message.persisted', { conversationId, turnId: submitted.turnId, entityRef: message.id, entityRevision: message.sequence, payload: { message } });
+      }
+      const startedExists = d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('turn.started', submitted.turnId) as { n: number };
+      if (startedExists.n === 0) {
         d.events.publish('turn.started', { conversationId, turnId: submitted.turnId, attemptId: submitted.attemptId, payload: {} });
-        d.supervisor.enqueue(submitted.turnId);
+      }
+      if (!submitted.duplicate || submitted.repaired || eventExists.n === 0) {
+        d.supervisor.enqueue(submitted.turnId); // F12：duplicate 但事件缺失时也重入队
       }
       return json(res, submitted.duplicate ? 200 : 201, { message: submitted.message, duplicate: submitted.duplicate, turn_id: submitted.turnId, repaired: submitted.repaired });
     }
@@ -157,7 +164,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         const built = buildSdkOptions({ config: d.config, gate, identityText, cwd: buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir });
         if (built.status === 'ok') assembledOptions = built.assembled as unknown as Record<string, unknown>;
       }
-      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions });
+      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions,
+        fenceActive: (convId: string) => { // F09：检查活跃 turn
+          return d.db.prepare("SELECT COUNT(*) n FROM turns WHERE conversation_id = ? AND state = 'running'").get(convId)!.n;
+        } });
       return json(res, result.ok ? 200 : 409, result.ok ? { window: result.window } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 

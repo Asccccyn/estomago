@@ -56,7 +56,8 @@ interface RealOptionsShape {
   mcpServers: Record<string, never>;
   strictMcpConfig: true;
   includePartialMessages: true;
-  thinking: { type: 'adaptive'; display: 'summarized'; effort?: string };
+  thinking: { type: 'adaptive'; display: 'summarized' };
+  effort?: string; // F07：SDK 顶层
   cwd: string;
   settings: Record<string, unknown>;
   env: Record<string, string>;
@@ -85,6 +86,7 @@ export class ClaudeSdkRunner implements AgentRunner {
       strictMcpConfig: o.strictMcpConfig,
       includePartialMessages: o.includePartialMessages,
       thinking: o.thinking,
+      ...(o.effort ? { effort: o.effort } : {}),
       cwd: o.cwd,
       settings: o.settings,
       env: o.env,
