@@ -12,7 +12,8 @@ export type ContentBlockType = 'thinking' | 'text' | 'tool_use' | 'redacted_thin
 export type RawStreamEvent =
   | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null; session_id?: string | null }
   | { type: 'assistant'; message: RawAssistantMessage; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
-  | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string }
+  | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string; errors?: string[] }
+  | { type: 'system'; subtype?: string; message?: string }
   | { type: 'error'; error: string };
 
 export type RawAnthropicEvent =
