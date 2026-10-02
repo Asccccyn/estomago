@@ -125,7 +125,7 @@ test('§29 effort：枚举校验 + buildOptions → runner options.effort 全贯
   const identity = new IdentityService(config, paths);
   const { db } = makeDb(root);
   const gate = identity.evaluateGate(db);
-  const built = buildSdkOptions({ config, gate, identityText: 'x', cwd: paths.workspacesDir });
+  const built = buildSdkOptions({ config, gate, identityText: 'x', approvedRulesText: 'rules', cwd: paths.workspacesDir });
   assert.ok(built.status === 'ok' && (built.assembled.options as Record<string, unknown>).effort === 'xhigh'); // F07：顶层
   const captured: Array<{ prompt: string; options: Record<string, unknown> }> = [];
   const runner = new ClaudeSdkRunner((p) => {
