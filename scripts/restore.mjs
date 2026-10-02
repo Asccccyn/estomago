@@ -62,7 +62,7 @@ try {
   const version = db.prepare("SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations").get()?.v ?? 0;
   const walMode = db.prepare('PRAGMA journal_mode').get();
   console.log(`[restore] 备份校验 OK：schema v${version}，journal=${JSON.stringify(walMode)}`);
-  const CURRENT_SCHEMA = 3; // 与 apps/host/src/db/migrations.ts 最新版本同步
+  const CURRENT_SCHEMA = 4; // 与 apps/host/src/db/migrations.ts 最新版本同步
   if (version > CURRENT_SCHEMA) fail('BACKUP_INCOMPATIBLE', `备份 schema v${version} 高于当前代码支持的版本`);
   db.close();
 } catch (e) {

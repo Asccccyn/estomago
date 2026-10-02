@@ -15,15 +15,15 @@ const draftGuard = makeDraftGuard(); // §19：普通发送与 route edit 共享
 const state = {
   authorized: false,
   composing: false,
-  pendingClientMessageId: null,
-  pendingDraft: null,
+  // F13：未完成发送的单一真源 { requestId, draft, frozenRev }（同 key 重试；成功回执只清自己的）
+  pendingSend: null,
   draftRevision: 0,          // AUD-17：每次用户输入 +1；发送时冻结
-  submittedDraftRevision: null,
   pendingRouteEdit: null,     // { decisionId, messageId, original }
   messages: new Map(),        // message_id -> dto
   lastSequence: 0,            // AUD-09：只应用更新的 sequence
   turns: new Map(),           // turn_id -> {element, reasoningPanel, reasoningBody, dirty, inflight, usageEl}
   routePending: null,
+  routeCloseTimer: null,      // F18：2s 关闭计时器（绑定票据，关下一张弹窗前必须核销）
   reasoningLabel: '思考',
   sse: null,
 };
@@ -56,12 +56,15 @@ void shouldSendOnKeydown; // 无任何按键发送路径（规则单一事实源
 function refreshSendButton() {
   const editing = Boolean(state.pendingRouteEdit);
   $('send-btn').textContent = editing ? '重新发送（修订）' : '发送';
-  $('send-btn').disabled = !canSend(composer.value, { composing: state.composing });
+  // F13：有未完成发送（失败待重试）时按钮必须可点——重试入口不能因 composer 为空而死
+  $('send-btn').disabled = !(canSend(composer.value, { composing: state.composing }) || Boolean(state.pendingSend));
 }
 $('send-btn').addEventListener('click', () => void send());
 
 async function send() {
-  if (!canSend(composer.value, { composing: state.composing })) return;
+  // F13：composer 为空但存在失败待重试的发送 → 按原内容同幂等键重试；composer 有新内容则发新请求（旧失败项作废）
+  const retryPending = Boolean(state.pendingSend) && (composer.value === '' || composer.value === state.pendingSend.draft);
+  if (!canSend(composer.value, { composing: state.composing }) && !retryPending) return;
   // 路由编辑流（AUD-07）：走真修订端点，原消息 revision+1
   if (state.pendingRouteEdit) {
     const { decisionId } = state.pendingRouteEdit;
@@ -87,14 +90,10 @@ async function send() {
     }
     return;
   }
-  // F13：每次发送独立跟踪（旧回执不清空新提交的幂等键）
-  const thisRequestId = state.pendingClientMessageId ?? newClientMessageId();
-  const thisDraft = state.pendingDraft ?? composer.value;
-  if (!state.pendingClientMessageId) {
-    state.pendingClientMessageId = thisRequestId;
-    state.pendingDraft = thisDraft;
-    state.submittedDraftRevision = draftGuard.freeze(); // §19：共享守卫冻结
-  }
+  const thisRequestId = retryPending ? state.pendingSend.requestId : newClientMessageId();
+  const thisDraft = retryPending ? state.pendingSend.draft : composer.value;
+  // F13：pending 携带自己的守卫冻结值——旧回执只允许按"它那次"的修订判断清空，绝不触碰新草稿
+  state.pendingSend = { requestId: thisRequestId, draft: thisDraft, frozenRev: retryPending ? state.pendingSend.frozenRev : draftGuard.freeze() };
   const draft = buildOutgoingDraft(thisDraft, thisRequestId);
   try {
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages`, {
@@ -106,20 +105,19 @@ async function send() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     absorbMessage(data.message, { update: true });
+    const settled = state.pendingSend;
     // F13：只有仍是同一个请求的 pending 才清除（新提交不受旧回执影响）
-    if (state.pendingClientMessageId === thisRequestId) {
-      state.pendingClientMessageId = null;
-      state.pendingDraft = null;
-    }
-    // §19：只有用户没继续输入时才清空（共享守卫）
-    if (draftGuard.mayClear(state.submittedDraftRevision)) {
+    if (settled && settled.requestId === thisRequestId) state.pendingSend = null;
+    // §19/F13：回执只清"仍是自己那次内容"的 composer——用户后来输入的新草稿绝不触碰
+    if (settled && settled.requestId === thisRequestId && draftGuard.mayClear(settled.frozenRev) && composer.value === settled.draft) {
       composer.value = '';
       state.draftRevision = draftGuard.touch();
     }
     refreshSendButton();
     composer.focus();
   } catch (err) {
-    console.warn('发送失败，复用同一幂等键重试', err);
+    // F13：失败保留 pending（同幂等键同内容可重试），按钮保持可点
+    console.warn('发送失败，保留待重试（同幂等键）', err);
     refreshSendButton();
   }
 }
@@ -293,6 +291,8 @@ function handleEvent(data) {
       break;
     case 'turn.status':
       setTurnState(turnId, data.state, data);
+      // F17：failed 终态也补拉——无思考块回合的 no_block 行不发 reasoning 事件，只能按终态拉取
+      if (data.state === 'failed') scheduleReasoningRefresh(turnId, data.attempt_id);
       if (data.state === 'route_pending' || (typeof data.reason === 'string' && data.reason.startsWith('ROUTE_ROOM_PENDING'))) {
         setRoomBadge('路由待决：新消息已保存，模型执行已冻结');
       }
@@ -304,6 +304,7 @@ function handleEvent(data) {
       break;
     case 'turn.interrupted':
       setTurnState(turnId, 'interrupted');
+      scheduleReasoningRefresh(turnId, data.attempt_id); // F17：中断终态同样补拉 no_block 投影
       break;
     case 'reasoning.started':
     case 'reasoning.delta':
@@ -321,6 +322,8 @@ function handleEvent(data) {
       break;
     case 'route.resolved':
       state.routePending = null;
+      clearTimeout(state.routeCloseTimer); // F18：票据已决，旧计时器作废
+      state.routeCloseTimer = null;
       $('route-dialog').close();
       setRoomBadge(null);
       break;
@@ -354,6 +357,8 @@ function setRoomBadge(text) {
 
 // —— 路由弹窗（AUD-07：重新编辑走修订流）——
 function showRouteDialog(data) {
+  clearTimeout(state.routeCloseTimer); // F18：上一张票据的关闭计时器必须核销，不得关掉新票据的弹窗
+  state.routeCloseTimer = null;
   const target = data.target_model ?? '未知（平台未给出目标模型）';
   $('route-detail').textContent =
     `本轮模型请求被平台标记为可能切换路由。目标模型：${target}。是否已切换：${data.already_switched ? '是' : '否/未知'}。` +
@@ -369,16 +374,22 @@ $('route-cancel').onclick = async () => {
 };
 $('route-approve').onclick = async () => {
   if (!state.routePending) return;
-  const res = await fetch(`/api/v1/route-decisions/${state.routePending.decisionId}`, {
+  const decidedId = state.routePending.decisionId; // F18：note 与计时器都绑定本张票据
+  const res = await fetch(`/api/v1/route-decisions/${decidedId}`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
     body: JSON.stringify({ choice: 'approve' }),
   });
-  // F18：读取响应正文，如实展示限制
+  // F18：读取响应正文，如实展示限制——只在弹窗仍开着且票据未变时写入（route.resolved 可能已先关掉）
   if (res.ok) {
     const data = await res.json();
-    if (data.note) {
+    if (data.note && $('route-dialog').open && state.routePending?.decisionId === decidedId) {
       $('route-detail').textContent = `已同意。注意：${data.note}`;
-      setTimeout(() => $('route-dialog').close(), 2000);
+      clearTimeout(state.routeCloseTimer);
+      state.routeCloseTimer = setTimeout(() => {
+        state.routeCloseTimer = null;
+        // F18：close 前核对仍是同一票据——期间到达的新 decision 不得被旧回调关闭
+        if (state.routePending?.decisionId === decidedId) $('route-dialog').close();
+      }, 2000);
     }
   }
 };

@@ -118,6 +118,20 @@ export class SdkEventNormalizer {
         out.push({ kind: 'complete_message', sdk_message_id: id, session_id: this.session_id, channel, matched, unmatched });
         break;
       }
+      case 'system': {
+        // F10：结构化 system 事件（model_refusal_fallback / model_refusal_no_fallback 等）不再丢弃
+        if (raw.session_id) this.session_id = raw.session_id;
+        if (raw.request_id) this.request_id = raw.request_id;
+        out.push({
+          kind: 'system_notice',
+          subtype: raw.subtype ?? 'unknown',
+          content: raw.content ?? raw.message ?? null,
+          original_model: raw.original_model ?? null,
+          fallback_model: raw.fallback_model ?? null,
+          session_id: this.session_id,
+        });
+        break;
+      }
       case 'result': {
         if (raw.session_id) this.session_id = raw.session_id;
         if (raw.usage) out.push({ kind: 'usage', scope: 'turn', usage: raw.usage, source: 'sdk_result', completeness: 'complete' });
@@ -126,7 +140,9 @@ export class SdkEventNormalizer {
           this.sawSuccessResult = true;
           out.push({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: this.session_id, request_id: this.request_id });
         } else {
-          const message = raw.error ?? `result subtype=${raw.subtype ?? 'unknown'} is_error=${raw.is_error ?? false}`;
+          // F10：errors 数组也是错误文本来源（error 字段为空时不至于丢失分类线索）
+          const message = raw.error ?? (Array.isArray(raw.errors) && raw.errors.length > 0 ? raw.errors.join('; ') : null)
+            ?? `result subtype=${raw.subtype ?? 'unknown'} is_error=${raw.is_error ?? false}`;
           this.lastError = { classified: classifyError(message), message };
           out.push({ kind: 'turn_end', outcome: 'error', error_classified: this.lastError.classified, error_message: message, session_id: this.session_id, request_id: this.request_id });
         }

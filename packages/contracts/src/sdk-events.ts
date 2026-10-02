@@ -13,7 +13,8 @@ export type RawStreamEvent =
   | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null; session_id?: string | null }
   | { type: 'assistant'; message: RawAssistantMessage; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
   | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string; errors?: string[] }
-  | { type: 'system'; subtype?: string; message?: string }
+  // F10：对齐 0.3.283 SDKSystemMessage（model_refusal_fallback / model_refusal_no_fallback 等结构化子类型）
+  | { type: 'system'; subtype?: string; content?: string; message?: string; original_model?: string; fallback_model?: string | null; request_id?: string | null; session_id?: string | null }
   | { type: 'error'; error: string };
 
 export type RawAnthropicEvent =
@@ -67,6 +68,8 @@ export type SdkNormalizedEvent =
       unmatched: UnmatchedCompleteBlock[]; // 无开放块可匹配：进 unmatched 路径，绝不猜下标
     }
   | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream'; completeness: 'complete' | 'partial' }
+  // F10：system 事件（含 model_refusal_fallback / model_refusal_no_fallback）不再被归一化层丢弃
+  | { kind: 'system_notice'; subtype: string; content: string | null; original_model: string | null; fallback_model: string | null; session_id: string | null }
   | { kind: 'turn_end'; outcome: 'completed' | 'error'; error_classified: ErrorClass | null; error_message: string | null; session_id: string | null; request_id: string | null };
 
 // 错误分类（10.1：普通拒绝、网络故障和明确路由分别归类；不确定归 unknown，不冒充路由）
@@ -77,6 +80,13 @@ export function classifyError(message: string | null | undefined): ErrorClass {
   const m = message.toLowerCase();
   if (m.includes('route_signal:') || m.includes('model_switch_requested')) return 'route_signal';
   if (m.includes('refus') || m.includes('permission denied') || m.includes('not allowed')) return 'refusal';
-  if (m.includes('network') || m.includes('timeout') || m.includes('econnreset') || m.includes('fetch failed')) return 'network';
+  // F10：网络故障的常见可观测词形（Node 错误码 / fetch 语义），其余仍归 unknown 不冒充
+  if (
+    m.includes('network') || m.includes('timeout') || m.includes('timed out') ||
+    m.includes('econnreset') || m.includes('econnrefused') || m.includes('enotfound') ||
+    m.includes('eai_again') || m.includes('ehostunreach') || m.includes('epipe') ||
+    m.includes('fetch failed') || m.includes('socket hang up') || m.includes('connection error') ||
+    m.includes('socket disconnected') || m.includes('terminated')
+  ) return 'network';
   return 'unknown';
 }
