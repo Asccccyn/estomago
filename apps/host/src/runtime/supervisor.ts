@@ -143,7 +143,7 @@ export class TurnSupervisor {
       | undefined;
     if (!turn) return;
     const attempt = d.db.prepare("SELECT * FROM attempts WHERE turn_id = ? AND state = 'pending' ORDER BY attempt_no DESC LIMIT 1").get(turnId) as
-      | { id: string; attempt_no: number; input_revision: number | null }
+      | { id: string; attempt_no: number; input_revision: number | null; fresh_session?: number }
       | undefined;
     if (!attempt) return;
 
@@ -171,9 +171,10 @@ export class TurnSupervisor {
 
     // —— 运行时 gate ——
     const gate = d.identity.evaluateGate(d.db);
-    const identityText = gate.state === 'READY' && gate.manifest ? d.identity.readApprovedIdentityText(gate.manifest) : null;
+    // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
+    const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const built = buildSdkOptions({ config: d.config, gate, identityText, cwd: workspacesDir });
+    const built = buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
       return;
@@ -200,7 +201,9 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');
       return;
     }
-    const resumeSessionId = window.sdk_session_id;
+    // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
+    // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑
+    const resumeSessionId = attempt.fresh_session ? null : window.sdk_session_id;
 
     // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
@@ -252,6 +255,8 @@ export class TurnSupervisor {
     let sawReasoningBlock = false;
     // §16 + F11：正文按 (messageId, blockIndex) 跟踪——同一消息多个 text 块各自独立
     const publishedByKey = new Map<string, string>();
+    // F11 第二道防线：归一化事件层的包幂等（runner 直发场景不经 normalizer；同 packet_uuid 只处理一次）
+    const handledPacketUuids = new Set<string>();
     const publishText = (sdkMessageId: string, blockIndex: number, text: string): void => {
       const key = `${sdkMessageId}:${blockIndex}`;
       const prev = publishedByKey.get(key) ?? '';
@@ -262,6 +267,8 @@ export class TurnSupervisor {
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
+    let fallbackSwitched = false; // F10：模型切换已发生（SDK 观测）——回合按 interrupted 收口并标注原因
+    let actualModelForUsage: string | null = null; // F10：用量记账用实际模型，不用配置模型冒充
     const publishSegments = (segs: string[]): void => {
       for (const seg of segs) {
         if (runToken.token.cancelled) return;
@@ -315,7 +322,9 @@ export class TurnSupervisor {
         resumeSessionId,
         abortController: runToken.controller,
         onEvent: (ev) => {
-          if (runToken.token.cancelled) return; // generation fence（AUD-05/03 迟到 chunk）
+          // generation fence（AUD-05/03 迟到 chunk）：只挡内容类事件（正文/思考/工具投影）；
+          // usage 与路由事实是记账观测，不是发布——fence 后仍须入账（F10：实际模型不能丢）
+          if (runToken.token.cancelled && ev.kind !== 'usage' && ev.kind !== 'system_notice' && ev.kind !== 'packet_conflict') return;
           switch (ev.kind) {
             case 'content_block_start':
               if (ev.channel === 'subagent') break; // 子代理不投影进主私聊（AUD-12）
@@ -341,15 +350,20 @@ export class TurnSupervisor {
               break;
             case 'complete_message':
               if (ev.channel === 'subagent') break;
+              if (ev.packet_uuid) {
+                // F11：同包重投（归一化层）只处理首次；后续重放不再发布正文
+                if (handledPacketUuids.has(ev.packet_uuid)) break;
+                handledPacketUuids.add(ev.packet_uuid);
+              }
               if (ev.matched.some((b) => b.block_type === 'thinking') || ev.matched.some((b) => b.block_type === 'redacted_thinking')) sawReasoningBlock = true;
               for (const b of ev.matched) {
                 if (b.block_type === 'text' && typeof b.text === 'string') publishText(ev.sdk_message_id, b.block_index, b.text); // §16+F11
               }
               for (const u of ev.unmatched) {
                 // §16+F11：只有无开放块对应的完整 text 才安全发布；ambiguous 不猜归属（reasoning 侧仍核对）。
-                // u.seq < 0 与流式块下标（≥0）键空间天然隔离，同块重投幂等
+                // 发布键绑定包 uuid（无则退化为 message id）——不同包同文字不误判，同包重投已被上层拦截
                 if (u.reason !== 'no_open_block' || u.block_type !== 'text' || typeof u.text !== 'string' || u.text.length === 0) continue;
-                publishText(ev.sdk_message_id, u.seq, u.text);
+                publishText(`${ev.packet_uuid ?? ev.sdk_message_id}`, u.seq, u.text);
               }
               d.reasoning.reconcileCompleteMessage({
                 conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
@@ -366,7 +380,8 @@ export class TurnSupervisor {
             case 'usage':
               d.usage.record({
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
-                model: d.config.runtime.model, source: ev.source, completeness: ev.completeness,
+                model: actualModelForUsage ?? d.config.runtime.model, // F10：SDK 观测到实际模型后按实际值记账
+                source: ev.source, completeness: ev.completeness,
               });
               d.events.publish('usage.updated', {
                 conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
@@ -376,9 +391,31 @@ export class TurnSupervisor {
             case 'turn_end':
               if (ev.outcome === 'error' && ev.error_classified === 'route_signal') handleRouteSignal();
               break;
+            case 'packet_conflict':
+              // F11：同包标识不同载荷——不发布正文，留观测（不落 content 正文——隐私纪律）
+              d.logger.warn('sdk_packet_conflict', { turn_id: turnId, code: 'PACKET_PAYLOAD_CONFLICT' });
+              break;
             case 'system_notice':
-              // F10：结构化 system 事件落观测日志（只记 subtype/模型，不落 content 正文——隐私纪律）
+              // F10：结构化 system 事件（只记 subtype/模型，不落 content 正文——隐私纪律）
               d.logger.info('sdk_system_notice', { turn_id: turnId, subtype: ev.subtype, original_model: ev.original_model, fallback_model: ev.fallback_model });
+              if (ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
+                const actualModel = ev.subtype === 'model_refusal_fallback' ? (ev.fallback_model ?? null) : null;
+                try {
+                  d.routing.recordSdkRouteEvent({
+                    conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
+                    subtype: ev.subtype, originalModel: ev.original_model, actualModel,
+                  });
+                } catch (err) {
+                  d.logger.error('route_event_tx_failed', { turn_id: turnId, code: stableCode(err) });
+                }
+                if (actualModel) {
+                  // 切换已发生：后续生成/工具动作按规格暂停——fence + abort，回合按 interrupted 收口
+                  actualModelForUsage = actualModel;
+                  fallbackSwitched = true;
+                  runToken.token.cancelled = true;
+                  runToken.controller.abort();
+                }
+              }
               break;
             default:
               break;
@@ -406,9 +443,11 @@ export class TurnSupervisor {
     }
     this.active.delete(turnId);
 
-    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口
+    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口；
+    // fresh_session 重跑完成后改绑新 session（旧 session 因含被替代输入而弃用）
     if (result.sessionId && !resumeSessionId) {
-      d.windows.bindSession(window.id, result.sessionId);
+      if (attempt.fresh_session) d.windows.rebindSession(window.id, window.sdk_session_id, result.sessionId);
+      else d.windows.bindSession(window.id, result.sessionId);
     }
 
     const now = new Date().toISOString();
@@ -424,10 +463,12 @@ export class TurnSupervisor {
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'interrupted', generation });
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
       tx(d.db, () => {
-        d.db.prepare("UPDATE attempts SET state = 'interrupted', completed_at = ? WHERE id = ?").run(now, attempt.id);
+        // F10：SDK 观测到模型切换后的暂停——如实标注原因，与用户主动停止区分
+        d.db.prepare("UPDATE attempts SET state = 'interrupted', blocked_reason = ?, completed_at = ? WHERE id = ?")
+          .run(fallbackSwitched ? 'MODEL_FALLBACK_SWITCHED' : null, now, attempt.id);
         d.db.prepare("UPDATE turns SET state = 'interrupted', completed_at = ? WHERE id = ?").run(now, turnId);
       });
-      d.events.publish('turn.interrupted', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation } });
+      d.events.publish('turn.interrupted', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, ...(fallbackSwitched ? { reason: 'MODEL_FALLBACK_SWITCHED' } : {}) } });
       return;
     }
     if (result.outcome === 'error' || result.outcome === 'no_final_result') {

@@ -11,7 +11,7 @@ export type ContentBlockType = 'thinking' | 'text' | 'tool_use' | 'redacted_thin
 
 export type RawStreamEvent =
   | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null; session_id?: string | null }
-  | { type: 'assistant'; message: RawAssistantMessage; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
+  | { type: 'assistant'; message: RawAssistantMessage; uuid?: string | null; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
   | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string; errors?: string[] }
   // F10：对齐 0.3.283 SDKSystemMessage（model_refusal_fallback / model_refusal_no_fallback 等结构化子类型）
   | { type: 'system'; subtype?: string; content?: string; message?: string; original_model?: string; fallback_model?: string | null; request_id?: string | null; session_id?: string | null }
@@ -66,7 +66,9 @@ export type SdkNormalizedEvent =
       channel: EventChannel;
       matched: MatchedCompleteBlock[]; // 已匹配到流式开放块（按类型顺序匹配）
       unmatched: UnmatchedCompleteBlock[]; // 无开放块可匹配：进 unmatched 路径，绝不猜下标
+      packet_uuid: string | null; // F11：SDK 传输包稳定标识（重放幂等键；无 uuid 的包由内容指纹承担）
     }
+  | { kind: 'packet_conflict'; packet_key: string; session_id: string | null } // F11：同包标识不同载荷——不发布正文，只留观测
   | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream'; completeness: 'complete' | 'partial' }
   // F10：system 事件（含 model_refusal_fallback / model_refusal_no_fallback）不再被归一化层丢弃
   | { kind: 'system_notice'; subtype: string; content: string | null; original_model: string | null; fallback_model: string | null; session_id: string | null }

@@ -112,6 +112,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null });
       } catch (err) {
         if ((err as Error).message.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: (err as Error).message } });
+        if ((err as Error).message.includes('INVALID_OCCURRED_AT')) return json(res, 422, { error: { code: 'invalid_occurred_at', message: (err as Error).message } });
         throw err;
       }
       // F12：无论 duplicate 与否，都确保事件已发 + 入队（duplicate 的 turn 可能因事件失败而 pending）
@@ -160,15 +161,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       let assembledOptions: Record<string, unknown> | null = null;
       if (gate.state === 'READY' && gate.manifest) {
         const { buildSdkOptions } = await import('../runtime/build-options.ts');
-        const identityText = d.identity.readApprovedIdentityText(gate.manifest);
+        const materials = d.identity.loadVerifiedMaterials(gate.manifest); // F04：与执行路径同一份已验证材料
         const { buildPaths, resolveStateRoot } = await import('../config/paths.ts');
-        const built = buildSdkOptions({ config: d.config, gate, identityText, cwd: buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir });
+        const built = buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir });
         if (built.status === 'ok') assembledOptions = built.assembled as unknown as Record<string, unknown>;
       }
-      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions,
-        fenceActive: (convId: string) => { // F09：检查活跃 turn
-          return d.db.prepare("SELECT COUNT(*) n FROM turns WHERE conversation_id = ? AND state = 'running'").get(convId)!.n;
-        } });
+      // F09：安全检查已在 WindowManager.rotate 内部（running + 待决票据），此处不再传可选回调
+      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions });
       return json(res, result.ok ? 200 : 409, result.ok ? { window: result.window } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
@@ -194,6 +193,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const body = (await readJson(req, d)) as { choice?: string; content?: string };
       if (body.choice !== 'approve' && body.choice !== 'edit' && body.choice !== 'cancel') {
         return json(res, 400, { error: { code: 'bad_choice', message: 'choice 必须是 approve/edit/cancel' } });
+      }
+      // F18：approve（按原配置重跑）没有已验证的单次继续动作——拒绝且不消耗票据；
+      // 已消费/不存在的票据仍按原语义报 409/404（多端重复点击只有一个生效）
+      if (body.choice === 'approve') {
+        const row = d.routing.get(decisionId);
+        if (!row) return json(res, 404, { error: { code: 'ROUTE_NOT_FOUND', message: '票据不存在' } });
+        if (row.state !== 'pending') {
+          return json(res, 409, { error: { code: 'ROUTE_ALREADY_RESOLVED', message: `票据已 ${row.state}${row.choice ? `(${row.choice})` : ''}` } });
+        }
+        return json(res, 422, { error: { code: 'approve_not_supported', message: '继续路由动作未验证（无平台级路由执行能力）：票据保持待决，可重新编辑或取消' } });
       }
       // AUD-06：先完整验证（RoutingService.validateAndConsume），非法请求票据不受影响
       const consumed = d.routing.validateAndConsume(decisionId, body.choice === 'edit' ? { choice: 'edit', content: String(body.content ?? '') } : { choice: body.choice });

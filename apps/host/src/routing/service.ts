@@ -74,6 +74,33 @@ export class RoutingService {
     return row;
   }
 
+  // F10：SDK 结构化路由事实落账 + 可回放事件（fallback 已发生 / 拒绝未切换）。
+  // 事实与票据分离：这不是待批准动作，是已发生的观测——不得呈现为事前票据
+  recordSdkRouteEvent(o: {
+    conversationId: string; turnId: string; attemptId: string;
+    subtype: string; originalModel: string | null; actualModel: string | null;
+    scope?: string | null; noticeId?: string | null; requestId?: string | null;
+  }): { id: string } {
+    const id = genId('sre');
+    tx(this.db, () => {
+      this.db
+        .prepare(
+          `INSERT INTO sdk_route_events(id, conversation_id, turn_id, attempt_id, subtype, original_model, actual_model, scope, notice_id, request_id, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        )
+        .run(id, o.conversationId, o.turnId, o.attemptId, o.subtype, o.originalModel, o.actualModel, o.scope ?? null, o.noticeId ?? null, o.requestId ?? null, new Date().toISOString());
+    });
+    this.events.publish('route.observed', {
+      conversationId: o.conversationId, turnId: o.turnId, attemptId: o.attemptId, scope: 'private',
+      payload: { subtype: o.subtype, original_model: o.originalModel, actual_model: o.actualModel, already_switched: o.actualModel !== null, evidence: 'sdk_system_notice' },
+    });
+    return { id };
+  }
+
+  listRouteEvents(turnId: string): Array<{ id: string; subtype: string; original_model: string | null; actual_model: string | null; created_at: string }> {
+    return this.db.prepare('SELECT id, subtype, original_model, actual_model, created_at FROM sdk_route_events WHERE turn_id = ? ORDER BY created_at').all(turnId) as Array<{ id: string; subtype: string; original_model: string | null; actual_model: string | null; created_at: string }>;
+  }
+
   get(id: string): RouteDecisionRow | null {
     return (this.db.prepare('SELECT * FROM route_decisions WHERE id = ?').get(id) as RouteDecisionRow | undefined) ?? null;
   }
@@ -145,9 +172,10 @@ export class RoutingService {
           const maxNo = this.db.prepare('SELECT COALESCE(MAX(attempt_no),0)+1 AS n FROM attempts WHERE turn_id = ?').get(row.turn_id) as { n: number };
           const revRow = this.db.prepare('SELECT current_revision FROM messages WHERE id = ?').get(turn.input_message_id) as { current_revision: number };
           newAttemptId = genId('att');
+          // route-edit 的新 attempt：fresh_session=1——修订输入不 resume 旧 session（旧输入排除语义未实测，不得带旧触发重跑）
           this.db
-            .prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,?,?, 'pending')")
-            .run(newAttemptId, row.turn_id, maxNo.n, revRow.current_revision);
+            .prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state, fresh_session) VALUES (?,?,?,?, 'pending', ?)")
+            .run(newAttemptId, row.turn_id, maxNo.n, revRow.current_revision, input.choice === 'edit' ? 1 : 0);
           this.db.prepare("UPDATE turns SET state = 'pending', completed_at = NULL WHERE id = ?").run(row.turn_id);
         }
         if (input.choice === 'cancel') {
@@ -165,10 +193,14 @@ export class RoutingService {
             )
             .run(row.conversation_id).changes,
         );
-        // durable route.resolved：事务内持久（广播失败不丢，可重放）
+        // durable route.resolved：事务内持久（广播失败不丢，可重放）。
+        // edit 携带修订后消息 dto——跨端按 message ID + revision 吸收（旧 revision 不覆盖新 revision）
         resolvedEventRow = this.events.persistInTx('route.resolved', {
           conversationId: row.conversation_id, turnId: row.turn_id, attemptId: row.attempt_id, scope: 'private',
-          payload: { decision_id: decisionId, choice: input.choice, edit_revision: editRevision, new_attempt_id: newAttemptId, released_waiting: releasedWaiting },
+          payload: {
+            decision_id: decisionId, choice: input.choice, edit_revision: editRevision, new_attempt_id: newAttemptId, released_waiting: releasedWaiting,
+            ...(input.choice === 'edit' && turn.input_message_id ? { message: this.messages.getMessage(turn.input_message_id) } : {}),
+          },
         });
       });
     } catch {

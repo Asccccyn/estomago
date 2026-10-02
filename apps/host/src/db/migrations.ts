@@ -1,8 +1,9 @@
 // 建库迁移：01 §16 最小数据表。迁移前记录 code_hash；不可逆变更需先备份（18.2）。
 import type { Db } from './connection.ts';
+import { validateAbsoluteIso } from '../util/time.ts';
 import { tx } from './connection.ts';
 
-const MIGRATIONS: Array<{ version: number; name: string; sql: string }> = [
+const MIGRATIONS: Array<{ version: number; name: string; sql: string; preSql?: string; postSql?: string; repair?: (db: Db) => number }> = [
   {
     version: 1,
     name: 'base-schema',
@@ -354,9 +355,55 @@ WHERE occurred_at IS NULL
    OR occurred_at NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*';
 `,
   },
+  {
+    version: 5,
+    name: 'v0.3.2-sdk-route-events-and-fresh-session',
+    // F10：SDK 结构化路由事实（fallback 已发生/拒绝未切换）持久化+可回放；
+    // route-edit 新 attempt 标记 fresh_session（不 resume 旧 session——旧输入排除语义未验证）
+    sql: `
+CREATE TABLE sdk_route_events(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  subtype TEXT NOT NULL,
+  original_model TEXT,
+  actual_model TEXT,
+  scope TEXT,
+  notice_id TEXT,
+  request_id TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_sdk_route_events_conv ON sdk_route_events(conversation_id, created_at);
+
+ALTER TABLE attempts ADD COLUMN fresh_session INTEGER NOT NULL DEFAULT 0;
+`,
+  },
+  {
+    version: 6,
+    name: 'v0.3.3-occurred-at-calendar-repair',
+    // F14：v4 的 GLOB 形状检查漏掉日历无效值（如 2026-99-01、2月30日）。
+    // 本迁移保留原始值（occurred_at_raw）+ 修复原因（occurred_at_repair），occurred_at 回填 received_at——
+    // 接收时间不冒充真实发生时间，语义由 repair 列如实标注
+    sql: `
+ALTER TABLE message_revisions ADD COLUMN occurred_at_raw TEXT;
+ALTER TABLE message_revisions ADD COLUMN occurred_at_repair TEXT;
+`,
+    repair: (db: Db): number => {
+      const rows = db.prepare('SELECT rowid, occurred_at, received_at FROM message_revisions').all() as Array<{ rowid: number; occurred_at: string | null; received_at: string | null }>;
+      let fixed = 0;
+      for (const r of rows) {
+        if (r.occurred_at !== null && validateAbsoluteIso(r.occurred_at).ok) continue;
+        db.prepare('UPDATE message_revisions SET occurred_at_raw = ?, occurred_at = ?, occurred_at_repair = ? WHERE rowid = ?')
+          .run(r.occurred_at, r.received_at ?? r.occurred_at, 'v6_calendar_repair_to_received_at', r.rowid);
+        fixed++;
+      }
+      return fixed;
+    },
+  },
 ];;
 
-export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied: number[] } {
+export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations(
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -370,8 +417,9 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied:
   const have = new Map(rows.map((r) => [r.version, r.code_hash]));
   const applied: number[] = [];
   for (const m of MIGRATIONS) {
+    if (upTo !== undefined && m.version > upTo) break;
     if (have.has(m.version)) {
-      if (have.get(m.version) !== codeHashOf(m.sql)) {
+      if (have.get(m.version) !== codeHashOf(m.sql + (m.repair ? '\n--with-repair' : ''))) {
         throw new Error(`迁移 v${m.version} code_hash 与历史不一致：不可逆 schema 变更需按 18.2 走备份/兼容验证，不许原地改`);
       }
       continue;
@@ -380,11 +428,12 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string): { applied:
     try {
       tx(db, () => {
         db.exec(m.sql);
+        if (m.repair) m.repair(db); // F14：数据修复与 schema 变更同事务（repair 的存在参与 code_hash）
         db.prepare('INSERT INTO schema_migrations(version, name, applied_at, code_hash) VALUES (?,?,?,?)').run(
           m.version,
           m.name,
           new Date().toISOString(),
-          codeHashOf(m.sql),
+          codeHashOf(m.sql + (m.repair ? '\n--with-repair' : '')),
         );
       });
     } finally {

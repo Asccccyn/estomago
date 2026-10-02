@@ -30,6 +30,8 @@ export class SdkEventNormalizer {
   private unboundCount = 0;
   private sawSuccessResult = false;
   private lastError: { classified: ErrorClass; message: string } | null = null;
+  // F11：完整包重放身份（包键 → 载荷指纹）。仅本 normalizer 生命周期内有效，不冒充跨崩溃保证
+  private seenCompletePackets = new Map<string, string>();
 
   get observedSuccess(): boolean { return this.sawSuccessResult; }
   get lastErrorInfo(): { classified: ErrorClass; message: string } | null { return this.lastError; }
@@ -93,6 +95,19 @@ export class SdkEventNormalizer {
         const channel: EventChannel = raw.parent_tool_use_id ? 'subagent' : 'main';
         if (raw.session_id) this.session_id = raw.session_id;
         if (raw.request_id) this.request_id = raw.request_id;
+        // F11：完整包重放身份——优先 SDK 包 uuid；无 uuid 时用 message id + 内容指纹（同内容视为重放）。
+        // 同键同载荷=重放直接忽略；同键不同载荷=冲突，不发布正文，只发观测事件
+        const payloadFingerprint = `${JSON.stringify(raw.message.content ?? null)}`;
+        const packetKey = raw.uuid
+          ? `uuid:${channel}:${raw.uuid}`
+          : `nouv:${channel}:${raw.message.id ?? ''}:${payloadFingerprint}`;
+        const seen = this.seenCompletePackets.get(packetKey);
+        if (seen !== undefined) {
+          if (seen === payloadFingerprint) break; // 完整重放（uuid 或内容指纹命中）：不产出 complete_message
+          out.push({ kind: 'packet_conflict', packet_key: packetKey, session_id: this.session_id });
+          break;
+        }
+        this.seenCompletePackets.set(packetKey, payloadFingerprint);
         const id = raw.message.id ?? this.currentByChannel.get(channel) ?? `local_assistant_${++this.unboundCount}`;
         if (!this.openBlocks.has(id)) this.openBlocks.set(id, new Map());
         const open = this.openBlocks.get(id)!;
@@ -115,7 +130,7 @@ export class SdkEventNormalizer {
             unmatched.push({ seq: --this.unmatchedSeq, block_type: b.type, text, reason: 'ambiguous' });
           }
         }
-        out.push({ kind: 'complete_message', sdk_message_id: id, session_id: this.session_id, channel, matched, unmatched });
+        out.push({ kind: 'complete_message', sdk_message_id: id, session_id: this.session_id, channel, matched, unmatched, packet_uuid: raw.uuid ?? null });
         break;
       }
       case 'system': {
