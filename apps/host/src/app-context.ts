@@ -26,6 +26,7 @@ import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
 import { RotationReviewService } from './context/rotation-review.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
 import { HostToolExecutor } from './runtime/host-tools.ts';
+import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -116,6 +117,7 @@ export class Host {
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
     const tools = new HostToolExecutor({ mariposa: mariposaClient, reviews, checkpoint });
+    const trajectory = new WindowTrajectoryService(db);
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,
@@ -133,6 +135,7 @@ export class Host {
       tools,
       reviews,
       checkpoint,
+      trajectory,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {
