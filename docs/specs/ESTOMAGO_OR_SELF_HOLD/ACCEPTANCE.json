@@ -798,7 +798,7 @@
       "level": "integration+live_sdk",
       "status": "BLOCKED",
       "evidence": [],
-      "notes": "mock/合同层回归全绿（44 文件）；真实 SDK 实机调用未授权"
+      "notes": "mock/合同层回归全绿（44 文件）；真实 SDK 实机调用未授权【2026-10-05 更新】她的 Claude 账号被封——SDK 实测凭据不可用；mock/合同层回归不受影响。OR 主路径不受影响（OpenRouter 独立计费）。"
     },
     {
       "id": "A068",
@@ -808,7 +808,7 @@
       "level": "contract+live_sdk",
       "status": "BLOCKED",
       "evidence": [],
-      "notes": "需已安装 SDK 版本的 hook 证据（未授权实机）"
+      "notes": "需已安装 SDK 版本的 hook 证据（未授权实机）【2026-10-05 更新】她的 Claude 账号被封——SDK 实测凭据不可用；mock/合同层回归不受影响。OR 主路径不受影响（OpenRouter 独立计费）。"
     },
     {
       "id": "A069",
