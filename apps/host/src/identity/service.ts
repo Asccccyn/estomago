@@ -8,8 +8,12 @@
 // 没有批准身份材料 → 阻断，绝不提供默认人格。
 import fs from 'node:fs';
 import path from 'node:path';
-// 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与
-export function contextFingerprint(config: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } }, manifest: IdentityManifestFile | null): string {
+// 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与。
+// ESTOMAGO_OR_SELF_HOLD §4.1：驱动/模型/缓存配置变更同样改变上下文有效性 → 纳入指纹触发换窗。
+export function contextFingerprint(config: {
+  runtime: { provider?: string; sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
+  openrouter?: { model: string | null; max_output_tokens: number; provider_only: string[]; reasoning: Record<string, unknown> | null };
+}, manifest: IdentityManifestFile | null): string {
   const parts = [
     manifest?.identity_version ?? null,
     manifest?.approved_source_hash ?? null,
@@ -21,9 +25,14 @@ export function contextFingerprint(config: { runtime: { sdk_version: string | nu
     JSON.stringify(config.runtime.setting_sources),
     JSON.stringify(config.runtime.builtin_tools),
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
+    config.runtime.provider ?? 'claude-agent-sdk',
+    config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort(), config.openrouter.reasoning]) : null,
   ];
   return sha256Hex(parts.join('\u0001'));
 }
+
+/** 指纹输入的配置形状（windows/manager 与 supervisor 共用；完整 Config 结构满足此类型） */
+export type BoundaryConfigInput = Parameters<typeof contextFingerprint>[0];
 
 import { createRequire } from 'node:module';
 import type { Db } from '../db/connection.ts';

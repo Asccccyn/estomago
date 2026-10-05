@@ -18,10 +18,12 @@ export class UsageCollector {
   record(o: {
     turnId: string; attemptId: string; scope: 'request' | 'turn' | 'cumulative';
     usage: RawUsage; model?: string | null; requestId?: string | null;
-    source: 'sdk_result' | 'sdk_stream' | 'estimated';
+    source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'estimated';
     completeness?: 'complete' | 'partial' | 'unknown';
   }): void {
-    // 幂等键：(attempt, scope, request_id, model)——F15：source 不进键（同请求跨来源=同一消耗）
+    // 幂等键：(attempt, scope, request_id, model)——F15：source 不进键（同请求跨来源=同一消耗）。
+    // 口径区分：source 只标来源证据；OR 行 input_tokens 携带"总输入（含缓存分类）"语义（§9.3），
+    // 与 SDK 事件的非缓存口径分列展示，绝不求和混算。
     const dup = this.db
       .prepare('SELECT id, completeness FROM usage_observations WHERE attempt_id = ? AND scope = ? AND request_id IS ? AND model IS ?')
       .get(o.attemptId, o.scope, o.requestId ?? null, o.model ?? null) as { id: string; completeness: string } | undefined;

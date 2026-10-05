@@ -11,8 +11,11 @@ import { TextSegmenter } from '../../apps/host/src/output/segments.ts';
 test('AUD-19：nullable 数字矩阵（null/int/float/数字串/乱串/缺失）', () => {
   const ok = validateConfig({ windows: { soft_limit_tokens: 200000 }, reasoning: { auto_delete_days: 30, maximum_buffer_bytes: 65536 }, archive: { semantic_auto_binding_threshold: 0.75 } });
   assert.equal(ok.issues.length, 0);
-  const nullOk = validateConfig({ windows: { soft_limit_tokens: null } });
+  // ESTOMAGO_OR_SELF_HOLD 后 soft_limit_tokens 为必填数字（批准初值 64000）；可空数字语义由 model_context_capacity 承担
+  const nullOk = validateConfig({ windows: { model_context_capacity: null } });
   assert.equal(nullOk.issues.length, 0);
+  const nullSoftNowRejected = validateConfig({ windows: { soft_limit_tokens: null } });
+  assert.ok(nullSoftNowRejected.issues.some((i) => i.path === 'windows.soft_limit_tokens'));
   const numericString = validateConfig({ windows: { soft_limit_tokens: '200000' } });
   assert.ok(numericString.issues.some((i) => i.path === 'windows.soft_limit_tokens'));
   const garbage = validateConfig({ windows: { soft_limit_tokens: 'banana' }, reasoning: { auto_delete_days: [] } });

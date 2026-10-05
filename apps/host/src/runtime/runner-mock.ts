@@ -17,6 +17,10 @@ export class MockRunner implements AgentRunner {
   sessionsCreated: string[] = [];
 
   async run(req: RunnerRunRequest): Promise<RunnerRunResult> {
+    if (req.driver === 'openrouter') {
+      // mock 不实现 OR 协议：测试若需要 OR 行为应注入假 transport 的 OpenRouterRunner，不改 mock 冒充
+      return { outcome: 'error', errorClassified: 'unknown', errorCode: 'MOCK_UNSUPPORTED_OR', errorMessage: 'mock runner 不处理 openrouter 请求', sessionId: null, requestId: null };
+    }
     const scenarioName = (process.env.ESTOMAGO_MOCK_SCENARIO as ScenarioName | undefined) ?? 'consistent';
     const script: RawStreamEvent[] = fixtureScenario(scenarioName, req.prompt);
     // 会话语义：有 resume → 沿用；否则按窗口创建新 session

@@ -9,7 +9,7 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
 import type { EventService } from '../events/service.ts';
-import { contextFingerprint, type GateResult, type IdentityService } from '../identity/service.ts';
+import { contextFingerprint, type BoundaryConfigInput, type GateResult, type IdentityService } from '../identity/service.ts';
 
 export type WindowRow = {
   id: string;
@@ -28,7 +28,7 @@ export type WindowRow = {
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } }) {
+  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput) {
     this.db = db;
     this.events = events;
     this.identity = identity;
@@ -39,7 +39,7 @@ export class WindowManager {
   private events: EventService;
   private identity: IdentityService;
   private handoffsDir: string;
-  private config: { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } } | null;
+  private config: BoundaryConfigInput | null;
 
   activeWindow(conversationId: string): WindowRow | null {
     const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(conversationId) as
@@ -216,7 +216,7 @@ export class WindowManager {
     });
   }
 
-  private identityConfig(): { runtime: { sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] } } {
+  private identityConfig(): BoundaryConfigInput {
     if (!this.config) throw new Error('CONFIG_ERROR: WindowManager 未收到 config，无法计算上下文指纹');
     return this.config;
   }
