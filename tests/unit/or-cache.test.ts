@@ -108,7 +108,9 @@ test('跨轮轨迹：append-only + G 断点入 payload + 失败回合不落轨�
   const traj1 = ctx.trajectory.forWindow(win.id)!;
   assert.equal(traj1.messages.length, 3, '轨迹=system+user1+assistant1');
   assert.equal(traj1.messages[2]!.role, 'assistant');
-  assert.deepEqual(traj1.lastBoundary, { messageIndex: 2, contentIndex: 0 }, '新已发送边界=末 assistant 块');
+  // F18（审计整改）：G 候选=本轮实际发送的最后一个 text 块=用户输入（index 1）；
+  // 最终 assistant 回复尚未随任何请求发送，不得作为已发送边界
+  assert.deepEqual(traj1.lastBoundary, { messageIndex: 1, contentIndex: 0 }, '新已发送边界=实际发送末块（用户输入）');
   // 首轮 payload：A 断点（system 块带 1h cache_control），无 G
   const p1msgs = payloads[0]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
   assert.deepEqual(p1msgs[0]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'A：system 末块 1h');
@@ -120,7 +122,7 @@ test('跨轮轨迹：append-only + G 断点入 payload + 失败回合不落轨�
   assert.deepEqual(traj2.messages.slice(0, 3).map((m) => m.role), traj1.messages.map((m) => m.role), '旧轨迹前缀不变');
   const p2msgs = payloads[1]!.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
   assert.deepEqual(p2msgs[0]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'A 保持');
-  assert.deepEqual(p2msgs[2]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'G：上轮末 assistant 块 1h（保护已发送边界）');
+  assert.deepEqual(p2msgs[1]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'G：上轮实际发送末块（用户输入）1h（保护已发送边界）');
   const explicit = JSON.stringify(p2msgs).match(/"cache_control"/g)?.length ?? 0;
   assert.equal(explicit, 2, '显式断点恰 2 个（A+G）；顶层自动点另算（§7.2 合计 ≤4）');
   assert.equal((payloads[1] as { session_id: string }).session_id, (payloads[0] as { session_id: string }).session_id);

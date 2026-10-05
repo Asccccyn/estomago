@@ -531,6 +531,18 @@ ALTER TABLE provider_requests ADD COLUMN payload_json TEXT;
 ALTER TABLE window_trajectories ADD COLUMN manifest_json TEXT;
 `,
   },
+  {
+    version: 12,
+    name: 'v0.5.2-usage-cost-raw',
+    // 审计 F19（estomago-audit-18a1f1f）：已返回的实际费用与 raw usage 不在桥接中丢失——
+    // cost/reasoning/anomalies/原始帧持久化（展示"已知小计+存在未知"，账单与估计分栏）。
+    sql: `
+ALTER TABLE usage_observations ADD COLUMN cost_usd REAL;
+ALTER TABLE usage_observations ADD COLUMN reasoning_tokens INTEGER;
+ALTER TABLE usage_observations ADD COLUMN anomalies_json TEXT;
+ALTER TABLE usage_observations ADD COLUMN raw_usage_json TEXT;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
