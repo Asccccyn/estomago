@@ -25,6 +25,7 @@ import type { TurnSupervisor } from '../runtime/supervisor.ts';
 import type { AuthService } from '../auth/tokens.ts';
 import { buildReadyReport } from '../observability/health.ts';
 import { buildTimeContext } from '../time/context.ts';
+import { buildRecordSnapshot, listRecordEvents } from './records.ts';
 import { genId } from '../util/id.ts';
 import type { SubmitMessageRequest } from '../../../../packages/contracts/src/api.ts';
 import { PRIMARY_CONVERSATION } from '../app-context.ts';
@@ -45,7 +46,10 @@ export type RequestDeps = {
   windows: WindowManager;
   supervisor: TurnSupervisor;
   auth: AuthService;
-  archiveSync?: { drainOnce(): Promise<unknown> }; // 原文归档同步（未启用时不注入）
+  archiveSync?: {
+    drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
+    rawSyncState?(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean };
+  };
 };
 
 const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
@@ -241,6 +245,27 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     if (route === 'GET /api/v1/time/context') {
       const conversationId = url.searchParams.get('conversation_id') ?? PRIMARY_CONVERSATION;
       return json(res, 200, buildTimeContext(d.db, { conversationId, config: d.config }));
+    }
+
+    // —— 前台"记录"只读端点（contracts/records-api.md）：GET 严格只读，不触发任何生成/hold/换窗 ——
+    const ctxRecords = /^GET \/api\/v1\/conversations\/([^/]+)\/context-records$/.exec(route);
+    if (ctxRecords) {
+      const conversationId = decodeURIComponent(ctxRecords[1]!);
+      const lastSeq = (d.db.prepare('SELECT MAX(sequence) AS m FROM runtime_stream_events WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m;
+      const snapshot = buildRecordSnapshot(
+        { db: d.db, config: d.config, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
+        conversationId,
+        lastSeq,
+      );
+      return json(res, 200, snapshot);
+    }
+
+    const ctxRecordsEvents = /^GET \/api\/v1\/conversations\/([^/]+)\/context-records\/events$/.exec(route);
+    if (ctxRecordsEvents) {
+      const conversationId = decodeURIComponent(ctxRecordsEvents[1]!);
+      const after = Math.max(0, Number(url.searchParams.get('cursor') ?? '0') || 0);
+      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? '30') || 30));
+      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit));
     }
 
     const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);
