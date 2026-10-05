@@ -78,8 +78,12 @@ test('F21：last=1 最近页语义——超过 30 条后能看到最新事件（
   const seqs = data.events.map((e) => e.sequence);
   assert.ok(Math.max(...seqs) >= 35, '最新事件在其中（旧实现永远只给最早的 30 条）');
   assert.ok(data.prevCursor, '可向更早翻页');
-  const older = await (await fetch(`${base}/api/v1/conversations/primary/context-records/events?limit=30&cursor=${data.prevCursor}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { events: Array<{ sequence: number }> };
-  assert.equal(older.events.length, 30, '更早页有内容');
+  // 审计 F26：更早页必须严格前移且与当前页无交集（旧 forward 会原样重发当前页，旧断言把错误锁成绿）
+  const older = await (await fetch(`${base}/api/v1/conversations/primary/context-records/events?limit=30&before=${data.prevCursor}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { events: Array<{ sequence: number }>; prevCursor: string | null };
+  const currentSeqs = new Set(data.events.map((e) => e.sequence));
+  assert.ok(older.events.length > 0 && older.events.length <= 30, '更早页有界有内容');
+  assert.ok(older.events.every((e) => !currentSeqs.has(e.sequence)), '更早页与当前页无交集');
+  assert.ok(Math.max(...older.events.map((e) => e.sequence)) < Math.min(...data.events.map((e) => e.sequence)), '严格前移');
 });
 
 test('F22：换窗后最近检查结果不消失（按房间保留 + 标注非当前窗）', async () => {

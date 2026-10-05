@@ -177,6 +177,7 @@ export class TurnSupervisor {
     controller: AbortController;
     onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
     seenSequence: number;
+    onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null }> {
     const d = this.d;
@@ -214,8 +215,20 @@ export class TurnSupervisor {
           return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null };
         }
       }
+      const payloadJson = JSON.stringify(envelope);
+      const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
+        // 审计 F17：重试的每次真实发送单独留证（首发放到本轮 planned 行，重试插新行）
+        const nowIso = new Date().toISOString();
+        if (info.attemptIndex === 0) {
+          d.db.prepare('UPDATE provider_requests SET sent_at = ?, attempt_no = ?, generation_id = COALESCE(?, generation_id) WHERE id = ?')
+            .run(nowIso, 0, info.generationId ?? null, prqId);
+        } else {
+          d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at, sent_at, attempt_no, generation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            .run(`prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, nowIso, nowIso, info.attemptIndex, info.generationId ?? null);
+        }
+      };
       const result = await Promise.race([
-        runner.run({ driver: 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped }),
+        runner.run({ driver: 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -247,7 +260,12 @@ export class TurnSupervisor {
         content: lastText ?? null,
         tool_calls: captured.map((t) => ({ id: t.tool_id, type: 'function', function: { name: t.tool_name ?? '', arguments: t.text ?? '{}' } })),
       };
-      if (result.reasoningFrames && result.reasoningFrames.length > 0) assistantContinue.reasoning_details = result.reasoningFrames;
+      if (result.reasoningFrames && result.reasoningFrames.length > 0) {
+        // 审计 F13：各帧 delta 的 reasoning_details 是一维数组——续传必须展平回一维 object[]，
+        // 不得嵌套成 object[][]（batch2 旧断言锁定的就是错误形状，已同步修正）
+        const flat = (result.reasoningFrames as unknown[]).flatMap((f) => (Array.isArray(f) ? f : [f]));
+        assistantContinue.reasoning_details = flat;
+      }
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
@@ -523,7 +541,7 @@ export class TurnSupervisor {
     const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, scope: ev.scope, usage: ev.usage, model: d.config.openrouter.model, source: ev.source, completeness: ev.completeness });
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.windowId, scope: ev.scope, usage: ev.usage, model: d.config.openrouter.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属
       }
     };
     const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
@@ -906,6 +924,7 @@ export class TurnSupervisor {
               d.usage.record({
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
                 requestId: reqCtx?.requestId ?? undefined, // F12：同 turn 多请求按请求身份分行保留
+                windowId: window.id, // F31：直接归属窗口（不再只靠 attempt JOIN）
                 model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
