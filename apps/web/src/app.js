@@ -364,12 +364,27 @@ $('records-close').onclick = () => { $('records-panel').hidden = true; };
 const fmtNum = (v) => (typeof v === 'number' ? v.toLocaleString('zh-Hans') : '未知');
 const fmtTime = (iso) => (typeof iso === 'string' ? new Date(iso).toLocaleString('zh-Hans', { hour12: false }) : '—');
 
+async function loadOlderEvents(prevCursor, body) {
+  try {
+    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30&cursor=${prevCursor}`, { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const older = await res.json();
+    const anchor = body.querySelector('.rec-section:last-child');
+    const rows = (older.events ?? []).map((e) => {
+      const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
+      return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}</div>`;
+    }).join('');
+    if (anchor) anchor.insertAdjacentHTML('beforebegin', `<div class="rec-event">${rows}</div>`);
+  } catch { /* 更早页加载失败不影响面板 */ }
+}
+
 async function loadRecords() {
   const body = $('records-body');
   try {
+    // F21：请求"最近一页"（最新 30 条），不再永远拿最早的 30 条；更早的按需加载
     const [snapRes, evRes] = await Promise.all([
       fetch(`/api/v1/conversations/${CONVERSATION}/context-records`, { credentials: 'same-origin' }),
-      fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30`, { credentials: 'same-origin' }),
+      fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30&last=1`, { credentials: 'same-origin' }),
     ]);
     if (!snapRes.ok || !evRes.ok) throw new Error(`HTTP ${snapRes.status}/${evRes.status}`);
     const s = await snapRes.json();
@@ -383,7 +398,7 @@ async function loadRecords() {
       <div>当前输入估计：${fmtNum(s.context.estimatedInput)}（${s.context.estimateQuality}）　上次实际：${fmtNum(s.context.lastActualInput)}</div>
       <div>预警线 ${fmtNum(56000)} / 有效软线 ${fmtNum(s.context.effectiveSoft)}${s.context.hardCapacity == null ? '（模型容量未测量——不画百分比）' : ` / 硬容量 ${fmtNum(s.context.hardCapacity)}`}</div></div>`);
     rows.push(`<div class="rec-section"><h4>记忆与换窗</h4>
-      <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : '已完成 hold'}）` : ''}　hold：${s.review.holdCount ?? 0} 条` : '本窗还没有检查过'}</div>
+      <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : `已完成 hold ${s.review.holdCount ?? 0} 条`}）` : ''}${s.review.isCurrentWindow ? '' : '（上一窗口的结果，换窗不抹去）'}` : '还没有检查过'}</div>
       <div>未新增 hold 是正常状态，不是漏记。</div></div>`);
     rows.push(`<div class="rec-section"><h4>原文同步</h4>
       <div>状态：${{ saved_pending_sync: '已保存，待同步', synced: '已同步 Mariposa', failed: '有失败项（需处理）', partial: '部分', unknown: '未知' }[s.rawSync.state] ?? s.rawSync.state}${s.rawSync.enabled ? '' : '（归档未启用——原文仍完整保存在本地）'}</div>
@@ -392,10 +407,23 @@ async function loadRecords() {
       <div>配置 TTL：1h　保温：未启用</div>
       <div>上次读缓存：${fmtNum(s.cache.lastRead)}　写缓存：${fmtNum(s.cache.lastWrite)}（观测于 ${fmtTime(s.cache.observedAt)}）</div>
       <div>“配置 1h”与“观测到缓存读取”是两回事；无观测时不显示命中。</div></div>`);
-    rows.push(`<div class="rec-section"><h4>最近事件</h4>${(ev.events ?? []).slice().reverse().map((e) => {
-      const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
-      return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}</div>`;
-    }).join('') || '<div class="muted">暂无</div>'}</div>`);
+    // F21：最新在最上；按 eventId 去重（SSE 刷新重拉不重复追加）；事件带关键事实（F22）
+    const seenIds = new Set();
+    const evRows = (ev.events ?? []).slice().reverse().filter((e) => (seenIds.has(e.eventId) ? false : seenIds.add(e.eventId)))
+      .map((e) => {
+        const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
+        const p = e.payload ?? {};
+        const detail = e.kind === 'archive.sync' ? `：${p.state ?? ''}${p.messages ? ` ${p.messages} 条` : ''}`
+          : e.kind === 'context.warning' ? `：估计 ${p.estimate ?? '?'} / 软线 ${p.effective_soft ?? '?'}`
+          : e.kind === 'review.sent' ? `：关注 ${p.focus_count ?? '?'} 条`
+          : e.kind === 'window.rotated' ? `：${p.reason === 'idle' ? '长时间静默' : p.reason === 'manual' ? '手动' : '容量'}${p.review_id ? '（检查通过）' : ''}`
+          : '';
+        return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}${detail}</div>`;
+      }).join('');
+    const olderBtn = ev.prevCursor ? `<button id="records-older" class="ghost" style="margin-top:6px">加载更早</button>` : '';
+    rows.push(`<div class="rec-section"><h4>最近事件</h4>${evRows || '<div class="muted">暂无</div>'}${olderBtn}</div>`);
+    const older = $('records-older');
+    if (older) older.onclick = () => { void loadOlderEvents(ev.prevCursor, body); };
     body.innerHTML = rows.join('');
   } catch (err) {
     body.innerHTML = '<p class="error">记录加载失败（可重试；不影响聊天）</p>';
