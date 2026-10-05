@@ -170,8 +170,8 @@ export class OpenRouterRunner implements AgentRunner {
     await this.sleep(ms);
   }
 
-  private final(outcome: RunnerRunResult['outcome'], errorCode: string | null, errorClassified: RunnerRunResult['errorClassified'], errorMessage: string | null, attempt: number, requestId: string | null = null): RunnerRunResult {
-    return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1 };
+  private final(outcome: RunnerRunResult['outcome'], errorCode: string | null, errorClassified: RunnerRunResult['errorClassified'], errorMessage: string | null, attempt: number, requestId: string | null = null, reasoningFrames: unknown[] | null = null): RunnerRunResult {
+    return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1, ...(reasoningFrames !== null && reasoningFrames.length > 0 ? { reasoningFrames } : {}) };
   }
 
   private errorResult(err: unknown, attempt: number): RunnerRunResult {
@@ -267,6 +267,7 @@ export class OpenRouterRunner implements AgentRunner {
       return { kind: 'result', result: this.final('no_final_result', code, null, code, attempt, finish.id ?? headerGenId) };
     }
     emit({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: null, request_id: finish.id ?? headerGenId });
-    return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id ?? headerGenId) };
+    // §10：opaque reasoning 片段随终态透出——协议继续态保真（宿主续请求原样携带，不解释不重构）
+    return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id ?? headerGenId, finish.reasoningFrames) };
   }
 }

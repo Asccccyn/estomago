@@ -144,7 +144,11 @@ export class IdentityService {
     }
   }
 
-  evaluateGate(db?: Db): GateResult {
+  // 审计 F01：驱动判别——SDK 专属前提（sdk_version 锁定/实装匹配、订阅认证确认、SDK 版本绑定探针、
+  // runtime.model）只约束 SDK 驱动；OR 用自己的明确型号与 key 状态门（selectRunner），共有身份校验
+  // （manifest/版本三键/hash 到文件/证据非空）对两驱动同样强制（§2.1：共有的身份/主体权限校验必需）。
+  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' }): GateResult {
+    const driver = opts?.driver ?? 'claude-agent-sdk';
     const reasons: string[] = [];
     const installed = this.observedSdkVersion();
     const cwdReal = fs.existsSync(this.paths.workspacesDir) ? fs.realpathSync(this.paths.workspacesDir) : null;
@@ -211,17 +215,19 @@ export class IdentityService {
     }
 
     // —— 期望 vs 观测（AUD-02 核心：配置自填 verified 不再是证据）——
-    if (!this.config.runtime.model) reasons.push('runtime.model=null（expected 未配置）');
-    if (!this.config.runtime.sdk_version) reasons.push('runtime.sdk_version=null（expected 未锁定）');
-    if (!this.config.runtime.auth_and_billing_verified) reasons.push('auth_and_billing_verified=false（认证/计费未确认）');
-    if (installed === null) {
-      reasons.push('observed: SDK 包未安装（无法观测版本）');
-    } else {
-      if (this.config.runtime.sdk_version && this.config.runtime.sdk_version !== installed) {
-        reasons.push(`sdk_version 不匹配：配置 ${this.config.runtime.sdk_version} / 实装 ${installed}`);
-      }
-      if (manifest.sdk_version && manifest.sdk_version !== installed) {
-        reasons.push(`manifest.sdk_version=${manifest.sdk_version} 与实装 ${installed} 不符（批准材料针对另一版本）`);
+    if (driver === 'claude-agent-sdk' && !this.config.runtime.model) reasons.push('runtime.model=null（expected 未配置）');
+    if (driver === 'claude-agent-sdk' && !this.config.runtime.sdk_version) reasons.push('runtime.sdk_version=null（expected 未锁定）');
+    if (driver === 'claude-agent-sdk' && !this.config.runtime.auth_and_billing_verified) reasons.push('auth_and_billing_verified=false（认证/计费未确认）');
+    if (driver === 'claude-agent-sdk') {
+      if (installed === null) {
+        reasons.push('observed: SDK 包未安装（无法观测版本）');
+      } else {
+        if (this.config.runtime.sdk_version && this.config.runtime.sdk_version !== installed) {
+          reasons.push(`sdk_version 不匹配：配置 ${this.config.runtime.sdk_version} / 实装 ${installed}`);
+        }
+        if (manifest.sdk_version && manifest.sdk_version !== installed) {
+          reasons.push(`manifest.sdk_version=${manifest.sdk_version} 与实装 ${installed} 不符（批准材料针对另一版本）`);
+        }
       }
     }
     if (!manifest.cwd_realpath || manifest.cwd_realpath !== cwdReal) {
@@ -240,26 +246,28 @@ export class IdentityService {
       reasons.push(`effective_mcp_servers 不符：manifest=${JSON.stringify(observedMcp)} / 配置=${JSON.stringify(expectedMcp)}`);
     }
 
-    // —— 能力探针证据（DB 观测，绑定实装版本）——
-    if (db) {
-      const maxAgeDays = (this.config.identity as { probe_evidence_max_age_days: number | null }).probe_evidence_max_age_days;
-      for (const key of REQUIRED_PROBES) {
-        const row = db
-          .prepare('SELECT state, sdk_version, evidence_ref, observed_at FROM capability_probes WHERE probe_key = ? AND sdk_version = ?')
-          .get(key, installed ?? '') as { state: string; sdk_version: string; evidence_ref: string; observed_at: string } | undefined;
-        probes[key] = row ?? null;
-        if (!row) reasons.push(`probe_missing:${key}（无匹配 ${installed ?? 'null'} 版本的实机证据）`);
-        else if (row.state !== 'supported') reasons.push(`probe_${row.state}:${key}`);
-        else if (!row.evidence_ref || row.evidence_ref.trim() === '') reasons.push(`probe_evidence_missing:${key}（supported 但证据引用为空）`);
-        else if (maxAgeDays != null) {
-          // F04：观测陈旧按明确配置策略判定（probe_evidence_max_age_days；null=不按时间过期）
-          const ageDays = (Date.now() - new Date(row.observed_at).getTime()) / 86_400_000;
-          if (Number.isFinite(ageDays) && ageDays > maxAgeDays) reasons.push(`probe_stale:${key}（观测于 ${row.observed_at}，超出 ${maxAgeDays} 天有效期）`);
+    // —— 能力探针证据（DB 观测，绑定实装版本；SDK 驱动专属——OR 的能力校验走自身型号/端点门）——
+    if (driver === 'claude-agent-sdk') {
+      if (db) {
+        const maxAgeDays = (this.config.identity as { probe_evidence_max_age_days: number | null }).probe_evidence_max_age_days;
+        for (const key of REQUIRED_PROBES) {
+          const row = db
+            .prepare('SELECT state, sdk_version, evidence_ref, observed_at FROM capability_probes WHERE probe_key = ? AND sdk_version = ?')
+            .get(key, installed ?? '') as { state: string; sdk_version: string; evidence_ref: string; observed_at: string } | undefined;
+          probes[key] = row ?? null;
+          if (!row) reasons.push(`probe_missing:${key}（无匹配 ${installed ?? 'null'} 版本的实机证据）`);
+          else if (row.state !== 'supported') reasons.push(`probe_${row.state}:${key}`);
+          else if (!row.evidence_ref || row.evidence_ref.trim() === '') reasons.push(`probe_evidence_missing:${key}（supported 但证据引用为空）`);
+          else if (maxAgeDays != null) {
+            // F04：观测陈旧按明确配置策略判定（probe_evidence_max_age_days；null=不按时间过期）
+            const ageDays = (Date.now() - new Date(row.observed_at).getTime()) / 86_400_000;
+            if (Number.isFinite(ageDays) && ageDays > maxAgeDays) reasons.push(`probe_stale:${key}（观测于 ${row.observed_at}，超出 ${maxAgeDays} 天有效期）`);
+          }
         }
+      } else {
+        for (const key of REQUIRED_PROBES) probes[key] = null;
+        reasons.push('probe_store_unavailable（无法读取能力探针证据）');
       }
-    } else {
-      for (const key of REQUIRED_PROBES) probes[key] = null;
-      reasons.push('probe_store_unavailable（无法读取能力探针证据）');
     }
 
     return {

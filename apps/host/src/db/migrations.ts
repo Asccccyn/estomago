@@ -519,6 +519,18 @@ ALTER TABLE outbox ADD COLUMN batch_id TEXT REFERENCES ingest_batches(operation_
 ALTER TABLE tool_side_effects ADD COLUMN seen_sequence INTEGER;
 `,
   },
+  {
+    version: 11,
+    name: 'v0.5.1-request-replay-and-trajectory-manifest',
+    // 审计 F17/F06（estomago-audit-18a1f1f）：
+    //  - provider_requests.payload_json：实际发送的不可变协议投影（受保护；重放/对账依据）
+    //  - window_trajectories.manifest_json：实际已见对话清单（id/revision/seq）——
+    //    提醒范围与书签视野从"实际发送"产生，不再从聊天库投影。
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN payload_json TEXT;
+ALTER TABLE window_trajectories ADD COLUMN manifest_json TEXT;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
