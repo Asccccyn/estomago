@@ -1,11 +1,14 @@
-// 原文归档同步（ESTOMAGO_OR_SELF_HOLD §1.2/§8.3 + 生命周期包 §4.1）：
-//   用户提交/助手正式发布 → 同事务 outbox（既有生产者）→ 本消费者按稳定 operation_id
-//   批量 source.ingest → 远端 ACK 落 source_sync_receipts → outbox acked。
-//  - 只投影正式消息（用户消息修订 + 助手已发布气泡）；thinking/工具/控制事件/时间包不进 outbox，天然不在此线。
-//  - 幂等：operation_id 由 (会话, 消息@修订 集合) 派生——崩溃重发同 op，服务端重放同 ACK（契约 §4.3）。
-//  - 顺序：同流按 outbox 创建序（=Host authoritative sequence），依赖缺失（SOURCE_NOT_READY）停流不跳过。
-//  - 未启用（archive.enabled=false 或未配 base_url）→ 不发不删，显示"待同步"语义由读取层承担。
-//  - 隐私：错误/事件只记 code/计数/ID，不携正文；本文件不读任何凭据值。
+// 原文归档同步（ESTOMAGO_OR_SELF_HOLD §1.2/§8.3 + 生命周期包 §4.1/§4.3）：
+//   用户提交/助手正式发布 → 同事务 outbox（既有生产者）→ 本消费者按冻结批次同步
+//   source.ingest → 远端 ACK 逐条校验后落 source_sync_receipts → outbox acked。
+//  审计修复（estomago-audit-18a1f1f）：
+//   - F09：批次在首次发送前冻结（ingest_batches：规范化 payload+成员键集）。崩溃/响应丢失
+//     按**字节一致**的原 payload 重放（同 op），新消息只进新批——不重组批、不重读可变前驱版本。
+//   - F10：ACK 逐条校验——op 必须匹配、每条 (origin,revision) 必须有对应回执且 hash 相符；
+//     空回执/缺条目=unknown_outcome，不标 acked。
+//   - F15：SOURCE_NOT_READY/429/502/503/504 视为可重试（批次 attempts 有界，超限 dead）；其余领域错误 dead。
+//   - F16：切批按规范化 JSON 的 UTF-8 字节数（含转义与元数据），不只算原始正文。
+//  隐私：错误/事件只记 code/计数/ID；本文件不读任何凭据值。
 import type { Db } from '../../db/connection.ts';
 import { tx } from '../../db/connection.ts';
 import { Buffer } from 'node:buffer';
@@ -17,41 +20,23 @@ import { classifyError, ingestOperationId, type IngestMessage, type IngestReques
 
 export const INGEST_BATCH_MAX_MESSAGES = 50; // 契约建议初值：每请求 ≤50 条
 export const INGEST_BATCH_MAX_BYTES = 1024 * 1024; // 规范化 JSON 总计 ≤1MiB
+export const INGEST_BATCH_MAX_ATTEMPTS = 10; // 瞬时错误有界重试（F15：超限 dead，不无限循环）
 
 type OutboxRow = {
   id: string;
   operation_key: string; // archive:<message_id>:<revision>
   target: string;
-  payload_ref: string; // {"message_id":"..."}
+  payload_ref: string;
   state: string;
   attempt: number;
   last_error: string | null;
+  batch_id: string | null;
   created_at: string;
   updated_at: string;
 };
 
-type MessageRow = {
-  id: string;
-  conversation_id: string;
-  sequence: number;
-  speaker: string;
-  kind: string;
-  current_revision: number;
-  published_at: string | null;
-  turn_id: string | null;
-};
-
-type RevisionRow = {
-  message_id: string;
-  revision: number;
-  kind: string;
-  content: string;
-  content_hash: string;
-  occurred_at: string | null;
-  received_at: string;
-  source: string;
-  supersedes_revision: number | null;
-};
+type MessageRow = { id: string; conversation_id: string; sequence: number; speaker: string; kind: string; current_revision: number; published_at: string | null };
+type RevisionRow = { message_id: string; revision: number; kind: string; content: string; content_hash: string; occurred_at: string | null; received_at: string; source: string; supersedes_revision: number | null };
 
 export type DrainSummary = { batches: number; acked: number; retry_later: number; dead: number; skipped_disabled: boolean; stopped_streams: number };
 
@@ -73,7 +58,6 @@ export class ArchiveSyncService {
     this.enabled = deps.config.archive.enabled && deps.config.integrations.mariposa.base_url !== null;
   }
 
-  /** 同步状态快照（记录面板/只读）：正文外的计数与状态 */
   rawSyncState(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } {
     const n = (where: string): number =>
       (this.db.prepare(`SELECT COUNT(*) n FROM outbox o JOIN messages m ON m.id = json_extract(o.payload_ref, '$.message_id') WHERE o.target = 'mariposa.archive' AND m.conversation_id = ? AND ${where}`).get(conversationId) as { n: number }).n;
@@ -92,7 +76,7 @@ export class ArchiveSyncService {
       summary.skipped_disabled = true;
       return summary;
     }
-    if (this.draining) return summary; // 单执行者（房间串行语义在同步层同样成立）
+    if (this.draining) return summary; // 单执行者
     this.draining = true;
     try {
       await this.drainLocked(summary);
@@ -103,65 +87,85 @@ export class ArchiveSyncService {
   }
 
   private async drainLocked(summary: DrainSummary): Promise<void> {
-    // 按会话分组、创建序取待同步行。含 unknown_outcome（响应丢失→同 op 重放）与遗留 sent
-    // （进程在标记 sent 后崩溃——重启后按同批行重派生同 op 重发，幂等恢复，不换 op 盲建）。
-    const rows = this.db.prepare(
-      `SELECT o.* FROM outbox o WHERE o.target = 'mariposa.archive' AND o.state IN ('pending','unknown_outcome','sent')
+    // —— 1) 冻结批次恢复（F09）：已绑批次的行（sent/unknown_outcome/重试回退的 pending）
+    //     → 原样字节重放，绝不与新消息重组 ——
+    const frozenOps = this.db.prepare(
+      `SELECT DISTINCT o.batch_id AS op FROM outbox o WHERE o.target = 'mariposa.archive' AND o.state IN ('sent','unknown_outcome','pending') AND o.batch_id IS NOT NULL ORDER BY o.batch_id`,
+    ).all() as Array<{ op: string }>;
+    for (const { op } of frozenOps) {
+      const batch = this.db.prepare('SELECT * FROM ingest_batches WHERE operation_id = ?').get(op) as
+        | { operation_id: string; conversation_id: string; payload_json: string; state: string; attempts: number }
+        | undefined;
+      const rows = this.db.prepare("SELECT * FROM outbox WHERE batch_id = ? AND state IN ('sent','unknown_outcome','pending') ORDER BY created_at, id").all(op) as OutboxRow[];
+      if (!batch || batch.state === 'acked') {
+        // 批次已确认/记录缺失：行对齐到批次终态（记录缺失=本地证据丢失，按 unknown 保留不冒充）
+        if (batch?.state === 'acked') this.markChunk(rows, 'acked', null);
+        else this.markChunk(rows, 'unknown_outcome', 'BATCH_RECORD_MISSING');
+        continue;
+      }
+      if (batch.state === 'dead') {
+        this.markChunk(rows, 'failed', 'BATCH_DEAD');
+        continue;
+      }
+      const payload = JSON.parse(batch.payload_json) as IngestRequest;
+      await this.sendPayload(payload, rows, summary, { operationId: op, conversationId: batch.conversation_id });
+    }
+
+    // —— 2) 新批次：pending/sent/unknown_outcome 且未绑批次 → 组批 → 冻结 → 发送 ——
+    const fresh = this.db.prepare(
+      `SELECT o.* FROM outbox o WHERE o.target = 'mariposa.archive' AND o.state IN ('pending','unknown_outcome','sent') AND o.batch_id IS NULL
        ORDER BY o.created_at, o.id`,
     ).all() as OutboxRow[];
-    if (rows.length === 0) return;
-
+    if (fresh.length === 0) return;
     const byConversation = new Map<string, OutboxRow[]>();
-    for (const row of rows) {
+    for (const row of fresh) {
       const messageId = this.messageIdOf(row);
       if (!messageId) {
-        this.markDead(row, 'PAYLOAD_REF_INVALID', summary);
+        this.markDeadQuietly(row, 'PAYLOAD_REF_INVALID');
+        summary.dead += rows.length;
         continue;
       }
       const msg = this.db.prepare('SELECT conversation_id FROM messages WHERE id = ?').get(messageId) as { conversation_id: string } | undefined;
       if (!msg) {
-        this.markDead(row, 'LOCAL_MESSAGE_MISSING', summary);
+        this.markDeadQuietly(row, 'LOCAL_MESSAGE_MISSING');
+        summary.dead += rows.length;
         continue;
       }
       const list = byConversation.get(msg.conversation_id) ?? [];
       list.push(row);
       byConversation.set(msg.conversation_id, list);
     }
-
     for (const [conversationId, streamRows] of byConversation) {
       let stopped = false;
       let i = 0;
+      let lastOutcome: 'acked' | 'retry_later' | 'dead' = 'acked';
       while (i < streamRows.length && !stopped) {
         const built = this.buildBatch(conversationId, streamRows, i);
         i += built.consumed;
-        for (const row of built.deadRows) this.markDead(row, 'OVERSIZED_MESSAGE', summary);
-        if (built.request === null) continue; // 本段全是本地坏行/超大行，已被逐行处置
-        const outcome = await this.sendBatch(built.request, built.rows);
-        summary.batches++;
-        if (outcome.kind === 'acked') {
-          summary.acked += built.rows.length;
-        } else if (outcome.kind === 'retry_later') {
-          summary.retry_later += built.rows.length;
-          summary.stopped_streams++;
-          stopped = true; // 同流有序：前面批次未确认，后面不继续（不跳过）
-        } else {
-          summary.dead += built.rows.length;
+        for (const row of built.deadRows) {
+          this.markDeadQuietly(row, 'OVERSIZED_MESSAGE');
+          summary.dead++;
         }
-      }
+          if (built.request === null) continue;
+          // F09：发送前冻结——payload/成员键/op 落 ingest_batches，行绑批次（同一事务）
+          tx(this.db, () => {
+            this.db.prepare('INSERT INTO ingest_batches(operation_id, conversation_id, payload_json, keys_json, created_at, updated_at) VALUES (?,?,?,?,?,?)')
+              .run(built.request!.operation_id, conversationId, JSON.stringify(built.request), JSON.stringify(built.rows.map((r) => r.operation_key)), new Date().toISOString(), new Date().toISOString());
+            for (const row of built.rows) {
+              this.db.prepare('UPDATE outbox SET batch_id = ? WHERE id = ?').run(built.request!.operation_id, row.id);
+            }
+          });
+          lastOutcome = await this.sendPayload(built.request, built.rows, summary, { operationId: built.request.operation_id, conversationId });
+          summary.batches++;
+          if (lastOutcome === 'retry_later') {
+            stopped = true; // 同流有序：前批未确认，后面不继续（不跳过）
+            summary.stopped_streams++;
+          }
+        }
     }
   }
 
-  private messageIdOf(row: OutboxRow): string | null {
-    try {
-      const v = JSON.parse(row.payload_ref) as { message_id?: unknown };
-      return typeof v.message_id === 'string' ? v.message_id : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // 从 rows[startIdx] 起累积一个批次：≤50 条且规范化正文合计 ≤1MiB（契约工程初值）。
-  // 超出即切批（剩余行下一批，稳定 op 身份分别派生）；单条自身超限才标死（大对象路径不在本任务）。
+  // 按 JSON 字节数（F16）累积一个批次：≤50 条且规范化消息对象 UTF-8 合计 ≤1MiB
   private buildBatch(conversationId: string, rows: OutboxRow[], startIdx: number): { request: IngestRequest | null; rows: OutboxRow[]; consumed: number; deadRows: OutboxRow[] } {
     const batchRows: OutboxRow[] = [];
     const messages: IngestMessage[] = [];
@@ -176,7 +180,7 @@ export class ArchiveSyncService {
       const revisionNo = Number(row.operation_key.split(':').pop());
       if (!messageId || !Number.isInteger(revisionNo)) {
         this.markDeadQuietly(row, 'PAYLOAD_REF_INVALID');
-        continue; // 本地坏行：处置后越过（consumed 由 i 推进）
+        continue;
       }
       const msg = this.db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId) as MessageRow | undefined;
       const rev = this.db.prepare('SELECT * FROM message_revisions WHERE message_id = ? AND revision = ?').get(messageId, revisionNo) as RevisionRow | undefined;
@@ -184,14 +188,6 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_ROW_MISSING');
         continue;
       }
-      // 字节上限按 UTF-8 实际字节数（契约：不用 JS UTF-16 length 冒充字节数）
-      const serializedBytes = Buffer.byteLength(rev.content ?? '', 'utf8');
-      if (batchRows.length > 0 && bytes + serializedBytes > INGEST_BATCH_MAX_BYTES) break; // 切批，剩余行下一批
-      if (serializedBytes > INGEST_BATCH_MAX_BYTES) {
-        deadRows.push(row); // 单条超限：明确报错，不静默截断
-        continue;
-      }
-      // predecessor：同流 sequence-1 消息及其当前修订（服务端链路校验的对象）；本地链断=坏行处置
       const pred = msg.sequence > 1
         ? (this.db.prepare('SELECT id, current_revision FROM messages WHERE conversation_id = ? AND sequence = ?').get(conversationId, msg.sequence - 1) as { id: string; current_revision: number } | undefined)
         : undefined;
@@ -199,9 +195,7 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_CHAIN_MISSING');
         continue;
       }
-      bytes += serializedBytes;
-      batchRows.push(row);
-      messages.push({
+      const message: IngestMessage = {
         origin_message_id: msg.id,
         revision: rev.revision,
         previous_revision: rev.supersedes_revision,
@@ -215,7 +209,17 @@ export class ArchiveSyncService {
         text: rev.content,
         assets: [],
         content_hash: rev.content_hash,
-      });
+      };
+      // F16：按序列化后的消息对象字节计（转义/元数据全算），不是裸正文
+      const serializedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+      if (batchRows.length > 0 && bytes + serializedBytes > INGEST_BATCH_MAX_BYTES) break; // 切批
+      if (serializedBytes > INGEST_BATCH_MAX_BYTES) {
+        deadRows.push(row); // 单条超限：明确报错不截断（大对象路径不在本任务）
+        continue;
+      }
+      bytes += serializedBytes;
+      batchRows.push(row);
+      messages.push(message);
       keys.push({ messageId: msg.id, revision: rev.revision });
     }
     if (messages.length === 0) return { request: null, rows: [], consumed: i - startIdx, deadRows };
@@ -229,11 +233,12 @@ export class ArchiveSyncService {
     return { request, rows: batchRows, consumed: i - startIdx, deadRows };
   }
 
-  private async sendBatch(request: IngestRequest, chunk: OutboxRow[]): Promise<{ kind: 'acked' | 'retry_later' | 'dead' }> {
-    // 先落 sent（attempt+1）：发送后崩溃 → unknown_outcome 由下一轮同 op 重放恢复
+  // 发送一个（冻结的）payload。F09 恢复路径与新批共用：绝不重建内容。
+  private async sendPayload(request: IngestRequest, rows: OutboxRow[], summary: DrainSummary, meta: { operationId: string; conversationId: string }): Promise<'acked' | 'retry_later' | 'dead'> {
     const now = new Date().toISOString();
     tx(this.db, () => {
-      for (const row of chunk) {
+      this.db.prepare('UPDATE ingest_batches SET attempts = attempts + 1, updated_at = ? WHERE operation_id = ?').run(now, meta.operationId);
+      for (const row of rows) {
         this.db.prepare("UPDATE outbox SET state = 'sent', attempt = attempt + 1, updated_at = ? WHERE id = ?").run(now, row.id);
       }
     });
@@ -241,30 +246,54 @@ export class ArchiveSyncService {
     try {
       result = await this.client.sourceIngest(request);
     } catch (err) {
-      // 网络未知结果：可能已提交（§4.3）——unknown_outcome，同 op 重发由服务端重放，不换 op 盲建
+      // 网络未知：可能已提交（§4.3）——unknown_outcome，下一轮按冻结 payload 同 op 重放
       const code = String((err as Error)?.message ?? err).slice(0, 60);
-      this.markChunk(chunk, 'unknown_outcome', `TRANSPORT_UNKNOWN:${code}`);
-      this.logger.warn('archive_sync_transport_unknown', { op: request.operation_id, code: 'TRANSPORT_UNKNOWN' });
-      return { kind: 'retry_later' };
+      this.markChunk(rows, 'unknown_outcome', `TRANSPORT_UNKNOWN:${code}`);
+      this.logger.warn('archive_sync_transport_unknown', { op: meta.operationId, code: 'TRANSPORT_UNKNOWN' });
+      summary.retry_later += rows.length;
+      return 'retry_later';
     }
     if (!result.ok) {
       const cls = classifyError(result.code);
-      if (cls === 'retry_later') {
-        this.markChunk(chunk, 'pending', result.code);
-        this.events.publish('archive.sync', { conversationId: request.origin_conversation_id, entityRef: request.operation_id, scope: 'private', payload: { state: 'retry_later', code: result.code } });
-        return { kind: 'retry_later' };
+      const attempts = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
+      // F15：瞬时错误（SOURCE_NOT_READY/429/502/503/504）可重试但有界；领域冲突=dead
+      if (cls === 'retry_later' && attempts <= INGEST_BATCH_MAX_ATTEMPTS) {
+        this.markChunk(rows, 'pending', result.code);
+        this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'retry_later', code: result.code, attempts } });
+        summary.retry_later += rows.length;
+        return 'retry_later';
       }
-      this.markChunk(chunk, 'failed', result.code);
-      this.events.publish('archive.sync', { conversationId: request.origin_conversation_id, entityRef: request.operation_id, scope: 'private', payload: { state: 'failed', code: result.code } });
-      this.logger.warn('archive_sync_dead', { op: request.operation_id, code: result.code });
-      return { kind: 'dead' };
+      const code = cls === 'retry_later' ? 'TRANSIENT_EXHAUSTED' : result.code;
+      this.markChunk(rows, 'failed', code);
+      this.markBatchDead(meta.operationId, code);
+      this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'failed', code } });
+      this.logger.warn('archive_sync_dead', { op: meta.operationId, code });
+      summary.dead += rows.length;
+      return 'dead';
     }
+    // F10：ACK 逐条校验——op 匹配 + 每条请求消息都有对应回执（origin+revision），hash 相符
     const ack = result.ack;
     if (!ack || ack.operation_id !== request.operation_id) {
-      this.markChunk(chunk, 'unknown_outcome', 'ACK_SHAPE_INVALID');
-      return { kind: 'retry_later' };
+      this.markChunk(rows, 'unknown_outcome', 'ACK_SHAPE_INVALID');
+      summary.retry_later += rows.length;
+      return 'retry_later';
     }
-    // ACK 落库：远端 source 身份映射（后续 hold/source_selections 使用的正主 ID）与 outbox acked 同事务
+    const byKey = new Map(ack.messages.map((m) => [`${m.origin_message_id}@${m.revision}`, m]));
+    for (const reqMsg of request.messages) {
+      const entry = byKey.get(`${reqMsg.origin_message_id}@${reqMsg.revision}`);
+      if (!entry) {
+        this.markChunk(rows, 'unknown_outcome', 'ACK_INCOMPLETE'); // 空回执/缺条目：不冒充已同步
+        summary.retry_later += rows.length;
+        return 'retry_later';
+      }
+      if (entry.content_hash !== null && entry.content_hash !== reqMsg.content_hash) {
+        this.markChunk(rows, 'failed', 'ACK_HASH_MISMATCH');
+        this.markBatchDead(meta.operationId, 'ACK_HASH_MISMATCH');
+        this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'failed', code: 'ACK_HASH_MISMATCH' } });
+        summary.dead += rows.length;
+        return 'dead';
+      }
+    }
     tx(this.db, () => {
       for (const m of ack.messages) {
         this.db.prepare(
@@ -273,20 +302,37 @@ export class ArchiveSyncService {
            ON CONFLICT(origin_message_id, revision) DO UPDATE SET source_message_id = excluded.source_message_id, content_hash = excluded.content_hash`,
         ).run(genId('ssr'), ack.operation_id, m.origin_message_id, m.revision, m.source_conversation_id, m.source_message_id, m.content_hash, ack.committed_at, new Date().toISOString());
       }
-      for (const row of chunk) {
+      for (const row of rows) {
         this.db.prepare("UPDATE outbox SET state = 'acked', last_error = NULL, updated_at = ? WHERE id = ?").run(new Date().toISOString(), row.id);
       }
+      this.db.prepare("UPDATE ingest_batches SET state = 'acked', updated_at = ? WHERE operation_id = ?").run(new Date().toISOString(), meta.operationId);
     });
-    this.events.publish('archive.sync', { conversationId: request.origin_conversation_id, entityRef: request.operation_id, scope: 'private', payload: { state: 'acked', messages: ack.messages.length, batch_ref: ack.batch_ref } });
-    return { kind: 'acked' };
+    this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'acked', messages: ack.messages.length } });
+    summary.acked += rows.length;
+    return 'acked';
   }
 
-  private markChunk(chunk: OutboxRow[], state: 'pending' | 'failed' | 'unknown_outcome', code: string): void {
+  private messageIdOf(row: OutboxRow): string | null {
+    try {
+      const v = JSON.parse(row.payload_ref) as { message_id?: unknown };
+      return typeof v.message_id === 'string' ? v.message_id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private markChunk(chunk: OutboxRow[], state: 'pending' | 'failed' | 'acked' | 'unknown_outcome', code: string | null): void {
     const now = new Date().toISOString();
     tx(this.db, () => {
       for (const row of chunk) {
-        this.db.prepare('UPDATE outbox SET state = ?, last_error = ?, updated_at = ? WHERE id = ?').run(state, code.slice(0, 200), now, row.id);
+        this.db.prepare('UPDATE outbox SET state = ?, last_error = ?, updated_at = ? WHERE id = ?').run(state, code !== null ? code.slice(0, 200) : null, now, row.id);
       }
+    });
+  }
+
+  private markBatchDead(operationId: string, code: string): void {
+    tx(this.db, () => {
+      this.db.prepare("UPDATE ingest_batches SET state = 'dead', last_error = ?, updated_at = ? WHERE operation_id = ?").run(code, new Date().toISOString(), operationId);
     });
   }
 
@@ -294,10 +340,5 @@ export class ArchiveSyncService {
     tx(this.db, () => {
       this.db.prepare("UPDATE outbox SET state = 'failed', last_error = ?, updated_at = ? WHERE id = ?").run(code, new Date().toISOString(), row.id);
     });
-  }
-
-  private markDead(row: OutboxRow, code: string, summary: DrainSummary): void {
-    this.markDeadQuietly(row, code);
-    summary.dead++;
   }
 }

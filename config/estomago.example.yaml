@@ -105,7 +105,10 @@ archive:
 integrations:
   mariposa:
     base_url: null
+    # credential_ref=主模型能力凭据（memory.hold 等）；archive_credential_ref=归档 worker 的
+    # 受限 stream 凭据（审计 F11/LC-050：生产必须分离——归档不得持业务写凭据）
     credential_ref: null
+    archive_credential_ref: null
     contract_version: null
   siren:
     base_url: null

@@ -179,7 +179,14 @@ export type Config = {
   };
 };
 
-export type IntegrationConfig = { base_url: string | null; credential_ref: string | null; contract_version: string | null };
+export type IntegrationConfig = {
+  base_url: string | null;
+  credential_ref: string | null; // 主模型能力凭据（memory.hold 等；环境变量名）
+  // 审计 F11（LC-050）：归档 worker 用独立的受限 stream 凭据（环境变量名）。
+  // null=回退共用 credential_ref（仅限开发/联调；生产必须配置受限 token——联合契约 §8）
+  archive_credential_ref: string | null;
+  contract_version: string | null;
+};
 
 // —— 默认值：与 config/estomago.example.yaml 语义一致 ——
 
@@ -290,10 +297,10 @@ export const CONFIG_DEFAULTS: Config = {
     semantic_auto_binding_enabled: false,
   },
   integrations: {
-    mariposa: { base_url: null, credential_ref: null, contract_version: null },
-    siren: { base_url: null, credential_ref: null, contract_version: null },
-    superposition: { base_url: null, credential_ref: null, contract_version: null },
-    zashidele: { base_url: null, credential_ref: null, contract_version: null },
+    mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    superposition: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    zashidele: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
   },
   notifications: {
     remote_enabled: false,
@@ -398,10 +405,10 @@ const SHAPE: SectionSpec = { section: {
     semantic_auto_binding_threshold: 'number?', semantic_auto_binding_enabled: 'boolean',
   } },
   integrations: { section: {
-    mariposa: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
-    siren: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
-    superposition: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
-    zashidele: { section: { base_url: 'string?', credential_ref: 'string?', contract_version: 'string?' } },
+    mariposa: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
+    siren: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
+    superposition: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
+    zashidele: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
   } },
   notifications: { section: {
     remote_enabled: 'boolean', provider: 'string?', credential_ref: 'string?', aggregate_by_turn: 'boolean',

@@ -65,6 +65,10 @@ export class RotationReviewService {
   complete(reviewId: string, args: ReviewCompleteArgs, invocation: ToolInvocation): { ok: true; review: ReviewRow } | { ok: false; code: string } {
     const row = this.get(reviewId);
     if (!row) return { ok: false, code: 'REVIEW_NOT_FOUND' };
+    // 审计 F08：核验范围=本窗口全部未决写（含普通聊天 hold、既往失败评审的遗留），不只本 review 的账本——
+    // 旧 unknown 不能被新 review 的 no_new_hold 抹掉；有界恢复在核验前由调用方先行探测。
+    const unresolvedWindow = this.unresolvedForWindow(row.windowId);
+    if (unresolvedWindow.length > 0) return { ok: false, code: 'WRITE_UNRESOLVED' };
     const ledger = this.ledgerForReview(reviewId);
     try {
       const completed = completeReview(row, args, invocation, ledger);
@@ -100,14 +104,14 @@ export class RotationReviewService {
   }
 
   // —— 工具副作用账本（§3.3：完成前未决写检查的数据源）——
-  openEffect(input: { reviewId: string | null; turnId: string | null; windowId: string; kind: 'hold' | 'source_bind' | 'review_complete'; operationId: string | null; toolCallId: string }): string {
+  openEffect(input: { reviewId: string | null; turnId: string | null; windowId: string; kind: 'hold' | 'source_bind' | 'review_complete'; operationId: string | null; toolCallId: string; seenSequence: number }): string {
     const id = genId('eff');
     const now = new Date().toISOString();
     tx(this.db, () => {
       this.db.prepare(
-        `INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, created_at, updated_at)
-         VALUES (?,?,?,?,?,'running',0,?,?,?,?)`,
-      ).run(id, input.reviewId, input.turnId, input.windowId, input.kind, input.operationId, input.toolCallId, now, now);
+        `INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, seen_sequence, created_at, updated_at)
+         VALUES (?,?,?,?,?,'running',0,?,?,?,?,?)`,
+      ).run(id, input.reviewId, input.turnId, input.windowId, input.kind, input.operationId, input.toolCallId, input.seenSequence, now, now);
     });
     return id;
   }
@@ -120,9 +124,16 @@ export class RotationReviewService {
   }
 
   /** 回合内未决副作用（turn 收口时仍 unknown/running 的写操作——§3.3：不能被 no_new_hold 抹掉） */
-  unresolvedForWindow(windowId: string): Array<{ id: string; kind: string; state: string }> {
+  unresolvedForWindow(windowId: string): Array<{ id: string; kind: string; state: string; operationId: string | null; seenSequence: number | null }> {
     return this.db.prepare(
-      "SELECT id, kind, state FROM tool_side_effects WHERE window_id = ? AND state IN ('pending','running','unknown','failed_unresolved')",
-    ).all(windowId) as Array<{ id: string; kind: string; state: string }>;
+      "SELECT id, kind, state, operation_id AS operationId, seen_sequence AS seenSequence FROM tool_side_effects WHERE window_id = ? AND state IN ('pending','running','unknown','failed_unresolved')",
+    ).all(windowId) as Array<{ id: string; kind: string; state: string; operationId: string | null; seenSequence: number | null }>;
+  }
+
+  /** 供有界恢复探测枚举 unknown 写（审计 F08：按原 operation_id 查询） */
+  unknownEffectsForWindow(windowId: string): Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null }> {
+    return this.db.prepare(
+      "SELECT id, operation_id AS operationId, seen_sequence AS seenSequence, memory_id AS memoryId FROM tool_side_effects WHERE window_id = ? AND state = 'unknown' AND operation_id IS NOT NULL",
+    ).all(windowId) as Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null }>;
   }
 }

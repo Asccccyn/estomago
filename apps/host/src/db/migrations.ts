@@ -496,6 +496,29 @@ CREATE TABLE window_trajectories(
 );
 `,
   },
+  {
+    version: 10,
+    name: 'v0.5.0-ingest-batch-freeze-and-credentials',
+    // 审计 F09/F16/F11（estomago-audit-18a1f1f）：
+    //  - ingest_batches：首次发送前冻结规范化 payload 与成员键集——unknown/崩溃重试按字节一致重放，
+    //    新消息只进新批次（不重组批、不重读可变前驱版本）。
+    //  - outbox.batch_id：行与冻结批次绑定，恢复按原批重放。
+    sql: `
+CREATE TABLE ingest_batches(
+  operation_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  keys_json TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'in_flight' CHECK (state IN ('in_flight','acked','dead')),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+ALTER TABLE outbox ADD COLUMN batch_id TEXT REFERENCES ingest_batches(operation_id);
+ALTER TABLE tool_side_effects ADD COLUMN seen_sequence INTEGER;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

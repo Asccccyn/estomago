@@ -87,19 +87,24 @@ export class HostToolExecutor {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARICOA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const toolCallId = String(args.__tool_call_id ?? '');
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
-    const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId });
+    const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
     const holdPayload: Record<string, unknown> = {};
     for (const k of ['category', 'text', 'mood_tags', 'our_words', 'plan_ids', 'creation_mode', 'backfill_date']) {
       if (args[k] !== undefined) holdPayload[k] = args[k];
     }
     const r = await this.mariposa.memoryHold({ operationId, holdPayload });
     if (!r.ok) {
-      // 传输未知（结果不明）≠ 失败：标 unknown，不得盲重试也不得当没写（§3.3）
-      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
+      // 审计 F10：结果不明（传输/5xx/429/回执形状无效）≠ 失败——标 unknown，不盲重试也不当没写（§3.3）
+      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT') || r.code === 'RECEIPT_SHAPE_INVALID';
       this.reviews.settleEffect(effectId, unknown ? 'unknown' : 'failed_resolved', false, null);
       return { ok: false, output: { error_code: unknown ? 'HOLD_OUTCOME_UNKNOWN' : `HOLD_${r.code}`, operation_id: operationId } };
     }
     const receipt = r.receipt!;
+    // 审计 F10：错操作号的收据不被信任——远端回执必须对应宿主派生的同一 operation_id
+    if (receipt.operation_id !== operationId) {
+      this.reviews.settleEffect(effectId, 'unknown', false, null);
+      return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH', expected: operationId, got: receipt.operation_id } };
+    }
     this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
     try {
@@ -117,6 +122,44 @@ export class HostToolExecutor {
     return { ok: true, output: { operation_id: receipt.operation_id, memory_id: receipt.memory_id, version: receipt.version, binding_ids: receipt.binding_ids, committed_at: receipt.committed_at } };
   }
 
+  /** 审计 F08：换窗评审前的有界恢复探测——按原 operation_id 查 hold.status；
+   *  有真实回执 → 落 committed + 迟到书签（只补原窗口记录）；completed=false（服务端明确
+   *  无提交证据）→ failed_resolved（不是没发生，是可判定的未提交）；查询失败 → 保持 unknown。 */
+  async recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> {
+    if (!this.mariposa) return { resolved: 0, stillUnknown: this.reviews.unknownEffectsForWindow(windowId).length };
+    let resolved = 0;
+    let stillUnknown = 0;
+    for (const e of this.reviews.unknownEffectsForWindow(windowId)) {
+      const r = await this.mariposa.holdStatus(e.operationId);
+      if (r.ok && r.receipt) {
+        if (r.receipt.operation_id === e.operationId) {
+          this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id);
+          if (e.seenSequence !== null) {
+            try {
+              this.checkpoint.advance(windowId, {
+                id: `recovery:${e.operationId}`, roomId: conversationId, epochId: windowId, operationId: e.operationId,
+                author: 'primary_model', seenSequence: e.seenSequence,
+              }, {
+                id: `${e.operationId}:${r.receipt.memory_id}`, roomId: conversationId, epochId: windowId,
+                operationId: e.operationId, memoryId: r.receipt.memory_id, verified: true, state: 'committed',
+              });
+            } catch { /* 迟到收据不倒退书签；冲突如实留检 */ }
+          }
+          resolved++;
+        } else {
+          stillUnknown++; // 回执错配：不可判定，保持 unknown
+        }
+      } else if (r.ok) {
+        // 服务端明确无提交证据（§5：无记录=尚无提交证据）→ 判定为未提交，解除阻塞
+        this.reviews.settleEffect(e.id, 'failed_resolved', false, null);
+        resolved++;
+      } else {
+        stillUnknown++; // 查询通道不可用/权限拒绝：结果仍不可判定
+      }
+    }
+    return { resolved, stillUnknown };
+  }
+
   private reviewComplete(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
     const reviewId = typeof args.review_id === 'string' ? args.review_id : '';
     const decision = args.decision === 'no_new_hold' || args.decision === 'holds_completed' ? args.decision : null;
@@ -129,7 +172,7 @@ export class HostToolExecutor {
       epochRevision: this.reviews.get(reviewId)?.epochRevision ?? -1,
     });
     if (!r.ok) return { ok: false, output: { error_code: r.code, error: '宿主核验未通过（真实收据/未决写操作检查）' } };
-    const effectId = this.reviews.openEffect({ reviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'review_complete', operationId: null, toolCallId: `${reviewId}:${decision}` });
+    const effectId = this.reviews.openEffect({ reviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'review_complete', operationId: null, toolCallId: `${reviewId}:${decision}`, seenSequence: ctx.seenSequence });
     this.reviews.settleEffect(effectId, 'committed', true, null);
     return { ok: true, output: { review_id: reviewId, decision, memory_ids: r.review.memoryIds ?? [] } };
   }

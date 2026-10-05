@@ -76,6 +76,18 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
+- **2026-10-05 审计整改批次①完成**（针对 estomago-audit-18a1f1f 的 P1 副作用安全组 + 同路径 P2，基线 2adf8b0）：
+  - **F04**：同批工具强制重排——全部写操作先执行并核实，`context_review_complete` 最后验证（§3.3）；`completeReview` 前置**窗口级**未决写检查。
+  - **F05**：手动换窗 HTTP 入口改走 `supervisor.manualRotate` 同一评审管线（无直转旁路）；活跃评审互斥（`ROTATION_ALREADY_IN_PROGRESS`/`REVIEW_IN_PROGRESS`）；`doRotate` 校验活动窗=评审目标窗，迟到评审不叠加轮转（`ROTATION_SUPERSEDED`）。
+  - **F07**：工具分派前检查取消——停止后同批后续工具不再分派（`STOPPED_DURING_TOOLS`）。
+  - **F08**：unknown 写按原 operation_id 有界恢复探测（`memory.hold.status`）：有真实回执→committed+迟到书签（只补原窗）；服务端明确无提交证据→failed_resolved；探测失败→保持 unknown 并阻断换窗。账本记录 seen_sequence。
+  - **F09+F16**：迁移 v10 `ingest_batches`（首次发送前冻结规范化 payload/成员键/op）+ `outbox.batch_id`；崩溃/重试按**字节一致**原 payload 重放（新消息只进新批、前驱版本不再重读）；切批按消息对象 JSON 的 UTF-8 字节（转义/元数据计入）。
+  - **F10**：ACK 逐条校验（op 匹配+每条 origin/revision 有回执+hash 相符；空回执=`ACK_INCOMPLETE`→unknown，不冒充已同步；hash 不符→dead）；hold 回执 operation_id 必须匹配宿主派生值（错配→unknown 不推书签）；`RECEIPT_SHAPE_INVALID`→unknown 不再 failed_resolved。
+  - **F15**：429/502/503/504 归可重试，批次 attempts 有界（≤10 后 `TRANSIENT_EXHAUSTED`）。
+  - **F11**：`integrations.*.archive_credential_ref` 独立归档凭据配置（null=回退共用，仅开发；生产必须受限 stream token——联合契约 §8/LC-050）；app-context 拆分 archive/model 两个客户端。
+  - 新增 `tests/unit/remediation-batch1.test.ts` 9 用例（审计反例翻成正向断言）；全量 42/42 文件 0 失败。
+  - **未动**：F01/F02/F03(部分—blocked_hard 已拦，工具续请求预算重算未做)/F06/F13/F14/F17-F22 留批次②③④。
+
 - **2026-10-05 WP1 完成**（离线部分）：`openrouter` 配置段+硬规则、换窗预算初值（56k/64k/6h/12k/32k/T8k/R8k/S4k）、退役旧预算字段（output/handoff_reserve、max_tool_result）与零点换窗默认值（true→false 硬规则）、`runtime/runner-openrouter.ts`（SSE 解析/payload 构造/用量归一移植自参考实现；429/流前网络故障有界重试、401/402/400 不重试、P2 append-only 断言收口为 error）、supervisor 驱动判别分支（OR 信封：system=身份+批准规则+固定运行片段，user=时间上下文程序事实+正文）、指纹纳入 provider/OR 型号（变更→CONTEXT_STALE）、usage `or_stream` 口径、http runtime 状态（只报布尔）。新增 5 个测试文件 31 用例；全量 36 文件 0 失败。**未做**：真实 OR 外网（A1/A2 门）、MCP 工具执行、跨轮轨迹/缓存断点（WP2-4）。
 - **2026-10-05 WP2 完成**（estómago 侧，离线）：A3 缺口经她裁定**由林石见在 mariposa 仓库实施对应接口**（联合契约装订 `docs/specs/MARIPOSA_LIFECYCLE_v1.0/`，SHA256 验签全过）；estómago 侧落地 `integrations/mariposa/client.ts`（source.ingest/ingest.status/memory.hold+op/hold.status，transport 注入、错误码沿用契约类别）+ `integrations/mariposa/archive-sync.ts`（outbox→批量 ingest：稳定 operation_id 派生、崩溃 unknown_outcome 同 op 重放、遗留 sent 恢复、SOURCE_NOT_READY 停流不跳过、IDEMPOTENCY_CONFLICT dead+事件披露、50 条/1MiB(UTF-8 字节) 切批、编辑修订链 previous_revision、收据落 `source_sync_receipts`（迁移 v7）、rawSyncState 只读快照）；host 接线（启动/提交后/turn 完成后 drain，未启用 no-op）。restore.mjs schema 门同步 v7。9 新用例；全量 37 文件 0 失败。**端到端 BLOCKED**：真实 Mariposa 接口未上线（mock transport 测试 ≠ 联调通过）；`archive.enabled` 生产开启=她另行决定。
 - **2026-10-05 WP3 完成**（estómago 侧，离线）：核心策略移植 `context/review-policy.ts`（selectReviewRange/advanceBookmark/completeReview/rotationPlan——早餐例子/书签不倒退/旧窗收据拒绝/unknown 不可抹掉/56k 仅预警/64k 换窗/6h idle 全部有测试）；迁移 v8（hold_checkpoints/rotation_reviews/tool_side_effects/provider_requests）；`memory/hold-checkpoint.ts`（书签持久化+幂等推进）、`context/rotation-review.ts`（评审创建/完成校验/同范围凭证复用/空范围跳过/副作用账本）、`runtime/host-tools.ts`（memory_hold 经 MariposaClient、context_review_complete 宿主核验，操作幂等 op 由宿主派生）；supervisor：OR 工具循环（≤8 轮、跨轮 previousPayload append-only、评审完成后即收口）、信封 v2（近期原话 12k 预算+已见清单入 provider_requests）、换窗触发（容量已测才参与/6h 用入站前 last_real_user_at/56k 只发事件）、**用户 turn 前同步评审流**（completed/skipped_empty/凭证复用/失败如实阻断不换窗）、跨窗继承（旧窗书签前内容焦点豁免+按房间已检查键）。13 新用例；全量 39 文件 0 失败。**未做**：token 估计为粗估（字符/2.5+上次 usage 校准，已标注精度；真实计数器另接）；Mariposa bootstrap 分页装载 BLOCKED（等接口）；完整协议轨迹持久化与缓存断点归 WP4；评审会话未接 turn 停止键（短生命周期，后续批）。
