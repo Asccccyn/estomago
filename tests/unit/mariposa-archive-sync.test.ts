@@ -266,7 +266,12 @@ test('memory.hold 客户端：operation_id 必带、回执形状校验、holdSta
       return { ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-1', version: 3, binding_ids: ['bd-1'], committed_at: '2026-10-05T00:00:00Z' } };
     }
     if (capability === 'memory.hold.status') {
-      return { ok: true, result: payload.operation_id === 'op-known' ? { operation_id: 'op-known', memory_id: 'mem-1', version: 3, binding_ids: [], committed_at: '2026-10-05T00:00:00Z' } : { found: false } };
+      // mariposa 实施形状（43444cb）：{operation_id, completed, receipt,
+      // memory_current}——回执在 receipt 内层，completed=false 即尚无
+      // 提交证据
+      return { ok: true, result: payload.operation_id === 'op-known'
+        ? { operation_id: 'op-known', completed: true, receipt: { operation_id: 'op-known', memory_id: 'mem-1', version: 3, binding_ids: [], committed_at: '2026-10-05T00:00:00Z' }, memory_current: { exists: true, visibility: 'active', version: 3 } }
+        : { operation_id: payload.operation_id, completed: false, receipt: null } };
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };

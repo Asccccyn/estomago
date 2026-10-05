@@ -87,19 +87,31 @@ export type HoldReceipt = {
 };
 
 function defaultTransport(baseUrl: string, credentialEnv: string | null): MariposaTransport {
+  // 真实 HTTP 表面（2026-10-05 与 mariposa 实施对齐，c9a2af8/43444cb）：
+  //  /api/capability/X（无 v1 前缀）、请求 {arguments:{...}} 信封、成功响应
+  //  {ok,data} 取 data、错误读 error.code。离线 fake transport 不经过此处；
+  //  端到端仍待真实凭据与联调授权。
   return async (capability, payload) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (credentialEnv) {
       const v = process.env[credentialEnv];
       if (typeof v === 'string' && v.length > 0) headers.authorization = `Bearer ${v}`;
     }
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/capability/${capability}`, {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/capability/${capability}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ arguments: payload }),
     });
     if (res.status >= 200 && res.status < 300) {
-      return { ok: true, result: (await res.json().catch(() => ({}))) as Record<string, unknown> };
+      const body = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        data?: Record<string, unknown>;
+        error?: { code?: string };
+      };
+      if (body.ok === false) {
+        return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+      }
+      return { ok: true, result: (body.data ?? {}) as Record<string, unknown> };
     }
     const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
     return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
@@ -119,11 +131,17 @@ export class MariposaClient {
     return { ok: true, result: r.result, ack: parseAck(r.result) };
   }
 
-  /** 同 op 已提交的重放查询（ACK 丢失恢复路径，§4.3/§5） */
+  /** 同 op 已提交的重放查询（ACK 丢失恢复路径，§4.3/§5）。
+   *  mariposa 实施形状：{operation_id, completed, receipt}——回执在
+   *  receipt 内层；completed=false 即尚无提交证据（不是失败）。 */
   async sourceIngestStatus(operationId: string): Promise<MariposaCallResult & { ack?: IngestAck }> {
     const r = await this.transport('source.ingest.status', { operation_id: operationId });
     if (!r.ok) return r;
-    return { ok: true, result: r.result, ack: parseAck(r.result) };
+    const s = r.result as { completed?: boolean; receipt?: Record<string, unknown> };
+    if (s.completed === true && s.receipt) {
+      return { ok: true, result: r.result, ack: parseAck(s.receipt) };
+    }
+    return { ok: true, result: r.result };
   }
 
   async memoryHold(args: {
@@ -145,12 +163,15 @@ export class MariposaClient {
     return { ok: true, result: r.result, receipt: { operation_id: r0.operation_id, memory_id: r0.memory_id, version: r0.version, binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [], committed_at: typeof r0.committed_at === 'string' ? r0.committed_at : null } };
   }
 
-  /** 已提交操作的回执查询：无记录只代表"尚无提交证据"，不是没写过（§5） */
+  /** 已提交操作的回执查询：无记录只代表"尚无提交证据"，不是没写过（§5）。
+   *  mariposa 实施形状：{operation_id, completed, receipt, memory_current}
+   *  ——回执在 receipt 内层；completed=false 即尚无提交证据。 */
   async holdStatus(operationId: string): Promise<MariposaCallResult & { receipt?: HoldReceipt }> {
     const r = await this.transport('memory.hold.status', { operation_id: operationId });
     if (!r.ok) return r;
-    const r0 = r.result as Partial<HoldReceipt> & { found?: boolean };
-    if (r0.found === false) return { ok: true, result: r.result };
+    const s = r.result as { completed?: boolean; receipt?: Record<string, unknown> };
+    if (s.completed !== true || !s.receipt) return { ok: true, result: r.result };
+    const r0 = s.receipt as Partial<HoldReceipt>;
     if (typeof r0.operation_id !== 'string' || typeof r0.memory_id !== 'string' || typeof r0.version !== 'number') {
       return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
     }
