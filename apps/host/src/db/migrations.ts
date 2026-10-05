@@ -423,6 +423,65 @@ CREATE TABLE source_sync_receipts(
 CREATE INDEX idx_source_sync_receipts_op ON source_sync_receipts(operation_id);
 `,
   },
+  {
+    version: 8,
+    name: 'v0.4.1-hold-checkpoint-rotation-review',
+    // ESTOMAGO_OR_SELF_HOLD §2.3/§3：成功书签（仅真实已核实 hold 收据推进）、换窗评审、
+    // 工具副作用账本（评审完成前的未决写检查）、模型请求已见清单（提醒范围的定位依据）。
+    sql: `
+CREATE TABLE hold_checkpoints(
+  window_id TEXT PRIMARY KEY REFERENCES windows(id),
+  room_id TEXT NOT NULL,
+  epoch_id TEXT NOT NULL,
+  seen_sequence INTEGER NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE rotation_reviews(
+  id TEXT PRIMARY KEY,
+  window_id TEXT NOT NULL REFERENCES windows(id),
+  room_id TEXT NOT NULL,
+  epoch_revision INTEGER NOT NULL,
+  range_keys_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active','completed','failed','skipped_empty')),
+  decision TEXT CHECK (decision IN ('no_new_hold','holds_completed')),
+  memory_ids_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE tool_side_effects(
+  id TEXT PRIMARY KEY,
+  review_id TEXT,
+  turn_id TEXT,
+  window_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('hold','source_bind','review_complete')),
+  state TEXT NOT NULL CHECK (state IN ('pending','running','unknown','failed_unresolved','failed_resolved','committed','cancelled')),
+  verified INTEGER NOT NULL DEFAULT 0,
+  memory_id TEXT,
+  operation_id TEXT,
+  tool_call_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE provider_requests(
+  id TEXT PRIMARY KEY,
+  window_id TEXT NOT NULL REFERENCES windows(id),
+  attempt_id TEXT,
+  turn_id TEXT,
+  purpose TEXT NOT NULL CHECK (purpose IN ('chat','pre_rotate_review','proactive_turn','cache_keepalive')),
+  seen_manifest_json TEXT NOT NULL,
+  generation_id TEXT,
+  outcome TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_rotation_reviews_window ON rotation_reviews(window_id, created_at);
+CREATE INDEX idx_tool_side_effects_review ON tool_side_effects(review_id);
+CREATE INDEX idx_provider_requests_window ON provider_requests(window_id, created_at);
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

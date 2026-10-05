@@ -23,6 +23,9 @@ import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
 import { MariposaClient } from './integrations/mariposa/client.ts';
 import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
+import { RotationReviewService } from './context/rotation-review.ts';
+import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
+import { HostToolExecutor } from './runtime/host-tools.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -99,6 +102,20 @@ export class Host {
     const usage = new UsageCollector(db);
     const routing = new RoutingService(db, events, messages);
     const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config);
+    const auth = new AuthService(paths);
+    messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
+    // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送；
+    // credential_ref 只是环境变量名（值由 transport 读取，不进日志）。未启用 → no-op，outbox 保持 pending（待同步）。
+    const mariposaClient = new MariposaClient({
+      baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+      credentialEnv: opts.config.integrations.mariposa.credential_ref,
+    });
+    const archiveSync = new ArchiveSyncService({ db, events, logger, client: mariposaClient, config: opts.config });
+    // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经 Mariposa 客户端；
+    // 端到端在 Mariposa 接口上线前 BLOCKED——客户端错误如实回给模型，不伪造成功）
+    const reviews = new RotationReviewService(db);
+    const checkpoint = new HoldCheckpointService(db);
+    const tools = new HostToolExecutor({ mariposa: mariposaClient, reviews, checkpoint });
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,
@@ -112,18 +129,10 @@ export class Host {
       routing,
       windows,
       logger,
-    });
-    const auth = new AuthService(paths);
-    messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
-    // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送；
-    // credential_ref 只是环境变量名（值由 transport 读取，不进日志）。未启用 → no-op，outbox 保持 pending（待同步）。
-    const archiveSync = new ArchiveSyncService({
-      db, events, logger,
-      client: new MariposaClient({
-        baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
-        credentialEnv: opts.config.integrations.mariposa.credential_ref,
-      }),
-      config: opts.config,
+      archiveSync,
+      tools,
+      reviews,
+      checkpoint,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {
