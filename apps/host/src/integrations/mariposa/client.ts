@@ -27,7 +27,7 @@ export function isKnownErrorCode(code: string): code is MariposaErrorCode {
 /** 可重试：依赖缺失 + 瞬时传输层（审计 F15：429/502/503/504 不再永久置失败）；其余已知领域错误 = dead（重试由调用方有界执行） */
 export function classifyError(code: string): 'retry_later' | 'dead' {
   if (code === 'SOURCE_NOT_READY') return 'retry_later';
-  if (code === 'HTTP_429' || code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504') return 'retry_later';
+  if (code === 'HTTP_429' || code === 'HTTP_500' || code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504') return 'retry_later';
   return 'dead';
 }
 

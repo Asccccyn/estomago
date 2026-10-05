@@ -91,6 +91,11 @@ export class OrStreamAccumulator {
     return { id: this.id, text: this.text };
   }
 
+  /** 审计 F20：无终态/DONE 断流时，已抵达的记账帧仍可读（不因 finish() 抛出而丢失事实） */
+  usageObserved(): OrUsageFrame | null {
+    return this.rawUsage ? structuredClone(this.rawUsage) : null;
+  }
+
   private accept(data: string): void {
     if (data === '[DONE]') {
       requireThat(!this.done, 'DUPLICATE_DONE');

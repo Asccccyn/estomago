@@ -113,9 +113,13 @@ export class Host {
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
       credentialEnv: opts.config.integrations.mariposa.credential_ref,
     });
+    // 审计 F11：受限归档凭据缺失时——测试模式允许回退共用（联调）；生产形态直接不给归档客户端
+    // 发凭据（ArchiveSyncService 发送将 401，如实 failed），不允许 worker 静默持有主模型业务凭据。
+    const archiveCredRef = opts.config.integrations.mariposa.archive_credential_ref
+      ?? (process.env.ESTOMAGO_TEST_MODE === '1' ? opts.config.integrations.mariposa.credential_ref : null);
     const archiveMariposaClient = new MariposaClient({
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
-      credentialEnv: opts.config.integrations.mariposa.archive_credential_ref ?? opts.config.integrations.mariposa.credential_ref,
+      credentialEnv: archiveCredRef,
     });
     const archiveSync = new ArchiveSyncService({ db, events, logger, client: archiveMariposaClient, config: opts.config });
     // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经主模型凭据的客户端；

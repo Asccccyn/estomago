@@ -233,11 +233,14 @@ export class ArchiveSyncService {
         assets: [],
         content_hash: rev.content_hash,
       };
-      // F16：按序列化后的消息对象字节计（转义/元数据全算），不是裸正文
-      const serializedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
-      if (batchRows.length > 0 && bytes + serializedBytes > INGEST_BATCH_MAX_BYTES) break; // 切批
-      if (serializedBytes > INGEST_BATCH_MAX_BYTES) {
-        deadRows.push(row); // 单条超限：明确报错不截断（大对象路径不在本任务）
+      // F16（复审修正）：按"完整请求信封"的边际字节计——消息 JSON + 数组逗号，
+      // 外层固定字段与 HTTP {arguments:...} 包装按实测常量预留（审计临界用例：
+      // 消息 1048526B + 包装 166B > 1MiB 必须被拒）
+      const serializedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8') + 1; // +1 数组逗号
+      const envelopeOverhead = 166; // 外层请求字段 + arguments 包装（保守实测值）
+      if (batchRows.length > 0 && bytes + serializedBytes + envelopeOverhead > INGEST_BATCH_MAX_BYTES) break; // 切批
+      if (batchRows.length === 0 && serializedBytes + envelopeOverhead > INGEST_BATCH_MAX_BYTES) {
+        deadRows.push(row); // 单条连同信封超限：明确报错不截断（大对象路径不在本任务）
         continue;
       }
       bytes += serializedBytes;
@@ -265,12 +268,21 @@ export class ArchiveSyncService {
         this.db.prepare("UPDATE outbox SET state = 'sent', attempt = attempt + 1, updated_at = ? WHERE id = ?").run(now, row.id);
       }
     });
+    const attemptsNow = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
+    const exhausted = (): boolean => attemptsNow > INGEST_BATCH_MAX_ATTEMPTS;
     let result: Awaited<ReturnType<MariposaClient['sourceIngest']>>;
     try {
       result = await this.client.sourceIngest(request);
     } catch (err) {
-      // 网络未知：可能已提交（§4.3）——unknown_outcome，下一轮按冻结 payload 同 op 重放
+      // 网络未知：可能已提交（§4.3）——unknown_outcome，下一轮按冻结 payload 同 op 重放。
+      // 审计 F15：重试预算同样约束未知路径——超限如实 dead，不无限 in_flight。
       const code = String((err as Error)?.message ?? err).slice(0, 60);
+      if (exhausted()) {
+        this.markChunk(rows, 'failed', 'TRANSIENT_EXHAUSTED');
+        this.markBatchDead(meta.operationId, 'TRANSIENT_EXHAUSTED');
+        summary.dead += rows.length;
+        return 'dead';
+      }
       this.markChunk(rows, 'unknown_outcome', `TRANSPORT_UNKNOWN:${code}`);
       this.logger.warn('archive_sync_transport_unknown', { op: meta.operationId, code: 'TRANSPORT_UNKNOWN' });
       summary.retry_later += rows.length;
@@ -315,6 +327,13 @@ export class ArchiveSyncService {
         this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'failed', code: 'ACK_HASH_MISMATCH' } });
         summary.dead += rows.length;
         return 'dead';
+      }
+      // 审计 F10：正式来源证据三件套（来源会话/来源消息/内容 hash）与提交时刻缺一不可——
+      // 只带 origin/revision 的骨架回执不算完整 ACK，不冒充已同步
+      if (entry.source_conversation_id === null || entry.source_message_id === null || entry.content_hash === null || ack.committed_at === null) {
+        this.markChunk(rows, 'unknown_outcome', 'ACK_FIELDS_INCOMPLETE');
+        summary.retry_later += rows.length;
+        return 'retry_later';
       }
     }
     tx(this.db, () => {

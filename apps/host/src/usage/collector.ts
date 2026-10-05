@@ -17,7 +17,7 @@ export class UsageCollector {
 
   record(o: {
     turnId: string; attemptId: string; scope: 'request' | 'turn' | 'cumulative';
-    usage: RawUsage; model?: string | null; requestId?: string | null;
+    usage: RawUsage; model?: string | null; requestId?: string | null; windowId?: string | null;
     source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'estimated';
     completeness?: 'complete' | 'partial' | 'unknown';
   }): void {
@@ -33,9 +33,9 @@ export class UsageCollector {
       const newIsComplete = (o.completeness ?? 'complete') === 'complete';
       if (oldIsComplete && !newIsComplete) return;
       this.db
-        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, cost_usd = ?, reasoning_tokens = ?, anomalies_json = ?, raw_usage_json = ?, completeness = ?, observed_at = ? WHERE id = ?')
+        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, cost_usd = ?, reasoning_tokens = ?, anomalies_json = ?, raw_usage_json = ?, window_id = COALESCE(?, window_id), completeness = ?, observed_at = ? WHERE id = ?')
         .run(o.usage.input_tokens ?? null, o.usage.output_tokens ?? null, o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null,
-          o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null, o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null,
+          o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null, o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null, o.windowId ?? null,
           o.completeness ?? 'complete', new Date().toISOString(), dup.id);
       return;
     }
@@ -43,15 +43,15 @@ export class UsageCollector {
       .prepare(
         `INSERT INTO usage_observations(id, request_id, attempt_id, turn_id, scope, model,
            input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
-           cost_usd, reasoning_tokens, anomalies_json, raw_usage_json, source, completeness, observed_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           cost_usd, reasoning_tokens, anomalies_json, raw_usage_json, window_id, source, completeness, observed_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         genId('use'), o.requestId ?? null, o.attemptId, o.turnId, o.scope, o.model ?? null,
         o.usage.input_tokens ?? null, o.usage.output_tokens ?? null,
         o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null,
         o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null,
-        o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null,
+        o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null, o.windowId ?? null,
         o.source, o.completeness ?? 'complete', new Date().toISOString(),
       );
   }
@@ -87,7 +87,11 @@ export class UsageCollector {
 
       // 口径选择（F15）：完整 turn 权威；否则 request（须集合完整）；否则只剩 cumulative（单列，不入总额）
       const authoritativeTurn = turnRows.find((r) => r.completeness === 'complete') ?? null;
-      const requestsComplete = requests.length > 0 && requests.every((r) => r.completeness === 'complete') && turnState === 'completed';
+      // 审计 F28：观测完整度必须对照"实际发送的请求集合"（provider_requests.sent_at 非空）——
+      // 发了 2 个请求只收到 1 份 usage 时，整轮不得标完整已知
+      const expectedRequests = (this.db.prepare('SELECT COUNT(*) n FROM provider_requests WHERE attempt_id = ? AND sent_at IS NOT NULL').get(attemptId) as { n: number }).n;
+      const observedComplete = requests.filter((r) => r.completeness === 'complete').length;
+      const requestsComplete = requests.length > 0 && requests.every((r) => r.completeness === 'complete') && turnState === 'completed' && observedComplete >= expectedRequests;
       let chosen: Row[]; let scope: string; let completeness: string; let countsTowardTotals = true;
       if (authoritativeTurn) {
         chosen = [authoritativeTurn]; scope = 'turn'; completeness = 'complete';

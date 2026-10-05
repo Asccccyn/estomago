@@ -354,6 +354,10 @@ function scheduleRecordsRefresh() {
   recordsTimer = setTimeout(() => { recordsTimer = null; void loadRecords(); }, 400);
 }
 
+// 审计 F26：委托绑定——面板内容被 innerHTML 重写后按钮处理器不再丢失
+$('records-panel').addEventListener('click', (e) => {
+  if (e.target && e.target.id === 'records-older') void loadOlderEvents();
+});
 $('records-btn').onclick = () => {
   const panel = $('records-panel');
   panel.hidden = !panel.hidden;
@@ -364,17 +368,24 @@ $('records-close').onclick = () => { $('records-panel').hidden = true; };
 const fmtNum = (v) => (typeof v === 'number' ? v.toLocaleString('zh-Hans') : '未知');
 const fmtTime = (iso) => (typeof iso === 'string' ? new Date(iso).toLocaleString('zh-Hans', { hour12: false }) : '—');
 
-async function loadOlderEvents(prevCursor, body) {
+// 审计 F26：加载更早=before= 游标严格前移（旧 forward 会原样重发当前页）；已见 eventId 不重复插入
+const seenEventIds = new Set();
+async function loadOlderEvents() {
+  const body = $('records-body');
+  const prev = body.dataset.prevCursor;
+  if (!prev) return;
   try {
-    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30&cursor=${prevCursor}`, { credentials: 'same-origin' });
+    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30&before=${prev}`, { credentials: 'same-origin' });
     if (!res.ok) return;
     const older = await res.json();
-    const anchor = body.querySelector('.rec-section:last-child');
-    const rows = (older.events ?? []).map((e) => {
+    const eventsSection = body.querySelector('.rec-section:last-child');
+    const rows = (older.events ?? []).filter((e) => !seenEventIds.has(e.eventId)).map((e) => {
+      seenEventIds.add(e.eventId);
       const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
       return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}</div>`;
     }).join('');
-    if (anchor) anchor.insertAdjacentHTML('beforebegin', `<div class="rec-event">${rows}</div>`);
+    if (eventsSection && rows) eventsSection.insertAdjacentHTML('afterbegin', rows);
+    if (older.prevCursor) body.dataset.prevCursor = older.prevCursor; else delete body.dataset.prevCursor;
   } catch { /* 更早页加载失败不影响面板 */ }
 }
 
@@ -408,8 +419,8 @@ async function loadRecords() {
       <div>上次读缓存：${fmtNum(s.cache.lastRead)}　写缓存：${fmtNum(s.cache.lastWrite)}（观测于 ${fmtTime(s.cache.observedAt)}）</div>
       <div>“配置 1h”与“观测到缓存读取”是两回事；无观测时不显示命中。</div></div>`);
     // F21：最新在最上；按 eventId 去重（SSE 刷新重拉不重复追加）；事件带关键事实（F22）
-    const seenIds = new Set();
-    const evRows = (ev.events ?? []).slice().reverse().filter((e) => (seenIds.has(e.eventId) ? false : seenIds.add(e.eventId)))
+    seenEventIds.clear();
+    const evRows = (ev.events ?? []).slice().reverse().filter((e) => (seenEventIds.has(e.eventId) ? false : seenEventIds.add(e.eventId)))
       .map((e) => {
         const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
         const p = e.payload ?? {};
@@ -420,10 +431,9 @@ async function loadRecords() {
           : '';
         return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}${detail}</div>`;
       }).join('');
+    body.dataset.prevCursor = ev.prevCursor ?? '';
     const olderBtn = ev.prevCursor ? `<button id="records-older" class="ghost" style="margin-top:6px">加载更早</button>` : '';
     rows.push(`<div class="rec-section"><h4>最近事件</h4>${evRows || '<div class="muted">暂无</div>'}${olderBtn}</div>`);
-    const older = $('records-older');
-    if (older) older.onclick = () => { void loadOlderEvents(ev.prevCursor, body); };
     body.innerHTML = rows.join('');
   } catch (err) {
     body.innerHTML = '<p class="error">记录加载失败（可重试；不影响聊天）</p>';

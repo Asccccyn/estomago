@@ -92,7 +92,14 @@ export class HostToolExecutor {
     for (const k of ['category', 'text', 'mood_tags', 'our_words', 'plan_ids', 'creation_mode', 'backfill_date']) {
       if (args[k] !== undefined) holdPayload[k] = args[k];
     }
-    const r = await this.mariposa.memoryHold({ operationId, holdPayload });
+    let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
+    try {
+      r = await this.mariposa.memoryHold({ operationId, holdPayload });
+    } catch {
+      // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
+      this.reviews.settleEffect(effectId, 'unknown', false, null);
+      return { ok: false, output: { error_code: 'HOLD_OUTCOME_UNKNOWN', operation_id: operationId } };
+    }
     if (!r.ok) {
       // 审计 F10：结果不明（传输/5xx/429/回执形状无效）≠ 失败——标 unknown，不盲重试也不当没写（§3.3）
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT') || r.code === 'RECEIPT_SHAPE_INVALID';
@@ -130,32 +137,43 @@ export class HostToolExecutor {
     let resolved = 0;
     let stillUnknown = 0;
     for (const e of this.reviews.unknownEffectsForWindow(windowId)) {
-      const r = await this.mariposa.holdStatus(e.operationId);
-      if (r.ok && r.receipt) {
-        if (r.receipt.operation_id === e.operationId) {
-          this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id);
-          if (e.seenSequence !== null) {
-            try {
-              this.checkpoint.advance(windowId, {
-                id: `recovery:${e.operationId}`, roomId: conversationId, epochId: windowId, operationId: e.operationId,
-                author: 'primary_model', seenSequence: e.seenSequence,
-              }, {
-                id: `${e.operationId}:${r.receipt.memory_id}`, roomId: conversationId, epochId: windowId,
-                operationId: e.operationId, memoryId: r.receipt.memory_id, verified: true, state: 'committed',
-              });
-            } catch { /* 迟到收据不倒退书签；冲突如实留检 */ }
-          }
+      // 审计 F08：只认两类确定结论——真实回执（committed）或服务端显式 completed=false。
+      // 查询失败/形状损坏/回执错配一律保持 unknown 并阻断换窗，绝不自动消解。
+      let r: Awaited<ReturnType<MariposaClient['holdStatus']>>;
+      try {
+        r = await this.mariposa.holdStatus(e.operationId);
+      } catch {
+        stillUnknown++; // fetch throw：结果不明，不是"没写"
+        continue;
+      }
+      if (!r.ok || !r.receipt) {
+        // ok 无回执（含损坏的 200 响应被客户端判为无 receipt）≠ 未提交——§5 无记录只是"尚无提交证据"。
+        // 只有服务端结构化 completed=false 才是可判定的未提交；此处保守保持 unknown。
+        if (r.ok && (r.result as { completed?: unknown }).completed === false) {
+          this.reviews.settleEffect(e.id, 'failed_resolved', false, null);
           resolved++;
         } else {
-          stillUnknown++; // 回执错配：不可判定，保持 unknown
+          stillUnknown++;
         }
-      } else if (r.ok) {
-        // 服务端明确无提交证据（§5：无记录=尚无提交证据）→ 判定为未提交，解除阻塞
-        this.reviews.settleEffect(e.id, 'failed_resolved', false, null);
-        resolved++;
-      } else {
-        stillUnknown++; // 查询通道不可用/权限拒绝：结果仍不可判定
+        continue;
       }
+      if (r.receipt.operation_id !== e.operationId) {
+        stillUnknown++; // 回执错配：不可判定
+        continue;
+      }
+      this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id);
+      if (e.seenSequence !== null) {
+        try {
+          this.checkpoint.advance(windowId, {
+            id: `recovery:${e.operationId}`, roomId: conversationId, epochId: windowId, operationId: e.operationId,
+            author: 'primary_model', seenSequence: e.seenSequence,
+          }, {
+            id: `${e.operationId}:${r.receipt.memory_id}`, roomId: conversationId, epochId: windowId,
+            operationId: e.operationId, memoryId: r.receipt.memory_id, verified: true, state: 'committed',
+          });
+        } catch { /* 迟到收据不倒退书签；冲突如实留检 */ }
+      }
+      resolved++;
     }
     return { resolved, stillUnknown };
   }

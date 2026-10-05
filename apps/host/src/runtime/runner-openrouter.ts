@@ -134,6 +134,7 @@ export class OpenRouterRunner implements AgentRunner {
         await this.sleepRetryAfter(response.headers.get('retry-after'), attempt);
         continue;
       }
+      req.onDispatch?.({ attemptIndex: attempt, generationId: response.headers.get('x-generation-id') }); // F17：2xx=真实发送
       if (response.status < 200 || response.status >= 300) {
         // 401/402/配置 400 及其他非 2xx：不自动重试，不改模型/上游（§9.2）
         const code = response.status === 401 || response.status === 403 ? 'OR_AUTH_ERROR'
@@ -172,6 +173,24 @@ export class OpenRouterRunner implements AgentRunner {
 
   private final(outcome: RunnerRunResult['outcome'], errorCode: string | null, errorClassified: RunnerRunResult['errorClassified'], errorMessage: string | null, attempt: number, requestId: string | null = null, reasoningFrames: unknown[] | null = null): RunnerRunResult {
     return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1, ...(reasoningFrames !== null && reasoningFrames.length > 0 ? { reasoningFrames } : {}) };
+  }
+
+  /** 审计 F20：断流/停止后的计量抢救——优先 finish()；抛出则用已观察的原始记账帧归一（不编造，缺帧=无事件） */
+  private salvageMetering(req: OrRunRequest, acc: OrStreamAccumulator): void {
+    try {
+      const f = acc.finish();
+      if (f.usage.completeness !== 'unknown') {
+        req.onEvent({ kind: 'usage', scope: 'request', usage: this.usageEventFields(f), source: 'or_stream', completeness: f.usage.completeness === 'complete' ? 'complete' : 'partial' });
+      }
+      return;
+    } catch { /* 无终态：走 usageObserved 抢救 */ }
+    const raw = acc.usageObserved();
+    if (raw) {
+      const u = normalizeOrUsage(raw);
+      if (u.completeness !== 'unknown') {
+        req.onEvent({ kind: 'usage', scope: 'request', usage: this.usageEventFields({ usage: u, usageRawFrame: raw }), source: 'or_stream', completeness: u.completeness === 'complete' ? 'complete' : 'partial' });
+      }
+    }
   }
 
   // F19：OR 计量字段全量透出（费用/推理明细/异常标记/原始帧）——不在桥接中丢失
@@ -243,20 +262,16 @@ export class OpenRouterRunner implements AgentRunner {
         }
       }
     } catch (err) {
-      if (req.abortController.signal.aborted || abortedMidStream) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
+      if (req.abortController.signal.aborted || abortedMidStream) {
+        this.salvageMetering(req, acc); // 审计 F20：AbortError/断流也要抢救已抵达的计量帧
+        return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
+      }
       if (!sawAnyFrame) return { kind: 'pre_data_error', error: err };
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
     if (abortedMidStream) {
-      // 停止收口：流若完整则把已抵达的 usage 帧补记账（§9.2 迟到 usage 仍记录真实消耗），终态=interrupted
-      try {
-        const fAborted = acc.finish();
-        if (fAborted.usage.completeness !== 'unknown') {
-          req.onEvent({ kind: 'usage', scope: 'request', usage: this.usageEventFields(fAborted), source: 'or_stream', completeness: fAborted.usage.completeness === 'complete' ? 'complete' : 'partial' });
-        }
-      } catch {
-        // 流未完整（无 DONE/终态）：无可靠计量，不编造
-      }
+      // 停止收口：流若完整则 finish；缺 DONE/终态时不再整帧丢弃——已到的记账帧照样补记（F20）
+      this.salvageMetering(req, acc);
       return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
     }
 

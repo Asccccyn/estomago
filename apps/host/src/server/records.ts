@@ -43,10 +43,10 @@ export function buildRecordSnapshot(d: {
   const lastUsage = win
     ? (d.db.prepare(
         `SELECT u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.observed_at
-         FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
-         WHERE a.window_id = ? AND u.source = 'or_stream' AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
+         FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id
+         WHERE (u.window_id = ? OR a.window_id = ?) AND u.source = 'or_stream' AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
          ORDER BY u.observed_at DESC LIMIT 1`,
-      ).get(win.id) as { input_tokens: number; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; observed_at: string } | undefined)
+      ).get(win.id, win.id) as { input_tokens: number; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; observed_at: string } | undefined)
     : undefined;
   if (lastUsage) {
     estimated = Math.max(estimated ?? 0, lastUsage.input_tokens);
@@ -69,13 +69,14 @@ export function buildRecordSnapshot(d: {
           : raw.acked > 0 ? 'synced' : 'saved_pending_sync';
 
   // F18：TTL 从请求开始计时（provider_requests.created_at），不是流结束后的 usage 入库时刻
+  // 审计 F18：TTL 只锚定真实发送的请求（sent_at 非空）——容量门前/未发送的 planned 行不刷新热时限
   const requestStartedAt = win
-    ? (d.db.prepare('SELECT created_at FROM provider_requests WHERE window_id = ? ORDER BY created_at DESC LIMIT 1').get(win.id) as { created_at: string } | undefined)?.created_at ?? null
+    ? (d.db.prepare('SELECT sent_at FROM provider_requests WHERE window_id = ? AND sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(win.id) as { sent_at: string } | undefined)?.sent_at ?? null
     : null;
   const observedAt = lastUsage?.observed_at ?? null;
   const costRow = win
-    ? (d.db.prepare("SELECT cost_usd FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id WHERE a.window_id = ? AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id) as { cost_usd: number } | undefined)
-    : undefined;
+    ? (d.db.prepare("SELECT cost_usd FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id WHERE (u.window_id = ? OR a.window_id = ?) AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id, win.id) as { cost_usd: number } | undefined)
+    : undefined; // F31：窗口直取（手动评审费用可见）
   return {
     roomId: conversationId,
     cursor: lastEventSequence !== null ? String(lastEventSequence) : null,
@@ -92,7 +93,7 @@ export function buildRecordSnapshot(d: {
         : null,
       lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
-      estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：请求开始+1h 的本地估计（非可查询缓存对象）
+      estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：真实发送开始+1h（F18：未发送行不刷 TTL）
       keeperEnabled: false,
     },
     review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,
@@ -109,7 +110,7 @@ export type RecordEventsPage = { events: RecordEventItem[]; nextCursor: string |
 const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')`;
 
 /** forward：游标向后翻页（历史分页）。recent（F21）：返回最新 limit 条（升序）+ prevCursor 向更早翻页。 */
-export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number, mode: 'forward' | 'recent' = 'forward'): RecordEventsPage {
+export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number, mode: 'forward' | 'recent' | 'older' = 'forward', before: number | null = null): RecordEventsPage {
   if (mode === 'recent') {
     const rows = db.prepare(
       `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
@@ -117,7 +118,18 @@ export function listRecordEvents(db: Db, conversationId: string, after: number, 
        ORDER BY sequence DESC LIMIT ?`,
     ).all(conversationId, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
     const events = rows.slice().reverse().map(rowToEvent(conversationId));
-    const prevCursor = events.length > 0 ? String(events[0]!.sequence - 1) : null;
+    const prevCursor = events.length > 0 ? String(events[0]!.sequence) : null; // F26：older 模式消费"严格小于此序号"
+    return { events, nextCursor: null, prevCursor };
+  }
+  if (mode === 'older' && before !== null) {
+    // 审计 F26：向更早翻页=严格小于游标序号（旧实现 > cursor 会原样重发当前页）
+    const rows = db.prepare(
+      `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
+       WHERE conversation_id = ? AND sequence < ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       ORDER BY sequence DESC LIMIT ?`,
+    ).all(conversationId, before, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
+    const events = rows.slice().reverse().map(rowToEvent(conversationId));
+    const prevCursor = events.length > 0 ? String(events[0]!.sequence) : null;
     return { events, nextCursor: null, prevCursor };
   }
   const rows = db.prepare(

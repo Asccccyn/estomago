@@ -64,8 +64,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
   try {
     if (route === 'GET /health/live') return json(res, 200, { status: 'ok' });
     if (route === 'GET /health/ready') {
+      const driver = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' ? 'openrouter' : 'claude-agent-sdk';
       const report = buildReadyReport({
-        config: d.config, gate: d.identity.evaluateGate(d.db),
+        config: d.config, gate: d.identity.evaluateGate(d.db, { driver }), // 审计 F29：状态按当前驱动判别——OR 不被 SDK 前提误报阻断
         runnerSelection: d.runnerSelection, capabilities: d.capabilities, db: d.db,
       });
       return json(res, 200, report);
@@ -171,7 +172,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);
     if (runtime) {
       const conversationId = decodeURIComponent(runtime[1]!);
-      const gate = d.identity.evaluateGate(d.db);
+      const driver = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' ? 'openrouter' : 'claude-agent-sdk';
+      const gate = d.identity.evaluateGate(d.db, { driver }); // 审计 F29
       const active = d.windows.activeWindow(conversationId);
       // ESTOMAGO_OR_SELF_HOLD §6.1：OR 配置状态只报"已配置/未配置"布尔与型号名；凭据值永不回显
       const orStatus = d.config.runtime.provider === 'openrouter'
@@ -255,8 +257,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const conversationId = decodeURIComponent(ctxRecordsEvents[1]!);
       const after = Math.max(0, Number(url.searchParams.get('cursor') ?? '0') || 0);
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? '30') || 30));
-      const mode = url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21：最近页语义
-      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode));
+      const before = url.searchParams.get('before') !== null ? Number(url.searchParams.get('before')) : null;
+      const mode = before !== null ? 'older' : url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21/F26：最近页/向更早/历史正向
+      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
     }
 
     const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);
