@@ -23,7 +23,7 @@
 | WP0 现场映射与冻结副作用 | **完成**（`docs/specs/IMPLEMENTATION_MAP.md`） |
 | WP1 OR 专用驱动与配置 | **完成（离线）**：OR 配置段+硬规则、换窗预算初值、SSE/payload/用量驱动（fake transport 31 用例；全量 36 文件全绿）。真实外网仅 WP6 |
 | WP2 原文同步 / MCP / 正式收据 | **estómago 侧完成（离线）**：outbox 消费者→`source.ingest` 幂等批量同步（崩溃同 op 重放/依赖缺失停流不跳过/冲突 dead/50 条与 1MiB 切批/编辑修订链）+ `memory.hold(operation_id)` 客户端与回执查询 + 迁移 v7。**端到端 BLOCKED**：等 Mariposa 侧接口落地（林石见做）；MCP 工具执行随 WP3 |
-| WP3 启动装配 / 轨迹 / 书签 / 一次提醒 / 自动换窗 | 未开始 |
+| WP3 启动装配 / 轨迹 / 书签 / 一次提醒 / 自动换窗 | **完成（离线）**：策略移植（提醒范围/成功书签/评审完成/换窗调度）+ OR 工具循环（memory_hold→真实收据→书签；context_review_complete 宿主核验）+ 56k 预警/64k/6h 触发 + 换窗前一次提醒 + 跨窗继承。Mariposa bootstrap 分页 BLOCKED（等接口）；粗估 token 已标注精度 |
 | WP4 缓存与工具续请求集成 | 未开始 |
 | WP5 前台"记录"与设置接线 | 未开始 |
 | WP6 真实验收 / 发布候选 | 未开始（真实 OR 调用须她明确预算授权；SDK 实测单列） |
