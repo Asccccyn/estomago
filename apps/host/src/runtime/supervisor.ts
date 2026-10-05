@@ -25,6 +25,9 @@ import type { Logger } from '../observability/logging.ts';
 import { buildTimeContext } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
 import { assembleContext } from '../context/assembler.ts';
+import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { orSessionId } from './runner-openrouter.ts';
+import type { OrRequestEnvelope } from './runner.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
@@ -174,20 +177,27 @@ export class TurnSupervisor {
     // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const built = buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
+    // §2.1/§6.3：驱动判别。OR 分支不构造 SDK options、不触发 SDK 握手；SDK 分支形状不变。
+    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
+    const built = isOr ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
       return;
     }
-    if (built.status === 'blocked') {
+    if (built !== null && built.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `IDENTITY_NOT_READY:${built.reasons.map(codeOf).join(';').slice(0, 120)}`, 'blocked');
+      return;
+    }
+    if (isOr && (!materials?.identityText || !materials?.rulesText)) {
+      // §2.1：OR 首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:OR_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
       return;
     }
 
     // —— 窗口与 session（AUD-03）——
     let window = d.windows.activeWindow(turn.conversation_id);
     if (!window) {
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built.assembled });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -202,8 +212,9 @@ export class TurnSupervisor {
       return;
     }
     // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
-    // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑
-    const resumeSessionId = attempt.fresh_session ? null : window.sdk_session_id;
+    // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑。
+    // OR 无宿主可见 resume 语义（session_id 是路由关联标识，不存历史，§6.2）→ 恒 null。
+    const resumeSessionId = isOr ? null : attempt.fresh_session ? null : window.sdk_session_id;
 
     // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
@@ -250,6 +261,30 @@ export class TurnSupervisor {
       .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
       .join('\n\n');
     const inputHash = effective.hash || sha256Hex(effective.content);
+
+    // OR 请求信封（§6.3）：messages 为不可变数组；system=身份+批准规则+固定运行片段+宿主边界
+    // （缓存点 A 的候选前缀，WP4 接显式断点规划）；user=本轮有效输入（与 SDK prompt 同一投影：
+    // 时间上下文程序事实 + 用户正文，provenance 标注不冒充用户发言）。
+    // WP1 最小形态：tools/boundaries 空、无跨轮轨迹（previousPayload=null）；WP2/WP3/WP4 逐包接线。
+    const orEnvelope: OrRequestEnvelope | null = isOr
+      ? {
+          model: d.config.openrouter.model!, // selectRunner ok ⇒ 已校验非 null
+          sessionId: orSessionId(turn.conversation_id, d.config.openrouter.model!, null),
+          messages: [
+            {
+              role: 'system',
+              content: [{ type: 'text', text: `${materials!.identityText}\n\n${materials!.rulesText}\n\n${FIXED_RUNTIME_FRAGMENT}\n\n${HOST_BOUNDARY_RULES}` }],
+            },
+            { role: 'user', content: [{ type: 'text', text: prompt }] },
+          ],
+          tools: [],
+          boundaries: [],
+          maxTokens: d.config.openrouter.max_output_tokens,
+          reasoning: d.config.openrouter.reasoning,
+        }
+      : null;
+    // 记账模型：OR 用明确 OR 型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
+    const configuredModelForUsage = isOr ? d.config.openrouter.model : d.config.runtime.model;
 
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;
@@ -310,18 +345,8 @@ export class TurnSupervisor {
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'interrupted', generation });
     };
 
-    const runner = d.runnerSelection.runner;
-    let result: import('./runner.ts').RunnerRunResult;
-    // §11：不合作 runner 的有界终止——宽限只在 abort 之后才计时（正常生成寿命不受限），
-    // grace 期满仍未收尾 → 合成 interrupted 终态，会话队列释放
-    try {
-      result = await Promise.race([
-        runner.run({
-        prompt,
-        options: built.assembled,
-        resumeSessionId,
-        abortController: runToken.controller,
-        onEvent: (ev) => {
+    // §6.3：驱动判别请求——同一 handleEvent（发布/记账/route 语义对两驱动一致，不复制两套处理）
+    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent): void => {
           // generation fence（AUD-05/03 迟到 chunk）：只挡内容类事件（正文/思考/工具投影）；
           // usage 与路由事实是记账观测，不是发布——fence 后仍须入账（F10：实际模型不能丢）
           if (runToken.token.cancelled && ev.kind !== 'usage' && ev.kind !== 'system_notice' && ev.kind !== 'packet_conflict') return;
@@ -380,7 +405,7 @@ export class TurnSupervisor {
             case 'usage':
               d.usage.record({
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
-                model: actualModelForUsage ?? d.config.runtime.model, // F10：SDK 观测到实际模型后按实际值记账
+                model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
               d.events.publish('usage.updated', {
@@ -420,8 +445,18 @@ export class TurnSupervisor {
             default:
               break;
           }
-        },
-        }),
+    };
+    const runner = d.runnerSelection.runner;
+    let result: import('./runner.ts').RunnerRunResult;
+    // §11：不合作 runner 的有界终止——宽限只在 abort 之后才计时（正常生成寿命不受限），
+    // grace 期满仍未收尾 → 合成 interrupted 终态，会话队列释放
+    try {
+      result = await Promise.race([
+        runner.run(
+          orEnvelope !== null
+            ? { driver: 'openrouter', purpose: 'chat', envelope: orEnvelope, previousPayload: null, abortController: runToken.controller, onEvent: handleEvent }
+            : { prompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent },
+        ),
         new Promise<never>((_, reject) => {
           const arm = (): void => {
             setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();

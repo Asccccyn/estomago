@@ -75,6 +75,10 @@ export class ClaudeSdkRunner implements AgentRunner {
   }
 
   async run(req: RunnerRunRequest): Promise<RunnerRunResult> {
+    if (req.driver === 'openrouter') {
+      // 类型层防护：OR 请求永不路由到 SDK runner（§6.3：驱动判别，不共用会话/KV）
+      return { outcome: 'error', errorClassified: 'unknown', errorCode: 'SDK_UNSUPPORTED_OR', errorMessage: 'SDK runner 收到 openrouter 请求', sessionId: null, requestId: null };
+    }
     const normalizer = new SdkEventNormalizer();
     const o = req.options.options;
     const options: RealOptionsShape = {

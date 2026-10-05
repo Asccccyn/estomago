@@ -176,13 +176,28 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const conversationId = decodeURIComponent(runtime[1]!);
       const gate = d.identity.evaluateGate(d.db);
       const active = d.windows.activeWindow(conversationId);
+      // ESTOMAGO_OR_SELF_HOLD §6.1：OR 配置状态只报"已配置/未配置"布尔与型号名；凭据值永不回显
+      const orStatus = d.config.runtime.provider === 'openrouter'
+        ? {
+            model: d.config.openrouter.model,
+            model_configured: d.config.openrouter.model !== null,
+            key_env_configured: (() => { const v = process.env[d.config.openrouter.api_key_env]; return typeof v === 'string' && v.length > 0; })(),
+            base_url: d.config.openrouter.base_url,
+          }
+        : null;
       return json(res, 200, {
         conversation_id: conversationId,
         identity: { state: gate.state, reasons: gate.reasons, manifest_status: gate.manifest?.status ?? null },
         runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
+        openrouter: orStatus,
         capabilities: d.capabilities.describe(),
         active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
-        thresholds: { status: d.config.windows.threshold_status, model_context_capacity: d.config.windows.model_context_capacity },
+        thresholds: {
+          status: d.config.windows.threshold_status,
+          model_context_capacity: d.config.windows.model_context_capacity,
+          soft_limit_tokens: d.config.windows.soft_limit_tokens,
+          warning_tokens: d.config.windows.warning_tokens,
+        },
         reasoning_label: d.config.reasoning.label,
       });
     }
