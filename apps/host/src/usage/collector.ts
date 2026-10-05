@@ -58,8 +58,8 @@ export class UsageCollector {
 
   // 账本视图：每个 attempt 一行（所选口径）+ 汇总（已知值求和；任一未知则该项标 unknown）
   summaryForTurn(turnId: string): {
-    attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }>;
-    totals: { input_tokens: number | null; output_tokens: number | null; unknown_present: boolean };
+    attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; cost_usd: number | null; completeness: string }>;
+    totals: { input_tokens: number | null; output_tokens: number | null; cost_usd: number | null; unknown_present: boolean };
   } {
     const rows = this.db
       .prepare('SELECT * FROM usage_observations WHERE turn_id = ? ORDER BY observed_at')
@@ -72,8 +72,8 @@ export class UsageCollector {
     const sumOf = (rs: Row[], f: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens'): number | null =>
       rs.length === 0 ? null : rs.some((r) => r[f] == null) ? null : rs.reduce((s, r) => s + (r[f] ?? 0), 0);
 
-    const attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string }> = [];
-    let inSum = 0, outSum = 0, inUnknown = false, outUnknown = false;
+    const attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; cost_usd: number | null; completeness: string }> = [];
+    let inSum = 0, outSum = 0, costSum = 0, inUnknown = false, outUnknown = false, costUnknown = false;
     const seen = new Set<string>();
     const declared = this.db.prepare('SELECT id FROM attempts WHERE turn_id = ?').all(turnId) as Array<{ id: string }>;
     const attemptIds = [...new Set([...declared.map((d) => d.id), ...rows.map((r) => r.attempt_id)])];
@@ -107,7 +107,7 @@ export class UsageCollector {
         chosen = [cumulative[cumulative.length - 1]!]; scope = 'cumulative'; completeness = cumulative[cumulative.length - 1]!.completeness; countsTowardTotals = false;
       } else {
         // 该 turn 声明了 attempt 但完全没有 usage 观测（如 failed 早退）→ 如实列 null 行
-        attempts.push({ attempt_id: attemptId, scope: 'none', model: null, input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null, completeness: 'missing' });
+        attempts.push({ attempt_id: attemptId, scope: 'none', model: null, input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null, cost_usd: null, completeness: 'missing' });
         inUnknown = true; outUnknown = true;
         continue;
       }
@@ -117,13 +117,17 @@ export class UsageCollector {
         output_tokens: sumOf(chosen, 'output_tokens'),
         cache_read_input_tokens: sumOf(chosen, 'cache_read_input_tokens'),
         cache_creation_input_tokens: sumOf(chosen, 'cache_creation_input_tokens'),
+        cost_usd: sumOf(chosen, 'cost_usd'),
         completeness,
       });
       if (countsTowardTotals) {
         const a = attempts[attempts.length - 1]!;
         if (a.input_tokens == null) inUnknown = true; else inSum += a.input_tokens;
         if (a.output_tokens == null) outUnknown = true; else outSum += a.output_tokens;
-        if (completeness !== 'complete') { inUnknown = true; outUnknown = true; } // partial/missing 不冒充完整总额
+        // 审计 A066：已知小计+未知分量并列——cost 缺观测不写零也不吞掉已知钱
+        if (a.cost_usd == null) costUnknown = true; else costSum += a.cost_usd;
+        if (completeness !== 'complete') { inUnknown = true; outUnknown = true; costUnknown = true; } // partial/missing 不冒充完整总额
+        // 注意：cost 缺失只影响 cost 小计（null），不把 token 口径染成 unknown——两信号独立（A066 语义）
       }
     }
     const empty = attempts.length === 0;
@@ -134,7 +138,8 @@ export class UsageCollector {
       totals: {
         input_tokens: empty || noCountable || inUnknown ? null : inSum,
         output_tokens: empty || noCountable || outUnknown ? null : outSum,
-        unknown_present: inUnknown || outUnknown || noCountable,
+        cost_usd: empty || noCountable || costUnknown ? null : costSum, // 已知小计；任一未知→null+unknown_present（不显示为零）
+        unknown_present: inUnknown || outUnknown || noCountable, // token 口径未知信号；cost 未知由 cost_usd=null 表达
       },
     };
   }

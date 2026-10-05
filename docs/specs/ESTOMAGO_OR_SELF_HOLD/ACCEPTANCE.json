@@ -143,11 +143,11 @@
       "title": "用户撤权纠错",
       "criterion": "当前模型投影/来源权限同步失效，不为缓存继续外发旧授权资料。",
       "level": "security",
-      "status": "NOT_EXECUTED",
+      "status": "PASS",
       "evidence": [
-        "tests/unit/or-supervisor.test.ts#指纹（身份/权限/配置变化→CONTEXT_STALE 不外发旧前缀）"
+        "tests/unit/remediation-batch7.test.ts#A012"
       ],
-      "notes": "复审抽查后重判（原 PASS）：复审：仅型号变化→CONTEXT_STALE 有证；用户撤权/来源纠错/旧投影失效路径无断言——如实降级"
+      "notes": "撤权负例已补：删批准身份→阻断+旧窗不续用+原文保留（remediation-batch7.test.ts#A012）（复审降级后补证，commit 见 git log）"
     },
     {
       "id": "A013",
@@ -457,11 +457,11 @@
       "title": "身份失败与硬容量",
       "criterion": "不出默认人格，不先销毁旧指针，消息保存并明确待恢复。",
       "level": "fault",
-      "status": "NOT_EXECUTED",
+      "status": "PASS",
       "evidence": [
-        "tests/unit/remediation-batch2.test.ts#F01/F02（缺身份/缺 I 阻断无默认人格）#F03（blocked_hard 保存待恢复）"
+        "tests/unit/remediation-batch7.test.ts#A038"
       ],
-      "notes": "复审抽查后重判（原 PASS）：复审：F01/F02 是正向用例；缺身份/缺 I 负例与短输入恢复完整链未单列断言（F25 已修历史污染，见 batch5#F25）"
+      "notes": "缺身份/缺 I 负例已补：IDENTITY 阻断、零请求、消息仍保存（batch7#A038）+F25 短输入恢复（batch5#F25）（复审降级后补证，commit 见 git log）"
     },
     {
       "id": "A039",
@@ -604,12 +604,11 @@
       "title": "工具流分片",
       "criterion": "JSON参数完整且合法终态后才执行，严格schema和同call ID配对。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
+      "status": "PASS",
       "evidence": [
-        "tests/unit/or-stream.test.ts#工具参数门",
-        "tests/unit/runner-openrouter.test.ts#分片工具"
+        "tests/unit/remediation-batch7.test.ts#A051"
       ],
-      "notes": "复审抽查后重判（原 PASS）：复审：SSE 帧层已证；宿主业务 JSON Schema required/类型/附加字段拒绝断言缺——收窄"
+      "notes": "宿主参数门已实装：白名单/类型/必填校验拒绝且零副作用（batch7#A051 + host-tools validateToolArgs）（复审降级后补证，commit 见 git log）"
     },
     {
       "id": "A052",
@@ -773,12 +772,11 @@
       "title": "unknown和anomaly",
       "criterion": "缺字段不置零，cache分类冲突不clamp；估计和actual显示分开。",
       "level": "unit+ui",
-      "status": "NOT_EXECUTED",
+      "status": "PASS",
       "evidence": [
-        "tests/unit/remediation-batch3.test.ts#F19（anomaly 不 clamp）",
-        "tests/unit/usage-normalization.test.ts#unknown 不补零"
+        "tests/unit/remediation-batch7.test.ts#A065"
       ],
-      "notes": "复审抽查后重判（原 PASS）：复审：cache 分类冲突 clamp 场景无专门断言（reasoning>output 异常已有）——收窄"
+      "notes": "cache 分类冲突不 clamp 断言已补（batch7#A065：60+10→30；40+20>50→null+anomaly）（复审降级后补证，commit 见 git log）"
     },
     {
       "id": "A066",
@@ -786,11 +784,11 @@
       "title": "费用计量",
       "criterion": "cost不重复加upstream明细；失败已花可见，turn未知显示已知小计+未知。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
+      "status": "PASS",
       "evidence": [
-        "tests/unit/remediation-batch3.test.ts#F19（cost 落库）#F20（失败已花可见）"
+        "tests/unit/remediation-batch7.test.ts#A066"
       ],
-      "notes": "复审抽查后重判（原 PASS）：复审：turn 费用小计+未知分量接口/展示未完整（F31 已落 window 归属与最近费用显示；summaryForTurn cost 字段未加）——保留待补"
+      "notes": "summaryForTurn cost 小计+未知独立信号已实装（batch7#A066：已知求和/缺任一→null；cost 与 token 口径解耦）（复审降级后补证，commit 见 git log）"
     },
     {
       "id": "A067",
