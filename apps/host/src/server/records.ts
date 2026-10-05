@@ -69,7 +69,14 @@ export function buildRecordSnapshot(d: {
         : raw.pending > 0 || !raw.enabled ? 'saved_pending_sync'
           : raw.acked > 0 ? 'synced' : 'saved_pending_sync';
 
+  // F18：TTL 从请求开始计时（provider_requests.created_at），不是流结束后的 usage 入库时刻
+  const requestStartedAt = win
+    ? (d.db.prepare('SELECT created_at FROM provider_requests WHERE window_id = ? ORDER BY created_at DESC LIMIT 1').get(win.id) as { created_at: string } | undefined)?.created_at ?? null
+    : null;
   const observedAt = lastUsage?.observed_at ?? null;
+  const costRow = win
+    ? (d.db.prepare("SELECT cost_usd FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id WHERE a.window_id = ? AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id) as { cost_usd: number } | undefined)
+    : undefined;
   return {
     roomId: conversationId,
     cursor: lastEventSequence !== null ? String(lastEventSequence) : null,
@@ -84,9 +91,9 @@ export function buildRecordSnapshot(d: {
       lastNoncached: lastUsage && lastUsage.input_tokens !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
         ? lastUsage.input_tokens - lastUsage.cache_read_input_tokens - lastUsage.cache_creation_input_tokens
         : null,
-      lastCostUsd: null, // 费用字段在 usage_observations 未落列（WP6 实测时补）——不编数
+      lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
-      estimatedExpiresAt: observedAt ? new Date(Date.parse(observedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：按请求开始时刻的本地估计，非可查询缓存对象
+      estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：请求开始+1h 的本地估计（非可查询缓存对象）
       keeperEnabled: false,
     },
     review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount } : null,

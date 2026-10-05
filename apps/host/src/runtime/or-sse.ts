@@ -64,6 +64,7 @@ export type OrStreamFinish = {
   text: string;
   toolCalls: AggregatedToolCall[];
   usage: NormalizedOrUsage;
+  usageRawFrame: OrUsageFrame | null; // 原始记账帧（仅计数/费用字段；供持久化对账）
   reasoningFrames: unknown[]; // opaque：只按接收顺序保留，不解释、不回发
   terminalEvents: number;
 };
@@ -179,6 +180,7 @@ export class OrStreamAccumulator {
       text: this.text,
       toolCalls: calls,
       usage: normalizeOrUsage(this.rawUsage),
+      usageRawFrame: this.rawUsage ? structuredClone(this.rawUsage) : null,
       reasoningFrames: this.reasoningFrames,
       terminalEvents: this.terminalEvents,
     };

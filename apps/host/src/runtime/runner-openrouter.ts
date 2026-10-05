@@ -174,6 +174,18 @@ export class OpenRouterRunner implements AgentRunner {
     return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1, ...(reasoningFrames !== null && reasoningFrames.length > 0 ? { reasoningFrames } : {}) };
   }
 
+  // F19：OR 计量字段全量透出（费用/推理明细/异常标记/原始帧）——不在桥接中丢失
+  private usageEventFields(finish: { usage: import('./or-contract.ts').NormalizedOrUsage; usageRawFrame: unknown }): import('../../../../packages/contracts/src/sdk-events.ts').RawUsage {
+    const u = finish.usage;
+    return {
+      ...toRawUsageColumns(u),
+      ...(u.cost !== null ? { cost_usd: u.cost } : {}),
+      ...(u.reasoning !== null ? { reasoning_tokens: u.reasoning } : {}),
+      ...(u.anomalies.length > 0 ? { anomalies: u.anomalies } : {}),
+      ...(finish.usageRawFrame ? { raw_json: JSON.stringify(finish.usageRawFrame) } : {}),
+    };
+  }
+
   private errorResult(err: unknown, attempt: number): RunnerRunResult {
     if (err instanceof ContractError) {
       return this.final('error', err.code, null, err.code, attempt);
@@ -208,16 +220,18 @@ export class OpenRouterRunner implements AgentRunner {
       return sdkMessageId!;
     };
 
+    let abortedMidStream = false;
     try {
       for await (const chunk of response.body) {
         sawAnyFrame = true; // 已进入流（即使尚无正文）——保守视为已发布，不再自动重试
         markPublished();
-        if (req.abortController.signal.aborted) {
-          return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
-        }
         const before = acc.snapshot();
-        acc.feed(chunk);
+        acc.feed(chunk); // 审计 F20：先吸收（含已抵达的计量帧），停止不丢已收到的事实
         const after = acc.snapshot();
+        if (req.abortController.signal.aborted) {
+          abortedMidStream = true;
+          continue; // 不再发布内容/工具；usage 由 fence 单独放行（下方收口补记）
+        }
         if (after.id !== before.id) ensureMessageStart(after.id);
         if (after.text.length > before.text.length) {
           const mid = ensureMessageStart(after.id);
@@ -229,9 +243,21 @@ export class OpenRouterRunner implements AgentRunner {
         }
       }
     } catch (err) {
-      if (req.abortController.signal.aborted) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
+      if (req.abortController.signal.aborted || abortedMidStream) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
       if (!sawAnyFrame) return { kind: 'pre_data_error', error: err };
       return { kind: 'result', result: this.errorResult(err, attempt) };
+    }
+    if (abortedMidStream) {
+      // 停止收口：流若完整则把已抵达的 usage 帧补记账（§9.2 迟到 usage 仍记录真实消耗），终态=interrupted
+      try {
+        const fAborted = acc.finish();
+        if (fAborted.usage.completeness !== 'unknown') {
+          req.onEvent({ kind: 'usage', scope: 'request', usage: this.usageEventFields(fAborted), source: 'or_stream', completeness: fAborted.usage.completeness === 'complete' ? 'complete' : 'partial' });
+        }
+      } catch {
+        // 流未完整（无 DONE/终态）：无可靠计量，不编造
+      }
+      return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
     }
 
     let finish: ReturnType<OrStreamAccumulator['finish']>;
@@ -246,7 +272,7 @@ export class OpenRouterRunner implements AgentRunner {
       emit({
         kind: 'usage',
         scope: 'request',
-        usage: toRawUsageColumns(finish.usage),
+        usage: this.usageEventFields(finish),
         source: 'or_stream',
         completeness: finish.usage.completeness === 'complete' ? 'complete' : 'partial',
       });
