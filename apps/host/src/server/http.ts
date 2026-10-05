@@ -255,7 +255,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const conversationId = decodeURIComponent(ctxRecordsEvents[1]!);
       const after = Math.max(0, Number(url.searchParams.get('cursor') ?? '0') || 0);
       const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? '30') || 30));
-      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit));
+      const mode = url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21：最近页语义
+      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode));
     }
 
     const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);
