@@ -219,7 +219,17 @@ export class TurnSupervisor {
           tool_calls: captured.map((t) => ({ id: t.tool_id, type: 'function', function: { name: t.tool_name ?? '', arguments: t.text ?? '{}' } })),
         } as unknown as OrMessage],
       };
-      for (const t of captured) {
+      // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
+      // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
+      const ordered = [
+        ...captured.filter((t) => t.tool_name !== 'context_review_complete'),
+        ...captured.filter((t) => t.tool_name === 'context_review_complete'),
+      ];
+      for (const t of ordered) {
+        // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
+        if (o.controller.signal.aborted) {
+          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null };
+        }
         let args: Record<string, unknown>;
         try {
           args = JSON.parse(t.text ?? '{}') as Record<string, unknown>;
@@ -301,6 +311,7 @@ export class TurnSupervisor {
     currentInputSequence: number;
     attemptId: string;
     materials: { identityText: string; rulesText: string } | null;
+    force?: boolean; // 手动换窗（F05：同一管线，不经评审直转的旁路已封）
   }): Promise<{ rotated: boolean; blocked: string | null }> {
     const d = this.d;
     if (!d.tools || !d.reviews || !d.checkpoint) return { rotated: false, blocked: null }; // 能力未接线：不触发自动换窗（普通聊天不受影响）
@@ -336,23 +347,41 @@ export class TurnSupervisor {
     const idleMs = lastUser && currentAt ? Math.max(0, Date.parse(currentAt) - Date.parse(lastUser)) : 0;
 
     const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比），idle 触发照常
-    const plan = rotationPlan({
-      currentInput: workingSet,
-      nextInput: workingSet,
-      capacity,
-      maxOutput: d.config.openrouter.max_output_tokens,
-      toolReserve: d.config.windows.tool_input_reserve_tokens,
-      reviewReserve: d.config.windows.review_reserve_tokens,
-      safety: d.config.windows.safety_reserve_tokens,
-      soft: d.config.windows.soft_limit_tokens,
-      warning: d.config.windows.warning_tokens,
-      idleMs,
-    });
-    if (plan.action === 'warn') {
-      d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { estimate: workingSet, quality: lastActual !== null ? 'calibrated_rough' : 'rough', effective_warning: plan.effectiveWarning, effective_soft: plan.effectiveSoft } });
+    let plan: ReturnType<typeof rotationPlan> | null = null;
+    if (!o.force) {
+      plan = rotationPlan({
+        currentInput: workingSet,
+        nextInput: workingSet,
+        capacity,
+        maxOutput: d.config.openrouter.max_output_tokens,
+        toolReserve: d.config.windows.tool_input_reserve_tokens,
+        reviewReserve: d.config.windows.review_reserve_tokens,
+        safety: d.config.windows.safety_reserve_tokens,
+        soft: d.config.windows.soft_limit_tokens,
+        warning: d.config.windows.warning_tokens,
+        idleMs,
+      });
+      if (plan.action === 'warn') {
+        d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { estimate: workingSet, quality: lastActual !== null ? 'calibrated_rough' : 'rough', effective_warning: plan.effectiveWarning, effective_soft: plan.effectiveSoft } });
+      }
+      // 审计 F03：blocked_hard 是硬门——超安全输入上界不得继续发送；交调用方按待恢复收口，不静默放行
+      if (plan.action === 'blocked_hard') {
+        return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复` };
+      }
+      if (plan.action !== 'rotate') return { rotated: false, blocked: null };
     }
-    if (plan.action !== 'rotate') return { rotated: false, blocked: null };
-    const reason: 'idle' | 'capacity' = plan.reason === 'idle' ? 'idle' : 'capacity';
+    const reason: 'idle' | 'capacity' | 'manual' = o.force ? 'manual' : plan!.reason === 'idle' ? 'idle' : 'capacity';
+
+    // 审计 F05：评审互斥——同窗已有活跃评审（自动/手动）时不重复开评审，恢复走同 review_id 有界重试
+    if (d.reviews.activeForWindow(o.window.id)) {
+      return { rotated: false, blocked: o.force ? 'REVIEW_IN_PROGRESS（评审进行中，手动换窗被拒）' : 'ROTATION_ALREADY_IN_PROGRESS' };
+    }
+    // 审计 F08：评审前按原 operation_id 有界恢复 unknown 写；仍不可判定的如实阻断换窗
+    await d.tools.recoverUnknownEffects(o.conversationId, o.window.id);
+    const unresolvedBefore = d.reviews.unresolvedForWindow(o.window.id);
+    if (unresolvedBefore.length > 0) {
+      return { rotated: false, blocked: `WRITES_UNRESOLVED:${unresolvedBefore.length}（存在结果未知的写操作，换窗前须核实）` };
+    }
 
     // —— §3.2 评审范围：书签之后、扣除已完成同范围凭证的真实原话 ——
     // §3.2.4 跨窗继承：旧窗成功书签之前的内容做"焦点豁免"（不标 reviewed，避免每次轮动强制补记早餐）；
@@ -423,11 +452,42 @@ export class TurnSupervisor {
     return this.doRotate(o, reason, review.id);
   }
 
-  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'idle' | 'capacity', reviewId: string | null): { rotated: boolean; blocked: string | null } {
+  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'idle' | 'capacity' | 'manual', reviewId: string | null): { rotated: boolean; blocked: string | null } {
+    // 审计 F05：评审期间可能已被并发换窗（手动/上一轮迟到返回）——只对评审针对的那个旧窗切换，
+    // 活动指针已变则本轮评审作废（凭证留档），绝不叠加第二次轮转。
+    const active = this.d.windows.activeWindow(o.conversationId);
+    if (!active || active.id !== o.window.id) {
+      return { rotated: false, blocked: 'ROTATION_SUPERSEDED:窗口已被并发切换，本次评审结果留档不重复换窗' };
+    }
     const rotated = this.d.windows.rotate({ conversationId: o.conversationId, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     this.d.events.publish('window.rotated', { conversationId: o.conversationId, entityRef: rotated.window.id, scope: 'private', payload: { reason, review_id: reviewId } });
     return { rotated: true, blocked: null };
+  }
+
+  /** 审计 F05：手动换窗入口——与自动换窗同一条评审管线（同互斥/恢复/未决检查/CAS），
+   *  不再存在绕过评审的直转旁路。SDK 驱动（无评审线）保持 v0.2.2 行为（running/票据检查仍在 manager）。 */
+  async manualRotate(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
+    const d = this.d;
+    const gate = d.identity.evaluateGate(d.db);
+    const window = d.windows.activeWindow(conversationId);
+    if (!window) return { ok: false, reason: '无当前活动窗口' };
+    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
+    if (!isOr || !d.tools || !d.reviews || !d.checkpoint) {
+      const r = d.windows.rotate({ conversationId, gate, maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m, assembledOptions: null });
+      return r.ok ? { ok: true, windowId: r.window.id } : { ok: false, reason: r.reason };
+    }
+    if (gate.state !== 'READY') return { ok: false, reason: `IDENTITY_BLOCKED：${gate.reasons.join('; ')}（旧窗保持 ACTIVE）` };
+    const materials = gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
+    const nextSeq = (d.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n;
+    const r = await this.rotateIfNeeded({
+      conversationId, window, gate, currentInputSequence: nextSeq, attemptId: 'manual-rotate',
+      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null,
+      force: true,
+    });
+    if (r.blocked) return { ok: false, reason: r.blocked };
+    const active = d.windows.activeWindow(conversationId);
+    return active ? { ok: true, windowId: active.id } : { ok: false, reason: '换窗后无活动窗口' };
   }
 
   private async runTurn(turnId: string): Promise<void> {
