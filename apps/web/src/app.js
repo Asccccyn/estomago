@@ -409,14 +409,16 @@ async function loadRecords() {
       <div>当前输入估计：${fmtNum(s.context.estimatedInput)}（${s.context.estimateQuality}）　上次实际：${fmtNum(s.context.lastActualInput)}</div>
       <div>预警线 ${fmtNum(56000)} / 有效软线 ${fmtNum(s.context.effectiveSoft)}${s.context.hardCapacity == null ? '（模型容量未测量——不画百分比）' : ` / 硬容量 ${fmtNum(s.context.hardCapacity)}`}</div></div>`);
     rows.push(`<div class="rec-section"><h4>记忆与换窗</h4>
-      <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : `已完成 hold ${s.review.holdCount ?? 0} 条`}）` : ''}${s.review.isCurrentWindow ? '' : '（上一窗口的结果，换窗不抹去）'}` : '还没有检查过'}</div>
+      <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : `已完成 hold ${s.review.holdCount ?? 0} 条`}）` : ''}${s.review.rangeCount != null ? `　范围 ${s.review.rangeCount} 条` : ''}${s.review.isCurrentWindow ? '' : '（上一窗口的结果，换窗不抹去）'}` : '还没有检查过'}</div>
+      <div>书签位置：${s.bookmark ? `已见到第 ${s.bookmark.seenSequence} 条（${fmtTime(s.bookmark.updatedAt)}）` : '本房间还没有成功 hold 书签'}</div>
       <div>未新增 hold 是正常状态，不是漏记。</div></div>`);
     rows.push(`<div class="rec-section"><h4>原文同步</h4>
       <div>状态：${{ saved_pending_sync: '已保存，待同步', synced: '已同步 Mariposa', failed: '有失败项（需处理）', partial: '部分', unknown: '未知' }[s.rawSync.state] ?? s.rawSync.state}${s.rawSync.enabled ? '' : '（归档未启用——原文仍完整保存在本地）'}</div>
       <div>已同步 ${s.rawSync.acked} / 待 ${s.rawSync.pending} / 失败 ${s.rawSync.failed}</div></div>`);
-    rows.push(`<div class="rec-section"><h4>一小时缓存</h4>
-      <div>配置 TTL：1h　保温：未启用</div>
+    rows.push(`<div class="rec-section"><h4>一小时缓存与费用</h4>
+      <div>配置 TTL：1h　保温：未启用${s.cache.estimatedExpiresAt ? `　估计热至 ${fmtTime(s.cache.estimatedExpiresAt)}` : ''}</div>
       <div>上次读缓存：${fmtNum(s.cache.lastRead)}　写缓存：${fmtNum(s.cache.lastWrite)}（观测于 ${fmtTime(s.cache.observedAt)}）</div>
+      <div>最近费用：${typeof s.cache.lastCostUsd === 'number' ? `$${s.cache.lastCostUsd}` : '未知'}（按请求报告值；无数据不编数）</div>
       <div>“配置 1h”与“观测到缓存读取”是两回事；无观测时不显示命中。</div></div>`);
     // F21：最新在最上；按 eventId 去重（SSE 刷新重拉不重复追加）；事件带关键事实（F22）
     seenEventIds.clear();
