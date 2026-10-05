@@ -11,6 +11,27 @@ export type ThinkingConfig = {
   require_capability_probe: boolean;
 };
 
+// ESTOMAGO_OR_SELF_HOLD §6.1/§6.2：明确 OR 型号约束（anthropic 上游、禁 auto/latest/别名）。
+// 注意这是宿主门，不是把任意 OR 型号都放行的通用校验；当前任务 provider.only 固定 ['anthropic']。
+export const RUNTIME_PROVIDER_ENUM = ['claude-agent-sdk', 'openrouter', 'mock'] as const;
+export type RuntimeProvider = (typeof RUNTIME_PROVIDER_ENUM)[number];
+
+export type OrModelId = string; // 形状校验见 orModelIdIssue()；null=未配置（selectRunner 阻断，不猜默认型号）
+
+export type OpenRouterConfig = {
+  base_url: string;
+  model: string | null;
+  api_key_env: string; // 凭据环境变量名（值只在后端 transport 读取，不进日志/DB/前端）
+  max_output_tokens: number; // 无既有批准值时的透明初值；设置页可改
+  provider_only: string[];
+  allow_fallbacks: boolean; // 硬规则 false（§6.2）
+  require_parameters: boolean; // 硬规则 true（§6.2）
+  cache_ttl: string; // 硬规则 '1h'（§7）
+  disable_context_compression: boolean; // 硬规则 true（§6.2 plugins）
+  retry_max_attempts_after_initial: number; // §9.2 建议初值 2
+  reasoning: Record<string, unknown> | null; // 未批准推理覆盖=null（§10：不照搬 SDK effort）
+};
+
 export type Config = {
   project: { display_name: string; slug: string; spec_version: string };
   deployment: {
@@ -51,6 +72,9 @@ export type Config = {
     auth_and_billing_verified: boolean;
     capability_state: string;
   };
+  // ESTOMAGO_OR_SELF_HOLD：OR 专用配置段——与 SDK 的 settingSources/systemPrompt 装配/
+  // resume/订阅认证完全分离（§2.1/§6.1）。共用业务授权（身份/主体权限），不共用供应商会话与 KV。
+  openrouter: OpenRouterConfig;
   identity: {
     approved_identity_ref: string | null;
     approved_identity_hash: string | null;
@@ -66,13 +90,16 @@ export type Config = {
     probe_evidence_max_age_days: number | null;
   };
   windows: {
-    rotate_on_business_date_change: boolean;
-    soft_limit_tokens: number | null;
-    output_reserve_tokens: number | null;
-    handoff_reserve_tokens: number | null;
-    max_tool_result_tokens: number | null;
-    recent_dialogue_budget_tokens: number | null;
-    model_context_capacity: number | null;
+    rotate_on_business_date_change: boolean; // 现行规范 §4.1：零点不触发换窗（默认 false）
+    soft_limit_tokens: number; // 输入工作集软线（§4.1 初值 64000；有效软线=min(此值, C-O-T-R-S)）
+    warning_tokens: number; // 前台预警线（初值 56000；不高于软线-8k）
+    idle_before_next_user_ms: number; // 距上一条真实用户消息≥6h → 下一条真实交互到达时换窗
+    tool_input_reserve_tokens: number; // T（§4.2 初值 8k）
+    review_reserve_tokens: number; // R：换窗提醒及必要 hold 往返预留（8k）
+    safety_reserve_tokens: number; // S（4k）
+    recent_dialogue_budget_tokens: number; // 近期原话目标约 12k（§5.5）
+    bootstrap_target_tokens: number; // 新窗启动总目标约 32k（§5.5）
+    model_context_capacity: number | null; // C：实际所选模型/端点容量；null=未测量（不假定）
     threshold_status: string;
     normal_rotation_uses_new_session: boolean;
   };
@@ -196,6 +223,21 @@ export const CONFIG_DEFAULTS: Config = {
     auth_and_billing_verified: false,
     capability_state: 'unknown',
   },
+  // OR 默认：model=null（未配置即阻断，不默选示例型号）；key 只经环境变量名引用。
+  // 控制字段（fallbacks/require_parameters/ttl/压缩）为硬规则固定值，配置不得放宽。
+  openrouter: {
+    base_url: 'https://openrouter.ai/api/v1',
+    model: null,
+    api_key_env: 'OPENROUTER_API_KEY',
+    max_output_tokens: 8192,
+    provider_only: ['anthropic'],
+    allow_fallbacks: false,
+    require_parameters: true,
+    cache_ttl: '1h',
+    disable_context_compression: true,
+    retry_max_attempts_after_initial: 2,
+    reasoning: null,
+  },
   identity: {
     approved_identity_ref: null,
     approved_identity_hash: null,
@@ -209,13 +251,19 @@ export const CONFIG_DEFAULTS: Config = {
     expected_rules_version: null,
     probe_evidence_max_age_days: 30,
   },
+  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值（config/implementation-target.json）：
+  // 56k 预警 / 64k 软线 / 6h 静默 / 12k 近期原话 / 32k 启动目标 / T8k R8k S4k。
+  // 这些是配置初值，不是上游极限或最优成本结论；C=null 必须由实际端点能力补齐。
   windows: {
-    rotate_on_business_date_change: true,
-    soft_limit_tokens: null,
-    output_reserve_tokens: null,
-    handoff_reserve_tokens: null,
-    max_tool_result_tokens: null,
-    recent_dialogue_budget_tokens: null,
+    rotate_on_business_date_change: false,
+    soft_limit_tokens: 64000,
+    warning_tokens: 56000,
+    idle_before_next_user_ms: 21600000,
+    tool_input_reserve_tokens: 8000,
+    review_reserve_tokens: 8000,
+    safety_reserve_tokens: 4000,
+    recent_dialogue_budget_tokens: 12000,
+    bootstrap_target_tokens: 32000,
     model_context_capacity: null,
     threshold_status: 'awaiting_measurement',
     normal_rotation_uses_new_session: true,
@@ -297,7 +345,8 @@ export const CONFIG_DEFAULTS: Config = {
 };
 
 // —— 显式类型树（AUD-19 修复）：每个叶子的类型显式声明，不从默认值推导 ——
-type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | { section: Record<string, Leaf> };
+// 'json?' = 可选任意 JSON 值（openrouter.reasoning：未批准覆盖=null；不假装理解其内部结构）
+type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | 'json?' | { section: Record<string, Leaf> };
 type SectionSpec = { section: Record<string, Leaf> };
 
 const SHAPE: SectionSpec = { section: {
@@ -316,6 +365,13 @@ const SHAPE: SectionSpec = { section: {
     thinking: { section: { mode: 'string', display: 'string', effort: 'string?', require_capability_probe: 'boolean' } },
     config_isolation_root: 'string?', auth_and_billing_verified: 'boolean', capability_state: 'string?',
   } },
+  openrouter: { section: {
+    base_url: 'string', model: 'string?', api_key_env: 'string', max_output_tokens: 'number',
+    provider_only: 'string[]', allow_fallbacks: 'boolean', require_parameters: 'boolean',
+    cache_ttl: 'string', disable_context_compression: 'boolean',
+    retry_max_attempts_after_initial: 'number',
+    reasoning: 'json?',
+  } },
   identity: { section: {
     approved_identity_ref: 'string?', approved_identity_hash: 'string?', i_source: 'string?',
     allow_unverified_fallback: 'boolean', require_bootstrap_receipt: 'boolean',
@@ -324,8 +380,9 @@ const SHAPE: SectionSpec = { section: {
     probe_evidence_max_age_days: 'number?',
   } },
   windows: { section: {
-    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number?', output_reserve_tokens: 'number?',
-    handoff_reserve_tokens: 'number?', max_tool_result_tokens: 'number?', recent_dialogue_budget_tokens: 'number?',
+    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number', warning_tokens: 'number',
+    idle_before_next_user_ms: 'number', tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
+    safety_reserve_tokens: 'number', recent_dialogue_budget_tokens: 'number', bootstrap_target_tokens: 'number',
     model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',
   } },
   time: { section: {
@@ -390,6 +447,9 @@ function checkType(v: unknown, t: Leaf, path: string, issues: ValidationIssue[])
       case 'string[]':
         if (!Array.isArray(v) || v.some((x) => typeof x !== 'string')) issues.push({ path, message: '需要字符串数组' });
         return;
+      case 'json':
+        if (typeof v !== 'object' || Array.isArray(v)) issues.push({ path, message: '需要 JSON 对象或 null' });
+        return;
       default:
         issues.push({ path, message: `内部错误：未知类型 ${t}` });
     }
@@ -407,7 +467,16 @@ function checkType(v: unknown, t: Leaf, path: string, issues: ValidationIssue[])
   }
 }
 
-// 产品硬规则（v0.2.1 固定，配置不得放宽；01 §6.2/§11.1、05 §2.1）
+// OR 型号门（§6.1）：必须是明确的 vendor/model ID；禁止 auto/latest/fallback 数组形态。
+// 只做形状门——型号真实可用性由 OR 元数据/能力快照另验（§6.2），此处不冒充。
+export function orModelIdIssue(model: string): string | null {
+  if (/\bauto\b|\blatest\b/i.test(model)) return '禁止 auto/latest 别名（必须是明确 OR model ID）';
+  if (model.includes(',') || /^\[.*\]$/.test(model.trim())) return '禁止 fallback 型号数组';
+  if (!/^[a-z0-9][a-z0-9._\-]*\/[a-z0-9][a-z0-9._\-]*$/i.test(model)) return '必须是 vendor/model 形式的明确型号 ID';
+  return null;
+}
+
+// 产品硬规则（v0.2.1 固定，配置不得放宽；01 §6.2/§11.1、05 §2.1 + ESTOMAGO_OR_SELF_HOLD §6/§7）
 function checkHardRules(c: Config, issues: ValidationIssue[]): void {
   const fixed: Array<[boolean, string]> = [
     [c.input.multiline === true, 'input.multiline 必须为 true（v0.2.1 产品规则）'],
@@ -432,8 +501,22 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     [c.reasoning.stop_transcript_main_capture === false, 'reasoning.stop_transcript_main_capture 必须为 false（主采集走 SDK 实时流）'],
     [c.safety.allow_unrestricted_shell === false, 'safety.allow_unrestricted_shell 必须为 false'],
     [c.identity.allow_unverified_fallback === false, 'identity.allow_unverified_fallback 必须为 false（缺身份即阻断）'],
+    // ESTOMAGO_OR_SELF_HOLD §6.2/§7：OR 控制字段硬规则（缓存 1h、禁 fallback、禁隐藏压缩）
+    [c.openrouter.cache_ttl === '1h', 'openrouter.cache_ttl 必须为 1h（一小时显式缓存是产品合同，不降 5m）'],
+    [c.openrouter.allow_fallbacks === false, 'openrouter.allow_fallbacks 必须为 false'],
+    [c.openrouter.require_parameters === true, 'openrouter.require_parameters 必须为 true'],
+    [c.openrouter.disable_context_compression === true, 'openrouter.disable_context_compression 必须为 true（供应商压缩显式关闭）'],
+    [Array.isArray(c.openrouter.provider_only) && c.openrouter.provider_only.length > 0, 'openrouter.provider_only 必须非空（限定上游集合）'],
+    [c.openrouter.base_url.startsWith('https://'), 'openrouter.base_url 必须 https（不降级明文）'],
+    [c.openrouter.api_key_env.length > 0, 'openrouter.api_key_env 必须指定（凭据只经环境变量名引用）'],
+    [c.windows.rotate_on_business_date_change === false, 'windows.rotate_on_business_date_change 必须为 false（现行规范：零点不触发换窗）'],
   ];
   for (const [ok, msg] of fixed) if (!ok) issues.push({ path: msg.slice(0, msg.indexOf('必须')), message: msg });
+  // §6.1：型号已配置时必须是明确 ID（未配置不在此报错——selectRunner 会以 OR_MODEL_NOT_CONFIGURED 阻断并显示）
+  if (c.openrouter.model !== null) {
+    const m = orModelIdIssue(c.openrouter.model);
+    if (m) issues.push({ path: 'openrouter.model', message: m });
+  }
 }
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
@@ -443,6 +526,11 @@ export function validateConfig(raw: unknown): { config: Config; issues: Validati
   const effort = (raw as { runtime?: { thinking?: { effort?: unknown } } })?.runtime?.thinking?.effort;
   if (effort !== undefined && effort !== null && !(typeof effort === 'string' && (THINKING_EFFORT_ENUM as readonly string[]).includes(effort))) {
     issues.push({ path: 'runtime.thinking.effort', message: `必须是 ${THINKING_EFFORT_ENUM.join('|')} 或 null（SDK EffortLevel 契约）` });
+  }
+  // ESTOMAGO_OR_SELF_HOLD §1.1：provider 枚举（新增 openrouter 驱动；未知值不得静默落到 SDK）
+  const provider = (raw as { runtime?: { provider?: unknown } })?.runtime?.provider;
+  if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
+    issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
   }
   if (issues.length > 0) return { config: structuredClone(CONFIG_DEFAULTS), issues };
   const config = deepMergeConfig(raw as Record<string, unknown>);

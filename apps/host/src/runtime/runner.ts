@@ -1,14 +1,21 @@
-// Runner 接口与选择（AUD-01/03 修复版）。
-// - 真实 SDK runner 按 0.3.283 契约把全部参数装入 options；支持 resume（会话连续性）。
+// Runner 接口与选择（AUD-01/03 修复版 + ESTOMAGO_OR_SELF_HOLD §6.3 provider 判别联合）。
+// - SDK 分支：按 0.3.283 契约把全部参数装入 options；支持 resume（会话连续性）。
+// - OR 分支：不可变 messages/tools/profile + streaming transport（envelope）；不把 messages
+//   压成 SDK 的一条 prompt，也不让 OR 样式 usage 伪装成 SDK usage（§6.3）。
 // - outcome 语义（AUD-25）：'completed' 仅当观察到 success result；流结束无 result →
 //   'no_final_result'；'error' / 'interrupted' 如常。
 // - mock 仅在 ESTOMAGO_TEST_MODE=1 下可用，模拟 session 语义，绝不冒充实机。
 import type { Config } from '../config/schema.ts';
 import type { SdkNormalizedEvent, RawStreamEvent } from '../../../../packages/contracts/src/sdk-events.ts';
 import type { AssembledSdkOptions } from './build-options.ts';
+import type { OrBoundary, OrMessage, OrTool } from './or-payload.ts';
 import { MockRunner } from './runner-mock.ts';
 
-export type RunnerRunRequest = {
+export type RunnerPurpose = 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive'; // §12：keepalive 默认禁用
+
+// —— SDK 形状请求（driver 缺省 = SDK/mock 既有路径，调用方无需改动）——
+export type SdkRunRequest = {
+  driver?: 'claude-agent-sdk' | 'mock';
   prompt: string; // 本轮有效输入（含每轮时间上下文块，宿主构造，不伪装成用户发言）
   options: AssembledSdkOptions;
   resumeSessionId: string | null; // 同一 window 的后续轮恢复同一 SDK session（AUD-03）
@@ -16,17 +23,39 @@ export type RunnerRunRequest = {
   onEvent: (ev: SdkNormalizedEvent) => void;
 };
 
+// —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3）——
+export type OrRequestEnvelope = {
+  model: string; // 已批准的明确 OR model ID（buildOrPayload 再过最后一道门）
+  sessionId: string; // 房间×模型×profile 的持久匿名标识（orSessionId 派生，≤256 字符）
+  messages: OrMessage[];
+  tools: OrTool[];
+  boundaries: OrBoundary[]; // 显式缓存断点 A/B/G（WP4 接规划；WP1 恒 []）
+  maxTokens: number;
+  reasoning: Record<string, unknown> | null;
+};
+export type OrRunRequest = {
+  driver: 'openrouter';
+  purpose: RunnerPurpose;
+  envelope: OrRequestEnvelope;
+  previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；WP3 轨迹接入前为 null）
+  abortController: AbortController;
+  onEvent: (ev: SdkNormalizedEvent) => void;
+};
+
+export type RunnerRunRequest = SdkRunRequest | OrRunRequest;
+
 export type RunnerRunResult = {
   outcome: 'completed' | 'error' | 'interrupted' | 'no_final_result';
   errorClassified: 'refusal' | 'network' | 'route_signal' | 'unknown' | null;
   errorCode: string | null; // 稳定错误码（日志/存储用；原始 message 不入日志，AUD-28）
   errorMessage: string | null; // 仅入 DB 调试字段，不入日志
-  sessionId: string | null; // 本轮观察到的 SDK session id（首轮创建，后续沿用）
-  requestId: string | null;
+  sessionId: string | null; // 本轮观察到的 SDK session id（首轮创建，后续沿用）；OR 无宿主可见 session → null
+  requestId: string | null; // OR：generation id；SDK：null
+  attempts?: number; // §9.2：真实发出的模型请求次数（含重试）；1=未重试
 };
 
 export interface AgentRunner {
-  readonly kind: 'claude-agent-sdk' | 'mock';
+  readonly kind: 'claude-agent-sdk' | 'mock' | 'openrouter';
   run(req: RunnerRunRequest): Promise<RunnerRunResult>;
   interruptSupport: 'claimed' | 'unknown';
 }
@@ -45,6 +74,11 @@ export async function selectRunner(config: Config): Promise<RunnerSelection> {
   if (config.runtime.provider === 'claude-agent-sdk') {
     const { tryLoadClaudeSdkRunner } = await import('./runner-claude-sdk.ts');
     return tryLoadClaudeSdkRunner(config);
+  }
+  if (config.runtime.provider === 'openrouter') {
+    // §2.1：OR 模式不加载 SDK、不读订阅凭据、不做 SDK 握手；反向亦然
+    const { openRouterSelection } = await import('./runner-openrouter.ts');
+    return openRouterSelection(config);
   }
   return { status: 'blocked', reasons: [`未知 provider: ${config.runtime.provider}`] };
 }

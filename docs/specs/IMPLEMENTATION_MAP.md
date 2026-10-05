@@ -74,6 +74,10 @@
 
 WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/收据（A3 门）→ WP3 启动装配/轨迹/书签/一次提醒/自动换窗 → WP4 缓存与工具续请求集成 → WP5 前台记录与设置 → WP6 真实验收（A1/A2 门）。每步按 `ACCEPTANCE.json` 逐项留证，未执行标 `NOT_EXECUTED`。
 
+### 进度记录
+
+- **2026-10-05 WP1 完成**（离线部分）：`openrouter` 配置段+硬规则、换窗预算初值（56k/64k/6h/12k/32k/T8k/R8k/S4k）、退役旧预算字段（output/handoff_reserve、max_tool_result）与零点换窗默认值（true→false 硬规则）、`runtime/runner-openrouter.ts`（SSE 解析/payload 构造/用量归一移植自参考实现；429/流前网络故障有界重试、401/402/400 不重试、P2 append-only 断言收口为 error）、supervisor 驱动判别分支（OR 信封：system=身份+批准规则+固定运行片段，user=时间上下文程序事实+正文）、指纹纳入 provider/OR 型号（变更→CONTEXT_STALE）、usage `or_stream` 口径、http runtime 状态（只报布尔）。新增 5 个测试文件 31 用例；全量 36 文件 0 失败。**未做**：真实 OR 外网（A1/A2 门）、MCP 工具执行、跨轮轨迹/缓存断点（WP2-4）。
+
 ## 6. 本次 WP0 已做/未做
 
 已做：只读核对（未改任何 `apps/`、`packages/`、`tests/` 代码）；装订规范包；本报告。未做：未写实现代码、未跑项目测试、未连接外部服务、未读取任何凭据/身份正文/私人数据。测试与实现自 WP1 起，遵守 AGENTS.md 测试纪律（临时 `ESTOMAGO_HOME`、前台分批串行、查孤儿进程）。

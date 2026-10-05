@@ -54,15 +54,36 @@ identity:
   receipt_requires_evidence: true
   unobservable_fields_are_unknown: true
 windows:
-  rotate_on_business_date_change: true
-  soft_limit_tokens: null
-  output_reserve_tokens: null
-  handoff_reserve_tokens: null
-  max_tool_result_tokens: null
-  recent_dialogue_budget_tokens: null
-  model_context_capacity: null
+  # ESTOMAGO_OR_SELF_HOLD §4：换窗容量预算（工程初值，非上游极限）。
+  # 零点不触发换窗（现行规范硬规则）；有效软线 = min(soft, C-O-T-R-S)。
+  rotate_on_business_date_change: false
+  soft_limit_tokens: 64000        # 输入工作集软线
+  warning_tokens: 56000           # 前台预警线（不高于软线-8k）
+  idle_before_next_user_ms: 21600000  # 6h：下一条真实用户消息到达时换窗
+  tool_input_reserve_tokens: 8000    # T：有界后续工具输入预留
+  review_reserve_tokens: 8000        # R：换窗提醒及必要 hold 往返预留
+  safety_reserve_tokens: 4000        # S：安全余量
+  recent_dialogue_budget_tokens: 12000   # 近期原话目标（新窗启动）
+  bootstrap_target_tokens: 32000         # 新窗启动总目标
+  model_context_capacity: null    # C：由实际模型/端点能力补齐；null=未测量
   threshold_status: awaiting_measurement
   normal_rotation_uses_new_session: true
+
+# OpenRouter 主接入（ESTOMAGO_OR_SELF_HOLD §6）：与 SDK 认证/装配完全分离。
+# model=null 表示"模型未配置"（运行时如实阻断，不猜默认型号）；key 只经环境变量名引用。
+openrouter:
+  base_url: https://openrouter.ai/api/v1
+  model: null                     # 明确 OR model ID（如 anthropic/claude-…）；禁止 auto/latest
+  api_key_env: OPENROUTER_API_KEY # 只在后端读取；不进前端/日志/Git
+  max_output_tokens: 8192         # 无既有批准值时的透明初值；设置页可改
+  provider_only:
+    - anthropic
+  allow_fallbacks: false          # 硬规则
+  require_parameters: true        # 硬规则
+  cache_ttl: 1h                   # 硬规则：一小时显式缓存
+  disable_context_compression: true  # 硬规则：显式关闭 OR 上下文压缩插件
+  retry_max_attempts_after_initial: 2
+  reasoning: null                 # 未批准的推理覆盖保持 null；不照搬 SDK effort 字符串
 time:
   business_timezone: Asia/Shanghai
   persist_absolute_time_as: UTC
