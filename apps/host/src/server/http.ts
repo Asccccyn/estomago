@@ -162,20 +162,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const windowId = decodeURIComponent(rotate[1]!);
       const win = d.windows.get(windowId);
       if (!win) return json(res, 404, { error: { code: 'not_found', message: '窗口不存在' } });
-      const maxRow = d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(win.conversation_id) as { m: number };
-      const gate = d.identity.evaluateGate(d.db);
-      // §22：candidate receipt 必须携带真实 assembled options hash——先装配再轮转
-      let assembledOptions: Record<string, unknown> | null = null;
-      if (gate.state === 'READY' && gate.manifest) {
-        const { buildSdkOptions } = await import('../runtime/build-options.ts');
-        const materials = d.identity.loadVerifiedMaterials(gate.manifest); // F04：与执行路径同一份已验证材料
-        const { buildPaths, resolveStateRoot } = await import('../config/paths.ts');
-        const built = buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir });
-        if (built.status === 'ok') assembledOptions = built.assembled as unknown as Record<string, unknown>;
-      }
-      // F09：安全检查已在 WindowManager.rotate 内部（running + 待决票据），此处不再传可选回调
-      const result = d.windows.rotate({ conversationId: win.conversation_id, gate, maxSequence: maxRow.m, assembledOptions });
-      return json(res, result.ok ? 200 : 409, result.ok ? { window: result.window } : { error: { code: 'rotate_blocked', message: result.reason } });
+      // 审计 F05：手动换窗走与自动换窗同一条评审管线（互斥/未决写核验/CAS）——
+      // 不再存在绕过评审直转 WindowManager 的旁路；SDK 驱动保持 v0.2.2 行为
+      const result = await d.supervisor.manualRotate(win.conversation_id);
+      return json(res, result.ok ? 200 : 409, result.ok ? { window: { id: result.windowId } } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
     const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);

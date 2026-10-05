@@ -105,18 +105,24 @@ export class Host {
     const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config);
     const auth = new AuthService(paths);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
-    // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送；
-    // credential_ref 只是环境变量名（值由 transport 读取，不进日志）。未启用 → no-op，outbox 保持 pending（待同步）。
-    const mariposaClient = new MariposaClient({
+    // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
+    // 审计 F11（LC-050）：归档 worker 与主模型使用不同凭据引用（archive_credential_ref
+    // 未配置时回退共用——仅限开发；生产必须给归档签发受限 stream token）。凭据值只在
+    // 各自 transport 请求头构造处读取，绝不进日志。
+    const modelMariposaClient = new MariposaClient({
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
       credentialEnv: opts.config.integrations.mariposa.credential_ref,
     });
-    const archiveSync = new ArchiveSyncService({ db, events, logger, client: mariposaClient, config: opts.config });
-    // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经 Mariposa 客户端；
+    const archiveMariposaClient = new MariposaClient({
+      baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+      credentialEnv: opts.config.integrations.mariposa.archive_credential_ref ?? opts.config.integrations.mariposa.credential_ref,
+    });
+    const archiveSync = new ArchiveSyncService({ db, events, logger, client: archiveMariposaClient, config: opts.config });
+    // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经主模型凭据的客户端；
     // 端到端在 Mariposa 接口上线前 BLOCKED——客户端错误如实回给模型，不伪造成功）
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
-    const tools = new HostToolExecutor({ mariposa: mariposaClient, reviews, checkpoint });
+    const tools = new HostToolExecutor({ mariposa: modelMariposaClient, reviews, checkpoint });
     const trajectory = new WindowTrajectoryService(db);
     const supervisor = new TurnSupervisor({
       db,

@@ -24,9 +24,11 @@ export function isKnownErrorCode(code: string): code is MariposaErrorCode {
   return (MARIPOSA_ERROR_CODES as readonly string[]).includes(code);
 }
 
-/** SOURCE_NOT_READY = 依赖缺失可重试（同流有序等待，不跳过）；其余已知领域错误 = dead */
+/** 可重试：依赖缺失 + 瞬时传输层（审计 F15：429/502/503/504 不再永久置失败）；其余已知领域错误 = dead（重试由调用方有界执行） */
 export function classifyError(code: string): 'retry_later' | 'dead' {
-  return code === 'SOURCE_NOT_READY' ? 'retry_later' : 'dead';
+  if (code === 'SOURCE_NOT_READY') return 'retry_later';
+  if (code === 'HTTP_429' || code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504') return 'retry_later';
+  return 'dead';
 }
 
 // —— source.ingest 契约形状（§4/接口说明）——
