@@ -150,3 +150,32 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 }
 .route-actions .ghost { background: transparent; color: var(--text); border: 1px solid #3a3f49; }
 .route-actions .danger { background: transparent; color: #d96459; border: 1px solid #d96459; }
+
+/* —— 记录面板（ESTOMAGO_OR_SELF_HOLD §11.2）：桌面右侧栏；窄屏底部面板 —— */
+.records-panel {
+  position: fixed;
+  top: 52px; right: 0; bottom: 0;
+  width: min(360px, 92vw);
+  background: var(--panel);
+  border-left: 1px solid #3a3f49;
+  display: flex; flex-direction: column;
+  z-index: 40;
+  box-shadow: -8px 0 24px rgba(0,0,0,0.25);
+}
+.records-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid #3a3f49;
+}
+.records-body { overflow-y: auto; padding: 10px 14px 20px; font-size: 13px; line-height: 1.7; }
+.records-body .muted { color: #8a919c; }
+.records-body .rec-section { margin: 12px 0; }
+.records-body .rec-section h4 { margin: 0 0 4px; font-size: 13px; color: var(--accent); }
+.records-body .rec-event { color: #b9c0cb; }
+@media (max-width: 720px) {
+  .records-panel {
+    top: auto; left: 0; right: 0; bottom: 0;
+    width: 100%; max-height: 62vh;
+    border-left: none; border-top: 1px solid #3a3f49;
+    border-radius: 14px 14px 0 0;
+  }
+}
