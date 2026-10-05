@@ -185,8 +185,25 @@ export class TurnSupervisor {
         }
         o.onEvent(ev);
       };
-      d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, created_at) VALUES (?,?,?,?,?,?,?)')
-        .run(`prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), new Date().toISOString());
+      const prqId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
+      d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at) VALUES (?,?,?,?,?,?,?,?)')
+        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), new Date().toISOString());
+      // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
+      const capacityNow = d.config.windows.model_context_capacity;
+      if (capacityNow !== null) {
+        const estNow = Math.ceil(JSON.stringify(envelope.messages).length / 2.5);
+        const planNow = rotationPlan({
+          currentInput: estNow, nextInput: estNow, capacity: capacityNow,
+          maxOutput: d.config.openrouter.max_output_tokens,
+          toolReserve: d.config.windows.tool_input_reserve_tokens, reviewReserve: d.config.windows.review_reserve_tokens,
+          safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens, warning: d.config.windows.warning_tokens,
+        });
+        if (planNow.action === 'blocked_hard') {
+          d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
+          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null };
+        }
+      }
       const result = await Promise.race([
         runner.run({ driver: 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped }),
         new Promise<never>((_, reject) => {
@@ -199,6 +216,7 @@ export class TurnSupervisor {
         if (isGrace) o.controller.abort();
         return { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
       });
+      d.db.prepare('UPDATE provider_requests SET generation_id = ?, outcome = ? WHERE id = ?').run(result.requestId, result.outcome, prqId);
       if (result.outcome !== 'completed') return { result, finalMessages: null };
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）
@@ -211,14 +229,15 @@ export class TurnSupervisor {
         return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null };
       }
       prevEnvelope = envelope;
-      envelope = {
-        ...envelope,
-        messages: [...envelope.messages, {
-          role: 'assistant',
-          content: null,
-          tool_calls: captured.map((t) => ({ id: t.tool_id, type: 'function', function: { name: t.tool_name ?? '', arguments: t.text ?? '{}' } })),
-        } as unknown as OrMessage],
+      // F13：已发布正文随 assistant 消息续传（原样保留，§2.2）；opaque reasoning 片段作为
+      // 协议继续态原样携带（§10：不解释不重构；真实端点兼容性=WP6 实测项，此处不冒称已验证）
+      const assistantContinue: Record<string, unknown> = {
+        role: 'assistant',
+        content: lastText ?? null,
+        tool_calls: captured.map((t) => ({ id: t.tool_id, type: 'function', function: { name: t.tool_name ?? '', arguments: t.text ?? '{}' } })),
       };
+      if (result.reasoningFrames && result.reasoningFrames.length > 0) assistantContinue.reasoning_details = result.reasoningFrames;
+      envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
       const ordered = [
@@ -273,31 +292,37 @@ export class TurnSupervisor {
     return out.reverse();
   }
 
-  // OR 信封 v2（§5.5）：system 固定前缀（缓存点 A 候选）+ 近期原话（预算内整段）+ 尾部输入/评审事件
+  // OR 信封（§5.1/§5.5/§7.1）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载，
+  // 缓存点 A 覆盖）；近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
   private buildOrEnvelope(o: {
     conversationId: string;
-    materials: { identityText: string; rulesText: string } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
   }): OrRequestEnvelope {
     const model = this.d.config.openrouter.model!;
     const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * 2.5; // 粗估（§11.1 估计口径，不冒充精确）
+    const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
     const messages: OrMessage[] = [
-      { role: 'system', content: [{ type: 'text', text: `${o.materials?.identityText ?? ''}\n\n${o.materials?.rulesText ?? ''}\n\n${FIXED_RUNTIME_FRAGMENT}\n\n${HOST_BOUNDARY_RULES}` }] },
+      { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
+    // F06：从最新向前装满预算再正序放入（预算外的旧消息被裁，新消息必进——不反向留旧丢新）
+    const selected: typeof o.dialogue = [];
     let used = 0;
-    for (const m of o.dialogue) {
-      if (used + m.content.length > budgetChars && messages.length > 1) break;
+    for (let i = o.dialogue.length - 1; i >= 0; i--) {
+      const m = o.dialogue[i]!;
+      if (used + m.content.length > budgetChars) break;
       used += m.content.length;
-      messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
+      selected.unshift(m);
     }
+    for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
     return {
       model,
       sessionId: orSessionId(o.conversationId, model, null),
       messages,
       tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
-      boundaries: [], // 显式断点 WP4 接规划
+      boundaries: [], // 断点规划由调用方（cache-plan）负责
       maxTokens: this.d.config.openrouter.max_output_tokens,
       reasoning: this.d.config.openrouter.reasoning,
     };
@@ -310,15 +335,17 @@ export class TurnSupervisor {
     gate: import('../identity/service.ts').GateResult;
     currentInputSequence: number;
     attemptId: string;
-    materials: { identityText: string; rulesText: string } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null } | null;
     force?: boolean; // 手动换窗（F05：同一管线，不经评审直转的旁路已封）
   }): Promise<{ rotated: boolean; blocked: string | null }> {
     const d = this.d;
     if (!d.tools || !d.reviews || !d.checkpoint) return { rotated: false, blocked: null }; // 能力未接线：不触发自动换窗（普通聊天不受影响）
     if (d.runnerSelection.status !== 'ok' || d.runnerSelection.runner.kind !== 'openrouter') return { rotated: false, blocked: null };
 
+    // F06：评审范围的实际已见清单优先取轨迹 manifest（真实发送证据）；无轨迹时退化为库投影。
     const dialogue = this.dialogueUpTo(o.conversationId, o.currentInputSequence - 1);
-    const manifest: ManifestEntry[] = dialogue.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue', visible: true }));
+    const trajManifest = d.trajectory?.forWindow(o.window.id)?.manifest ?? null;
+    const manifest: ManifestEntry[] = trajManifest ?? dialogue.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // 当前输入是"下一输入"的一部分（§4.2：下一输入将达到软线也要触发）——其长度计入。
@@ -469,10 +496,10 @@ export class TurnSupervisor {
    *  不再存在绕过评审的直转旁路。SDK 驱动（无评审线）保持 v0.2.2 行为（running/票据检查仍在 manager）。 */
   async manualRotate(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
     const d = this.d;
-    const gate = d.identity.evaluateGate(d.db);
+    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
+    const gate = d.identity.evaluateGate(d.db, { driver: isOr ? 'openrouter' : 'claude-agent-sdk' });
     const window = d.windows.activeWindow(conversationId);
     if (!window) return { ok: false, reason: '无当前活动窗口' };
-    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
     if (!isOr || !d.tools || !d.reviews || !d.checkpoint) {
       const r = d.windows.rotate({ conversationId, gate, maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m, assembledOptions: null });
       return r.ok ? { ok: true, windowId: r.window.id } : { ok: false, reason: r.reason };
@@ -482,7 +509,7 @@ export class TurnSupervisor {
     const nextSeq = (d.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n;
     const r = await this.rotateIfNeeded({
       conversationId, window, gate, currentInputSequence: nextSeq, attemptId: 'manual-rotate',
-      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null,
+      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       force: true,
     });
     if (r.blocked) return { ok: false, reason: r.blocked };
@@ -524,12 +551,12 @@ export class TurnSupervisor {
     d.db.prepare('UPDATE turns SET time_context_json = ?, started_at = COALESCE(started_at, ?) WHERE id = ?').run(JSON.stringify(timeCtx), new Date().toISOString(), turnId);
 
     // —— 运行时 gate ——
-    const gate = d.identity.evaluateGate(d.db);
+    // §2.1/§6.3：驱动判别（先行——gate 的驱动专属前提据此区分，审计 F01）
+    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
+    const gate = d.identity.evaluateGate(d.db, { driver: isOr ? 'openrouter' : 'claude-agent-sdk' });
     // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    // §2.1/§6.3：驱动判别。OR 分支不构造 SDK options、不触发 SDK 握手；SDK 分支形状不变。
-    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
     const built = isOr ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
@@ -542,6 +569,11 @@ export class TurnSupervisor {
     if (isOr && (!materials?.identityText || !materials?.rulesText)) {
       // §2.1：OR 首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:OR_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
+      return;
+    }
+    if (isOr && !materials?.iText) {
+      // 审计 F02：当前 I 必须完整进入固定前缀（§5.1/§7.1）——缺必需 I 时阻断，不静默降级
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:OR_DRIVER_MISSING_I', 'blocked');
       return;
     }
 
@@ -568,8 +600,10 @@ export class TurnSupervisor {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
         const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
-        const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: baseDialogue, tailUserText: ' ' });
-        d.trajectory.init(window.id, initEnv.messages.slice(0, -1));
+        const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        // F06：manifest=初始段实际装载的对话（预算裁剪后的真实集合，非全库投影）
+        const baseManifest = initEnv.messages.slice(1, -1).map((m, i) => ({ id: baseDialogue[i]!.id, revision: baseDialogue[i]!.revision, seq: baseDialogue[i]!.sequence, origin: 'dialogue' as const, visible: true }));
+        d.trajectory.init(window.id, initEnv.messages.slice(0, -1), baseManifest);
       }
     }
     // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线/6h 静默）→ 一次提醒 → CAS 换窗；
@@ -578,7 +612,7 @@ export class TurnSupervisor {
       const rotation = await this.rotateIfNeeded({
         conversationId: turn.conversation_id, window, gate,
         currentInputSequence: inputMessage.sequence, attemptId: attempt.id,
-        materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null,
+        materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       });
       if (rotation.blocked) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, rotation.blocked, 'blocked');
@@ -591,8 +625,9 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: baseDialogue, tailUserText: ' ' });
-            d.trajectory.init(window.id, initEnv.messages.slice(0, -1));
+            const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            const baseManifest = initEnv.messages.slice(1, -1).map((m, i) => ({ id: baseDialogue[i]!.id, revision: baseDialogue[i]!.revision, seq: baseDialogue[i]!.sequence, origin: 'dialogue' as const, visible: true }));
+            d.trajectory.init(window.id, initEnv.messages.slice(0, -1), baseManifest);
           }
         }
       }
@@ -655,7 +690,7 @@ export class TurnSupervisor {
     const orTraj = isOr ? d.trajectory?.forWindow(window.id) ?? null : null;
     const orBaseMessages: OrMessage[] = orTraj
       ? orTraj.messages
-      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: dialogueForInput, tailUserText: prompt }).messages;
+      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).messages;
     const orMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
       : orBaseMessages;
@@ -674,8 +709,8 @@ export class TurnSupervisor {
         })()
       : null;
     const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: orTraj.messages } : null;
-    // 书签视野高水位：轨迹含本输入之前的全部消息 → 序号=输入序号-1（§3.1 发起请求实际看见的位置）
-    const orSeenHighWater = inputMessage ? inputMessage.sequence - 1 : 0;
+    // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
+    const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // 记账模型：OR 用明确 OR 型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = isOr ? d.config.openrouter.model : d.config.runtime.model;
 
@@ -697,10 +732,13 @@ export class TurnSupervisor {
     let routeSignalHandled = false;
     let fallbackSwitched = false; // F10：模型切换已发生（SDK 观测）——回合按 interrupted 收口并标注原因
     let actualModelForUsage: string | null = null; // F10：用量记账用实际模型，不用配置模型冒充
+    // F06/F14：本回合正式发布的助手消息 → 轨迹 manifest 增量（实际已见证据）
+    const turnManifestAdditions: ManifestEntry[] = [];
     const publishSegments = (segs: string[]): void => {
       for (const seg of segs) {
         if (runToken.token.cancelled) return;
         const msg = d.messages.publishAssistantMessage({ conversationId: turn.conversation_id, turnId, content: seg });
+        turnManifestAdditions.push({ id: msg.id, revision: (msg as { current_revision?: number }).current_revision ?? 1, seq: msg.sequence, origin: 'dialogue', visible: true });
         d.events.publish('message.published', {
           conversationId: turn.conversation_id, turnId, entityRef: msg.id, entityRevision: msg.sequence,
           payload: { message: msg },
@@ -931,9 +969,14 @@ export class TurnSupervisor {
       d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
     });
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
-    // §2.2/§7：成功回合才推进协议轨迹（append-only）；新已发送边界=本轮末 text 块（下轮 G 候选）
+    // §2.2/§7：成功回合才推进协议轨迹（append-only）+ 实际已见 manifest（F06：本轮输入与
+    // 已发布助手消息入清单——下一轮范围/书签从这份证据出发）；新已发送边界=本轮末 text 块
     if (orFinalMessages !== null && d.trajectory) {
-      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orFinalMessages));
+      const baseManifest = d.trajectory.forWindow(window.id)?.manifest ?? [];
+      const inputEntry: ManifestEntry[] = inputMessage
+        ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }]
+        : [];
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orFinalMessages), [...baseManifest, ...inputEntry, ...turnManifestAdditions]);
     }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {

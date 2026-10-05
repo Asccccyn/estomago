@@ -52,6 +52,7 @@ export type RunnerRunResult = {
   sessionId: string | null; // 本轮观察到的 SDK session id（首轮创建，后续沿用）；OR 无宿主可见 session → null
   requestId: string | null; // OR：generation id；SDK：null
   attempts?: number; // §9.2：真实发出的模型请求次数（含重试）；1=未重试
+  reasoningFrames?: unknown[]; // OR §10：opaque reasoning 片段（按接收顺序；协议继续态保真用，非 UI 思考）
 };
 
 export interface AgentRunner {
