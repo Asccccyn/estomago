@@ -237,7 +237,7 @@ export const CONFIG_DEFAULTS: Config = {
     model: null,
     api_key_env: 'OPENROUTER_API_KEY',
     max_output_tokens: 8192,
-    provider_only: ['anthropic'],
+    provider_only: ['anthropic'], // 规范默认；DS 冒烟等场景可配置化（如 ['deepseek']），型号门随上游族放宽
     allow_fallbacks: false,
     require_parameters: true,
     cache_ttl: '1h',

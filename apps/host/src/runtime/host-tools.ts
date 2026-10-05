@@ -54,6 +54,28 @@ export function hostToolNames(): string[] {
   return HOST_TOOLS.map((t) => t.function.name);
 }
 
+/** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外的字段剥除（additionalProperties:false），
+ *  required 缺失/类型不符直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
+export function validateToolArgs(name: string, args: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
+  const spec = HOST_TOOLS.find((t) => t.function.name === name);
+  if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
+  const schema = spec.function.parameters as { properties?: Record<string, { type?: string; items?: { type?: string } }>; required?: string[] };
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (k === '__tool_call_id') continue; // 宿主内部标识，非模型参数
+    const prop = schema.properties?.[k];
+    if (!prop) return { ok: false, code: 'TOOL_ARG_UNKNOWN', detail: `未知参数 ${k}（additionalProperties:false）` };
+    const expected = prop.type === 'array' ? 'array' : prop.type;
+    if (expected === 'string' && typeof v !== 'string') return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string` };
+    if (expected === 'array' && (!Array.isArray(v) || v.some((x) => typeof x !== 'string'))) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
+    out[k] = v;
+  }
+  for (const req of schema.required ?? []) {
+    if (out[req] === undefined || (typeof out[req] === 'string' && (out[req] as string).length === 0)) return { ok: false, code: 'TOOL_ARG_REQUIRED', detail: `缺少必填 ${req}` };
+  }
+  return { ok: true, value: out };
+}
+
 export type ToolExecContext = {
   roomId: string;
   windowId: string;
@@ -66,6 +88,9 @@ export type ToolExecContext = {
 
 export type ToolExecResult = { ok: boolean; output: Record<string, unknown> };
 
+const rawToolCallIdRef = { current: null as string | null };
+function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
+
 export class HostToolExecutor {
   private mariposa: MariposaClient | null;
   private reviews: RotationReviewService;
@@ -77,15 +102,20 @@ export class HostToolExecutor {
     this.checkpoint = deps.checkpoint;
   }
 
-  async execute(name: string, args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name === 'memory_hold') return this.memoryHold(args, ctx);
-    if (name === 'context_review_complete') return this.reviewComplete(args, ctx);
-    return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+  async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (name !== 'memory_hold' && name !== 'context_review_complete') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
+    rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
+    const checked = validateToolArgs(name, rawArgs);
+    if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
+    if (rawToolCallIdRef.current !== null) checked.value.__tool_call_id = rawToolCallIdRef.current;
+    if (name === 'memory_hold') return this.memoryHold(checked.value, ctx);
+    return this.reviewComplete(checked.value, ctx);
   }
 
   private async memoryHold(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARICOA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
-    const toolCallId = String(args.__tool_call_id ?? '');
+    const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? (rawToolCallIdOf(ctx) ?? ''));
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
     const holdPayload: Record<string, unknown> = {};
