@@ -341,6 +341,66 @@ function handleEvent(data) {
     default:
       break;
   }
+  // 记录面板：相关事件到达时（面板开着才）轻量刷新——只读查询，不触发生成
+  if (RECORD_EVENT_KINDS.has(data.kind)) scheduleRecordsRefresh();
+}
+
+// —— 记录面板（ESTOMAGO_OR_SELF_HOLD §11.2）：只读；打开/刷新不调用模型、不写记忆、不换窗 ——
+const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated']);
+let recordsTimer = null;
+function scheduleRecordsRefresh() {
+  if ($('records-panel').hidden) return;
+  if (recordsTimer) return;
+  recordsTimer = setTimeout(() => { recordsTimer = null; void loadRecords(); }, 400);
+}
+
+$('records-btn').onclick = () => {
+  const panel = $('records-panel');
+  panel.hidden = !panel.hidden;
+  if (!panel.hidden) void loadRecords();
+};
+$('records-close').onclick = () => { $('records-panel').hidden = true; };
+
+const fmtNum = (v) => (typeof v === 'number' ? v.toLocaleString('zh-Hans') : '未知');
+const fmtTime = (iso) => (typeof iso === 'string' ? new Date(iso).toLocaleString('zh-Hans', { hour12: false }) : '—');
+
+async function loadRecords() {
+  const body = $('records-body');
+  try {
+    const [snapRes, evRes] = await Promise.all([
+      fetch(`/api/v1/conversations/${CONVERSATION}/context-records`, { credentials: 'same-origin' }),
+      fetch(`/api/v1/conversations/${CONVERSATION}/context-records/events?limit=30`, { credentials: 'same-origin' }),
+    ]);
+    if (!snapRes.ok || !evRes.ok) throw new Error(`HTTP ${snapRes.status}/${evRes.status}`);
+    const s = await snapRes.json();
+    const ev = await evRes.json();
+    const rows = [];
+    rows.push(`<p class="muted">打开面板只查询，不会触发模型调用、记忆写入或换窗。</p>`);
+    rows.push(`<div class="rec-section"><h4>模型与窗口</h4>
+      <div>模式：${s.driver === 'openrouter' ? 'OpenRouter' : s.driver === 'claude-agent-sdk' ? 'Claude Agent SDK' : s.driver}　型号：${s.exactModel ?? '未配置'}</div>
+      <div>当前窗口：${s.epochId ?? '无'}</div></div>`);
+    rows.push(`<div class="rec-section"><h4>上下文容量</h4>
+      <div>当前输入估计：${fmtNum(s.context.estimatedInput)}（${s.context.estimateQuality}）　上次实际：${fmtNum(s.context.lastActualInput)}</div>
+      <div>预警线 ${fmtNum(56000)} / 有效软线 ${fmtNum(s.context.effectiveSoft)}${s.context.hardCapacity == null ? '（模型容量未测量——不画百分比）' : ` / 硬容量 ${fmtNum(s.context.hardCapacity)}`}</div></div>`);
+    rows.push(`<div class="rec-section"><h4>记忆与换窗</h4>
+      <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : '已完成 hold'}）` : ''}　hold：${s.review.holdCount ?? 0} 条` : '本窗还没有检查过'}</div>
+      <div>未新增 hold 是正常状态，不是漏记。</div></div>`);
+    rows.push(`<div class="rec-section"><h4>原文同步</h4>
+      <div>状态：${{ saved_pending_sync: '已保存，待同步', synced: '已同步 Mariposa', failed: '有失败项（需处理）', partial: '部分', unknown: '未知' }[s.rawSync.state] ?? s.rawSync.state}${s.rawSync.enabled ? '' : '（归档未启用——原文仍完整保存在本地）'}</div>
+      <div>已同步 ${s.rawSync.acked} / 待 ${s.rawSync.pending} / 失败 ${s.rawSync.failed}</div></div>`);
+    rows.push(`<div class="rec-section"><h4>一小时缓存</h4>
+      <div>配置 TTL：1h　保温：未启用</div>
+      <div>上次读缓存：${fmtNum(s.cache.lastRead)}　写缓存：${fmtNum(s.cache.lastWrite)}（观测于 ${fmtTime(s.cache.observedAt)}）</div>
+      <div>“配置 1h”与“观测到缓存读取”是两回事；无观测时不显示命中。</div></div>`);
+    rows.push(`<div class="rec-section"><h4>最近事件</h4>${(ev.events ?? []).slice().reverse().map((e) => {
+      const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
+      return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}</div>`;
+    }).join('') || '<div class="muted">暂无</div>'}</div>`);
+    body.innerHTML = rows.join('');
+  } catch (err) {
+    body.innerHTML = '<p class="error">记录加载失败（可重试；不影响聊天）</p>';
+    console.error(err);
+  }
 }
 
 async function refreshUsageLedger(turnId) {
@@ -414,6 +474,7 @@ async function boot() {
     if (!(await tryResume())) { $('login-panel').hidden = false; return; }
     state.authorized = true;
     $('login-btn').hidden = true;
+    $('records-btn').hidden = false;
     $('chat').hidden = false;
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500`, { credentials: 'same-origin' });
     const data = await res.json();

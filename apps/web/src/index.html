@@ -10,8 +10,19 @@
   <header class="topbar">
     <span class="brand">estómago</span>
     <span id="runtime-badge" class="badge">连接中…</span>
+    <button id="records-btn" class="ghost" hidden>记录</button>
     <button id="login-btn" class="ghost" hidden>登录</button>
   </header>
+
+  <aside id="records-panel" class="records-panel" hidden aria-label="记录面板">
+    <div class="records-head">
+      <strong>记录</strong>
+      <button id="records-close" class="ghost">关闭</button>
+    </div>
+    <div id="records-body" class="records-body">
+      <p class="muted">打开面板只查询，不会触发模型调用、记忆写入或换窗。</p>
+    </div>
+  </aside>
 
   <div id="login-panel" class="login-panel" hidden>
     <p>首次使用：请打开服务器上的 token 文件粘贴一次（文件路径见启动日志；内容不会出现在日志里）。</p>
