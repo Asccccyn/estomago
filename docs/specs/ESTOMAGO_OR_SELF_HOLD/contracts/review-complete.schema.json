@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Host review completion arguments",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "review_id",
+    "decision"
+  ],
+  "properties": {
+    "review_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "decision": {
+      "enum": [
+        "no_new_hold",
+        "holds_completed"
+      ]
+    }
+  }
+}

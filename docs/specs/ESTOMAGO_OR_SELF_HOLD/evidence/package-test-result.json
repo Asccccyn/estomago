@@ -1,0 +1,21 @@
+{
+  "scope": "package_reference_functions_only",
+  "executed_at_utc": "2026-10-05T11:09:44.963826+00:00",
+  "environment": "ChatGPT isolated working container, not user Mac",
+  "node": "v22.16.0",
+  "command": "node --test tests/reference.test.mjs",
+  "exit_code": 0,
+  "tests_passed": 73,
+  "tests_failed": 0,
+  "network_requests": 0,
+  "paid_model_calls": 0,
+  "application_source_modified": false,
+  "production_deployed": false,
+  "does_not_prove": [
+    "actual estomago integration",
+    "live Mariposa API/MCP",
+    "OpenRouter cache hit or one-hour TTL",
+    "SDK compatibility",
+    "front-end UI implementation"
+  ]
+}

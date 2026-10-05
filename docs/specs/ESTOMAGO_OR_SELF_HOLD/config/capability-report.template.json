@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "captured_at": null,
+  "model_id": null,
+  "provider_scope": [
+    "anthropic"
+  ],
+  "endpoint_ids_observed": [],
+  "context_capacity": null,
+  "max_output": null,
+  "minimum_cache_prefix_tokens": null,
+  "reasoning": {
+    "mandatory": null,
+    "supported_efforts": null,
+    "signed_tool_continuation_required": null,
+    "existing_policy_allows_protocol_continuation": null
+  },
+  "features": {
+    "or_credentials": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "identity_before_generation": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "tools": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "source_append_revision": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "hold_remote_idempotency": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "source_binding": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "explicit_cache_1h": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "automatic_cache": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "cache_read_observed": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "delayed_reuse_over_5m": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "sdk_precompact": {
+      "state": "unknown",
+      "evidence_ref": null
+    },
+    "sdk_no_summary_rotation": {
+      "state": "unknown",
+      "evidence_ref": null
+    }
+  },
+  "price_snapshot": {
+    "currency": "USD",
+    "retrieved_at": null,
+    "input_per_token": null,
+    "output_per_token": null,
+    "cache_read_per_token": null,
+    "cache_write_1h_per_token": null
+  },
+  "notes": [
+    "unknown 不等于 unsupported 或 ready；资料支持与真实实测分开。"
+  ]
+}
