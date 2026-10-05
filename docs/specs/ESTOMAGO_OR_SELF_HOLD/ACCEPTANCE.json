@@ -10,8 +10,11 @@
       "title": "早餐未hold、工作事件hold",
       "criterion": "仅书签后提醒；早餐不补齐；完整原文仍可定位。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#早餐例子",
+        "tests/unit/or-rotation.test.ts#跨窗继承"
+      ],
       "notes": null
     },
     {
@@ -20,8 +23,10 @@
       "title": "一整窗零hold",
       "criterion": "普通回合不产生记忆补齐任务；临换窗一次提醒，零新增可通过。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#6h 静默触发（no_new_hold 放行）"
+      ],
       "notes": null
     },
     {
@@ -32,7 +37,7 @@
       "level": "integration",
       "status": "NOT_EXECUTED",
       "evidence": [],
-      "notes": null
+      "notes": "实现允许聊天中任意时刻自主 hold（构造性）；\"更早内容补记\"专门断言未写"
     },
     {
       "id": "A004",
@@ -40,8 +45,10 @@
       "title": "真正未完plan与事件",
       "criterion": "技术停止、TTL、零点、换窗和review完成不会自动完成plan或CLOSED。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "grep 证据：无 plan 自动完成路径/episode 零调用（evidence/offline-pass-2026-10-05.md）"
+      ],
       "notes": null
     },
     {
@@ -50,8 +57,10 @@
       "title": "不新增第二套记忆",
       "criterion": "无小模型扫描、全量覆盖任务、滚动摘要、session summary或新语义向量库。",
       "level": "code+negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "grep 证据：rolling/session summary·小模型·语义向量库零命中（evidence/offline-pass-2026-10-05.md）"
+      ],
       "notes": null
     },
     {
@@ -60,8 +69,11 @@
       "title": "入站先落库",
       "criterion": "崩溃前已持久消息、修订及outbox，不依赖模型成功。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/messages.test.ts",
+        "tests/integration/mock-turn.test.ts"
+      ],
       "notes": null
     },
     {
@@ -70,8 +82,10 @@
       "title": "未绑定原文与窗口轮动",
       "criterion": "保留原文；sync授权状态明确，不因没桶删除。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/mariposa-archive-sync.test.ts#编辑链（旧修订保留不覆盖）"
+      ],
       "notes": null
     },
     {
@@ -80,8 +94,10 @@
       "title": "远端离线",
       "criterion": "本地已保存与Mariposa待同步不同，outbox重试有界且幂等。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F09/F15（离线重试有界幂等）"
+      ],
       "notes": null
     },
     {
@@ -90,8 +106,10 @@
       "title": "相同正文不同消息",
       "criterion": "不同日期/消息不按文本hash去重丢失。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "构造性证据：批次成员键=消息ID@修订（archive-sync buildBatch），非正文 hash"
+      ],
       "notes": null
     },
     {
@@ -100,8 +118,11 @@
       "title": "同消息同修订异正文",
       "criterion": "冲突明确拒绝，不无痕覆盖；新修订保留来源链。",
       "level": "contract",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/mariposa-archive-sync.test.ts#IDEMPOTENCY_CONFLICT",
+        "tests/unit/remediation-batch1.test.ts#F09 字节一致重放"
+      ],
       "notes": null
     },
     {
@@ -110,8 +131,10 @@
       "title": "内部检查与工具/思考",
       "criterion": "不进入双方原话、TTS、推送或自动hold来源。",
       "level": "negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#工具/控制块不是双方原话"
+      ],
       "notes": null
     },
     {
@@ -120,8 +143,10 @@
       "title": "用户撤权纠错",
       "criterion": "当前模型投影/来源权限同步失效，不为缓存继续外发旧授权资料。",
       "level": "security",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-supervisor.test.ts#指纹（身份/权限/配置变化→CONTEXT_STALE 不外发旧前缀）"
+      ],
       "notes": null
     },
     {
@@ -130,8 +155,11 @@
       "title": "成功收据书签",
       "criterion": "以发起请求已见高水位记书签；不得用事件日期或回执时最新消息。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#书签规则",
+        "tests/unit/remediation-batch2.test.ts#F14"
+      ],
       "notes": null
     },
     {
@@ -140,8 +168,10 @@
       "title": "晚到与外部写入",
       "criterion": "另一房间、导入、外部客户端hold与旧窗迟到收据不推进当前书签。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#旧窗收据拒绝/另一客户端不推进"
+      ],
       "notes": null
     },
     {
@@ -150,8 +180,11 @@
       "title": "文字承诺不是收据",
       "criterion": "只说记住了、HTTP模糊成功、失败/unknown不显示hold成功。",
       "level": "negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F04（unknown 不显示成功）",
+        "tests/unit/review-policy.test.ts#completeReview"
+      ],
       "notes": null
     },
     {
@@ -160,9 +193,9 @@
       "title": "hold与绑定分域",
       "criterion": "使用真实memory.hold/source.bind，不塞被拒绝raw_refs；创建/绑定状态分开。",
       "level": "contract+integration",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "hold 已接真实客户端；source_selections/source.bind 工具入口未暴露（审计已列）——待补丁"
     },
     {
       "id": "A017",
@@ -170,8 +203,10 @@
       "title": "远端成功但响应丢失",
       "criterion": "同operation回查或幂等返回；不随机key重写；无真实能力时BLOCKED。",
       "level": "contract+fault",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F09（同 op 重放）#F08（hold.status 恢复）"
+      ],
       "notes": null
     },
     {
@@ -180,9 +215,9 @@
       "title": "真实写入字段规则",
       "criterion": "分类、plan绑定、现场/回顾、心情可写门、原话来源遵守实际领域规则。",
       "level": "contract",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "领域字段校验在 Mariposa 服务端——待端到端联调"
     },
     {
       "id": "A019",
@@ -190,8 +225,10 @@
       "title": "提醒范围准确",
       "criterion": "仅本窗实际原话manifest及修订；无全库补查，无重复粘贴尾段。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch2.test.ts#F06（范围⊆实际已见清单）"
+      ],
       "notes": null
     },
     {
@@ -200,8 +237,10 @@
       "title": "新窗继承焦点依据",
       "criterion": "带回的旧尾段不会因重置epoch强迫补早餐；焦点豁免不冒称已审阅。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#跨窗继承（焦点豁免不冒称已审阅）"
+      ],
       "notes": null
     },
     {
@@ -210,8 +249,10 @@
       "title": "提醒范围为空",
       "criterion": "skip_empty记录，零模型调用。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#无已见原话容量触发（skipped_empty 零模型调用）"
+      ],
       "notes": null
     },
     {
@@ -220,8 +261,10 @@
       "title": "零新增完成",
       "criterion": "no_new_hold有效且无未解决写操作即可切窗，无理由/评分/小模型复审。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#6h（零新增有效）"
+      ],
       "notes": null
     },
     {
@@ -230,8 +273,11 @@
       "title": "成功若干hold完成",
       "criterion": "holds_completed从已验证收据核对数量，不信模型自填bucket ID。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#评审中 hold（holds_completed 从收据核对）",
+        "tests/unit/remediation-batch1.test.ts#F04 反面"
+      ],
       "notes": null
     },
     {
@@ -240,8 +286,10 @@
       "title": "同批工具顺序",
       "criterion": "hold及绑定先收口再complete，不并发抢先切窗。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F04（写先收口、complete 最后）"
+      ],
       "notes": null
     },
     {
@@ -250,8 +298,11 @@
       "title": "普通对话伪造控制",
       "criterion": "仿写文本不能创建active review；服务端校验purpose/room/epoch/revision。",
       "level": "security",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#普通聊天伪造 review 文字不能完成",
+        "apps/host/src/runtime/host-tools.ts#REVIEW_NOT_ACTIVE"
+      ],
       "notes": null
     },
     {
@@ -260,8 +311,10 @@
       "title": "失败不是不想记",
       "criterion": "超时、截断、空结果、非法完成参数不记成no_new_hold，有限恢复。",
       "level": "fault",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F04/F08（unknown/失败≠no_new_hold）"
+      ],
       "notes": null
     },
     {
@@ -272,7 +325,7 @@
       "level": "integration",
       "status": "NOT_EXECUTED",
       "evidence": [],
-      "notes": null
+      "notes": "completedForRange 复用已实现（rotation-review.ts）；无专门回归断言"
     },
     {
       "id": "A028",
@@ -280,8 +333,11 @@
       "title": "提醒中来新消息",
       "criterion": "先保存排队，不记入旧review范围，新窗只注入一次。",
       "level": "concurrency",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#本轮输入只进新窗一次",
+        "tests/unit/remediation-batch2.test.ts#F06（未携带不进旧范围）"
+      ],
       "notes": null
     },
     {
@@ -290,9 +346,11 @@
       "title": "容量口径",
       "criterion": "当前输入包括cached token；累积账单不作为64k阈值。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#rotationPlan（当前输入口径，非累计账单）"
+      ],
+      "notes": "离线口径断言完整；真实 cached-token 占比的实测归 A061。"
     },
     {
       "id": "A030",
@@ -300,9 +358,12 @@
       "title": "56k预警",
       "criterion": "前台warning，无额外模型请求。",
       "level": "integration+ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#56k 仅 warn",
+        "apps/host/src/runtime/supervisor.ts#context.warning 事件（代码级）"
+      ],
+      "notes": "unit 断言完整；事件线上链路为代码级证据（无 live 流量）。"
     },
     {
       "id": "A031",
@@ -310,8 +371,10 @@
       "title": "64k自动换窗",
       "criterion": "安全回合边界提醒、准备资料、CAS切指针，不生成summary。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#容量触发（CAS 换窗无 summary）"
+      ],
       "notes": null
     },
     {
@@ -320,8 +383,11 @@
       "title": "小容量/大输出/媒体",
       "criterion": "按真实C/O/T/R/S调有效软线，最终请求含提醒仍受P2门控。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/review-policy.test.ts#小容量",
+        "tests/unit/remediation-batch2.test.ts#F03 尾（工具续请求 P2）"
+      ],
       "notes": null
     },
     {
@@ -330,8 +396,11 @@
       "title": "一个大新输入",
       "criterion": "旧窗检查不声称看过新消息，新消息仅在新窗出现一次。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#只进新窗一次",
+        "tests/unit/remediation-batch2.test.ts#F06"
+      ],
       "notes": null
     },
     {
@@ -350,8 +419,10 @@
       "title": "6h入站恢复",
       "criterion": "取当前入站之前的last_real_user；仅下一交互处理，无夜间定时收费。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-rotation.test.ts#6h 静默触发（入站前 last_real_user）"
+      ],
       "notes": null
     },
     {
@@ -360,8 +431,11 @@
       "title": "无关时钟",
       "criterion": "面板/重启/keeper/主动任务不刷新真实用户活跃；TTL/午夜不单独换。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-config.test.ts#零点换窗硬规则 false",
+        "apps/host/src/time/context.ts#crossed_business_date 纯事实"
+      ],
       "notes": null
     },
     {
@@ -370,8 +444,11 @@
       "title": "并发及路由屏障",
       "criterion": "pending route/running turn拒绝切换；CAS失败保旧窗；一个房间一个执行者。",
       "level": "concurrency",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/fresh-session-rotate.test.ts#换窗安全检查内部化",
+        "tests/unit/remediation-batch1.test.ts#F05（互斥+SUPERSEDED）"
+      ],
       "notes": null
     },
     {
@@ -380,8 +457,10 @@
       "title": "身份失败与硬容量",
       "criterion": "不出默认人格，不先销毁旧指针，消息保存并明确待恢复。",
       "level": "fault",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch2.test.ts#F01/F02（缺身份/缺 I 阻断无默认人格）#F03（blocked_hard 保存待恢复）"
+      ],
       "notes": null
     },
     {
@@ -390,8 +469,10 @@
       "title": "第一条生成身份",
       "criterion": "已批准身份与当前有效I预先加载；无空身份探路请求。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch2.test.ts#F02（I 完整进首条输入）"
+      ],
       "notes": null
     },
     {
@@ -400,9 +481,9 @@
       "title": "I分页与薄响应",
       "criterion": "当前I足量完整；snapshot一致，unchanged时本地必须有内容；I不重复装A/B。",
       "level": "contract+integration",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "I 分页/薄响应需 Mariposa estómago profile（方案 §7.6）"
     },
     {
       "id": "A041",
@@ -410,9 +491,9 @@
       "title": "合法bootstrap视图",
       "criterion": "按当前获授权entry/profile及字段合同；不自行改Mariposa投影或绕明开扩资料。",
       "level": "contract",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "同上（bootstrap 视图合同）"
     },
     {
       "id": "A042",
@@ -420,8 +501,11 @@
       "title": "近期原话和状态",
       "criterion": "跨日期真实原话约12k，有效版本/完整回合；无未完故事摘要或强制闲聊事件。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-config.test.ts#recent_dialogue_budget_tokens=12000",
+        "tests/unit/remediation-batch2.test.ts#F06（最新向前取整段）"
+      ],
       "notes": null
     },
     {
@@ -430,8 +514,10 @@
       "title": "只读无副作用",
       "criterion": "启动/记录读取不调用hold/open-confirm，不更新明确打开时间。",
       "level": "negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/integration/records-api.test.ts#只读性（查询零副作用）"
+      ],
       "notes": null
     },
     {
@@ -440,8 +526,10 @@
       "title": "专用driver分离",
       "criterion": "OR不启动SDK/读取订阅；SDK不依赖OR key；共享身份与业务授权。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch2.test.ts#F01（无 SDK 前提 OR 照常）"
+      ],
       "notes": null
     },
     {
@@ -450,8 +538,11 @@
       "title": "真实模型配置",
       "criterion": "沿用明确获批OR型号，不auto/latest/静默fallback/误用SDK别名。",
       "level": "contract+ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-config.test.ts#auto/latest/fallback 拒绝",
+        "tests/unit/or-protocol.test.ts#EXACT_CLAUDE_MODEL_REQUIRED"
+      ],
       "notes": null
     },
     {
@@ -460,8 +551,11 @@
       "title": "凭据隔离",
       "criterion": "key只在后端，浏览器/URL/log/Git/夹具不出现，配置写入有鉴权。",
       "level": "security",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "grep 证据：web/logging 零凭据命中（evidence/offline-pass-2026-10-05.md）",
+        "tests/unit/or-config.test.ts#https 硬规则"
+      ],
       "notes": null
     },
     {
@@ -470,9 +564,9 @@
       "title": "路由与TTL",
       "criterion": "only允许集合、allow_fallbacks false、require_parameters true，所有cache_control明确1h。",
       "level": "contract+live",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "only/fallbacks/require_parameters 已离线断言（or-protocol）；真实路由/继承 preset 检查需 live"
     },
     {
       "id": "A048",
@@ -480,9 +574,9 @@
       "title": "无隐式压缩",
       "criterion": "request与继承preset无context-compression/summary裁剪；拒绝静默middle-out。",
       "level": "contract+live",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "请求侧压缩显式关闭已证；继承 preset/响应 healing 需 live 检查"
     },
     {
       "id": "A049",
@@ -490,9 +584,9 @@
       "title": "模型能力",
       "criterion": "context/output/工具/推理/缓存门槛按实际精确型号元数据，未知不自填通过。",
       "level": "contract",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "能力快照（带日期的型号元数据）未实施——WP6"
     },
     {
       "id": "A050",
@@ -500,9 +594,9 @@
       "title": "MCP真实执行",
       "criterion": "具备initialize/list/call真实客户端与稳定映射，不仅流出tool.status。",
       "level": "integration",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "通用 MCP initialize/list/call registry 未接（当前仅宿主固定工具）"
     },
     {
       "id": "A051",
@@ -510,8 +604,11 @@
       "title": "工具流分片",
       "criterion": "JSON参数完整且合法终态后才执行，严格schema和同call ID配对。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-stream.test.ts#工具参数门",
+        "tests/unit/runner-openrouter.test.ts#分片工具"
+      ],
       "notes": null
     },
     {
@@ -520,8 +617,10 @@
       "title": "SSE framing",
       "criterion": "UTF8跨块、CRLF、多行data、注释、DONE均正确；解析错误不静默成功。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-stream.test.ts"
+      ],
       "notes": null
     },
     {
@@ -530,8 +629,11 @@
       "title": "SSE错误终态",
       "criterion": "非2xxJSON、200内error、length、无最终结果区分；不发布伪完整结果。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-stream.test.ts#拒绝面",
+        "tests/unit/runner-openrouter.test.ts#OR_FINISH_LENGTH"
+      ],
       "notes": null
     },
     {
@@ -540,8 +642,11 @@
       "title": "usage帧重复finish",
       "criterion": "结束只处理一次，usage单独补记，不重复发布/执行工具。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-stream.test.ts#重复终态是记账帧",
+        "tests/unit/remediation-batch3.test.ts#F12"
+      ],
       "notes": null
     },
     {
@@ -550,8 +655,11 @@
       "title": "取消与交付恢复",
       "criterion": "AbortController+fence，迟到输出/工具不再执行，usage仍计；送达失败不重生成。",
       "level": "fault",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch1.test.ts#F07（停止）",
+        "tests/unit/remediation-batch3.test.ts#F20（迟到 usage 记账）"
+      ],
       "notes": null
     },
     {
@@ -560,8 +668,10 @@
       "title": "重试预算",
       "criterion": "401/402/错误配置不循环；429/可恢复错误有界且不重复副作用。",
       "level": "fault",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/runner-openrouter.test.ts#401 不重试#429 有界"
+      ],
       "notes": null
     },
     {
@@ -570,9 +680,11 @@
       "title": "稳定前缀",
       "criterion": "同窗time/RAG/tool结果不可变，只追加；hold书签不改正文，动态提醒不被提升至头部。",
       "level": "contract+live",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-cache.test.ts#append-only#or-protocol.test.ts#assertAppendOnly（离线部分；真实命中见 A061）"
+      ],
+      "notes": "前缀不可变已离线证明；上游真实命中证据在 A061（BLOCKED）。"
     },
     {
       "id": "A058",
@@ -580,9 +692,11 @@
       "title": "工具与思考参数",
       "criterion": "schema/顺序/tool_choice/推理配置在同窗稳定；撤权执行层即时校验。",
       "level": "contract+security",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "构造性证据：HOST_TOOLS 常量开窗固定（runtime/host-tools.ts）；无临场 tool_choice 改写路径"
+      ],
+      "notes": "工具集/schema/顺序稳定性为构造性证据（常量装配）；运行权限即时校验待 MCP registry（A050）。"
     },
     {
       "id": "A059",
@@ -590,8 +704,11 @@
       "title": "缓存布局槽数",
       "criterion": "A/B/auto及可选G至多4，不累积历史markers；全部1h。",
       "level": "unit+contract",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/or-protocol.test.ts#断点门（≤3/去重/text 块）",
+        "tests/unit/or-cache.test.ts#恰 2 显式+auto"
+      ],
       "notes": null
     },
     {
@@ -600,9 +717,9 @@
       "title": "跨多内容块保护",
       "criterion": "保留上次候选边界、准确回溯/保守G；不把气泡数当原生块数。",
       "level": "contract+live",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "G 保守丢弃已离线证明；真实回溯窗口/原生块数需 live"
     },
     {
       "id": "A061",
@@ -610,9 +727,9 @@
       "title": "真实缓存观测",
       "criterion": "有cache_control或HTTP200不等于命中；保存实际read/write/端点证据。",
       "level": "live",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "真实缓存观测需她授权 OR key/型号/预算（A1/A2 门）"
     },
     {
       "id": "A062",
@@ -620,9 +737,9 @@
       "title": "延时复用",
       "criterion": "授权合成prefix超过5分钟无续温后读缓存；记录实际时刻，不只即时二次命中。",
       "level": "live_delayed",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "同上（>5min 延时复用实验）"
     },
     {
       "id": "A063",
@@ -630,8 +747,11 @@
       "title": "TTL估计与路由",
       "criterion": "从请求开始估计，session_id稳定；10m黏性不冒充1h物理缓存锁。",
       "level": "unit+ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch3.test.ts#F18（TTL 请求开始）",
+        "tests/unit/runner-openrouter.test.ts#session_id 稳定"
+      ],
       "notes": null
     },
     {
@@ -640,9 +760,12 @@
       "title": "OR与SDK口径",
       "criterion": "OR prompt总量不再加cached；SDK按已证实语义归一；同请求多个观测不双算。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch3.test.ts#F12（多观测不双算）",
+        "tests/unit/usage-normalization.test.ts"
+      ],
+      "notes": "OR/SDK 归一与去重已离线证明；\"SDK 按已证实语义\"的实机部分归 A067。"
     },
     {
       "id": "A065",
@@ -650,8 +773,11 @@
       "title": "unknown和anomaly",
       "criterion": "缺字段不置零，cache分类冲突不clamp；估计和actual显示分开。",
       "level": "unit+ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch3.test.ts#F19（anomaly 不 clamp）",
+        "tests/unit/usage-normalization.test.ts#unknown 不补零"
+      ],
       "notes": null
     },
     {
@@ -660,9 +786,11 @@
       "title": "费用计量",
       "criterion": "cost不重复加upstream明细；失败已花可见，turn未知显示已知小计+未知。",
       "level": "unit+integration",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
-      "notes": null
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/remediation-batch3.test.ts#F19（cost 落库）#F20（失败已花可见）"
+      ],
+      "notes": "费用落库/失败已花已证；真实账单金额分栏待 live。"
     },
     {
       "id": "A067",
@@ -670,9 +798,9 @@
       "title": "已有路径回归",
       "criterion": "同房间SDK启动/停止/路由/工具/流式/身份仍正常，无隐式模式转换。",
       "level": "integration+live_sdk",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "mock/合同层回归全绿（44 文件）；真实 SDK 实机调用未授权"
     },
     {
       "id": "A068",
@@ -680,9 +808,9 @@
       "title": "compact钩子与提前探针",
       "criterion": "安装版本证据，PreCompact兜底不替代P1/P2；摘要不进原文/桶/新窗。",
       "level": "contract+live_sdk",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "需已安装 SDK 版本的 hook 证据（未授权实机）"
     },
     {
       "id": "A069",
@@ -690,8 +818,10 @@
       "title": "UI思考隔离",
       "criterion": "ReasoningProjection不能流入业务上下文、原文、bootstrap、hold、TTS或推送。",
       "level": "negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/integration/context-canary.test.ts#ReasoningProjection 无通道"
+      ],
       "notes": null
     },
     {
@@ -700,9 +830,9 @@
       "title": "协议必要字段",
       "criterion": "reasoning_details签名/顺序不伪造；与严格不回灌合同冲突时明确BLOCKED，不擅自豁免。",
       "level": "contract+live",
-      "status": "NOT_EXECUTED",
+      "status": "BLOCKED",
       "evidence": [],
-      "notes": null
+      "notes": "opaque 透传已证（F13）；REASONING_PROTOCOL_BLOCKED 冲突门需真实型号协议验证"
     },
     {
       "id": "A071",
@@ -710,8 +840,12 @@
       "title": "记录入口",
       "criterion": "桌面侧栏/手机面板接真实记录，显示窗口、书签、review/换窗、缓存费用、原文同步。",
       "level": "ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "reports/screenshots/records-desktop.png",
+        "reports/screenshots/records-zero-hold.png",
+        "reports/screenshots/records-narrow.png"
+      ],
       "notes": null
     },
     {
@@ -720,8 +854,11 @@
       "title": "只读与隐私",
       "criterion": "打开刷新重连不调模型/hold/明开/keeper/活跃时钟；不泄露私密prompt和跨房间资料。",
       "level": "ui+security",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/integration/records-api.test.ts#只读+鉴权+白名单",
+        "reports/screenshots/"
+      ],
       "notes": null
     },
     {
@@ -730,8 +867,11 @@
       "title": "输入及导航回归",
       "criterion": "Enter只换行、独立发送、IME、多行；定位原话不写轨迹，详情明开遵守领域合同。",
       "level": "ui",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/unit/composer-logic.test.ts",
+        "tests/unit/web-vm.test.ts"
+      ],
       "notes": null
     },
     {
@@ -740,8 +880,10 @@
       "title": "keeper未运行",
       "criterion": "不产生cache_keepalive收费或常驻任务；主动唤醒与review用途分开。",
       "level": "negative",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "grep 证据：cache_keepalive 仅枚举占位/keeperEnabled 恒 false（evidence/offline-pass-2026-10-05.md）"
+      ],
       "notes": null
     },
     {
@@ -750,8 +892,12 @@
       "title": "隔离测试与部署",
       "criterion": "临时ESTOMAGO_HOME、前台分批、无真实服务副作用；生产部署/跨仓库改动有明确授权。",
       "level": "audit",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "tests/integration/aud-16-26-31-32-ops.test.ts#生产根拒绝",
+        "scripts/run-tests.mjs#保险丝",
+        "AGENTS.md"
+      ],
       "notes": null
     },
     {
@@ -760,8 +906,11 @@
       "title": "交付证据可信",
       "criterion": "实际commit、逐项应用结果、真实OR/SDK/部署分开；包内reference测试不冒称应用已通过。",
       "level": "audit",
-      "status": "NOT_EXECUTED",
-      "evidence": [],
+      "status": "PASS",
+      "evidence": [
+        "docs/specs/IMPLEMENTATION_MAP.md",
+        "git log 6d1c5f3..6fc0032（六提交+整改四批+CSS 修复）"
+      ],
       "notes": null
     }
   ]
