@@ -9,7 +9,7 @@ import type { OrMessage } from './or-payload.ts';
 import type { PrevBoundary } from './cache-plan.ts';
 import type { ManifestEntry } from '../context/review-policy.ts';
 
-export type TrajectoryRow = { windowId: string; messages: OrMessage[]; lastBoundary: PrevBoundary | null; manifest: ManifestEntry[] };
+export type TrajectoryRow = { windowId: string; messages: OrMessage[]; lastBoundary: PrevBoundary | null; manifest: ManifestEntry[] | null }; // manifest=null：v11 前旧行未知（F27：不当作空清单）
 
 export class WindowTrajectoryService {
   private db: Db;
@@ -26,7 +26,7 @@ export class WindowTrajectoryService {
       windowId,
       messages: JSON.parse(row.messages_json) as OrMessage[],
       lastBoundary: row.last_boundary_json ? (JSON.parse(row.last_boundary_json) as PrevBoundary) : null,
-      manifest: row.manifest_json ? (JSON.parse(row.manifest_json) as ManifestEntry[]) : [],
+      manifest: row.manifest_json === null ? null : (JSON.parse(row.manifest_json) as ManifestEntry[]),
     };
   }
 
@@ -36,6 +36,14 @@ export class WindowTrajectoryService {
     tx(this.db, () => {
       this.db.prepare('INSERT INTO window_trajectories(window_id, messages_json, last_boundary_json, manifest_json, updated_at) VALUES (?,?,NULL,?,?)')
         .run(windowId, JSON.stringify(messages), JSON.stringify(manifest), new Date().toISOString());
+    });
+  }
+
+  /** 审计 F27：只为旧轨迹行回填重建出的 manifest（不动消息/边界） */
+  replaceManifest(windowId: string, manifest: ManifestEntry[]): void {
+    tx(this.db, () => {
+      this.db.prepare('UPDATE window_trajectories SET manifest_json = ?, updated_at = ? WHERE window_id = ?')
+        .run(JSON.stringify(manifest), new Date().toISOString(), windowId);
     });
   }
 

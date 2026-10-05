@@ -60,7 +60,7 @@ export class ArchiveSyncService {
 
   rawSyncState(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } {
     const n = (where: string): number =>
-      (this.db.prepare(`SELECT COUNT(*) n FROM outbox o JOIN messages m ON m.id = json_extract(o.payload_ref, '$.message_id') WHERE o.target = 'mariposa.archive' AND m.conversation_id = ? AND ${where}`).get(conversationId) as { n: number }).n;
+      (this.db.prepare(`SELECT COUNT(*) n FROM outbox o JOIN messages m ON m.id = CASE WHEN json_valid(o.payload_ref) THEN json_extract(o.payload_ref, '$.message_id') END WHERE o.target = 'mariposa.archive' AND m.conversation_id = ? AND ${where}`).get(conversationId) as { n: number }).n; // F24：坏 JSON 不炸快照
     return {
       pending: n("o.state IN ('pending','sent')"),
       unknown_outcome: n("o.state = 'unknown_outcome'"),
@@ -87,28 +87,50 @@ export class ArchiveSyncService {
   }
 
   private async drainLocked(summary: DrainSummary): Promise<void> {
-    // —— 1) 冻结批次恢复（F09）：已绑批次的行（sent/unknown_outcome/重试回退的 pending）
-    //     → 原样字节重放，绝不与新消息重组 ——
-    const frozenOps = this.db.prepare(
-      `SELECT DISTINCT o.batch_id AS op FROM outbox o WHERE o.target = 'mariposa.archive' AND o.state IN ('sent','unknown_outcome','pending') AND o.batch_id IS NOT NULL ORDER BY o.batch_id`,
-    ).all() as Array<{ op: string }>;
-    for (const { op } of frozenOps) {
-      const batch = this.db.prepare('SELECT * FROM ingest_batches WHERE operation_id = ?').get(op) as
-        | { operation_id: string; conversation_id: string; payload_json: string; state: string; attempts: number }
-        | undefined;
-      const rows = this.db.prepare("SELECT * FROM outbox WHERE batch_id = ? AND state IN ('sent','unknown_outcome','pending') ORDER BY created_at, id").all(op) as OutboxRow[];
-      if (!batch || batch.state === 'acked') {
-        // 批次已确认/记录缺失：行对齐到批次终态（记录缺失=本地证据丢失，按 unknown 保留不冒充）
-        if (batch?.state === 'acked') this.markChunk(rows, 'acked', null);
-        else this.markChunk(rows, 'unknown_outcome', 'BATCH_RECORD_MISSING');
-        continue;
+    // —— 1) 冻结批次恢复（F09）：已绑批次的行 → 原样字节重放，绝不与新消息重组。
+    //     审计 F23：按会话分组、批内按最早成员的来源顺序（不按 op 哈希序）；
+    //     未决（retry_later）或本地记录缺失 → 阻断该流后续所有批次（含新批阶段）。
+    const frozen = this.db.prepare(
+      `SELECT b.operation_id AS op, b.conversation_id AS cid, b.state AS bstate, b.payload_json AS payload,
+         (SELECT MIN(o.created_at) FROM outbox o WHERE o.batch_id = b.operation_id) AS first_at
+       FROM ingest_batches b
+       WHERE EXISTS (SELECT 1 FROM outbox o WHERE o.batch_id = b.operation_id AND o.state IN ('sent','unknown_outcome','pending'))
+       ORDER BY first_at`,
+    ).all() as Array<{ op: string; cid: string; bstate: string; payload: string; first_at: string | null }>;
+    const blockedStreams = new Set<string>();
+    const frozenByCid = new Map<string, Array<{ op: string; bstate: string; payload: string }>>();
+    for (const b of frozen) {
+      const list = frozenByCid.get(b.cid) ?? [];
+      list.push({ op: b.op, bstate: b.bstate, payload: b.payload });
+      frozenByCid.set(b.cid, list);
+    }
+    for (const [cid, batches] of frozenByCid) {
+      for (const b of batches) {
+        if (blockedStreams.has(cid)) break;
+        const rows = this.db.prepare("SELECT * FROM outbox WHERE batch_id = ? AND state IN ('sent','unknown_outcome','pending') ORDER BY created_at, id").all(b.op) as OutboxRow[];
+        if (b.bstate === 'acked') {
+          this.markChunk(rows, 'acked', null);
+          continue;
+        }
+        if (b.bstate === 'dead') {
+          this.markChunk(rows, 'failed', 'BATCH_DEAD'); // 终态冲突不阻断后续（前批已了结）
+          continue;
+        }
+        if (b.bstate !== 'in_flight') {
+          // 记录缺失/未知批次状态：本地证据不完整 → 行 unknown 并阻断同流（不冒充可继续）
+          this.markChunk(rows, 'unknown_outcome', 'BATCH_RECORD_MISSING');
+          blockedStreams.add(cid);
+          summary.stopped_streams++;
+          continue;
+        }
+        const payload = JSON.parse(b.payload) as IngestRequest;
+        const outcome = await this.sendPayload(payload, rows, summary, { operationId: b.op, conversationId: cid });
+        summary.batches++;
+        if (outcome === 'retry_later') {
+          blockedStreams.add(cid); // 同流有序：恢复批未确认，本流后续（含新批）停发
+          summary.stopped_streams++;
+        }
       }
-      if (batch.state === 'dead') {
-        this.markChunk(rows, 'failed', 'BATCH_DEAD');
-        continue;
-      }
-      const payload = JSON.parse(batch.payload_json) as IngestRequest;
-      await this.sendPayload(payload, rows, summary, { operationId: op, conversationId: batch.conversation_id });
     }
 
     // —— 2) 新批次：pending/sent/unknown_outcome 且未绑批次 → 组批 → 冻结 → 发送 ——
@@ -121,14 +143,14 @@ export class ArchiveSyncService {
     for (const row of fresh) {
       const messageId = this.messageIdOf(row);
       if (!messageId) {
-        this.markDeadQuietly(row, 'PAYLOAD_REF_INVALID');
-        summary.dead += rows.length;
+        this.markDeadQuietly(row, 'PAYLOAD_REF_INVALID'); // 审计 F24：坏行按单行隔离处置，不再引用越界 rows
+        summary.dead++;
         continue;
       }
       const msg = this.db.prepare('SELECT conversation_id FROM messages WHERE id = ?').get(messageId) as { conversation_id: string } | undefined;
       if (!msg) {
         this.markDeadQuietly(row, 'LOCAL_MESSAGE_MISSING');
-        summary.dead += rows.length;
+        summary.dead++;
         continue;
       }
       const list = byConversation.get(msg.conversation_id) ?? [];
@@ -136,6 +158,7 @@ export class ArchiveSyncService {
       byConversation.set(msg.conversation_id, list);
     }
     for (const [conversationId, streamRows] of byConversation) {
+      if (blockedStreams.has(conversationId)) continue; // 审计 F23：恢复阶段未决的流不再发新批
       let stopped = false;
       let i = 0;
       let lastOutcome: 'acked' | 'retry_later' | 'dead' = 'acked';
