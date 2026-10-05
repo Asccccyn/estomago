@@ -13,7 +13,8 @@ export type RecordSnapshot = {
   exactModel: string | null;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
   cache: { requestedTtl: '1h'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
-  review: { id: string; status: string; decision: string | null; holdCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
+  review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
+  bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
 };
 
@@ -58,7 +59,7 @@ export function buildRecordSnapshot(d: {
   const effectiveSoft = safeInput !== null ? Math.min(w.soft_limit_tokens, safeInput) : w.soft_limit_tokens;
 
   // F22：按房间取最近一次检查（成功换窗后完成结果留在旧窗——不因窗口切换显示"还没检查过"）
-  const reviewRow = (d.db.prepare("SELECT id, status, decision, window_id FROM rotation_reviews WHERE room_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId) as { id: string; status: string; decision: string | null; window_id: string } | undefined);
+  const reviewRow = (d.db.prepare("SELECT id, status, decision, window_id, json_array_length(range_keys_json) AS range_count FROM rotation_reviews WHERE room_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId) as { id: string; status: string; decision: string | null; window_id: string; range_count: number | null } | undefined);
   const holdCount = reviewRow ? ((d.db.prepare("SELECT COUNT(*) n FROM tool_side_effects WHERE review_id = ? AND kind='hold' AND state='committed'").get(reviewRow.id) as { n: number }).n) : null;
 
   const raw = d.rawSyncState;
@@ -96,7 +97,11 @@ export function buildRecordSnapshot(d: {
       estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：真实发送开始+1h（F18：未发送行不刷 TTL）
       keeperEnabled: false,
     },
-    review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,
+    review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, rangeCount: reviewRow.range_count ?? null, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,
+    bookmark: (() => {
+      const cp = win ? (d.db.prepare('SELECT seen_sequence, memory_id, updated_at FROM hold_checkpoints WHERE room_id = ? ORDER BY updated_at DESC LIMIT 1').get(conversationId) as { seen_sequence: number; memory_id: string; updated_at: string } | undefined) : undefined;
+      return cp ? { seenSequence: cp.seen_sequence, memoryId: cp.memory_id, updatedAt: cp.updated_at } : null;
+    })(),
     rawSync: { state: rawState, enabled: raw?.enabled ?? false, pending: raw?.pending ?? 0, failed: raw?.failed ?? 0, acked: raw?.acked ?? 0 },
   };
 }
