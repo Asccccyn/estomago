@@ -543,6 +543,17 @@ ALTER TABLE usage_observations ADD COLUMN anomalies_json TEXT;
 ALTER TABLE usage_observations ADD COLUMN raw_usage_json TEXT;
 `,
   },
+  {
+    version: 13,
+    name: 'v0.5.3-request-dispatch-and-usage-attribution',
+    // 复审 F17/F18/F28/F31：每次实际派发生效的 sent_at/attempt_no（重试逐笔留证、TTL 锚定真实发送）；
+    // usage_observations.window_id 直接归属（手动评审费用不再依赖不存在的 attempt 才能JOIN）。
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN sent_at TEXT;
+ALTER TABLE provider_requests ADD COLUMN attempt_no INTEGER;
+ALTER TABLE usage_observations ADD COLUMN window_id TEXT;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

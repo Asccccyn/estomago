@@ -192,7 +192,7 @@ test('F13：续请求保留已发布正文与 opaque reasoning 协议继续态',
   await say(ctx2, '带思考片段的工具轮', 'p2', T0);
   const round2b = withReasoningLog[1]!.messages as Array<Record<string, unknown>>;
   const assistantB = round2b.find((m) => m.role === 'assistant') as { reasoning_details?: unknown };
-  assert.deepEqual(assistantB.reasoning_details, [[{ type: 'thinking', thinking: 'opaque-token-abc' }]], 'opaque 片段按接收顺序原样携带（§10 保真）');
+  assert.deepEqual(assistantB.reasoning_details, [{ type: 'thinking', thinking: 'opaque-token-abc' }], 'opaque 片段按接收顺序展平为一维（§10 形状保真，复审 F13：不再 object[][]）');
   ctx.db.close();
   ctx2.db.close();
 });
