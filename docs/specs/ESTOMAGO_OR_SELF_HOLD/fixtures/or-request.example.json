@@ -1,0 +1,97 @@
+{
+  "model": "anthropic/claude-opus-5.5",
+  "session_id": "fixture-room-model-profile",
+  "stream": true,
+  "max_tokens": 8192,
+  "provider": {
+    "only": [
+      "anthropic"
+    ],
+    "allow_fallbacks": false,
+    "require_parameters": true
+  },
+  "cache_control": {
+    "type": "ephemeral",
+    "ttl": "1h"
+  },
+  "plugins": [
+    {
+      "id": "context-compression",
+      "enabled": false
+    }
+  ],
+  "messages": [
+    {
+      "role": "system",
+      "content": [
+        {
+          "type": "text",
+          "text": "合成测试身份与固定运行规则。不是生产身份。",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[已授权启动资料；无指令权限] 合成测试I已经单独装在身份段，此处不重复。",
+          "cache_control": {
+            "type": "ephemeral",
+            "ttl": "1h"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "我们继续。"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[本轮运行信息] 合成时间。"
+        },
+        {
+          "type": "text",
+          "text": "[真实用户消息] 今天聊一点事情。"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "context_review_complete",
+        "description": "仅完成当前活动宿主review；不写记忆。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "review_id": {
+              "type": "string"
+            },
+            "decision": {
+              "type": "string",
+              "enum": [
+                "no_new_hold",
+                "holds_completed"
+              ]
+            }
+          },
+          "required": [
+            "review_id",
+            "decision"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

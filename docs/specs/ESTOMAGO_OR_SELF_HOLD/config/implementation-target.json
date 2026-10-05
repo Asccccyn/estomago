@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_OR_SELF_HOLD",
+  "runtime": {
+    "preferred_driver": "openrouter",
+    "keep_drivers": [
+      "claude-agent-sdk"
+    ],
+    "model_selection": "inherit_explicit_approved_profile"
+  },
+  "openrouter": {
+    "base_url": "https://openrouter.ai/api/v1",
+    "protocol": "chat-completions",
+    "model": null,
+    "api_key_env": "OPENROUTER_API_KEY",
+    "session_id_strategy": "persistent_opaque_room_model_profile",
+    "stream": true,
+    "max_tokens_if_not_previously_configured": 8192,
+    "reasoning_override": null,
+    "provider": {
+      "only": [
+        "anthropic"
+      ],
+      "allow_fallbacks": false,
+      "require_parameters": true
+    },
+    "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+    },
+    "plugins": [
+      {
+        "id": "context-compression",
+        "enabled": false
+      }
+    ],
+    "retry_max_attempts_after_initial": 2
+  },
+  "context": {
+    "warning_tokens": 56000,
+    "soft_limit_tokens": 64000,
+    "idle_before_next_user_ms": 21600000,
+    "rotate_on_business_date_change": false,
+    "recent_dialogue_target_tokens": 12000,
+    "bootstrap_target_tokens": 32000,
+    "tool_input_reserve_tokens": 8000,
+    "review_reserve_tokens": 8000,
+    "safety_reserve_tokens": 4000,
+    "model_capacity": null,
+    "token_counter_state": "unverified",
+    "rolling_summary": false,
+    "automatic_compaction": false
+  },
+  "memory": {
+    "raw_autosave": true,
+    "sync_requires_existing_continuous_grant": true,
+    "formal_memory_service": "mariposa",
+    "author": "primary_model",
+    "helper_model": false,
+    "full_coverage_backfill": false,
+    "per_turn_review_required": false,
+    "review_focus": "after_last_confirmed_hold_bookmark",
+    "allow_no_new_hold": true
+  },
+  "ui": {
+    "records_button": "记录",
+    "desktop": "side_panel",
+    "mobile": "bottom_panel",
+    "records_read_only": true,
+    "enter_behavior": "newline",
+    "send_control": "dedicated_button"
+  },
+  "keepalive": {
+    "enabled": false
+  },
+  "real_model_smoke": {
+    "enabled": false,
+    "authorized_budget_usd": null
+  },
+  "notes": [
+    "本文件是配置目标，由GLM映射进现有严格schema；不得直接覆盖现有用户配置。",
+    "model=null不是auto；已有明确型号必须继承，无配置时由设置页指定真实型号，禁止默选示例型号。",
+    "capacity=null必须从实际端点能力补齐；unknown不能以假定1M启动容量门。",
+    "采用已批准输出/推理配置优先；此8192只是无既有配置时的透明初值。"
+  ]
+}

@@ -3,7 +3,7 @@
   "version": "0.2.2",
   "private": true,
   "type": "module",
-  "description": "est\u00f3mago \u00b7 \u81ea\u5efa\u804a\u5929\u5bbf\u4e3b\uff08\u67b6\u6784\u89c4\u683c v0.2.1 \u7684\u5b9e\u73b0\u9aa8\u67b6\uff1b166 \u9879\u4ea7\u54c1\u9a8c\u6536\u4ecd\u4e3a NOT_EXECUTED\uff09",
+  "description": "estómago · 自建聊天宿主（现行规范 ESTOMAGO_OR_SELF_HOLD：OpenRouter 主接入+自主 hold+1h 缓存；进度见 docs/specs/IMPLEMENTATION_MAP.md，验收以 ACCEPTANCE.json 逐项为准）",
   "engines": {
     "node": ">=22.18"
   },
