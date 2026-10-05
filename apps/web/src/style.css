@@ -179,3 +179,5 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
     border-radius: 14px 14px 0 0;
   }
 }
+/* hidden 属性必须生效（记录面板 display:flex 不得覆盖它——否则未登录时面板盖住登录区） */
+.records-panel[hidden] { display: none; }
