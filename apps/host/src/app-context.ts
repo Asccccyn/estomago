@@ -21,6 +21,8 @@ import { WindowManager } from './windows/manager.ts';
 import { TurnSupervisor } from './runtime/supervisor.ts';
 import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
+import { MariposaClient } from './integrations/mariposa/client.ts';
+import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -47,6 +49,7 @@ export class Host {
   readonly windows: WindowManager;
   readonly supervisor: TurnSupervisor;
   readonly auth: AuthService;
+  readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
   port = 0;
 
@@ -55,6 +58,7 @@ export class Host {
     opts: HostOptions,
     server: http.Server,
     deps: Omit<RequestDeps, 'config'>,
+    archiveSync: ArchiveSyncService,
   ) {
     this.config = config;
     this.opts = opts;
@@ -72,6 +76,7 @@ export class Host {
     this.windows = deps.windows;
     this.supervisor = deps.supervisor;
     this.auth = deps.auth;
+    this.archiveSync = archiveSync;
     this.server = server;
   }
 
@@ -110,6 +115,16 @@ export class Host {
     });
     const auth = new AuthService(paths);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
+    // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送；
+    // credential_ref 只是环境变量名（值由 transport 读取，不进日志）。未启用 → no-op，outbox 保持 pending（待同步）。
+    const archiveSync = new ArchiveSyncService({
+      db, events, logger,
+      client: new MariposaClient({
+        baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+        credentialEnv: opts.config.integrations.mariposa.credential_ref,
+      }),
+      config: opts.config,
+    });
 
     const deps: Omit<RequestDeps, 'config'> = {
       paths,
@@ -126,6 +141,7 @@ export class Host {
       windows,
       supervisor,
       auth,
+      archiveSync,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {
@@ -142,7 +158,7 @@ export class Host {
       });
     });
 
-    const host = new Host(opts.config, opts, server, deps);
+    const host = new Host(opts.config, opts, server, deps, archiveSync);
     return host;
   }
 
@@ -154,6 +170,10 @@ export class Host {
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.opts.port;
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
     const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
+    // 启动恢复同步：崩溃遗留的 pending/unknown_outcome 按稳定 op 重放（未启用时 no-op）
+    void this.archiveSync.drainOnce().catch((err) => {
+      this.logger.warn('archive_sync_startup_failed', { code: stableErrorCode(err) });
+    });
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
