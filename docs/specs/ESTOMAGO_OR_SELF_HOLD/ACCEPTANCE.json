@@ -98,7 +98,7 @@
       "evidence": [
         "tests/unit/remediation-batch1.test.ts#F09/F15（离线重试有界幂等）"
       ],
-      "notes": null
+      "notes": "HTTP500/throw 超限/恢复越序已修（4b6d8a8：F15 重试预算全路径 + F23 同流停发 + F24 坏行隔离）；tests/unit/remediation-batch5/6.test.ts"
     },
     {
       "id": "A009",
@@ -143,11 +143,11 @@
       "title": "用户撤权纠错",
       "criterion": "当前模型投影/来源权限同步失效，不为缓存继续外发旧授权资料。",
       "level": "security",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/or-supervisor.test.ts#指纹（身份/权限/配置变化→CONTEXT_STALE 不外发旧前缀）"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：仅型号变化→CONTEXT_STALE 有证；用户撤权/来源纠错/旧投影失效路径无断言——如实降级"
     },
     {
       "id": "A013",
@@ -207,7 +207,7 @@
       "evidence": [
         "tests/unit/remediation-batch1.test.ts#F09（同 op 重放）#F08（hold.status 恢复）"
       ],
-      "notes": null
+      "notes": "损坏 status 不再自动消解、throw 收口 unknown（4b6d8a8 F08）；tests/unit/remediation-batch6.test.ts#F08"
     },
     {
       "id": "A018",
@@ -229,7 +229,7 @@
       "evidence": [
         "tests/unit/remediation-batch2.test.ts#F06（范围⊆实际已见清单）"
       ],
-      "notes": null
+      "notes": "F06 修正 manifest=实际装载子集 + 载荷正文对应断言（05fbaf9）；tests/unit/remediation-batch5.test.ts#F06"
     },
     {
       "id": "A020",
@@ -338,7 +338,7 @@
         "tests/unit/or-rotation.test.ts#本轮输入只进新窗一次",
         "tests/unit/remediation-batch2.test.ts#F06（未携带不进旧范围）"
       ],
-      "notes": null
+      "notes": "F05 房间串行链：评审等待中 chat 排队不并发（05fbaf9）；tests/unit/remediation-batch5.test.ts#F05"
     },
     {
       "id": "A029",
@@ -383,12 +383,12 @@
       "title": "小容量/大输出/媒体",
       "criterion": "按真实C/O/T/R/S调有效软线，最终请求含提醒仍受P2门控。",
       "level": "unit+integration",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/review-policy.test.ts#小容量",
         "tests/unit/remediation-batch2.test.ts#F03 尾（工具续请求 P2）"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：小容量/大工具续轮已证；媒体预算与\"提醒+媒体最终序列化\"组合无断言——收窄为部分"
     },
     {
       "id": "A033",
@@ -457,11 +457,11 @@
       "title": "身份失败与硬容量",
       "criterion": "不出默认人格，不先销毁旧指针，消息保存并明确待恢复。",
       "level": "fault",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/remediation-batch2.test.ts#F01/F02（缺身份/缺 I 阻断无默认人格）#F03（blocked_hard 保存待恢复）"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：F01/F02 是正向用例；缺身份/缺 I 负例与短输入恢复完整链未单列断言（F25 已修历史污染，见 batch5#F25）"
     },
     {
       "id": "A039",
@@ -604,12 +604,12 @@
       "title": "工具流分片",
       "criterion": "JSON参数完整且合法终态后才执行，严格schema和同call ID配对。",
       "level": "unit+integration",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/or-stream.test.ts#工具参数门",
         "tests/unit/runner-openrouter.test.ts#分片工具"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：SSE 帧层已证；宿主业务 JSON Schema required/类型/附加字段拒绝断言缺——收窄"
     },
     {
       "id": "A052",
@@ -660,7 +660,7 @@
         "tests/unit/remediation-batch1.test.ts#F07（停止）",
         "tests/unit/remediation-batch3.test.ts#F20（迟到 usage 记账）"
       ],
-      "notes": null
+      "notes": "F20 断流计量抢救（EOF 无 DONE/AbortError 均记账）；remediation-batch3#F20 + 4b6d8a8 salvageMetering"
     },
     {
       "id": "A056",
@@ -692,11 +692,11 @@
       "title": "工具与思考参数",
       "criterion": "schema/顺序/tool_choice/推理配置在同窗稳定；撤权执行层即时校验。",
       "level": "contract+security",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "构造性证据：HOST_TOOLS 常量开窗固定（runtime/host-tools.ts）；无临场 tool_choice 改写路径"
       ],
-      "notes": "工具集/schema/顺序稳定性为构造性证据（常量装配）；运行权限即时校验待 MCP registry（A050）。"
+      "notes": "复审抽查后重判（原 PASS）：复审：撤权执行层即时校验未实施（notes 自认）；构造性稳定已证不足以整条 PASS——如实降级"
     },
     {
       "id": "A059",
@@ -752,7 +752,7 @@
         "tests/unit/remediation-batch3.test.ts#F18（TTL 请求开始）",
         "tests/unit/runner-openrouter.test.ts#session_id 稳定"
       ],
-      "notes": null
+      "notes": "F18 TTL 锚定真实发送（sent_at）；tests/unit/remediation-batch3.test.ts#F18 + 4b6d8a8 records TTL sent-only"
     },
     {
       "id": "A064",
@@ -773,12 +773,12 @@
       "title": "unknown和anomaly",
       "criterion": "缺字段不置零，cache分类冲突不clamp；估计和actual显示分开。",
       "level": "unit+ui",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/remediation-batch3.test.ts#F19（anomaly 不 clamp）",
         "tests/unit/usage-normalization.test.ts#unknown 不补零"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：cache 分类冲突 clamp 场景无专门断言（reasoning>output 异常已有）——收窄"
     },
     {
       "id": "A066",
@@ -786,11 +786,11 @@
       "title": "费用计量",
       "criterion": "cost不重复加upstream明细；失败已花可见，turn未知显示已知小计+未知。",
       "level": "unit+integration",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/remediation-batch3.test.ts#F19（cost 落库）#F20（失败已花可见）"
       ],
-      "notes": "费用落库/失败已花已证；真实账单金额分栏待 live。"
+      "notes": "复审抽查后重判（原 PASS）：复审：turn 费用小计+未知分量接口/展示未完整（F31 已落 window 归属与最近费用显示；summaryForTurn cost 字段未加）——保留待补"
     },
     {
       "id": "A067",
@@ -846,7 +846,7 @@
         "reports/screenshots/records-zero-hold.png",
         "reports/screenshots/records-narrow.png"
       ],
-      "notes": null
+      "notes": "F22 补书签位置/精确范围条数/费用/TTL 估计显示（4b6d8a8 后续 commit）；records snapshot 扩展"
     },
     {
       "id": "A072",
@@ -854,12 +854,12 @@
       "title": "只读与隐私",
       "criterion": "打开刷新重连不调模型/hold/明开/keeper/活跃时钟；不泄露私密prompt和跨房间资料。",
       "level": "ui+security",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/integration/records-api.test.ts#只读+鉴权+白名单",
         "reports/screenshots/"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：跨房间 ACL/前端 SSE 重连/活跃时钟组合无专门断言——收窄为已证子集（鉴权 401/白名单/只读）"
     },
     {
       "id": "A073",
@@ -867,12 +867,12 @@
       "title": "输入及导航回归",
       "criterion": "Enter只换行、独立发送、IME、多行；定位原话不写轨迹，详情明开遵守领域合同。",
       "level": "ui",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "tests/unit/composer-logic.test.ts",
         "tests/unit/web-vm.test.ts"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：定位原话/详情明开导航未实现——输入语义部分已证，整条如实降级"
     },
     {
       "id": "A074",
@@ -906,12 +906,12 @@
       "title": "交付证据可信",
       "criterion": "实际commit、逐项应用结果、真实OR/SDK/部署分开；包内reference测试不冒称应用已通过。",
       "level": "audit",
-      "status": "PASS",
+      "status": "NOT_EXECUTED",
       "evidence": [
         "docs/specs/IMPLEMENTATION_MAP.md",
         "git log 6d1c5f3..6fc0032（六提交+整改四批+CSS 修复）"
       ],
-      "notes": null
+      "notes": "复审抽查后重判（原 PASS）：复审：59 PASS 中 9 项被否——本轮已按逐项重判修正；整体证据可信度待下轮独立复审确认，不自评通过"
     }
   ]
 }
