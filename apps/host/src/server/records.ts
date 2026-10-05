@@ -13,7 +13,7 @@ export type RecordSnapshot = {
   exactModel: string | null;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
   cache: { requestedTtl: '1h'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
-  review: { id: string; status: string; decision: string | null; holdCount: number | null } | null;
+  review: { id: string; status: string; decision: string | null; holdCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
 };
 
@@ -57,9 +57,8 @@ export function buildRecordSnapshot(d: {
   const safeInput = hardCapacity !== null ? hardCapacity - d.config.openrouter.max_output_tokens - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens : null;
   const effectiveSoft = safeInput !== null ? Math.min(w.soft_limit_tokens, safeInput) : w.soft_limit_tokens;
 
-  const reviewRow = win
-    ? (d.db.prepare("SELECT id, status, decision FROM rotation_reviews WHERE window_id = ? ORDER BY created_at DESC LIMIT 1").get(win.id) as { id: string; status: string; decision: string | null } | undefined)
-    : undefined;
+  // F22：按房间取最近一次检查（成功换窗后完成结果留在旧窗——不因窗口切换显示"还没检查过"）
+  const reviewRow = (d.db.prepare("SELECT id, status, decision, window_id FROM rotation_reviews WHERE room_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId) as { id: string; status: string; decision: string | null; window_id: string } | undefined);
   const holdCount = reviewRow ? ((d.db.prepare("SELECT COUNT(*) n FROM tool_side_effects WHERE review_id = ? AND kind='hold' AND state='committed'").get(reviewRow.id) as { n: number }).n) : null;
 
   const raw = d.rawSyncState;
@@ -96,7 +95,7 @@ export function buildRecordSnapshot(d: {
       estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：请求开始+1h 的本地估计（非可查询缓存对象）
       keeperEnabled: false,
     },
-    review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount } : null,
+    review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,
     rawSync: { state: rawState, enabled: raw?.enabled ?? false, pending: raw?.pending ?? 0, failed: raw?.failed ?? 0, acked: raw?.acked ?? 0 },
   };
 }
@@ -104,15 +103,32 @@ export function buildRecordSnapshot(d: {
 // 记录事件白名单（§11.2 契约 kind 集合中实际存在的；元数据 payload，不含正文类事件）
 const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated']);
 
-export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number): { events: Array<{ eventId: string; sequence: number; roomId: string; occurredAt: string; kind: string; payload: unknown }>; nextCursor: string | null } {
+export type RecordEventItem = { eventId: string; sequence: number; roomId: string; occurredAt: string; kind: string; payload: unknown };
+export type RecordEventsPage = { events: RecordEventItem[]; nextCursor: string | null; prevCursor: string | null };
+
+const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')`;
+
+/** forward：游标向后翻页（历史分页）。recent（F21）：返回最新 limit 条（升序）+ prevCursor 向更早翻页。 */
+export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number, mode: 'forward' | 'recent' = 'forward'): RecordEventsPage {
+  if (mode === 'recent') {
+    const rows = db.prepare(
+      `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
+       WHERE conversation_id = ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       ORDER BY sequence DESC LIMIT ?`,
+    ).all(conversationId, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
+    const events = rows.slice().reverse().map(rowToEvent(conversationId));
+    const prevCursor = events.length > 0 ? String(events[0]!.sequence - 1) : null;
+    return { events, nextCursor: null, prevCursor };
+  }
   const rows = db.prepare(
     `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
-     WHERE conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+     WHERE ${RECORD_EVENT_SQL_WHERE}
      ORDER BY sequence LIMIT ?`,
   ).all(conversationId, after, limit + 1) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
   const page = rows.slice(0, limit);
-  return {
-    events: page.map((r) => ({ eventId: r.event_id, sequence: r.sequence, roomId: conversationId, occurredAt: r.occurred_at, kind: r.kind, payload: r.payload_ref ? (JSON.parse(r.payload_ref) as unknown) : null })),
-    nextCursor: rows.length > limit ? String(page[page.length - 1]!.sequence) : null,
-  };
+  const events = page.map(rowToEvent(conversationId));
+  return { events, nextCursor: rows.length > limit ? String(page[page.length - 1]!.sequence) : null, prevCursor: null };
 }
+
+const rowToEvent = (roomId: string) => (r: { sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }): RecordEventItem =>
+  ({ eventId: r.event_id, sequence: r.sequence, roomId, occurredAt: r.occurred_at, kind: r.kind, payload: r.payload_ref ? (JSON.parse(r.payload_ref) as unknown) : null });

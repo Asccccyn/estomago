@@ -67,3 +67,32 @@ test('事件端点：白名单 kind、有界分页、limit 上限', async () => 
   const capped = await fetch(`${base}/api/v1/conversations/primary/context-records/events?limit=99999`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(capped.status, 200, '上限截断而非报错');
 });
+
+test('F21：last=1 最近页语义——超过 30 条后能看到最新事件（不再永远显示最早 30 条）', async () => {
+  for (let i = 0; i < 35; i++) {
+    host.events.publish('context.warning', { conversationId: 'primary', entityRef: `w${i}`, scope: 'private', payload: { estimate: i, quality: 'rough' } });
+  }
+  const res = await fetch(`${base}/api/v1/conversations/primary/context-records/events?limit=30&last=1`, { headers: { Authorization: `Bearer ${token}` } });
+  const data = (await res.json()) as { events: Array<{ sequence: number }>; prevCursor: string | null };
+  assert.equal(data.events.length, 30);
+  const seqs = data.events.map((e) => e.sequence);
+  assert.ok(Math.max(...seqs) >= 35, '最新事件在其中（旧实现永远只给最早的 30 条）');
+  assert.ok(data.prevCursor, '可向更早翻页');
+  const older = await (await fetch(`${base}/api/v1/conversations/primary/context-records/events?limit=30&cursor=${data.prevCursor}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { events: Array<{ sequence: number }> };
+  assert.equal(older.events.length, 30, '更早页有内容');
+});
+
+test('F22：换窗后最近检查结果不消失（按房间保留 + 标注非当前窗）', async () => {
+  const db = host.db;
+  // 旧窗的 completed 评审 + 新活动窗
+  db.prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES ('win_old_f22','primary','CLOSED','2026-10-01T00:00:00Z','2026-10-01T00:00:00Z')").run();
+  db.prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES ('win_new_f22','primary','ACTIVE','2026-10-02T00:00:00Z','2026-10-02T00:00:00Z')").run();
+  db.prepare("UPDATE conversations SET active_window_id = 'win_new_f22' WHERE id = 'primary'").run();
+  db.prepare("INSERT INTO rotation_reviews(id, window_id, room_id, epoch_revision, range_keys_json, status, decision, created_at, updated_at) VALUES ('rev_f22','win_old_f22','primary',1,'[]','completed','no_new_hold','2026-10-01T01:00:00Z','2026-10-01T01:00:00Z')").run();
+  const res = await fetch(`${base}/api/v1/conversations/primary/context-records`, { headers: { Authorization: `Bearer ${token}` } });
+  const snap = (await res.json()) as { review: { id: string; status: string; decision: string | null; windowId: string; isCurrentWindow: boolean } | null };
+  assert.ok(snap.review, '换窗后最近检查结果仍显示（旧实现变 null）');
+  assert.equal(snap.review!.id, 'rev_f22');
+  assert.equal(snap.review!.decision, 'no_new_hold');
+  assert.equal(snap.review!.isCurrentWindow, false, '如实标注：这是上一窗口的结果');
+});
