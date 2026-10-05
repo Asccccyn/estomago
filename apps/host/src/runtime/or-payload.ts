@@ -43,10 +43,13 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
   const providerOnly = input.providerOnly ?? ['anthropic'];
   const allowFallbacks = input.allowFallbacks ?? false;
   const requireParameters = input.requireParameters ?? true;
-  // 当前任务 provider.only 固定 anthropic 上游（§6.2 控制片段）；型号必须是明确的 Claude 型号，
-  // 禁 auto/latest/别名。这是发送前最后一道门；配置层形状门在 config/schema.ts orModelIdIssue。
+  // 型号门按上游族：anthropic 族维持规范原门（明确 Claude 型号、禁 auto/latest/别名）；
+  // 非 anthropic 族（如 DS 冒烟 ['deepseek']）按 vendor/model 形状校验——仍禁 auto/latest/fallback 数组。
+  const isAnthropicFamily = providerOnly.includes('anthropic');
   requireThat(
-    typeof model === 'string' && /^anthropic\/claude-[a-zA-Z0-9.-]+$/.test(model) && !/latest|auto/.test(model),
+    isAnthropicFamily
+      ? typeof model === 'string' && /^anthropic\/claude-[a-zA-Z0-9.-]+$/.test(model) && !/latest|auto/.test(model)
+      : typeof model === 'string' && /^[a-z0-9][a-z0-9._\-]*\/[a-z0-9][a-z0-9._\-]*$/i.test(model) && !/latest|auto/.test(model),
     'EXACT_CLAUDE_MODEL_REQUIRED',
   );
   requireThat(typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 256, 'SESSION_ID_INVALID');
@@ -71,13 +74,15 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
     (block as Record<string, unknown>).cache_control = oneHour();
   }
   // 关键控制字段固定在展开 base 之后——调用方/配置不能覆盖（§6.2：不隐藏 fallback/压缩/降级）。
+  // cache_control(ephemeral 1h) 是 Anthropic 式参数：仅 anthropic 族上游注入；
+  // 非 anthropic 族（DS 冒烟）省略——DS 为自动上下文缓存，多余参数可能被端点拒绝。
   const out: Record<string, unknown> = {
     model,
     session_id: sessionId,
     stream: true,
     max_tokens: maxTokens,
     provider: { only: providerOnly, allow_fallbacks: allowFallbacks, require_parameters: requireParameters },
-    cache_control: oneHour(),
+    ...(isAnthropicFamily ? { cache_control: oneHour() } : {}),
     plugins: [{ id: 'context-compression', enabled: false }],
     ...base,
   };
