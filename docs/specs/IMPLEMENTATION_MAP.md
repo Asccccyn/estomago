@@ -76,6 +76,14 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
+- **2026-10-05 复审整改完成（审 967b899 → 4 commits：05fbaf9/4b6d8a8/005665b 前三批 + D-tail）**：复审报告 `~/Documents/Codex/2026-10-05/1-readme-md-2-docs-specs/outputs/estomago-reaudit-967b899.zip`（结论不通过：F01-22 中 10 CLOSED/12 PARTIAL + 新增 F23-F31）。已修全部 21 项可实现项：
+  - **批次 A（P1）**05fbaf9：F05 manualRotate 上房间串行链（评审中 chat 排队）、F06 manifest 从 buildOrEnvelope 实选子集生成（索引错配根除）、F23 冻结批恢复按会话按源序+未决阻断同流含新批、F24 坏行单行隔离+rawSync json_valid 防护、F25 容量估算改用轨迹正本（被拒大输入不再污染短输入）、F27 NULL manifest 按正文重建/不可重建如实阻断（不签 skipped_empty）。
+  - **批次 B**：F08 恢复只认真回执或结构化 completed=false（损坏 200/错配/throw 全保持 unknown 阻断）、F10 ACK 三件套+committed_at 缺一不可、F15 HTTP500 入可重试+throw/invalid-ACK 吃 attempts 上限、F16 信封字节（+166 开销实测常量）、F11 归档凭据回退仅限 TEST_MODE。
+  - **批次 C（v13）**：F13 reasoning 续传展平一维、F17 onDispatch 每次真实发送逐笔留证（sent_at/attempt_no，重试行单列）、F18 TTL 锚 sent_at、F20 断流计量抢救（finish 抛出用已观察原始帧）、F28 完整度对照已发送请求集合、F31 usage 落 window_id（手动评审费用可见）。
+  - **批次 D**：F26 before= 严格前移翻页+事件委托绑定+records-api 旧断言修正、F29 状态端点按驱动判别 gate、F22 快照/前台补书签位置/范围条数/费用/TTL、F30 ACCEPTANCE 重判（49 PASS/14 BLOCKED/13 NOT_EXECUTED；A076 自评 NOT_EXECUTED 留独立复审）。
+  - 新增 tests/unit/remediation-batch5/6.test.ts（10 用例）+ 3 处旧断言修正（batch2 F13 形状、or-cache F18 语义、records-api F21 重复页）；全量 **46/46 文件 0 失败**。
+  - **未修/待授权**：A016 source_selections 工具入口、A034 MCP 大结果分页（等 registry）、A040/041 Mariposa profile、A049 能力快照、A061/062 真实缓存、A067/068 SDK 实机——维持 BLOCKED；F30 中 9 项收窄 NOT_EXECUTED 待补断言。
+
 - **2026-10-05 审计整改批次①完成**（针对 estomago-audit-18a1f1f 的 P1 副作用安全组 + 同路径 P2，基线 2adf8b0）：
   - **F04**：同批工具强制重排——全部写操作先执行并核实，`context_review_complete` 最后验证（§3.3）；`completeReview` 前置**窗口级**未决写检查。
   - **F05**：手动换窗 HTTP 入口改走 `supervisor.manualRotate` 同一评审管线（无直转旁路）；活跃评审互斥（`ROTATION_ALREADY_IN_PROGRESS`/`REVIEW_IN_PROGRESS`）；`doRotate` 校验活动窗=评审目标窗，迟到评审不叠加轮转（`ROTATION_SUPERSEDED`）。
