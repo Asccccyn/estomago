@@ -82,18 +82,27 @@ export class TurnSupervisor {
   enqueue(turnId: string): void {
     const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
     if (!conv) return;
-    const prev = this.chains.get(conv.conversation_id) ?? Promise.resolve();
-    const next = prev
-      .then(() => this.runTurn(turnId))
-      .catch((err) => {
+    this.runSerialized(conv.conversation_id, async () => {
+      try {
+        await this.runTurn(turnId);
+      } catch (err) {
         // AUD-10：链条内崩溃不留悬挂——该 turn 落 failed 终态
         this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err) });
         this.failTurnQuietly(turnId, 'RUNNER_CRASHED');
-      })
-      .finally(() => {
-        if (this.chains.get(conv.conversation_id) === next) this.chains.delete(conv.conversation_id);
-      });
-    this.chains.set(conv.conversation_id, next);
+      }
+    });
+  }
+
+  /** 审计 F05：房间唯一串行链的通用入口——turn、自动评审、手动换窗共用同一互斥；
+   *  前序任务失败不阻断后续（fn 总被执行），返回值/异常原样传给调用方。 */
+  private runSerialized<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chains.get(conversationId) ?? Promise.resolve();
+    const result = prev.then(fn, fn);
+    const next = result.catch(() => {}).finally(() => {
+      if (this.chains.get(conversationId) === next) this.chains.delete(conversationId);
+    });
+    this.chains.set(conversationId, next);
+    return result;
   }
 
   async waitIdle(): Promise<void> {
@@ -280,6 +289,36 @@ export class TurnSupervisor {
     });
   }
 
+  /** 审计 F27：为 manifest=NULL 的旧轨迹行重建已见清单——轨迹 user/assistant 文本逐条匹配
+   *  库内当前修订（角色+正文精确等值，按序消费候选防重复正文误配）；任一条无匹配 → null（未知）。 */
+  private rebuildTrajectoryManifest(conversationId: string, trajMessages: OrMessage[]): ManifestEntry[] | null {
+    const dbRows = this.d.db.prepare(
+      `SELECT m.id, m.sequence, m.current_revision, m.speaker, r.content FROM messages m
+       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+       WHERE m.conversation_id = ? ORDER BY m.sequence`,
+    ).all(conversationId) as Array<{ id: string; sequence: number; current_revision: number; speaker: string; content: string }>;
+    const out: ManifestEntry[] = [];
+    let cursor = 0;
+    for (const tm of trajMessages) {
+      if (tm.role !== 'user' && tm.role !== 'assistant') continue;
+      const text = typeof tm.content === 'string' ? tm.content : Array.isArray(tm.content) ? tm.content.map((b) => (b as { text?: string }).text ?? '').join('') : '';
+      const speaker = tm.role === 'user' ? 'owner' : 'assistant';
+      let matched: { id: string; sequence: number; current_revision: number } | null = null;
+      for (let i = cursor; i < dbRows.length; i++) {
+        const row = dbRows[i]!;
+        // 轨迹 user 消息=时间上下文前缀+正文（§5.5 组合投影）→ 用包含匹配；按序消费候选防重复正文误配
+        if (row.speaker === speaker && row.content.length > 0 && text.includes(row.content)) {
+          matched = row;
+          cursor = i + 1;
+          break;
+        }
+      }
+      if (!matched) return null; // 无法无歧义重建：范围未知
+      out.push({ id: matched.id, revision: matched.current_revision, seq: matched.sequence, origin: 'dialogue', visible: true });
+    }
+    return out;
+  }
+
   // 当前输入之前的双方原话（§3.2.2：范围=本窗实际携带的真实对话；不扩大到全库）
   private dialogueUpTo(conversationId: string, maxSequence: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> {
     const rows = this.d.db.prepare(
@@ -301,7 +340,7 @@ export class TurnSupervisor {
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
-  }): OrRequestEnvelope {
+  }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
     const model = this.d.config.openrouter.model!;
     const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * 2.5; // 粗估（§11.1 估计口径，不冒充精确）
     const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
@@ -320,13 +359,16 @@ export class TurnSupervisor {
     for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
     return {
-      model,
-      sessionId: orSessionId(o.conversationId, model, null),
-      messages,
-      tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
-      boundaries: [], // 断点规划由调用方（cache-plan）负责
-      maxTokens: this.d.config.openrouter.max_output_tokens,
-      reasoning: this.d.config.openrouter.reasoning,
+      envelope: {
+        model,
+        sessionId: orSessionId(o.conversationId, model, null),
+        messages,
+        tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+        boundaries: [], // 断点规划由调用方（cache-plan）负责
+        maxTokens: this.d.config.openrouter.max_output_tokens,
+        reasoning: this.d.config.openrouter.reasoning,
+      },
+      selected, // 审计 F06：manifest 必须从实际装载子集生成，不能按索引回映全量前缀
     };
   }
 
@@ -346,7 +388,18 @@ export class TurnSupervisor {
 
     // F06：评审范围的实际已见清单优先取轨迹 manifest（真实发送证据）；无轨迹时退化为库投影。
     const dialogue = this.dialogueUpTo(o.conversationId, o.currentInputSequence - 1);
-    const trajManifest = d.trajectory?.forWindow(o.window.id)?.manifest ?? null;
+    const trajRow = d.trajectory?.forWindow(o.window.id) ?? null;
+    let trajManifest: ManifestEntry[] | null = trajRow?.manifest ?? null;
+    // 审计 F27：v11 前旧轨迹行的 manifest 为 NULL（未知），不得当作空清单签 skipped_empty——
+    // 按轨迹正文的 user/assistant 消息逐条匹配库内消息重建；任一匹配失败 → 范围未知，如实阻断。
+    if (trajRow !== null && trajManifest === null) {
+      trajManifest = this.rebuildTrajectoryManifest(o.conversationId, trajRow.messages);
+      if (trajManifest !== null) {
+        d.trajectory!.replaceManifest(o.window.id, trajManifest);
+      } else {
+        return { rotated: false, blocked: 'ROTATION_RANGE_UNKNOWN:旧窗口轨迹缺少已见清单且无法按正文重建——不签发空范围凭证，需明确恢复' };
+      }
+    }
     const manifest: ManifestEntry[] = trajManifest ?? dialogue.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
@@ -355,7 +408,13 @@ export class TurnSupervisor {
       `SELECT LENGTH(r.content) AS len FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
        WHERE m.conversation_id = ? AND m.sequence = ?`,
     ).get(o.conversationId, o.currentInputSequence) as { len: number | null } | undefined)?.len ?? 0;
-    const recentChars = dialogue.reduce((s, m) => s + m.content.length, 0) + currentInputLen;
+    // 审计 F25：估算只用实际发送集合——轨迹正本（无轨迹的新窗首轮回退库内近期，此时二者一致）。
+    // 被拒/未发送的历史大消息不得污染当前工作集（否则短输入被持续 CAPACITY_BLOCKED_HARD）。
+    const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
+    const sentChars = trajForEstimate
+      ? trajForEstimate.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0)
+      : dialogue.reduce((s, m) => s + m.content.length, 0);
+    const recentChars = sentChars + currentInputLen;
     const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
     const estimate = Math.ceil((recentChars + systemChars) / 2.5);
     const lastActual = (d.db.prepare(
@@ -446,7 +505,7 @@ export class TurnSupervisor {
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = d.trajectory?.forWindow(o.window.id);
-    const fallbackBase = this.buildOrEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).messages.slice(0, -1);
+    const fallbackBase = this.buildOrEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
     const reviewBaseMessages: OrMessage[] = traj ? traj.messages : fallbackBase;
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
     const { boundaries: reviewBoundaries } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
@@ -498,6 +557,12 @@ export class TurnSupervisor {
   /** 审计 F05：手动换窗入口——与自动换窗同一条评审管线（同互斥/恢复/未决检查/CAS），
    *  不再存在绕过评审的直转旁路。SDK 驱动（无评审线）保持 v0.2.2 行为（running/票据检查仍在 manager）。 */
   async manualRotate(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
+    // 审计 F05：手动换窗占用房间串行链——与 turn/自动评审/另一个手动调用互斥，
+    // 评审等待期间新 chat 排队而非并发发送
+    return this.runSerialized(conversationId, () => this.manualRotateInner(conversationId));
+  }
+
+  private async manualRotateInner(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
     const d = this.d;
     const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
     const gate = d.identity.evaluateGate(d.db, { driver: isOr ? 'openrouter' : 'claude-agent-sdk' });
@@ -603,10 +668,11 @@ export class TurnSupervisor {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
         const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
-        const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
-        // F06：manifest=初始段实际装载的对话（预算裁剪后的真实集合，非全库投影）
-        const baseManifest = initEnv.messages.slice(1, -1).map((m, i) => ({ id: baseDialogue[i]!.id, revision: baseDialogue[i]!.revision, seq: baseDialogue[i]!.sequence, origin: 'dialogue' as const, visible: true }));
-        d.trajectory.init(window.id, initEnv.messages.slice(0, -1), baseManifest);
+        const built0 = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        // F06（复审修正）：manifest 从 buildOrEnvelope 实际选中的子集生成——裁剪掉旧消息时
+        // 不再按索引错配到历史前缀 ID（正文含 B、清单含 A 的错配源头）
+        const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+        d.trajectory.init(window.id, built0.envelope.messages.slice(0, -1), baseManifest);
       }
     }
     // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线/6h 静默）→ 一次提醒 → CAS 换窗；
@@ -628,9 +694,9 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
-            const baseManifest = initEnv.messages.slice(1, -1).map((m, i) => ({ id: baseDialogue[i]!.id, revision: baseDialogue[i]!.revision, seq: baseDialogue[i]!.sequence, origin: 'dialogue' as const, visible: true }));
-            d.trajectory.init(window.id, initEnv.messages.slice(0, -1), baseManifest);
+            const builtR = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+            d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
         }
       }
@@ -693,7 +759,7 @@ export class TurnSupervisor {
     const orTraj = isOr ? d.trajectory?.forWindow(window.id) ?? null : null;
     const orBaseMessages: OrMessage[] = orTraj
       ? orTraj.messages
-      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).messages;
+      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).envelope.messages;
     const orMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
       : orBaseMessages;
