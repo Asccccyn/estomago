@@ -33,20 +33,25 @@ export class UsageCollector {
       const newIsComplete = (o.completeness ?? 'complete') === 'complete';
       if (oldIsComplete && !newIsComplete) return;
       this.db
-        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, completeness = ?, observed_at = ? WHERE id = ?')
-        .run(o.usage.input_tokens ?? null, o.usage.output_tokens ?? null, o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null, o.completeness ?? 'complete', new Date().toISOString(), dup.id);
+        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, cost_usd = ?, reasoning_tokens = ?, anomalies_json = ?, raw_usage_json = ?, completeness = ?, observed_at = ? WHERE id = ?')
+        .run(o.usage.input_tokens ?? null, o.usage.output_tokens ?? null, o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null,
+          o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null, o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null,
+          o.completeness ?? 'complete', new Date().toISOString(), dup.id);
       return;
     }
     this.db
       .prepare(
         `INSERT INTO usage_observations(id, request_id, attempt_id, turn_id, scope, model,
-           input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, source, completeness, observed_at)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+           cost_usd, reasoning_tokens, anomalies_json, raw_usage_json, source, completeness, observed_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         genId('use'), o.requestId ?? null, o.attemptId, o.turnId, o.scope, o.model ?? null,
         o.usage.input_tokens ?? null, o.usage.output_tokens ?? null,
         o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null,
+        o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null,
+        o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null,
         o.source, o.completeness ?? 'complete', new Date().toISOString(),
       );
   }

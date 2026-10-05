@@ -166,10 +166,10 @@ export class TurnSupervisor {
     turnId: string;
     attemptId: string;
     controller: AbortController;
-    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent) => void;
+    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
     seenSequence: number;
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
-  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null }> {
+  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null }> {
     const d = this.d;
     const runner = d.runnerSelection.runner;
     let envelope = o.envelope;
@@ -177,13 +177,14 @@ export class TurnSupervisor {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const captured: MatchedCompleteBlock[] = [];
       let lastText: string | null = null;
-      const wrapped: typeof o.onEvent = (ev) => {
+      const wrapped: typeof o.onEvent = (ev, reqCtx) => {
+        void reqCtx;
         if (ev.kind === 'complete_message') {
           for (const b of ev.matched) if (b.block_type === 'tool_use') captured.push(b);
           const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
           if (text) lastText = text.text;
         }
-        o.onEvent(ev);
+        o.onEvent(ev, { requestId: prqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
       const prqId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
@@ -217,16 +218,17 @@ export class TurnSupervisor {
         return { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
       });
       d.db.prepare('UPDATE provider_requests SET generation_id = ?, outcome = ? WHERE id = ?').run(result.requestId, result.outcome, prqId);
-      if (result.outcome !== 'completed') return { result, finalMessages: null };
+      if (result.outcome !== 'completed') return { result, finalMessages: null, lastSentMessages: null };
       if (captured.length === 0) {
-        // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）
+        // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
+        // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
         const finalMessages = lastText !== null && lastText.length > 0
           ? [...envelope.messages, { role: 'assistant', content: [{ type: 'text', text: lastText }] } as unknown as OrMessage]
           : envelope.messages;
-        return { result, finalMessages };
+        return { result, finalMessages, lastSentMessages: envelope.messages };
       }
       if (round === MAX_TOOL_ROUNDS) {
-        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null };
+        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null };
       }
       prevEnvelope = envelope;
       // F13：已发布正文随 assistant 消息续传（原样保留，§2.2）；opaque reasoning 片段作为
@@ -263,10 +265,10 @@ export class TurnSupervisor {
         envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
-        return { result, finalMessages: null }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
+        return { result, finalMessages: null, lastSentMessages: null }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null };
+    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null };
   }
 
   private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
@@ -458,10 +460,11 @@ export class TurnSupervisor {
       reasoning: d.config.openrouter.reasoning,
     };
     const controller = new AbortController();
-    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent): void => {
-      // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态
+    const reviewTurnId = (d.db.prepare('SELECT turn_id FROM attempts WHERE id = ?').get(o.attemptId) as { turn_id: string } | undefined)?.turn_id ?? o.attemptId;
+    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
+      // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: o.attemptId, attemptId: o.attemptId, scope: ev.scope, usage: ev.usage, model: d.config.openrouter.model, source: ev.source, completeness: ev.completeness });
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, scope: ev.scope, usage: ev.usage, model: d.config.openrouter.model, source: ev.source, completeness: ev.completeness });
       }
     };
     const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
@@ -777,7 +780,7 @@ export class TurnSupervisor {
     };
 
     // §6.3：驱动判别请求——同一 handleEvent（发布/记账/route 语义对两驱动一致，不复制两套处理）
-    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent): void => {
+    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
           // generation fence（AUD-05/03 迟到 chunk）：只挡内容类事件（正文/思考/工具投影）；
           // usage 与路由事实是记账观测，不是发布——fence 后仍须入账（F10：实际模型不能丢）
           if (runToken.token.cancelled && ev.kind !== 'usage' && ev.kind !== 'system_notice' && ev.kind !== 'packet_conflict') return;
@@ -836,6 +839,7 @@ export class TurnSupervisor {
             case 'usage':
               d.usage.record({
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
+                requestId: reqCtx?.requestId ?? undefined, // F12：同 turn 多请求按请求身份分行保留
                 model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
@@ -880,6 +884,7 @@ export class TurnSupervisor {
     const runner = d.runnerSelection.runner;
     let result: import('./runner.ts').RunnerRunResult;
     let orFinalMessages: OrMessage[] | null = null;
+    let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
     if (orEnvelope !== null) {
       // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
       const loop = await this.runOrToolLoop({
@@ -891,6 +896,7 @@ export class TurnSupervisor {
       });
       result = loop.result;
       orFinalMessages = loop.finalMessages;
+      orLastSentMessages = loop.lastSentMessages;
     } else {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
@@ -976,7 +982,10 @@ export class TurnSupervisor {
       const inputEntry: ManifestEntry[] = inputMessage
         ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }]
         : [];
-      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orFinalMessages), [...baseManifest, ...inputEntry, ...turnManifestAdditions]);
+      // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
+      // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
+      const boundaryBase = orLastSentMessages ?? orFinalMessages;
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...inputEntry, ...turnManifestAdditions]);
     }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {

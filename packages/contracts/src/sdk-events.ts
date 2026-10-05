@@ -40,6 +40,11 @@ export type RawUsage = {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  // 审计 F19：OR 桥接保留已返回的费用/推理明细/异常标记与原始帧（可选；SDK 事件不填）
+  cost_usd?: number;
+  reasoning_tokens?: number;
+  anomalies?: string[];
+  raw_json?: string;
 };
 
 // —— 归一化输出 ——————————————————————————————
