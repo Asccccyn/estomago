@@ -32,6 +32,8 @@ import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { orSessionId } from './runner-openrouter.ts';
 import { buildOrPayload, type OrMessage } from './or-payload.ts';
+import { planBoundaries, tailBoundaryOf } from './cache-plan.ts';
+import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { HOST_TOOLS, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
@@ -56,6 +58,7 @@ export type SupervisorDeps = {
   tools?: HostToolExecutor; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
+  trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -153,6 +156,7 @@ export class TurnSupervisor {
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
   // 同样经 P2（previousPayload append-only 断言）。发布/记账语义由调用方 onEvent 决定。
+  // 返回 finalMessages：成功回合的完整轨迹消息（含最终 assistant 文本），供轨迹持久化（§2.2）。
   private async runOrToolLoop(o: {
     envelope: OrRequestEnvelope;
     purpose: RunnerPurpose;
@@ -164,19 +168,25 @@ export class TurnSupervisor {
     controller: AbortController;
     onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent) => void;
     seenSequence: number;
-  }): Promise<import('./runner.ts').RunnerRunResult> {
+    previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
+  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null }> {
     const d = this.d;
     const runner = d.runnerSelection.runner;
     let envelope = o.envelope;
-    let prevEnvelope: OrRequestEnvelope | null = null;
+    let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const captured: MatchedCompleteBlock[] = [];
+      let lastText: string | null = null;
       const wrapped: typeof o.onEvent = (ev) => {
-        if (ev.kind === 'complete_message') for (const b of ev.matched) if (b.block_type === 'tool_use') captured.push(b);
+        if (ev.kind === 'complete_message') {
+          for (const b of ev.matched) if (b.block_type === 'tool_use') captured.push(b);
+          const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
+          if (text) lastText = text.text;
+        }
         o.onEvent(ev);
       };
-      const db1 = d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, created_at) VALUES (?,?,?,?,?,?,?)');
-      db1.run(`prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), new Date().toISOString());
+      d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, created_at) VALUES (?,?,?,?,?,?,?)')
+        .run(`prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), new Date().toISOString());
       const result = await Promise.race([
         runner.run({ driver: 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped }),
         new Promise<never>((_, reject) => {
@@ -189,10 +199,16 @@ export class TurnSupervisor {
         if (isGrace) o.controller.abort();
         return { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
       });
-      if (result.outcome !== 'completed') return result;
-      if (captured.length === 0) return result;
+      if (result.outcome !== 'completed') return { result, finalMessages: null };
+      if (captured.length === 0) {
+        // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）
+        const finalMessages = lastText !== null && lastText.length > 0
+          ? [...envelope.messages, { role: 'assistant', content: [{ type: 'text', text: lastText }] } as unknown as OrMessage]
+          : envelope.messages;
+        return { result, finalMessages };
+      }
       if (round === MAX_TOOL_ROUNDS) {
-        return { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId };
+        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null };
       }
       prevEnvelope = envelope;
       envelope = {
@@ -218,10 +234,10 @@ export class TurnSupervisor {
         envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
-        return result; // §3.3：complete 最后验证；完成后收口，不再继续生成
+        return { result, finalMessages: null }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null };
+    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null };
   }
 
   private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
@@ -370,12 +386,21 @@ export class TurnSupervisor {
     d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
 
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
-    const envelope = this.buildOrEnvelope({
-      conversationId: o.conversationId,
-      materials: o.materials,
-      dialogue,
-      tailUserText: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }),
-    });
+    // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
+    const traj = d.trajectory?.forWindow(o.window.id);
+    const fallbackBase = this.buildOrEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).messages.slice(0, -1);
+    const reviewBaseMessages: OrMessage[] = traj ? traj.messages : fallbackBase;
+    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
+    const { boundaries: reviewBoundaries } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
+    const envelope: OrRequestEnvelope = {
+      model: d.config.openrouter.model!,
+      sessionId: orSessionId(o.conversationId, d.config.openrouter.model!, null),
+      messages: reviewMessages,
+      tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+      boundaries: reviewBoundaries,
+      maxTokens: d.config.openrouter.max_output_tokens,
+      reasoning: d.config.openrouter.reasoning,
+    };
     const controller = new AbortController();
     const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态
@@ -384,7 +409,7 @@ export class TurnSupervisor {
       }
     };
     const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
-    const result = await this.runOrToolLoop({
+    const { result } = await this.runOrToolLoop({
       envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
       conversationId: o.conversationId, windowId: o.window.id,
       turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
@@ -477,6 +502,16 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');
       return;
     }
+    // —— ESTOMAGO_OR_SELF_HOLD §2.2/§7：轨迹懒初始化（窗口创建/换窗后的首次 OR 回合）——
+    // 基底=system + 本输入之前的近期原话（首次规范化后固定，§7.1）；当前输入只作尾部追加一次。
+    if (isOr && d.trajectory) {
+      const trajExists = d.trajectory.forWindow(window.id) !== null;
+      if (!trajExists) {
+        const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
+        const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        d.trajectory.init(window.id, initEnv.messages.slice(0, -1));
+      }
+    }
     // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线/6h 静默）→ 一次提醒 → CAS 换窗；
     // 评审失败如实阻断本 attempt（不绕过、不伪造完成凭证）。
     if (isOr && inputMessage) {
@@ -492,6 +527,14 @@ export class TurnSupervisor {
       if (rotation.rotated) {
         const next = d.windows.activeWindow(turn.conversation_id);
         if (next) window = next; // 新窗已 ACTIVE：本轮输入只进新窗一次（§4.2）
+        if (d.trajectory) {
+          const nextTraj = d.trajectory.forWindow(window.id);
+          if (!nextTraj) {
+            const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
+            const initEnv = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            d.trajectory.init(window.id, initEnv.messages.slice(0, -1));
+          }
+        }
       }
     }
     // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
@@ -545,19 +588,34 @@ export class TurnSupervisor {
       .join('\n\n');
     const inputHash = effective.hash || sha256Hex(effective.content);
 
-    // OR 请求信封 v2（§5.5/§6.3）：system=身份+批准规则+固定运行片段+宿主边界（缓存点 A 候选）；
-    // 近期原话=预算内的整段真实对话（12k 初值）；尾部=本轮有效输入（时间上下文程序事实+用户正文，
-    // provenance 标注不冒充用户发言）。tools=开窗即固定的宿主 allowlist（§3.3/§8.2）。
+    // OR 请求信封 v3（§5.5/§6.3/§7）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
+    // 断点规划 A（system 末块）+ G（上次已发送边界，仍有效才标；B 待 bootstrap 接入）；
+    // previousPayload=轨迹正本构造的上一请求（跨轮 append-only 断言依据）。
     const dialogueForInput = isOr && inputMessage ? this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1) : [];
+    const orTraj = isOr ? d.trajectory?.forWindow(window.id) ?? null : null;
+    const orBaseMessages: OrMessage[] = orTraj
+      ? orTraj.messages
+      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null, dialogue: dialogueForInput, tailUserText: prompt }).messages;
+    const orMessages: OrMessage[] = orTraj
+      ? [...orTraj.messages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
+      : orBaseMessages;
     const orEnvelope: OrRequestEnvelope | null = isOr
-      ? this.buildOrEnvelope({
-          conversationId: turn.conversation_id,
-          materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText } : null,
-          dialogue: dialogueForInput,
-          tailUserText: prompt,
-        })
+      ? (() => {
+          const { boundaries } = planBoundaries({ messages: orMessages, systemMessageCount: 1, prevBoundary: orTraj?.lastBoundary ?? null });
+          return {
+            model: d.config.openrouter.model!,
+            sessionId: orSessionId(turn.conversation_id, d.config.openrouter.model!, null),
+            messages: orMessages,
+            tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+            boundaries,
+            maxTokens: d.config.openrouter.max_output_tokens,
+            reasoning: d.config.openrouter.reasoning,
+          };
+        })()
       : null;
-    const orSeenHighWater = dialogueForInput.length > 0 ? Math.max(...dialogueForInput.map((m) => m.sequence)) : 0;
+    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: orTraj.messages } : null;
+    // 书签视野高水位：轨迹含本输入之前的全部消息 → 序号=输入序号-1（§3.1 发起请求实际看见的位置）
+    const orSeenHighWater = inputMessage ? inputMessage.sequence - 1 : 0;
     // 记账模型：OR 用明确 OR 型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = isOr ? d.config.openrouter.model : d.config.runtime.model;
 
@@ -723,14 +781,18 @@ export class TurnSupervisor {
     };
     const runner = d.runnerSelection.runner;
     let result: import('./runner.ts').RunnerRunResult;
+    let orFinalMessages: OrMessage[] | null = null;
     if (orEnvelope !== null) {
-      // OR：工具循环（§8.2）——含 grace fence；错误已由循环收口为终态
-      result = await this.runOrToolLoop({
+      // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
+      const loop = await this.runOrToolLoop({
         envelope: orEnvelope, purpose: 'chat', activeReviewId: null,
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         onEvent: handleEvent, seenSequence: orSeenHighWater,
+        previousEnvelope: orPreviousPayloadEnvelope,
       });
+      result = loop.result;
+      orFinalMessages = loop.finalMessages;
     } else {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
@@ -809,6 +871,10 @@ export class TurnSupervisor {
       d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
     });
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
+    // §2.2/§7：成功回合才推进协议轨迹（append-only）；新已发送边界=本轮末 text 块（下轮 G 候选）
+    if (orFinalMessages !== null && d.trajectory) {
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orFinalMessages));
+    }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {
       d.logger.warn('archive_sync_after_turn_failed', { turn_id: turnId, code: stableCode(err) });

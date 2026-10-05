@@ -482,6 +482,20 @@ CREATE INDEX idx_tool_side_effects_review ON tool_side_effects(review_id);
 CREATE INDEX idx_provider_requests_window ON provider_requests(window_id, created_at);
 `,
   },
+  {
+    version: 9,
+    name: 'v0.4.2-window-trajectory',
+    // ESTOMAGO_OR_SELF_HOLD §2.2/§7：每窗口 append-only 协议轨迹（实际送出的有序输入投影）。
+    // 跨轮 previousPayload 断言与保护点 G 的定位依据；受不低于原文的访问保护（同库同权限）。
+    sql: `
+CREATE TABLE window_trajectories(
+  window_id TEXT PRIMARY KEY REFERENCES windows(id),
+  messages_json TEXT NOT NULL,
+  last_boundary_json TEXT,
+  updated_at TEXT NOT NULL
+);
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
