@@ -1,0 +1,84 @@
+{
+  "spec_id": "ESTOMAGO_OR_SELF_HOLD",
+  "status": "contract_target_not_claim_of_existing_endpoints",
+  "transport": "use_existing_authenticated_domain_HTTP_or_MCP",
+  "direct_database_access": false,
+  "source_append": {
+    "intent": "Idempotent append/revision of one authorized true chat message",
+    "request_fields": [
+      "operation_id",
+      "source_namespace",
+      "room_source_key",
+      "provider_message_id",
+      "revision",
+      "supersedes_revision",
+      "role",
+      "occurred_at",
+      "published_state",
+      "body",
+      "stable_assets",
+      "content_hash"
+    ],
+    "server_auth_fields_not_taken_from_model": [
+      "principal",
+      "authorized_source_scope",
+      "entry_source"
+    ],
+    "idempotency_key": [
+      "source_namespace",
+      "room_source_key",
+      "provider_message_id",
+      "revision"
+    ],
+    "receipt_fields": [
+      "operation_id",
+      "source_conversation_id",
+      "source_message_id",
+      "source_revision",
+      "content_hash",
+      "committed_at"
+    ],
+    "same_key_different_body": "reject conflict, never overwrite silently",
+    "same_text_different_message": "keep both",
+    "atomicity": "source commit and idempotency receipt share the domain transaction"
+  },
+  "hold_operation": {
+    "intent": "Wrap the existing formal hold without changing memory semantics",
+    "fields": [
+      "operation_id",
+      "request_fingerprint",
+      "existing_hold_payload"
+    ],
+    "same_operation_same_payload": "return stored committed result",
+    "same_operation_different_payload": "reject conflict",
+    "receipt": [
+      "operation_id",
+      "memory_id",
+      "memory_version",
+      "committed_at"
+    ],
+    "result_lookup": "authorized lookup of a known operation, not semantic search for a similar bucket",
+    "atomicity": "memory creation and completed operation result in same domain transaction",
+    "existing_source_binding": "memory.hold does not accept nonempty raw_refs; use source.bind",
+    "unknown_result": "never regenerate a random key and retry blindly"
+  },
+  "source_bind": {
+    "reuse": "current source.bind contract",
+    "scope": "exact existing memory and authorized source message range",
+    "revision_requirement": "stable immutable source version or explicit revision verification; unverified version cannot be called exact",
+    "multi_range": "one or more distinct verified bindings, track separately",
+    "creation_and_binding_status": "distinct receipts, no false all-success"
+  },
+  "bootstrap": {
+    "reuse": "current authorized profile/entry_source and legal returned projection",
+    "must_read_i_before_first_model_call": true,
+    "honor_paging_and_snapshot": true,
+    "open_side_effect": false,
+    "thin_unchanged_requires_local_content": true
+  },
+  "scope_guard": [
+    "First prove an existing capability is sufficient before implementing anything new.",
+    "Missing remote contracts need the corresponding repository authorization and a minimal patch; no direct DB writes.",
+    "These runtime receipt fields do not reintroduce the retired recall budget/operation state machinery."
+  ]
+}

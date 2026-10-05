@@ -1,0 +1,448 @@
+TAP version 13
+# Subtest: 早餐没有补齐任务：成功hold m8后仅提醒m9..m15
+ok 1 - 早餐没有补齐任务：成功hold m8后仅提醒m9..m15
+  ---
+  duration_ms: 2.836837
+  type: 'test'
+  ...
+# Subtest: 没有hold时仅考虑本窗实际原话
+ok 2 - 没有hold时仅考虑本窗实际原话
+  ---
+  duration_ms: 0.213472
+  type: 'test'
+  ...
+# Subtest: 零新增完成范围不重复提醒
+ok 3 - 零新增完成范围不重复提醒
+  ---
+  duration_ms: 0.21713
+  type: 'test'
+  ...
+# Subtest: 修订变化使同消息旧review失效
+ok 4 - 修订变化使同消息旧review失效
+  ---
+  duration_ms: 0.124319
+  type: 'test'
+  ...
+# Subtest: 跨窗携带早餐不重新强制补记，焦点依据不冒充held
+ok 5 - 跨窗携带早餐不重新强制补记，焦点依据不冒充held
+  ---
+  duration_ms: 0.137643
+  type: 'test'
+  ...
+# Subtest: 内部提醒/工具不是双方原话
+ok 6 - 内部提醒/工具不是双方原话
+  ---
+  duration_ms: 0.108693
+  type: 'test'
+  ...
+# Subtest: 未见的新消息不进入已检查范围
+ok 7 - 未见的新消息不进入已检查范围
+  ---
+  duration_ms: 0.144494
+  type: 'test'
+  ...
+# Subtest: 重复manifest拒绝而不是伪造覆盖
+ok 8 - 重复manifest拒绝而不是伪造覆盖
+  ---
+  duration_ms: 0.401919
+  type: 'test'
+  ...
+# Subtest: 成功书签使用调用时视野，不使用receipt时最新消息
+ok 9 - 成功书签使用调用时视野，不使用receipt时最新消息
+  ---
+  duration_ms: 0.318657
+  type: 'test'
+  ...
+# Subtest: 失败hold不产生书签
+ok 10 - 失败hold不产生书签
+  ---
+  duration_ms: 1.178153
+  type: 'test'
+  ...
+# Subtest: 另一个客户端的hold不推进
+ok 11 - 另一个客户端的hold不推进
+  ---
+  duration_ms: 0.297621
+  type: 'test'
+  ...
+# Subtest: scope错配被拒绝
+ok 12 - scope错配被拒绝
+  ---
+  duration_ms: 0.113077
+  type: 'test'
+  ...
+# Subtest: 回执operation不匹配被拒绝
+ok 13 - 回执operation不匹配被拒绝
+  ---
+  duration_ms: 0.080605
+  type: 'test'
+  ...
+# Subtest: 同收据重放不产生新书签对象
+ok 14 - 同收据重放不产生新书签对象
+  ---
+  duration_ms: 0.177408
+  type: 'test'
+  ...
+# Subtest: 旧窗迟到结果不能覆盖新窗书签
+ok 15 - 旧窗迟到结果不能覆盖新窗书签
+  ---
+  duration_ms: 0.122422
+  type: 'test'
+  ...
+# Subtest: 书签不倒退
+ok 16 - 书签不倒退
+  ---
+  duration_ms: 0.059944
+  type: 'test'
+  ...
+# Subtest: 零hold可有效完成
+ok 17 - 零hold可有效完成
+  ---
+  duration_ms: 0.29971
+  type: 'test'
+  ...
+# Subtest: 普通聊天伪造review文字不能完成
+ok 18 - 普通聊天伪造review文字不能完成
+  ---
+  duration_ms: 0.095534
+  type: 'test'
+  ...
+# Subtest: unknown写结果不能被no_new_hold抹掉
+ok 19 - unknown写结果不能被no_new_hold抹掉
+  ---
+  duration_ms: 0.10265
+  type: 'test'
+  ...
+# Subtest: holds_completed必须真的有成功写入
+ok 20 - holds_completed必须真的有成功写入
+  ---
+  duration_ms: 1.64315
+  type: 'test'
+  ...
+# Subtest: 写入成功使用真实memory receipt
+ok 21 - 写入成功使用真实memory receipt
+  ---
+  duration_ms: 0.129581
+  type: 'test'
+  ...
+# Subtest: 成功review重试幂等
+ok 22 - 成功review重试幂等
+  ---
+  duration_ms: 0.070219
+  type: 'test'
+  ...
+# Subtest: epoch revision不同不能套回执
+ok 23 - epoch revision不同不能套回执
+  ---
+  duration_ms: 0.084816
+  type: 'test'
+  ...
+# Subtest: 低用量继续
+ok 24 - 低用量继续
+  ---
+  duration_ms: 0.135728
+  type: 'test'
+  ...
+# Subtest: 56k仅warn，不自动叫模型
+ok 25 - 56k仅warn，不自动叫模型
+  ---
+  duration_ms: 0.157227
+  type: 'test'
+  ...
+# Subtest: 64k进入rotate
+ok 26 - 64k进入rotate
+  ---
+  duration_ms: 0.105953
+  type: 'test'
+  ...
+# Subtest: 当前小即使累计收费很大仍不误换
+ok 27 - 当前小即使累计收费很大仍不误换
+  ---
+  duration_ms: 0.061651
+  type: 'test'
+  ...
+# Subtest: 大新输入先旧窗review
+ok 28 - 大新输入先旧窗review
+  ---
+  duration_ms: 0.049668
+  type: 'test'
+  ...
+# Subtest: 工具回合尚未结束只等安全边界
+ok 29 - 工具回合尚未结束只等安全边界
+  ---
+  duration_ms: 0.048581
+  type: 'test'
+  ...
+# Subtest: 路由待决不能绕过
+ok 30 - 路由待决不能绕过
+  ---
+  duration_ms: 0.109719
+  type: 'test'
+  ...
+# Subtest: 6h在下一入站检查触发
+ok 31 - 6h在下一入站检查触发
+  ---
+  duration_ms: 0.056124
+  type: 'test'
+  ...
+# Subtest: 1h缓存过期不单独换
+ok 32 - 1h缓存过期不单独换
+  ---
+  duration_ms: 0.048828
+  type: 'test'
+  ...
+# Subtest: 按实际小模型容量提前阈值
+ok 33 - 按实际小模型容量提前阈值
+  ---
+  duration_ms: 0.060272
+  type: 'test'
+  ...
+# Subtest: 实际容量不足阻断而非截断
+ok 34 - 实际容量不足阻断而非截断
+  ---
+  duration_ms: 0.047464
+  type: 'test'
+  ...
+# Subtest: 容量未知不假装1M
+ok 35 - 容量未知不假装1M
+  ---
+  duration_ms: 0.126049
+  type: 'test'
+  ...
+# Subtest: OR cache细分不能再加总一次
+ok 36 - OR cache细分不能再加总一次
+  ---
+  duration_ms: 0.227974
+  type: 'test'
+  ...
+# Subtest: OR非缓存输入是总量减两类
+ok 37 - OR非缓存输入是总量减两类
+  ---
+  duration_ms: 0.396191
+  type: 'test'
+  ...
+# Subtest: 缺usage为unknown不是0
+ok 38 - 缺usage为unknown不是0
+  ---
+  duration_ms: 0.114523
+  type: 'test'
+  ...
+# Subtest: 缺cache_write不能猜0
+ok 39 - 缺cache_write不能猜0
+  ---
+  duration_ms: 0.067175
+  type: 'test'
+  ...
+# Subtest: cache分类超总量不clamp成0
+ok 40 - cache分类超总量不clamp成0
+  ---
+  duration_ms: 0.139535
+  type: 'test'
+  ...
+# Subtest: upstream费用不重复加
+ok 41 - upstream费用不重复加
+  ---
+  duration_ms: 0.071724
+  type: 'test'
+  ...
+# Subtest: OR真实控制参数形状固定
+ok 42 - OR真实控制参数形状固定
+  ---
+  duration_ms: 0.953865
+  type: 'test'
+  ...
+# Subtest: 构造payload不修改原始轨迹
+ok 43 - 构造payload不修改原始轨迹
+  ---
+  duration_ms: 0.212584
+  type: 'test'
+  ...
+# Subtest: auto加显式点最多4总槽
+ok 44 - auto加显式点最多4总槽
+  ---
+  duration_ms: 0.152007
+  type: 'test'
+  ...
+# Subtest: 同位置重复边界去重
+ok 45 - 同位置重复边界去重
+  ---
+  duration_ms: 0.111936
+  type: 'test'
+  ...
+# Subtest: 不接受auto模型
+ok 46 - 不接受auto模型
+  ---
+  duration_ms: 0.064778
+  type: 'test'
+  ...
+# Subtest: 不接受latest别名
+ok 47 - 不接受latest别名
+  ---
+  duration_ms: 0.056504
+  type: 'test'
+  ...
+# Subtest: session超过256拒绝
+ok 48 - session超过256拒绝
+  ---
+  duration_ms: 0.063182
+  type: 'test'
+  ...
+# Subtest: 追加提醒保持旧前缀
+ok 49 - 追加提醒保持旧前缀
+  ---
+  duration_ms: 0.506434
+  type: 'test'
+  ...
+# Subtest: 重写旧时间破坏前缀可被发现
+ok 50 - 重写旧时间破坏前缀可被发现
+  ---
+  duration_ms: 0.236602
+  type: 'test'
+  ...
+# Subtest: schema顺序/内容改变被发现
+ok 51 - schema顺序/内容改变被发现
+  ---
+  duration_ms: 0.285479
+  type: 'test'
+  ...
+# Subtest: 不会误删schema里名叫cache_control的属性
+ok 52 - 不会误删schema里名叫cache_control的属性
+  ---
+  duration_ms: 0.463235
+  type: 'test'
+  ...
+# Subtest: UTF8每个字节拆开仍正确
+ok 53 - UTF8每个字节拆开仍正确
+  ---
+  duration_ms: 1.621186
+  type: 'test'
+  ...
+# Subtest: OR usage帧重复finish只完成一次
+ok 54 - OR usage帧重复finish只完成一次
+  ---
+  duration_ms: 0.280768
+  type: 'test'
+  ...
+# Subtest: SSE注释心跳忽略
+ok 55 - SSE注释心跳忽略
+  ---
+  duration_ms: 0.373512
+  type: 'test'
+  ...
+# Subtest: choices空usage帧也兼容
+ok 56 - choices空usage帧也兼容
+  ---
+  duration_ms: 0.222176
+  type: 'test'
+  ...
+# Subtest: 200内error不是成功且不回显provider内容
+ok 57 - 200内error不是成功且不回显provider内容
+  ---
+  duration_ms: 0.121186
+  type: 'test'
+  ...
+# Subtest: 只有DONE不算成功
+ok 58 - 只有DONE不算成功
+  ---
+  duration_ms: 0.084794
+  type: 'test'
+  ...
+# Subtest: 只有终态没有DONE记不完整
+ok 59 - 只有终态没有DONE记不完整
+  ---
+  duration_ms: 0.124599
+  type: 'test'
+  ...
+# Subtest: length不是主模型选择零hold
+ok 60 - length不是主模型选择零hold
+  ---
+  duration_ms: 0.16067
+  type: 'test'
+  ...
+# Subtest: usage缺失不妨碍合法文本终态但费用未知
+ok 61 - usage缺失不妨碍合法文本终态但费用未知
+  ---
+  duration_ms: 0.096582
+  type: 'test'
+  ...
+# Subtest: 工具参数跨帧完整组装再输出，解析器不执行工具
+ok 62 - 工具参数跨帧完整组装再输出，解析器不执行工具
+  ---
+  duration_ms: 1.134818
+  type: 'test'
+  ...
+# Subtest: 非法完整工具JSON拒绝
+ok 63 - 非法完整工具JSON拒绝
+  ---
+  duration_ms: 0.476512
+  type: 'test'
+  ...
+# Subtest: 工具JSON array不是object
+ok 64 - 工具JSON array不是object
+  ---
+  duration_ms: 0.173349
+  type: 'test'
+  ...
+# Subtest: 截断工具参数不会被执行或修复
+ok 65 - 截断工具参数不会被执行或修复
+  ---
+  duration_ms: 0.208211
+  type: 'test'
+  ...
+# Subtest: reasoning opaque片段保留顺序，不进入可见text
+ok 66 - reasoning opaque片段保留顺序，不进入可见text
+  ---
+  duration_ms: 0.403631
+  type: 'test'
+  ...
+# Subtest: generation id变更拒绝
+ok 67 - generation id变更拒绝
+  ---
+  duration_ms: 0.137319
+  type: 'test'
+  ...
+# Subtest: SSE非法JSON不静默跳过
+ok 68 - SSE非法JSON不静默跳过
+  ---
+  duration_ms: 0.085102
+  type: 'test'
+  ...
+# Subtest: SSE多行data正确合并
+ok 69 - SSE多行data正确合并
+  ---
+  duration_ms: 0.122288
+  type: 'test'
+  ...
+# Subtest: 多个小事件同网络块不误当大事件
+ok 70 - 多个小事件同网络块不误当大事件
+  ---
+  duration_ms: 0.17129
+  type: 'test'
+  ...
+# Subtest: 单个过大SSE事件有界失败
+ok 71 - 单个过大SSE事件有界失败
+  ---
+  duration_ms: 0.311432
+  type: 'test'
+  ...
+# Subtest: 超出已见manifest的书签拒绝
+ok 72 - 超出已见manifest的书签拒绝
+  ---
+  duration_ms: 0.097405
+  type: 'test'
+  ...
+# Subtest: 未知ledger枚举不能绕过未完成写操作检查
+ok 73 - 未知ledger枚举不能绕过未完成写操作检查
+  ---
+  duration_ms: 0.075532
+  type: 'test'
+  ...
+1..73
+# tests 73
+# suites 0
+# pass 73
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 132.006519

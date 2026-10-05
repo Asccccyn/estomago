@@ -1,30 +1,37 @@
 # estómago
 
-> **v0.2.2 · Core Correctness Remediation**（2026-09-27）：EST-AUD-01~32 复审缺陷 + AUD-33/34 已按机制修复；22 测试文件 / 100 用例全绿（mock 层 + 真实浏览器 E2E 五场景）。真实 Claude Agent SDK acceptance 保持 **BLOCKED**（待用户批准身份材料与认证，且涉及 Claude 的操作须二次确认）。修复明细见 `docs/v0.2.2-remediation-selftest.md`。
+> 自建聊天宿主：统一聊天入口 + 模型驱动宿主（OpenRouter 主用 / Claude Agent SDK 保留）+ Mariposa 唯一正式记忆。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
 
-自建聊天宿主：统一聊天入口 + Claude Agent SDK 运行宿主。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
+## 当前基线（唯一现行规范，2026-10-05 冻结）
 
-- 架构规格：`docs/architecture/v0.2.1/`（v0.2.1 设计包原件，含 166 项验收矩阵 `03_*.json`）
-- 目标机器：江乔生的 Mac mini。源码 `~/Projects/estomago/`；运行区 `~/Library/Application Support/estomago/`；日志 `~/Library/Logs/estomago/`
+**现行规范正文：`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md`**（规范标识 `ESTOMAGO_OR_SELF_HOLD`：OpenRouter 主接入、原文全存+主模型自主 hold、换窗前一次提醒、一小时 Prompt Cache、前台"记录"面板）。实施状态与逐模块"复用/接线/新增/退役"判定见 `docs/specs/IMPLEMENTATION_MAP.md`；应用验收以 `docs/specs/ESTOMAGO_OR_SELF_HOLD/ACCEPTANCE.json` 逐项为准（未执行=`NOT_EXECUTED`，不拿测试总数冒充）。
 
-## 当前状态（如实声明，2026-09-26）
+版本口径（审计从这里进，不要并行引用多代文档）：
 
-**这是按 v0.2.1 架构实现的可运行骨架（Phase B 底座），不是已验收产品。**
-
-| 范围 | 状态 |
+| 文档 | 地位 |
 |---|---|
-| 仓库结构 / 配置层 / DB schema / 消息幂等修订 / SSE / 时间感知 / 身份 gate / 思考流核对 / 路由票据 / 窗口状态机 / 用量口径 / 输入硬规则 | **代码已实现**，本项目 11 个测试文件 54 个用例全绿（`npm test`，合成夹具，mock runner） |
-| 真实 Claude Agent SDK 调用 | **包已锁定安装（0.3.283 + lockfile）；装配/会话/终止契约按实装类型重写并有契约回归**。真实调用未执行（无授权凭据）→ acceptance **BLOCKED**；能力矩阵默认 unknown，待授权后由 `scripts/probe-capabilities.mjs` 实测写证 |
-| 身份正本 / I | **未加载**（无批准材料 → `IDENTITY_BLOCKED`；Evidence Gate 要求 manifest+实装版本+cwd+探针证据全匹配才 READY） |
-| 166 项产品验收（03 矩阵） | **全部 NOT_EXECUTED**（mock 全绿 ≠ 实机通过；doctor 报告只是环境证据） |
-| Mariposa / Siren / 许愿星 / 扎西德勒 接入 | 未接（配置项全 null，如实 blocked/disabled） |
-| 公网 / 推送 / Telegram | 不在本版范围（disabled） |
+| `docs/specs/ESTOMAGO_OR_SELF_HOLD/` | **现行**：唯一规范正文 + 验收 + WP0 映射 |
+| `docs/architecture/v0.2.1/` | **历史存档**（v0.2.1 设计包，只读；其安全/隐私/测试硬约束经 AGENTS.md 继续有效） |
+| `reports/` | 运行证据区（gitignore；测试日志、doctor、截图、备份清单） |
+| `docs/v0.2.2-remediation-selftest.md` | 历史自检报告（已并入基线状态，不再单独维护） |
+
+## 实施进度（对照 03_施工与交付 的工作包）
+
+| 工作包 | 状态 |
+|---|---|
+| WP0 现场映射与冻结副作用 | **完成**（`docs/specs/IMPLEMENTATION_MAP.md`） |
+| WP1 OR 专用驱动与配置 | 进行中（离线 fake transport；不联网） |
+| WP2 原文同步 / MCP / 正式收据 | 未开始（依赖 Mariposa 接口核对，跨仓库补丁须授权） |
+| WP3 启动装配 / 轨迹 / 书签 / 一次提醒 / 自动换窗 | 未开始 |
+| WP4 缓存与工具续请求集成 | 未开始 |
+| WP5 前台"记录"与设置接线 | 未开始 |
+| WP6 真实验收 / 发布候选 | 未开始（真实 OR 调用须她明确预算授权；SDK 实测单列） |
 
 ## 快速开始
 
 ```bash
 npm run doctor      # 只读环境检查 → reports/mac-doctor-*.json
-npm test            # 54 用例（前台、串行、独立临时 ESTOMAGO_HOME）
+npm test            # 前台、串行、独立临时 ESTOMAGO_HOME（AGENTS.md 测试纪律）
 npm start           # 前台启动（127.0.0.1:18787；首次自动复制 example 配置）
 # 打开 http://127.0.0.1:18787 ；首次登录粘贴 $STATE_ROOT/config/auth.token 内容
 npm stop / npm run status
@@ -32,34 +39,23 @@ npm run backup      # SQLite VACUUM INTO 一致性快照 → $STATE/backups/
 npm run install-launchagent   # 渲染 LaunchAgent（默认 dry-run，--apply 才写盘）
 ```
 
-零 npm 依赖：Node ≥ 22.18（原生跑 `.ts` type-stripping + `node:sqlite`，实验性告警如实保留）。不装 SDK 也能启动：身份/运行时会如实 `IDENTITY_BLOCKED`，消息保存、时间线、SSE、思考通道结构照常工作——这是规格要求的降级形态，不是故障。
+零 npm 运行依赖（Node ≥ 22.18，原生 `.ts` type-stripping + `node:sqlite`）；开发依赖仅 `@anthropic-ai/claude-agent-sdk@0.3.283`（锁定安装，OR 模式不加载）。无凭据/无身份材料时按规格如实 `IDENTITY_BLOCKED`/blocked 降级，消息保存、时间线、SSE、思考通道照常——这是规格要求的形态，不是故障。
 
-## 与规格的对应（v0.2.1 关键硬规则的落点）
+## 关键硬规则的代码落点（现行规范 → 现场）
 
-| 规格条款 | 代码落点 |
+| 规范条款 | 代码落点 |
 |---|---|
-| 输入框：Enter 只换行、独立发送键、IME guard、多行=一条消息、无组合键捷径（01 §11.1 / 02 §6.2） | `apps/web/src/composer-logic.js`（规则单一事实源）+ `tests/unit/composer-logic.test.ts` + 服务端 `messages/service.ts` 只做 `\n` 规范化、绝不 trim/拆分 |
-| 幂等提交 / 修订链 / 发布边界 / outbox（01 §4） | `messages/service.ts`、`server/http.ts`（`Idempotency-Key`/`client_message_id`） |
-| 每轮刷新 Time Context、两个"多久"不混用（01 §8） | `time/context.ts` + `runtime/supervisor.ts`（处理前构建、注入 prompt 且标明非用户发言） |
-| 身份 Manifest / Bootstrap Receipt 四层证据 / gate（01 §6、05 §3） | `identity/service.ts`；unknown 不填 false；无批准材料即 `IDENTITY_BLOCKED` |
-| SDK 装配：`settingSources:[]`、`tools:[]`、strictMcp、关自动记忆/连接器、adaptive+summarized、`switchModelsOnFlag:false`（01 §6.2、05 §2） | `runtime/build-options.ts`（配置→options/settings/env 三层，缺前提即 blocked） |
-| 思考摘要：增量接收矩阵、signature 吞掉、完整块核对不重复追加、冲突 snapshot、redacted/no_block 如实、不入原文/TTS/交接（05 §4-§9） | `runtime/sdk-event-normalizer.ts`、`reasoning/*`、表 `reasoning_blocks`/`runtime_stream_events` |
-| 路由：票据原子一次消费、重启仍 pending、待决冻结生成（01 §10） | `routing/service.ts`、`route_decisions` 表、supervisor gate |
-| 换窗状态机 + 原子指针 + 降级保旧窗（01 §7） | `windows/manager.ts` |
-| 停止：先 fence 再 abort、迟到 chunk 丢弃、已发布保留（01 §5.3） | `runtime/supervisor.ts` |
-| 用量三口径分开、未知不填零（01 §9） | `usage/collector.ts` |
-| 能力矩阵 unknown/supported/unsupported + evidence_ref（02 §5） | `runtime/capabilities.ts` |
-| SSE 持久 sequence 回放、慢客户端有界队列（05 §5.3、01 §17） | `events/service.ts`、`server/http.ts` |
-| 测试隔离 / 只停本项目 / 一致性备份（02 §7、18） | `scripts/run-tests.mjs`、`scripts/stop.mjs`、`scripts/backup.mjs` |
+| 原文全存/幂等提交/修订链/outbox（01 §1.2、§2.2） | `messages/service.ts`（生产者）、`db/migrations.ts`（outbox 表；消费者 WP2） |
+| OR 驱动 / 请求控制 / SSE / 重试 / 费用（01 §6、§9） | `runtime/runner-openrouter.ts` + `runtime/or-*.ts`（WP1） |
+| 三探针 P1/P2/P3（01 §11.1） | `runtime/supervisor.ts`（P1）、OR 驱动序列化后 fetch 前（P2）、usage/终态帧回填（P3） |
+| 换窗状态机 + 原子指针 + 降级保旧窗（01 §4.3） | `windows/manager.ts`（review 接线于 WP3） |
+| 一小时缓存布局 A/B/auto/G（01 §7） | `runtime/or-payload.ts`（边界构造；规划接线 WP4） |
+| 思考隔离：ReasoningProjection 不可进上下文（01 §10） | `context/assembler.ts`（allowlist builder）、`reasoning/*` |
+| 用量口径分列、未知不填零（01 §9.3） | `usage/collector.ts` |
+| 停止：先 fence 再 abort、迟到 chunk 丢弃（01 §9.2） | `runtime/supervisor.ts` |
+| 输入框：Enter 只换行、独立发送键、IME guard（AGENTS.md 硬规则） | `apps/web/src/composer-logic.js` + 服务端只做 `\n` 规范化 |
+| SSE 持久 sequence 回放、慢客户端有界队列 | `events/service.ts`、`server/http.ts` |
 
-## 已知偏差 / 待办（不掩饰）
+## 硬边界（AGENTS.md 摘要）
 
-- **SDK Runner 未实机验证**：`runtime/runner-claude-sdk.ts` 按公开文档形状编写，装包锁版本后须先过能力矩阵取证（05 §10 顺序）。
-- **Runner 未做成子进程**（01 §2.1 建议）：v0 同进程内运行，重启边界暂与 HTTP 服务一体；后续按规格拆 Supervisor/Runner。
-- **分句器 v0 为段落模式**（空行分界 + 上限强切）；表情/语音/贴纸、唤醒调度、日历、MCP server、signals、jobs、模块注册表为骨架占位（表已建、逻辑未写）。
-- **Mariposa 交接包**：`windows/manager.ts` 只写元信息交接文件，正式开窗包待契约接入。
-- 归档 outbox 产生 pending 记录后无分发循环（archive.enabled=false 时标 disabled 的逻辑在路由层未接线）。
-
-## 硬边界（继承 02 执行规章）
-
-不碰兄弟项目（mariposa/siren/superposition/Zashidele）；不编造验收；秘密不进日志/Git；网络/凭据变更需用户逐项批准。详见 `AGENTS.md`。
+不碰兄弟项目（mariposa/siren/superposition/Zashidele）；不编造验收；秘密不进日志/Git；测试用隔离临时根、前台分批串行；网络/凭据/跨仓库变更需她逐项批准。完整规章见 `AGENTS.md` 与现行规范正文。
