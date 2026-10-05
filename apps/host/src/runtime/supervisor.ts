@@ -45,6 +45,7 @@ export type SupervisorDeps = {
   routing: RoutingService;
   windows: WindowManager;
   logger: Logger;
+  archiveSync?: { drainOnce(): Promise<unknown> }; // 助手消息正式发布后触发原文同步（未启用时不注入）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -527,9 +528,13 @@ export class TurnSupervisor {
     if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
     tx(d.db, () => {
       d.db.prepare("UPDATE attempts SET state = 'completed', completed_at = ? WHERE id = ?").run(now, attempt.id);
-      d.db.prepare("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ?").run(now, turnId);
+      d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
     });
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
+    // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
+    void d.archiveSync?.drainOnce().catch((err) => {
+      d.logger.warn('archive_sync_after_turn_failed', { turn_id: turnId, code: stableCode(err) });
+    });
   }
 
   // 决议后重新驱动房间（AUD-05/36/37）：waiting 已被决议事务释放为 pending；此处入队全部可跑 turn

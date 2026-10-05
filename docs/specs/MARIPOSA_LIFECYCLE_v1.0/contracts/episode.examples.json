@@ -1,0 +1,77 @@
+{
+  "status": "DESIGN_ONLY_SYNTHETIC",
+  "examples": [
+    {
+      "case": "start_optional_tracking",
+      "request": {
+        "operation_id": "op-demo-start-1",
+        "scope_id": "private-demo",
+        "action": "start",
+        "reason_code": "tracking_requested",
+        "label": "决定本次舞台剧场次",
+        "source_selections": [
+          {
+            "conversation_id": "sc_demo",
+            "members": [
+              {
+                "source_message_id": "sm_demo_1r1",
+                "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "case": "pause_not_close",
+      "request": {
+        "operation_id": "op-demo-pause-1",
+        "scope_id": "private-demo",
+        "episode_id": "ep_demo",
+        "expected_revision": 1,
+        "action": "pause",
+        "reason_code": "waiting"
+      }
+    },
+    {
+      "case": "close_after_later_evidence",
+      "request": {
+        "operation_id": "op-demo-close-1",
+        "scope_id": "private-demo",
+        "episode_id": "ep_demo",
+        "expected_revision": 2,
+        "action": "close",
+        "reason_code": "goal_resolved",
+        "terminal_source_ref": {
+          "source_message_id": "sm_demo_3r1",
+          "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "decision_source_refs": [
+          {
+            "source_message_id": "sm_demo_5r1",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    },
+    {
+      "case": "correct_wrong_closure",
+      "request": {
+        "operation_id": "op-demo-correct-1",
+        "scope_id": "private-demo",
+        "episode_id": "ep_demo",
+        "expected_revision": 3,
+        "action": "correct",
+        "reason_code": "boundary_error",
+        "corrected_state": "QUIESCENT",
+        "note": "原话只是暂时离开；此前关闭判定错误。",
+        "decision_source_refs": [
+          {
+            "source_message_id": "sm_demo_5r1",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -77,6 +77,7 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 ### 进度记录
 
 - **2026-10-05 WP1 完成**（离线部分）：`openrouter` 配置段+硬规则、换窗预算初值（56k/64k/6h/12k/32k/T8k/R8k/S4k）、退役旧预算字段（output/handoff_reserve、max_tool_result）与零点换窗默认值（true→false 硬规则）、`runtime/runner-openrouter.ts`（SSE 解析/payload 构造/用量归一移植自参考实现；429/流前网络故障有界重试、401/402/400 不重试、P2 append-only 断言收口为 error）、supervisor 驱动判别分支（OR 信封：system=身份+批准规则+固定运行片段，user=时间上下文程序事实+正文）、指纹纳入 provider/OR 型号（变更→CONTEXT_STALE）、usage `or_stream` 口径、http runtime 状态（只报布尔）。新增 5 个测试文件 31 用例；全量 36 文件 0 失败。**未做**：真实 OR 外网（A1/A2 门）、MCP 工具执行、跨轮轨迹/缓存断点（WP2-4）。
+- **2026-10-05 WP2 完成**（estómago 侧，离线）：A3 缺口经她裁定**由林石见在 mariposa 仓库实施对应接口**（联合契约装订 `docs/specs/MARIPOSA_LIFECYCLE_v1.0/`，SHA256 验签全过）；estómago 侧落地 `integrations/mariposa/client.ts`（source.ingest/ingest.status/memory.hold+op/hold.status，transport 注入、错误码沿用契约类别）+ `integrations/mariposa/archive-sync.ts`（outbox→批量 ingest：稳定 operation_id 派生、崩溃 unknown_outcome 同 op 重放、遗留 sent 恢复、SOURCE_NOT_READY 停流不跳过、IDEMPOTENCY_CONFLICT dead+事件披露、50 条/1MiB(UTF-8 字节) 切批、编辑修订链 previous_revision、收据落 `source_sync_receipts`（迁移 v7）、rawSyncState 只读快照）；host 接线（启动/提交后/turn 完成后 drain，未启用 no-op）。restore.mjs schema 门同步 v7。9 新用例；全量 37 文件 0 失败。**端到端 BLOCKED**：真实 Mariposa 接口未上线（mock transport 测试 ≠ 联调通过）；`archive.enabled` 生产开启=她另行决定。
 
 ## 6. 本次 WP0 已做/未做
 
