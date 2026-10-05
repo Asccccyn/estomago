@@ -1,0 +1,35 @@
+{
+  "artifact_version": "1.0",
+  "date": "2026-10-05",
+  "status": "DOCUMENT_VALIDATION_PASSED_ONLY",
+  "mariposa_head": "90d730ec2ba1fdaba1f73daa471630afd7c3b33c",
+  "product_tests_executed": false,
+  "production_modified": false,
+  "actual_model_calls": 0,
+  "json_parse": "PASS",
+  "episode_schema_syntax": "PASS",
+  "valid_synthetic_examples": 4,
+  "rejected_invalid_synthetic_examples": 5,
+  "acceptance_case_count": 58,
+  "acceptance_status": "ALL_NOT_EXECUTED",
+  "source_hash_record_count": 15,
+  "reference_copies": [
+    {
+      "file": "references/01_estomago_架构与接口_v0.2.1.md",
+      "sha256": "d3541ee8a660590ed201e43390924f19110cd52c3cb625235b315c2add75f676"
+    },
+    {
+      "file": "references/estomago_OR1h_self_hold_checkpoint_GLM_v0.3_2026-10-05.md",
+      "sha256": "3f3f713dbf563c5dd60cd4201b9f89f1f2e55c526e52bdafaaffd9c4d2fe6776"
+    },
+    {
+      "file": "references/02_estomago_实现路径与执行规章_v0.2.1.md",
+      "sha256": "211d7463ddee9802ca7498f51f6c70b43d0ba888ad4a68a0ec4f4f4b40bce0fa"
+    },
+    {
+      "file": "references/06_estomago_v0.2.1修订与来源核对.md",
+      "sha256": "4e2a31a42d7ea8a04ed0e2854f37fc00d8766afb9666ce50eaad6ac5573242c9"
+    }
+  ],
+  "note": "仅包内文档与JSON契约形状校验；未执行任何Mariposa/estomago测试、迁移或线上联调。"
+}

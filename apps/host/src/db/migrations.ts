@@ -401,6 +401,28 @@ ALTER TABLE message_revisions ADD COLUMN occurred_at_repair TEXT;
       return fixed;
     },
   },
+  {
+    version: 7,
+    name: 'v0.4.0-source-sync-receipts',
+    // ESTOMAGO_OR_SELF_HOLD §1.2 + 生命周期包 §4.1：远端原文同步 ACK 落库——
+    // origin(消息,修订) → Mariposa source 身份映射，后续 hold/source_selections 用正主 ID。
+    // outbox 状态机（pending/sent/acked/failed/disabled/unknown_outcome）自 v0.2.1 已存在，本迁移只加收据表。
+    sql: `
+CREATE TABLE source_sync_receipts(
+  id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
+  origin_message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  source_conversation_id TEXT,
+  source_message_id TEXT,
+  content_hash TEXT,
+  committed_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (origin_message_id, revision)
+);
+CREATE INDEX idx_source_sync_receipts_op ON source_sync_receipts(operation_id);
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

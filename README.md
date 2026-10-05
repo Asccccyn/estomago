@@ -11,6 +11,7 @@
 | 文档 | 地位 |
 |---|---|
 | `docs/specs/ESTOMAGO_OR_SELF_HOLD/` | **现行**：唯一规范正文 + 验收 + WP0 映射 |
+| `docs/specs/MARIPOSA_LIFECYCLE_v1.0/` | **现行联合契约**：estómago×Mariposa 生命周期（source.ingest/memory.hold op/episode）；estómago 侧按 §4.1/§7 执行，Mariposa 侧由林石见在 mariposa 仓库实施 |
 | `docs/architecture/v0.2.1/` | **历史存档**（v0.2.1 设计包，只读；其安全/隐私/测试硬约束经 AGENTS.md 继续有效） |
 | `reports/` | 运行证据区（gitignore；测试日志、doctor、截图、备份清单） |
 | `docs/v0.2.2-remediation-selftest.md` | 历史自检报告（已并入基线状态，不再单独维护） |
@@ -21,7 +22,7 @@
 |---|---|
 | WP0 现场映射与冻结副作用 | **完成**（`docs/specs/IMPLEMENTATION_MAP.md`） |
 | WP1 OR 专用驱动与配置 | **完成（离线）**：OR 配置段+硬规则、换窗预算初值、SSE/payload/用量驱动（fake transport 31 用例；全量 36 文件全绿）。真实外网仅 WP6 |
-| WP2 原文同步 / MCP / 正式收据 | 未开始（依赖 Mariposa 接口核对，跨仓库补丁须授权） |
+| WP2 原文同步 / MCP / 正式收据 | **estómago 侧完成（离线）**：outbox 消费者→`source.ingest` 幂等批量同步（崩溃同 op 重放/依赖缺失停流不跳过/冲突 dead/50 条与 1MiB 切批/编辑修订链）+ `memory.hold(operation_id)` 客户端与回执查询 + 迁移 v7。**端到端 BLOCKED**：等 Mariposa 侧接口落地（林石见做）；MCP 工具执行随 WP3 |
 | WP3 启动装配 / 轨迹 / 书签 / 一次提醒 / 自动换窗 | 未开始 |
 | WP4 缓存与工具续请求集成 | 未开始 |
 | WP5 前台"记录"与设置接线 | 未开始 |

@@ -45,6 +45,7 @@ export type RequestDeps = {
   windows: WindowManager;
   supervisor: TurnSupervisor;
   auth: AuthService;
+  archiveSync?: { drainOnce(): Promise<unknown> }; // 原文归档同步（未启用时不注入）
 };
 
 const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
@@ -129,6 +130,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!submitted.duplicate || submitted.repaired || eventExists.n === 0 || startedExists.n === 0) {
         d.supervisor.enqueue(submitted.turnId);
       }
+      // 原文线独立于模型线：提交即触发同步 drain（未启用时 no-op；失败不阻塞提交）
+      void d.archiveSync?.drainOnce().catch(() => {});
       return json(res, submitted.duplicate ? 200 : 201, { message: submitted.message, duplicate: submitted.duplicate, turn_id: submitted.turnId, repaired: submitted.repaired });
     }
 

@@ -1,0 +1,470 @@
+{
+  "version": "1.0",
+  "product_tests_executed": false,
+  "cases": [
+    {
+      "id": "LC-001",
+      "group": "语义",
+      "stimulus": "纯闲聊连续十轮，主模型不调用事件或hold",
+      "expected": "原文照常保存；episode/新桶为零；没有每轮记忆决定或漏记任务",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-002",
+      "group": "语义",
+      "stimulus": "用户说去洗澡等我，之后回来继续同一问题",
+      "expected": "可QUIESCENT→OPEN；不因离线创建新事件或CLOSED",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-003",
+      "group": "语义",
+      "stimulus": "A讨论未完，切B，再明确回到A",
+      "expected": "A可暂停后继续；B不被并入A；无需唯一active约束",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-004",
+      "group": "语义",
+      "stimulus": "明确表示场次定下并结束本次讨论",
+      "expected": "主模型可显式close；服务端校验来源和revision，记录关闭",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-005",
+      "group": "语义",
+      "stimulus": "用相同关键词回忆一个已结束事件",
+      "expected": "普通引用或新episode；原CLOSED不被普通continue重开",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-006",
+      "group": "语义",
+      "stimulus": "明确发现上一轮错误关闭，correct恢复",
+      "expected": "保留原close审计；CAS新revision；不修改原文/桶",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-007",
+      "group": "语义",
+      "stimulus": "一次SDK Stop、API finish、用户stop分别发生",
+      "expected": "只结束/中断技术回合；不自动pause/close语义事件",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-008",
+      "group": "语义",
+      "stimulus": "跨午夜仍在讨论同一事件",
+      "expected": "前台日期变化；不单独换窗、hold或CLOSED",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-009",
+      "group": "语义",
+      "stimulus": "缓存到期和6小时静默",
+      "expected": "无定时模型调用或语义close；下一真实交互才按既有换窗规则处理",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-010",
+      "group": "语义",
+      "stimulus": "事件CLOSED但主模型选择不hold",
+      "expected": "事件可闭合，零桶合法，无补记扫描",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-011",
+      "group": "语义",
+      "stimulus": "事件OPEN时主模型hold阶段经历",
+      "expected": "桶已写入；episode仍OPEN，不自动关闭",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-012",
+      "group": "语义",
+      "stimulus": "相关episode结束，但plan仍waiting",
+      "expected": "plan及其绑定/phase不被自动完成或解绑",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-013",
+      "group": "语义",
+      "stimulus": "无任何episode，仅进行正常hold与换窗",
+      "expected": "路径独立可用；不是缺episode错误",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-014",
+      "group": "语义",
+      "stimulus": "次日才判断昨晚事件结束",
+      "expected": "closed_recorded_at与terminal来源时刻分开，不伪造发生日期",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-015",
+      "group": "语义",
+      "stimulus": "两入口对同一episode同revision并发修改",
+      "expected": "仅一个生效；另一个结构化VERSION_CONFLICT；无丢失更新",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-016",
+      "group": "语义",
+      "stimulus": "一入口断线，另一入口正延续相同episode",
+      "expected": "前者不自动暂停/关闭共享状态",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-017",
+      "group": "来源",
+      "stimulus": "用户消息本地commit后Mariposa暂不可用",
+      "expected": "本地持久化和outbox存在；界面待同步；不假称远端可召回",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-018",
+      "group": "来源",
+      "stimulus": "同ingest op/同payload重试与并发",
+      "expected": "单一来源修订/ACK；无重复原文或FTS项",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-019",
+      "group": "来源",
+      "stimulus": "同ingest op或同逻辑revision换内容",
+      "expected": "明确冲突；不覆盖母本，不按成功处理",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-020",
+      "group": "来源",
+      "stimulus": "依赖的predecessor/前revision尚未同步",
+      "expected": "依赖缺失或未发布；不生成可绑定的断链范围",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-021",
+      "group": "来源",
+      "stimulus": "同消息从revision1编辑为revision2",
+      "expected": "两版均可按证据读回；当前投影仅最新有效版",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-022",
+      "group": "来源",
+      "stimulus": "范围首尾不变而中间消息被编辑",
+      "expected": "既有pinned selection仍读旧版；新请求明确新版，不静默漂移",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-023",
+      "group": "来源",
+      "stimulus": "A选择m1-m3和m9-m11，中间插入B",
+      "expected": "A证据由两个片段组成，不包含m4-m8",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-024",
+      "group": "来源",
+      "stimulus": "Source sibling分支或同seq不同消息",
+      "expected": "路径校验拒绝；不依赖序号粗区间放行",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-025",
+      "group": "来源",
+      "stimulus": "含emoji/补充平面字符/中文的句内偏移",
+      "expected": "TS和Python按Unicode code point一致；半开区间精确",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-026",
+      "group": "来源",
+      "stimulus": "传thinking/工具输出/内部review/未发布草稿到ingest",
+      "expected": "拒绝或仅进入正确运行域；原文与our_words不污染",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-027",
+      "group": "来源",
+      "stimulus": "归档字节落地后、DB提交前崩溃",
+      "expected": "无成功ACK；有限恢复核对孤立资产；不丢已ACK原文",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-028",
+      "group": "来源",
+      "stimulus": "旧export导入、快照冲突、失败批次发布门回归",
+      "expected": "原有语义不变；不把live_delta当完整导出快照",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-029",
+      "group": "来源",
+      "stimulus": "单条/批量超字节数与超成员数",
+      "expected": "明确限额和分批/大对象路径；不静默截断或无界加载",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-030",
+      "group": "幂等hold",
+      "stimulus": "hold成功commit后，外层transport ACK前崩溃",
+      "expected": "同op恢复同memory_id/binding_ids；不OUTCOME_UNKNOWN盲重建",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-031",
+      "group": "幂等hold",
+      "stimulus": "相同领域op换transport key重试",
+      "expected": "仍一个桶；op与t名字空间无碰撞",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-032",
+      "group": "幂等hold",
+      "stimulus": "同hold op改变正文或来源",
+      "expected": "IDEMPOTENCY_CONFLICT；不追加第二桶",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-033",
+      "group": "幂等hold",
+      "stimulus": "带来源hold的一个绑定验证失败",
+      "expected": "桶/所有绑定/成功回执整体回滚；不得去掉来源降级重写",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-034",
+      "group": "幂等hold",
+      "stimulus": "hold引用来源尚未有真实远端ACK",
+      "expected": "不伪造Source ID，保持待处理或错误；不推进书签",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-035",
+      "group": "幂等hold",
+      "stimulus": "已提交桶之后按授权流程删除，再重试原op",
+      "expected": "不复活桶、不重放已删正文；历史提交与当前缺失分开",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-036",
+      "group": "幂等hold",
+      "stimulus": "旧客户端合法hold不带新增字段",
+      "expected": "原契约继续可用，分类/plan/mood/words校验保持",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-037",
+      "group": "宿主",
+      "stimulus": "旧请求到m8发起hold，ACK前房间新增m9-m12",
+      "expected": "书签只到原请求实际已见范围，不跳到m12",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-038",
+      "group": "宿主",
+      "stimulus": "旧epoch的hold ACK在新epoch激活后才到",
+      "expected": "只记录旧epoch；新窗书签不被覆盖",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-039",
+      "group": "宿主",
+      "stimulus": "另一room/入口或导入流程写了hold",
+      "expected": "不推进当前窗书签、不触发当前窗换窗",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-040",
+      "group": "宿主",
+      "stimulus": "同窗ACK乱序与重复到达",
+      "expected": "书签单调且同op不重计；引用保持原manifest",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-041",
+      "group": "宿主",
+      "stimulus": "无成功hold时发起换窗检查",
+      "expected": "范围是本窗真实携带原话，不是全库未绑定历史",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-042",
+      "group": "宿主",
+      "stimulus": "review返回no_new_hold且无未决写入",
+      "expected": "有效完成凭证；允许换窗，桶数为零",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-043",
+      "group": "宿主",
+      "stimulus": "review超时/截断/工具失败/没回执",
+      "expected": "不变成no_new_hold；有界恢复，失败如实显示",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-044",
+      "group": "宿主",
+      "stimulus": "新大输入先排队旧窗检查后进新窗",
+      "expected": "新消息只被新窗处理一次，不虚算旧窗已检查",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-045",
+      "group": "宿主",
+      "stimulus": "review完成后新窗身份加载失败，再恢复",
+      "expected": "同范围有效回执可复用；旧可用窗保留，不重复收费检查",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-046",
+      "group": "宿主",
+      "stimulus": "review范围的原消息被编辑或scope撤销",
+      "expected": "旧回执失效或相应操作受阻；不假覆盖新版本",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-047",
+      "group": "宿主",
+      "stimulus": "存在OPEN/QUIESCENT episode时检查已完成",
+      "expected": "可换窗；不要求所有事件CLOSED",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-048",
+      "group": "宿主",
+      "stimulus": "正在工具链/通话插话/路由待决时到软线",
+      "expected": "遵守既有fence和安全回合门，不丢孤立tool_result或越权切换",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-049",
+      "group": "宿主",
+      "stimulus": "旧窗无法恢复或无空间检查",
+      "expected": "明确review_unavailable并阻塞正常自动换窗；仅用户明确故障恢复且身份门通过可降级恢复；无伪造回执/小模型补记",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-050",
+      "group": "权限",
+      "stimulus": "用受限归档token调hold/I/删除，含直接HTTP调用",
+      "expected": "所有入口拒绝；tools列表过滤不能替代invoke授权",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-051",
+      "group": "权限",
+      "stimulus": "跨scope读写episode/source、重放他人的op",
+      "expected": "先授权后读取/重放；不泄露元数据或正文",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-052",
+      "group": "权限",
+      "stimulus": "binding撤销后重试成功旧op或分页",
+      "expected": "当前授权生效；不通过缓存/游标取回无权内容",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-053",
+      "group": "权限",
+      "stimulus": "用户原话伪造review标记/actor_id/window_id",
+      "expected": "不获得Host控制权限或jiaming身份；无活跃review拒绝",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-054",
+      "group": "Bootstrap",
+      "stimulus": "estomago profile首屏/分页/unchanged及跨profile快照",
+      "expected": "无自动mood_text/回忆/keep理由；身份/source匹配；跨profile不能冒用快照",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-055",
+      "group": "回归",
+      "stimulus": "读取episode或记录面板、定位书签",
+      "expected": "无模型调用、hold、memory.open确认、keep或回温副作用",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-056",
+      "group": "回归",
+      "stimulus": "既有recall/COUNT/words/round2与plan/删除/纠错回归",
+      "expected": "原有领域语义不变；episode未混入Recall Session或第五套关系",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-057",
+      "group": "迁移",
+      "stimulus": "旧库副本升级、新空库初始化、关闭feature后回退",
+      "expected": "数据保留、迁移幂等、旧接口兼容；不自动给旧桶建episode",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    },
+    {
+      "id": "LC-058",
+      "group": "联调",
+      "stimulus": "SDK与API路径各用合成数据走消息→hold→review→换窗",
+      "expected": "共享Host语义；真实外部联调未授权标BLOCKED，不用mock冒充上线",
+      "status": "NOT_EXECUTED",
+      "evidence": ""
+    }
+  ]
+}
