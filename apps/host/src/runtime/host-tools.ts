@@ -297,7 +297,10 @@ export class HostToolExecutor {
           speaker: q.speaker === 'owner' ? 'qiaosheng' : 'jiaming',
           text: q.fragment,
           expression_kind: 'verbatim',
-          source_ref: q.messageId,
+          // F-J-01（联合审计 2026-10-06）：mariposa provenance 收紧（2026-10-04 裁定）只认
+          // source_msg:<已发布 source 消息 id>，本地 msg id 永远解析不到——此前带 quotes 的
+          // hold 被整单 INVALID_SOURCE_REF 拒。正式身份=本次同步收据的 source_message_id。
+          source_ref: `source_msg:${receipt.source_message_id}`,
         });
         const member = { source_message_id: receipt.source_message_id, content_hash: receipt.content_hash };
         // 整句引用=消息边界（不带 offset）；句内片段带字符区间（mariposa 契约：句内片段用可选 char offset）
@@ -350,6 +353,13 @@ export class HostToolExecutor {
     if (receipt.operation_id !== operationId) {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
       return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH', expected: operationId, got: receipt.operation_id } };
+    }
+    // F-J-54（联合审计 2026-10-06）：mariposa 对每条 source_selection 恰好建一个绑定
+    // （registry._hold 逐 frag bind 后 append，1:1）。带选集而回执绑定数不符=回执可疑——
+    // 按结果不明收口（unknown），恢复走原 op 查 hold.status，不换 op 重写桶。
+    if (selections.length > 0 && receipt.binding_ids.length !== selections.length) {
+      this.reviews.settleEffect(effectId, 'unknown', false, null);
+      return { ok: false, output: { error_code: 'HOLD_RECEIPT_BINDING_MISMATCH', operation_id: operationId, expected: selections.length, got: receipt.binding_ids.length } };
     }
     this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）

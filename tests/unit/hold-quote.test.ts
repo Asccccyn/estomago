@@ -40,12 +40,17 @@ const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((s
 
 type HoldCall = { operationId: string; holdPayload: Record<string, unknown>; sourceSelections: unknown };
 
-/** 记录型假 Mariposa：memory.hold 参数原样留证 */
-function recordingMariposa(calls: HoldCall[]): MariposaTransport {
+/** 记录型假 Mariposa：memory.hold 参数原样留证。
+ *  F-J-54 对齐（联合审计 2026-10-06）：回执 binding_ids 按真实服务端语义生成——
+ *  mariposa registry._hold 对每条 source_selection 恰好建一个绑定（1:1）；
+ *  opts.bindingCount 可显式制造数量不符的坏回执。 */
+function recordingMariposa(calls: HoldCall[], opts: { bindingCount?: number } = {}): MariposaTransport {
   return async (capability, payload) => {
     if (capability === 'memory.hold') {
       calls.push({ operationId: payload.operation_id as string, holdPayload: payload as Record<string, unknown>, sourceSelections: payload.source_selections ?? null });
-      return { ok: true, result: { operation_id: payload.operation_id, memory_id: `mem-${calls.length}`, version: 1, binding_ids: [], committed_at: new Date().toISOString() } };
+      const selCount = Array.isArray(payload.source_selections) ? (payload.source_selections as unknown[]).length : 0;
+      const n = opts.bindingCount !== undefined ? opts.bindingCount : selCount;
+      return { ok: true, result: { operation_id: payload.operation_id, memory_id: `mem-${calls.length}`, version: 1, binding_ids: Array.from({ length: n }, (_, i) => `msb-fake-${calls.length}-${i}`), committed_at: new Date().toISOString() } };
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
@@ -120,6 +125,7 @@ test('真实顺序：提交→收据就位→hold 带片段引用→our_words �
   assert.equal(ourWords[0]!.speaker, 'qiaosheng', '用户原话→qiaosheng（来源自动映射）');
   assert.equal(ourWords[0]!.text, '路过花店，突然好想你', '逐字保真（模型零复述）');
   assert.equal(ourWords[0]!.expression_kind, 'verbatim', '网关核对过的=verbatim');
+  assert.equal(ourWords[0]!.source_ref, 'source_msg:src-m-1', 'F-J-01：正式来源身份=source_msg:<同步收据 id>——本地 msg id 会被 mariposa provenance 校验整单拒（INVALID_SOURCE_REF）');
   const sel = (call.sourceSelections as Array<Record<string, unknown>>)[0]!;
   assert.equal(sel.conversation_id, 'src-conv-1', '按 mariposa 来源会话钉');
   const member = (sel.members as Array<Record<string, string>>)[0]!;
