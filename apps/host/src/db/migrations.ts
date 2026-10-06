@@ -554,6 +554,16 @@ ALTER TABLE provider_requests ADD COLUMN attempt_no INTEGER;
 ALTER TABLE usage_observations ADD COLUMN window_id TEXT;
 `,
   },
+  {
+    version: 14,
+    name: 'joint-audit-b2-skipped-empty-basis',
+    // F-J-40（联合审计 2026-10-06）：skipped_empty 凭证补定位依据——
+    // 空键集本身无法证明"为什么空"；存书签/清单高水位/触发原因等
+    // 事实（不伪造 reviewed/held 全覆盖，只可定位复核）。
+    sql: `
+ALTER TABLE rotation_reviews ADD COLUMN basis_json TEXT;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
