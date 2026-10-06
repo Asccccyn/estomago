@@ -52,7 +52,13 @@ export function selectReviewRange(input: {
   requireThat(new Set(rows.map(rawKey)).size === rows.length, 'MANIFEST_DUPLICATE');
   const floor = lastHold?.epochId === epochId ? lastHold.seenSequence : -1;
   requireThat(floor === -1 || nonNegInt(floor), 'BOOKMARK_INVALID');
-  requireThat(rows.length === 0 || floor <= Math.max(...rows.map((m) => m.seq)), 'BOOKMARK_OUTSIDE_MANIFEST');
+  // F-J-02（联合审计 2026-10-06）：书签高于清单高水位不再判 BOOKMARK_OUTSIDE_MANIFEST。
+  // 书签只能由已核实成功收据推进（advanceBookmark 三门），floor > max(清单 seq) 的含义是
+  // "发起该 hold 的请求真实看见了 seq=floor 的输入，但其回合未成功落轨迹"（如 hold 成功后
+  // 回合被停止/网络失败/轮次超限）。此时清单内全部内容都 ≤ 书签，提醒范围为空=合法
+  // ——调用方按 skipped_empty 收口，不叫模型、不伪称全覆盖。清单缺失/损坏/无法重建的
+  // 阻塞在调用方（supervisor 的 ROTATION_RANGE_UNKNOWN 路径）与 completeReview
+  // （WRITE_UNRESOLVED）维持不变；本函数其余结构守卫（MANIFEST_INVALID/DUPLICATE）不放松。
   const exempt = new Set([...reviewedKeys, ...carriedBeforeBookmarkKeys]);
   return rows.filter((m) => m.seq > floor && !exempt.has(rawKey(m))).map((m) => ({ id: m.id, revision: m.revision, seq: m.seq }));
 }

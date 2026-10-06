@@ -53,7 +53,9 @@ function recordingMariposa(calls: HoldCall[], resultOverride?: () => Record<stri
   return async (capability, payload) => {
     if (capability === 'memory.hold') {
       calls.push({ payload: payload as Record<string, unknown>, result: {} });
-      const r = resultOverride ? resultOverride() : { operation_id: payload.operation_id, memory_id: 'mem-1', version: 1, binding_ids: [], committed_at: new Date().toISOString() };
+      // F-J-54 对齐（联合审计 2026-10-06）：默认回执按真实服务端语义生成——每条 source_selection 恰好一个绑定
+      const selCount = Array.isArray(payload.source_selections) ? (payload.source_selections as unknown[]).length : 0;
+      const r = resultOverride ? resultOverride() : { operation_id: payload.operation_id, memory_id: 'mem-1', version: 1, binding_ids: Array.from({ length: selCount }, (_, i) => `msb-${i}`), committed_at: new Date().toISOString() };
       if (r.__reject) return { ok: false, code: String(r.code), httpStatus: Number(r.httpStatus) };
       return { ok: true, result: r };
     }
