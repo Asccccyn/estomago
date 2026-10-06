@@ -78,7 +78,8 @@ export function buildHostTools(): HostToolSpec[] {
           mood_tags: { type: 'array', items: { type: 'string', enum: [...currentMoodCategories()] }, maxItems: 3, description: `当时心情大类（固定 ${currentMoodCategories().length} 类选 1-3 个；正本=memory.mood.vocab；不选=不写心情）` },
           mood_note: { type: 'string', description: '当下心情随笔，自由文字可写可不写（如"开心想抱抱"）；永不参与检索' },
         },
-        required: ['original_title', 'categories', 'text'],
+        // F-J-22（她批准 2026-10-06）：当下/补记由模型显式声明——服务端公开面同语义必填
+        required: ['original_title', 'categories', 'text', 'creation_mode'],
         additionalProperties: false,
       },
     },

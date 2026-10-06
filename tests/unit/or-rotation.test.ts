@@ -59,11 +59,11 @@ function scriptedTransport(chat: ChatScript, review: ReviewScript, log: Array<{ 
       if (review === 'no_new_hold') body = toolBody(id, `rc-${gen}`, 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' });
       else if (review === 'hold_then_complete') body = hasToolResult
         ? toolBody(id, `rc-${gen}`, 'context_review_complete', { review_id: reviewId, decision: 'holds_completed' })
-        : toolBody(id, `hc-${gen}`, 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: '合成 hold 内容' });
+        : toolBody(id, `hc-${gen}`, 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '合成 hold 内容' });
       else body = textBody(id, '（不调用完成工具的模型回复）');
     } else {
       body = chat.firstRound === 'hold' && !hasToolResult
-        ? toolBody(id, `cc-${gen}`, 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: '聊天中主动记一条' })
+        ? toolBody(id, `cc-${gen}`, 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '聊天中主动记一条' })
         : textBody(id, chat.text ?? `回复${gen}`);
     }
     return { status: 200, headers: new Map<string, string>(), body: frameStream(body) };
