@@ -90,7 +90,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
@@ -114,7 +114,7 @@ test('F04：同批 complete+hold（complete 在前），hold 结果未知 → �
     review: (_hasTool, reviewId) => {
       reviewIdSeen = reviewId;
       // 审计 R2：complete 排在 hold 之前 + hold 返回 503——修复后必须先执行写、complete 最后核验失败
-      return twoToolBody('r1', ['call-comp', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' }], ['call-hold', 'memory_hold', { category: 'daily', text: 'y' }]);
+      return twoToolBody('r1', ['call-comp', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' }], ['call-hold', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'y' }]);
     },
   });
   const mariposa: MariposaTransport = async (cap) => {
@@ -174,7 +174,7 @@ test('F07：停止后同批后续工具不再分派（内容 fence 不足以拦�
   holdGate = new Promise((r) => { releaseHold = r; });
   const holdCalls: string[] = [];
   const orT = orTransportWith({
-    chat: (hasTool) => (hasTool ? textBody('c2', '完成') : twoToolBody('c1', ['call-a', 'memory_hold', { category: 'daily', text: 'A' }], ['call-b', 'memory_hold', { category: 'daily', text: 'B' }])),
+    chat: (hasTool) => (hasTool ? textBody('c2', '完成') : twoToolBody('c1', ['call-a', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'A' }], ['call-b', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'B' }])),
   });
   const mariposa: MariposaTransport = async (cap, payload) => {
     if (cap === 'memory.hold') {
@@ -204,7 +204,7 @@ test('F07：停止后同批后续工具不再分派（内容 fence 不足以拦�
 test('F08：unknown hold 阻断评审；hold.status 恢复后放行并推进书签', async () => {
   let holdFail = true;
   const orT = orTransportWith({
-    chat: (hasTool) => (hasTool ? textBody('c2', '好的') : toolBody('c1', 'hc', 'memory_hold', { category: 'daily', text: '记一下' })),
+    chat: (hasTool) => (hasTool ? textBody('c2', '好的') : toolBody('c1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: '记一下' })),
     review: (hasTool, reviewId) => (hasTool ? textBody('r2', 'ok') : toolBody('r1', 'rc', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' })),
   });
   const mariposa: MariposaTransport = async (cap, payload) => {
@@ -237,7 +237,7 @@ test('F08：unknown hold 阻断评审；hold.status 恢复后放行并推进书�
 
 test('F08b：hold.status 明确无提交证据 → 解除阻塞（failed_resolved），不产生书签', async () => {
   const orT = orTransportWith({
-    chat: (hasTool) => (hasTool ? textBody('c2', '好的') : toolBody('c1', 'hc', 'memory_hold', { category: 'daily', text: 'x' })),
+    chat: (hasTool) => (hasTool ? textBody('c2', '好的') : toolBody('c1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' })),
     review: (hasTool, reviewId) => (hasTool ? textBody('r2', 'ok') : toolBody('r1', 'rc', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' })),
   });
   const mariposa: MariposaTransport = async (cap, payload) => {

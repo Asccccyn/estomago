@@ -1,33 +1,48 @@
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
 //    operation_id 由宿主从 tool_call 派生（模型不能自编）；无 Mariposa 客户端 → 能力缺口，明确拒绝。
+//    契约对齐 mariposa@d14a24e（她的 1005 裁定）：original_title 必填≤30字、categories 数组九分类枚举、
+//    creation_mode 枚举、memory_date+date_confidence。mood 整块暂不对模型开放（词表八大类她还要改，
+//    2026-10-05 指示"先不要动手做心情"）——等 mariposa 词表定稿后经 memory.mood.vocab 动态拉取接入。
+//  - our_words=模型指认（她的裁定）：模型只给 quotes（想逐字引用的片段）；网关在"发起请求实际看见的
+//    原文"里逐字核对（对不上=拒绝，不替模型圆谎），说话人按消息来源自动映射（owner=qiaosheng/
+//    assistant=jiaming），引用按 mariposa 现成机制钉住（source_selections：source_message_id+内容hash，
+//    句内片段带 char offset）——our_words 逐字保真，模型零复述 token。
 //  - context_review_complete：宿主本地验证（review/账本/收据），不依赖模型自报成功名单。
 // 工具执行串行（写操作依赖顺序；review_complete 最后验证，不并发抢先放行）。
 import { sha256Hex } from '../util/id.ts';
+import type { Db } from '../db/connection.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 
 export type HostToolSpec = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
 
+// mariposa 现行 hold 契约常量（正本=mariposa input_schemas；此处只做形状门，域校验仍以服务端为准）
+export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'plan', 'sex', 'anniversary', 'reloplay'] as const;
+export const HOLD_CREATION_MODES = ['contemporaneous', 'retrospective'] as const;
+export const HOLD_DATE_CONFIDENCE = ['exact', 'inferred', 'unknown'] as const;
+export const HOLD_TITLE_MAX = 30;
+
 export const HOST_TOOLS: HostToolSpec[] = [
   {
     type: 'function',
     function: {
       name: 'memory_hold',
-      description: '把一件事写入 Mariposa 正式记忆（hold）。由你自主决定是否值得记；也可以完全不调用。参数即既有 hold 业务字段。',
+      description: '把一件事写入 Mariposa 正式记忆（hold）。由你自主决定是否值得记；也可以完全不调用。引用原话用 quotes：必须是这段对话里真实出现过的原文片段（一字不差），系统会核对、标注说话人并钉住出处；对不上的引用整条被拒。',
       parameters: {
         type: 'object',
         properties: {
-          category: { type: 'string', description: '既有九分类之一' },
+          original_title: { type: 'string', minLength: 1, maxLength: HOLD_TITLE_MAX, description: `这条记忆的标题（1-${HOLD_TITLE_MAX}字，必填）` },
+          categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, description: '分类（从固定九类里选，至少一个）' },
           text: { type: 'string', description: '要记住的内容（你的表述）' },
-          mood_tags: { type: 'array', items: { type: 'string' } },
-          our_words: { type: 'string' },
+          quotes: { type: 'array', items: { type: 'string' }, maxItems: 10, description: '可选：想逐字引用的原话片段。只给对话里真实出现过的连续原文；每条独立，说话人由系统标注' },
           plan_ids: { type: 'array', items: { type: 'string' } },
-          creation_mode: { type: 'string' },
-          backfill_date: { type: 'string' },
+          creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
+          memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）' },
+          date_confidence: { type: 'string', enum: [...HOLD_DATE_CONFIDENCE] },
         },
-        required: ['category', 'text'],
+        required: ['original_title', 'categories', 'text'],
         additionalProperties: false,
       },
     },
@@ -54,20 +69,31 @@ export function hostToolNames(): string[] {
   return HOST_TOOLS.map((t) => t.function.name);
 }
 
-/** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外的字段剥除（additionalProperties:false），
- *  required 缺失/类型不符直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
+type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[] }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
+
+/** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外字段拒绝（additionalProperties:false），
+ *  required 缺失/类型不符/枚举外值/长度与条数越界直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
 export function validateToolArgs(name: string, args: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
   const spec = HOST_TOOLS.find((t) => t.function.name === name);
   if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
-  const schema = spec.function.parameters as { properties?: Record<string, { type?: string; items?: { type?: string } }>; required?: string[] };
+  const schema = spec.function.parameters as { properties?: Record<string, PropSpec>; required?: string[] };
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
     if (k === '__tool_call_id') continue; // 宿主内部标识，非模型参数
     const prop = schema.properties?.[k];
     if (!prop) return { ok: false, code: 'TOOL_ARG_UNKNOWN', detail: `未知参数 ${k}（additionalProperties:false）` };
-    const expected = prop.type === 'array' ? 'array' : prop.type;
-    if (expected === 'string' && typeof v !== 'string') return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string` };
-    if (expected === 'array' && (!Array.isArray(v) || v.some((x) => typeof x !== 'string'))) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
+    if (prop.enum && !prop.enum.includes(v)) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 必须是 ${prop.enum.join('|')} 之一` };
+    if (prop.type === 'string') {
+      if (typeof v !== 'string') return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string` };
+      if (prop.minLength !== undefined && v.length < prop.minLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minLength} 字` };
+      if (prop.maxLength !== undefined && v.length > prop.maxLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxLength} 字` };
+    } else if (prop.type === 'array') {
+      if (!Array.isArray(v)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 array` };
+      if (prop.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
+      if (prop.items?.enum && v.some((x) => !prop.items!.enum!.includes(x))) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 含枚举外值（允许：${prop.items.enum.join('|')}）` };
+      if (prop.minItems !== undefined && v.length < prop.minItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minItems} 条` };
+      if (prop.maxItems !== undefined && v.length > prop.maxItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxItems} 条` };
+    }
     out[k] = v;
   }
   for (const req of schema.required ?? []) {
@@ -82,7 +108,7 @@ export type ToolExecContext = {
   turnId: string | null;
   purpose: 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive';
   activeReviewId: string | null;
-  seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签位置依据，§3.1）
+  seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签与引用核对范围依据，§3.1）
   requestId: string; // 发起 hold 的模型请求标识
 };
 
@@ -91,15 +117,22 @@ export type ToolExecResult = { ok: boolean; output: Record<string, unknown> };
 const rawToolCallIdRef = { current: null as string | null };
 function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
 
+/** 已匹配的引用（逐字核对通过）：原文消息 + 片段在该消息内的字符区间 */
+type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
+
 export class HostToolExecutor {
+  private db: Db;
   private mariposa: MariposaClient | null;
   private reviews: RotationReviewService;
   private checkpoint: HoldCheckpointService;
+  private archiveSync: { drainOnce(): Promise<unknown> } | null;
 
-  constructor(deps: { mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService }) {
+  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null }) {
+    this.db = deps.db;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
     this.checkpoint = deps.checkpoint;
+    this.archiveSync = deps.archiveSync ?? null;
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -113,18 +146,86 @@ export class HostToolExecutor {
     return this.reviewComplete(checked.value, ctx);
   }
 
+  /** 模型指认的引用核对（她的裁定 2026-10-05）：只在"发起请求实际看见的原话"里逐字匹配（按序消费候选，
+   *  防重复片段误配）；任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。 */
+  private resolveQuotes(roomId: string, seenSequence: number, quotes: string[]): MatchedQuote[] | { error: string; index: number } {
+    const rows = this.db.prepare(
+      `SELECT m.id, m.sequence, m.speaker, m.current_revision, r.content FROM messages m
+       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+       WHERE m.conversation_id = ? AND m.sequence <= ? AND m.speaker IN ('owner','assistant')
+       ORDER BY m.sequence DESC LIMIT 60`,
+    ).all(roomId, seenSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; content: string }>;
+    const candidates = rows.slice().reverse(); // 时间正序，按序消费
+    const matched: MatchedQuote[] = [];
+    let cursor = 0;
+    for (let qi = 0; qi < quotes.length; qi++) {
+      const frag = quotes[qi]!;
+      if (frag.length === 0) return { error: 'QUOTE_EMPTY', index: qi };
+      let hit: MatchedQuote | null = null;
+      for (let i = cursor; i < candidates.length; i++) {
+        const row = candidates[i]!;
+        const start = row.content.indexOf(frag);
+        if (row.speaker !== 'owner' && row.speaker !== 'assistant') continue;
+        if (start >= 0) {
+          hit = { messageId: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag, start, end: start + frag.length };
+          cursor = i + 1;
+          break;
+        }
+      }
+      if (!hit) return { error: 'QUOTE_MATCH_FAILED', index: qi };
+      matched.push(hit);
+    }
+    return matched;
+  }
+
   private async memoryHold(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? (rawToolCallIdOf(ctx) ?? ''));
+
+    // —— 引用先收口（零副作用阶段）：逐字核对 → 来源收据齐备（收据缺失先补一发同步再核） ——
+    let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; expression_kind: 'verbatim'; source_ref: string }> = [];
+    let selections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }>; start_char_offset?: number; end_char_offset?: number }> = [];
+    const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as string[]) : [];
+    if (rawQuotes.length > 0) {
+      const resolved = this.resolveQuotes(ctx.roomId, ctx.seenSequence, rawQuotes);
+      if ('error' in resolved) {
+        return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: '引用片段在已见原文中逐字核对未通过——只允许引用这段对话里真实出现过的一字不差的原文' } };
+      }
+      // 每条被引消息必须有正式来源收据（estómago↔mariposa 同步回执）：没有就先 drain 一次再核
+      const missing = resolved.filter((q) => !this.receiptOf(q.messageId, q.revision));
+      if (missing.length > 0 && this.archiveSync) {
+        await this.archiveSync.drainOnce().catch(() => {});
+      }
+      for (const q of resolved) {
+        const receipt = this.receiptOf(q.messageId, q.revision);
+        if (!receipt) {
+          return { ok: false, output: { error_code: 'QUOTE_NOT_SYNCED', quote_index: resolved.indexOf(q), error: `被引消息（seq=${q.sequence}）尚未完成正式来源同步——稍后重试或去掉该引用` } };
+        }
+        ourWords.push({
+          speaker: q.speaker === 'owner' ? 'qiaosheng' : 'jiaming',
+          text: q.fragment,
+          expression_kind: 'verbatim',
+          source_ref: q.messageId,
+        });
+        const member = { source_message_id: receipt.source_message_id, content_hash: receipt.content_hash };
+        // 整句引用=消息边界（不带 offset）；句内片段带字符区间（mariposa 契约：句内片段用可选 char offset）
+        const wholeMessage = q.fragment === q.content;
+        selections.push(wholeMessage
+          ? { conversation_id: receipt.source_conversation_id, members: [member] }
+          : { conversation_id: receipt.source_conversation_id, members: [member], start_char_offset: q.start, end_char_offset: q.end });
+      }
+    }
+
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
-    const holdPayload: Record<string, unknown> = {};
-    for (const k of ['category', 'text', 'mood_tags', 'our_words', 'plan_ids', 'creation_mode', 'backfill_date']) {
+    const holdPayload: Record<string, unknown> = { original_title: args.original_title, categories: args.categories, text: args.text };
+    for (const k of ['plan_ids', 'creation_mode', 'memory_date', 'date_confidence']) {
       if (args[k] !== undefined) holdPayload[k] = args[k];
     }
+    if (ourWords.length > 0) holdPayload.our_words = ourWords;
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
     try {
-      r = await this.mariposa.memoryHold({ operationId, holdPayload });
+      r = await this.mariposa.memoryHold({ operationId, holdPayload, sourceSelections: selections.length > 0 ? selections : null });
     } catch {
       // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
       this.reviews.settleEffect(effectId, 'unknown', false, null);
@@ -156,7 +257,14 @@ export class HostToolExecutor {
       // 书签推进被拒（旧窗收据/收据错配等）——hold 本身已成功，不因书签失败回滚写入；
       // 冲突留在 checkpoint 查询层如实呈现
     }
-    return { ok: true, output: { operation_id: receipt.operation_id, memory_id: receipt.memory_id, version: receipt.version, binding_ids: receipt.binding_ids, committed_at: receipt.committed_at } };
+    return { ok: true, output: { operation_id: receipt.operation_id, memory_id: receipt.memory_id, version: receipt.version, binding_ids: receipt.binding_ids, committed_at: receipt.committed_at, quoted_messages: ourWords.length } };
+  }
+
+  private receiptOf(messageId: string, revision: number): { source_conversation_id: string; source_message_id: string; content_hash: string } | null {
+    const row = this.db.prepare('SELECT source_conversation_id, source_message_id, content_hash FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ?')
+      .get(messageId, revision) as { source_conversation_id: string | null; source_message_id: string | null; content_hash: string | null } | undefined;
+    if (!row || !row.source_conversation_id || !row.source_message_id || !row.content_hash) return null;
+    return { source_conversation_id: row.source_conversation_id, source_message_id: row.source_message_id, content_hash: row.content_hash };
   }
 
   /** 审计 F08：换窗评审前的有界恢复探测——按原 operation_id 查 hold.status；
