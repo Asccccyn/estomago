@@ -89,11 +89,26 @@ test('D15：只给 mood_tags 时 mood 不带 text 字段（服务端 text 只收
   const ctx = baseCtx(root);
   ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
   const calls: HoldCall[] = [];
-  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, mood_tags: ['开心'] }, []);
+  // 审计 1005B：带心情必须显式 creation_mode（mariposa 宁拒不猜，宿主前置拦截同语义）
+  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, mood_tags: ['开心'], creation_mode: 'contemporaneous' }, []);
   assert.equal(out.ok, true);
   const mood = (calls[0]!.payload.mood as Record<string, unknown>) ?? {};
   assert.deepEqual(mood.tags, ['开心']);
   assert.equal('text' in mood, false, '没有 note 就不发 text（null 会被服务端拒）');
+  ctx.db.close();
+});
+
+test('审计 1005B-D：mood 给了而 creation_mode 缺省 → 宿主前置拦截（不再默认同期，防补记心情绕过窗口）', async () => {
+  const root = tempRoot('d15b-');
+  const ctx = baseCtx(root);
+  ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
+  const calls: HoldCall[] = [];
+  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, mood_tags: ['开心'] }, []);
+  assert.equal(out.ok, false);
+  assert.equal((out.output as { error_code: string }).error_code, 'HOLD_MOOD_WINDOW_REQUIRED');
+  assert.equal(calls.length, 0, '前置拦截——不浪费一次远端调用');
+  const eff = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").get() as { state: string } | undefined;
+  assert.equal(eff?.state, 'failed_resolved', '缺省被拒=未提交（可自纠重试），不是 unknown');
   ctx.db.close();
 });
 

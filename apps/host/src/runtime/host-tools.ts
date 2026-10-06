@@ -24,10 +24,41 @@ export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'p
 export const HOLD_CREATION_MODES = ['contemporaneous', 'retrospective'] as const;
 export const HOLD_DATE_CONFIDENCE = ['exact', 'inferred', 'unknown'] as const;
 export const HOLD_TITLE_MAX = 30;
-// mariposa 心情大类终版（2026-10-05 她指定 7 类；正本=mariposa memory.mood.vocab）
-export const MOOD_CATEGORIES = ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'] as const;
+// 心情词表：正本=mariposa memory.mood.vocab（她说"之后可以调整"——审计 1005B：
+// mariposa 明文规定调用方动态拉取、不各自硬编码；此前硬编码 7 类已与 mariposa
+// 文案漂移演示过风险）。本地快照仅作 mariposa 不可达时的回退；联网时
+// refreshMoodCategories() 同步，工具 schema 枚举与形状校验随当前值走。
+let moodCategories: string[] = ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'];
+let moodVocabVersion: string | null = null;
+let hostToolsCache: HostToolSpec[] | null = null;
 
-export const HOST_TOOLS: HostToolSpec[] = [
+export function currentMoodCategories(): readonly string[] {
+  return moodCategories;
+}
+
+/** best-effort 拉词表（幂等、失败保快照）；变更后失效工具集缓存。
+ *  需绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
+export async function refreshMoodCategories(client: MariposaClient): Promise<boolean> {
+  try {
+    const r = await client.moodVocab();
+    if (r.ok && r.categories && r.categories.length) {
+      if (r.categories.join('\u0000') !== moodCategories.join('\u0000') || r.version !== moodVocabVersion) {
+        moodCategories = [...r.categories];
+        moodVocabVersion = r.version ?? null;
+        hostToolsCache = null;
+      }
+      return true;
+    }
+  } catch {
+    // mariposa 不可达：保持快照与缓存，域校验以服务端为准
+  }
+  return false;
+}
+
+export function buildHostTools(): HostToolSpec[] {
+  // 词表变更（refreshMoodCategories）会置空缓存——枚举随正本走
+  if (hostToolsCache) return hostToolsCache;
+  hostToolsCache = [
   {
     type: 'function',
     function: {
@@ -44,7 +75,7 @@ export const HOST_TOOLS: HostToolSpec[] = [
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
           memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）' },
           date_confidence: { type: 'string', enum: [...HOLD_DATE_CONFIDENCE] },
-          mood_tags: { type: 'array', items: { type: 'string', enum: [...MOOD_CATEGORIES] }, maxItems: 3, description: '当时心情大类（固定 7 类选 1-3 个；不选=不写心情）' },
+          mood_tags: { type: 'array', items: { type: 'string', enum: [...currentMoodCategories()] }, maxItems: 3, description: `当时心情大类（固定 ${currentMoodCategories().length} 类选 1-3 个；正本=memory.mood.vocab；不选=不写心情）` },
           mood_note: { type: 'string', description: '当下心情随笔，自由文字可写可不写（如"开心想抱抱"）；永不参与检索' },
         },
         required: ['original_title', 'categories', 'text'],
@@ -68,10 +99,12 @@ export const HOST_TOOLS: HostToolSpec[] = [
       },
     },
   },
-];
+  ];
+  return hostToolsCache;
+}
 
 export function hostToolNames(): string[] {
-  return HOST_TOOLS.map((t) => t.function.name);
+  return buildHostTools().map((t) => t.function.name);
 }
 
 type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[]; minLength?: number }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
@@ -79,7 +112,7 @@ type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum
 /** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外字段拒绝（additionalProperties:false），
  *  required 缺失/类型不符/枚举外值/长度与条数越界直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
 export function validateToolArgs(name: string, args: Record<string, unknown>): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
-  const spec = HOST_TOOLS.find((t) => t.function.name === name);
+  const spec = buildHostTools().find((t) => t.function.name === name);
   if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
   const schema = spec.function.parameters as { properties?: Record<string, PropSpec>; required?: string[] };
   const out: Record<string, unknown> = {};
@@ -154,6 +187,7 @@ export class HostToolExecutor {
   private reviews: RotationReviewService;
   private checkpoint: HoldCheckpointService;
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
+  private lastMoodVocabRefreshAt = 0;
 
   constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null }) {
     this.db = deps.db;
@@ -231,6 +265,15 @@ export class HostToolExecutor {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? (rawToolCallIdOf(ctx) ?? ''));
 
+    // 词表节流刷新（审计 1005B）：带心情的 hold 前保证枚举/校验与 mariposa
+    // 正本对齐——60s 一次，失败保快照不阻塞 hold 本身
+    if (args.mood_tags !== undefined || args.mood_note !== undefined) {
+      if (Date.now() - this.lastMoodVocabRefreshAt > 60_000) {
+        this.lastMoodVocabRefreshAt = Date.now();
+        await refreshMoodCategories(this.mariposa);
+      }
+    }
+
     // —— 引用先收口（零副作用阶段）：逐字核对 → 来源收据齐备（收据缺失先补一发同步再核） ——
     let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; expression_kind: 'verbatim'; source_ref: string }> = [];
     let selections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }>; start_char_offset?: number; end_char_offset?: number }> = [];
@@ -275,6 +318,13 @@ export class HostToolExecutor {
     // mood（mariposa 侧空心情合法）；tags 只收大类，note 自由文字。
     // D15（审计 3655d60）：没给 note 时**省略 text 字段**（mood.text 只允许 string，发 null 会被服务端拒）
     if (args.mood_tags !== undefined || args.mood_note !== undefined) {
+      // 审计 1005B：mariposa 已收紧——带心情必须显式 creation_mode="contemporaneous"
+      //（缺省不再默认同期，防补记心情绕过 V2-REC-04 窗口裁定）。宿主前置拦截
+      // 省一次远端调用，错误码与服务端一致，模型可自纠后重试。
+      if (args.creation_mode === undefined) {
+        this.reviews.settleEffect(effectId, 'failed_resolved', false, null);
+        return { ok: false, output: { error_code: 'HOLD_MOOD_WINDOW_REQUIRED', operation_id: operationId, message: '带当时心情必须显式 creation_mode="contemporaneous"（当下聊到随手记）；补记过去的事（retrospective）不能带当时心情' } };
+      }
       holdPayload.mood = {
         tags: Array.isArray(args.mood_tags) ? args.mood_tags : [],
         ...(typeof args.mood_note === 'string' ? { text: args.mood_note } : {}),

@@ -309,7 +309,7 @@ export class ArchiveSyncService {
       return 'retry_later';
     }
     if (!result.ok) {
-      const cls = classifyError(result.code);
+      const cls = classifyError(result.code, result.httpStatus); // 审计 1005B：传 httpStatus——429/423/50x 按 HTTP 语义判 retry，不再依赖码名字符串匹配
       const attempts = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
       // F15：瞬时错误（SOURCE_NOT_READY/429/502/503/504）可重试但有界；领域冲突=dead
       if (cls === 'retry_later' && attempts <= INGEST_BATCH_MAX_ATTEMPTS) {
