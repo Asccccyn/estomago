@@ -215,8 +215,22 @@ export class MessageService {
     return row ? rowToDto(row) : null;
   }
 
-  listMessages(opts: { conversationId: string; afterSequence?: number; limit?: number }): MessageDto[] {
+  listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number }): MessageDto[] {
     const limit = Math.min(opts.limit ?? 100, 1000);
+    // F-J-48（联合审计 2026-10-06）：beforeSequence=反向翻页（历史"加载更早"）——
+    // 取 sequence < before 的最新 limit 条后翻回升序，与 after 语义对偶
+    if (opts.beforeSequence !== undefined) {
+      const older = this.db
+        .prepare(
+          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
+                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+           FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           WHERE m.conversation_id = ? AND m.sequence < ?
+           ORDER BY m.sequence DESC LIMIT ?`,
+        )
+        .all(opts.conversationId, opts.beforeSequence, limit) as MessageRow[];
+      return older.reverse().map(rowToDto);
+    }
     const rows = this.db
       .prepare(
         `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,

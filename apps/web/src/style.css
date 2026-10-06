@@ -181,3 +181,13 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 }
 /* hidden 属性必须生效（记录面板 display:flex 不得覆盖它——否则未登录时面板盖住登录区） */
 .records-panel[hidden] { display: none; }
+
+/* 联合审计 B5：停止/编辑/加载更早（2026-10-06） */
+.stop-btn, .edit-btn, #load-earlier-btn {
+  font-size: 12px; padding: 2px 10px; margin-left: 8px;
+  border: 1px solid #b9c4d0; border-radius: 6px; background: #f4f7fa; cursor: pointer;
+}
+.stop-btn { color: #b03a2e; border-color: #d9a19a; }
+.edit-btn { opacity: 0.55; }
+.bubble:hover .edit-btn { opacity: 1; }
+#load-earlier-btn { display: block; margin: 8px auto; }

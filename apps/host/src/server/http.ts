@@ -111,7 +111,31 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const conversationId = decodeURIComponent(convMsgs[1]!);
       const after = Number(url.searchParams.get('after') ?? '0') || 0;
       const limit = Number(url.searchParams.get('limit') ?? '100') || 100;
-      return json(res, 200, { messages: d.messages.listMessages({ conversationId, afterSequence: after, limit }) });
+      const beforeRaw = url.searchParams.get('before');
+      const before = beforeRaw !== null ? Number(beforeRaw) || 0 : undefined;
+      return json(res, 200, { messages: d.messages.listMessages({ conversationId, afterSequence: after, beforeSequence: before, limit }) });
+    }
+
+    // F-J-08（联合审计 2026-10-06）：用户消息编辑修订——服务端能力（editUserMessage：
+    // 修订+supersedes+outbox 同事务）此前无 HTTP 入口，正常聊天内编辑不可达
+    const putMsg = /^PUT \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.exec(route);
+    if (putMsg) {
+      const conversationId = decodeURIComponent(putMsg[1]!);
+      const messageId = decodeURIComponent(putMsg[2]!);
+      const body = (await readJson(req, d)) as Partial<{ content: string }>;
+      if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串（多行正文整体提交）' } });
+      const existing = d.messages.getMessage(messageId);
+      if (!existing || existing.conversation_id !== conversationId) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
+      try {
+        const message = d.messages.editUserMessage(messageId, body.content);
+        return json(res, 200, { message, revision_of: messageId });
+      } catch (err) {
+        const msg = String((err as Error).message ?? '');
+        if (msg.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: msg } });
+        if (msg.includes('只有用户消息可编辑')) return json(res, 403, { error: { code: 'not_editable', message: msg } });
+        if (msg.includes('message not found')) return json(res, 404, { error: { code: 'not_found', message: '消息不存在' } });
+        throw err;
+      }
     }
 
     const postMsgs = /^POST \/api\/v1\/conversations\/([^/]+)\/messages$/.exec(route);
