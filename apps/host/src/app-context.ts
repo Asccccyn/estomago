@@ -126,7 +126,8 @@ export class Host {
     // 端到端在 Mariposa 接口上线前 BLOCKED——客户端错误如实回给模型，不伪造成功）
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
-    const tools = new HostToolExecutor({ mariposa: modelMariposaClient, reviews, checkpoint });
+    // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
+    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync });
     const trajectory = new WindowTrajectoryService(db);
     const supervisor = new TurnSupervisor({
       db,

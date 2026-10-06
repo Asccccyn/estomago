@@ -61,7 +61,7 @@ function compose(root: string, orTransport: OrTransport, opts: { removeIdentity?
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
@@ -120,14 +120,21 @@ test('A012 撤权：会话中途撤走批准材料 → 旧窗作废不续用、�
   ctx.db.close();
 });
 
-test('A051：宿主参数门——未知字段/类型错/缺必填全部拒收且零副作用', () => {
-  const bad = validateToolArgs('memory_hold', { category: 'daily' });
+test('A051：宿主参数门——新 hold 契约的未知字段/类型错/枚举外/长度/缺必填全部拒收且零副作用', () => {
+  const base = { original_title: '测试记忆', categories: ['daily'], text: 'x' };
+  const bad = validateToolArgs('memory_hold', { original_title: '测试记忆', categories: ['daily'] });
   assert.ok(!bad.ok && bad.code === 'TOOL_ARG_REQUIRED', '缺 text 拒收');
-  const badType = validateToolArgs('memory_hold', { category: 123, text: 'x' });
+  const badType = validateToolArgs('memory_hold', { ...base, categories: 123 });
   assert.ok(!badType.ok && badType.code === 'TOOL_ARG_TYPE', '类型错拒收');
-  const badUnknown = validateToolArgs('memory_hold', { category: 'daily', text: 'x', evil: 'y' });
+  const badUnknown = validateToolArgs('memory_hold', { ...base, evil: 'y' });
   assert.ok(!badUnknown.ok && badUnknown.code === 'TOOL_ARG_UNKNOWN', '白名单外字段拒收（additionalProperties:false）');
-  const good = validateToolArgs('memory_hold', { category: 'daily', text: 'x', mood_tags: ['a'] });
+  const badEnum = validateToolArgs('memory_hold', { ...base, categories: ['daily', 'mood'] });
+  assert.ok(!badEnum.ok && badEnum.code === 'TOOL_ARG_ENUM', '分类枚举外值拒收');
+  const badTitle = validateToolArgs('memory_hold', { ...base, original_title: '标'.repeat(31) });
+  assert.ok(!badTitle.ok && badTitle.code === 'TOOL_ARG_LENGTH', '标题超 30 字拒收（mariposa 契约）');
+  const oldField = validateToolArgs('memory_hold', { ...base, category: 'daily', mood_tags: ['开心'] });
+  assert.ok(!oldField.ok && oldField.code === 'TOOL_ARG_UNKNOWN', '旧字段（category/mood_tags）已退役拒收');
+  const good = validateToolArgs('memory_hold', { ...base, quotes: ['原话片段'], creation_mode: 'contemporaneous' });
   assert.ok(good.ok && good.value.text === 'x');
   const notListed = validateToolArgs('nonexistent', {});
   assert.ok(!notListed.ok && notListed.code === 'TOOL_NOT_IN_ALLOWLIST');
