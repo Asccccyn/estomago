@@ -24,7 +24,7 @@ export class HoldCheckpointService {
   advance(windowId: string, request: HoldRequest, receipt: HoldReceipt): CheckpointRow {
     const existing = this.forWindow(windowId);
     const next = advanceBookmark(existing, request, receipt);
-    if (existing !== null && next === existing) return next; // 重放/不倒退：无写入
+    if (existing !== null && next === existing) return existing; // 重放/不倒退：无写入（next === existing，同一对象）
     tx(this.db, () => {
       this.db.prepare(
         `INSERT INTO hold_checkpoints(window_id, room_id, epoch_id, seen_sequence, request_id, receipt_id, memory_id, operation_id, updated_at)
@@ -33,6 +33,6 @@ export class HoldCheckpointService {
            receipt_id = excluded.receipt_id, memory_id = excluded.memory_id, operation_id = excluded.operation_id, updated_at = excluded.updated_at`,
       ).run(windowId, next.roomId, next.epochId, next.seenSequence, next.requestId, next.receiptId, next.memoryId, (receipt as HoldReceipt & { operationId?: string }).operationId ?? '', new Date().toISOString());
     });
-    return { ...next, windowId };
+    return { ...next, windowId, operationId: (receipt as HoldReceipt & { operationId?: string }).operationId ?? '' }; // 与上方落库值同源（F-J-31：补齐 CheckpointRow 声明字段）
   }
 }

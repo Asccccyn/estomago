@@ -80,7 +80,7 @@ export class ClaudeSdkRunner implements AgentRunner {
       return { outcome: 'error', errorClassified: 'unknown', errorCode: 'SDK_UNSUPPORTED_ENVELOPE_DRIVER', errorMessage: `SDK runner 收到 ${req.driver} 请求`, sessionId: null, requestId: null };
     }
     const normalizer = new SdkEventNormalizer();
-    const o = req.options.options;
+    const o = req.options!.options; // driver 守卫后必为 SDK 形状（options 必有）
     const options: RealOptionsShape = {
       model: o.model,
       systemPrompt: o.systemPrompt,
@@ -98,7 +98,7 @@ export class ClaudeSdkRunner implements AgentRunner {
       ...(req.resumeSessionId ? { resume: req.resumeSessionId } : {}), // 会话连续性（AUD-03）
     };
     try {
-      const iterable = this.query({ prompt: req.prompt, options });
+      const iterable = this.query({ prompt: req.prompt!, options }); // driver 守卫后必为 SDK 形状
       for await (const raw of iterable) {
         if (req.abortController.signal.aborted) {
           return final(normalizer, 'interrupted');
