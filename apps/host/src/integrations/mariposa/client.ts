@@ -12,18 +12,12 @@ export type MariposaCallResult =
 
 export type MariposaTransport = (capability: string, payload: Record<string, unknown>) => Promise<MariposaCallResult>;
 
-// 稳定错误类别（契约 §错误）：retryable=false 的领域冲突/权限问题标 dead，不由宿主盲重试
-export const MARIPOSA_ERROR_CODES = [
-  'IDEMPOTENCY_CONFLICT', 'VERSION_CONFLICT', 'FORBIDDEN', 'SOURCE_NOT_READY',
-  'SOURCE_REVISION_CONFLICT', 'SOURCE_HASH_MISMATCH', 'SOURCE_RANGE_NOT_PATH',
-  'SOURCE_RANGE_OFFSET', 'SOURCE_SELECTION_TOO_LARGE', 'EPISODE_ALREADY_CLOSED',
-  'INVALID_TRANSITION', 'REVIEW_STALE', 'REVIEW_NOT_ACTIVE',
-] as const;
-export type MariposaErrorCode = (typeof MARIPOSA_ERROR_CODES)[number];
-
-export function isKnownErrorCode(code: string): code is MariposaErrorCode {
-  return (MARIPOSA_ERROR_CODES as readonly string[]).includes(code);
-}
+// F-J-14（联合审计 2026-10-06）：移除手工维护的错误码清单（MARIPOSA_ERROR_CODES/
+// isKnownErrorCode）——该副本含 3 个 mariposa 不存在的码（EPISODE_ALREADY_CLOSED/
+// REVIEW_STALE/REVIEW_NOT_ACTIVE）、缺 ≥8 个真实码，且全仓零调用；重试语义已按
+// httpStatus 分类（classifyError），未知码的 dead/unknown 兜底不受影响。真实码
+// 正本=mariposa input_schemas/registry；跨仓契约漂移防护=tests/unit/
+// joint-audit-b4-contract.test.ts（F-J-13）。
 
 /** 可重试分类（审计 1005B 根因修复）：HTTP 语义优先，结构化码只做领域细分。
  *  此前只按 code 字符串匹配——mariposa 429 的结构化码是 RATE_LIMITED，
