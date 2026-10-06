@@ -73,7 +73,7 @@ export function buildHostTools(): HostToolSpec[] {
           quotes: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10, description: '可选：想逐字引用的原话片段。只给对话里真实出现过的连续原文；每条独立，说话人由系统标注' },
           plan_ids: { type: 'array', items: { type: 'string', minLength: 1 } },
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
-          memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）' },
+          memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）；当天聊到随手记**不用填**——服务端自动按记录当天（她的裁定 2026-10-06）' },
           date_confidence: { type: 'string', enum: [...HOLD_DATE_CONFIDENCE] },
           mood_tags: { type: 'array', items: { type: 'string', enum: [...currentMoodCategories()] }, maxItems: 3, description: `当时心情大类（固定 ${currentMoodCategories().length} 类选 1-3 个；正本=memory.mood.vocab；不选=不写心情）` },
           mood_note: { type: 'string', description: '当下心情随笔，自由文字可写可不写（如"开心想抱抱"）；永不参与检索' },
