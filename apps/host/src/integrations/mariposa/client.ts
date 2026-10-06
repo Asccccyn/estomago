@@ -229,6 +229,23 @@ export class MariposaClient {
     return { ok: true, result: r.result, receipt: parsed };
   }
 
+  /** D2（2026-10-06）：开窗资料（estomago profile——服务端默认不带心情
+   *  自由文字，字段矩阵见 mariposa _memory_slim；分页 bootstrap.next 按
+   *  snapshot 游标续取，宿主当前只消费首页摘要）。 */
+  async bootstrapGet(): Promise<MariposaCallResult> {
+    return this.transport('bootstrap.get', { profile: 'estomago' });
+  }
+
+  /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
+   *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string }): Promise<MariposaCallResult> {
+    return this.transport('memory.recall.start', {
+      query_plan: { original_request: args.query, channels: ['event'] },
+      ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      request_ref: args.requestRef,
+    });
+  }
+
   /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。
    *  形状：{categories: string[], version?, rules?, frozen_ruling?}。
    *  需要绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
