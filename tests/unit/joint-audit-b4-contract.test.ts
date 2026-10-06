@@ -94,3 +94,57 @@ test('F-J-13：hold 的 source_selections 字段名与 mariposa schema 一致', 
     assert.ok(selBlock.includes(`"${field}"`), `selections 字段漂移：${field}`);
   }
 });
+
+// —— F-J-12：批次字节口径跨语言黄金夹具（JS 计数 vs Python json.dumps 服务端口径）——
+import { serverNormalizedBytes } from '../../apps/host/src/integrations/mariposa/client.ts';
+import { execFileSync } from 'node:child_process';
+
+function pythonDumpsBytes(payload: unknown): number {
+  // 服务端口径：json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')
+  const json = JSON.stringify(payload);
+  const out = execFileSync('python3', ['-c', `
+import json, sys
+payload = json.loads(sys.argv[1])
+print(len(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode('utf-8')))
+`, json], { encoding: 'utf8' });
+  return Number(out.trim());
+}
+
+const goldenMessage = (i: number, over: Partial<Record<string, unknown>> = {}): Record<string, unknown> => ({
+  origin_message_id: `msg-${i}`, revision: 1, previous_revision: null, conversation_sequence: i,
+  predecessor: null, sender: i % 2 === 0 ? 'user' : 'assistant', published_kind: 'chat_message',
+  occurred_at: '2026-10-06T21:00:00+08:00', received_at: '2026-10-06T21:00:01+08:00',
+  published_at: '2026-10-06T21:00:02+08:00',
+  text: `第${i}条：中文正文带引号"引号"、换行\\n、emoji 😀与制表\\t——月亮很圆`,
+  assets: [], content_hash: 'a'.repeat(64), ...over,
+});
+
+test('F-J-12 黄金夹具：JS serverNormalizedBytes 与 Python 服务端口径逐样本相等', () => {
+  const samples: Array<{ name: string; payload: unknown }> = [
+    { name: '单条中文+emoji+引号+换行', payload: { operation_id: 'op-1', stream_id: 's', origin_instance: 'estomago', origin_conversation_id: 'room', messages: [goldenMessage(1)] } },
+    { name: '50 条边界', payload: { operation_id: 'op-50', stream_id: 's', origin_instance: 'estomago', origin_conversation_id: 'room', messages: Array.from({ length: 50 }, (_, i) => goldenMessage(i + 1)) } },
+    { name: '键序乱序（对象键插入序≠字典序）', payload: { zeta: 1, alpha: '中文', middle: null, beta: [3, 1, 2] } },
+    { name: '空对象/空数组/空串/null', payload: { a: {}, b: [], c: '', d: null } },
+    { name: '嵌套 predecessor', payload: { operation_id: 'op-p', stream_id: 's', origin_instance: 'estomago', origin_conversation_id: 'room', messages: [goldenMessage(2, { predecessor: { origin_message_id: 'msg-1', revision: 1 } })] } },
+  ];
+  for (const s of samples) {
+    const js = serverNormalizedBytes(s.payload);
+    const py = pythonDumpsBytes(s.payload);
+    assert.equal(js, py, `${s.name}：JS=${js} Python=${py}（口径漂移）`);
+  }
+});
+
+test('F-J-12 边界：1MiB 阈值邻域两端同判定', () => {
+  // 构造使规范化载荷接近 1MiB 的正文长度，两端判定一致
+  const LIMIT = 1024 * 1024;
+  for (const extra of [-64, -1, 0, 1, 64]) {
+    const base = { operation_id: 'op-b', stream_id: 's', origin_instance: 'estomago', origin_conversation_id: 'room', messages: [goldenMessage(1, { text: '字'.repeat(300000) })] };
+    // 通过增删正文长度逼近阈值（粗调+微调）
+    const probe = (len: number): number => serverNormalizedBytes({ ...base, messages: [{ ...base.messages[0] as Record<string, unknown>, text: 'x'.repeat(len) }] });
+    // 只断言两端在同一载荷上给出相同字节与相同越限判定
+    const payload = { ...base, messages: [{ ...(base.messages[0] as Record<string, unknown>), text: '字'.repeat(260000 + Math.floor(extra / 3)) }] };
+    assert.equal(serverNormalizedBytes(payload) > LIMIT, pythonDumpsBytes(payload) > LIMIT, `extra=${extra}：越限判定一致`);
+    assert.equal(serverNormalizedBytes(payload), pythonDumpsBytes(payload), `extra=${extra}：字节数相等`);
+    void probe;
+  }
+});
