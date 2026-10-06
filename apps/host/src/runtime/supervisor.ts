@@ -60,6 +60,7 @@ export type SupervisorDeps = {
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
+  supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -80,8 +81,13 @@ type ActiveRun = {
 
 export class TurnSupervisor {
   private d: SupervisorDeps;
-  private chains = new Map<string, Promise<void>>();
+  private chains = new Map<string, Promise<unknown>>(); // F-J-31：runSerialized 链尾 Promise<T|void> 存迹，只 await 不读值
   private active = new Map<string, ActiveRun>(); // key = turnId
+  // F-J-09（联合审计 2026-10-06）：工具 schema/顺序按 epoch（窗口）冻结——
+  // 同窗续请求 tools 恒定（§7.1）；词表刷新只影响新窗快照。进程内缓存；
+  // 重启后同窗首发的快照重建（跨重启的前缀漂移只影响缓存命中，不影
+  // 响正确性——新窗在换窗时取新快照）。
+  private frozenToolsByWindow = new Map<string, import('./or-payload.ts').OrTool[]>();
 
   constructor(d: SupervisorDeps) {
     this.d = d;
@@ -188,7 +194,7 @@ export class TurnSupervisor {
     activeReviewId: string | null;
     conversationId: string;
     windowId: string;
-    turnId: string;
+    turnId: string | null; // 自动评审无所属 turn（手动换窗评审线）——与运行时实况对齐（F-J-31）
     attemptId: string;
     controller: AbortController;
     onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
@@ -199,12 +205,12 @@ export class TurnSupervisor {
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null }> {
     const d = this.d;
-    const runner = d.runnerSelection.runner;
+    const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
     let envelope = o.envelope;
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const captured: MatchedCompleteBlock[] = [];
-      let lastText: string | null = null;
+      let lastText = null as string | null; // 闭包内赋值（wrapped）：外层流分析按声明类型读（F-J-31）
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const prqId = prqId0;
       let lastPrqId = prqId0; // D07：终态/计量归属**最后一次实际派发**的请求行（重试不再覆盖首发）
@@ -232,7 +238,7 @@ export class TurnSupervisor {
         });
         if (planNow.action === 'blocked_hard') {
           d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
-          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null };
+          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null };
         }
       }
       const payloadJson = JSON.stringify(envelope);
@@ -309,7 +315,7 @@ export class TurnSupervisor {
       for (const t of ordered) {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
-          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null };
+          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null };
         }
         let args: Record<string, unknown>;
         try {
@@ -410,6 +416,26 @@ export class TurnSupervisor {
   // 信封（§5.1/§5.5/§7.1，OR/DS 共用）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载）；
   // 近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
   // 身份映射隔离：型号/输出上限/粗估系数/session 派生按驱动取值（drv()）；DS 不发 session_id（runner 序列化丢弃）。
+  /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
+  private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
+    let t = this.frozenToolsByWindow.get(windowId);
+    if (!t) {
+      t = buildHostTools() as unknown as import('./or-payload.ts').OrTool[];
+      this.frozenToolsByWindow.set(windowId, t);
+    }
+    return t;
+  }
+
+  /** F-J-39：追赶投影——清单高水位之后、有真实发出证据（purpose=chat 且 sent_at 非空）的
+   *  回合消息。失败回合的已发输入/已发布助手原话真实被模型看过，应计入评审范围与
+   *  评审信封（不扫库假称已见；评审请求自身不算证据）。 */
+  private catchupEntries(conversationId: string, dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }>, trajMaxSeq: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> {
+    const sentChatTurnIds = new Set((this.d.db.prepare(
+      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.sent_at IS NOT NULL",
+    ).all() as Array<{ tid: string | null }>).map((r) => r.tid).filter((t): t is string => t !== null));
+    return dialogue.filter((m) => m.sequence > trajMaxSeq && m.turnId !== null && sentChatTurnIds.has(m.turnId));
+  }
+
   private buildEnvelope(o: {
     conversationId: string;
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
@@ -485,7 +511,11 @@ export class TurnSupervisor {
         return { rotated: false, blocked: 'ROTATION_RANGE_UNKNOWN:旧窗口轨迹缺少已见清单且无法按正文重建——不签发空范围凭证，需明确恢复' };
       }
     }
-    const manifest: ManifestEntry[] = trajManifest ?? dialogue.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+    // F-J-10（联合审计 2026-10-06）：无轨迹时 manifest=实际装载子集（buildEnvelope
+    // selected，12k 预算内完整回合组）——此前用最近 200 条库投影，范围可含模型看不见
+    // 的消息，签出覆盖信封外内容的 review（违反 §3.2.2"不扩大到全库"）
+    const manifest: ManifestEntry[] = trajManifest ?? this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).selected
+      .map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
@@ -569,8 +599,13 @@ export class TurnSupervisor {
       : [];
     let range;
     try {
+      // F-J-39：范围清单并入追赶投影（有真实派发证据的失败回合消息）——
+      // 与评审信封同源，范围 ⊆ 模型实际可见集合
+      const trajMaxForRange = trajManifest && trajManifest.length > 0 ? Math.max(...trajManifest.map((m) => m.seq)) : -1;
+      const rangeCatchup = trajRow !== null ? this.catchupEntries(o.conversationId, dialogue, trajMaxForRange).map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true })) : [];
+      const manifestWithCatchup = trajRow !== null ? [...(trajManifest ?? []), ...rangeCatchup] : manifest;
       range = selectReviewRange({
-        manifest,
+        manifest: manifestWithCatchup,
         epochId: o.window.id,
         lastHold: checkpoint ? { epochId: checkpoint.epochId, seenSequence: checkpoint.seenSequence } : null,
         reviewedKeys: d.reviews.reviewedKeysForRoom(o.conversationId),
@@ -584,7 +619,16 @@ export class TurnSupervisor {
       return this.doRotate(o, reason, null); // 同范围有效凭证：直接换窗不再次收费检查（§4.3）
     }
     if (range.length === 0) {
-      d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, rangeKeys); // §3.2.5：空范围不叫模型
+      // F-J-40：空范围凭证携带定位依据（书签/清单高水位/触发原因/凭证计数）——
+      // 空键集本身无法复核"为什么空"；不伪造 reviewed/held 全覆盖
+      const manifestMax = manifest.reduce((mx, m) => Math.max(mx, m.seq), -1);
+      d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, rangeKeys, {
+        reason,
+        bookmark_seen_sequence: checkpoint ? checkpoint.seenSequence : null,
+        manifest_high_water: manifestMax,
+        manifest_entries: manifest.length,
+        carried_exempt: carriedExempt.length,
+      }); // §3.2.5：空范围不叫模型
       return this.doRotate(o, reason, null);
     }
     // §3.3 有界恢复（审计 P2-1）：同窗评审失败达上限后不再自动发评审（每次评审都是真实付费请求）。
@@ -600,14 +644,20 @@ export class TurnSupervisor {
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = d.trajectory?.forWindow(o.window.id);
     const fallbackBase = this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
-    const reviewBaseMessages: OrMessage[] = traj ? traj.messages : fallbackBase;
+    // F-J-39：轨迹正本 + 追赶投影——失败回合的已发输入/已发布原话有真实派发证据，
+    // 属"截至本次已携带高水位"，纳入评审范围与信封（此前只在下次成功回合才入清单）
+    const trajMaxForCatchup = traj?.manifest && traj.manifest.length > 0 ? Math.max(...traj.manifest.map((m) => m.seq)) : -1;
+    const reviewCatchup = traj ? this.catchupEntries(o.conversationId, dialogue, trajMaxForCatchup) : [];
+    const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
+    const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : fallbackBase;
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
     const { boundaries: reviewBoundaries } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
     const envelope: OrRequestEnvelope = {
       model: dv.model,
       sessionId: dv.sessionId(o.conversationId),
       messages: reviewMessages,
-      tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
+      // F-J-09：评审请求同窗复用冻结工具快照（epoch 内 tools 恒定）
+      tools: this.windowTools(o.window.id),
       boundaries: reviewBoundaries,
       maxTokens: dv.maxTokens,
       reasoning: dv.reasoning,
@@ -895,10 +945,8 @@ export class TurnSupervisor {
     // D05/D06 交互：追赶只收**有真实发出证据**的回合（该回合存在 purpose='chat' 且 sent_at 非空的请求）——
     // 被 P2 硬门拒发的大输入从未上线，不得被追赶投影反复注回上下文（否则 F25 短输入被永久堵死的
     // 回归以新形式复现）；评审请求（pre_rotate_review）不算证据（其信封不含聊天正文）。
-    const sentChatTurnIds = new Set((d.db.prepare(
-      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.sent_at IS NOT NULL",
-    ).all() as Array<{ tid: string | null }>).map((r) => r.tid).filter((t): t is string => t !== null));
-    const catchup = orTraj ? dialogueForInput.filter((m) => m.sequence > trajMaxSeq && m.turnId !== null && sentChatTurnIds.has(m.turnId)) : [];
+    // F-J-39：追赶投影与评审路径同源（catchupEntries 单一实现）
+    const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq) : [];
     const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     const orBaseMessages: OrMessage[] = orTraj
@@ -914,14 +962,18 @@ export class TurnSupervisor {
             model: dv.model,
             sessionId: dv.sessionId(turn.conversation_id),
             messages: orMessages,
-            tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
+            // F-J-09：本窗冻结快照（首发定格；词表中途变化不改变本窗 tools）
+            tools: this.windowTools(window.id),
             boundaries,
             maxTokens: dv.maxTokens,
             reasoning: dv.reasoning,
           };
         })()
       : null;
-    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: [...orTraj.messages, ...catchupMessages] } : null;
+    // F-J-09：跨轮 previousPayload 的 tools 取**已发送冻结快照**（本窗首发定格），
+    // 不用本轮重建结果充当"上一请求"——若当前信封 tools 与冻结快照漂移（回归），
+    // append-only 断言可在跨轮间抓到（此前两边恒同源=结构性失明）
+    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, tools: this.windowTools(window.id), messages: [...orTraj.messages, ...catchupMessages] } : null;
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单
@@ -1230,7 +1282,7 @@ export class TurnSupervisor {
     const rows = deps.db
       .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id WHERE t.state = 'pending' AND a.state IN ('pending','ready_after_route')")
       .all() as Array<{ id: string }>;
-    for (const r of rows) deps.supervisor.enqueue(r.id);
+    for (const r of rows) deps.supervisor!.enqueue(r.id);
     return { redispatched: rows.length };
   }
 

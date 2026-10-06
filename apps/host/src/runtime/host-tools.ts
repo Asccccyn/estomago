@@ -324,7 +324,9 @@ export class HostToolExecutor {
       // 审计 1005B：mariposa 已收紧——带心情必须显式 creation_mode="contemporaneous"
       //（缺省不再默认同期，防补记心情绕过 V2-REC-04 窗口裁定）。宿主前置拦截
       // 省一次远端调用，错误码与服务端一致，模型可自纠后重试。
-      if (args.creation_mode === undefined) {
+      // F-J-38（联合审计 2026-10-06）：retrospective+mood 组合也在宿主预拒（与文案一致）——
+      // 此前只拦缺省，补记+心情放过本地门靠服务端兜底（多一次远端）
+      if (args.creation_mode === undefined || args.creation_mode === 'retrospective') {
         this.reviews.settleEffect(effectId, 'failed_resolved', false, null);
         return { ok: false, output: { error_code: 'HOLD_MOOD_WINDOW_REQUIRED', operation_id: operationId, message: '带当时心情必须显式 creation_mode="contemporaneous"（当下聊到随手记）；补记过去的事（retrospective）不能带当时心情' } };
       }
