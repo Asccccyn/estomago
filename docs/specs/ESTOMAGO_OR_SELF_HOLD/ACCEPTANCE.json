@@ -195,7 +195,7 @@
       "level": "contract+integration",
       "status": "BLOCKED",
       "evidence": [],
-      "notes": "hold 已接真实客户端；source_selections/source.bind 工具入口未暴露（审计已列）——待补丁"
+      "notes": "source_selections 已随 quotes 落地（9b08046：钉 source_message_id+hash）；source.bind 独立工具入口仍未暴露——端到端真联调仍 BLOCKED（凭据+archive.enabled）【2026-10-06 修订理由，状态不变】"
     },
     {
       "id": "A017",
