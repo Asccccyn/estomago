@@ -23,7 +23,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
+import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -128,6 +128,33 @@ test('真实顺序：提交→收据就位→hold 带片段引用→our_words �
   assert.equal(sel.start_char_offset, userText.indexOf('路过花店'), '句内片段带字符区间');
   assert.equal(sel.end_char_offset, userText.indexOf('路过花店') + '路过花店，突然好想你'.length);
   ctx.db.close();
+});
+
+test('自审 P2 回归：emoji（增补平面）在片段之前时，offset 按码点计不按 UTF-16 计', async () => {
+  const calls: HoldCall[] = [];
+  const root = tempRoot('hq-emoji-');
+  // '😀'=1 码点但 2 个 UTF-16 单位：旧实现会把 start 多算 1、end 多算 1 → mariposa（码点半开区间）钉错区间
+  const userText = '😀今天路过花店，突然好想你';
+  const frag = '路过花店，突然好想你';
+  const ctx = compose(root, { original_title: '带emoji的引用', categories: ['sweet'], text: 'x', quotes: [frag] }, recordingMariposa(calls));
+  const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'e1', occurredAt: T0 });
+  seedReceipt(ctx, sub.message.id, 1, userText, 'src-conv-e', 'src-m-e');
+  ctx.supervisor.enqueue(sub.turnId);
+  await ctx.supervisor.waitIdle();
+  assert.equal(calls.length, 1, '引用命中（indexOf 匹配不受代理对影响）');
+  const sel = (calls[0]!.sourceSelections as Array<Record<string, unknown>>)[0]!;
+  const startCp = 3; // 😀(1) + 今(1) + 天(1) —— UTF-16 下标会是 4
+  assert.equal(sel.start_char_offset, startCp, 'start=码点口径（mariposa query.py CB-029 契约），不是 UTF-16');
+  assert.equal(sel.end_char_offset, startCp + [...frag].length, 'end=码点半开区间（frag 码点长度）');
+  assert.notEqual(sel.start_char_offset, userText.indexOf(frag), '确实与 UTF-16 下标不同（用例有效性）');
+  ctx.db.close();
+});
+
+test('参数门补充：quotes/plan_ids 空串条目在门口拒绝', async () => {
+  const badQ = validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', quotes: ['正常片段', ''] });
+  assert.ok(!badQ.ok && badQ.code === 'TOOL_ARG_LENGTH', 'quotes 空串条目拒收');
+  const badP = validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', plan_ids: [''] });
+  assert.ok(!badP.ok && badP.code === 'TOOL_ARG_LENGTH', 'plan_ids 空串条目拒收（mariposa items minLength=1 对齐）');
 });
 
 test('引用失配：模型指认了不存在的原话 → QUOTE_MATCH_FAILED，hold 不发、账本不开（零副作用）', async () => {
