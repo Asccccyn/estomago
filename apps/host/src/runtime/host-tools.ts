@@ -39,8 +39,8 @@ export const HOST_TOOLS: HostToolSpec[] = [
           original_title: { type: 'string', minLength: 1, maxLength: HOLD_TITLE_MAX, description: `这条记忆的标题（1-${HOLD_TITLE_MAX}字，必填）` },
           categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, description: '分类（从固定九类里选，至少一个）' },
           text: { type: 'string', description: '要记住的内容（你的表述）' },
-          quotes: { type: 'array', items: { type: 'string' }, maxItems: 10, description: '可选：想逐字引用的原话片段。只给对话里真实出现过的连续原文；每条独立，说话人由系统标注' },
-          plan_ids: { type: 'array', items: { type: 'string' } },
+          quotes: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10, description: '可选：想逐字引用的原话片段。只给对话里真实出现过的连续原文；每条独立，说话人由系统标注' },
+          plan_ids: { type: 'array', items: { type: 'string', minLength: 1 } },
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
           memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）' },
           date_confidence: { type: 'string', enum: [...HOLD_DATE_CONFIDENCE] },
@@ -74,7 +74,7 @@ export function hostToolNames(): string[] {
   return HOST_TOOLS.map((t) => t.function.name);
 }
 
-type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[] }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
+type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[]; minLength?: number }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
 
 /** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外字段拒绝（additionalProperties:false），
  *  required 缺失/类型不符/枚举外值/长度与条数越界直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
@@ -95,6 +95,7 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): {
     } else if (prop.type === 'array') {
       if (!Array.isArray(v)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 array` };
       if (prop.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
+      if (prop.items?.minLength !== undefined && v.some((x) => typeof x === 'string' && x.length < prop.items!.minLength!)) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 含空串条目（每条至少 ${prop.items.minLength} 字）` };
       if (prop.items?.enum && v.some((x) => !prop.items!.enum!.includes(x))) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 含枚举外值（允许：${prop.items.enum.join('|')}）` };
       if (prop.minItems !== undefined && v.length < prop.minItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minItems} 条` };
       if (prop.maxItems !== undefined && v.length > prop.maxItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxItems} 条` };
@@ -122,8 +123,26 @@ export type ToolExecResult = { ok: boolean; output: Record<string, unknown> };
 const rawToolCallIdRef = { current: null as string | null };
 function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
 
-/** 已匹配的引用（逐字核对通过）：原文消息 + 片段在该消息内的字符区间 */
+/** 已匹配的引用（逐字核对通过）：原文消息 + 片段在该消息内的字符区间。
+ *  区间口径=**Unicode 码点**半开区间 [start,end)——与 mariposa 契约一致（source/query.py CB-029：
+ *  "char offset 口径不变，仍是 code point 半开区间"）。不得直接发 JS 的 UTF-16 下标：
+ *  emoji 等增补平面字符占 2 个 UTF-16 单位但只算 1 个码点，fragment 之前出现过一个就会错位。 */
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
+
+/** 引用核对只看最近 N 条已见消息（资源有界；更早原话的引用会如实 QUOTE_MATCH_FAILED，不扩大扫描） */
+const QUOTE_CANDIDATE_LIMIT = 60;
+
+/** UTF-16 下标 → 码点数（代理对计 1）；把 indexOf 的结果换算成 mariposa 契约口径 */
+function utf16IndexToCodepoints(s: string, utf16Index: number): number {
+  let cp = 0;
+  let i = 0;
+  while (i < utf16Index) {
+    const code = s.charCodeAt(i);
+    i += code >= 0xd800 && code <= 0xdbff && i + 1 < s.length ? 2 : 1;
+    cp++;
+  }
+  return cp;
+}
 
 export class HostToolExecutor {
   private db: Db;
@@ -152,13 +171,14 @@ export class HostToolExecutor {
   }
 
   /** 模型指认的引用核对（她的裁定 2026-10-05）：只在"发起请求实际看见的原话"里逐字匹配（按序消费候选，
-   *  防重复片段误配）；任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。 */
+   *  防重复片段误配）；任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。
+   *  匹配用 indexOf（UTF-16 一致，无碍）；发出的 start/end 换算成码点口径（见 MatchedQuote 注释）。 */
   private resolveQuotes(roomId: string, seenSequence: number, quotes: string[]): MatchedQuote[] | { error: string; index: number } {
     const rows = this.db.prepare(
       `SELECT m.id, m.sequence, m.speaker, m.current_revision, r.content FROM messages m
        JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
        WHERE m.conversation_id = ? AND m.sequence <= ? AND m.speaker IN ('owner','assistant')
-       ORDER BY m.sequence DESC LIMIT 60`,
+       ORDER BY m.sequence DESC LIMIT ${QUOTE_CANDIDATE_LIMIT}`,
     ).all(roomId, seenSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; content: string }>;
     const candidates = rows.slice().reverse(); // 时间正序，按序消费
     const matched: MatchedQuote[] = [];
@@ -169,10 +189,15 @@ export class HostToolExecutor {
       let hit: MatchedQuote | null = null;
       for (let i = cursor; i < candidates.length; i++) {
         const row = candidates[i]!;
-        const start = row.content.indexOf(frag);
         if (row.speaker !== 'owner' && row.speaker !== 'assistant') continue;
-        if (start >= 0) {
-          hit = { messageId: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag, start, end: start + frag.length };
+        const idx = row.content.indexOf(frag);
+        if (idx >= 0) {
+          const startCp = utf16IndexToCodepoints(row.content, idx);
+          hit = {
+            messageId: row.id, revision: row.current_revision, sequence: row.sequence,
+            speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag,
+            start: startCp, end: startCp + [...frag].length, // [...str] 按码点迭代=码点长度
+          };
           cursor = i + 1;
           break;
         }
