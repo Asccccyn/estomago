@@ -132,8 +132,15 @@ test('A051：宿主参数门——新 hold 契约的未知字段/类型错/枚�
   assert.ok(!badEnum.ok && badEnum.code === 'TOOL_ARG_ENUM', '分类枚举外值拒收');
   const badTitle = validateToolArgs('memory_hold', { ...base, original_title: '标'.repeat(31) });
   assert.ok(!badTitle.ok && badTitle.code === 'TOOL_ARG_LENGTH', '标题超 30 字拒收（mariposa 契约）');
-  const oldField = validateToolArgs('memory_hold', { ...base, category: 'daily', mood_tags: ['开心'] });
-  assert.ok(!oldField.ok && oldField.code === 'TOOL_ARG_UNKNOWN', '旧字段（category/mood_tags）已退役拒收');
+  const oldField = validateToolArgs('memory_hold', { ...base, category: 'daily' });
+  assert.ok(!oldField.ok && oldField.code === 'TOOL_ARG_UNKNOWN', '旧字段 category 已退役拒收');
+  // 心情接入（2026-10-05 词表终版）：mood_tags=大类枚举 ≤3；词表外拒
+  const badMood = validateToolArgs('memory_hold', { ...base, mood_tags: ['愉悦'] });
+  assert.ok(!badMood.ok && badMood.code === 'TOOL_ARG_ENUM', '心情大类枚举外值（旧词）拒收');
+  const tooMany = validateToolArgs('memory_hold', { ...base, mood_tags: ['开心', '爱', '生气', '吃醋'] });
+  assert.ok(!tooMany.ok && tooMany.code === 'TOOL_ARG_LENGTH', '心情大类超过 3 个拒收');
+  const okMood = validateToolArgs('memory_hold', { ...base, mood_tags: ['吃醋'], mood_note: '开心想抱抱' });
+  assert.ok(okMood.ok, '词表内大类+随笔通过');
   const good = validateToolArgs('memory_hold', { ...base, quotes: ['原话片段'], creation_mode: 'contemporaneous' });
   assert.ok(good.ok && good.value.text === 'x');
   const notListed = validateToolArgs('nonexistent', {});

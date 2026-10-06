@@ -1,9 +1,10 @@
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
 //    operation_id 由宿主从 tool_call 派生（模型不能自编）；无 Mariposa 客户端 → 能力缺口，明确拒绝。
-//    契约对齐 mariposa@d14a24e（她的 1005 裁定）：original_title 必填≤30字、categories 数组九分类枚举、
-//    creation_mode 枚举、memory_date+date_confidence。mood 整块暂不对模型开放（词表八大类她还要改，
-//    2026-10-05 指示"先不要动手做心情"）——等 mariposa 词表定稿后经 memory.mood.vocab 动态拉取接入。
+//    契约对齐 mariposa@75378ab（她的 1005 裁定）：original_title 必填≤30字、categories 数组九分类枚举、
+//    creation_mode 枚举、memory_date+date_confidence。心情已随词表终版接入（她当晚冻结 7 大类）：
+//    mood_tags=大类枚举（≤3 个）+ mood_note 自由文字（可写可不写），映射 mariposa hold 的
+//    mood{tags,text}。词表正本=mariposa memory.mood.vocab；此处枚举只是形状门，域校验以服务端为准。
 //  - our_words=模型指认（她的裁定）：模型只给 quotes（想逐字引用的片段）；网关在"发起请求实际看见的
 //    原文"里逐字核对（对不上=拒绝，不替模型圆谎），说话人按消息来源自动映射（owner=qiaosheng/
 //    assistant=jiaming），引用按 mariposa 现成机制钉住（source_selections：source_message_id+内容hash，
@@ -23,6 +24,8 @@ export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'p
 export const HOLD_CREATION_MODES = ['contemporaneous', 'retrospective'] as const;
 export const HOLD_DATE_CONFIDENCE = ['exact', 'inferred', 'unknown'] as const;
 export const HOLD_TITLE_MAX = 30;
+// mariposa 心情大类终版（2026-10-05 她指定 7 类；正本=mariposa memory.mood.vocab）
+export const MOOD_CATEGORIES = ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'] as const;
 
 export const HOST_TOOLS: HostToolSpec[] = [
   {
@@ -41,6 +44,8 @@ export const HOST_TOOLS: HostToolSpec[] = [
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
           memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）' },
           date_confidence: { type: 'string', enum: [...HOLD_DATE_CONFIDENCE] },
+          mood_tags: { type: 'array', items: { type: 'string', enum: [...MOOD_CATEGORIES] }, maxItems: 3, description: '当时心情大类（固定 7 类选 1-3 个；不选=不写心情）' },
+          mood_note: { type: 'string', description: '当下心情随笔，自由文字可写可不写（如"开心想抱抱"）；永不参与检索' },
         },
         required: ['original_title', 'categories', 'text'],
         additionalProperties: false,
@@ -221,6 +226,11 @@ export class HostToolExecutor {
     const holdPayload: Record<string, unknown> = { original_title: args.original_title, categories: args.categories, text: args.text };
     for (const k of ['plan_ids', 'creation_mode', 'memory_date', 'date_confidence']) {
       if (args[k] !== undefined) holdPayload[k] = args[k];
+    }
+    // 心情（2026-10-05 词表终版接入）：任一给了才组 mood——都不给=不带
+    // mood（mariposa 侧空心情合法）；tags 只收大类，note 自由文字
+    if (args.mood_tags !== undefined || args.mood_note !== undefined) {
+      holdPayload.mood = { tags: Array.isArray(args.mood_tags) ? args.mood_tags : [], text: typeof args.mood_note === 'string' ? args.mood_note : null };
     }
     if (ourWords.length > 0) holdPayload.our_words = ourWords;
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
