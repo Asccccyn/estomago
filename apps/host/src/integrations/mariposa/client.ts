@@ -149,6 +149,30 @@ function parseHoldReceiptShape(r0: Partial<HoldReceipt>): HoldReceipt | null {
   };
 }
 
+/** F-J-12（联合审计 2026-10-06）：按 mariposa 服务端规范化口径计字节——
+ * 服务端对规范化 payload 做 json.dumps(ensure_ascii=False, sort_keys=True,
+ * default=str)（Python 默认分隔符 ', '/': '）后 UTF-8 计数并与 1MiB 门比较。
+ * 此前客户端按紧凑 JSON.stringify({arguments:req}) 计（紧凑分隔符+插入序+信封
+ * 包装）：服务端度量典型偏大，临界批被 SOURCE_SELECTION_TOO_LARGE 判 dead。
+ * 本函数不含 HTTP 信封包装（服务端门也不含）。与 Python 序列化的等价性由
+ * tests/unit/joint-audit-b4-contract.test.ts 的跨语言黄金夹具互证。
+ */
+export function serverNormalizedBytes(payload: unknown): number {
+  const pyJson = (v: unknown): string => {
+    if (v === null) return 'null';
+    if (typeof v === 'number' || typeof v === 'boolean') return JSON.stringify(v);
+    if (typeof v === 'string') return JSON.stringify(v);
+    if (Array.isArray(v)) return '[' + v.map(pyJson).join(', ') + ']';
+    if (typeof v === 'object') {
+      const rec = v as Record<string, unknown>;
+      const keys = Object.keys(rec).sort();
+      return '{' + keys.map((k) => JSON.stringify(k) + ': ' + pyJson(rec[k])).join(', ') + '}';
+    }
+    return JSON.stringify(String(v)); // default=str 兜底（estómago 字段均为 JSON 类型）
+  };
+  return Buffer.byteLength(pyJson(payload), 'utf8');
+}
+
 export class MariposaClient {
   private transport: MariposaTransport;
 
