@@ -56,7 +56,7 @@ fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 const config = buildConfig({
   ...readyRuntimePatch(),
   runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' },
-  openrouter: { model: MODEL, provider_only: ['deepseek'] },
+  openrouter: { model: MODEL, provider_only: ['deepseek'], retry_max_attempts_after_initial: 0, max_output_tokens: 256 }, // 保险丝①②：冒烟不自动重试、输出上限压到一句话级
 });
 const paths = buildPaths(root);
 const db = openDatabase(path.join(root, 'data'));
@@ -118,8 +118,14 @@ async function step(name, content, clientId) {
   return att.state;
 }
 
+// 保险丝③：任一步非 completed 立即停止——不给后续步骤继续发请求的机会
+const SMOKE_MAX_REQUESTS = 10; // 保险丝④：全局真实发送上限（3 步 × 正常 1-2 轮 + 余量；超限说明行为异常，中止）
+function requestCount() { return (db.prepare('SELECT COUNT(*) n FROM provider_requests WHERE sent_at IS NOT NULL').get()).n; }
 const s1 = await step('chat-baseline', '冒烟第一步：请只回复"收到"。', 'ds1');
+if (s1 !== 'completed') { evidence.verdict = `ABORTED_AFTER_STEP1（${s1}，不再继续发送）`; fs.mkdirSync('reports', { recursive: true }); fs.writeFileSync(path.join('reports', `ds-smoke-${Date.now()}.json`), JSON.stringify(evidence, null, 2)); console.log(evidence.verdict); db.close(); fs.rmSync(root, { recursive: true, force: true }); process.exit(1); }
+if (requestCount() > SMOKE_MAX_REQUESTS) { console.error('保险丝④熔断：真实发送数超上限，中止'); process.exit(1); }
 const s2 = await step('tool-roundtrip', '请记录：今天跑了 DS 冒烟，一切都好。', 'ds2');
+if (s2 !== 'completed' || requestCount() > SMOKE_MAX_REQUESTS) { console.error(`第二步后中止（state=${s2}, sent=${requestCount()}）`); evidence.verdict = 'ABORTED_AFTER_STEP2'; fs.writeFileSync(path.join('reports', `ds-smoke-${Date.now()}.json`), JSON.stringify(evidence, null, 2)); db.close(); fs.rmSync(root, { recursive: true, force: true }); process.exit(1); }
 const s3 = await step('followup-appendonly', '谢谢，请只回复"完成"。', 'ds3');
 const win = windows.activeWindow('c1');
 evidence.final = {
