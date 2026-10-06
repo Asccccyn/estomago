@@ -86,6 +86,9 @@ export function buildDeepSeekPayload(envelope: OrRequestEnvelope): Record<string
     } else out.content = m.content ?? null;
     if (Array.isArray((m as { tool_calls?: unknown }).tool_calls)) out.tool_calls = structuredClone((m as { tool_calls: unknown[] }).tool_calls);
     if (typeof (m as { tool_call_id?: unknown }).tool_call_id === 'string') out.tool_call_id = (m as { tool_call_id: string }).tool_call_id;
+    // D01（审计 3655d60）：thinking 型号同一工具回合的官方协议继续态——仅 string 原样透传
+    // （宿主在落轨迹前剥除，绝不跨用户回合携带；UI 思考投影与本字段无通道）
+    if (typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string') out.reasoning_content = (m as { reasoning_content: string }).reasoning_content;
     return out;
   });
   return {
@@ -176,8 +179,8 @@ export class DeepSeekRunner implements AgentRunner {
     await this.sleep(ms);
   }
 
-  private final(outcome: RunnerRunResult['outcome'], errorCode: string | null, errorClassified: RunnerRunResult['errorClassified'], errorMessage: string | null, attempt: number, requestId: string | null = null): RunnerRunResult {
-    return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1 };
+  private final(outcome: RunnerRunResult['outcome'], errorCode: string | null, errorClassified: RunnerRunResult['errorClassified'], errorMessage: string | null, attempt: number, requestId: string | null = null, _reasoningFrames?: undefined, reasoningContent?: string): RunnerRunResult {
+    return { outcome, errorClassified, errorCode, errorMessage, sessionId: null, requestId, attempts: attempt + 1, ...(reasoningContent ? { reasoningContent } : {}) };
   }
 
   /** 审计 F20 同款：断流/停止后的计量抢救——finish() 抛出则用已观察原始帧按 DS 口径归一（缺帧=无事件） */
@@ -268,6 +271,7 @@ export class DeepSeekRunner implements AgentRunner {
         return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id) };
       }
       if (!sawAnyFrame) return { kind: 'pre_data_error', error: err };
+      this.salvageMetering(req, acc); // D04（审计 3655d60）：断流/网络错误先记已到计量帧再收口
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
     if (abortedMidStream) {
@@ -279,6 +283,7 @@ export class DeepSeekRunner implements AgentRunner {
     try {
       finish = acc.finish();
     } catch (err) {
+      this.salvageMetering(req, acc); // D04：EOF 无 DONE/非法工具 JSON 等 finish 抛出前先抢救计量
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
 
@@ -307,7 +312,8 @@ export class DeepSeekRunner implements AgentRunner {
       return { kind: 'result', result: this.final('no_final_result', code, null, code, attempt, finish.id) };
     }
     emit({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: null, request_id: finish.id });
-    // DS 无 reasoning_details 续态（reasoning_content 服务端剥离，不回传）——不透出 reasoningFrames
-    return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id) };
+    // DS 无 reasoning_details 续态；reasoning_content（thinking）作为同轮工具续传的协议继续态透出——
+    // supervisor 只在同一工具回合内回传，落轨迹前剥除（§10/D01）
+    return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id, undefined, finish.reasoningContent ?? undefined) };
   }
 }

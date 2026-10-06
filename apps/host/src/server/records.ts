@@ -11,7 +11,7 @@ export type RecordSnapshot = {
   epochId: string | null;
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
-  context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
+  context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; effectiveWarning: number | null; hardCapacity: number | null; estimateQuality: string };
   cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
@@ -59,6 +59,9 @@ export function buildRecordSnapshot(d: {
   const maxOutput = driver === 'deepseek' ? d.config.deepseek.max_output_tokens : d.config.openrouter.max_output_tokens;
   const safeInput = hardCapacity !== null ? hardCapacity - maxOutput - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens : null;
   const effectiveSoft = safeInput !== null ? Math.min(w.soft_limit_tokens, safeInput) : w.soft_limit_tokens;
+  // D23（审计 3655d60）：前台预警线按与 rotationPlan 同式计算（不高于软线-8k；容量未测时退配置值并如实标注
+  // hardCapacity=null）——旧 UI 固定显示 56000，小容量/自定义配置下是到不了的假线
+  const effectiveWarning = Math.max(0, Math.min(w.warning_tokens, effectiveSoft - 8000));
 
   // F22：按房间取最近一次检查（成功换窗后完成结果留在旧窗——不因窗口切换显示"还没检查过"）
   const reviewRow = (d.db.prepare("SELECT id, status, decision, window_id, json_array_length(range_keys_json) AS range_count FROM rotation_reviews WHERE room_id = ? ORDER BY created_at DESC LIMIT 1").get(conversationId) as { id: string; status: string; decision: string | null; window_id: string; range_count: number | null } | undefined);
@@ -86,7 +89,7 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
-    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality },
+    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, effectiveWarning, hardCapacity, estimateQuality: quality },
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
       requestedTtl: driver === 'deepseek' ? 'auto' : '1h',

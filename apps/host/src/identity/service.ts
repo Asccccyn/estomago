@@ -12,7 +12,7 @@ import path from 'node:path';
 // ESTOMAGO_OR_SELF_HOLD §4.1：驱动/模型/缓存配置变更同样改变上下文有效性 → 纳入指纹触发换窗。
 // 身份映射隔离：deepseek 段独立参与指纹——OR↔DS 切换（或 DS 型号/输出上限变化）→ CONTEXT_STALE 强制换窗。
 export function contextFingerprint(config: {
-  runtime: { provider?: string; sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
+  runtime: { provider?: string; sdk_version: string | null; model?: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
   openrouter?: { model: string | null; max_output_tokens: number; provider_only: string[]; reasoning: Record<string, unknown> | null };
   deepseek?: { model: string | null; max_output_tokens: number };
 }, manifest: IdentityManifestFile | null): string {
@@ -24,6 +24,7 @@ export function contextFingerprint(config: {
     manifest?.runtime_rules_version ?? null,
     manifest?.rules_hash ?? null,
     config.runtime.sdk_version,
+    config.runtime.model, // D09（审计 3655d60）：SDK 实际型号参与指纹——只换 runtime.model 也算运行边界变化（旧窗不 resume）
     JSON.stringify(config.runtime.setting_sources),
     JSON.stringify(config.runtime.builtin_tools),
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),

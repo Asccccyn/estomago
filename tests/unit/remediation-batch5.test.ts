@@ -234,10 +234,12 @@ test('F25：被拒大输入不污染后续短输入的容量估算', async () =>
   const root = tempRoot('r5e-');
   // 容量 40000 → 安全输入 11808；软线 500
   const ctx = compose(root, t, mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 500, warning_tokens: 400 } });
-  const big = await say(ctx, '巨'.repeat(40000), 'big1', T0); // ≈16k token > 安全输入 11808 → blocked_hard
+  const big = await say(ctx, '巨'.repeat(40000), 'big1', T0); // ≈16k token：旧窗自身不超限→先换窗（D06），新窗装不下→P2 硬门收口
   const attBig = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
-  assert.equal(attBig.state, 'blocked');
-  assert.ok(attBig.blocked_reason!.includes('CAPACITY_BLOCKED_HARD'));
+  // D06（审计 3655d60）：大输入不再把旧窗直接堵死——先走换窗；新窗最终载荷确实超限时由工具轮 P2 门
+  // 拒绝（failed/CAPACITY_BLOCKED_HARD_TOOL_ROUND），或旧窗自身超限（blocked/CAPACITY_BLOCKED_HARD）
+  assert.ok(['blocked', 'failed'].includes(attBig.state), `大输入终态（得到 ${attBig.state}）`);
+  assert.ok((attBig.blocked_reason ?? '').includes('CAPACITY_BLOCKED'), `硬门错误码保留（得到 ${attBig.blocked_reason}）`);
   const short = await say(ctx, '短', 's1', at(1)); // 修复后应正常完成
   const attShort = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(short.attemptId) as { state: string };
   assert.equal(attShort.state, 'completed', '短输入不再被未发送的大历史持续阻断（F25 修复）');
