@@ -107,8 +107,10 @@ export class UsageCollector {
         chosen = [cumulative[cumulative.length - 1]!]; scope = 'cumulative'; completeness = cumulative[cumulative.length - 1]!.completeness; countsTowardTotals = false;
       } else {
         // 该 turn 声明了 attempt 但完全没有 usage 观测（如 failed 早退）→ 如实列 null 行
+        // D25（审计 3655d60）：missing attempt 的费用同样未知——不能只把 token 染成 unknown
+        // 而留下一个看似完整的 cost_usd 总额（已知小计冒充完整总额）
         attempts.push({ attempt_id: attemptId, scope: 'none', model: null, input_tokens: null, output_tokens: null, cache_read_input_tokens: null, cache_creation_input_tokens: null, cost_usd: null, completeness: 'missing' });
-        inUnknown = true; outUnknown = true;
+        inUnknown = true; outUnknown = true; costUnknown = true;
         continue;
       }
       attempts.push({

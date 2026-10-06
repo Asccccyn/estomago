@@ -359,9 +359,13 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
   const writeFrame = (row: Parameters<typeof toSseDto>[0]): 'ok' | 'blocked' | 'cap' => {
     if (closed) return 'blocked';
     const frame = `id: ${row.sequence}\ndata: ${JSON.stringify(toSseDto(row))}\n\n`; // §17：唯一 DTO 函数
-    pendingBytes += frame.length; // 自上次 drain 事件以来累计；读端停滞时只增不减（§18 保护服务端内存）
+    // D26（审计 3655d60）：内存水位只统计**未 flush 的待发字节**——write 同步成功即清零；
+    // 旧实现把连接终生已发送字节累进队列上限，健康长连接写满 8MiB 被误断。
+    // 真正的慢客户端由 write=false + drain 超时 + 订阅队列上限三道防线处理。
+    pendingBytes += frame.length;
     if (pendingBytes > SSE_MAX_PENDING_BYTES) return 'cap'; // 无论 write 返回值：累计超限即断开（内核缓冲吞不掉了）
     drained = res.write(frame); // false = 内部缓冲已满 → 必须等 drain（§18）
+    if (drained) pendingBytes = 0; // 同步 flush 完成：待发水位归零
     return drained ? 'ok' : 'blocked';
   };
   const waitDrain = async (): Promise<boolean> => {

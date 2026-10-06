@@ -90,12 +90,15 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): {
     if (prop.enum && !prop.enum.includes(v)) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 必须是 ${prop.enum.join('|')} 之一` };
     if (prop.type === 'string') {
       if (typeof v !== 'string') return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string` };
-      if (prop.minLength !== undefined && v.length < prop.minLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minLength} 字` };
-      if (prop.maxLength !== undefined && v.length > prop.maxLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxLength} 字` };
+      // D19（审计 3655d60）：长度按 Unicode 码点计（与 mariposa/Python 口径一致）——
+      // 16 个 emoji 是 16 码点但 32 个 UTF-16 单位，按 v.length 会误拒服务端允许的标题
+      const cpLen = [...v].length;
+      if (prop.minLength !== undefined && cpLen < prop.minLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minLength} 字` };
+      if (prop.maxLength !== undefined && cpLen > prop.maxLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxLength} 字` };
     } else if (prop.type === 'array') {
       if (!Array.isArray(v)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 array` };
       if (prop.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
-      if (prop.items?.minLength !== undefined && v.some((x) => typeof x === 'string' && x.length < prop.items!.minLength!)) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 含空串条目（每条至少 ${prop.items.minLength} 字）` };
+      if (prop.items?.minLength !== undefined && v.some((x) => typeof x === 'string' && [...x].length < prop.items!.minLength!)) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 含空串条目（每条至少 ${prop.items.minLength} 字）` };
       if (prop.items?.enum && v.some((x) => !prop.items!.enum!.includes(x))) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 含枚举外值（允许：${prop.items.enum.join('|')}）` };
       if (prop.minItems !== undefined && v.length < prop.minItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minItems} 条` };
       if (prop.maxItems !== undefined && v.length > prop.maxItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxItems} 条` };
@@ -114,7 +117,8 @@ export type ToolExecContext = {
   turnId: string | null;
   purpose: 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive';
   activeReviewId: string | null;
-  seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签与引用核对范围依据，§3.1）
+  seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签位置依据，§3.1）
+  seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：发起请求**实际装载**的 (消息,修订) 清文——引用核对只认这份视野，不从库高水位推断
   requestId: string; // 发起 hold 的模型请求标识
 };
 
@@ -170,36 +174,51 @@ export class HostToolExecutor {
     return this.reviewComplete(checked.value, ctx);
   }
 
-  /** 模型指认的引用核对（她的裁定 2026-10-05）：只在"发起请求实际看见的原话"里逐字匹配（按序消费候选，
-   *  防重复片段误配）；任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。
+  /** 模型指认的引用核对（她的裁定 2026-10-05 + 审计 D13/D16）：
+   *  - 只在**发起请求实际装载的 (消息,修订) 清单**里核对（seenMessages），按该修订的正文逐字匹配——
+   *    预算裁剪掉的旧文、请求发出后才编辑的新修订，都不在视野内，引用它们=QUOTE_MATCH_FAILED；
+   *  - 每条引述独立定位（倒序指认合法）：从最新可见消息向旧搜索，取不与已消费区间重叠的首个出现；
+   *    同一消息允许多个互不重叠片段；同一段文字重复引用（区间重叠）会被拒——不产生重复出处；
+   *  - 任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。
    *  匹配用 indexOf（UTF-16 一致，无碍）；发出的 start/end 换算成码点口径（见 MatchedQuote 注释）。 */
-  private resolveQuotes(roomId: string, seenSequence: number, quotes: string[]): MatchedQuote[] | { error: string; index: number } {
-    const rows = this.db.prepare(
-      `SELECT m.id, m.sequence, m.speaker, m.current_revision, r.content FROM messages m
-       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       WHERE m.conversation_id = ? AND m.sequence <= ? AND m.speaker IN ('owner','assistant')
-       ORDER BY m.sequence DESC LIMIT ${QUOTE_CANDIDATE_LIMIT}`,
-    ).all(roomId, seenSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; content: string }>;
-    const candidates = rows.slice().reverse(); // 时间正序，按序消费
+  private resolveQuotes(roomId: string, seenMessages: ReadonlyArray<{ id: string; revision: number }>, quotes: string[]): MatchedQuote[] | { error: string; index: number } {
+    // D13（审计 3655d60）：候选=**所见修订号**的正文（不是当前修订）——消息被编辑后，模型见过的旧修订
+    // 仍可被正确引用（引用内容=它当时看见的），未见过的新修订天然不可见（不查它）。
+    const candidates: Array<{ id: string; sequence: number; speaker: string; revision: number; content: string }> = [];
+    for (const s of seenMessages) {
+      const row = this.db.prepare(
+        'SELECT m.id, m.sequence, m.speaker, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
+      ).get(s.revision, s.id, roomId) as { id: string; sequence: number; speaker: string; revision: number; content: string } | undefined;
+      if (row && (row.speaker === 'owner' || row.speaker === 'assistant') && typeof row.content === 'string' && row.content.length > 0) candidates.push(row);
+    }
+    candidates.sort((a, b) => a.sequence - b.sequence);
+    if (candidates.length > QUOTE_CANDIDATE_LIMIT) candidates.splice(0, candidates.length - QUOTE_CANDIDATE_LIMIT); // 资源有界：只看最近 N 条可见
+    const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费 UTF-16 区间
     const matched: MatchedQuote[] = [];
-    let cursor = 0;
     for (let qi = 0; qi < quotes.length; qi++) {
       const frag = quotes[qi]!;
       if (frag.length === 0) return { error: 'QUOTE_EMPTY', index: qi };
       let hit: MatchedQuote | null = null;
-      for (let i = cursor; i < candidates.length; i++) {
-        const row = candidates[i]!;
-        if (row.speaker !== 'owner' && row.speaker !== 'assistant') continue;
-        const idx = row.content.indexOf(frag);
-        if (idx >= 0) {
-          const startCp = utf16IndexToCodepoints(row.content, idx);
-          hit = {
-            messageId: row.id, revision: row.current_revision, sequence: row.sequence,
-            speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag,
-            start: startCp, end: startCp + [...frag].length, // [...str] 按码点迭代=码点长度
-          };
-          cursor = i + 1;
-          break;
+      for (let ci = candidates.length - 1; ci >= 0 && !hit; ci--) { // 最新→最旧
+        const row = candidates[ci]!;
+        let from = 0;
+        for (;;) {
+          const idx = row.content.indexOf(frag, from);
+          if (idx < 0) break;
+          const spans = consumed.get(row.id) ?? [];
+          const overlap = spans.some(([s, e]) => idx < e && idx + frag.length > s);
+          if (!overlap) {
+            const startCp = utf16IndexToCodepoints(row.content, idx);
+            hit = {
+              messageId: row.id, revision: row.revision, sequence: row.sequence,
+              speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag,
+              start: startCp, end: startCp + [...frag].length,
+            };
+            spans.push([idx, idx + frag.length]);
+            consumed.set(row.id, spans);
+            break;
+          }
+          from = idx + 1; // 该出现处已消费（重复引用）——找同消息下一处
         }
       }
       if (!hit) return { error: 'QUOTE_MATCH_FAILED', index: qi };
@@ -217,7 +236,7 @@ export class HostToolExecutor {
     let selections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }>; start_char_offset?: number; end_char_offset?: number }> = [];
     const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as string[]) : [];
     if (rawQuotes.length > 0) {
-      const resolved = this.resolveQuotes(ctx.roomId, ctx.seenSequence, rawQuotes);
+      const resolved = this.resolveQuotes(ctx.roomId, ctx.seenMessages, rawQuotes);
       if ('error' in resolved) {
         return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: '引用片段在已见原文中逐字核对未通过——只允许引用这段对话里真实出现过的一字不差的原文' } };
       }
@@ -253,9 +272,13 @@ export class HostToolExecutor {
       if (args[k] !== undefined) holdPayload[k] = args[k];
     }
     // 心情（2026-10-05 词表终版接入）：任一给了才组 mood——都不给=不带
-    // mood（mariposa 侧空心情合法）；tags 只收大类，note 自由文字
+    // mood（mariposa 侧空心情合法）；tags 只收大类，note 自由文字。
+    // D15（审计 3655d60）：没给 note 时**省略 text 字段**（mood.text 只允许 string，发 null 会被服务端拒）
     if (args.mood_tags !== undefined || args.mood_note !== undefined) {
-      holdPayload.mood = { tags: Array.isArray(args.mood_tags) ? args.mood_tags : [], text: typeof args.mood_note === 'string' ? args.mood_note : null };
+      holdPayload.mood = {
+        tags: Array.isArray(args.mood_tags) ? args.mood_tags : [],
+        ...(typeof args.mood_note === 'string' ? { text: args.mood_note } : {}),
+      };
     }
     if (ourWords.length > 0) holdPayload.our_words = ourWords;
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
