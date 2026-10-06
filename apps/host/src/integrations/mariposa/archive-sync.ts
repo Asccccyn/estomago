@@ -16,7 +16,7 @@ import { genId } from '../../util/id.ts';
 import type { EventService } from '../../events/service.ts';
 import type { Logger } from '../../observability/logging.ts';
 import type { Config } from '../../config/schema.ts';
-import { classifyError, ingestOperationId, type IngestMessage, type IngestRequest, type MariposaClient } from './client.ts';
+import { classifyError, ingestOperationId, serverNormalizedBytes, type IngestMessage, type IngestRequest, type MariposaClient } from './client.ts';
 
 export const INGEST_BATCH_MAX_MESSAGES = 50; // 契约建议初值：每请求 ≤50 条
 export const INGEST_BATCH_MAX_BYTES = 1024 * 1024; // 规范化 JSON 总计 ≤1MiB
@@ -256,7 +256,9 @@ export class ArchiveSyncService {
         origin_conversation_id: conversationId,
         messages: msgs,
       });
-      const wrapBytes = (req: IngestRequest): number => Buffer.byteLength(JSON.stringify({ arguments: req }), 'utf8');
+      // F-J-12：对齐服务端规范化口径（sort_keys+Python 默认分隔符+无信封包装）——
+      // 黄金夹具互证见 tests/unit/joint-audit-b4-contract.test.ts
+      const wrapBytes = (req: IngestRequest): number => serverNormalizedBytes(req);
       const candidateBytes = wrapBytes(candidateRequest([...messages, message]));
       if (batchRows.length > 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) break; // 切批（候选留给下一批）
       if (batchRows.length === 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) {
