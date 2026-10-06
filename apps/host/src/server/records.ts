@@ -9,10 +9,10 @@ export type RecordSnapshot = {
   roomId: string;
   cursor: string | null;
   epochId: string | null;
-  driver: 'openrouter' | 'claude-agent-sdk' | 'mock' | 'unknown';
+  driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
-  cache: { requestedTtl: '1h'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
+  cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
@@ -27,9 +27,10 @@ export function buildRecordSnapshot(d: {
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
   const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok' ? (d.runnerSelection.runner.kind as RecordSnapshot['driver']) : 'unknown';
-  const exactModel = driver === 'openrouter' ? d.config.openrouter.model : d.config.runtime.model;
+  const exactModel = driver === 'openrouter' ? d.config.openrouter.model : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model;
+  // §11.1：本地粗估 + 实际 usage 校准；粗估系数按驱动（DS 默认 1.5——中文场景；OR 默认 2.5），精度分级如实
+  const charsPerToken = driver === 'deepseek' ? d.config.deepseek.estimate_chars_per_token : driver === 'openrouter' ? d.config.openrouter.estimate_chars_per_token : 2.5;
 
-  // §11.1：本地粗估 + 实际 usage 校准；精度分级如实
   const trajRow = win
     ? (d.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string } | undefined)
     : undefined;
@@ -38,14 +39,14 @@ export function buildRecordSnapshot(d: {
   if (trajRow) {
     const msgs = JSON.parse(trajRow.messages_json) as Array<{ content: unknown }>;
     const chars = msgs.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0);
-    estimated = Math.ceil(chars / 2.5);
+    estimated = Math.ceil(chars / charsPerToken);
     quality = 'rough';
   }
   const lastUsage = win
     ? (d.db.prepare(
         `SELECT u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.observed_at
          FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id
-         WHERE (u.window_id = ? OR a.window_id = ?) AND u.source = 'or_stream' AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
+         WHERE (u.window_id = ? OR a.window_id = ?) AND u.source IN ('or_stream','ds_stream') AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
          ORDER BY u.observed_at DESC LIMIT 1`,
       ).get(win.id, win.id) as { input_tokens: number; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; observed_at: string } | undefined)
     : undefined;
@@ -55,7 +56,8 @@ export function buildRecordSnapshot(d: {
   }
   const w = d.config.windows;
   const hardCapacity = w.model_context_capacity; // null=未测量，不画假百分比
-  const safeInput = hardCapacity !== null ? hardCapacity - d.config.openrouter.max_output_tokens - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens : null;
+  const maxOutput = driver === 'deepseek' ? d.config.deepseek.max_output_tokens : d.config.openrouter.max_output_tokens;
+  const safeInput = hardCapacity !== null ? hardCapacity - maxOutput - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens : null;
   const effectiveSoft = safeInput !== null ? Math.min(w.soft_limit_tokens, safeInput) : w.soft_limit_tokens;
 
   // F22：按房间取最近一次检查（成功换窗后完成结果留在旧窗——不因窗口切换显示"还没检查过"）
@@ -86,7 +88,8 @@ export function buildRecordSnapshot(d: {
     exactModel,
     context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality },
     cache: {
-      requestedTtl: '1h',
+      // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
+      requestedTtl: driver === 'deepseek' ? 'auto' : '1h',
       lastRead: lastUsage?.cache_read_input_tokens ?? null,
       lastWrite: lastUsage?.cache_creation_input_tokens ?? null,
       lastNoncached: lastUsage && lastUsage.input_tokens !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
@@ -94,7 +97,8 @@ export function buildRecordSnapshot(d: {
         : null,
       lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
-      estimatedExpiresAt: requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null, // §7.3：真实发送开始+1h（F18：未发送行不刷 TTL）
+      // §7.3：OR 1h 从真实发送开始估计；DS 自动缓存无公开固定 TTL——不画估计线，只报观测
+      estimatedExpiresAt: driver === 'deepseek' ? null : (requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null),
       keeperEnabled: false,
     },
     review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, rangeCount: reviewRow.range_count ?? null, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,

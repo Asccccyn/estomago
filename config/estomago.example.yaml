@@ -84,6 +84,18 @@ openrouter:
   disable_context_compression: true  # 硬规则：显式关闭 OR 上下文压缩插件
   retry_max_attempts_after_initial: 2
   reasoning: null                 # 未批准的推理覆盖保持 null；不照搬 SDK effort 字符串
+  estimate_chars_per_token: 2.5   # §11.1 输入粗估系数（拉丁文本≈2.5；有真实 usage 校准兜底）
+
+# DeepSeek 官方直连驱动（2026-10-05 裁定：DS 官方 key 不经 OpenRouter；runtime.provider: deepseek 时启用）。
+# 身份映射隔离：session 派生/上下文指纹/凭据与 openrouter 段完全独立，切换驱动强制换窗。
+# DS 自动上下文缓存——无 cache_control/provider/plugins 等参数（命中看 usage 的 prompt_cache_hit_tokens）。
+deepseek:
+  base_url: https://api.deepseek.com
+  model: null                     # DS 官方单段型号（如 deepseek-chat / deepseek-reasoner）；null=未配置阻断
+  api_key_env: DEEPSEEK_API_KEY   # DeepSeek 官方平台的 key；只在后端读取；不进前端/日志/Git
+  max_output_tokens: 8192
+  retry_max_attempts_after_initial: 2
+  estimate_chars_per_token: 1.5   # 中文对话为主的粗估系数（§11.1 估计带精度，usage 校准兜底）
 time:
   business_timezone: Asia/Shanghai
   persist_absolute_time_as: UTC

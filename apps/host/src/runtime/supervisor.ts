@@ -31,6 +31,7 @@ import { rotationPlan, selectReviewRange, rawKey, type ManifestEntry } from '../
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { orSessionId } from './runner-openrouter.ts';
+import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf } from './cache-plan.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
@@ -63,6 +64,13 @@ export type SupervisorDeps = {
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
 const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
+// §3.3 有界恢复（2026-10-05 审计 P2-1）：同窗评审失败达上限后不再自动付费评审——
+// 恢复路径=评审成功换新窗（新窗计数重置）或人工处理后手动换窗；防"模型永不调用 complete"时每条消息都付费评审。
+const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
+
+/** 信封驱动（OR / DS 直连共用消息轨迹与工具循环管线；SDK/mock 走 prompt 路径） */
+export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' =>
+  kind === 'openrouter' || kind === 'deepseek';
 
 type ActiveRun = {
   token: { cancelled: boolean };
@@ -203,10 +211,10 @@ export class TurnSupervisor {
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
       if (capacityNow !== null) {
-        const estNow = Math.ceil(JSON.stringify(envelope.messages).length / 2.5);
+        const estNow = Math.ceil(JSON.stringify(envelope.messages).length / (this.drv()?.charsPerToken ?? 2.5));
         const planNow = rotationPlan({
           currentInput: estNow, nextInput: estNow, capacity: capacityNow,
-          maxOutput: d.config.openrouter.max_output_tokens,
+          maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
           toolReserve: d.config.windows.tool_input_reserve_tokens, reviewReserve: d.config.windows.review_reserve_tokens,
           safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens, warning: d.config.windows.warning_tokens,
         });
@@ -228,7 +236,7 @@ export class TurnSupervisor {
         }
       };
       const result = await Promise.race([
-        runner.run({ driver: 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch }),
+        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -298,7 +306,21 @@ export class TurnSupervisor {
     return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null };
   }
 
+  /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
+   *  非信封驱动（SDK/mock）返回 null。 */
+  private drv(): { kind: 'openrouter' | 'deepseek'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
+    const r = this.d.runnerSelection;
+    if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
+    if (r.runner.kind === 'deepseek') {
+      const ds = this.d.config.deepseek;
+      return { kind: 'deepseek', model: ds.model!, maxTokens: ds.max_output_tokens, reasoning: null, charsPerToken: ds.estimate_chars_per_token, sessionId: (roomId) => dsSessionId(roomId, ds.model!) };
+    }
+    const or = this.d.config.openrouter;
+    return { kind: 'openrouter', model: or.model!, maxTokens: or.max_output_tokens, reasoning: or.reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, or.model!, null) };
+  }
+
   private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
+    if (this.drv()?.kind === 'deepseek') return buildDeepSeekPayload(envelope);
     const or = this.d.config.openrouter;
     return buildOrPayload({
       model: envelope.model, sessionId: envelope.sessionId, messages: envelope.messages, tools: envelope.tools,
@@ -351,16 +373,17 @@ export class TurnSupervisor {
     return out.reverse();
   }
 
-  // OR 信封（§5.1/§5.5/§7.1）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载，
-  // 缓存点 A 覆盖）；近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
-  private buildOrEnvelope(o: {
+  // 信封（§5.1/§5.5/§7.1，OR/DS 共用）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载）；
+  // 近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
+  // 身份映射隔离：型号/输出上限/粗估系数/session 派生按驱动取值（drv()）；DS 不发 session_id（runner 序列化丢弃）。
+  private buildEnvelope(o: {
     conversationId: string;
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
-    const model = this.d.config.openrouter.model!;
-    const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * 2.5; // 粗估（§11.1 估计口径，不冒充精确）
+    const dv = this.drv()!;
+    const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * dv.charsPerToken; // 粗估（§11.1 估计口径，不冒充精确）
     const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
@@ -378,13 +401,13 @@ export class TurnSupervisor {
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
     return {
       envelope: {
-        model,
-        sessionId: orSessionId(o.conversationId, model, null),
+        model: dv.model,
+        sessionId: dv.sessionId(o.conversationId),
         messages,
         tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
-        boundaries: [], // 断点规划由调用方（cache-plan）负责
-        maxTokens: this.d.config.openrouter.max_output_tokens,
-        reasoning: this.d.config.openrouter.reasoning,
+        boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
+        maxTokens: dv.maxTokens,
+        reasoning: dv.reasoning,
       },
       selected, // 审计 F06：manifest 必须从实际装载子集生成，不能按索引回映全量前缀
     };
@@ -397,12 +420,14 @@ export class TurnSupervisor {
     gate: import('../identity/service.ts').GateResult;
     currentInputSequence: number;
     attemptId: string;
+    turnId: string | null; // 自动换窗=当前 turn（评审请求可被 stop(turnId) 中断）；手动换窗=null（stopAll 兜底）
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     force?: boolean; // 手动换窗（F05：同一管线，不经评审直转的旁路已封）
   }): Promise<{ rotated: boolean; blocked: string | null }> {
     const d = this.d;
+    const dv = this.drv();
     if (!d.tools || !d.reviews || !d.checkpoint) return { rotated: false, blocked: null }; // 能力未接线：不触发自动换窗（普通聊天不受影响）
-    if (d.runnerSelection.status !== 'ok' || d.runnerSelection.runner.kind !== 'openrouter') return { rotated: false, blocked: null };
+    if (!dv) return { rotated: false, blocked: null };
 
     // F06：评审范围的实际已见清单优先取轨迹 manifest（真实发送证据）；无轨迹时退化为库投影。
     const dialogue = this.dialogueUpTo(o.conversationId, o.currentInputSequence - 1);
@@ -434,7 +459,7 @@ export class TurnSupervisor {
       : dialogue.reduce((s, m) => s + m.content.length, 0);
     const recentChars = sentChars + currentInputLen;
     const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const estimate = Math.ceil((recentChars + systemChars) / 2.5);
+    const estimate = Math.ceil((recentChars + systemChars) / dv.charsPerToken);
     const lastActual = (d.db.prepare(
       `SELECT u.input_tokens FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
        WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
@@ -459,7 +484,7 @@ export class TurnSupervisor {
         currentInput: workingSet,
         nextInput: workingSet,
         capacity,
-        maxOutput: d.config.openrouter.max_output_tokens,
+        maxOutput: dv.maxTokens,
         toolReserve: d.config.windows.tool_input_reserve_tokens,
         reviewReserve: d.config.windows.review_reserve_tokens,
         safety: d.config.windows.safety_reserve_tokens,
@@ -517,39 +542,55 @@ export class TurnSupervisor {
       d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, rangeKeys); // §3.2.5：空范围不叫模型
       return this.doRotate(o, reason, null);
     }
+    // §3.3 有界恢复（审计 P2-1）：同窗评审失败达上限后不再自动发评审（每次评审都是真实付费请求）。
+    // 恢复路径：评审成功换新窗（新窗计数自动重置）或人工处理（修提示/型号后手动换窗）。
+    const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
+    if (failedReviews >= MAX_WINDOW_REVIEW_ATTEMPTS) {
+      return { rotated: false, blocked: `ROTATION_REVIEW_RETRY_EXHAUSTED:本窗评审已失败 ${failedReviews} 次（上限 ${MAX_WINDOW_REVIEW_ATTEMPTS}），不再自动评审——请检查模型对提醒的响应或手动换窗；输入已保存待恢复` };
+    }
     const review = d.reviews.create(o.window.id, o.conversationId, o.window.revision, range);
     d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
 
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = d.trajectory?.forWindow(o.window.id);
-    const fallbackBase = this.buildOrEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
+    const fallbackBase = this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
     const reviewBaseMessages: OrMessage[] = traj ? traj.messages : fallbackBase;
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
     const { boundaries: reviewBoundaries } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
     const envelope: OrRequestEnvelope = {
-      model: d.config.openrouter.model!,
-      sessionId: orSessionId(o.conversationId, d.config.openrouter.model!, null),
+      model: dv.model,
+      sessionId: dv.sessionId(o.conversationId),
       messages: reviewMessages,
       tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
       boundaries: reviewBoundaries,
-      maxTokens: d.config.openrouter.max_output_tokens,
-      reasoning: d.config.openrouter.reasoning,
+      maxTokens: dv.maxTokens,
+      reasoning: dv.reasoning,
     };
     const controller = new AbortController();
+    // 审计 P2-2（§9.2 停止=abort 上游）：评审请求登记进活动代——自动换窗评审可被 stop(turnId) 中断；
+    // 手动换窗评审登记在合成键下（无所属 turn），进程级 stopAll 兜底。
+    const reviewRun: ActiveRun = { token: { cancelled: false }, controller, generation: 0 };
+    const stopKey = o.turnId ?? `review:${o.window.id}`;
+    this.active.set(stopKey, reviewRun);
     const reviewTurnId = (d.db.prepare('SELECT turn_id FROM attempts WHERE id = ?').get(o.attemptId) as { turn_id: string } | undefined)?.turn_id ?? o.attemptId;
     const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.windowId, scope: ev.scope, usage: ev.usage, model: d.config.openrouter.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.windowId, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属
       }
     };
     const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
-    const { result } = await this.runOrToolLoop({
-      envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
-      conversationId: o.conversationId, windowId: o.window.id,
-      turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
-    });
+    let result: import('./runner.ts').RunnerRunResult;
+    try {
+      ({ result } = await this.runOrToolLoop({
+        envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
+        conversationId: o.conversationId, windowId: o.window.id,
+        turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
+      }));
+    } finally {
+      if (this.active.get(stopKey) === reviewRun) this.active.delete(stopKey);
+    }
     const reviewRow = d.reviews.get(review.id);
     if (reviewRow?.status !== 'completed') {
       d.reviews.markFailed(review.id);
@@ -582,11 +623,11 @@ export class TurnSupervisor {
 
   private async manualRotateInner(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
     const d = this.d;
-    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
-    const gate = d.identity.evaluateGate(d.db, { driver: isOr ? 'openrouter' : 'claude-agent-sdk' });
+    const dv = this.drv();
+    const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
     const window = d.windows.activeWindow(conversationId);
     if (!window) return { ok: false, reason: '无当前活动窗口' };
-    if (!isOr || !d.tools || !d.reviews || !d.checkpoint) {
+    if (!dv || !d.tools || !d.reviews || !d.checkpoint) {
       const r = d.windows.rotate({ conversationId, gate, maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m, assembledOptions: null });
       return r.ok ? { ok: true, windowId: r.window.id } : { ok: false, reason: r.reason };
     }
@@ -594,7 +635,7 @@ export class TurnSupervisor {
     const materials = gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const nextSeq = (d.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS n FROM messages WHERE conversation_id = ?').get(conversationId) as { n: number }).n;
     const r = await this.rotateIfNeeded({
-      conversationId, window, gate, currentInputSequence: nextSeq, attemptId: 'manual-rotate',
+      conversationId, window, gate, currentInputSequence: nextSeq, attemptId: 'manual-rotate', turnId: null,
       materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       force: true,
     });
@@ -637,13 +678,14 @@ export class TurnSupervisor {
     d.db.prepare('UPDATE turns SET time_context_json = ?, started_at = COALESCE(started_at, ?) WHERE id = ?').run(JSON.stringify(timeCtx), new Date().toISOString(), turnId);
 
     // —— 运行时 gate ——
-    // §2.1/§6.3：驱动判别（先行——gate 的驱动专属前提据此区分，审计 F01）
-    const isOr = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter';
-    const gate = d.identity.evaluateGate(d.db, { driver: isOr ? 'openrouter' : 'claude-agent-sdk' });
+    // §2.1/§6.3：驱动判别（先行——gate 的驱动专属前提据此区分，审计 F01）；OR/DS 均为信封驱动，
+    // 身份映射按驱动隔离（dv()），SDK 专属前提只约束 SDK 驱动。
+    const dv = this.drv();
+    const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
     // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const built = isOr ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
+    const built = dv ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
       return;
@@ -652,14 +694,14 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `IDENTITY_NOT_READY:${built.reasons.map(codeOf).join(';').slice(0, 120)}`, 'blocked');
       return;
     }
-    if (isOr && (!materials?.identityText || !materials?.rulesText)) {
-      // §2.1：OR 首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:OR_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
+    if (dv !== null && (!materials?.identityText || !materials?.rulesText)) {
+      // §2.1：信封驱动（OR/DS）首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
       return;
     }
-    if (isOr && !materials?.iText) {
+    if (dv !== null && !materials?.iText) {
       // 审计 F02：当前 I 必须完整进入固定前缀（§5.1/§7.1）——缺必需 I 时阻断，不静默降级
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:OR_DRIVER_MISSING_I', 'blocked');
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_I', 'blocked');
       return;
     }
 
@@ -680,14 +722,14 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');
       return;
     }
-    // —— ESTOMAGO_OR_SELF_HOLD §2.2/§7：轨迹懒初始化（窗口创建/换窗后的首次 OR 回合）——
+    // —— ESTOMAGO_OR_SELF_HOLD §2.2/§7：轨迹懒初始化（窗口创建/换窗后的首次信封驱动回合）——
     // 基底=system + 本输入之前的近期原话（首次规范化后固定，§7.1）；当前输入只作尾部追加一次。
-    if (isOr && d.trajectory) {
+    if (dv && d.trajectory) {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
         const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
-        const built0 = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
-        // F06（复审修正）：manifest 从 buildOrEnvelope 实际选中的子集生成——裁剪掉旧消息时
+        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引错配到历史前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
         d.trajectory.init(window.id, built0.envelope.messages.slice(0, -1), baseManifest);
@@ -695,10 +737,10 @@ export class TurnSupervisor {
     }
     // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线/6h 静默）→ 一次提醒 → CAS 换窗；
     // 评审失败如实阻断本 attempt（不绕过、不伪造完成凭证）。
-    if (isOr && inputMessage) {
+    if (dv && inputMessage) {
       const rotation = await this.rotateIfNeeded({
         conversationId: turn.conversation_id, window, gate,
-        currentInputSequence: inputMessage.sequence, attemptId: attempt.id,
+        currentInputSequence: inputMessage.sequence, attemptId: attempt.id, turnId,
         materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       });
       if (rotation.blocked) {
@@ -712,7 +754,7 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const builtR = this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -721,8 +763,8 @@ export class TurnSupervisor {
     }
     // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
     // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑。
-    // OR 无宿主可见 resume 语义（session_id 是路由关联标识，不存历史，§6.2）→ 恒 null。
-    const resumeSessionId = isOr ? null : attempt.fresh_session ? null : window.sdk_session_id;
+    // 信封驱动（OR/DS）无宿主可见 resume 语义（session_id 是内部关联标识，不存历史）→ 恒 null。
+    const resumeSessionId = dv ? null : attempt.fresh_session ? null : window.sdk_session_id;
 
     // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
@@ -770,36 +812,36 @@ export class TurnSupervisor {
       .join('\n\n');
     const inputHash = effective.hash || sha256Hex(effective.content);
 
-    // OR 请求信封 v3（§5.5/§6.3/§7）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
-    // 断点规划 A（system 末块）+ G（上次已发送边界，仍有效才标；B 待 bootstrap 接入）；
-    // previousPayload=轨迹正本构造的上一请求（跨轮 append-only 断言依据）。
-    const dialogueForInput = isOr && inputMessage ? this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1) : [];
-    const orTraj = isOr ? d.trajectory?.forWindow(window.id) ?? null : null;
+    // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
+    // 断点规划 A（system 末块）+ G（上次已发送边界，仍有效才标；B 待 bootstrap 接入）——DS 直连
+    // 序列化时忽略断点（自动缓存，无参数）；previousPayload=轨迹正本构造的上一请求（跨轮 append-only 断言依据）。
+    const dialogueForInput = dv && inputMessage ? this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1) : [];
+    const orTraj = dv ? d.trajectory?.forWindow(window.id) ?? null : null;
     const orBaseMessages: OrMessage[] = orTraj
       ? orTraj.messages
-      : this.buildOrEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).envelope.messages;
+      : (dv ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).envelope.messages : []);
     const orMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
       : orBaseMessages;
-    const orEnvelope: OrRequestEnvelope | null = isOr
+    const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
           const { boundaries } = planBoundaries({ messages: orMessages, systemMessageCount: 1, prevBoundary: orTraj?.lastBoundary ?? null });
           return {
-            model: d.config.openrouter.model!,
-            sessionId: orSessionId(turn.conversation_id, d.config.openrouter.model!, null),
+            model: dv.model,
+            sessionId: dv.sessionId(turn.conversation_id),
             messages: orMessages,
             tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
             boundaries,
-            maxTokens: d.config.openrouter.max_output_tokens,
-            reasoning: d.config.openrouter.reasoning,
+            maxTokens: dv.maxTokens,
+            reasoning: dv.reasoning,
           };
         })()
       : null;
     const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: orTraj.messages } : null;
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
-    // 记账模型：OR 用明确 OR 型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
-    const configuredModelForUsage = isOr ? d.config.openrouter.model : d.config.runtime.model;
+    // 记账模型：信封驱动用各自明确型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
+    const configuredModelForUsage = dv ? dv.model : d.config.runtime.model;
 
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;

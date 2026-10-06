@@ -18,7 +18,7 @@ export class UsageCollector {
   record(o: {
     turnId: string; attemptId: string; scope: 'request' | 'turn' | 'cumulative';
     usage: RawUsage; model?: string | null; requestId?: string | null; windowId?: string | null;
-    source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'estimated';
+    source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'ds_stream' | 'estimated';
     completeness?: 'complete' | 'partial' | 'unknown';
   }): void {
     // 幂等键：(attempt, scope, request_id, model)——F15：source 不进键（同请求跨来源=同一消耗）。

@@ -76,6 +76,17 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
+- **2026-10-05 第三方审计修复批完成（审 f65f716 → 本批；程知行审→修同轮）**：全量审计结论=测试 47/47 绿但 DS 放 key 前有 2 个 P1+2 个 P2；她裁定"DS 单独开接口、不走 OR、身份映射隔离"。已修：
+  - **DS 官方直连驱动（新）**：`runtime/runner-deepseek.ts`（DeepSeekRunner/buildDeepSeekPayload/dsSessionId/deepSeekSelection）+ `config.deepseek` 配置段（base_url 默认 api.deepseek.com、DEEPSEEK_API_KEY、单段型号门 dsModelIdIssue、无缓存/路由参数）+ selectRunner/信封类型分发。DS 请求**绝不携带** session_id/provider/plugins/cache_control（content 块拍平、reasoning_details 剥除、断点忽略）；SSE 解析复用 OrStreamAccumulator（注入 normalizeDsUsage：prompt_cache_hit_tokens→cache_read、费用缺失不降级 token 完整度、命中超总量标 anomaly 不 clamp）。
+  - **身份映射隔离**：dsSessionId 独立命名空间（estomago:ds:session:*，仅宿主内部关联不发送）；contextFingerprint 纳入 deepseek 段 → OR↔DS 切换/DS 型号变化=CONTEXT_STALE 强制换窗；gate driver 三值（SDK 专属前提仍只约束 SDK）。
+  - **P1-1（块级 cache_control 泄漏）**：or-payload 断点循环按 isAnthropicFamily 注入（非 anthropic 族断点仍规划但不落标记）；非 anthropic 族型号错误码改 EXACT_MODEL_REQUIRED。此前 commit 883a891 声称的族判断只覆盖了顶层——本批补齐并有断言锁死（batch7 + ds-driver 测试）。
+  - **P2-1（评审失败无界重试）**：MAX_WINDOW_REVIEW_ATTEMPTS=3（按窗）——同窗 3 次失败评审后不再自动付费评审（ROTATION_REVIEW_RETRY_EXHAUSTED，输入保存待恢复）；换新窗或人工处理后重置。
+  - **P2-2（评审请求停不下来）**：评审 AbortController 登记 active 表（自动换窗=stopKey turnId，手动=合成键 stopAll 兜底）——停止键可中断换窗评审，abort 送达 transport。
+  - **顺手项**：MARIPOSA_CLIENT_UNAVAILABLE 拼写修正；中文估算系数 estimate_chars_per_token（OR 2.5/DS 1.5，替代硬编码 2.5）；records 快照 driver=deepseek、TTL=auto、不画 1h 估计线；http runtime 端点报 dsStatus；SDK/mock runner 信封守卫两值化。
+  - **ds-smoke 重写**：provider=deepseek 直连；live 门=ESTOMAGO_DS_SMOKE=1+DEEPSEEK_API_KEY（提示语钉死"官方平台 key、直连不经 OR"）；四道熔断保留（retry=0/输出 256/step1 失败即停/全局 10 次）；**真/假 transport 层字段自检**——OR/Anthropic 字段泄漏在 dry-run 即失败，不等 live 400。dry-run 实测 SMOKE_PASS（三步含工具往返）。
+  - 新增 tests/unit/ds-driver.test.ts（11 用例）+ tests/unit/ds-supervisor.test.ts（3 用例：DS 端到端+记录快照/评审重试上限/评审停止键）；全量 **49/49 文件 0 失败**。
+  - **遗留（审计已列、本批未动）**：provider_requests.payload_json 平方级重复（下一批：改轨迹版本引用+hash）；runtime_stream_events 无保留策略；app-context↔http 循环依赖；手动换窗评审费用落 'manual-rotate' 假 ID（靠 window_id 可见，未改语义）；A016 source_selections 等 BLOCKED 项不变。
+
 - **2026-10-05 复审整改完成（审 967b899 → 4 commits：05fbaf9/4b6d8a8/005665b 前三批 + D-tail）**：复审报告 `~/Documents/Codex/2026-10-05/1-readme-md-2-docs-specs/outputs/estomago-reaudit-967b899.zip`（结论不通过：F01-22 中 10 CLOSED/12 PARTIAL + 新增 F23-F31）。已修全部 21 项可实现项：
   - **批次 A（P1）**05fbaf9：F05 manualRotate 上房间串行链（评审中 chat 排队）、F06 manifest 从 buildOrEnvelope 实选子集生成（索引错配根除）、F23 冻结批恢复按会话按源序+未决阻断同流含新批、F24 坏行单行隔离+rawSync json_valid 防护、F25 容量估算改用轨迹正本（被拒大输入不再污染短输入）、F27 NULL manifest 按正文重建/不可重建如实阻断（不签 skipped_empty）。
   - **批次 B**：F08 恢复只认真回执或结构化 completed=false（损坏 200/错配/throw 全保持 unknown 阻断）、F10 ACK 三件套+committed_at 缺一不可、F15 HTTP500 入可重试+throw/invalid-ACK 吃 attempts 上限、F16 信封字节（+166 开销实测常量）、F11 归档凭据回退仅限 TEST_MODE。
