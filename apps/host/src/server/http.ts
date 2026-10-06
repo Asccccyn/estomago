@@ -70,7 +70,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         config: d.config, gate: d.identity.evaluateGate(d.db, { driver: gateDriver }), // 审计 F29：状态按当前驱动判别——OR/DS 不被 SDK 前提误报阻断
         runnerSelection: d.runnerSelection, capabilities: d.capabilities, db: d.db,
       });
-      return json(res, 200, report);
+      // F-J-49（联合审计 2026-10-06）：ready 未认证可达——原因明细（含绝对路径/目录结构）
+      // 不上公共面，只回状态码级摘要；完整诊断走已认证的 doctor
+      // ReadyReport = { status, components: Record<name, HealthComponent> }——
+      // 公共面只回状态码级摘要（component+status），detail（含路径/原因）不上未认证面
+      const comps = (report as { components?: Record<string, { status: string; detail?: string }> }).components ?? {};
+      const entries = Object.entries(comps);
+      return json(res, 200, {
+        ready: entries.length > 0 && entries.every(([, c]) => c.status === 'ok'),
+        degraded: entries.filter(([, c]) => c.status !== 'ok').map(([k, c]) => ({ component: k, status: c.status })),
+      });
     }
     if (route === 'POST /api/v1/auth/login') {
       const body = (await readJson(req, d)) as { token?: string };
@@ -290,6 +299,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     return json(res, 404, { error: { code: 'not_found', message: `未知路由：${route}` } });
   } catch (err) {
     // AUD-28：日志只记稳定错误码 + 路由，不落原始异常文本
+    // F-J-44：客户端请求体错误（超限/坏 JSON）按 4xx 语义返回，不混入 500
+    if (err instanceof ClientBodyError) {
+      d.logger.error('client_body_error', { route, code: err.code });
+      if (!res.headersSent) return json(res, err.status, { error: { code: err.code, message: err.message } });
+      res.end();
+      return;
+    }
     d.logger.error('route_error', { route, code: stableErrorCode(err) });
     if (!res.headersSent) return json(res, 500, { error: { code: 'internal', message: '内部错误（错误码见日志）' } });
     res.end();
@@ -361,7 +377,7 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
     // D26（审计 3655d60）：内存水位只统计**未 flush 的待发字节**——write 同步成功即清零；
     // 旧实现把连接终生已发送字节累进队列上限，健康长连接写满 8MiB 被误断。
     // 真正的慢客户端由 write=false + drain 超时 + 订阅队列上限三道防线处理。
-    pendingBytes += frame.length;
+    pendingBytes += Buffer.byteLength(frame, 'utf8'); // F-J-47：按 UTF-8 字节计——JS length 是 UTF-16 码元，中文正文低估约 3 倍
     if (pendingBytes > SSE_MAX_PENDING_BYTES) return 'cap'; // 无论 write 返回值：累计超限即断开（内核缓冲吞不掉了）
     drained = res.write(frame); // false = 内部缓冲已满 → 必须等 drain（§18）
     if (drained) pendingBytes = 0; // 同步 flush 完成：待发水位归零
@@ -386,6 +402,11 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
       if (closed) return;
       // 回放阶段：追平到 highWater
       const page = d.events.replayPage(replayCursor, conversationId, SSE_PAGE_LIMIT);
+      // F-J-46（联合审计 2026-10-06）：满页且首行即越 highWater 时，for 内 break 会让
+      // 外层 while 条件（page.length < LIMIT || replayCursor >= highWater）双双不满足——
+      // 理论活锁（每轮一次 DB 查询无进展）。改为直接结束回放阶段：越界行由 live 队列
+      // 按 > replayCursor 规则交付，不漏不重
+      if (page.length >= SSE_PAGE_LIMIT && page[0]!.sequence > highWater) break;
       for (const row of page) {
         if (row.sequence > highWater) break;
         if (closed) return;
@@ -427,16 +448,32 @@ function serveStatic(res: ServerResponse, pathname: string): void {
   }
 }
 
+class ClientBodyError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 async function readJson(req: IncomingMessage, d: RequestDeps): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 5 * 1024 * 1024) throw new Error('PAYLOAD_TOO_LARGE');
+    if (size > 5 * 1024 * 1024) throw new ClientBodyError(413, 'payload_too_large', '请求体超过 5MiB 上限');
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  } catch {
+    // F-J-44（联合审计 2026-10-06）：坏 JSON 是客户端错误（400），不是 500——
+    // 此前 SyntaxError 落进外层 catch 污染 500 口径
+    throw new ClientBodyError(400, 'invalid_json', '请求体不是合法 JSON');
+  }
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
