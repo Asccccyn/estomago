@@ -35,7 +35,7 @@ import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf } from './cache-plan.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
-import { HOST_TOOLS, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
+import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
@@ -446,7 +446,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+        tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,
@@ -607,7 +607,7 @@ export class TurnSupervisor {
       model: dv.model,
       sessionId: dv.sessionId(o.conversationId),
       messages: reviewMessages,
-      tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+      tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
       boundaries: reviewBoundaries,
       maxTokens: dv.maxTokens,
       reasoning: dv.reasoning,
@@ -914,7 +914,7 @@ export class TurnSupervisor {
             model: dv.model,
             sessionId: dv.sessionId(turn.conversation_id),
             messages: orMessages,
-            tools: HOST_TOOLS as unknown as import('./or-payload.ts').OrTool[],
+            tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
             boundaries,
             maxTokens: dv.maxTokens,
             reasoning: dv.reasoning,
