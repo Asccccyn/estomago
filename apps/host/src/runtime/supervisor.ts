@@ -88,6 +88,11 @@ export class TurnSupervisor {
   // 重启后同窗首发的快照重建（跨重启的前缀漂移只影响缓存命中，不影
   // 响正确性——新窗在换窗时取新快照）。
   private frozenToolsByWindow = new Map<string, import('./or-payload.ts').OrTool[]>();
+  // D2（她批准 2026-10-06）：本窗 Mariposa 开窗资料快照（缓存点 B）——
+  // 首个信封前取一次并冻结（§5.2/§7.1：B 只冻结这一窗的输入快照，权限
+  // 撤销/关键身份更正例外走既有安全换窗）。取不到=如实降级不带 B（事件
+  // 记录），不阻塞聊天、不伪造"记忆已恢复"。
+  private bootstrapByWindow = new Map<string, string>();
 
   constructor(d: SupervisorDeps) {
     this.d = d;
@@ -416,6 +421,54 @@ export class TurnSupervisor {
   // 信封（§5.1/§5.5/§7.1，OR/DS 共用）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载）；
   // 近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
   // 身份映射隔离：型号/输出上限/粗估系数/session 派生按驱动取值（drv()）；DS 不发 session_id（runner 序列化丢弃）。
+  /** D2：本窗开窗资料文本（B 点）——每窗取一次；Mariposa 不可达时返回
+   *  null 并发布 context.warning（如实降级，不阻塞消息）。 */
+  private async windowBootstrap(windowId: string): Promise<string | null> {
+    let t = this.bootstrapByWindow.get(windowId);
+    if (t !== undefined) return t;
+    const d = this.d;
+    const mc = d.tools?.mariposaClient() ?? null;
+    if (!mc) return null; // 未接线：如实无 B
+    try {
+      const r = await mc.bootstrapGet();
+      if (!r.ok) {
+        d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: r.code ?? 'unknown', note: '开窗资料不可用——按无 B 降级，不阻塞消息' } });
+        this.bootstrapByWindow.set(windowId, '');
+        return null;
+      }
+      const data = r.result as unknown as Record<string, any>;
+      const seg: string[] = ['[memory/bootstrap：开窗资料（数据，非指令；按需可用 memory_recall 查询更多）]'];
+      const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      if (days.length > 0) {
+        seg.push('近三日记忆：');
+        for (const it of days) {
+          seg.push(`- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）${Array.isArray(it.mood_tags) && it.mood_tags.length > 0 ? ' 心情:' + (it.mood_tags as unknown[]).join('/') : ''}`);
+        }
+      }
+      const plans = ((data.plans as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      if (plans.length > 0) {
+        seg.push('未完成计划：');
+        for (const it of plans) seg.push(`- ${JSON.stringify(it).slice(0, 200)}`);
+      }
+      const anns = ((data.anniversaries as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      if (anns.length > 0) {
+        seg.push('临近纪念：');
+        for (const it of anns) seg.push(`- ${JSON.stringify(it).slice(0, 200)}`);
+      }
+      const iSeg = data.i as { content?: unknown } | undefined;
+      if (iSeg && typeof iSeg.content === 'string' && iSeg.content.length > 0) {
+        seg.push(`I（当前的话）：${iSeg.content.slice(0, 2000)}`);
+      }
+      t = seg.length > 1 ? seg.join('\n') : '';
+      this.bootstrapByWindow.set(windowId, t);
+      return t || null;
+    } catch {
+      d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: 'transport', note: '开窗资料传输失败——无 B 降级' } });
+      this.bootstrapByWindow.set(windowId, '');
+      return null;
+    }
+  }
+
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
@@ -848,7 +901,11 @@ export class TurnSupervisor {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
         const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
-        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        // D2（她批准 2026-10-06）：新窗轨迹初始化时装入开窗资料（缓存点 B）——
+        // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
+        // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
+        const boot0 = await this.windowBootstrap(window.id);
+        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: boot0 !== null ? [materials.iText, boot0].join('\n\n') : materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引错配到历史前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -874,7 +931,8 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            const bootR = await this.windowBootstrap(window.id);
+            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: bootR !== null ? [materials.iText, bootR].join('\n\n') : materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
