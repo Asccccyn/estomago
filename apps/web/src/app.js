@@ -414,7 +414,8 @@ async function loadRecords() {
       <div>未新增 hold 是正常状态，不是漏记。</div></div>`);
     rows.push(`<div class="rec-section"><h4>原文同步</h4>
       <div>状态：${{ saved_pending_sync: '已保存，待同步', synced: '已同步 Mariposa', failed: '有失败项（需处理）', partial: '部分', unknown: '未知' }[s.rawSync.state] ?? s.rawSync.state}${s.rawSync.enabled ? '' : '（归档未启用——原文仍完整保存在本地）'}</div>
-      <div>已同步 ${s.rawSync.acked} / 待 ${s.rawSync.pending} / 失败 ${s.rawSync.failed}</div></div>`);
+      <div>已同步 ${s.rawSync.acked} / 待 ${s.rawSync.pending} / 失败 ${s.rawSync.failed}</div>
+      <div>最近记忆写入：${(s.holdEffects ?? []).length === 0 ? '（尚无）' : (s.holdEffects ?? []).map((h) => `${h.state === 'committed' && h.verified ? `已提交 ${h.memoryId ?? ''}` : h.state}${h.bindingDetail === 'not_recorded_locally' ? '（绑定明细本地未留痕，按单号在 Mariposa 核对）' : ''}`).join('；')}</div></div>`);
     const ttlLabel = s.cache.requestedTtl === 'auto' ? '自动缓存（DS：无显式 TTL 参数，命中看观测）' : '1h';
     rows.push(`<div class="rec-section"><h4>缓存与费用</h4>
       <div>缓存策略：${ttlLabel}　保温：未启用${s.cache.estimatedExpiresAt ? `　估计热至 ${fmtTime(s.cache.estimatedExpiresAt)}` : ''}</div>
@@ -430,7 +431,7 @@ async function loadRecords() {
         const detail = e.kind === 'archive.sync' ? `：${p.state ?? ''}${p.messages ? ` ${p.messages} 条` : ''}`
           : e.kind === 'context.warning' ? `：估计 ${p.estimate ?? '?'} / 软线 ${p.effective_soft ?? '?'}`
           : e.kind === 'review.sent' ? `：关注 ${p.focus_count ?? '?'} 条`
-          : e.kind === 'window.rotated' ? `：${p.reason === 'idle' ? '长时间静默' : p.reason === 'manual' ? '手动' : '容量'}${p.review_id ? '（检查通过）' : ''}`
+          : e.kind === 'window.rotated' ? `：${p.reason === 'idle' ? '长时间静默' : p.reason === 'manual' ? '手动' : p.reason === 'manual-stale-context' ? '手动（身份/上下文已变化）' : p.reason === 'capacity' ? '容量' : String(p.reason)}${p.review_id ? '（检查通过）' : ''}`
           : '';
         return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}${detail}</div>`;
       }).join('');

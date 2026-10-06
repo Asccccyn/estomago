@@ -170,18 +170,16 @@ test('鉴权：无 token 401；错 token 401；对 Origin 校验不误伤本地�
   assert.equal(crossOrigin.status, 403, '跨源 POST 被 CSRF 校验拒绝');
 });
 
-test('health：ready 分项（identity/runtime/archive/push/db）', async () => {
+test('health：ready 公共面脱敏摘要（F-J-49：分项明细走已认证 doctor，不漏路径）', async () => {
   const res = await fetch(`${base}/health/ready`);
-  const report = (await res.json()) as {
-    status: string;
-    components: Record<string, { status: string }>;
-  };
-  assert.equal(report.components.identity!.status, 'ok');
-  assert.equal(report.components.db!.status, 'ok');
-  assert.equal(report.components.push!.status, 'disabled');
-  // runtime=unknown（能力矩阵无实机证据）→ 整体 degraded，如实
-  assert.equal(report.components.runtime!.status, 'unknown');
-  assert.equal(report.status, 'degraded');
+  const raw = await res.text();
+  const body = JSON.parse(raw) as { ready: boolean; degraded: Array<{ component: string; status: string }> };
+  assert.equal(typeof body.ready, 'boolean');
+  assert.equal(body.ready, body.degraded.length === 0, 'ready 与 degraded 一致');
+  const byComp = Object.fromEntries(body.degraded.map((x) => [x.component, x.status]));
+  assert.equal(byComp.db, undefined, 'db ok 不入 degraded');
+  assert.ok(body.degraded.every((x) => typeof x.component === 'string' && typeof x.status === 'string'), 'degraded 仅状态码级（component+status），无原因明细');
+  assert.ok(!raw.includes('/Users/'), '公共 ready 不携带绝对路径/原因明细');
 });
 
 test('SSE：token query 认证 + 持久 sequence 帧 + Last-Event-ID 优先语义（AUD-09 新契约）', async () => {
@@ -209,4 +207,22 @@ test('SSE：token query 认证 + 持久 sequence 帧 + Last-Event-ID 优先语�
   }
   controller.abort();
   assert.ok(frames >= 3);
+});
+
+// —— 联合审计 B5（2026-10-06）——
+
+test('F-J-44：坏 JSON=400、超限=413（客户端错误不再一律 500）', async () => {
+  const res1 = await fetch(`${base}/api/v1/conversations/primary/messages`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    body: '这不是JSON{{{',
+  });
+  assert.equal(res1.status, 400);
+  assert.equal(((await res1.json()) as { error: { code: string } }).error.code, 'invalid_json');
+  const big = 'x'.repeat(5 * 1024 * 1024 + 1);
+  const res2 = await fetch(`${base}/api/v1/conversations/primary/messages`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    body: big,
+  });
+  assert.equal(res2.status, 413);
+  assert.equal(((await res2.json()) as { error: { code: string } }).error.code, 'payload_too_large');
 });

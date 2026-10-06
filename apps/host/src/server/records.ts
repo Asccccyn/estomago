@@ -16,6 +16,8 @@ export type RecordSnapshot = {
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
+  // F-J-42：hold 绑定状态按事实分列（绑定明细本地未留痕，不冒充已核对/未接通）
+  holdEffects: Array<{ state: string; verified: boolean; memoryId: string | null; updatedAt: string; bindingDetail: string | null }>;
 };
 
 export function buildRecordSnapshot(d: {
@@ -110,6 +112,20 @@ export function buildRecordSnapshot(d: {
       return cp ? { seenSequence: cp.seen_sequence, memoryId: cp.memory_id, updatedAt: cp.updated_at } : null;
     })(),
     rawSync: { state: rawState, enabled: raw?.enabled ?? false, pending: raw?.pending ?? 0, failed: raw?.failed ?? 0, acked: raw?.acked ?? 0 },
+    // F-J-42（联合审计 2026-10-06）：hold 绑定状态按**事实**分列——账本里已核实的
+    // committed hold 是"创建成功"；绑定明细（binding_ids）estómago 侧未持久化，
+    // 如实标注本地未留痕（需到 Mariposa 侧按 operation_id 核对），不沿用旧
+    // "绑定未接通"占位（联调已证 msb_ 绑定真实存在）；rawSync 是原文归档同步，
+    // 不是桶的绑定状态，两者不混。
+    holdEffects: (() => {
+      const rows = d.db.prepare(
+        "SELECT state, verified, memory_id, updated_at FROM tool_side_effects WHERE kind = 'hold' ORDER BY updated_at DESC LIMIT 5",
+      ).all() as Array<{ state: string; verified: number; memory_id: string | null; updated_at: string }>;
+      return rows.map((r) => ({
+        state: r.state, verified: r.verified === 1, memoryId: r.memory_id, updatedAt: r.updated_at,
+        bindingDetail: r.state === 'committed' ? 'not_recorded_locally' : null,
+      }));
+    })(),
   };
 }
 
