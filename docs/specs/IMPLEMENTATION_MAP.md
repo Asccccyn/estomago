@@ -76,6 +76,11 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
+- **2026-10-05 23:0x Codex 审计修复批完成（审 3655d60 报告 28 项=9P1/18P2/1P3 → 修复 909bd99，50/51 文件→51/51 绿）**：D14（UTF16/码点 offset）为送审前自审已修项（0422aeb），其余 27 项全修，逐项对照报告证据核过无误判：
+  - **P1**：D01 DS thinking 工具续轮回传 reasoning_content（同轮 opaque、落轨迹前剥除）/ D02 手动换窗接指纹门（失效身份零外发、按新材料 CAS 换窗）/ D03 重启恢复收口 active 评审+running 写（hold→unknown 可探测）/ D12 published_kind→chat_message / D13 引用按实际已见 (id,revision) 清单钉修订核对 / D17 弱回执严形状（unknown 不推书签）/ D20 前驱修订可达性解析（不闭锁）/ D22 5xx 一律传输层分类（unknown+有界重试）。
+  - **P2/P3**：D04 OR 计量抢救补 import+全断流路径 / D05 轨迹追赶投影（按真实 chat 派发证据收，防未发送大输入注回）/ D06 硬门拆分（大输入先换窗）/ D07 重试终态归实际派发行 / D08 近期原话按完整回合组 / D09 SDK 型号入指纹 / D10 评审费用 windowId typo / D11 重建清单锚定匹配 / D15 mood 缺 note 省 text / D16 同消息多片段+倒序引用 / D18 坏 ACK 吃预算 / D19 码点长度门 / D21 信封实际字节切批 / D23 面板 effectiveWarning+DS TTL=auto / D24 restore WAL 收拢快照 / D25 缺 usage 费用未知 / D26 SSE 只计未 flush 字节 / D27 冒烟不变量（hold committed+书签+工具续轮才 PASS）/ D28 发送前熔断。
+  - 新增 tests/unit/audit-d-fixes.test.ts（14 用例）；F25 断言按 D06 新语义更新；SSE 契约测试按 D26 语义翻转；ds-smoke dry-run SMOKE_PASS（含新不变量）。审计简报遗留清单项维持（payload_json 重复/事件保留/循环依赖/manual 假 ID——D10 已修窗口归属）。
+
 - **2026-10-05 21:0x 自审批（0422aeb，程知行）**：送审前对自家 f65f716..ba41c18 改动做同火力自审。**发现并修复 1 个 P2**：quotes 的 start/end_char_offset 原按 JS UTF-16 单位计算，mariposa 契约是 Unicode 码点半开区间（source/query.py CB-029）——消息内片段之前出现 emoji 等增补平面字符即错位；已改 `utf16IndexToCodepoints` 换算 + `[...frag]` 码点长度，emoji 回归锁定（start=3≠UTF-16 的 4）。顺手：QUOTE_CANDIDATE_LIMIT 命名常量（超 60 条已见消息的引用如实拒绝，不扩大扫描）；参数门补 items.minLength（quotes/plan_ids 空串条目门口拒，mariposa schema 对齐）。自审其余面（收据修订配对/评审上限绕过路径含 manual force 与 skipped_empty/停止键竞态/DS payload 不变式在续轮/参数门等价性）逐一核过未见问题，论据见简报攻击面更新。50/50 绿；ds-smoke dry-run PASS。审计简报同步到 0422aeb 口径（Codex 验证修复而非重发现）。
 
 - **2026-10-05 深夜 memory_hold 契约对齐批（mariposa@d14a24e 起步、mood 随 75378ab 终版由并行批补齐；她的三项裁定落地）**：mariposa 侧接口核对（ingest/status/回执全兼容，断点=hold 入参）后，按她裁定修 estómago 工具面：
