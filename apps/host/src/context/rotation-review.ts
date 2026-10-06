@@ -23,7 +23,7 @@ export class RotationReviewService {
          VALUES (?,?,?,?,?,'active',?,?)`,
       ).run(id, windowId, roomId, epochRevision, JSON.stringify(rangeKeys), now, now);
     });
-    return { id, roomId, epochId: windowId, epochRevision, selected: range, status: 'active', rangeKeys, createdAt: now };
+    return { id, roomId, epochId: windowId, epochRevision, selected: range, status: 'active', rangeKeys, createdAt: now, windowId }; // F-J-31：补齐 ReviewRow 声明的 windowId（与 get() 对齐）
   }
 
   get(reviewId: string): ReviewRow | null {
@@ -82,12 +82,23 @@ export class RotationReviewService {
     }
   }
 
-  markSkippedEmpty(windowId: string, roomId: string, epochRevision: number, rangeKeys: string[]): ReviewRow {
+  /** F-J-40（联合审计 2026-10-06）：basis=空范围定位依据（书签/清单高水位/触发原因/
+   *  凭证计数等事实）。仍为空范围——不伪称 reviewed/held 全覆盖；迁移 v14 落
+   *  basis_json 列（旧库无列时静默降级为不存依据，不阻断换窗）。 */
+  markSkippedEmpty(windowId: string, roomId: string, epochRevision: number, rangeKeys: string[], basis?: Record<string, unknown>): ReviewRow {
     const row = this.create(windowId, roomId, epochRevision, []);
     // 空范围记录（skipped_empty）：范围键写入以便同范围恢复复用；不叫模型（§3.2.5）
     tx(this.db, () => {
       this.db.prepare("UPDATE rotation_reviews SET range_keys_json = ?, status = 'skipped_empty', updated_at = ? WHERE id = ?")
         .run(JSON.stringify(rangeKeys), new Date().toISOString(), row.id);
+      if (basis !== undefined) {
+        try {
+          this.db.prepare("UPDATE rotation_reviews SET basis_json = ? WHERE id = ?")
+            .run(JSON.stringify(basis), row.id);
+        } catch (err) {
+          if ((err as { code?: string }).code !== 'ERR_SQLITE_ERROR') throw err;
+        }
+      }
     });
     return this.get(row.id)!;
   }
