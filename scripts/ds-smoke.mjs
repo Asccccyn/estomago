@@ -109,10 +109,17 @@ if (DRY) {
 const runner = DRY
   ? new DeepSeekRunner({ retryMax: 0 }, orTransport)
   : deepSeekSelection(config).runner; // 真实模式：defaultTransport 直连 api.deepseek.com，key 只在请求头构造处读取
-if (!DRY) {
-  // 真实模式也包一层字段自检（不触碰 key/流——只校验发出的 payload 形状）
-  const realTransport = runner.transport;
-  runner.transport = async (payload, signal) => { assertDsPayloadClean(payload); return realTransport(payload, signal); };
+{
+  // D28（审计 3655d60）：全局发送熔断在**发送前**原子生效——第 11 次调用直接拒绝，不再只在步间事后检查；
+  // 同时（D27 的前置）字段自检对真/假 transport 一致执行。
+  const inner = DRY ? orTransport : runner.transport;
+  let sent = 0;
+  runner.transport = async (payload, signal) => {
+    assertDsPayloadClean(payload);
+    sent += 1;
+    if (sent > 10) throw new Error(`SMOKE_FUSE_TRIPPED:全局发送上限 10 次已被超越（第 ${sent} 次）——行为异常，中止`);
+    return inner(payload, signal);
+  };
 }
 const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
 messages.ensureConversation('c1');
@@ -128,7 +135,7 @@ async function step(name, content, clientId) {
   const usage = db.prepare('SELECT request_id, input_tokens, output_tokens, cache_read_input_tokens, cost_usd, completeness FROM usage_observations WHERE attempt_id = ? ORDER BY rowid').all(sub.attemptId);
   const effects = db.prepare("SELECT kind, state FROM tool_side_effects WHERE turn_id = ?").all(sub.turnId);
   const published = messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 50 }).filter((m) => m.speaker === 'assistant').length;
-  evidence.steps.push({ name, attempt: att, usage, effects, assistantPublished: published });
+  evidence.steps.push({ name, attempt: att, attempt_id: sub.attemptId, usage, effects, assistantPublished: published });
   console.log(`[${name}] attempt=${att.state} usageRows=${usage.length} effects=${JSON.stringify(effects)}`);
   return att.state;
 }
@@ -151,8 +158,16 @@ evidence.final = {
   trajectoryMessages: trajectory.forWindow(win?.id ?? '')?.messages.length ?? null,
   providerRequests: db.prepare('SELECT COUNT(*) n, SUM(CASE WHEN sent_at IS NOT NULL THEN 1 ELSE 0 END) sent FROM provider_requests').get(),
 };
-const pass = s1 === 'completed' && s2 === 'completed' && s3 === 'completed';
-evidence.verdict = pass ? 'SMOKE_PASS（三步完成）' : 'SMOKE_FAIL（见 steps）';
+// D27（审计 3655d60）：SMOKE_PASS 不能只看三步 completed——工具步必须有真实发生的合法调用与
+// committed 回执、书签推进、以及工具后续轮；缓存命中只按观测值记录（不拿 completed 推断）。
+const holdEffect = evidence.steps[1]?.effects?.find((e) => e.kind === 'hold');
+const holdVerified = holdEffect?.state === 'committed';
+const bookmarkAdvanced = Boolean(evidence.final.checkpoint && evidence.final.checkpoint.seenSequence != null && evidence.final.checkpoint.memoryId);
+const toolRound2 = (() => { const r = db.prepare('SELECT COUNT(*) n FROM provider_requests WHERE attempt_id = ? AND payload_json LIKE ?').get(evidence.steps[1]?.attempt_id, '%"role":"tool"%'); return r.n >= 1; })(); // 续请求真实携带工具结果（D27：不看 usage 行数——工具轮首响应可无计量帧）
+const cacheObs = (() => { const rows = db.prepare('SELECT cache_read_input_tokens FROM usage_observations WHERE cache_read_input_tokens IS NOT NULL').all(); return rows.length; })();
+evidence.invariants = { holdVerified, bookmarkAdvanced, toolRound2, cacheObsRequests: cacheObs };
+const pass = s1 === 'completed' && s2 === 'completed' && s3 === 'completed' && holdVerified && bookmarkAdvanced && toolRound2;
+evidence.verdict = pass ? 'SMOKE_PASS（三步完成且工具往返/书签不变量成立）' : `SMOKE_FAIL（steps=${s1}/${s2}/${s3} hold=${holdVerified} bookmark=${bookmarkAdvanced} toolRound2=${toolRound2}）`;
 saveEvidence();
 console.log(`\n${evidence.verdict}`);
 cleanup();

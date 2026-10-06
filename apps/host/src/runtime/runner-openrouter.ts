@@ -11,7 +11,7 @@ import type { MatchedCompleteBlock, SdkNormalizedEvent } from '../../../../packa
 import type { Config } from '../config/schema.ts';
 import { orModelIdIssue } from '../config/schema.ts';
 import { sha256Hex } from '../util/id.ts';
-import { ContractError, toRawUsageColumns } from './or-contract.ts';
+import { ContractError, normalizeOrUsage, toRawUsageColumns } from './or-contract.ts';
 import { assertAppendOnly, buildOrPayload } from './or-payload.ts';
 import { OrStreamAccumulator } from './or-sse.ts';
 import type { AgentRunner, OrRunRequest, RunnerRunResult, RunnerSelection } from './runner.ts';
@@ -263,10 +263,11 @@ export class OpenRouterRunner implements AgentRunner {
       }
     } catch (err) {
       if (req.abortController.signal.aborted || abortedMidStream) {
-        this.salvageMetering(req, acc); // 审计 F20：AbortError/断流也要抢救已抵达的计量帧
+        this.salvageMetering(req, acc);
         return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
       }
       if (!sawAnyFrame) return { kind: 'pre_data_error', error: err };
+      this.salvageMetering(req, acc); // D04（审计 3655d60）：断流/网络错误也先记已到计量帧，再收口错误
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
     if (abortedMidStream) {
@@ -279,6 +280,7 @@ export class OpenRouterRunner implements AgentRunner {
     try {
       finish = acc.finish();
     } catch (err) {
+      this.salvageMetering(req, acc); // D04：EOF 无 DONE/非法工具 JSON 等 finish 抛出前，先抢救已到计量
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
 

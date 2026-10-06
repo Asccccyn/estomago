@@ -218,14 +218,27 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_CHAIN_MISSING');
         continue;
       }
+      // D20（审计 3655d60）：前驱修订取"可达"版本——优先前驱当前修订**仅当**它已同步（有收据）或
+      // 在本批更早位置（同批可完成）；否则回退到前驱最新已同步修订（无收据则 revision 1=首批必带）。
+      // 否则 >50 条积压+前驱被编辑时，首批引用只在后批才有的修订 → SOURCE_NOT_READY 永久闭锁。
+      let predRevForPayload: number | undefined;
+      if (pred) {
+        const earlierInBatch = batchRows.some((r) => this.messageIdOf(r) === pred.id);
+        const predCurrentSynced = !!this.receiptRowOf(pred.id, pred.current_revision);
+        predRevForPayload = earlierInBatch || predCurrentSynced
+          ? pred.current_revision
+          : this.latestSyncedRevision(pred.id) ?? 1;
+      }
       const message: IngestMessage = {
         origin_message_id: msg.id,
         revision: rev.revision,
         previous_revision: rev.supersedes_revision,
         conversation_sequence: msg.sequence,
-        predecessor: pred ? { origin_message_id: pred.id, revision: pred.current_revision } : null,
+        predecessor: pred ? { origin_message_id: pred.id, revision: predRevForPayload } : null,
         sender: msg.speaker === 'owner' ? 'user' : 'assistant',
-        published_kind: rev.kind,
+        // D12（审计 3655d60）：宿主内部 kind（text/sticker/voice/system）与领域 published_kind 分开映射——
+        // mariposa 现行契约（aa624c9）只收 chat_message；未映射的 kind 原样发出由服务端如实拒绝（不静默转写）
+        published_kind: rev.kind === 'text' ? 'chat_message' : rev.kind,
         occurred_at: rev.occurred_at,
         received_at: rev.received_at,
         published_at: msg.published_at,
@@ -233,17 +246,24 @@ export class ArchiveSyncService {
         assets: [],
         content_hash: rev.content_hash,
       };
-      // F16（复审修正）：按"完整请求信封"的边际字节计——消息 JSON + 数组逗号，
-      // 外层固定字段与 HTTP {arguments:...} 包装按实测常量预留（审计临界用例：
-      // 消息 1048526B + 包装 166B > 1MiB 必须被拒）
-      const serializedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8') + 1; // +1 数组逗号
-      const envelopeOverhead = 166; // 外层请求字段 + arguments 包装（保守实测值）
-      if (batchRows.length > 0 && bytes + serializedBytes + envelopeOverhead > INGEST_BATCH_MAX_BYTES) break; // 切批
-      if (batchRows.length === 0 && serializedBytes + envelopeOverhead > INGEST_BATCH_MAX_BYTES) {
+      // F16 + D21（审计 3655d60）：按"完整请求信封"的**实际序列化字节**计——不再用固定 166B 常量
+      // （scope/origin id 变长时曾放行 >1MiB 请求被服务端拒）。候选入批后序列化整个请求验证，
+      // 超限则回退该候选并切批；单条即超限走 dead（明确报错不截断）。
+      const candidateRequest = (msgs: IngestMessage[]): IngestRequest => ({
+        operation_id: ingestOperationId(conversationId, [...keys, { messageId: msg.id, revision: rev.revision }]),
+        stream_id: this.streamId,
+        origin_instance: 'estomago',
+        origin_conversation_id: conversationId,
+        messages: msgs,
+      });
+      const wrapBytes = (req: IngestRequest): number => Buffer.byteLength(JSON.stringify({ arguments: req }), 'utf8');
+      const candidateBytes = wrapBytes(candidateRequest([...messages, message]));
+      if (batchRows.length > 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) break; // 切批（候选留给下一批）
+      if (batchRows.length === 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) {
         deadRows.push(row); // 单条连同信封超限：明确报错不截断（大对象路径不在本任务）
         continue;
       }
-      bytes += serializedBytes;
+      bytes = candidateBytes;
       batchRows.push(row);
       messages.push(message);
       keys.push({ messageId: msg.id, revision: rev.revision });
@@ -307,19 +327,29 @@ export class ArchiveSyncService {
       return 'dead';
     }
     // F10：ACK 逐条校验——op 匹配 + 每条请求消息都有对应回执（origin+revision），hash 相符
+    // D18（审计 3655d60）：unknown 类 ACK 异常路径共享同一重试预算——超限走 TRANSIENT_EXHAUSTED dead，
+    // 不再无界重复发送（服务端持续回坏 ACK 时 12 次后必须落人工可恢复状态）
+    const unknownAck = (code: string): 'retry_later' | 'dead' => {
+      if (!exhausted()) {
+        this.markChunk(rows, 'unknown_outcome', code);
+        summary.retry_later += rows.length;
+        return 'retry_later';
+      }
+      this.markChunk(rows, 'failed', 'TRANSIENT_EXHAUSTED');
+      this.markBatchDead(meta.operationId, `TRANSIENT_EXHAUSTED:${code}`);
+      this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'failed', code: `TRANSIENT_EXHAUSTED:${code}` } });
+      summary.dead += rows.length;
+      return 'dead';
+    };
     const ack = result.ack;
     if (!ack || ack.operation_id !== request.operation_id) {
-      this.markChunk(rows, 'unknown_outcome', 'ACK_SHAPE_INVALID');
-      summary.retry_later += rows.length;
-      return 'retry_later';
+      return unknownAck('ACK_SHAPE_INVALID');
     }
     const byKey = new Map(ack.messages.map((m) => [`${m.origin_message_id}@${m.revision}`, m]));
     for (const reqMsg of request.messages) {
       const entry = byKey.get(`${reqMsg.origin_message_id}@${reqMsg.revision}`);
       if (!entry) {
-        this.markChunk(rows, 'unknown_outcome', 'ACK_INCOMPLETE'); // 空回执/缺条目：不冒充已同步
-        summary.retry_later += rows.length;
-        return 'retry_later';
+        return unknownAck('ACK_INCOMPLETE'); // 空回执/缺条目：不冒充已同步
       }
       if (entry.content_hash !== null && entry.content_hash !== reqMsg.content_hash) {
         this.markChunk(rows, 'failed', 'ACK_HASH_MISMATCH');
@@ -331,9 +361,7 @@ export class ArchiveSyncService {
       // 审计 F10：正式来源证据三件套（来源会话/来源消息/内容 hash）与提交时刻缺一不可——
       // 只带 origin/revision 的骨架回执不算完整 ACK，不冒充已同步
       if (entry.source_conversation_id === null || entry.source_message_id === null || entry.content_hash === null || ack.committed_at === null) {
-        this.markChunk(rows, 'unknown_outcome', 'ACK_FIELDS_INCOMPLETE');
-        summary.retry_later += rows.length;
-        return 'retry_later';
+        return unknownAck('ACK_FIELDS_INCOMPLETE');
       }
     }
     tx(this.db, () => {
@@ -361,6 +389,17 @@ export class ArchiveSyncService {
     } catch {
       return null;
     }
+  }
+
+  /** D20：某 (消息,修订) 是否已有正式来源收据（=已确认同步） */
+  private receiptRowOf(messageId: string, revision: number): unknown {
+    return this.db.prepare('SELECT 1 FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ?').get(messageId, revision);
+  }
+
+  /** D20：该消息最新已同步的修订号（无任何收据→null，调用方回退 revision 1） */
+  private latestSyncedRevision(messageId: string): number | null {
+    const row = this.db.prepare('SELECT MAX(revision) AS m FROM source_sync_receipts WHERE origin_message_id = ?').get(messageId) as { m: number | null };
+    return row?.m ?? null;
   }
 
   private markChunk(chunk: OutboxRow[], state: 'pending' | 'failed' | 'acked' | 'unknown_outcome', code: string | null): void {

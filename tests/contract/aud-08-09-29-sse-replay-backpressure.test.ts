@@ -184,13 +184,14 @@ test('AUD-29（组件级·确定性）：drain 超时与累计字节上限都必
     db.close();
   }
 
-  // 场景2：res.write 恒 true（内核全吸收）且无 drain 事件 → 累计字节超上限 → destroy 必然被调
+  // 场景2（D26 翻转，审计 3655d60）：res.write 恒 true（内核全吸收）= 健康 fast consumer——
+  // 待发水位每帧清零，**不得**按"连接终生累计字节"断开；12MB 全部写完且连接保持存活。
   {
     const root = tempRoot('aud29c-');
     const db = openDatabase(path.join(root, 'data'));
     migrate(db, sha);
     const events = new EventService(db);
-    const blob = 'z'.repeat(1024 * 1024); // 1MB/条 × 12 条 = 12MB > 8MB 上限
+    const blob = 'z'.repeat(1024 * 1024); // 1MB/条 × 12 条 = 12MB（旧实现按终生累计会在 8MB 误断）
     for (let i = 0; i < 12; i++) events.publish('message.persisted', { conversationId: null, payload: { blob } });
     let destroyed = false;
     let wrote = 0;
@@ -202,12 +203,10 @@ test('AUD-29（组件级·确定性）：drain 超时与累计字节上限都必
     const fakeReq = new (await import('node:events')).EventEmitter() as unknown as import('node:http').IncomingMessage;
     (fakeReq as unknown as { headers: Record<string, string> }).headers = {};
     handleSse(fakeReq, fakeRes, makeDeps(events), new URL('http://x/api/v1/events?cursor=0'));
-    await new Promise<void>((resolve) => {
-      const check = setInterval(() => { if (destroyed) { clearInterval(check); resolve(); } }, 20);
-      setTimeout(() => { clearInterval(check); resolve(); }, 3000).unref?.();
-    });
-    assert.equal(destroyed, true, '即使 write 恒 true，累计写入超 8MB 上限也必须断开（应用层无界缓冲被禁止）');
-    assert.ok(wrote < 12 * 1024 * 1024 + 64 * 1024, `不得把全部 12MB 无界写入（实际 ${Math.round(wrote / 1024)}KB）`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 600));
+    assert.equal(destroyed, false, 'write 恒 true=健康消费者：待发水位归零，不得按终生累计误断（D26）');
+    assert.ok(wrote > 12 * 1024 * 1024, `12MB 应全部写出（实际 ${Math.round(wrote / 1024)}KB）`);
+    fakeReq.emit('close'); // 显式收尾，避免悬挂
     db.close();
   }
   delete process.env.ESTOMAGO_SSE_DRAIN_TIMEOUT_MS;

@@ -49,10 +49,39 @@ if (fs.existsSync(destDirInput)) {
 const existingLock = path.join(destDirInput, 'run/instance.lock');
 if (fs.existsSync(existingLock)) fail('DEST_IN_USE', '目标目录存在实例锁（可能有活动实例）');
 
-// 备份有效性
+// 备份有效性 + D24（审计 3655d60）：校验读的是"主库+WAL"视图，拷贝若只拿主文件会静默丢 WAL 提交——
+// 存在未 checkpoint 的 WAL 边车时，先把 (主库+wal+shm) 复制到临时目录做 checkpoint 收拢出**一致性独立快照**，
+// 再以该快照为恢复源（原备份文件一个字节都不动）。
+import os from 'node:os';
+let restoreSource = src;
+let tempSnapshotDir = null;
+const walSide = src + '-wal';
+if (fs.existsSync(walSide) && fs.statSync(walSide).size > 0) {
+  tempSnapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'estomago-restore-wal-'));
+  const tMain = path.join(tempSnapshotDir, 'chat.sqlite3');
+  fs.copyFileSync(src, tMain);
+  fs.copyFileSync(walSide, tMain + '-wal');
+  const shmSide = src + '-shm';
+  if (fs.existsSync(shmSide)) fs.copyFileSync(shmSide, tMain + '-shm');
+  try {
+    const tdb = new DatabaseSync(tMain); // 读写打开副本（不动原件）
+    tdb.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    const integrity = tdb.prepare('PRAGMA integrity_check').get();
+    tdb.close();
+    if (String(integrity?.integrity_check ?? integrity ?? '') !== 'ok') {
+      fs.rmSync(tempSnapshotDir, { recursive: true, force: true });
+      fail('BACKUP_CORRUPT', `WAL 收拢快照 integrity_check 未通过：${JSON.stringify(integrity).slice(0, 80)}`);
+    }
+    restoreSource = tMain;
+    console.log('[restore] 源含未 checkpoint 的 WAL——已收拢为一致性快照（原备份未修改）');
+  } catch (e) {
+    fs.rmSync(tempSnapshotDir, { recursive: true, force: true });
+    fail('BACKUP_WAL_FOLD_FAILED', `WAL 收拢失败：${String(e.message).slice(0, 80)}`);
+  }
+}
 let db;
 try {
-  db = new DatabaseSync(src, { readOnly: true });
+  db = new DatabaseSync(restoreSource, { readOnly: true });
 } catch (e) {
   fail('BACKUP_NOT_SQLITE', `无法以 SQLite 打开备份：${String(e.message).slice(0, 80)}`);
 }
@@ -70,18 +99,19 @@ try {
   fail('BACKUP_INVALID', `备份校验失败：${String(e.message).slice(0, 80)}`);
 }
 
-// 拷贝 + 校验和
+// 拷贝 + 校验和（D24：拷的是收拢后的一致性快照 restoreSource，不是带活跃 WAL 的原始主文件）
 const { createHash } = await import('node:crypto');
 const hashOf = (f) => createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-const srcHash = hashOf(src);
+const srcHash = hashOf(restoreSource);
 const dest = path.join(destDirInput, 'data');
 fs.mkdirSync(dest, { recursive: true });
 const destFile = path.join(dest, 'chat.sqlite3');
-fs.copyFileSync(src, destFile);
+fs.copyFileSync(restoreSource, destFile);
 if (hashOf(destFile) !== srcHash) {
   fs.rmSync(destFile, { force: true });
   fail('COPY_MISMATCH', '拷贝后校验和不一致，已删除半成品');
 }
+if (tempSnapshotDir) fs.rmSync(tempSnapshotDir, { recursive: true, force: true });
 fs.writeFileSync(destFile.replace(/\.sqlite3$/, '') + '.restore-manifest.json', JSON.stringify({
   restored_at: new Date().toISOString(), source: src, source_sha256: srcHash,
   side_effects: 'DISABLED', promote: '正式启用需单独显式流程（本脚本不 promote）',

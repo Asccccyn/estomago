@@ -145,8 +145,10 @@ export class TurnSupervisor {
     return attemptId;
   }
 
-  // AUD-10/38（§10）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型
-  static recoveryPass(db: Db, logger: { warn: (e: string, f: Record<string, unknown>) => void }): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number } {
+  // AUD-10/38（§10）+ D03（审计 3655d60）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型；
+  //   active 评审无执行者（宿主重启即失主）→ failed（下次换窗按上限内有界重开评审，先做 unknown 写恢复）；
+  //   running 写操作 → hold 记 unknown（可按 operation_id 恢复探测），本地类（review_complete 等）→ failed_resolved。
+  static recoveryPass(db: Db, logger: { warn: (e: string, f: Record<string, unknown>) => void }): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number; staleReviews: number; orphanEffects: number } {
     const now = new Date().toISOString();
     const turns = tx(db, () => Number(db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now).changes));
     const attempts = tx(db, () => Number(db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now).changes));
@@ -166,9 +168,15 @@ export class TurnSupervisor {
        WHERE state = 'route_owner_pending'
          AND NOT EXISTS (SELECT 1 FROM route_decisions rd WHERE rd.attempt_id = attempts.id AND rd.state = 'pending')`,
     ).run(now).changes));
-    const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners;
-    if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, code: 'RECOVERY_HOST_RESTART' });
-    return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners };
+    // D03a：无执行者的 active 评审 → failed（重启后没有任何协程会收口它；不伪造完成凭证）
+    const staleReviews = tx(db, () => Number(db.prepare("UPDATE rotation_reviews SET status = 'failed', updated_at = ? WHERE status = 'active'").run(now).changes));
+    // D03b：崩溃遗留 running 写操作——hold 类结果不明（可按 operation_id 探测恢复），本地类可判未提交
+    const orphanEffects = tx(db, () => Number(db.prepare(
+      "UPDATE tool_side_effects SET state = CASE WHEN kind = 'hold' THEN 'unknown' ELSE 'failed_resolved' END, updated_at = ? WHERE state = 'running'",
+    ).run(now).changes));
+    const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners + staleReviews + orphanEffects;
+    if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects, code: 'RECOVERY_HOST_RESTART' });
+    return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects };
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
@@ -185,6 +193,8 @@ export class TurnSupervisor {
     controller: AbortController;
     onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
     seenSequence: number;
+    seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：实际装载视野（引用核对）
+    liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null }> {
@@ -195,6 +205,9 @@ export class TurnSupervisor {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const captured: MatchedCompleteBlock[] = [];
       let lastText: string | null = null;
+      const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+      const prqId = prqId0;
+      let lastPrqId = prqId0; // D07：终态/计量归属**最后一次实际派发**的请求行（重试不再覆盖首发）
       const wrapped: typeof o.onEvent = (ev, reqCtx) => {
         void reqCtx;
         if (ev.kind === 'complete_message') {
@@ -202,9 +215,8 @@ export class TurnSupervisor {
           const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
           if (text) lastText = text.text;
         }
-        o.onEvent(ev, { requestId: prqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
+        o.onEvent(ev, { requestId: lastPrqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
-      const prqId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
       d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at) VALUES (?,?,?,?,?,?,?,?)')
         .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), new Date().toISOString());
@@ -230,9 +242,12 @@ export class TurnSupervisor {
         if (info.attemptIndex === 0) {
           d.db.prepare('UPDATE provider_requests SET sent_at = ?, attempt_no = ?, generation_id = COALESCE(?, generation_id) WHERE id = ?')
             .run(nowIso, 0, info.generationId ?? null, prqId);
+          lastPrqId = prqId;
         } else {
+          const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at, sent_at, attempt_no, generation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-            .run(`prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, nowIso, nowIso, info.attemptIndex, info.generationId ?? null);
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, nowIso, nowIso, info.attemptIndex, info.generationId ?? null);
+          lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
       };
       const result = await Promise.race([
@@ -247,7 +262,11 @@ export class TurnSupervisor {
         if (isGrace) o.controller.abort();
         return { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
       });
-      d.db.prepare('UPDATE provider_requests SET generation_id = ?, outcome = ? WHERE id = ?').run(result.requestId, result.outcome, prqId);
+      // D07：终态与 generation 写到**最后一次实际派发**的行；被重试取代的首发行如实标注，不被后次覆盖
+      d.db.prepare('UPDATE provider_requests SET generation_id = ?, outcome = ? WHERE id = ?').run(result.requestId, result.outcome, lastPrqId);
+      if (lastPrqId !== prqId) {
+        d.db.prepare("UPDATE provider_requests SET outcome = 'SUPERSEDED_BY_RETRY' WHERE id = ? AND outcome IS NULL").run(prqId);
+      }
       if (result.outcome !== 'completed') return { result, finalMessages: null, lastSentMessages: null };
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
@@ -274,6 +293,12 @@ export class TurnSupervisor {
         const flat = (result.reasoningFrames as unknown[]).flatMap((f) => (Array.isArray(f) ? f : [f]));
         assistantContinue.reasoning_details = flat;
       }
+      // D01（审计 3655d60）：DS thinking 型号在同一工具回合的续请求必须原样回传 reasoning_content
+      // （官方协议继续态；§10 opaque 透传——不解释不重构，不入 UI/轨迹正本，下一用户回合清除）。
+      // 仅 DS 驱动携带；OR 的协议继续态走上面的 reasoning_details 通道，两不混淆。
+      if (this.drv()?.kind === 'deepseek' && typeof (result as { reasoningContent?: unknown }).reasoningContent === 'string' && (result as { reasoningContent: string }).reasoningContent.length > 0) {
+        assistantContinue.reasoning_content = (result as { reasoningContent: string }).reasoningContent;
+      }
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
@@ -295,7 +320,9 @@ export class TurnSupervisor {
         args.__tool_call_id = t.tool_id;
         const exec = await d.tools!.execute(t.tool_name ?? '', args, {
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose,
-          activeReviewId: o.activeReviewId, seenSequence: o.seenSequence, requestId: result.requestId ?? `round_${round}`,
+          activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
+          seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? [])], // D13：含流式期间新发布的已见原话
+          requestId: result.requestId ?? lastPrqId,
         });
         envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
       }
@@ -329,8 +356,12 @@ export class TurnSupervisor {
     });
   }
 
-  /** 审计 F27：为 manifest=NULL 的旧轨迹行重建已见清单——轨迹 user/assistant 文本逐条匹配
-   *  库内当前修订（角色+正文精确等值，按序消费候选防重复正文误配）；任一条无匹配 → null（未知）。 */
+  /** 审计 F27 + D11（审计 3655d60）：为 manifest=NULL 的旧轨迹行重建已见清单——按**宿主已知结构锚定**
+   *  匹配，不用裸子串（旧实现 text.includes(row.content) 会把库内更早的子串正文 A 错配给轨迹里的 AA，
+   *  给未发送原话签已见证明）：
+   *  - user 轨迹消息=装配投影，正文以 `[user_input]\n` 头结束 → 锚定为 endsWith(`[user_input]\n{正文}`)；
+   *  - assistant 轨迹消息=已发布分段原文 → 锚定为全文等值；
+   *  按序消费候选防重复正文误配；任一条无匹配 → null（范围未知，如实阻断）。 */
   private rebuildTrajectoryManifest(conversationId: string, trajMessages: OrMessage[]): ManifestEntry[] | null {
     const dbRows = this.d.db.prepare(
       `SELECT m.id, m.sequence, m.current_revision, m.speaker, r.content FROM messages m
@@ -346,8 +377,11 @@ export class TurnSupervisor {
       let matched: { id: string; sequence: number; current_revision: number } | null = null;
       for (let i = cursor; i < dbRows.length; i++) {
         const row = dbRows[i]!;
-        // 轨迹 user 消息=时间上下文前缀+正文（§5.5 组合投影）→ 用包含匹配；按序消费候选防重复正文误配
-        if (row.speaker === speaker && row.content.length > 0 && text.includes(row.content)) {
+        if (row.speaker !== speaker || row.content.length === 0) continue;
+        // D11：锚定匹配（杜绝子串误配）——基底段=裸正文等值；回合追加段=装配投影，以 [user_input] 头收尾
+        const anchored = text === row.content
+          || (speaker === 'owner' && text.endsWith(`[user_input]\n${row.content}`));
+        if (anchored) {
           matched = row;
           cursor = i + 1;
           break;
@@ -360,15 +394,15 @@ export class TurnSupervisor {
   }
 
   // 当前输入之前的双方原话（§3.2.2：范围=本窗实际携带的真实对话；不扩大到全库）
-  private dialogueUpTo(conversationId: string, maxSequence: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> {
+  private dialogueUpTo(conversationId: string, maxSequence: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> {
     const rows = this.d.db.prepare(
-      'SELECT id, sequence, speaker, current_revision FROM messages WHERE conversation_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 200',
-    ).all(conversationId, maxSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number }>;
-    const out: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> = [];
+      'SELECT id, sequence, speaker, current_revision, turn_id FROM messages WHERE conversation_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 200',
+    ).all(conversationId, maxSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; turn_id: string | null }>;
+    const out: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> = [];
     for (const r of rows) {
       const msg = this.d.messages.getMessage(r.id);
       if (!msg) continue;
-      out.push({ id: r.id, revision: r.current_revision, sequence: r.sequence, role: r.speaker === 'owner' ? 'user' : 'assistant', content: msg.revision.content });
+      out.push({ id: r.id, revision: r.current_revision, sequence: r.sequence, role: r.speaker === 'owner' ? 'user' : 'assistant', content: msg.revision.content, turnId: r.turn_id });
     }
     return out.reverse();
   }
@@ -388,14 +422,22 @@ export class TurnSupervisor {
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
-    // F06：从最新向前装满预算再正序放入（预算外的旧消息被裁，新消息必进——不反向留旧丢新）
+    // F06 + D08（审计 3655d60）：从最新**完整回合组**向前装预算（一组=一条用户消息+其后连续助手回复）——
+    // 整组放不下就整组排除（留旧丢新不允许，留答丢问也不允许：不产生缺用户输入的孤立助手回复）。
+    // 旧实现按单消息累计，预算临界时会留下回答却截掉问题。
+    const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
+    for (const m of o.dialogue) {
+      if (m.role === 'user' || groups.length === 0) groups.push([]);
+      groups[groups.length - 1]!.push(m);
+    }
     const selected: typeof o.dialogue = [];
     let used = 0;
-    for (let i = o.dialogue.length - 1; i >= 0; i--) {
-      const m = o.dialogue[i]!;
-      if (used + m.content.length > budgetChars) break;
-      used += m.content.length;
-      selected.unshift(m);
+    for (let g = groups.length - 1; g >= 0; g--) {
+      const group = groups[g]!;
+      const groupChars = group.reduce((s, m) => s + m.content.length, 0);
+      if (used + groupChars > budgetChars) break; // 整组放不下：本组及更旧全部不装
+      used += groupChars;
+      selected.unshift(...group);
     }
     for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
@@ -446,7 +488,9 @@ export class TurnSupervisor {
     const manifest: ManifestEntry[] = trajManifest ?? dialogue.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
-    // 当前输入是"下一输入"的一部分（§4.2：下一输入将达到软线也要触发）——其长度计入。
+    // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
+    // 新消息长度只并入"下一输入"预测触发换窗（§4.2：大输入先保存、先提醒旧窗、新输入只进新窗一次）。
+    // 新窗装下新输入的最终校验由工具循环每轮的 P2 容量门承担（F03 尾），真实硬门不放松。
     const currentInputLen = (d.db.prepare(
       `SELECT LENGTH(r.content) AS len FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
        WHERE m.conversation_id = ? AND m.sequence = ?`,
@@ -457,14 +501,15 @@ export class TurnSupervisor {
     const sentChars = trajForEstimate
       ? trajForEstimate.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0)
       : dialogue.reduce((s, m) => s + m.content.length, 0);
-    const recentChars = sentChars + currentInputLen;
     const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const estimate = Math.ceil((recentChars + systemChars) / dv.charsPerToken);
+    const oldWindowEstimate = Math.ceil((sentChars + systemChars) / dv.charsPerToken); // 旧窗自身工作集
+    const incomingEstimate = Math.ceil((currentInputLen + systemChars) / dv.charsPerToken); // 新消息独立估计（新窗视角下界）
     const lastActual = (d.db.prepare(
       `SELECT u.input_tokens FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
        WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
     ).get(o.window.id) as { input_tokens: number } | undefined)?.input_tokens ?? null;
-    const workingSet = Math.max(estimate, lastActual ?? 0);
+    const workingSet = Math.max(oldWindowEstimate, lastActual ?? 0);
+    const nextWithIncoming = Math.max(workingSet, incomingEstimate);
 
     // §4.1：6h 比较=本条入站消息之前的 last_real_user_at（不先更新再相减）；occurred_at 在修订行上
     const lastUser = (d.db.prepare(
@@ -481,8 +526,8 @@ export class TurnSupervisor {
     let plan: ReturnType<typeof rotationPlan> | null = null;
     if (!o.force) {
       plan = rotationPlan({
-        currentInput: workingSet,
-        nextInput: workingSet,
+        currentInput: workingSet, // D06：旧窗自身（硬门判这个）
+        nextInput: nextWithIncoming, // 新消息并入下一输入预测（触发先提醒再换窗，不直接堵死）
         capacity,
         maxOutput: dv.maxTokens,
         toolReserve: d.config.windows.tool_input_reserve_tokens,
@@ -577,7 +622,7 @@ export class TurnSupervisor {
     const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.windowId, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
       }
     };
     const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
@@ -587,6 +632,7 @@ export class TurnSupervisor {
         envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
         conversationId: o.conversationId, windowId: o.window.id,
         turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
+        seenMessages: manifest.map((m) => ({ id: m.id, revision: m.revision })), // D13：评审视野=本窗实际已见清单
       }));
     } finally {
       if (this.active.get(stopKey) === reviewRun) this.active.delete(stopKey);
@@ -627,6 +673,30 @@ export class TurnSupervisor {
     const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
     const window = d.windows.activeWindow(conversationId);
     if (!window) return { ok: false, reason: '无当前活动窗口' };
+    // D02（审计 3655d60）：手动换窗与普通回合同一上下文指纹门——身份/规则/驱动变化后旧窗轨迹失效，
+    // 不得把旧 system/协议轨迹再发给模型评审（§4.4 安全性优先于提醒：被撤换的身份内容不外发）。
+    // 处置=旧窗 CONTEXT_STALE + 按**新材料**直接建新窗（跳过对失效内容的评审，不伪造检查凭证）。
+    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
+    if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
+      if (gate.state !== 'READY') {
+        d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
+        return { ok: false, reason: `IDENTITY_BLOCKED：${gate.reasons.join('; ')}（旧窗已标失效，新材料就绪后重试手动换窗）` };
+      }
+      // 先按旧窗 CAS 轮转（rotate 需要 ACTIVE 旧窗），成功后给旧窗补记失效原因——
+      // 旧窗终态=CLOSED+ROTATED_CONTEXT_STALE，新窗按新材料装配，失效轨迹零外发。
+      const r = d.windows.rotate({
+        conversationId, gate,
+        maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m,
+        assembledOptions: null,
+      });
+      if (r.ok) {
+        d.db.prepare("UPDATE windows SET blocked_reason = 'ROTATED_CONTEXT_STALE' WHERE id = ?").run(window.id);
+        d.events.publish('window.rotated', { conversationId, entityRef: r.window.id, scope: 'private', payload: { reason: 'manual-stale-context', review_id: null, stale_window: window.id } });
+        return { ok: true, windowId: r.window.id };
+      }
+      d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
+      return { ok: false, reason: `IDENTITY_STALE_ROTATE_FAILED:${r.reason.slice(0, 80)}` };
+    }
     if (!dv || !d.tools || !d.reviews || !d.checkpoint) {
       const r = d.windows.rotate({ conversationId, gate, maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m, assembledOptions: null });
       return r.ok ? { ok: true, windowId: r.window.id } : { ok: false, reason: r.reason };
@@ -817,11 +887,25 @@ export class TurnSupervisor {
     // 序列化时忽略断点（自动缓存，无参数）；previousPayload=轨迹正本构造的上一请求（跨轮 append-only 断言依据）。
     const dialogueForInput = dv && inputMessage ? this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1) : [];
     const orTraj = dv ? d.trajectory?.forWindow(window.id) ?? null : null;
+    // D05（审计 3655d60）：轨迹追赶投影——上一轨迹落盘后新发布的消息（含失败回合的已发输入与已发布
+    // 助手原话）按库内当前修订补进本次信封，模型上下文与聊天界面不再分叉。成功回合的轨迹已含它们
+    // （无重复）；失败回合不落轨迹，下一轮按同一规则重算（自愈且幂等，重试不去重问题不存在——
+    // 失败轮的输入修订若被 route-edit 替代，追赶段按 current_revision 取到的是新修订，仍只出现一次）。
+    const trajMaxSeq = orTraj?.manifest && orTraj.manifest.length > 0 ? Math.max(...orTraj.manifest.map((m) => m.seq)) : -1;
+    // D05/D06 交互：追赶只收**有真实发出证据**的回合（该回合存在 purpose='chat' 且 sent_at 非空的请求）——
+    // 被 P2 硬门拒发的大输入从未上线，不得被追赶投影反复注回上下文（否则 F25 短输入被永久堵死的
+    // 回归以新形式复现）；评审请求（pre_rotate_review）不算证据（其信封不含聊天正文）。
+    const sentChatTurnIds = new Set((d.db.prepare(
+      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.sent_at IS NOT NULL",
+    ).all() as Array<{ tid: string | null }>).map((r) => r.tid).filter((t): t is string => t !== null));
+    const catchup = orTraj ? dialogueForInput.filter((m) => m.sequence > trajMaxSeq && m.turnId !== null && sentChatTurnIds.has(m.turnId)) : [];
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
+    const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     const orBaseMessages: OrMessage[] = orTraj
-      ? orTraj.messages
+      ? [...orTraj.messages, ...catchupMessages]
       : (dv ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, dialogue: dialogueForInput, tailUserText: prompt }).envelope.messages : []);
     const orMessages: OrMessage[] = orTraj
-      ? [...orTraj.messages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
+      ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
       : orBaseMessages;
     const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
@@ -837,9 +921,13 @@ export class TurnSupervisor {
           };
         })()
       : null;
-    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: orTraj.messages } : null;
+    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, messages: [...orTraj.messages, ...catchupMessages] } : null;
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
+    // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单
+    const orSeenBase: ReadonlyArray<{ id: string; revision: number }> = orTraj
+      ? [...(orTraj.manifest ?? []).map((m) => ({ id: m.id, revision: m.revision })), ...catchupManifest.map((m) => ({ id: m.id, revision: m.revision })), ...(inputMessage ? [{ id: inputMessage.id, revision: effective.revision }] : [])]
+      : catchupManifest.map((m) => ({ id: m.id, revision: m.revision }));
     // 记账模型：信封驱动用各自明确型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = dv ? dv.model : d.config.runtime.model;
 
@@ -1019,6 +1107,7 @@ export class TurnSupervisor {
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         onEvent: handleEvent, seenSequence: orSeenHighWater,
+        seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions, // D13：流式发布即时入视野
         previousEnvelope: orPreviousPayloadEnvelope,
       });
       result = loop.result;
@@ -1109,10 +1198,18 @@ export class TurnSupervisor {
       const inputEntry: ManifestEntry[] = inputMessage
         ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }]
         : [];
+      // D01（审计 3655d60）：DS 的 reasoning_content 只是同轮工具续传的协议继续态——落轨迹前剥除，
+      // 下一用户回合绝不携带（DS 官方合同：跨回合回传不被允许且无意义）。provider_requests 留的是
+      // 实际发送副本，不剥（对账需要真实形状）。
+      const trajMessages: OrMessage[] = dv?.kind === 'deepseek'
+        ? orFinalMessages.map((m) => (m.role === 'assistant' && typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string'
+          ? (({ reasoning_content: _strip, ...rest }) => rest as OrMessage)(m as Record<string, unknown> & OrMessage)
+          : m))
+        : orFinalMessages;
       // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
-      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...inputEntry, ...turnManifestAdditions]);
+      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions]);
     }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {

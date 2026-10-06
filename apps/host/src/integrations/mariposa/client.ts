@@ -4,6 +4,7 @@
 //  - 凭据：credential_ref 只是环境变量名；值在默认 transport 请求头构造处读取，绝不进日志/DB/事件。
 //  - 错误码沿用生命周期包 §"必须表达的错误类别"；未识别 code 不吞成成功。
 import { sha256Hex } from '../../util/id.ts';
+import { validateAbsoluteIso } from '../../util/time.ts';
 
 export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
@@ -116,7 +117,28 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
       return { ok: true, result: (body.data ?? {}) as Record<string, unknown> };
     }
     const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
+    // D22（审计 3655d60）：5xx 不论响应体是否带结构化错误码，都按传输层状态分类为 HTTP_5xx——
+    // 调用方（hold/archive）将 5xx 归"结果不明 unknown"并有界核实，不当确定失败。
+    if (res.status >= 500) return { ok: false, code: `HTTP_${res.status}`, httpStatus: res.status };
     return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+  };
+}
+
+/** D17（审计 3655d60）：hold 回执完整形状校验——非空 operation_id/memory_id、正整数 version、
+ *  array 形状 binding_ids、合法绝对 ISO committed_at；不合格=RECEIPT_SHAPE_INVALID（上层归 unknown，
+ *  不给弱回执签"已核实提交"）。 */
+function parseHoldReceiptShape(r0: Partial<HoldReceipt>): HoldReceipt | null {
+  if (typeof r0.operation_id !== 'string' || r0.operation_id.length === 0) return null;
+  if (typeof r0.memory_id !== 'string' || r0.memory_id.length === 0) return null;
+  if (typeof r0.version !== 'number' || !Number.isSafeInteger(r0.version) || r0.version < 1) return null;
+  if (typeof r0.committed_at !== 'string' || !validateAbsoluteIso(r0.committed_at).ok) return null;
+  if (r0.binding_ids !== undefined && !Array.isArray(r0.binding_ids)) return null;
+  return {
+    operation_id: r0.operation_id,
+    memory_id: r0.memory_id,
+    version: r0.version,
+    binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [],
+    committed_at: r0.committed_at,
   };
 }
 
@@ -158,11 +180,9 @@ export class MariposaClient {
     };
     const r = await this.transport('memory.hold', payload);
     if (!r.ok) return r;
-    const r0 = r.result as Partial<HoldReceipt>;
-    if (typeof r0.operation_id !== 'string' || typeof r0.memory_id !== 'string' || typeof r0.version !== 'number') {
-      return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
-    }
-    return { ok: true, result: r.result, receipt: { operation_id: r0.operation_id, memory_id: r0.memory_id, version: r0.version, binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [], committed_at: typeof r0.committed_at === 'string' ? r0.committed_at : null } };
+    const parsed = parseHoldReceiptShape(r.result as Partial<HoldReceipt>);
+    if (!parsed) return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
+    return { ok: true, result: r.result, receipt: parsed };
   }
 
   /** 已提交操作的回执查询：无记录只代表"尚无提交证据"，不是没写过（§5）。
@@ -173,11 +193,9 @@ export class MariposaClient {
     if (!r.ok) return r;
     const s = r.result as { completed?: boolean; receipt?: Record<string, unknown> };
     if (s.completed !== true || !s.receipt) return { ok: true, result: r.result };
-    const r0 = s.receipt as Partial<HoldReceipt>;
-    if (typeof r0.operation_id !== 'string' || typeof r0.memory_id !== 'string' || typeof r0.version !== 'number') {
-      return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
-    }
-    return { ok: true, result: r.result, receipt: { operation_id: r0.operation_id, memory_id: r0.memory_id, version: r0.version, binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [], committed_at: typeof r0.committed_at === 'string' ? r0.committed_at : null } };
+    const parsed = parseHoldReceiptShape(s.receipt as Partial<HoldReceipt>);
+    if (!parsed) return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
+    return { ok: true, result: r.result, receipt: parsed };
   }
 }
 
