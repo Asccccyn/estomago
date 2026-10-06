@@ -39,7 +39,7 @@ const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
 const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { content: text } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
 const holdToolBody = (id: string, callId: string) =>
-  sse({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify({ original_title: '第二条要记的事', categories: ['daily'], text: 'turn2 的 hold——随后本回合会失败' }) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
+  sse({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify({ original_title: '第二条要记的事', creation_mode: 'contemporaneous', categories: ['daily'], text: 'turn2 的 hold——随后本回合会失败' }) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((s) => s.length > 0).map((s) => enc.encode(`${s}\n\n`)));
 
 // —— F-J-02 纯函数：书签高于清单高水位=合法空范围；结构守卫不放松 ——
@@ -149,7 +149,7 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews, checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_hold', {
     __tool_call_id: 'call-j54',
-    original_title: '回执完整性', categories: ['daily'], text: 'x',
+    original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
     quotes: ['引用一句真实原话'],
   }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54' });
   return { out, reviews };

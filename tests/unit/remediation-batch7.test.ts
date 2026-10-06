@@ -121,9 +121,12 @@ test('A012 撤权：会话中途撤走批准材料 → 旧窗作废不续用、�
 });
 
 test('A051：宿主参数门——新 hold 契约的未知字段/类型错/枚举外/长度/缺必填全部拒收且零副作用', () => {
-  const base = { original_title: '测试记忆', categories: ['daily'], text: 'x' };
-  const bad = validateToolArgs('memory_hold', { original_title: '测试记忆', categories: ['daily'] });
+  const base = { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' };
+  const bad = validateToolArgs('memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'] });
   assert.ok(!bad.ok && bad.code === 'TOOL_ARG_REQUIRED', '缺 text 拒收');
+  // F-J-22（她批准 2026-10-06）：当下/补记必须显式声明——缺 creation_mode 拒收
+  const badMode = validateToolArgs('memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' });
+  assert.ok(!badMode.ok && badMode.code === 'TOOL_ARG_REQUIRED', '缺 creation_mode 拒收（不猜当下/补记）');
   const badType = validateToolArgs('memory_hold', { ...base, categories: 123 });
   assert.ok(!badType.ok && badType.code === 'TOOL_ARG_TYPE', '类型错拒收');
   const badUnknown = validateToolArgs('memory_hold', { ...base, evil: 'y' });

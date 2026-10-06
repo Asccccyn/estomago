@@ -179,7 +179,7 @@ test('F-J-40：skipped_empty 凭证携带定位依据（basis_json）', async ()
   let gen = 0;
   const transport: OrTransport = async () => {
     gen++;
-    if (gen === 2) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody(`g${gen}`, 'c5', { original_title: '失败回合的记事', categories: ['daily'], text: 'x' })) };
+    if (gen === 2) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody(`g${gen}`, 'c5', { original_title: '失败回合的记事', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' })) };
     if (gen === 3) return { status: 500, headers: new Map<string, string>(), body: frameStream(sse({ error: { message: '模拟失败' } })) };
     return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) };
   };

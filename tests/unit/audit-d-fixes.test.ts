@@ -37,7 +37,7 @@ const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { co
 const toolBody = (id: string, callId: string, args: Record<string, unknown>) =>
   sse({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify(args) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE;
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter(Boolean).map((s) => enc.encode(`${s}\n\n`)));
-const HOLD_ARGS = { original_title: '审计回归', categories: ['daily'], text: 'x' };
+const HOLD_ARGS = { original_title: '审计回归', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' };
 
 function baseCtx(root: string) {
   writeApprovedIdentity(root);
@@ -100,17 +100,21 @@ test('D15：只给 mood_tags 时 mood 不带 text 字段（服务端 text 只收
   ctx.db.close();
 });
 
-test('审计 1005B-D：mood 给了而 creation_mode 缺省 → 宿主前置拦截（不再默认同期，防补记心情绕过窗口）', async () => {
+test('审计 1005B-D/F-J-22：hold 缺 creation_mode（无论是否带心情）→ 宿主参数门即拒（宁拒不猜）', async () => {
   const root = tempRoot('d15b-');
   const ctx = baseCtx(root);
   ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
   const calls: HoldCall[] = [];
+  // F-J-22（2026-10-06 她/林批准）：creation_mode 公开面显式必填——缺省在
+  // 参数门即 TOOL_ARG_REQUIRED（旧 HOLD_MOOD_WINDOW_REQUIRED 拦截场景已被
+  // 更强的必填门覆盖；retrospective+mood 的窗口拦截回归在 joint-audit-b2）
+  const gate = validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', mood_tags: ['开心'] });
+  assert.ok(!gate.ok && gate.code === 'TOOL_ARG_REQUIRED', '缺 creation_mode 拒收（含心情场景同样先撞必填门）');
   const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, mood_tags: ['开心'] }, []);
-  assert.equal(out.ok, false);
-  assert.equal((out.output as { error_code: string }).error_code, 'HOLD_MOOD_WINDOW_REQUIRED');
-  assert.equal(calls.length, 0, '前置拦截——不浪费一次远端调用');
+  assert.equal(out.ok, true, '显式 contemporaneous+心情合法');
+  assert.equal(calls.length, 1);
   const eff = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").get() as { state: string } | undefined;
-  assert.equal(eff?.state, 'failed_resolved', '缺省被拒=未提交（可自纠重试），不是 unknown');
+  assert.equal(eff?.state, 'committed', '显式声明后正常提交');
   ctx.db.close();
 });
 
