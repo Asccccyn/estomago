@@ -166,13 +166,26 @@ test('A066：turn 费用小计——已知求和、任一未知则 null+unknown�
   db.close();
 });
 
-test('DS 冒烟配置化：非 anthropic 族门——deepseek 型号过、cache_control 不注入；anthropic 族行为不变', () => {
+test('DS 冒烟配置化：非 anthropic 族门——deepseek 型号过、顶层+块级 cache_control 均不注入；anthropic 族行为不变', () => {
   const ds = buildOrPayload({ model: 'deepseek/deepseek-chat', sessionId: 'es-ds-1', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], providerOnly: ['deepseek'] });
   assert.equal(ds.model, 'deepseek/deepseek-chat');
-  assert.equal(ds.cache_control, undefined, '非 anthropic 上游不注入 Anthropic 式 cache_control');
+  assert.equal(ds.cache_control, undefined, '非 anthropic 上游不注入 Anthropic 式顶层 cache_control');
   assert.deepEqual((ds.provider as { only: string[] }).only, ['deepseek']);
-  assert.throws(() => buildOrPayload({ model: 'deepseek/deepseek-latest', sessionId: 'es-ds-2', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], providerOnly: ['deepseek'] }), /EXACT_CLAUDE_MODEL_REQUIRED/, 'DS 族同样禁 latest');
+  assert.throws(() => buildOrPayload({ model: 'deepseek/deepseek-latest', sessionId: 'es-ds-2', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], providerOnly: ['deepseek'] }), /EXACT_MODEL_REQUIRED/, 'DS 族同样禁 latest（族感知错误码）');
   const an = buildOrPayload({ model: MODEL, sessionId: 'es-1', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] });
   assert.deepEqual(an.cache_control, { type: 'ephemeral', ttl: '1h' }, 'anthropic 族规范行为不变');
   assert.throws(() => buildOrPayload({ model: 'deepseek/deepseek-chat', sessionId: 'es-3', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }), /EXACT_CLAUDE_MODEL_REQUIRED/, '默认 anthropic 门不放行 DS 型号');
+  // 审计 P1-1（2026-10-05）：块级 cache_control 也必须族感知——非 anthropic 族断点不落标记
+  const dsB = buildOrPayload({
+    model: 'deepseek/deepseek-chat', sessionId: 'es-ds-4', providerOnly: ['deepseek'],
+    messages: [{ role: 'system', content: [{ type: 'text', text: 'sys' }] }, { role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    boundaries: [{ messageIndex: 0, contentIndex: 0 }, { messageIndex: 1, contentIndex: 0 }],
+  });
+  assert.equal(JSON.stringify(dsB.messages).includes('cache_control'), false, '非 anthropic 族：断点规划存在但块级不注入 cache_control');
+  const anB = buildOrPayload({
+    model: MODEL, sessionId: 'es-5',
+    messages: [{ role: 'system', content: [{ type: 'text', text: 'sys' }] }, { role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    boundaries: [{ messageIndex: 0, contentIndex: 0 }],
+  });
+  assert.deepEqual((anB.messages as Array<{ content: Array<{ text: string; cache_control?: unknown }> }>)[0]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'anthropic 族：断点照常注入块级 cache_control');
 });

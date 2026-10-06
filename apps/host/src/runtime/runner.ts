@@ -23,21 +23,21 @@ export type SdkRunRequest = {
   onEvent: (ev: SdkNormalizedEvent) => void;
 };
 
-// —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3）——
+// —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3；DS 直连驱动复用同一信封形状）——
 export type OrRequestEnvelope = {
-  model: string; // 已批准的明确 OR model ID（buildOrPayload 再过最后一道门）
-  sessionId: string; // 房间×模型×profile 的持久匿名标识（orSessionId 派生，≤256 字符）
+  model: string; // 已批准的明确型号（OR=OR model ID；DS=DS 官方型号；buildPayload 再过最后一道门）
+  sessionId: string; // 房间×型号×profile 的持久匿名标识（orSessionId/dsSessionId 派生，≤256 字符；DS 仅内部关联不发送）
   messages: OrMessage[];
   tools: OrTool[];
-  boundaries: OrBoundary[]; // 显式缓存断点 A/B/G（WP4 接规划；WP1 恒 []）
+  boundaries: OrBoundary[]; // 显式缓存断点 A/B/G（Anthropic 式缓存专用；DS 自动缓存忽略）
   maxTokens: number;
   reasoning: Record<string, unknown> | null;
 };
 export type OrRunRequest = {
-  driver: 'openrouter';
+  driver: 'openrouter' | 'deepseek';
   purpose: RunnerPurpose;
   envelope: OrRequestEnvelope;
-  previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；WP3 轨迹接入前为 null）
+  previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；轨迹正本由调用方提供）
   abortController: AbortController;
   onEvent: (ev: SdkNormalizedEvent) => void;
 };
@@ -56,7 +56,7 @@ export type RunnerRunResult = {
 };
 
 export interface AgentRunner {
-  readonly kind: 'claude-agent-sdk' | 'mock' | 'openrouter';
+  readonly kind: 'claude-agent-sdk' | 'mock' | 'openrouter' | 'deepseek';
   run(req: RunnerRunRequest): Promise<RunnerRunResult>;
   interruptSupport: 'claimed' | 'unknown';
 }
@@ -80,6 +80,11 @@ export async function selectRunner(config: Config): Promise<RunnerSelection> {
     // §2.1：OR 模式不加载 SDK、不读订阅凭据、不做 SDK 握手；反向亦然
     const { openRouterSelection } = await import('./runner-openrouter.ts');
     return openRouterSelection(config);
+  }
+  if (config.runtime.provider === 'deepseek') {
+    // DS 官方直连（2026-10-05 她裁定）：与 OR/SDK 均互不前置——不读 OPENROUTER_API_KEY/SDK 订阅
+    const { deepSeekSelection } = await import('./runner-deepseek.ts');
+    return deepSeekSelection(config);
   }
   return { status: 'blocked', reasons: [`未知 provider: ${config.runtime.provider}`] };
 }

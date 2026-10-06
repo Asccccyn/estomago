@@ -80,7 +80,13 @@ export class OrStreamAccumulator {
   private rawUsage: OrUsageFrame | null = null;
   private tools = new Map<number, ToolAcc>();
   private reasoningFrames: unknown[] = [];
+  private normalizeUsageFn: (u: OrUsageFrame | null) => NormalizedOrUsage;
   private framer = new SseFramer((data) => this.accept(data));
+
+  // normalizeUsage 可注入（DS 官方端点用量口径与 OR 不同：prompt_cache_hit_tokens、无费用字段常态）
+  constructor(opts: { normalizeUsage?: (u: OrUsageFrame | null) => NormalizedOrUsage } = {}) {
+    this.normalizeUsageFn = opts.normalizeUsage ?? normalizeOrUsage;
+  }
 
   feed(chunk: string | Uint8Array): void {
     this.framer.feed(chunk);
@@ -184,7 +190,7 @@ export class OrStreamAccumulator {
       finishReason: this.terminal as string,
       text: this.text,
       toolCalls: calls,
-      usage: normalizeOrUsage(this.rawUsage),
+      usage: this.normalizeUsageFn(this.rawUsage),
       usageRawFrame: this.rawUsage ? structuredClone(this.rawUsage) : null,
       reasoningFrames: this.reasoningFrames,
       terminalEvents: this.terminalEvents,

@@ -74,7 +74,7 @@ export type SdkNormalizedEvent =
       packet_uuid: string | null; // F11：SDK 传输包稳定标识（重放幂等键；无 uuid 的包由内容指纹承担）
     }
   | { kind: 'packet_conflict'; packet_key: string; session_id: string | null } // F11：同包标识不同载荷——不发布正文，只留观测
-  | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream' | 'or_stream'; completeness: 'complete' | 'partial' }
+  | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'ds_stream'; completeness: 'complete' | 'partial' }
   // F10：system 事件（含 model_refusal_fallback / model_refusal_no_fallback）不再被归一化层丢弃
   | { kind: 'system_notice'; subtype: string; content: string | null; original_model: string | null; fallback_model: string | null; session_id: string | null }
   | { kind: 'turn_end'; outcome: 'completed' | 'error'; error_classified: ErrorClass | null; error_message: string | null; session_id: string | null; request_id: string | null };

@@ -44,13 +44,13 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
   const allowFallbacks = input.allowFallbacks ?? false;
   const requireParameters = input.requireParameters ?? true;
   // 型号门按上游族：anthropic 族维持规范原门（明确 Claude 型号、禁 auto/latest/别名）；
-  // 非 anthropic 族（如 DS 冒烟 ['deepseek']）按 vendor/model 形状校验——仍禁 auto/latest/fallback 数组。
+  // 非 anthropic 族按 vendor/model 形状校验——仍禁 auto/latest/fallback 数组。
   const isAnthropicFamily = providerOnly.includes('anthropic');
   requireThat(
     isAnthropicFamily
       ? typeof model === 'string' && /^anthropic\/claude-[a-zA-Z0-9.-]+$/.test(model) && !/latest|auto/.test(model)
       : typeof model === 'string' && /^[a-z0-9][a-z0-9._\-]*\/[a-z0-9][a-z0-9._\-]*$/i.test(model) && !/latest|auto/.test(model),
-    'EXACT_CLAUDE_MODEL_REQUIRED',
+    isAnthropicFamily ? 'EXACT_CLAUDE_MODEL_REQUIRED' : 'EXACT_MODEL_REQUIRED',
   );
   requireThat(typeof sessionId === 'string' && sessionId.length > 0 && sessionId.length <= 256, 'SESSION_ID_INVALID');
   requireThat(Number.isSafeInteger(maxTokens) && maxTokens > 0, 'MAX_TOKENS_INVALID');
@@ -66,6 +66,10 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
     const key = `${b.messageIndex}:${b.contentIndex}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    // 审计 P1-1（2026-10-05）：块级 cache_control 是 Anthropic 式参数，只对 anthropic 族注入——
+    // 非 anthropic 族（含经 OR 的 DS 等自动缓存上游）多余块参数可能被端点拒绝，此前此处无条件注入与
+    // 顶层族判断不一致（断点仍规划、合法性仍校验，仅不落标记）。
+    if (!isAnthropicFamily) continue;
     requireThat(seen.size <= 3, 'TOO_MANY_EXPLICIT_BREAKPOINTS');
     const content = baseMessages[b.messageIndex]?.content;
     requireThat(Array.isArray(content), 'BOUNDARY_CONTENT_NOT_BLOCKS');
@@ -74,8 +78,8 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
     (block as Record<string, unknown>).cache_control = oneHour();
   }
   // 关键控制字段固定在展开 base 之后——调用方/配置不能覆盖（§6.2：不隐藏 fallback/压缩/降级）。
-  // cache_control(ephemeral 1h) 是 Anthropic 式参数：仅 anthropic 族上游注入；
-  // 非 anthropic 族（DS 冒烟）省略——DS 为自动上下文缓存，多余参数可能被端点拒绝。
+  // cache_control(ephemeral 1h) 是 Anthropic 式参数：仅 anthropic 族注入（顶层+块级一致）；
+  // 非 anthropic 族自动缓存上游（DS 等经 OR 的型号）一律省略——多余参数可能被端点拒绝。
   const out: Record<string, unknown> = {
     model,
     session_id: sessionId,

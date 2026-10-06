@@ -1,4 +1,4 @@
-// ESTOMAGO_OR_SELF_HOLD §9.3：OR 用量归一 + 契约错误。
+// ESTOMAGO_OR_SELF_HOLD §9.3：OR/DS 用量归一 + 契约错误。
 // 移植自 docs/specs/ESTOMAGO_OR_SELF_HOLD/reference/policy.mjs（按本仓 TS 规范）。
 // 纯函数：无网络、无凭据、无生产状态。缺失字段永远是 null/anomaly，不补零隐藏问题。
 export class ContractError extends Error {
@@ -75,4 +75,39 @@ export function toRawUsageColumns(u: NormalizedOrUsage): { input_tokens?: number
     ...(u.cacheRead !== null ? { cache_read_input_tokens: u.cacheRead } : {}),
     ...(u.cacheWrite !== null ? { cache_creation_input_tokens: u.cacheWrite } : {}),
   };
+}
+
+// —— DS 官方端点用量口径（ds_stream；与 OR 分列，不混算）——
+// DeepSeek 官方 /chat/completions usage 帧：prompt_tokens / completion_tokens 为总量，
+// 缓存命中在 prompt_cache_hit_tokens（或 prompt_tokens_details.cached_tokens）；
+// 费用字段官方帧通常不返回——费用未知由 cost=null 独立表达，不因此把 token 计量打成 partial。
+export function normalizeDsUsage(usage: OrUsageFrame | null | undefined): NormalizedOrUsage {
+  if (!usage) {
+    return { inputTotal: null, cacheRead: null, cacheWrite: null, noncached: null, output: null, reasoning: null, cost: null, completeness: 'unknown', anomalies: [] };
+  }
+  const ds = usage as OrUsageFrame & { prompt_cache_hit_tokens?: unknown; prompt_cache_miss_tokens?: unknown; total_cost?: unknown };
+  const total = num(ds.prompt_tokens);
+  const details = (ds.prompt_tokens_details ?? {}) as { cached_tokens?: unknown; cache_write_tokens?: unknown };
+  const outDetails = (ds.completion_tokens_details ?? {}) as { reasoning_tokens?: unknown };
+  const read = num(details.cached_tokens) ?? num(ds.prompt_cache_hit_tokens);
+  const write = num(details.cache_write_tokens); // DS 无显式写分类（自动缓存不报写）：null
+  const output = num(ds.completion_tokens);
+  const reasoning = num(outDetails.reasoning_tokens);
+  const cost = num(ds.cost) ?? num(ds.total_cost);
+  const anomalies: string[] = [];
+  let noncached: number | null = null;
+  if (total !== null && read !== null) {
+    // DS 无显式写分类（write=null 按 0 参与相容性检查）：命中超过总量仍是异常，不 clamp
+    const w = write ?? 0;
+    if (read + w > total) anomalies.push('CACHE_CATEGORIES_EXCEED_PROMPT');
+    // DS 口径 prompt_tokens = 命中 + 未命中 → noncached=total-read（write 已知时按 OR 口径三元推导）
+    else noncached = write !== null ? total - read - write : total - read;
+  }
+  if (output !== null && reasoning !== null && reasoning > output) anomalies.push('REASONING_EXCEEDS_OUTPUT');
+  const completeness: NormalizedOrUsage['completeness'] = anomalies.length > 0
+    ? 'anomaly'
+    : total !== null && output !== null
+      ? 'complete'
+      : 'partial';
+  return { inputTotal: total, cacheRead: read, cacheWrite: write, noncached, output, reasoning, cost, completeness, anomalies };
 }

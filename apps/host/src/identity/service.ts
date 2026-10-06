@@ -10,9 +10,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 // 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与。
 // ESTOMAGO_OR_SELF_HOLD §4.1：驱动/模型/缓存配置变更同样改变上下文有效性 → 纳入指纹触发换窗。
+// 身份映射隔离：deepseek 段独立参与指纹——OR↔DS 切换（或 DS 型号/输出上限变化）→ CONTEXT_STALE 强制换窗。
 export function contextFingerprint(config: {
   runtime: { provider?: string; sdk_version: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
   openrouter?: { model: string | null; max_output_tokens: number; provider_only: string[]; reasoning: Record<string, unknown> | null };
+  deepseek?: { model: string | null; max_output_tokens: number };
 }, manifest: IdentityManifestFile | null): string {
   const parts = [
     manifest?.identity_version ?? null,
@@ -27,6 +29,7 @@ export function contextFingerprint(config: {
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
     config.runtime.provider ?? 'claude-agent-sdk',
     config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort(), config.openrouter.reasoning]) : null,
+    config.deepseek ? JSON.stringify([config.deepseek.model, config.deepseek.max_output_tokens]) : null,
   ];
   return sha256Hex(parts.join('\u0001'));
 }
@@ -145,9 +148,9 @@ export class IdentityService {
   }
 
   // 审计 F01：驱动判别——SDK 专属前提（sdk_version 锁定/实装匹配、订阅认证确认、SDK 版本绑定探针、
-  // runtime.model）只约束 SDK 驱动；OR 用自己的明确型号与 key 状态门（selectRunner），共有身份校验
-  // （manifest/版本三键/hash 到文件/证据非空）对两驱动同样强制（§2.1：共有的身份/主体权限校验必需）。
-  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' }): GateResult {
+  // runtime.model）只约束 SDK 驱动；OR/DS 用各自的型号与 key 状态门（selectRunner），共有身份校验
+  // （manifest/版本三键/hash 到文件/证据非空）对全部驱动同样强制（§2.1：共有的身份/主体权限校验必需）。
+  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' | 'deepseek' }): GateResult {
     const driver = opts?.driver ?? 'claude-agent-sdk';
     const reasons: string[] = [];
     const installed = this.observedSdkVersion();
