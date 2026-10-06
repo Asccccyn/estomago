@@ -84,11 +84,11 @@ export function buildDeepSeekPayload(envelope: OrRequestEnvelope): Record<string
     else if (Array.isArray(m.content)) {
       out.content = m.content.map((b) => (typeof (b as { text?: unknown }).text === 'string' ? (b as { text: string }).text : '')).join('');
     } else out.content = m.content ?? null;
-    if (Array.isArray((m as { tool_calls?: unknown }).tool_calls)) out.tool_calls = structuredClone((m as { tool_calls: unknown[] }).tool_calls);
-    if (typeof (m as { tool_call_id?: unknown }).tool_call_id === 'string') out.tool_call_id = (m as { tool_call_id: string }).tool_call_id;
+    if (Array.isArray((m as { tool_calls?: unknown }).tool_calls)) out.tool_calls = structuredClone((m as unknown as { tool_calls: unknown[] }).tool_calls);
+    if (typeof (m as { tool_call_id?: unknown }).tool_call_id === 'string') out.tool_call_id = (m as unknown as { tool_call_id: string }).tool_call_id;
     // D01（审计 3655d60）：thinking 型号同一工具回合的官方协议继续态——仅 string 原样透传
     // （宿主在落轨迹前剥除，绝不跨用户回合携带；UI 思考投影与本字段无通道）
-    if (typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string') out.reasoning_content = (m as { reasoning_content: string }).reasoning_content;
+    if (typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string') out.reasoning_content = (m as unknown as { reasoning_content: string }).reasoning_content;
     return out;
   });
   return {

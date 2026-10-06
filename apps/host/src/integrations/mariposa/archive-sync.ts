@@ -234,7 +234,7 @@ export class ArchiveSyncService {
         revision: rev.revision,
         previous_revision: rev.supersedes_revision,
         conversation_sequence: msg.sequence,
-        predecessor: pred ? { origin_message_id: pred.id, revision: predRevForPayload } : null,
+        predecessor: pred ? { origin_message_id: pred.id, revision: predRevForPayload! } : null, // pred 真值 ⇔ 上方 if(pred) 块已赋值（全程 number）
         sender: msg.speaker === 'owner' ? 'user' : 'assistant',
         // D12（审计 3655d60）：宿主内部 kind（text/sticker/voice/system）与领域 published_kind 分开映射——
         // mariposa 现行契约（aa624c9）只收 chat_message；未映射的 kind 原样发出由服务端如实拒绝（不静默转写）

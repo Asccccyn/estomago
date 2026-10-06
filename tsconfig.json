@@ -1,0 +1,21 @@
+{
+  // 联合审计 F-J-31（2026-10-06）：仓内首个 typecheck 配置。
+  // 目标=抓类型不一致（如 review-prompts reason 联合类型漏值），不是重构门槛：
+  // - type-stripping 运行时链不动（node --experimental-strip-types）；
+  // - allowJs 关、strict 开但 noEmitOnly 检查；$ 函数式依赖注入与 .ts 后缀导入按 Node
+  //   ESM 实况（allowImportingTsExtensions 需 noEmit）；
+  // - 先允许既有松散面（skipLibCheck），不借机大改。
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "types": ["node"],
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["apps/host/src/**/*.ts", "packages/contracts/src/**/*.ts"],
+  "exclude": ["node_modules", "apps/web", "tests", "scripts"]
+}

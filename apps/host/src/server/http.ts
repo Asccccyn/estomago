@@ -77,7 +77,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!d.auth.verifyToken(typeof body.token === 'string' ? body.token : null)) {
         return json(res, 401, { error: { code: 'unauthorized', message: 'token 不正确' } });
       }
-      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(body.token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(body.token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
       return json(res, 200, { ok: true });
     }
     if (route === 'GET /' || route === 'GET /app.js' || route === 'GET /style.css' || route === 'GET /composer-logic.js') {
@@ -239,9 +239,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         const message = turn?.input_message_id ? d.messages.getMessage(turn.input_message_id) : null;
         return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision, released_waiting: consumed.releasedWaiting });
       }
-      if (body.choice === 'approve') {
-        return json(res, 200, { resolved: 'approve', attempt_id: consumed.newAttemptId, note: 'continue_capability=unknown：按新 attempt 重跑本输入，不代表平台级路由动作已执行' });
-      }
+      // F-J-31（typecheck 基线）：下方 approve 分支为死代码——choice='approve' 已在上方提前
+      // return 422（approve_not_supported）/404/409，控制流到不了此处，按联合审计 B2 指示删除。
       return json(res, 200, { resolved: 'cancel' });
     }
 
