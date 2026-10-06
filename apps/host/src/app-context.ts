@@ -40,6 +40,8 @@ export type HostOptions = {
 
 export class Host {
   readonly paths: EstomagoPaths;
+  readonly config: Config; // F-J-31：构造器赋值的字段补声明（typecheck 基线）
+  readonly opts: HostOptions;
   readonly db: Db;
   readonly logger: Logger;
   readonly events: EventService;

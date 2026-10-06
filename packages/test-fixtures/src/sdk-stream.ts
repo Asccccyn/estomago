@@ -23,7 +23,7 @@ const THINKING_FULL = THINKING_A + THINKING_B;
 const TEXT_PART1 = '这是第一段合成回复。\n\n';
 const TEXT_PART2 = '这是第二段合成回复，包含第二行\n换行仍在同一条消息里。';
 
-function se(event: RawStreamEvent['event'], session = 'sess_fixture_1'): RawStreamEvent {
+function se(event: Extract<RawStreamEvent, { type: 'stream_event' }>['event'], session = 'sess_fixture_1'): RawStreamEvent {
   return { type: 'stream_event', event, session_id: session, parent_tool_use_id: null };
 }
 function assistant(id: string, blocks: NonNullable<import('../../contracts/src/sdk-events.ts').RawAssistantMessage['content']>, session = 'sess_fixture_1', parent: string | null = null, request_id: string | null = null): RawStreamEvent {

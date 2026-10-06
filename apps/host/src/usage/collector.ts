@@ -66,10 +66,10 @@ export class UsageCollector {
       .all(turnId) as Array<{
       id: string; attempt_id: string; scope: string; model: string | null;
       input_tokens: number | null; output_tokens: number | null;
-      cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; completeness: string;
+      cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; cost_usd: number | null; completeness: string;
     }>;
     type Row = (typeof rows)[number];
-    const sumOf = (rs: Row[], f: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens'): number | null =>
+    const sumOf = (rs: Row[], f: 'input_tokens' | 'output_tokens' | 'cache_read_input_tokens' | 'cache_creation_input_tokens' | 'cost_usd'): number | null =>
       rs.length === 0 ? null : rs.some((r) => r[f] == null) ? null : rs.reduce((s, r) => s + (r[f] ?? 0), 0);
 
     const attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; cost_usd: number | null; completeness: string }> = [];

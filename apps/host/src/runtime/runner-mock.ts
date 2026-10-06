@@ -22,14 +22,14 @@ export class MockRunner implements AgentRunner {
       return { outcome: 'error', errorClassified: 'unknown', errorCode: 'MOCK_UNSUPPORTED_ENVELOPE_DRIVER', errorMessage: `mock runner 不处理 ${req.driver} 请求`, sessionId: null, requestId: null };
     }
     const scenarioName = (process.env.ESTOMAGO_MOCK_SCENARIO as ScenarioName | undefined) ?? 'consistent';
-    const script: RawStreamEvent[] = fixtureScenario(scenarioName, req.prompt);
+    const script: RawStreamEvent[] = fixtureScenario(scenarioName, req.prompt!); // driver 守卫后必为 SDK 形状（prompt 必有）
     // 会话语义：有 resume → 沿用；否则按窗口创建新 session
     let sessionId = req.resumeSessionId;
     if (!sessionId) {
       sessionId = `sess_mock_${randomBytes(6).toString('hex')}`; // 唯一命名；同窗后续轮靠 resume 沿用
       this.sessionsCreated.push(sessionId);
     }
-    this.lastResumeRequest = req.resumeSessionId;
+    this.lastResumeRequest = req.resumeSessionId!;
     const decorated: RawStreamEvent[] = script.map((raw) =>
       raw.type === 'result' ? { ...raw, session_id: raw.session_id ?? sessionId! } : raw,
     );
