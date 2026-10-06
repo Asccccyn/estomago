@@ -25,9 +25,22 @@ export function isKnownErrorCode(code: string): code is MariposaErrorCode {
   return (MARIPOSA_ERROR_CODES as readonly string[]).includes(code);
 }
 
-/** 可重试：依赖缺失 + 瞬时传输层（审计 F15：429/502/503/504 不再永久置失败）；其余已知领域错误 = dead（重试由调用方有界执行） */
-export function classifyError(code: string): 'retry_later' | 'dead' {
-  if (code === 'SOURCE_NOT_READY') return 'retry_later';
+/** 可重试分类（审计 1005B 根因修复）：HTTP 语义优先，结构化码只做领域细分。
+ *  此前只按 code 字符串匹配——mariposa 429 的结构化码是 RATE_LIMITED，
+ *  永远不等于 'HTTP_429'（该分支不可达），一次限流就把归档批次连同全部
+ *  消息行判成永久 dead（与 F15"429 可重试"的设计意图相反）。
+ *  分类依据改为 httpStatus（MariposaCallResult 已携带，fetch 层天然知道）：
+ *  429=限流、423=AUTH_LOCKED 门禁锁（指数退避后可解）、502/503/504=上游
+ *  瞬时故障一律 retry_later——不管服务端结构化码叫什么名字。code 参数
+ *  保留领域细分（SOURCE_NOT_READY 等无状态码语义的依赖缺失）与无状态
+ *  合成码（TRANSPORT_*）兜底。 */
+export function classifyError(code: string, httpStatus?: number): 'retry_later' | 'dead' {
+  if (httpStatus !== undefined) {
+    if (httpStatus === 429 || httpStatus === 423
+        || httpStatus === 500 || httpStatus === 502
+        || httpStatus === 503 || httpStatus === 504) return 'retry_later';
+  }
+  if (code === 'SOURCE_NOT_READY' || code === 'AUTH_LOCKED') return 'retry_later';
   if (code === 'HTTP_429' || code === 'HTTP_500' || code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504') return 'retry_later';
   return 'dead';
 }
@@ -196,6 +209,20 @@ export class MariposaClient {
     const parsed = parseHoldReceiptShape(s.receipt as Partial<HoldReceipt>);
     if (!parsed) return { ok: false, code: 'RECEIPT_SHAPE_INVALID', httpStatus: 200 };
     return { ok: true, result: r.result, receipt: parsed };
+  }
+
+  /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。
+   *  形状：{categories: string[], version?, rules?, frozen_ruling?}。
+   *  需要绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
+  async moodVocab(): Promise<MariposaCallResult & { categories?: string[]; version?: string }> {
+    const r = await this.transport('memory.mood.vocab', {});
+    if (!r.ok) return r;
+    const s = r.result as { categories?: unknown; version?: unknown };
+    return {
+      ok: true, result: r.result,
+      categories: Array.isArray(s.categories) && s.categories.every((x) => typeof x === 'string') ? s.categories as string[] : undefined,
+      version: typeof s.version === 'string' ? s.version : undefined,
+    };
   }
 }
 
