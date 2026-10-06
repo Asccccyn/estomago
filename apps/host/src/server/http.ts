@@ -64,9 +64,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
   try {
     if (route === 'GET /health/live') return json(res, 200, { status: 'ok' });
     if (route === 'GET /health/ready') {
-      const driver = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' ? 'openrouter' : 'claude-agent-sdk';
+      const kind = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
+      const gateDriver = kind === 'openrouter' || kind === 'deepseek' ? kind : 'claude-agent-sdk';
       const report = buildReadyReport({
-        config: d.config, gate: d.identity.evaluateGate(d.db, { driver }), // 审计 F29：状态按当前驱动判别——OR 不被 SDK 前提误报阻断
+        config: d.config, gate: d.identity.evaluateGate(d.db, { driver: gateDriver }), // 审计 F29：状态按当前驱动判别——OR/DS 不被 SDK 前提误报阻断
         runnerSelection: d.runnerSelection, capabilities: d.capabilities, db: d.db,
       });
       return json(res, 200, report);
@@ -172,10 +173,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);
     if (runtime) {
       const conversationId = decodeURIComponent(runtime[1]!);
-      const driver = d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' ? 'openrouter' : 'claude-agent-sdk';
-      const gate = d.identity.evaluateGate(d.db, { driver }); // 审计 F29
+      const kind = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
+      const gateDriver = kind === 'openrouter' || kind === 'deepseek' ? kind : 'claude-agent-sdk';
+      const gate = d.identity.evaluateGate(d.db, { driver: gateDriver }); // 审计 F29
       const active = d.windows.activeWindow(conversationId);
-      // ESTOMAGO_OR_SELF_HOLD §6.1：OR 配置状态只报"已配置/未配置"布尔与型号名；凭据值永不回显
+      // ESTOMAGO_OR_SELF_HOLD §6.1：OR/DS 配置状态只报"已配置/未配置"布尔与型号名；凭据值永不回显
       const orStatus = d.config.runtime.provider === 'openrouter'
         ? {
             model: d.config.openrouter.model,
@@ -184,11 +186,20 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
             base_url: d.config.openrouter.base_url,
           }
         : null;
+      const dsStatus = d.config.runtime.provider === 'deepseek'
+        ? {
+            model: d.config.deepseek.model,
+            model_configured: d.config.deepseek.model !== null,
+            key_env_configured: (() => { const v = process.env[d.config.deepseek.api_key_env]; return typeof v === 'string' && v.length > 0; })(),
+            base_url: d.config.deepseek.base_url,
+          }
+        : null;
       return json(res, 200, {
         conversation_id: conversationId,
         identity: { state: gate.state, reasons: gate.reasons, manifest_status: gate.manifest?.status ?? null },
         runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
         openrouter: orStatus,
+        deepseek: dsStatus,
         capabilities: d.capabilities.describe(),
         active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
         thresholds: {

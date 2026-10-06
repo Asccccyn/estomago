@@ -13,7 +13,7 @@ export type ThinkingConfig = {
 
 // ESTOMAGO_OR_SELF_HOLD §6.1/§6.2：明确 OR 型号约束（anthropic 上游、禁 auto/latest/别名）。
 // 注意这是宿主门，不是把任意 OR 型号都放行的通用校验；当前任务 provider.only 固定 ['anthropic']。
-export const RUNTIME_PROVIDER_ENUM = ['claude-agent-sdk', 'openrouter', 'mock'] as const;
+export const RUNTIME_PROVIDER_ENUM = ['claude-agent-sdk', 'openrouter', 'mock', 'deepseek'] as const;
 export type RuntimeProvider = (typeof RUNTIME_PROVIDER_ENUM)[number];
 
 export type OrModelId = string; // 形状校验见 orModelIdIssue()；null=未配置（selectRunner 阻断，不猜默认型号）
@@ -30,6 +30,19 @@ export type OpenRouterConfig = {
   disable_context_compression: boolean; // 硬规则 true（§6.2 plugins）
   retry_max_attempts_after_initial: number; // §9.2 建议初值 2
   reasoning: Record<string, unknown> | null; // 未批准推理覆盖=null（§10：不照搬 SDK effort）
+  estimate_chars_per_token: number; // §11.1 粗估系数（拉丁文本≈2.5；中文场景偏低，靠真实 usage 校准兜底）
+};
+
+// DeepSeek 官方直连配置段（2026-10-05 她裁定：DS 官方 key 不经 OpenRouter）。
+// 与 openrouter 段完全分离：无 provider/cache/plugin 概念（DS 自动上下文缓存，无参数）；
+// 身份映射（session 派生、上下文指纹）按驱动隔离，切换驱动强制换窗（identity/service）。
+export type DeepSeekConfig = {
+  base_url: string; // 默认 https://api.deepseek.com（https 硬规则）
+  model: string | null; // DS 官方型号（如 deepseek-chat / deepseek-reasoner）；null=未配置阻断
+  api_key_env: string; // 默认 DEEPSEEK_API_KEY（值只在后端 transport 读取）
+  max_output_tokens: number;
+  retry_max_attempts_after_initial: number; // §9.2 同款有界重试
+  estimate_chars_per_token: number; // 中文场景默认 1.5（DS 主用途为中文对话；粗估+真实 usage 校准）
 };
 
 export type Config = {
@@ -75,6 +88,8 @@ export type Config = {
   // ESTOMAGO_OR_SELF_HOLD：OR 专用配置段——与 SDK 的 settingSources/systemPrompt 装配/
   // resume/订阅认证完全分离（§2.1/§6.1）。共用业务授权（身份/主体权限），不共用供应商会话与 KV。
   openrouter: OpenRouterConfig;
+  // DS 官方直连段（身份映射隔离：与 OR 各自独立配置/凭据/型号门）
+  deepseek: DeepSeekConfig;
   identity: {
     approved_identity_ref: string | null;
     approved_identity_hash: string | null;
@@ -237,13 +252,24 @@ export const CONFIG_DEFAULTS: Config = {
     model: null,
     api_key_env: 'OPENROUTER_API_KEY',
     max_output_tokens: 8192,
-    provider_only: ['anthropic'], // 规范默认；DS 冒烟等场景可配置化（如 ['deepseek']），型号门随上游族放宽
+    provider_only: ['anthropic'], // 规范默认（§6.2）；非 anthropic 族可配置，型号门随上游族放宽
     allow_fallbacks: false,
     require_parameters: true,
     cache_ttl: '1h',
     disable_context_compression: true,
     retry_max_attempts_after_initial: 2,
     reasoning: null,
+    estimate_chars_per_token: 2.5,
+  },
+  // DS 官方直连默认：model=null（未配置即阻断）；key 只经环境变量名引用；
+  // 无缓存/路由参数（DS 自动上下文缓存）；中文对话为主 → 粗估系数 1.5（§11.1 估计带精度，usage 校准兜底）。
+  deepseek: {
+    base_url: 'https://api.deepseek.com',
+    model: null,
+    api_key_env: 'DEEPSEEK_API_KEY',
+    max_output_tokens: 8192,
+    retry_max_attempts_after_initial: 2,
+    estimate_chars_per_token: 1.5,
   },
   identity: {
     approved_identity_ref: null,
@@ -378,6 +404,11 @@ const SHAPE: SectionSpec = { section: {
     cache_ttl: 'string', disable_context_compression: 'boolean',
     retry_max_attempts_after_initial: 'number',
     reasoning: 'json?',
+    estimate_chars_per_token: 'number',
+  } },
+  deepseek: { section: {
+    base_url: 'string', model: 'string?', api_key_env: 'string', max_output_tokens: 'number',
+    retry_max_attempts_after_initial: 'number', estimate_chars_per_token: 'number',
   } },
   identity: { section: {
     approved_identity_ref: 'string?', approved_identity_hash: 'string?', i_source: 'string?',
@@ -483,6 +514,15 @@ export function orModelIdIssue(model: string): string | null {
   return null;
 }
 
+// DS 官方型号门（直连驱动）：DS 型号是单段名（deepseek-chat / deepseek-reasoner），非 vendor/model；
+// 禁 auto/latest/数组。只做形状门——真实可用性由端点实测（冒烟）另验，不冒充。
+export function dsModelIdIssue(model: string): string | null {
+  if (/\bauto\b|\blatest\b/i.test(model)) return '禁止 auto/latest 别名（必须是明确 DS 官方型号）';
+  if (model.includes(',') || /^\[.*\]$/.test(model.trim())) return '禁止 fallback 型号数组';
+  if (!/^[a-z0-9][a-z0-9._\-]*$/i.test(model)) return '必须是 DS 官方单段型号名（如 deepseek-chat）';
+  return null;
+}
+
 // 产品硬规则（v0.2.1 固定，配置不得放宽；01 §6.2/§11.1、05 §2.1 + ESTOMAGO_OR_SELF_HOLD §6/§7）
 function checkHardRules(c: Config, issues: ValidationIssue[]): void {
   const fixed: Array<[boolean, string]> = [
@@ -516,13 +556,23 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     [Array.isArray(c.openrouter.provider_only) && c.openrouter.provider_only.length > 0, 'openrouter.provider_only 必须非空（限定上游集合）'],
     [c.openrouter.base_url.startsWith('https://'), 'openrouter.base_url 必须 https（不降级明文）'],
     [c.openrouter.api_key_env.length > 0, 'openrouter.api_key_env 必须指定（凭据只经环境变量名引用）'],
+    // DS 直连段硬规则（§6.1 同款纪律：https、凭据只经环境变量名、有界重试、粗估系数合理区间）
+    [c.deepseek.base_url.startsWith('https://'), 'deepseek.base_url 必须 https（不降级明文）'],
+    [c.deepseek.api_key_env.length > 0, 'deepseek.api_key_env 必须指定（凭据只经环境变量名引用）'],
+    [Number.isSafeInteger(c.deepseek.retry_max_attempts_after_initial) && c.deepseek.retry_max_attempts_after_initial >= 0, 'deepseek.retry_max_attempts_after_initial 必须是非负整数'],
+    [c.deepseek.estimate_chars_per_token > 0 && c.deepseek.estimate_chars_per_token <= 10, 'deepseek.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
+    [c.openrouter.estimate_chars_per_token > 0 && c.openrouter.estimate_chars_per_token <= 10, 'openrouter.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
     [c.windows.rotate_on_business_date_change === false, 'windows.rotate_on_business_date_change 必须为 false（现行规范：零点不触发换窗）'],
   ];
   for (const [ok, msg] of fixed) if (!ok) issues.push({ path: msg.slice(0, msg.indexOf('必须')), message: msg });
-  // §6.1：型号已配置时必须是明确 ID（未配置不在此报错——selectRunner 会以 OR_MODEL_NOT_CONFIGURED 阻断并显示）
+  // §6.1：型号已配置时必须是明确 ID（未配置不在此报错——selectRunner 会以 *_MODEL_NOT_CONFIGURED 阻断并显示）
   if (c.openrouter.model !== null) {
     const m = orModelIdIssue(c.openrouter.model);
     if (m) issues.push({ path: 'openrouter.model', message: m });
+  }
+  if (c.deepseek.model !== null) {
+    const m = dsModelIdIssue(c.deepseek.model);
+    if (m) issues.push({ path: 'deepseek.model', message: m });
   }
 }
 

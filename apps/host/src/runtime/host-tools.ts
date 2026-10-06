@@ -114,7 +114,7 @@ export class HostToolExecutor {
   }
 
   private async memoryHold(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.mariposa) return { ok: false, output: { error_code: 'MARICOA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? (rawToolCallIdOf(ctx) ?? ''));
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
