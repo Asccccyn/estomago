@@ -76,7 +76,9 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
-- **2026-10-05 深夜 memory_hold 契约对齐批（mariposa@d14a24e；她的三项裁定落地）**：mariposa 侧接口核对（ingest/status/回执全兼容，断点=hold 入参）后，按她裁定修 estómago 工具面：
+- **2026-10-05 21:0x 自审批（0422aeb，程知行）**：送审前对自家 f65f716..ba41c18 改动做同火力自审。**发现并修复 1 个 P2**：quotes 的 start/end_char_offset 原按 JS UTF-16 单位计算，mariposa 契约是 Unicode 码点半开区间（source/query.py CB-029）——消息内片段之前出现 emoji 等增补平面字符即错位；已改 `utf16IndexToCodepoints` 换算 + `[...frag]` 码点长度，emoji 回归锁定（start=3≠UTF-16 的 4）。顺手：QUOTE_CANDIDATE_LIMIT 命名常量（超 60 条已见消息的引用如实拒绝，不扩大扫描）；参数门补 items.minLength（quotes/plan_ids 空串条目门口拒，mariposa schema 对齐）。自审其余面（收据修订配对/评审上限绕过路径含 manual force 与 skipped_empty/停止键竞态/DS payload 不变式在续轮/参数门等价性）逐一核过未见问题，论据见简报攻击面更新。50/50 绿；ds-smoke dry-run PASS。审计简报同步到 0422aeb 口径（Codex 验证修复而非重发现）。
+
+- **2026-10-05 深夜 memory_hold 契约对齐批（mariposa@d14a24e 起步、mood 随 75378ab 终版由并行批补齐；她的三项裁定落地）**：mariposa 侧接口核对（ingest/status/回执全兼容，断点=hold 入参）后，按她裁定修 estómago 工具面：
   - **新契约直传**：`original_title`（必填 ≤30 字）/`categories`（数组·九分类枚举）/`text`；可选 `plan_ids`/`creation_mode`（contemporaneous|retrospective 枚举）/`memory_date`/`date_confidence`。旧字段（category/mood_tags/our_words 自由串/backfill_date）退役，宿主参数门扩展 enum/minLength/maxLength/minItems/maxItems。
   - **引用=模型指认**（她选）：模型只给 `quotes`（想逐字引用的片段，≤10 条）；网关在"发起请求实际看见的原话"里**逐字核对**（按序消费候选，失配=QUOTE_MATCH_FAILED 整单拒绝·零副作用·不替模型圆谎）；说话人按来源自动映射 owner=qiaosheng / assistant=jiaming；引用按 mariposa 现成机制钉住——`our_words`（verbatim+source_ref）+ `source_selections`（source_message_id+内容 hash 来自 source_sync_receipts；句内片段带 char offset，整句=消息边界）；被引消息缺收据 → 先 drainOnce 再核，仍缺=QUOTE_NOT_SYNCED 如实拒绝。
   - **mood 整块未做**（她明示"八大类还要改，先不要动手做心情"）——工具面无 mood 参数；等词表定稿后经 `memory.mood.vocab`（mariposa 已开，owners-only，接口规定动态拉取不许硬编码）接入。
