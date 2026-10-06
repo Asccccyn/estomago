@@ -1,6 +1,11 @@
 # estómago
 
-> 自建聊天宿主：统一聊天入口 + 模型驱动宿主（OpenRouter 主用 / Claude Agent SDK 保留）+ Mariposa 唯一正式记忆。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
+> 自建聊天宿主：统一聊天入口 + 模型驱动宿主（OpenRouter 主用 / **DeepSeek 官方直连** / Claude Agent SDK 保留）+ Mariposa 唯一正式记忆。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
+
+三个模型驱动（身份映射互相隔离——session 命名空间与上下文指纹分域，切换强制换窗）：
+- **OpenRouter**：规范 §6 主接入；凭据待她授权（A1 门）
+- **DeepSeek 官方直连**：2026-10-05 她裁定新增（`runtime.provider: deepseek` + `config.deepseek` 段），独立驱动直连 api.deepseek.com，不经 OpenRouter、payload 零 OR/Anthropic 专属字段（无 cache_control/session_id/provider/plugins）；**当前唯一完成真实外网验证的通道**（DS 官方 key 冒烟 SMOKE_PASS）
+- **Claude Agent SDK**：保留；她的 Claude 账号 1005 被封，实测凭据暂不可用（mock/合同层回归不受影响）
 
 ## 当前基线（唯一现行规范，2026-10-05 冻结）
 
@@ -26,7 +31,13 @@
 | WP3 启动装配 / 轨迹 / 书签 / 一次提醒 / 自动换窗 | **完成（离线）**：策略移植（提醒范围/成功书签/评审完成/换窗调度）+ OR 工具循环（memory_hold→真实收据→书签；context_review_complete 宿主核验）+ 56k 预警/64k/6h 触发 + 换窗前一次提醒 + 跨窗继承。Mariposa bootstrap 分页 BLOCKED（等接口）；粗估 token 已标注精度 |
 | WP4 缓存与工具续请求集成 | **完成（离线）**：每窗 append-only 协议轨迹（成功才推进）+ 断点规划 A/G（B 待 bootstrap）+ 跨轮 previousPayload 断言；真实命中观测=WP6 |
 | WP5 前台"记录"与设置接线 | **完成（离线）**：records 两个只读端点（快照+白名单事件分页）+ 聊天顶栏"记录"面板（桌面侧栏/窄屏底部，零新依赖，打开不触发生成）；设置页 UI 待真实凭据联调批 |
-| WP6 真实验收 / 发布候选 | 未开始（真实 OR 调用须她明确预算授权；SDK 实测单列） |
+| WP6 真实验收 / 发布候选 | **DS 通道已实测**：官方 key 直连冒烟 SMOKE_PASS（三步：基线聊天/工具往返/append-only 续传；自动缓存命中被正确观测；四道熔断，全程几厘钱）。OR 实测仍待预算授权；SDK 实测凭据不可用；estómago↔真 Mariposa 端到端待联调（见下） |
+
+## 2026-10-05 深夜两批（在上述 WP 状态之后）
+
+- **e3babaa**：DS 官方直连驱动 + 身份映射隔离 + 第三方审计 P1/P2 修复（块级 cache_control 族判断、评审失败重试上限 3 次/窗、评审请求停止键）。
+- **9b08046**：memory_hold 契约对齐 mariposa@d14a24e（标题必填≤30 字/九分类数组/补记日期），**引用=模型指认**——模型给 quotes 片段，网关在已见原话里逐字核对（失配整单拒·零副作用），说话人自动映射（owner=qiaosheng/assistant=jiaming），按 mariposa source_selections 钉住（收据+内容 hash+句内 offset）。**mood 整块按她指令未做**（八大类词表她还要改；定稿后经 `memory.mood.vocab` 动态拉取接入）。
+- 审计简报：`reports/audit-brief-20261005-ds-hold.md`（送独立复审的定向范围）。
 
 ## 快速开始
 
@@ -38,6 +49,8 @@ npm start           # 前台启动（127.0.0.1:18787；首次自动复制 exampl
 npm stop / npm run status
 npm run backup      # SQLite VACUUM INTO 一致性快照 → $STATE/backups/
 npm run install-launchagent   # 渲染 LaunchAgent（默认 dry-run，--apply 才写盘）
+node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
+# 真实冒烟（需她授权）：export DEEPSEEK_API_KEY=<官方平台key> && ESTOMAGO_DS_SMOKE=1 node scripts/ds-smoke.mjs
 ```
 
 零 npm 运行依赖（Node ≥ 22.18，原生 `.ts` type-stripping + `node:sqlite`）；开发依赖仅 `@anthropic-ai/claude-agent-sdk@0.3.283`（锁定安装，OR 模式不加载）。无凭据/无身份材料时按规格如实 `IDENTITY_BLOCKED`/blocked 降级，消息保存、时间线、SSE、思考通道照常——这是规格要求的形态，不是故障。
