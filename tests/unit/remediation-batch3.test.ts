@@ -60,7 +60,7 @@ function compose(root: string, orTransport: OrTransport) {
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
@@ -120,7 +120,7 @@ test('F18：G 候选指向实际已发送的末块（非未发送的最终 assis
   let gen = 0;
   const t: OrTransport = async () => {
     gen++;
-    if (gen === 1) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody('g1', 'hc', 'memory_hold', { category: 'daily', text: 'x' })) };
+    if (gen === 1) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' })) };
     return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody('g2', '最终回复正文')) };
   };
   const root = tempRoot('rm3-f18-');

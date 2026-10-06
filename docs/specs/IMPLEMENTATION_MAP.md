@@ -76,6 +76,13 @@ WP1 配置+OR 驱动（fake transport 离线测试）→ WP2 原文同步/MCP/�
 
 ### 进度记录
 
+- **2026-10-05 深夜 memory_hold 契约对齐批（mariposa@d14a24e；她的三项裁定落地）**：mariposa 侧接口核对（ingest/status/回执全兼容，断点=hold 入参）后，按她裁定修 estómago 工具面：
+  - **新契约直传**：`original_title`（必填 ≤30 字）/`categories`（数组·九分类枚举）/`text`；可选 `plan_ids`/`creation_mode`（contemporaneous|retrospective 枚举）/`memory_date`/`date_confidence`。旧字段（category/mood_tags/our_words 自由串/backfill_date）退役，宿主参数门扩展 enum/minLength/maxLength/minItems/maxItems。
+  - **引用=模型指认**（她选）：模型只给 `quotes`（想逐字引用的片段，≤10 条）；网关在"发起请求实际看见的原话"里**逐字核对**（按序消费候选，失配=QUOTE_MATCH_FAILED 整单拒绝·零副作用·不替模型圆谎）；说话人按来源自动映射 owner=qiaosheng / assistant=jiaming；引用按 mariposa 现成机制钉住——`our_words`（verbatim+source_ref）+ `source_selections`（source_message_id+内容 hash 来自 source_sync_receipts；句内片段带 char offset，整句=消息边界）；被引消息缺收据 → 先 drainOnce 再核，仍缺=QUOTE_NOT_SYNCED 如实拒绝。
+  - **mood 整块未做**（她明示"八大类还要改，先不要动手做心情"）——工具面无 mood 参数；等词表定稿后经 `memory.mood.vocab`（mariposa 已开，owners-only，接口规定动态拉取不许硬编码）接入。
+  - 新增 tests/unit/hold-quote.test.ts（4 用例：片段引用+说话人+收据钉住+offset / 整句=消息边界+jiaming / 失配零副作用 / 未同步拒绝）；batch7 参数门断言重写；6 个旧测试文件的 hold 参数与全部 HostToolExecutor 构造点（+db+archiveSync 接线）更新；ds-smoke 假桩参数同步。全量 **50/50 文件 0 失败**；ds-smoke dry-run SMOKE_PASS。
+  - **待办**：mariposa 侧"内置绑定"（长期服务身份，她的"内置感觉"裁定——那边 debug 中不踩）；mood 接入等词表定稿；estómago↔真 mariposa 端到端联调（等凭据+archive.enabled）。
+
 - **2026-10-05 第三方审计修复批完成（审 f65f716 → 本批；程知行审→修同轮）**：全量审计结论=测试 47/47 绿但 DS 放 key 前有 2 个 P1+2 个 P2；她裁定"DS 单独开接口、不走 OR、身份映射隔离"。已修：
   - **DS 官方直连驱动（新）**：`runtime/runner-deepseek.ts`（DeepSeekRunner/buildDeepSeekPayload/dsSessionId/deepSeekSelection）+ `config.deepseek` 配置段（base_url 默认 api.deepseek.com、DEEPSEEK_API_KEY、单段型号门 dsModelIdIssue、无缓存/路由参数）+ selectRunner/信封类型分发。DS 请求**绝不携带** session_id/provider/plugins/cache_control（content 块拍平、reasoning_details 剥除、断点忽略）；SSE 解析复用 OrStreamAccumulator（注入 normalizeDsUsage：prompt_cache_hit_tokens→cache_read、费用缺失不降级 token 完整度、命中超总量标 anomaly 不 clamp）。
   - **身份映射隔离**：dsSessionId 独立命名空间（estomago:ds:session:*，仅宿主内部关联不发送）；contextFingerprint 纳入 deepseek 段 → OR↔DS 切换/DS 型号变化=CONTEXT_STALE 强制换窗；gate driver 三值（SDK 专属前提仍只约束 SDK）。

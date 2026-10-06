@@ -45,7 +45,7 @@ test('F08：损坏的 status 响应（200 无回执无 completed）保持 unknow
     };
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
-    const tools = new HostToolExecutor({ mariposa: new MariposaClient({ transport: m }), reviews, checkpoint });
+    const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: m }), reviews, checkpoint });
     // 直接落一个 unknown hold 效果（模拟聊天中 503）
     const effId = reviews.openEffect({ reviewId: null, turnId: null, windowId: 'win_x', kind: 'hold', operationId: 'op-1', toolCallId: 'tc', seenSequence: 3 });
     reviews.settleEffect(effId, 'unknown', false, null);
