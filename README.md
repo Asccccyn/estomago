@@ -40,6 +40,7 @@
 - **ba41c18**（并行批）：mood 参数接入她冻结的七大类词表终版（mood_tags 枚举≤3 + mood_note 自由文字）。
 - **0422aeb**：送审前自审修复——quotes 的 char offset 按码点计（mariposa 契约），emoji 前置不再错位。
 - **909bd99 + 4a61003**：Codex 审计 3655d60 全量 28 项修复（9 P1/18 P2/1 P3；含 DS thinking 续传、重启恢复、按实际已见清单核对引用、归档 published_kind 映射、5xx→unknown、前驱闭锁等）；51/51 绿。审计简报与逐项对照见 `reports/audit-brief-20261005-ds-hold.md` 与 IMPLEMENTATION_MAP。
+- **c084103/ef1ecf9/9765086/c04a963/6c98a71/9306550/68067b5**（联合审计返修 B2–B5）：B2 工具 epoch 冻结+无轨迹评审范围=实际装载+追赶进范围+skipped_empty 依据（v14）+retrospective 预拒+typecheck 基线清零（36→0，tsconfig+锁依赖）；B4 跨仓契约防漂移测试（读 mariposa 实码、突变必红）+outbox 受控恢复脚本（dry-run 默认）+批次字节口径对齐（跨语言黄金夹具）+错误码清单副本移除；B5 停止键/编辑修订入口/加载更早（服务端 before= 翻页）/坏JSON 400·超限 413/SSE 活锁与字节背压/ready 脱敏/换窗原因如实/面板绑定事实化。全量 56/56 文件+typecheck 0 错误。
 - **c8f2bae**（联合审计返修 B1）：跨仓 P1 三项——quotes 引用身份改 source_msg: 前缀（F-J-01，修复带引用 hold 必被拒的跨仓断裂）/书签高于清单改合法空范围防换窗死锁（F-J-02）/回执绑定 1:1 校验（F-J-54）；真实双端探针 R01/R02 通过（审计包 probes/b1）。
 - **36fd6df**（mariposa-1005B 并行批）：接口根因适配——classifyError 按 httpStatus 优先分类（修 mariposa 结构化 429=RATE_LIMITED 被判永久 dead 的真根因）、mood 需配 creation_mode 的前置拦截、心情词表改 `memory.mood.vocab` 动态拉取（正本唯一，不再硬编码）；52/52 绿。
 
