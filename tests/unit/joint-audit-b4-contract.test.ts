@@ -69,9 +69,20 @@ test('F-J-13：estómago hold 副本与 mariposa 现行 schema 一致（枚举/�
   assert.equal(Number(etm[1]), Number(mtm[1]), 'mood tags 上限两端一致（mariposa=_MOOD_TAGS_MAX）');
 });
 
+test('D2：bootstrap profile 枚举含 estomago（两端口径）', async () => {
+  const fs2 = await import('node:fs');
+  const block = fs2.readFileSync(schemasPath, 'utf8');
+  const m = block.match(/"bootstrap.get": \{[\s\S]*?"enum": \[([^\]]+)\]/);
+  assert.ok(m, 'bootstrap.get profile 枚举可解析');
+  assert.ok(m[1]!.includes('estomago'), 'mariposa V2 schema 含 estomago profile');
+  const clientSrc = fs2.readFileSync(new URL('../../apps/host/src/integrations/mariposa/client.ts', import.meta.url), 'utf8');
+  assert.ok(clientSrc.includes("profile: 'estomago'"), 'estómago 客户端用 estomago profile（不冒充 cc）');
+});
+
 test('F-J-13：estómago 调用的全部 mariposa 能力名在服务端注册', { skip: !repoAvailable && 'mariposa 仓不存在（独立环境跳过）' }, () => {
   const registry = fs.readFileSync(registryPath, 'utf8');
-  const called = ['source.ingest', 'source.ingest.status', 'memory.hold', 'memory.hold.status', 'memory.mood.vocab'];
+  const called = ['source.ingest', 'source.ingest.status', 'memory.hold', 'memory.hold.status', 'memory.mood.vocab',
+    'bootstrap.get', 'bootstrap.next', 'memory.recall.start', 'memory.recall.refine', 'memory.recall.status', 'memory.recall.accept', 'memory.recall.reject'];
   for (const cap of called) {
     assert.ok(registry.includes(`add("${cap}"`) || registry.includes(`"${cap}"`), `mariposa registry 缺能力：${cap}`);
   }
