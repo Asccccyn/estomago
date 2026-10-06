@@ -107,7 +107,7 @@ test('真实顺序：提交→收据就位→hold 带片段引用→our_words �
   const calls: HoldCall[] = [];
   const root = tempRoot('hq2-');
   const userText = '今天路过花店，突然好想你';
-  const holdArgs = { original_title: '路过花店想他', categories: ['sweet'], text: '她在回家路上路过花店时想起了char', quotes: ['路过花店，突然好想你'] };
+  const holdArgs = { original_title: '路过花店想他', creation_mode: 'contemporaneous', categories: ['sweet'], text: '她在回家路上路过花店时想起了char', quotes: ['路过花店，突然好想你'] };
   const ctx = compose(root, holdArgs, recordingMariposa(calls));
   // 手动走真实顺序：提交消息（不 enqueue）→ 种收据 → enqueue 驱动
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'q2', occurredAt: T0 });
@@ -142,7 +142,7 @@ test('自审 P2 回归：emoji（增补平面）在片段之前时，offset 按�
   // '😀'=1 码点但 2 个 UTF-16 单位：旧实现会把 start 多算 1、end 多算 1 → mariposa（码点半开区间）钉错区间
   const userText = '😀今天路过花店，突然好想你';
   const frag = '路过花店，突然好想你';
-  const ctx = compose(root, { original_title: '带emoji的引用', categories: ['sweet'], text: 'x', quotes: [frag] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '带emoji的引用', creation_mode: 'contemporaneous', categories: ['sweet'], text: 'x', quotes: [frag] }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'e1', occurredAt: T0 });
   seedReceipt(ctx, sub.message.id, 1, userText, 'src-conv-e', 'src-m-e');
   ctx.supervisor.enqueue(sub.turnId);
@@ -157,16 +157,16 @@ test('自审 P2 回归：emoji（增补平面）在片段之前时，offset 按�
 });
 
 test('参数门补充：quotes/plan_ids 空串条目在门口拒绝', async () => {
-  const badQ = validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', quotes: ['正常片段', ''] });
+  const badQ = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: ['正常片段', ''] });
   assert.ok(!badQ.ok && badQ.code === 'TOOL_ARG_LENGTH', 'quotes 空串条目拒收');
-  const badP = validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', plan_ids: [''] });
+  const badP = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', plan_ids: [''] });
   assert.ok(!badP.ok && badP.code === 'TOOL_ARG_LENGTH', 'plan_ids 空串条目拒收（mariposa items minLength=1 对齐）');
 });
 
 test('引用失配：模型指认了不存在的原话 → QUOTE_MATCH_FAILED，hold 不发、账本不开（零副作用）', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq3-');
-  const ctx = compose(root, { original_title: '记录确认', categories: ['daily'], text: '他确认记下了', quotes: ['模型编造的、从没说过的话'] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '记录确认', creation_mode: 'contemporaneous', categories: ['daily'], text: '他确认记下了', quotes: ['模型编造的、从没说过的话'] }, recordingMariposa(calls));
   const sub = await say(ctx, '帮我记住这件事', 'b1', T0);
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed', '回合照常收口（工具错误是模型可见输出，不是宿主故障）');
@@ -203,7 +203,7 @@ test('整句引用（消息边界）：上一轮已发布的助手回复，第�
     gen++;
     let body: string;
     if (phase === 0) body = textBody(`g${gen}`, '这是上一轮的原话');
-    else body = hasToolResult ? textBody(`g${gen}`, '记好了') : toolBody(`g${gen}`, `c${gen}`, { original_title: '引用上一轮', categories: ['daily'], text: '补一条引用', quotes: ['这是上一轮的原话'] });
+    else body = hasToolResult ? textBody(`g${gen}`, '记好了') : toolBody(`g${gen}`, `c${gen}`, { original_title: '引用上一轮', creation_mode: 'contemporaneous', categories: ['daily'], text: '补一条引用', quotes: ['这是上一轮的原话'] });
     return { status: 200, headers: new Map<string, string>(), body: frameStream(body) };
   };
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
@@ -237,7 +237,7 @@ test('整句引用（消息边界）：上一轮已发布的助手回复，第�
 test('未同步引用：消息存在但无来源收据 → QUOTE_NOT_SYNCED 拒绝（不宣称未入库的引用）', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq5-');
-  const ctx = compose(root, { original_title: '无收据', categories: ['daily'], text: 'x', quotes: ['还没同步的话'] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '无收据', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: ['还没同步的话'] }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '这句还没同步的话先说着', clientMessageId: 'u1', occurredAt: T0 });
   // 不种收据、executor 无 archiveSync → 直接拒
   ctx.supervisor.enqueue(sub.turnId);

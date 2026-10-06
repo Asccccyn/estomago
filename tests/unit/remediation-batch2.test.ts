@@ -101,7 +101,7 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
 
 test('F01：无任何 SDK 前提（不装探针/不锁版本/不确认订阅）→ OR 照常出稿', async () => {
   const log: PayloadLog = [];
-  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', '好的') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' })));
+  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', '好的') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' })));
   const root = tempRoot('rm2-f01-');
   const ctx = compose(root, t, mariposaOk, { withSdkEnv: false, seedProbes: false });
   const sub = await say(ctx, '第一句', 'a1', T0);
@@ -128,7 +128,7 @@ test('F02：已验证的当前 I 完整进入 OR 固定前缀（system 首块）
 test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不再发送', async () => {
   // soft=800（首轮 ~300 不触发换窗）；safeInput=1000（工具参数膨胀后续轮 >1000 → 拦截）
   const log: PayloadLog = [];
-  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
+  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
   const root = tempRoot('rm2-f03-');
   const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 29192, soft_limit_tokens: 800, warning_tokens: 700 } } });
   const sub = await say(ctx, '触发工具', 't1', T0);
@@ -172,7 +172,7 @@ test('F13：续请求保留已发布正文与 opaque reasoning 协议继续态',
   const log: PayloadLog = [];
   const t = loggingTransport(log, (_p, hasTool) => (hasTool
     ? textBody('g2', '最终回复')
-    : mixedTextToolBody('g1', '先说一段话', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: '记这个' })));
+    : mixedTextToolBody('g1', '先说一段话', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '记这个' })));
   const root = tempRoot('rm2-f13-');
   const ctx = compose(root, t, mariposaOk);
   await say(ctx, '正文+工具', 'p1', T0);
@@ -186,7 +186,7 @@ test('F13：续请求保留已发布正文与 opaque reasoning 协议继续态',
   const withReasoningLog: PayloadLog = [];
   const t2 = loggingTransport(withReasoningLog, (_p, hasTool) => (hasTool
     ? textBody('g2', '完')
-    : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'r' }, { type: 'thinking', thinking: 'opaque-token-abc' })));
+    : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'r' }, { type: 'thinking', thinking: 'opaque-token-abc' })));
   const root2 = tempRoot('rm2-f13b-');
   const ctx2 = compose(root2, t2, mariposaOk);
   await say(ctx2, '带思考片段的工具轮', 'p2', T0);
@@ -199,7 +199,7 @@ test('F13：续请求保留已发布正文与 opaque reasoning 协议继续态',
 
 test('F14：成功 hold 的书签视野包含当前输入（首条消息 → seen_sequence=1）', async () => {
   const log: PayloadLog = [];
-  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', '记好了') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' })));
+  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', '记好了') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' })));
   const root = tempRoot('rm2-f14-');
   const ctx = compose(root, t, mariposaOk);
   await say(ctx, '第一条就记', 'b1', T0);
@@ -212,7 +212,7 @@ test('F14：成功 hold 的书签视野包含当前输入（首条消息 → see
 
 test('F17：provider_requests 留完整重放投影与终态', async () => {
   const log: PayloadLog = [];
-  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', 'ok') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', categories: ['daily'], text: 'x' })));
+  const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', 'ok') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' })));
   const root = tempRoot('rm2-f17-');
   const ctx = compose(root, t, mariposaOk);
   await say(ctx, '两轮请求', 'q1', T0);
