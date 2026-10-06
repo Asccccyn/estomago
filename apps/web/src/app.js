@@ -35,6 +35,26 @@ async function tryResume() {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return true;
 }
+
+// F-J-48（联合审计 2026-10-06）：历史向上翻页——服务端 before= 反向分页；
+// 吸收走同一 absorbMessage（ID 去重/修订吸收），加载后保持视口位置不跳底
+async function loadEarlier() {
+  const seqs = [...state.messages.values()].map((m) => m.sequence).filter((x) => typeof x === 'number');
+  if (seqs.length === 0) return;
+  const oldest = Math.min(...seqs);
+  const timeline = $('timeline');
+  const anchorHeights = [document.documentElement.scrollHeight, timeline.scrollHeight];
+  const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=200&before=${oldest}`, { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const data = await res.json();
+  const older = data.messages ?? [];
+  const hadScrollbar = window.scrollY > 0;
+  for (const m of older) absorbMessage(m);
+  if (hadScrollbar || anchorHeights[1] !== timeline.scrollHeight) {
+    window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight - anchorHeights[0] + window.scrollY));
+  }
+  if (older.length < 200) { const btn = $('load-earlier-btn'); if (btn) btn.hidden = true; }
+}
 $('login-btn').hidden = false;
 $('login-btn').onclick = () => { $('login-panel').hidden = !$('login-panel').hidden; };
 $('token-submit').onclick = async () => {
@@ -165,6 +185,23 @@ function renderMessage(dto, { update = false } = {}) {
   meta.textContent = new Date(dto.revision.occurred_at).toLocaleString();
   if (dto.revision.revision > 1) meta.textContent += ` · 修订 ${dto.revision.revision}`;
   bubble.appendChild(meta);
+  // F-J-08（联合审计 2026-10-06）：用户消息编辑入口——修订链/outbox 由服务端
+  // editUserMessage 同事务保证（不无痕重写）；编辑不自动触发重新生成
+  if (dto.speaker === 'owner') {
+    const editBtn = document.createElement('button');
+    editBtn.className = 'edit-btn';
+    editBtn.textContent = '编辑';
+    editBtn.onclick = async () => {
+      const next = window.prompt('修改这条消息（整体多行正文，保存后形成新修订）', dto.revision.content);
+      if (next === null || next === dto.revision.content) return;
+      const res = await fetch(`/api/v1/conversations/${encodeURIComponent(dto.conversation_id ?? CONVERSATION)}/messages/${encodeURIComponent(dto.id)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ content: next }),
+      });
+      if (res.ok) { const data = await res.json(); absorbMessage(data.message, { update: true }); }
+      else { const e = await res.json().catch(() => ({})); window.alert(`编辑失败：${e?.error?.message ?? res.status}`); }
+    };
+    bubble.appendChild(editBtn);
+  }
   scrollBottom();
 }
 
@@ -251,6 +288,25 @@ function setTurnState(turnId, s, extra) {
     completed: '', interrupted: '已停止', failed: '失败',
   };
   el.textContent = labels[s] ?? s;
+  // F-J-07（联合审计 2026-10-06）：主动停止入口——服务端 stop 端点此前 UI 不可达，
+  // 只能靠断连。fence 先行（迟到文字丢弃、真实迟到 usage 仍记账）由服务端保证。
+  if (s === 'running') {
+    if (!ts.stopBtn) {
+      const btn = document.createElement('button');
+      btn.className = 'stop-btn';
+      btn.textContent = '停止';
+      btn.onclick = async () => {
+        btn.disabled = true;
+        try { await fetch(`/api/v1/turns/${encodeURIComponent(turnId)}/stop`, { method: 'POST', credentials: 'same-origin' }); }
+        catch { /* 失败保留按钮，下次状态事件重置 */ }
+      };
+      ts.stopBtn = btn;
+      ts.element.appendChild(btn);
+    }
+  } else if (ts.stopBtn) {
+    ts.stopBtn.remove();
+    ts.stopBtn = null;
+  }
 }
 
 function renderUsage(turnId, payload) {
@@ -522,6 +578,14 @@ async function boot() {
     const data = await res.json();
     const turnIds = new Set();
     for (const m of data.messages ?? []) { absorbMessage(m); if (m.turn_id) turnIds.add(m.turn_id); }
+    // F-J-48：满页说明可能有更早历史——露出"加载更早"入口（不足一页时隐藏由点击后处理）
+    if ((data.messages ?? []).length >= 500) {
+      const btn = document.createElement('button');
+      btn.id = 'load-earlier-btn';
+      btn.textContent = '加载更早的消息';
+      btn.onclick = () => void loadEarlier();
+      $('timeline').before(btn);
+    }
     // 回看思考摘要（AUD-34）：不依赖 SSE 当时在线
     for (const turnId of turnIds) {
       try {

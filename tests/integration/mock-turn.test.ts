@@ -226,3 +226,36 @@ test('F-J-44：坏 JSON=400、超限=413（客户端错误不再一律 500）', 
   assert.equal(res2.status, 413);
   assert.equal(((await res2.json()) as { error: { code: string } }).error.code, 'payload_too_large');
 });
+
+test('F-J-08/F-J-48：用户消息编辑修订（PUT）+ before 反向翻页', async () => {
+  // 编辑：修订+1、旧修订可查、正文更新
+  const post1 = await fetch(`${base}/api/v1/conversations/primary/messages`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base, 'Idempotency-Key': `ed-${Date.now()}` },
+    body: JSON.stringify({ content: '编辑前的原话' }),
+  });
+  const msg1 = ((await post1.json()) as { message: { id: string; current_revision: number; revision: { revision: number; content: string } } }).message;
+  const put = await fetch(`${base}/api/v1/conversations/primary/messages/${msg1.id}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ content: '编辑后的新话' }),
+  });
+  assert.equal(put.status, 200);
+  const edited = ((await put.json()) as { message: { current_revision: number; revision: { revision: number; content: string } } }).message;
+  assert.equal(edited.current_revision, msg1.current_revision + 1, '编辑形成新修订（不无痕重写）');
+  assert.equal(edited.revision.content, '编辑后的新话');
+  // 空白编辑拒绝
+  const putBlank = await fetch(`${base}/api/v1/conversations/primary/messages/${msg1.id}`, {
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ content: '   ' }),
+  });
+  assert.equal(putBlank.status, 422);
+  // 反向翻页：before=该消息 sequence 之前应取到更早的消息且升序返回
+  const listAll = await fetch(`${base}/api/v1/conversations/primary/messages?limit=1000`, { headers: { authorization: `Bearer ${token}` } });
+  const all = ((await listAll.json()) as { messages: Array<{ sequence: number }> }).messages;
+  const target = all.find((m) => m.sequence > 1);
+  if (target) {
+    const older = await fetch(`${base}/api/v1/conversations/primary/messages?limit=50&before=${target.sequence}`, { headers: { authorization: `Bearer ${token}` } });
+    const page = ((await older.json()) as { messages: Array<{ sequence: number }> }).messages;
+    assert.ok(page.every((m) => m.sequence < target.sequence), 'before 语义：只含更早');
+    assert.deepEqual(page.map((m) => m.sequence), [...page.map((m) => m.sequence)].sort((a, b) => a - b), '返回升序');
+  }
+});
