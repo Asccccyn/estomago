@@ -298,10 +298,12 @@ function setTurnState(turnId, s, extra) {
       btn.onclick = async () => {
         btn.disabled = true;
         try { await fetch(`/api/v1/turns/${encodeURIComponent(turnId)}/stop`, { method: 'POST', credentials: 'same-origin' }); }
-        catch { /* 失败保留按钮，下次状态事件重置 */ }
+        catch { btn.disabled = false; /* R19：失败恢复可重试（此前一次网络失败后按钮永久 disabled） */ }
       };
       ts.stopBtn = btn;
       ts.element.appendChild(btn);
+    } else if (ts.stopBtn && ts.stopBtn.disabled) {
+      ts.stopBtn.disabled = false; // R19：后续 running 状态事件重置（服务端拒绝/失败后可再停）
     }
   } else if (ts.stopBtn) {
     ts.stopBtn.remove();
@@ -347,6 +349,7 @@ function handleEvent(data) {
   switch (data.kind) {
     case 'message.persisted':
     case 'message.published':
+    case 'message.edited': // R16：编辑修订经 SSE 可见，按 ID/修订吸收（update 不降级已见修订）
       if (data.message) absorbMessage(data.message, { update: true });
       break;
     case 'turn.started':
@@ -481,6 +484,7 @@ async function loadRecords() {
       <div>缓存策略：${ttlLabel}　保温：未启用${s.cache.estimatedExpiresAt ? `　估计热至 ${fmtTime(s.cache.estimatedExpiresAt)}` : ''}</div>
       <div>上次读缓存：${fmtNum(s.cache.lastRead)}　写缓存：${fmtNum(s.cache.lastWrite)}（观测于 ${fmtTime(s.cache.observedAt)}）</div>
       <div>最近费用：${typeof s.cache.lastCostUsd === 'number' ? `$${s.cache.lastCostUsd}` : '未知'}（按请求报告值；无数据不编数）</div>
+      <div>今日费用（${s.usageDay ?? '上海日'}，按用途）：${(s.usageByPurpose ?? []).map((u) => `${esc(String(u.purpose))} ${u.knownCostUsd === null ? '—' : `$${u.knownCostUsd}`}（${u.count} 次${u.unknownCount > 0 ? `，另有 ${u.unknownCount} 次费用未知` : ''}）`).join('　') || '无记录'}</div>
       <div>“配置的策略”与“观测到缓存读取”是两回事；无观测时不显示命中。</div></div>`);
     // F21：最新在最上；按 eventId 去重（SSE 刷新重拉不重复追加）；事件带关键事实（F22）
     seenEventIds.clear();
@@ -497,7 +501,10 @@ async function loadRecords() {
       }).join('');
     body.dataset.prevCursor = ev.prevCursor ?? '';
     const olderBtn = ev.prevCursor ? `<button id="records-older" class="ghost" style="margin-top:6px">加载更早</button>` : '';
-    rows.push(`<div class="rec-section"><h4>最近事件</h4>${esc(evRows || '<div class="muted">暂无</div>')}${esc(olderBtn)}</div>`);
+    // R17（复审 2026-10-07）：结构 HTML 不再整段转义——动态内容（label/detail）
+    // 已逐段 esc；此前 esc(evRows)/esc(olderBtn) 把事件行和按钮转义成文字，
+    // records-older 按钮从未真实存在
+    rows.push(`<div class="rec-section"><h4>最近事件</h4>${evRows || '<div class="muted">暂无</div>'}${olderBtn}</div>`);
     body.innerHTML = rows.join('');
   } catch (err) {
     body.innerHTML = '<p class="error">记录加载失败（可重试；不影响聊天）</p>';
@@ -578,7 +585,9 @@ async function boot() {
     $('login-btn').hidden = true;
     $('records-btn').hidden = false;
     $('chat').hidden = false;
-    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500`, { credentials: 'same-origin' });
+    // R20（复审 2026-10-07）：初次加载=最新一页（order=latest），"加载更早"向前
+    // 游标才成立——此前默认取最早 500 条，before=最早序号 永远翻 0 条
+    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500&order=latest`, { credentials: 'same-origin' });
     const data = await res.json();
     const turnIds = new Set();
     for (const m of data.messages ?? []) { absorbMessage(m); if (m.turn_id) turnIds.add(m.turn_id); }

@@ -215,8 +215,23 @@ export class MessageService {
     return row ? rowToDto(row) : null;
   }
 
-  listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number }): MessageDto[] {
+  listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number; latest?: boolean }): MessageDto[] {
     const limit = Math.min(opts.limit ?? 100, 1000);
+    // R20（复审 2026-10-07）：latest=最新一页（DESC 取满再翻回升序）——
+    // 首屏方向与"加载更早"的 before= 向前游标对齐；此前默认最早 500 条，
+    // before=最早序号永远翻 0 条（>500 条历史不可达）
+    if (opts.latest) {
+      const rows = this.db
+        .prepare(
+          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
+                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+           FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           WHERE m.conversation_id = ?
+           ORDER BY m.sequence DESC LIMIT ?`,
+        )
+        .all(opts.conversationId, limit) as MessageRow[];
+      return rows.reverse().map(rowToDto);
+    }
     // F-J-48（联合审计 2026-10-06）：beforeSequence=反向翻页（历史"加载更早"）——
     // 取 sequence < before 的最新 limit 条后翻回升序，与 after 语义对偶
     if (opts.beforeSequence !== undefined) {
