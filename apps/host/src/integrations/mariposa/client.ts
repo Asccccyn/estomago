@@ -236,6 +236,22 @@ export class MariposaClient {
     return this.transport('bootstrap.get', { profile: 'estomago' });
   }
 
+  /** episode（她批 2026-10-07"做吧"）：scope 内分页读取事件状态。
+   *  蓝图 §6.3：注入/查询取少量状态+证据引用，不给全库未完故事。 */
+  async episodeList(args: { scopeId: string; states?: string[]; limit?: number; cursor?: Record<string, unknown> }): Promise<MariposaCallResult> {
+    return this.transport('episode.list', {
+      scope_id: args.scopeId,
+      ...(args.states ? { states: args.states } : {}),
+      ...(args.limit !== undefined ? { limit: args.limit } : {}),
+      ...(args.cursor ? { cursor: args.cursor } : {}),
+    });
+  }
+
+  /** episode.get：按 ID 读取事件当前状态与证据引用（无正文展开）。 */
+  async episodeGet(episodeId: string): Promise<MariposaCallResult> {
+    return this.transport('episode.get', { episode_id: episodeId });
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string }): Promise<MariposaCallResult> {
