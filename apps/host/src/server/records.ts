@@ -18,6 +18,8 @@ export type RecordSnapshot = {
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
   // F-J-42：hold 绑定状态按事实分列（绑定明细本地未留痕，不冒充已核对/未接通）
   holdEffects: Array<{ state: string; verified: boolean; memoryId: string | null; updatedAt: string; bindingDetail: string | null }>;
+  // F-J-34：用量按 purpose 分列（chat / pre_rotate_review / unknown）
+  usageByPurpose: Array<{ purpose: string; count: number; knownCostUsd: number | null; unknownCount: number }>;
 };
 
 export function buildRecordSnapshot(d: {
@@ -85,6 +87,18 @@ export function buildRecordSnapshot(d: {
   const costRow = win
     ? (d.db.prepare("SELECT cost_usd FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id WHERE (u.window_id = ? OR a.window_id = ?) AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id, win.id) as { cost_usd: number } | undefined)
     : undefined; // F31：窗口直取（手动评审费用可见）
+  // F-J-34（联合审计 2026-10-06）：用量按 purpose 分列——chat/pre_rotate_review
+  // 不混列；日累计按上海自然日聚合（§9.3 四分列）。unknown 不补零。
+  const purposeCost = d.db.prepare(`
+    SELECT COALESCE(pr.purpose, 'unknown') AS purpose,
+           COUNT(*) AS n,
+           SUM(CASE WHEN u.cost_usd IS NOT NULL THEN u.cost_usd ELSE 0 END) AS known_cost,
+           SUM(CASE WHEN u.cost_usd IS NULL THEN 1 ELSE 0 END) AS unknown_n
+    FROM usage_observations u
+    LEFT JOIN provider_requests pr ON pr.id = u.request_id
+    WHERE u.observed_at >= ?
+    GROUP BY COALESCE(pr.purpose, 'unknown')
+  `).all(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
   return {
     roomId: conversationId,
     cursor: lastEventSequence !== null ? String(lastEventSequence) : null,
@@ -117,6 +131,11 @@ export function buildRecordSnapshot(d: {
     // 如实标注本地未留痕（需到 Mariposa 侧按 operation_id 核对），不沿用旧
     // "绑定未接通"占位（联调已证 msb_ 绑定真实存在）；rawSync 是原文归档同步，
     // 不是桶的绑定状态，两者不混。
+    usageByPurpose: purposeCost.map((r) => ({
+      purpose: r.purpose, count: r.n,
+      knownCostUsd: r.known_cost ?? null,
+      unknownCount: r.unknown_n,
+    })),
     holdEffects: (() => {
       const rows = d.db.prepare(
         "SELECT state, verified, memory_id, updated_at FROM tool_side_effects WHERE kind = 'hold' ORDER BY updated_at DESC LIMIT 5",
