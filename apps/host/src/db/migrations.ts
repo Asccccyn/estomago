@@ -573,6 +573,23 @@ ALTER TABLE rotation_reviews ADD COLUMN basis_json TEXT;
 DROP TABLE IF EXISTS events;
 `,
   },
+  {
+    version: 16,
+    name: 'daily-digest-yesterday',
+    // 昨天日结（她裁定 2026-10-07）：昨天（上海自然日）未归档闲聊的话题
+    // 索引——DS 写、与换窗 hold 提醒共用一个开关（config.reminders）
+    sql: `
+CREATE TABLE IF NOT EXISTS daily_digests(
+  day TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('ready','empty','failed')),
+  summary TEXT,
+  model TEXT,
+  message_count INTEGER,
+  last_error TEXT,
+  generated_at TEXT NOT NULL
+);
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
