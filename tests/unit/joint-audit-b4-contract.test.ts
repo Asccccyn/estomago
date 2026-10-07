@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../../apps/host/src/runtime/host-tools.ts';
 
-const MARIPOSA_REPO = process.env.MARIPOSA_REPO ?? '/Users/char/Projects/mariposa';
+const MARIPOSA_REPO = process.env.MARIPOSA_REPO ?? '/Users/user/Projects/mariposa';
 const schemasPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/input_schemas.py');
 const registryPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/registry.py');
 const ourWordsPath = path.join(MARIPOSA_REPO, 'backend/mariposa/memory/our_words.py');
@@ -82,7 +82,7 @@ test('D2：bootstrap profile 枚举含 estomago（两端口径）', async () => 
 test('F-J-13：estómago 调用的全部 mariposa 能力名在服务端注册', { skip: !repoAvailable && 'mariposa 仓不存在（独立环境跳过）' }, () => {
   const registry = fs.readFileSync(registryPath, 'utf8');
   const called = ['source.ingest', 'source.ingest.status', 'memory.hold', 'memory.hold.status', 'memory.mood.vocab',
-    'bootstrap.get', 'bootstrap.next', 'memory.recall.start', 'memory.recall.refine', 'memory.recall.status', 'memory.recall.accept', 'memory.recall.reject'];
+    'bootstrap.get', 'bootstrap.next', 'memory.recall.start', 'memory.recall.refine', 'memory.recall.status', 'memory.recall.accept', 'memory.recall.reject', 'episode.apply', 'episode.get', 'episode.list'];
   for (const cap of called) {
     assert.ok(registry.includes(`add("${cap}"`) || registry.includes(`"${cap}"`), `mariposa registry 缺能力：${cap}`);
   }
