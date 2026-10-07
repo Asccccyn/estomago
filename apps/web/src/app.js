@@ -324,6 +324,10 @@ function renderUsage(turnId, payload) {
     : '用量：未知（SDK 未提供）';
 }
 
+// F-J-52（联合审计 2026-10-06）：HTML 转义 helper——面板拼装统一走此函数，
+// 动态自由文本（标题/型号/原因等）不得以原始形态进 innerHTML
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
 // —— SSE（AUD-09：lastAppliedSequence 纪律；重连靠 Last-Event-ID）——
 function connectSse() {
   const es = new EventSource(`/api/v1/events?cursor=${state.lastSequence}&conversation_id=${CONVERSATION}`);
@@ -438,7 +442,7 @@ async function loadOlderEvents() {
     const rows = (older.events ?? []).filter((e) => !seenEventIds.has(e.eventId)).map((e) => {
       seenEventIds.add(e.eventId);
       const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
-      return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}</div>`;
+      return `<div class="rec-event">${fmtTime(e.occurredAt)}　${esc(label)}</div>`;
     }).join('');
     if (eventsSection && rows) eventsSection.insertAdjacentHTML('afterbegin', rows);
     if (older.prevCursor) body.dataset.prevCursor = older.prevCursor; else delete body.dataset.prevCursor;
@@ -489,11 +493,11 @@ async function loadRecords() {
           : e.kind === 'review.sent' ? `：关注 ${p.focus_count ?? '?'} 条`
           : e.kind === 'window.rotated' ? `：${p.reason === 'idle' ? '长时间静默' : p.reason === 'manual' ? '手动' : p.reason === 'manual-stale-context' ? '手动（身份/上下文已变化）' : p.reason === 'capacity' ? '容量' : String(p.reason)}${p.review_id ? '（检查通过）' : ''}`
           : '';
-        return `<div class="rec-event">${fmtTime(e.occurredAt)}　${label}${detail}</div>`;
+        return `<div class="rec-event">${fmtTime(e.occurredAt)}　${esc(label)}${esc(detail)}</div>`;
       }).join('');
     body.dataset.prevCursor = ev.prevCursor ?? '';
     const olderBtn = ev.prevCursor ? `<button id="records-older" class="ghost" style="margin-top:6px">加载更早</button>` : '';
-    rows.push(`<div class="rec-section"><h4>最近事件</h4>${evRows || '<div class="muted">暂无</div>'}${olderBtn}</div>`);
+    rows.push(`<div class="rec-section"><h4>最近事件</h4>${esc(evRows || '<div class="muted">暂无</div>')}${esc(olderBtn)}</div>`);
     body.innerHTML = rows.join('');
   } catch (err) {
     body.innerHTML = '<p class="error">记录加载失败（可重试；不影响聊天）</p>';
