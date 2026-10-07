@@ -98,6 +98,9 @@ export function buildHostTools(): HostToolSpec[] {
         type: 'object',
         properties: {
           query: { type: 'string', minLength: 1, maxLength: 2000, description: '要找什么（自然语言，如"上次我们聊中秋看月亮的内容"）' },
+          lexical_terms: { type: 'array', items: { type: 'string', minLength: 1 }, description: '可选：关键词（如["中秋","月亮"]）——需要精确命中时补充；不给则走语义通道' },
+          refine_session_id: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的 recall_session_id（同一召回会话内收窄/换角度）' },
+          refine_continue_ref: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的续查引用（与 refine_session_id 成对）' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -474,14 +477,27 @@ export class HostToolExecutor {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? '');
     const requestRef = `es-recall-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
-    let r: Awaited<ReturnType<MariposaClient['recallStart']>>;
+    // R02（复审 2026-10-07）：续查=refine 回原 session（不是另起 start 冒充
+    // 会话延续）；同 tool_call 重试同 request_ref（新调用=新逻辑身份）
+    const refineSession = typeof args.refine_session_id === 'string' ? args.refine_session_id : '';
+    const refineRef = typeof args.refine_continue_ref === 'string' ? args.refine_continue_ref : '';
+    if ((refineSession || refineRef) && !(refineSession && refineRef)) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '续查须同时带 refine_session_id 与 refine_continue_ref' } };
+    }
+    const lexical = Array.isArray(args.lexical_terms) ? (args.lexical_terms as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
+    let r: Awaited<ReturnType<MariposaClient['recallStart']>> | Awaited<ReturnType<MariposaClient['recallRefine']>>;
     try {
-      r = await this.mariposa.recallStart({
-        requestRef, query: String(args.query ?? ''),
-        conversationScope: ctx.roomId,
-      });
+      if (refineSession && refineRef) {
+        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? '') });
+      } else {
+        r = await this.mariposa.recallStart({
+          requestRef, query: String(args.query ?? ''),
+          conversationScope: ctx.roomId,
+          ...(lexical && lexical.length > 0 ? { lexicalTerms: lexical } : {}),
+        });
+      }
     } catch {
-      return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: requestRef } };
+      return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: refineRef || requestRef } };
     }
     if (!r.ok) {
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
@@ -509,7 +525,9 @@ export class HostToolExecutor {
     };
     const cont = data.continuation as Record<string, unknown> | undefined;
     if (cont && typeof cont.continue_request_ref === 'string') {
-      out.continuation_note = `续查引用（如需在同会话继续可再调用 memory_recall，本次为会话延续）: ${cont.continue_request_ref}`;
+      // R02：如实描述——续查须带 refine_session_id+refine_continue_ref
+      // 回到本会话；不带则是一次全新召回（不是会话延续）
+      out.continuation_note = `续查（同一召回会话内收窄/换角度）：再次调用 memory_recall 时带 refine_session_id=${String(data.recall_session_id)} 与 refine_continue_ref=${cont.continue_request_ref}；不带这两个参数=全新会话`;
     }
     if (Array.isArray(data.missing) && data.missing.length > 0) {
       out.missing = data.missing;
