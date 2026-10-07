@@ -61,6 +61,7 @@ export type SupervisorDeps = {
   checkpoint?: HoldCheckpointService;
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
+  digest?: { yesterdaySection(signal?: AbortSignal): Promise<string | null>; ensureYesterday(signal?: AbortSignal): Promise<{ day: string; summary: string } | null> }; // 昨天日结（她裁定 2026-10-07；未注入则无日结段）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -472,6 +473,14 @@ export class TurnSupervisor {
           seg.push(`[I 当前的话超窗未全载（全文共 ${String(iSeg.total_chars ?? '?')} 字，续读走 bootstrap.next）——已载入部分如上]`);
         }
       }
+      // 昨天日结（她裁定 2026-10-07）：昨天（上海自然日）未归档闲聊的话题
+      // 索引——DS 写、与换窗提醒共用一个开关；空/失败/关闭=不注入不伪造
+      try {
+        const digest = await d.digest?.yesterdaySection(signal);
+        if (digest) seg.push(digest);
+      } catch {
+        d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'digest', code: 'unavailable', note: '昨天日结不可用——不带该段，不伪造' } });
+      }
       t = seg.length > 1 ? seg.join('\n') : '';
       this.bootstrapByWindow.set(windowId, t);
       return t || null;
@@ -674,6 +683,16 @@ export class TurnSupervisor {
     const unresolvedBefore = d.reviews.unresolvedForWindow(o.window.id);
     if (unresolvedBefore.length > 0) {
       return { rotated: false, blocked: `WRITES_UNRESOLVED:${unresolvedBefore.length}（存在结果未知的写操作，换窗前须核实）` };
+    }
+
+    // 她裁定 2026-10-07 的总开关：关=换窗不发 hold 提醒（也不做昨天日结）。
+    // 记录 skipped 凭证如实定位（不伪造 reviewed/held 覆盖），直接换窗。
+    if (d.config.reminders && !d.config.reminders.enabled) {
+      d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, [], {
+        reason: 'reminders_disabled',
+        note: '她裁定开关：关=不发评审提醒、不做昨天日结',
+      });
+      return this.doRotate(o, reason, null);
     }
 
     // —— §3.2 评审范围：书签之后、扣除已完成同范围凭证的真实原话 ——
