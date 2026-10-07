@@ -252,6 +252,13 @@ export class MariposaClient {
     return this.transport('episode.get', { episode_id: episodeId });
   }
 
+  /** episode.apply（R05 复审 2026-10-07）：五动作 start/continue/pause/
+   *  close/correct。operation_id/scope_id 由宿主派生注入（模型不能自编）。
+   *  args 已是宿主侧校验后的出站形状（snake_case）。 */
+  async episodeApply(args: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('episode.apply', args);
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string }): Promise<MariposaCallResult> {
