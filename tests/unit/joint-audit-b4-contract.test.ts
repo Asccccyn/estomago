@@ -82,7 +82,7 @@ test('D2：bootstrap profile 枚举含 estomago（两端口径）', async () => 
 test('F-J-13：estómago 调用的全部 mariposa 能力名在服务端注册', { skip: !repoAvailable && 'mariposa 仓不存在（独立环境跳过）' }, () => {
   const registry = fs.readFileSync(registryPath, 'utf8');
   const called = ['source.ingest', 'source.ingest.status', 'memory.hold', 'memory.hold.status', 'memory.mood.vocab',
-    'bootstrap.get', 'bootstrap.next', 'memory.recall.start', 'memory.recall.refine', 'memory.recall.status', 'memory.recall.accept', 'memory.recall.reject'];
+    'bootstrap.get', 'bootstrap.next', 'memory.recall.start', 'memory.recall.refine', 'memory.recall.status', 'memory.recall.accept', 'memory.recall.reject', 'episode.apply', 'episode.get', 'episode.list'];
   for (const cap of called) {
     assert.ok(registry.includes(`add("${cap}"`) || registry.includes(`"${cap}"`), `mariposa registry 缺能力：${cap}`);
   }
