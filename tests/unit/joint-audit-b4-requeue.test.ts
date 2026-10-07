@@ -56,7 +56,7 @@ test('F-J-11：dry-run 只列不改；apply 升序重排 failed/dead，unknown �
   assert.ok(states().every((r) => r.state === 'failed' || r.state === 'unknown_outcome'), 'dry-run 未改动');
   // apply
   const out = run(['--apply', '--conversation', 'c1'], root);
-  assert.ok(out.includes('已重排 2 行'), `重排 2 行（跳过 attempt=10）实际输出：${out.slice(-400)}`);
+  assert.ok(out.includes('已重排散行 2 行'), `散行重排 2（跳过 attempt=10）实际输出：${out.slice(-400)}`);
   const after = new Map(states().map((r) => [r.id, r.state]));
   assert.equal(after.get(ids.obx1), 'pending', '最早的 failed 重排');
   assert.equal(after.get(ids.obx3), 'pending', '第三条重排');
