@@ -194,8 +194,10 @@ test('F-J-40：skipped_empty 凭证携带定位依据（basis_json）', async ()
   assert.ok(basis, 'basis_json 已落（迁移 v14）');
   assert.equal(basis!.reason, 'idle');
   assert.equal(basis!.bookmark_seen_sequence, 3, '依据含书签高水位');
-  assert.equal(basis!.manifest_high_water, 2, '依据含清单高水位（失败回合不入清单）');
-  assert.equal(basis!.manifest_entries, 2);
+  // R12（复审 2026-10-07）单一正本：失败回合的**已发输入**有真实派发证据，
+  // 计入实际评审输入清单（追赶投影）——高水位含它，引用核对不再 QUOTE_MATCH_FAILED
+  assert.equal(basis!.manifest_high_water, 3, '依据含清单高水位（失败回合已发输入入清单）');
+  assert.equal(basis!.manifest_entries, 3);
   ctx.db.close();
 });
 

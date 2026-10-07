@@ -10,7 +10,7 @@ export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
   | { ok: false; code: string; httpStatus: number };
 
-export type MariposaTransport = (capability: string, payload: Record<string, unknown>) => Promise<MariposaCallResult>;
+export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal) => Promise<MariposaCallResult>;
 
 // F-J-14（联合审计 2026-10-06）：移除手工维护的错误码清单（MARIPOSA_ERROR_CODES/
 // isKnownErrorCode）——该副本含 3 个 mariposa 不存在的码（EPISODE_ALREADY_CLOSED/
@@ -101,16 +101,19 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
   //  /api/capability/X（无 v1 前缀）、请求 {arguments:{...}} 信封、成功响应
   //  {ok,data} 取 data、错误读 error.code。离线 fake transport 不经过此处；
   //  端到端仍待真实凭据与联调授权。
-  return async (capability, payload) => {
+  return async (capability, payload, signal) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (credentialEnv) {
       const v = process.env[credentialEnv];
       if (typeof v === 'string' && v.length > 0) headers.authorization = `Bearer ${v}`;
     }
+    // R10（复审 2026-10-07）：取消信号传递到 socket——准备阶段可取消，
+    // bootstrap 有受控截止时间
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/capability/${capability}`, {
       method: 'POST',
       headers,
       body: JSON.stringify({ arguments: payload }),
+      ...(signal ? { signal } : {}),
     });
     if (res.status >= 200 && res.status < 300) {
       const body = (await res.json().catch(() => ({}))) as {
@@ -232,8 +235,8 @@ export class MariposaClient {
   /** D2（2026-10-06）：开窗资料（estomago profile——服务端默认不带心情
    *  自由文字，字段矩阵见 mariposa _memory_slim；分页 bootstrap.next 按
    *  snapshot 游标续取，宿主当前只消费首页摘要）。 */
-  async bootstrapGet(): Promise<MariposaCallResult> {
-    return this.transport('bootstrap.get', { profile: 'estomago' });
+  async bootstrapGet(signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('bootstrap.get', { profile: 'estomago' }, signal);
   }
 
   /** episode（她批 2026-10-07"做吧"）：scope 内分页读取事件状态。
@@ -259,11 +262,33 @@ export class MariposaClient {
     return this.transport('episode.apply', args);
   }
 
+  /** R02（复审 2026-10-07）：同会话续查（refine）——回到原 session 收窄/
+   *  换角度，不是另起 start。request_ref 用服务端给的 continue 引用。 */
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string }): Promise<MariposaCallResult> {
+    return this.transport('memory.recall.refine', {
+      session_id: args.sessionId,
+      query_plan: {
+        original_request: args.query,
+        semantic_query: args.query,
+        channels: ['event'],
+        request_ref: args.continueRef,
+      },
+    });
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[] }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.start', {
-      query_plan: { original_request: args.query, channels: ['event'] },
+      query_plan: {
+        original_request: args.query,
+        // R02（复审 2026-10-07）：自然语言问题显式进语义通道——服务端
+        // 只认显式 semantic_query 不回填；此前词项为空时整句被当 exact
+        // phrase 匹配，自然语言问题必然 0 命中
+        semantic_query: args.query,
+        channels: ['event'],
+        ...(args.lexicalTerms && args.lexicalTerms.length > 0 ? { lexical_terms: args.lexicalTerms } : {}),
+      },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
       request_ref: args.requestRef,
     });
