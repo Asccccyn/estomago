@@ -623,7 +623,10 @@ export class TurnSupervisor {
        WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
     ).get(o.window.id) as { input_tokens: number } | undefined)?.input_tokens ?? null;
     const workingSet = Math.max(oldWindowEstimate, lastActual ?? 0);
-    const nextWithIncoming = Math.max(workingSet, incomingEstimate);
+    // R21（复审 2026-10-07）：下一输入=旧工作集+本轮新增输入（system 只计
+    // 一次）——此前 Math.max(workingSet, incomingEstimate) 漏加本轮输入，
+    // 临界消息在旧窗超软线却不触发提醒/换窗（既有问题，硬门不受影响）
+    const nextWithIncoming = workingSet + Math.ceil(currentInputLen / dv.charsPerToken);
 
     // §4.1：6h 比较=本条入站消息之前的 last_real_user_at（不先更新再相减）；occurred_at 在修订行上
     const lastUser = (d.db.prepare(

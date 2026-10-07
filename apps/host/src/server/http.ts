@@ -113,7 +113,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const limit = Number(url.searchParams.get('limit') ?? '100') || 100;
       const beforeRaw = url.searchParams.get('before');
       const before = beforeRaw !== null ? Number(beforeRaw) || 0 : undefined;
-      return json(res, 200, { messages: d.messages.listMessages({ conversationId, afterSequence: after, beforeSequence: before, limit }) });
+      const latest = new URL(req.url ?? '/', 'http://local').searchParams.get('order') === 'latest';
+      return json(res, 200, { messages: d.messages.listMessages({ conversationId, afterSequence: after, beforeSequence: before, limit, latest }) });
     }
 
     // F-J-08（联合审计 2026-10-06）：用户消息编辑修订——服务端能力（editUserMessage：
@@ -128,6 +129,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!existing || existing.conversation_id !== conversationId) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
       try {
         const message = d.messages.editUserMessage(messageId, body.content);
+        // R16（复审 2026-10-07）：编辑有自己的接线——发布修订事件（SSE 可见，
+        // 客户端按 ID/修订吸收）并触发现有归档（编辑已在同事务写 outbox；
+        // 归档失败不撤销本地编辑，drain 自带重试/死信路径）
+        d.events.publish('message.edited', { conversationId, entityRef: messageId, entityRevision: message.current_revision, scope: 'private', payload: { message } });
+        d.archiveSync?.drainOnce().catch(() => { /* 归档失败走 drain 重试/死信；编辑不回滚 */ });
         return json(res, 200, { message, revision_of: messageId });
       } catch (err) {
         const msg = String((err as Error).message ?? '');
