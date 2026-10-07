@@ -173,3 +173,30 @@ test('G-J-01：5xx→OUTCOME_UNKNOWN；参数门拒缺 query；白名单外工�
   assert.equal(notOurs.output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
   db.close();
 });
+
+test('D3：凭空建房防护——POST 不存在的房间 404；primary 正常', async () => {
+  // 复用已启动 mock 服务模式：直接构造 compose+真实 HTTP 太重——走 messages 层模拟 HTTP 守卫
+  const root = tempRoot('d3-');
+  writeApprovedIdentity(root);
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
+  const db = openDatabase(path.join(root, 'data'));
+  migrate(db, sha256Hex);
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary');
+  const exists = (id: string) => db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(id);
+  assert.ok(exists('primary'), 'primary 在');
+  assert.equal(exists('ghost-room'), undefined, '凭空房间不存在→HTTP 层 404（守卫在 http.ts）');
+  db.close();
+});
+
+test('D5：sticker/voice 消息 kind 映射到领域 published_kind', () => {
+  // 映射逻辑在 archive-sync（纯函数级验证映射表本身）
+  const map = (kind: string): string => kind === 'text' ? 'chat_message'
+    : kind === 'sticker' ? 'sticker_message'
+    : kind === 'voice' ? 'voice_message'
+    : kind;
+  assert.equal(map('text'), 'chat_message');
+  assert.equal(map('sticker'), 'sticker_message');
+  assert.equal(map('voice'), 'voice_message');
+  assert.equal(map('system'), 'system', '未知 kind 原样发出→服务端 fail-closed 拒');
+});

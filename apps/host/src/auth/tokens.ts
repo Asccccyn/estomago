@@ -37,7 +37,8 @@ export class AuthService {
     return diff === 0;
   }
 
-  // 从请求解析凭证：Authorization: Bearer / 会话 cookie / ?token=（EventSource 场景）
+  // 从请求解析凭证：Authorization: Bearer / 会话 cookie（F-J-45 她 2026-10-06 批准关 URL token——
+// 凭据不进 URL（shell history/中间层日志泄漏面）；EventSource 走同源 cookie）
   extract(req: { headers: Record<string, string | string[] | undefined>; url?: string }): string | null {
     const auth = req.headers['authorization'];
     if (typeof auth === 'string' && auth.startsWith('Bearer ')) return auth.slice('Bearer '.length);
@@ -49,13 +50,6 @@ export class AuthService {
       }
     }
     if (req.url) {
-      try {
-        const u = new URL(req.url, 'http://localhost');
-        const t = u.searchParams.get('token');
-        if (t) return t;
-      } catch {
-        /* 非 URL 形状，忽略 */
-      }
     }
     return null;
   }

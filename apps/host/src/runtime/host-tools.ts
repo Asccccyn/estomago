@@ -28,6 +28,8 @@ export const HOLD_TITLE_MAX = 30;
 // mariposa 明文规定调用方动态拉取、不各自硬编码；此前硬编码 7 类已与 mariposa
 // 文案漂移演示过风险）。本地快照仅作 mariposa 不可达时的回退；联网时
 // refreshMoodCategories() 同步，工具 schema 枚举与形状校验随当前值走。
+// F-J-37：动态拉取 memory.mood.vocab 为正本；此数组仅为 Mariposa 不可达时的
+// 版本化回退快照（60s 节流刷新，域校验以服务端为准）——不是第二权威词表
 let moodCategories: string[] = ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'];
 let moodVocabVersion: string | null = null;
 let hostToolsCache: HostToolSpec[] | null = null;
