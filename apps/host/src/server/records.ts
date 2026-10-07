@@ -19,6 +19,7 @@ export type RecordSnapshot = {
   // F-J-42：hold 绑定状态按事实分列（绑定明细本地未留痕，不冒充已核对/未接通）
   holdEffects: Array<{ state: string; verified: boolean; memoryId: string | null; updatedAt: string; bindingDetail: string | null }>;
   // F-J-34：用量按 purpose 分列（chat / pre_rotate_review / unknown）
+  usageDay: string; // 上海自然日（R18：日累计口径，非滚动 24h）
   usageByPurpose: Array<{ purpose: string; count: number; knownCostUsd: number | null; unknownCount: number }>;
 };
 
@@ -87,8 +88,15 @@ export function buildRecordSnapshot(d: {
   const costRow = win
     ? (d.db.prepare("SELECT cost_usd FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id WHERE (u.window_id = ? OR a.window_id = ?) AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id, win.id) as { cost_usd: number } | undefined)
     : undefined; // F31：窗口直取（手动评审费用可见）
-  // F-J-34（联合审计 2026-10-06）：用量按 purpose 分列——chat/pre_rotate_review
-  // 不混列；日累计按上海自然日聚合（§9.3 四分列）。unknown 不补零。
+  // F-J-34（联合审计 2026-10-06）+R18（复审 2026-10-07）：用量按 purpose
+  // 分列；日累计按**上海自然日**聚合（此前 SQL 参数是滚动 24 小时——
+  // 上海中午会把昨日午后费用算进今天）。unknown 不补零、不以零冒充总成本。
+  const SHANGHAI_OFFSET_MS = 8 * 60 * 60 * 1000;
+  const shanghaiNow = new Date(Date.now() + SHANGHAI_OFFSET_MS);
+  const usageDay = shanghaiNow.toISOString().slice(0, 10);
+  const usageDayStartUtcIso = new Date(
+    Date.UTC(shanghaiNow.getUTCFullYear(), shanghaiNow.getUTCMonth(), shanghaiNow.getUTCDate()) - SHANGHAI_OFFSET_MS
+  ).toISOString();
   const purposeCost = d.db.prepare(`
     SELECT COALESCE(pr.purpose, 'unknown') AS purpose,
            COUNT(*) AS n,
@@ -98,7 +106,7 @@ export function buildRecordSnapshot(d: {
     LEFT JOIN provider_requests pr ON pr.id = u.request_id
     WHERE u.observed_at >= ?
     GROUP BY COALESCE(pr.purpose, 'unknown')
-  `).all(new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
+  `).all(usageDayStartUtcIso) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
   return {
     roomId: conversationId,
     cursor: lastEventSequence !== null ? String(lastEventSequence) : null,
@@ -131,6 +139,7 @@ export function buildRecordSnapshot(d: {
     // 如实标注本地未留痕（需到 Mariposa 侧按 operation_id 核对），不沿用旧
     // "绑定未接通"占位（联调已证 msb_ 绑定真实存在）；rawSync 是原文归档同步，
     // 不是桶的绑定状态，两者不混。
+    usageDay,
     usageByPurpose: purposeCost.map((r) => ({
       purpose: r.purpose, count: r.n,
       knownCostUsd: r.known_cost ?? null,
