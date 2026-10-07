@@ -564,6 +564,15 @@ ALTER TABLE usage_observations ADD COLUMN window_id TEXT;
 ALTER TABLE rotation_reviews ADD COLUMN basis_json TEXT;
 `,
   },
+  {
+    version: 15,
+    name: 'joint-audit-d7-retire-envelope-events',
+    // D7：旧 events/recordEnvelope 死链退役（零调用零读者；活跃事件流是
+    // runtime_stream_events，不受影响）。纯死表 DROP，无数据保留需求。
+    sql: `
+DROP TABLE IF EXISTS events;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

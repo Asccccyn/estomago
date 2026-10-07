@@ -238,7 +238,12 @@ export class ArchiveSyncService {
         sender: msg.speaker === 'owner' ? 'user' : 'assistant',
         // D12（审计 3655d60）：宿主内部 kind（text/sticker/voice/system）与领域 published_kind 分开映射——
         // mariposa 现行契约（aa624c9）只收 chat_message；未映射的 kind 原样发出由服务端如实拒绝（不静默转写）
-        published_kind: rev.kind === 'text' ? 'chat_message' : rev.kind,
+        // D5（她批 2026-10-06 扩展归档合同）：宿主 kind→领域 published_kind
+      // 映射；未知 kind 原样发出由服务端如实拒绝（fail-closed 不变）
+      published_kind: rev.kind === 'text' ? 'chat_message'
+        : rev.kind === 'sticker' ? 'sticker_message'
+        : rev.kind === 'voice' ? 'voice_message'
+        : rev.kind,
         occurred_at: rev.occurred_at,
         received_at: rev.received_at,
         published_at: msg.published_at,

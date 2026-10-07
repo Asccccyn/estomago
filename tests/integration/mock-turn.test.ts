@@ -184,7 +184,11 @@ test('health：ready 公共面脱敏摘要（F-J-49：分项明细走已认证 d
 
 test('SSE：token query 认证 + 持久 sequence 帧 + Last-Event-ID 优先语义（AUD-09 新契约）', async () => {
   const controller = new AbortController();
-  const res = await fetch(`${base}/api/v1/events?cursor=0&token=${encodeURIComponent(token)}`, { signal: controller.signal });
+  // F-J-45：URL token 通道已关——EventSource 场景走同源会话 cookie
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
+  assert.equal(login.status, 200, '登录换会话 cookie');
+  const cookie = login.headers.get('set-cookie')!.split(';')[0];
+  const res = await fetch(`${base}/api/v1/events?cursor=0`, { signal: controller.signal, headers: { cookie } });
   assert.equal(res.status, 200);
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();

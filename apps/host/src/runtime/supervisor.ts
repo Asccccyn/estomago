@@ -584,7 +584,8 @@ export class TurnSupervisor {
     const sentChars = trajForEstimate
       ? trajForEstimate.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0)
       : dialogue.reduce((s, m) => s + m.content.length, 0);
-    const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
+    // F-J-33：估算含 I——无轨迹回退路径此前漏计 iText（轨迹路径略保守高估，方向安全不动）
+    const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
     const oldWindowEstimate = Math.ceil((sentChars + systemChars) / dv.charsPerToken); // 旧窗自身工作集
     const incomingEstimate = Math.ceil((currentInputLen + systemChars) / dv.charsPerToken); // 新消息独立估计（新窗视角下界）
     const lastActual = (d.db.prepare(
@@ -704,7 +705,11 @@ export class TurnSupervisor {
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : fallbackBase;
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
-    const { boundaries: reviewBoundaries } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
+    const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
+    // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
+    if (reviewGDropped) {
+      d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
+    }
     const envelope: OrRequestEnvelope = {
       model: dv.model,
       sessionId: dv.sessionId(o.conversationId),
@@ -1015,7 +1020,10 @@ export class TurnSupervisor {
       : orBaseMessages;
     const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
-          const { boundaries } = planBoundaries({ messages: orMessages, systemMessageCount: 1, prevBoundary: orTraj?.lastBoundary ?? null });
+          const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: 1, prevBoundary: orTraj?.lastBoundary ?? null });
+          if (gDropped) {
+            d.events.publish('context.warning', { conversationId: turn.conversation_id, entityRef: window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
+          }
           return {
             model: dv.model,
             sessionId: dv.sessionId(turn.conversation_id),
