@@ -274,7 +274,7 @@ export const CONFIG_DEFAULTS: Config = {
   identity: {
     approved_identity_ref: null,
     approved_identity_hash: null,
-    i_source: 'mariposa',
+    i_source: 'mariposa', // F-J-56 如实：I 正文当前读本地批准 manifest；Mariposa bootstrap（B 点/开窗资料）已接通，I 的远端读取属 D2 后续
     allow_unverified_fallback: false,
     require_bootstrap_receipt: true,
     receipt_requires_evidence: true,

@@ -146,7 +146,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const clientMessageId = body.client_message_id ?? idempotencyKey;
       if (!clientMessageId) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 client_message_id / Idempotency-Key' } });
       if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串（多行正文整体提交，不拆分）' } });
-      d.messages.ensureConversation(conversationId);
+      // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（房间必须
+      // 已存在；归档 grant 也按 primary 钉死，第二房间同步本就会拒）
+      const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
+      if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
       let submitted;
       try {
         submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null });

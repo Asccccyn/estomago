@@ -77,6 +77,8 @@ test('重启（同 state root 重组 Host）后从 DB 恢复 session 继续沿�
 
 test('跨会话隔离：不同 conversation 不共用 session', async () => {
   const primarySession = await dbSession();
+  // D3（2026-10-06）：HTTP 凭空建房已关——跨房隔离验证改为直接建房间行
+  host.db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('room-b','estomago','private',?)").run(new Date().toISOString());
   const t = await submit('room-b', 'b1');
   await waitDone(t);
   const bRow = host.db.prepare("SELECT sdk_session_id FROM windows WHERE status='ACTIVE' AND conversation_id='room-b'").get() as { sdk_session_id: string | null };

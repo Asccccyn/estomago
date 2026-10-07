@@ -61,14 +61,17 @@ async function bootSeeded(count: number, port: number) {
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port });
   await host.start();
   const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
-  return { host, port: host.port, token, count, root };
+// F-J-45：URL token 通道已关——SSE 走同源会话 cookie
+const __login = await fetch(`http://127.0.0.1:${host.port}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
+const __cookie = (__login.headers.get('set-cookie') || '').split(';')[0]!;
+  return { host, port: host.port, token, cookie: __cookie, count, root };
 }
 
-async function readIds(port: number, token: string, opts: { cursor?: number; lastEventId?: number; collectMs?: number } = {}) {
+async function readIds(port: number, token: string, opts: { cursor?: number; lastEventId?: number; collectMs?: number } = {}, cookie = '') {
   const { cursor = 0, lastEventId, collectMs = 3000 } = opts;
   const ctrl = new AbortController();
-  const res = await fetch(`http://127.0.0.1:${port}/api/v1/events?cursor=${cursor}&token=${encodeURIComponent(token)}`, {
-    headers: lastEventId ? { 'Last-Event-ID': String(lastEventId) } : {}, signal: ctrl.signal,
+  const res = await fetch(`http://127.0.0.1:${port}/api/v1/events?cursor=${cursor}`, {
+    headers: { cookie, ...(lastEventId ? { 'Last-Event-ID': String(lastEventId) } : {}) }, signal: ctrl.signal,
   });
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
@@ -95,17 +98,17 @@ async function readIds(port: number, token: string, opts: { cursor?: number; las
 }
 
 test('AUD-08：1005 条全量回放（分页追平，不丢尾）', async () => {
-  const { host, port, token, count } = await bootSeeded(1005, 0);
-  const ids = await readIds(port, token, { cursor: 0 });
+  const { host, port, token, cookie, count } = await bootSeeded(1005, 0);
+  const ids = await readIds(port, token, { cursor: 0 }, cookie);
   assert.equal(ids.length, count, `应收到全部 ${count} 条，实际 ${ids.length}`);
   assert.ok(ids.every((v, i) => i === 0 || v > ids[i - 1]), '严格递增');
   await host.stop();
 });
 
 test('AUD-08：3005 条全量回放 + 回放期间 live 事件无空洞', async () => {
-  const { host, port, token, count } = await bootSeeded(3005, 0);
+  const { host, port, token, cookie, count } = await bootSeeded(3005, 0);
   const ctrl = new AbortController();
-  const res = await fetch(`http://127.0.0.1:${port}/api/v1/events?cursor=0&token=${encodeURIComponent(token)}`, { signal: ctrl.signal });
+  const res = await fetch(`http://127.0.0.1:${port}/api/v1/events?cursor=0`, { signal: ctrl.signal, headers: { cookie } });
   const reader = res.body!.getReader();
   const dec = new TextDecoder();
   let buf = '';
@@ -142,8 +145,8 @@ test('AUD-08：3005 条全量回放 + 回放期间 live 事件无空洞', async 
 });
 
 test('AUD-09：Last-Event-ID 优先于 query cursor', async () => {
-  const { host, port, token } = await bootSeeded(50, 0);
-  const ids = await readIds(port, token, { cursor: 0, lastEventId: 40, collectMs: 1500 });
+  const { host, port, token, cookie } = await bootSeeded(50, 0);
+  const ids = await readIds(port, token, { cursor: 0, lastEventId: 40, collectMs: 1500 }, cookie);
   assert.equal(ids[0], 41, '应从 Last-Event-ID+1 开始');
   await host.stop();
 });

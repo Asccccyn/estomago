@@ -54,25 +54,12 @@ export function makeEnvelope(init: {
 
 // SSE 推送的 kind 集合（01 §17）。reasoning.* 是本协议名，不冒称 SDK 原生名称。
 export const SSE_EVENT_KINDS = [
-  'message.persisted',
-  'message.published',
-  'turn.started',
-  'turn.completed',
-  'turn.interrupted',
-  'turn.status',
-  'usage.updated',
-  'window.changed',
-  'route.pending',
-  'route.resolved',
-  'archive.status',
-  'module.degraded',
-  'tool.status',
-  'reasoning.started',
-  'reasoning.delta',
-  'reasoning.snapshot',
-  'reasoning.completed',
-  'reasoning.status_changed',
-] as const;
+  // F-J-50/D7（2026-10-06）：与实际发布集对齐（http.ts/events 全调用点核对）；
+  // 本常量无运行时强制点（kind 自由串），仅作契约对照
+  'message.persisted', 'message.published', 'turn.started', 'turn.status',
+  'reasoning.delta', 'reasoning.block', 'archive.sync', 'context.warning',
+  'review.sent', 'review.failed', 'window.rotated',
+];
 
 export type SseEventKind = (typeof SSE_EVENT_KINDS)[number];
 

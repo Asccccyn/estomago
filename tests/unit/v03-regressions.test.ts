@@ -145,7 +145,7 @@ test('§27 guard 矩阵：模式化凭据名全拒（矩阵样本）', async () 
     const r = guardCheck({ PATH: '/usr/bin', HOME: home, [key]: 'synthetic' });
     assert.ok(!r.ok, `${key} 必须被凭据模式拒绝`);
   }
-  const safe = guardCheck({ PATH: '/usr/bin', HOME: home, ESTOMAGO_TEST_MODE: '1', CI: '1', TZ: 'Asia/Shanghai' });
+  const safe = guardCheck({ PATH: '/usr/bin', HOME: home, ESTOMAGO_HOME: home, ESTOMAGO_TEST_MODE: '1', CI: '1', TZ: 'Asia/Shanghai' });
   assert.ok(safe.ok, `安全 allowlist 不得误报：${safe.issues.join(';')}`);
 });
 

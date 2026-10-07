@@ -4,7 +4,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, newDedupeKey } from '../util/id.ts';
-import { makeEnvelope, type EventEnvelope } from '../../../../packages/contracts/src/envelope.ts';
+import type { EventEnvelope } from '../../../../packages/contracts/src/envelope.ts';
 
 export type StreamEventRow = {
   sequence: number;
@@ -41,27 +41,9 @@ export class EventService {
     this.streamId = genId('stream');
   }
 
-  recordEnvelope(init: { type: string; source: string; dedupeKey?: string; conversationId?: string | null; payload: unknown }): EventEnvelope {
-    const envelope = makeEnvelope({
-      id: genId('evt'),
-      type: init.type,
-      source: init.source,
-      dedupe_key: init.dedupeKey ?? newDedupeKey(),
-      correlation_id: genId('corr'),
-      conversation_id: init.conversationId ?? null,
-      payload: init.payload,
-    });
-    tx(this.db, () => {
-      this.db
-        .prepare(
-          `INSERT INTO events(id, type, conversation_id, source, occurred_at, received_at, dedupe_key, state)
-           VALUES (?,?,?,?,?,?,?, 'queued')
-           ON CONFLICT(source, dedupe_key) DO NOTHING`,
-        )
-        .run(envelope.id, envelope.type, envelope.conversation_id, envelope.source, envelope.occurred_at, envelope.received_at, envelope.dedupe_key);
-    });
-    return envelope;
-  }
+  // D7（她批 2026-10-06"剩下的都做了"）：recordEnvelope+events 表已退役
+  // （全仓零调用、零读者——联合审计 Q1 实证死链）；迁移 v15 DROP 表。
+  
 
   // —— 在调用方已有事务内持久（不自己开 tx；AUD-14 原子性的关键）——
   persistInTx(kind: string, opts: {
