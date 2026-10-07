@@ -90,6 +90,10 @@ export type Config = {
   openrouter: OpenRouterConfig;
   // DS 官方直连段（身份映射隔离：与 OR 各自独立配置/凭据/型号门）
   deepseek: DeepSeekConfig;
+  // 她裁定 2026-10-07：换窗 hold 提醒与昨天日结共用一个开关；日结模型
+  // 暂定 DS（零新增外发面），千问本地接口预留不安装
+  reminders: { enabled: boolean };
+  digest: { provider: 'deepseek' | 'qwen-local'; max_messages: number };
   identity: {
     approved_identity_ref: string | null;
     approved_identity_hash: string | null;
@@ -263,6 +267,8 @@ export const CONFIG_DEFAULTS: Config = {
   },
   // DS 官方直连默认：model=null（未配置即阻断）；key 只经环境变量名引用；
   // 无缓存/路由参数（DS 自动上下文缓存）；中文对话为主 → 粗估系数 1.5（§11.1 估计带精度，usage 校准兜底）。
+  reminders: { enabled: true },
+  digest: { provider: 'deepseek', max_messages: 400 },
   deepseek: {
     base_url: 'https://api.deepseek.com',
     model: null,
@@ -406,6 +412,8 @@ const SHAPE: SectionSpec = { section: {
     reasoning: 'json?',
     estimate_chars_per_token: 'number',
   } },
+  reminders: { section: { enabled: 'boolean' } },
+  digest: { section: { provider: 'string', max_messages: 'number' } },
   deepseek: { section: {
     base_url: 'string', model: 'string?', api_key_env: 'string', max_output_tokens: 'number',
     retry_max_attempts_after_initial: 'number', estimate_chars_per_token: 'number',
