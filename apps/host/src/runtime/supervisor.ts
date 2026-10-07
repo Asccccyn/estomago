@@ -68,6 +68,8 @@ const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；
 // §3.3 有界恢复（2026-10-05 审计 P2-1）：同窗评审失败达上限后不再自动付费评审——
 // 恢复路径=评审成功换新窗（新窗计数重置）或人工处理后手动换窗；防"模型永不调用 complete"时每条消息都付费评审。
 const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
+// R10（复审 2026-10-07）：bootstrap 受控截止时间——准备阶段不无限挂起
+const BOOTSTRAP_DEADLINE_MS = 8000;
 
 /** 信封驱动（OR / DS 直连共用消息轨迹与工具循环管线；SDK/mock 走 prompt 路径） */
 export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' =>
@@ -423,14 +425,14 @@ export class TurnSupervisor {
   // 身份映射隔离：型号/输出上限/粗估系数/session 派生按驱动取值（drv()）；DS 不发 session_id（runner 序列化丢弃）。
   /** D2：本窗开窗资料文本（B 点）——每窗取一次；Mariposa 不可达时返回
    *  null 并发布 context.warning（如实降级，不阻塞消息）。 */
-  private async windowBootstrap(windowId: string): Promise<string | null> {
+  private async windowBootstrap(windowId: string, signal?: AbortSignal): Promise<string | null> {
     let t = this.bootstrapByWindow.get(windowId);
     if (t !== undefined) return t;
     const d = this.d;
     const mc = d.tools?.mariposaClient() ?? null;
     if (!mc) return null; // 未接线：如实无 B
     try {
-      const r = await mc.bootstrapGet();
+      const r = await mc.bootstrapGet(signal);
       if (!r.ok) {
         d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: r.code ?? 'unknown', note: '开窗资料不可用——按无 B 降级，不阻塞消息' } });
         this.bootstrapByWindow.set(windowId, '');
@@ -445,19 +447,30 @@ export class TurnSupervisor {
           seg.push(`- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）${Array.isArray(it.mood_tags) && it.mood_tags.length > 0 ? ' 心情:' + (it.mood_tags as unknown[]).join('/') : ''}`);
         }
       }
-      const plans = ((data.plans as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      // R11（复审 2026-10-07）：移除无状态字符串截断——服务端包本就有界
+      // （每段≤50 条、I≤2000 字+truncated 标记）；宿主只渲染+如实披露
+      // 截断/续页元数据，不再自行砍 200 字符丢 next_cursor
+      const plansSection = data.plans as Record<string, any> | undefined;
+      const plans = (plansSection?.items ?? []) as Array<Record<string, unknown>>;
       if (plans.length > 0) {
         seg.push('未完成计划：');
-        for (const it of plans) seg.push(`- ${JSON.stringify(it).slice(0, 200)}`);
+        for (const it of plans) seg.push(`- ${JSON.stringify(it)}`);
       }
-      const anns = ((data.anniversaries as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
+      if (plansSection && (plansSection.next_cursor || (typeof plansSection.total === 'number' && plansSection.total > plans.length))) {
+        seg.push('[未完：计划段还有更多未载入（本窗未取续页）——需要完整清单时明确说明并走计划查询]');
+      }
+      const annsSection = data.anniversaries as Record<string, any> | undefined;
+      const anns = (annsSection?.items ?? []) as Array<Record<string, unknown>>;
       if (anns.length > 0) {
         seg.push('临近纪念：');
-        for (const it of anns) seg.push(`- ${JSON.stringify(it).slice(0, 200)}`);
+        for (const it of anns) seg.push(`- ${JSON.stringify(it)}`);
       }
-      const iSeg = data.i as { content?: unknown } | undefined;
+      const iSeg = data.i as { content?: unknown; truncated?: boolean; total_chars?: number } | undefined;
       if (iSeg && typeof iSeg.content === 'string' && iSeg.content.length > 0) {
-        seg.push(`I（当前的话）：${iSeg.content.slice(0, 2000)}`);
+        seg.push(`I（当前的话）：${iSeg.content}`);
+        if (iSeg.truncated === true) {
+          seg.push(`[I 当前的话超窗未全载（全文共 ${String(iSeg.total_chars ?? '?')} 字，续读走 bootstrap.next）——已载入部分如上]`);
+        }
       }
       t = seg.length > 1 ? seg.join('\n') : '';
       this.bootstrapByWindow.set(windowId, t);
@@ -494,6 +507,7 @@ export class TurnSupervisor {
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
+    bootText?: string | null;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
     const dv = this.drv()!;
     const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * dv.charsPerToken; // 粗估（§11.1 估计口径，不冒充精确）
@@ -501,6 +515,12 @@ export class TurnSupervisor {
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
+    // R11（复审 2026-10-07）：B（开窗资料）作为独立 system 数据块——显式
+    // A/B 缓存分界（cache-plan 的 B 点分支要求 systemMessageCount>=2），
+    // 不把外部资料并入 A 段升级成高优先级指令
+    if (o.bootText && o.bootText.length > 0) {
+      messages.push({ role: 'system', content: [{ type: 'text', text: o.bootText }] });
+    }
     // F06 + D08（审计 3655d60）：从最新**完整回合组**向前装预算（一组=一条用户消息+其后连续助手回复）——
     // 整组放不下就整组排除（留旧丢新不允许，留答丢问也不允许：不产生缺用户输入的孤立助手回复）。
     // 旧实现按单消息累计，预算临界时会留下回答却截掉问题。
@@ -569,6 +589,16 @@ export class TurnSupervisor {
     // 的消息，签出覆盖信封外内容的 review（违反 §3.2.2"不扩大到全库"）
     const manifest: ManifestEntry[] = trajManifest ?? this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).selected
       .map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+    // R12（复审 2026-10-07）：单一正本——范围、评审正文、seenMessages、
+    // 书签高水位、凭证依据全部由同一份"实际评审输入清单"驱动。追赶投影
+    // 此前只进范围与正文，已见集合仍取旧 manifest——catchup 原话进了评审
+    // 正文却不在已见清单，引用核对必 QUOTE_MATCH_FAILED。
+    const trajEarly = d.trajectory?.forWindow(o.window.id) ?? null;
+    const trajMaxEarly = trajEarly?.manifest && trajEarly.manifest.length > 0 ? Math.max(...trajEarly.manifest.map((m) => m.seq)) : -1;
+    const unifiedCatchup = trajEarly ? this.catchupEntries(o.conversationId, dialogue, trajMaxEarly) : [];
+    const effectiveManifest: ManifestEntry[] = trajRow !== null
+      ? [...(trajManifest ?? []), ...unifiedCatchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }))]
+      : manifest;
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
@@ -649,17 +679,14 @@ export class TurnSupervisor {
     const checkpoint = d.checkpoint.forWindow(o.window.id);
     const priorBookmark = d.db.prepare('SELECT seen_sequence FROM hold_checkpoints WHERE room_id = ? ORDER BY updated_at DESC LIMIT 1').get(o.conversationId) as { seen_sequence: number } | undefined;
     const carriedExempt = priorBookmark && (!checkpoint || checkpoint.epochId !== o.window.id)
-      ? manifest.filter((m) => m.seq <= priorBookmark.seen_sequence).map(rawKey)
+      ? effectiveManifest.filter((m) => m.seq <= priorBookmark.seen_sequence).map(rawKey)
       : [];
     let range;
     try {
-      // F-J-39：范围清单并入追赶投影（有真实派发证据的失败回合消息）——
-      // 与评审信封同源，范围 ⊆ 模型实际可见集合
-      const trajMaxForRange = trajManifest && trajManifest.length > 0 ? Math.max(...trajManifest.map((m) => m.seq)) : -1;
-      const rangeCatchup = trajRow !== null ? this.catchupEntries(o.conversationId, dialogue, trajMaxForRange).map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true })) : [];
-      const manifestWithCatchup = trajRow !== null ? [...(trajManifest ?? []), ...rangeCatchup] : manifest;
+      // F-J-39 + R12：范围=同一份 effectiveManifest（含追赶投影）——
+      // 与评审信封、已见清单同源，范围 ⊆ 模型实际可见集合
       range = selectReviewRange({
-        manifest: manifestWithCatchup,
+        manifest: effectiveManifest,
         epochId: o.window.id,
         lastHold: checkpoint ? { epochId: checkpoint.epochId, seenSequence: checkpoint.seenSequence } : null,
         reviewedKeys: d.reviews.reviewedKeysForRoom(o.conversationId),
@@ -675,12 +702,12 @@ export class TurnSupervisor {
     if (range.length === 0) {
       // F-J-40：空范围凭证携带定位依据（书签/清单高水位/触发原因/凭证计数）——
       // 空键集本身无法复核"为什么空"；不伪造 reviewed/held 全覆盖
-      const manifestMax = manifest.reduce((mx, m) => Math.max(mx, m.seq), -1);
+      const manifestMax = effectiveManifest.reduce((mx, m) => Math.max(mx, m.seq), -1);
       d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, rangeKeys, {
         reason,
         bookmark_seen_sequence: checkpoint ? checkpoint.seenSequence : null,
         manifest_high_water: manifestMax,
-        manifest_entries: manifest.length,
+        manifest_entries: effectiveManifest.length,
         carried_exempt: carriedExempt.length,
       }); // §3.2.5：空范围不叫模型
       return this.doRotate(o, reason, null);
@@ -696,16 +723,16 @@ export class TurnSupervisor {
 
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
-    const traj = d.trajectory?.forWindow(o.window.id);
+    const traj = trajEarly;
     const fallbackBase = this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
-    // F-J-39：轨迹正本 + 追赶投影——失败回合的已发输入/已发布原话有真实派发证据，
-    // 属"截至本次已携带高水位"，纳入评审范围与信封（此前只在下次成功回合才入清单）
-    const trajMaxForCatchup = traj?.manifest && traj.manifest.length > 0 ? Math.max(...traj.manifest.map((m) => m.seq)) : -1;
-    const reviewCatchup = traj ? this.catchupEntries(o.conversationId, dialogue, trajMaxForCatchup) : [];
+    // F-J-39 + R12：评审正文追赶投影=同一份 unifiedCatchup（与范围/已见清单
+    // 同源——失败回合的已发输入/已发布原话有真实派发证据，属"截至本次已
+    // 携带高水位"）
+    const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : fallbackBase;
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
-    const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: 1, prevBoundary: traj?.lastBoundary ?? null });
+    const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: reviewMessages.filter((m) => m.role === 'system').length, prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
     if (reviewGDropped) {
       d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
@@ -733,14 +760,14 @@ export class TurnSupervisor {
         d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
       }
     };
-    const seenHighWater = manifest.length > 0 ? Math.max(...manifest.map((m) => m.seq)) : 0;
+    const seenHighWater = effectiveManifest.length > 0 ? Math.max(...effectiveManifest.map((m) => m.seq)) : 0;
     let result: import('./runner.ts').RunnerRunResult;
     try {
       ({ result } = await this.runOrToolLoop({
         envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
         conversationId: o.conversationId, windowId: o.window.id,
         turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
-        seenMessages: manifest.map((m) => ({ id: m.id, revision: m.revision })), // D13：评审视野=本窗实际已见清单
+        seenMessages: effectiveManifest.map((m) => ({ id: m.id, revision: m.revision })), // D13+R12：评审视野=本窗实际已见清单（单一正本，含追赶投影）
       }));
     } finally {
       if (this.active.get(stopKey) === reviewRun) this.active.delete(stopKey);
@@ -902,6 +929,14 @@ export class TurnSupervisor {
     }
     // —— ESTOMAGO_OR_SELF_HOLD §2.2/§7：轨迹懒初始化（窗口创建/换窗后的首次信封驱动回合）——
     // 基底=system + 本输入之前的近期原话（首次规范化后固定，§7.1）；当前输入只作尾部追加一次。
+    // R10（复审 2026-10-07）：准备阶段开始即可取消——活动代登记先于任何
+    // await（此前 bootstrap 挂起发生在登记前，Stop 只认 active，房间卡在
+    // 准备 await 上）。bootstrap 带受控截止时间+取消传递；取消后迟到
+    // 结果不得再启动模型。
+    const prepController = new AbortController();
+    const prepRun: ActiveRun = { token: { cancelled: false }, controller: prepController, generation: turn.generation + 1 };
+    this.active.set(turnId, prepRun);
+    const prepSignal = AbortSignal.any([prepController.signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]);
     if (dv && d.trajectory) {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
@@ -909,8 +944,8 @@ export class TurnSupervisor {
         // D2（她批准 2026-10-06）：新窗轨迹初始化时装入开窗资料（缓存点 B）——
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
-        const boot0 = await this.windowBootstrap(window.id);
-        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: boot0 !== null ? [materials.iText, boot0].join('\n\n') : materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+        const boot0 = await this.windowBootstrap(window.id, prepSignal);
+        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引错配到历史前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -926,6 +961,7 @@ export class TurnSupervisor {
         materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       });
       if (rotation.blocked) {
+        this.active.delete(turnId);
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, rotation.blocked, 'blocked');
         return;
       }
@@ -936,8 +972,8 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const bootR = await this.windowBootstrap(window.id);
-            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: bootR !== null ? [materials.iText, bootR].join('\n\n') : materials.iText } : null, dialogue: baseDialogue, tailUserText: ' ' });
+            const bootR = await this.windowBootstrap(window.id, prepSignal);
+            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -959,12 +995,21 @@ export class TurnSupervisor {
       }
       return Number(c.changes);
     });
-    if (claimed !== 1) return; // 已被其他执行路径占有：跳过（数据库是真源）
+    if (claimed !== 1) { // 已被其他执行路径占有：跳过（数据库是真源）
+      if (this.active.get(turnId) === prepRun) this.active.delete(turnId);
+      return;
+    }
     d.events.publish('turn.status', {
       conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id,
       payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(resumeSessionId) },
     });
 
+    // R10：准备阶段被取消 → 迟到的 bootstrap 结果不得再启动模型
+    if (prepRun.token.cancelled) {
+      this.active.delete(turnId);
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'STOPPED_DURING_PREP:准备阶段已取消——迟到资料不派发模型，输入已保存', 'blocked');
+      return;
+    }
     const runToken: ActiveRun = { token: { cancelled: false }, controller: new AbortController(), generation };
     this.active.set(turnId, runToken);
 
@@ -1020,7 +1065,9 @@ export class TurnSupervisor {
       : orBaseMessages;
     const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
-          const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: 1, prevBoundary: orTraj?.lastBoundary ?? null });
+          // R11：systemMessageCount 按实际（B 独立数据块时=2，cache-plan
+          // 的独立 B 点分支由此生效；此前硬编码 1，B 点显式边界从未成立）
+          const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: orMessages.filter((m) => m.role === 'system').length, prevBoundary: orTraj?.lastBoundary ?? null });
           if (gDropped) {
             d.events.publish('context.warning', { conversationId: turn.conversation_id, entityRef: window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
           }

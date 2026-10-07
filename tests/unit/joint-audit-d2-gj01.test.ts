@@ -90,13 +90,15 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
   };
   await say('a'); await say('b');
   const first = log[0]!.full as Array<{ role: string; content: unknown }>;
-  const sysText = JSON.stringify(first[0]);
+  // R11（复审 2026-10-07）：B=独立 system 数据块——断言覆盖全部 system 块
+  const sysOf = (msgs: Array<{ role: string }>) => msgs.filter((m) => m.role === 'system').map((m) => JSON.stringify(m)).join('\n');
+  const sysText = sysOf(first);
   assert.ok(sysText.includes('天台看月亮'), '首信封 system 含三日条目标题');
   assert.ok(sysText.includes('周末采购'), '含未完成计划');
   assert.ok(!sysText.includes('mood_text'), 'estomago 口径：不带心情自由文字（标签可带）');
   assert.ok(sysText.includes('开心'), '心情标签在场');
   const second = log[1]!.full as Array<{ role: string; content: unknown }>;
-  assert.equal(JSON.stringify(second[0]), JSON.stringify(first[0]), '同窗第二轮 system 不变（B 已冻结进轨迹正本）');
+  assert.equal(sysOf(second), sysOf(first), '同窗第二轮 system 块不变（B 已冻结进轨迹正本）');
   ctx.db.close();
 });
 
