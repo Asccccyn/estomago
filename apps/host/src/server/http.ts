@@ -22,6 +22,7 @@ import type { UsageCollector } from '../usage/collector.ts';
 import type { RoutingService } from '../routing/service.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import type { TurnSupervisor } from '../runtime/supervisor.ts';
+import type { ManualSelectionService } from '../context/manual-selection.ts';
 import type { AuthService } from '../auth/tokens.ts';
 import { buildReadyReport } from '../observability/health.ts';
 import { buildTimeContext } from '../time/context.ts';
@@ -45,6 +46,7 @@ export type RequestDeps = {
   routing: RoutingService;
   windows: WindowManager;
   supervisor: TurnSupervisor;
+  selections?: ManualSelectionService; // WP3（2026-10-08）：人工历史选集
   auth: AuthService;
   archiveSync?: {
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
@@ -208,8 +210,49 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!win) return json(res, 404, { error: { code: 'not_found', message: '窗口不存在' } });
       // 审计 F05：手动换窗走与自动换窗同一条评审管线（互斥/未决写核验/CAS）——
       // 不再存在绕过评审直转 WindowManager 的旁路；SDK 驱动保持 v0.2.2 行为
+      // WP3（H07）：无已确认选集 → 409 context_selection_required（awaiting
+      // 已持久化；输入已保存，确认后自动继续——rotate 不再是绕过选集的旁路）
       const result = await d.supervisor.manualRotate(win.conversation_id);
+      if (!result.ok && result.reason.startsWith('CONTEXT_SELECTION_REQUIRED')) {
+        const awaiting = d.selections?.awaitingFor(win.conversation_id) ?? null;
+        return json(res, 409, { error: { code: 'context_selection_required', message: result.reason, selection_id: awaiting?.selection_id ?? null } });
+      }
       return json(res, result.ok ? 200 : 409, result.ok ? { window: { id: result.windowId } } : { error: { code: 'rotate_blocked', message: result.reason } });
+    }
+
+    // —— WP3（2026-10-08 她裁定）：人工历史选集 ——
+
+    // preview（§6.2）：只读核验（引用/修订/hash/发布状态/间隙/粗估）——
+    // 不跑模型、不 hold、不换窗、不写选集
+    const selPreview = /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/preview$/.exec(route);
+    if (selPreview) {
+      const windowId = decodeURIComponent(selPreview[1]!);
+      const body = (await readJson(req, d)) as { conversation_id?: unknown; items?: unknown };
+      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : PRIMARY_CONVERSATION;
+      const items = parseSelectionItems(body.items);
+      const result = d.supervisor.selectionPreview(conversationId, windowId, items);
+      return json(res, result.ok ? 200 : 422, result.ok ? { preview: result.result } : { error: { code: result.error.code, detail: result.error } });
+    }
+
+    // confirm（§6.2/§6.3）：幂等键 + expected_window_revision CAS + explicit_empty；
+    // 有被选集阻断的待回答输入时，确认后自动换窗并以原 input_message_id 恢复
+    const selConfirm = /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/confirm$/.exec(route);
+    if (selConfirm) {
+      const windowId = decodeURIComponent(selConfirm[1]!);
+      const body = (await readJson(req, d)) as { conversation_id?: unknown; items?: unknown; explicit_empty?: unknown; idempotency_key?: unknown; expected_window_revision?: unknown };
+      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : PRIMARY_CONVERSATION;
+      const items = parseSelectionItems(body.items);
+      const result = await d.supervisor.selectionConfirm({
+        conversationId,
+        windowId,
+        items,
+        explicitEmpty: body.explicit_empty === true,
+        idempotencyKey: typeof body.idempotency_key === 'string' && body.idempotency_key.length > 0 ? body.idempotency_key : null,
+        expectedWindowRevision: typeof body.expected_window_revision === 'number' && Number.isInteger(body.expected_window_revision) ? body.expected_window_revision : undefined,
+      });
+      return json(res, result.ok ? 200 : 422, result.ok
+        ? { selection: { id: result.selection_id, rotated: result.rotated, window_id: result.windowId, resumed: result.resumed } }
+        : { error: { code: result.error.code, detail: result.error } });
     }
 
     const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);
@@ -507,6 +550,23 @@ async function readJson(req: IncomingMessage, d: RequestDeps): Promise<unknown> 
     // 此前 SyntaxError 落进外层 catch 污染 500 口径
     throw new ClientBodyError(400, 'invalid_json', '请求体不是合法 JSON');
   }
+}
+
+/** WP3（2026-10-08）：选集条目解析——只取 message_id/revision/content_hash
+ *  三个受控字段（前端正文不进模型，服务端从真实修订读取）；坏条目剔除。 */
+function parseSelectionItems(raw: unknown): Array<{ message_id: string; revision?: number; content_hash?: string }> {
+  if (!Array.isArray(raw)) return [];
+  const out: Array<{ message_id: string; revision?: number; content_hash?: string }> = [];
+  for (const x of raw) {
+    if (!x || typeof x !== 'object') continue;
+    const rec = x as Record<string, unknown>;
+    if (typeof rec.message_id !== 'string' || rec.message_id.length === 0) continue;
+    const item: { message_id: string; revision?: number; content_hash?: string } = { message_id: rec.message_id };
+    if (typeof rec.revision === 'number' && Number.isInteger(rec.revision)) item.revision = rec.revision;
+    if (typeof rec.content_hash === 'string') item.content_hash = rec.content_hash;
+    out.push(item);
+  }
+  return out;
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {

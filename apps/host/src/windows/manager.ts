@@ -10,6 +10,7 @@ import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
 import type { EventService } from '../events/service.ts';
 import { contextFingerprint, type BoundaryConfigInput, type GateResult, type IdentityService } from '../identity/service.ts';
+import type { ManualSelectionService } from '../context/manual-selection.ts';
 
 export type WindowRow = {
   id: string;
@@ -28,18 +29,20 @@ export type WindowRow = {
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput) {
+  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput, selections?: ManualSelectionService) {
     this.db = db;
     this.events = events;
     this.identity = identity;
     this.handoffsDir = handoffsDir;
     this.config = config ?? null;
+    this.selections = selections ?? null;
   }
   private db: Db;
   private events: EventService;
   private identity: IdentityService;
   private handoffsDir: string;
   private config: BoundaryConfigInput | null;
+  private selections: ManualSelectionService | null;
 
   activeWindow(conversationId: string): WindowRow | null {
     const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(conversationId) as
@@ -72,7 +75,8 @@ export class WindowManager {
   }
 
   // 创建并尝试激活新窗：NEW → PREPARING(+receipt) → READY → [tx 原子切换] ACTIVE | BLOCKED
-  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null }): { window: WindowRow; blockedReason: string | null } {
+  // WP3：selectionId 给出时，选集消费与激活同一事务（E07 原子提交）
+  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string }): { window: WindowRow; blockedReason: string | null } {
     const id = genId('win');
     const now = new Date().toISOString();
     tx(this.db, () => {
@@ -115,6 +119,8 @@ export class WindowManager {
       this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
       this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(id, o.conversationId);
       if (prev) this.db.prepare("UPDATE windows SET status = 'CLOSED', updated_at = ? WHERE id = ?").run(new Date().toISOString(), prev);
+      // WP3（E07）：选集 consumed+target 绑定与窗口激活同一事务
+      if (o.selectionId && this.selections) this.selections.consumeInTx(this.db, o.selectionId, id);
       return prev;
     });
     void prevId;
@@ -125,7 +131,9 @@ export class WindowManager {
   // 手动轮转（AUD-20 修复版）：prepare 全部成功 → 一个事务切换；任何失败旧窗保持 ACTIVE
   // F09：安全检查在 Manager 内部（数据库是真源）——生成中 turn 或待决路由票据都拒绝轮转，
   // 不依赖可选 HTTP callback；HTTP 与直接服务调用无法绕过
-  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  // WP3（E07）：selectionId 给出时，选集消费（consumed+target_window_id）
+  // 与窗口指针切换同一事务——新窗未就绪则选集不被消费，失败整体回滚
+  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
     if (o.gate.state !== 'READY') {
@@ -176,6 +184,9 @@ export class WindowManager {
         this.db.prepare("UPDATE windows SET status = 'CLOSED', cutoff_sequence = ?, updated_at = ? WHERE id = ?").run(o.maxSequence, new Date().toISOString(), current.id);
         this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), candidateId);
         this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(candidateId, o.conversationId);
+        // WP3（E07）：选集消费与指针切换原子——输家整体回滚，不出现
+        // "选集已耗但新窗未激活"（或反之）的半状态
+        if (o.selectionId && this.selections) this.selections.consumeInTx(this.db, o.selectionId, candidateId);
       });
     } catch (err) {
       this.setStatus(candidateId, 'BLOCKED', `switch_failed: ${(err as Error).message.slice(0, 80)}`);
