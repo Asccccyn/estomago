@@ -294,6 +294,19 @@ export class MariposaClient {
     });
   }
 
+  /** WP2（MANUAL_HANDOFF_JUDGE_SWITCH_V1，2026-10-08）：关闭判断模式的
+   *  冻结结果集续页——只消费既有 result_set（零检索/零判断/零 COUNT）；
+   *  不修改查询（refine 才改查询）。政策切换后服务端返回
+   *  RECALL_POLICY_CHANGED，如实上抛。 */
+  async recallPage(args: { resultSetId: string; sessionId?: string; cursor?: string; conversationScope?: string }): Promise<MariposaCallResult> {
+    return this.transport('memory.recall.page', {
+      result_set_id: args.resultSetId,
+      ...(args.sessionId ? { session_id: args.sessionId } : {}),
+      ...(args.cursor ? { cursor: args.cursor } : {}),
+      ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+    });
+  }
+
   /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。
    *  形状：{categories: string[], version?, rules?, frozen_ruling?}。
    *  需要绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
