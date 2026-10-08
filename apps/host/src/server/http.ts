@@ -47,6 +47,7 @@ export type RequestDeps = {
   windows: WindowManager;
   supervisor: TurnSupervisor;
   selections?: ManualSelectionService; // WP3（2026-10-08）：人工历史选集
+  settings?: import('../runtime/runtime-settings.ts').RuntimeSettingsService; // 2026-10-08：换模型/推理等级
   auth: AuthService;
   archiveSync?: {
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
@@ -220,6 +221,43 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, result.ok ? 200 : 409, result.ok ? { window: { id: result.windowId } } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
+    // —— 2026-10-08 她裁定：聊天窗换模型/推理等级 ——
+    const rtGet = route === 'GET /api/v1/runtime-settings';
+    if (rtGet) {
+      const cfg = d.config.openrouter;
+      const effModel = d.settings ? d.settings.effectiveOrModel(cfg.model) : cfg.model;
+      const effEffort = d.settings ? (d.settings.reasoningEffort() ?? 'default') : 'default';
+      return json(res, 200, {
+        driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
+        or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
+        reasoning_effort: { effective: effEffort, override: d.settings?.reasoningEffort() ?? null, config_default: cfg.reasoning },
+        model_options: cfg.model_options ?? [],
+        effort_options: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        note: '切模型=运行边界变化，下一条消息将等待历史选集确认后换窗；切思考深度=立即生效，不换窗（上下文复用）',
+      });
+    }
+    const rtPut = route === 'PUT /api/v1/runtime-settings';
+    if (rtPut) {
+      if (!d.settings) return json(res, 503, { error: { code: 'unavailable', message: '运行时设置服务未接线' } });
+      const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown };
+      if (body.or_model !== undefined) {
+        if (body.or_model === null || body.or_model === '') d.settings.set('or_model', null);
+        else if (typeof body.or_model === 'string' && body.or_model.trim().length > 0 && body.or_model.length <= 128) d.settings.set('or_model', body.or_model.trim());
+        else return json(res, 422, { error: { code: 'invalid_model', message: 'or_model 必须是非空字符串或 null（回落默认）' } });
+      }
+      if (body.reasoning_effort !== undefined) {
+        const v = body.reasoning_effort;
+        const ok = v === null || v === 'default' || ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(v as string);
+        if (!ok) return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
+        d.settings.set('reasoning_effort', v === 'default' ? null : (v as string | null));
+      }
+      const cfg2 = d.config.openrouter;
+      return json(res, 200, {
+        or_model: { effective: d.settings.effectiveOrModel(cfg2.model), override: d.settings.orModel() },
+        reasoning_effort: { effective: d.settings.reasoningEffort() ?? 'default', override: d.settings.reasoningEffort() },
+      });
+    }
+
     // —— WP3（2026-10-08 她裁定）：人工历史选集 ——
 
     // preview（§6.2）：只读核验（引用/修订/hash/发布状态/间隙/粗估）——
@@ -291,7 +329,6 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
           status: d.config.windows.threshold_status,
           model_context_capacity: d.config.windows.model_context_capacity,
           soft_limit_tokens: d.config.windows.soft_limit_tokens,
-          warning_tokens: d.config.windows.warning_tokens,
         },
         reasoning_label: d.config.reasoning.label,
       });
