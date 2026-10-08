@@ -90,10 +90,13 @@ export type Config = {
   openrouter: OpenRouterConfig;
   // DS 官方直连段（身份映射隔离：与 OR 各自独立配置/凭据/型号门）
   deepseek: DeepSeekConfig;
-  // 她裁定 2026-10-07：换窗 hold 提醒与昨天日结共用一个开关；日结模型
-  // 暂定 DS（零新增外发面），千问本地接口预留不安装
+  // 她裁定 2026-10-07：换窗 hold 提醒开关。
+  // MANUAL_HANDOFF_JUDGE_SWITCH_V1（2026-10-08 WP5）：DS 昨天日结整链退役——
+  // digest 配置段与 recent_dialogue_budget_tokens 已删除；旧配置出现这些键
+  // 由 RETIRED_CONFIG_KEYS 结构化披露（不再接受、也不再静默忽略）
   reminders: { enabled: boolean };
-  digest: { provider: 'deepseek' | 'qwen-local'; max_messages: number };
+  /** WP5（D02）：旧配置退役键的只读披露（读取处负责告警，不进运行时） */
+  retiredKeys: string[];
   identity: {
     approved_identity_ref: string | null;
     approved_identity_hash: string | null;
@@ -116,8 +119,7 @@ export type Config = {
     tool_input_reserve_tokens: number; // T（§4.2 初值 8k）
     review_reserve_tokens: number; // R：换窗提醒及必要 hold 往返预留（8k）
     safety_reserve_tokens: number; // S（4k）
-    recent_dialogue_budget_tokens: number; // 近期原话目标约 12k（§5.5）
-    bootstrap_target_tokens: number; // 新窗启动总目标约 32k（§5.5）
+    bootstrap_target_tokens: number; // 新窗启动总目标（§5.5 旧值；WP5 起新窗历史只经人工选集）
     model_context_capacity: number | null; // C：实际所选模型/端点容量；null=未测量（不假定）
     threshold_status: string;
     normal_rotation_uses_new_session: boolean;
@@ -268,7 +270,7 @@ export const CONFIG_DEFAULTS: Config = {
   // DS 官方直连默认：model=null（未配置即阻断）；key 只经环境变量名引用；
   // 无缓存/路由参数（DS 自动上下文缓存）；中文对话为主 → 粗估系数 1.5（§11.1 估计带精度，usage 校准兜底）。
   reminders: { enabled: true },
-  digest: { provider: 'deepseek', max_messages: 400 },
+  retiredKeys: [],
   deepseek: {
     base_url: 'https://api.deepseek.com',
     model: null,
@@ -301,7 +303,6 @@ export const CONFIG_DEFAULTS: Config = {
     tool_input_reserve_tokens: 8000,
     review_reserve_tokens: 8000,
     safety_reserve_tokens: 4000,
-    recent_dialogue_budget_tokens: 12000,
     bootstrap_target_tokens: 32000,
     model_context_capacity: null,
     threshold_status: 'awaiting_measurement',
@@ -413,7 +414,6 @@ const SHAPE: SectionSpec = { section: {
     estimate_chars_per_token: 'number',
   } },
   reminders: { section: { enabled: 'boolean' } },
-  digest: { section: { provider: 'string', max_messages: 'number' } },
   deepseek: { section: {
     base_url: 'string', model: 'string?', api_key_env: 'string', max_output_tokens: 'number',
     retry_max_attempts_after_initial: 'number', estimate_chars_per_token: 'number',
@@ -428,7 +428,7 @@ const SHAPE: SectionSpec = { section: {
   windows: { section: {
     rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number', warning_tokens: 'number',
     idle_before_next_user_ms: 'number', tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
-    safety_reserve_tokens: 'number', recent_dialogue_budget_tokens: 'number', bootstrap_target_tokens: 'number',
+    safety_reserve_tokens: 'number', bootstrap_target_tokens: 'number',
     model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',
   } },
   time: { section: {
@@ -584,21 +584,47 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
   }
 }
 
+/** WP5（D02，MANUAL_HANDOFF_JUDGE_SWITCH_V1）：已退役配置键——出现即从补丁
+ *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
+ *  读取处负责把披露写进日志/启动报告） */
+export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens'] as const;
+
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];
-  checkType(raw, SHAPE, '', issues);
+  const retiredKeys: string[] = [];
+  const input = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  // retiredKeys 是代码写入字段：输入面带它（Config 回灌当补丁的场景）先剥离，
+  // 输出永远按实际检测重算——配置文件不能自填披露
+  delete input.retiredKeys;
+  for (const key of RETIRED_CONFIG_KEYS) {
+    const parts = key.split('.');
+    let node: Record<string, unknown> | undefined = input;
+    for (let i = 0; i < parts.length - 1 && node; i++) {
+      const nxt: unknown = node[parts[i]!];
+      node = nxt && typeof nxt === 'object' && !Array.isArray(nxt) ? nxt as Record<string, unknown> : undefined;
+    }
+    const leaf = parts[parts.length - 1]!;
+    if (node && node[leaf] !== undefined) {
+      retiredKeys.push(key);
+      delete node[leaf];
+    }
+  }
+  // retiredKeys 是代码写入的只读披露字段——不进 SHAPE 校验面（输入面无此键）
+  const patched = input;
+  checkType(patched, SHAPE, '', issues);
   // §29：effort 非法枚举直接拒绝（SDK 不认识的值不得静默通过）
-  const effort = (raw as { runtime?: { thinking?: { effort?: unknown } } })?.runtime?.thinking?.effort;
+  const effort = (patched as { runtime?: { thinking?: { effort?: unknown } } })?.runtime?.thinking?.effort;
   if (effort !== undefined && effort !== null && !(typeof effort === 'string' && (THINKING_EFFORT_ENUM as readonly string[]).includes(effort))) {
     issues.push({ path: 'runtime.thinking.effort', message: `必须是 ${THINKING_EFFORT_ENUM.join('|')} 或 null（SDK EffortLevel 契约）` });
   }
   // ESTOMAGO_OR_SELF_HOLD §1.1：provider 枚举（新增 openrouter 驱动；未知值不得静默落到 SDK）
-  const provider = (raw as { runtime?: { provider?: unknown } })?.runtime?.provider;
+  const provider = (patched as { runtime?: { provider?: unknown } })?.runtime?.provider;
   if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
     issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
   }
   if (issues.length > 0) return { config: structuredClone(CONFIG_DEFAULTS), issues };
-  const config = deepMergeConfig(raw as Record<string, unknown>);
+  const config = deepMergeConfig(patched);
+  config.retiredKeys = retiredKeys;
   checkHardRules(config, issues);
   return { config, issues };
 }

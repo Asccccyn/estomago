@@ -153,7 +153,7 @@ test('F06：预算裁剪留新丢旧；未实际携带的消息不进评审范�
     return hasTool ? textBody('g2', 'ok') : textBody('g1', '回复');
   });
   const root = tempRoot('rm2-f06-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { recent_dialogue_budget_tokens: 12 } } });
+  const ctx = compose(root, t, mariposaOk); // WP5：12k 键已退役（断言与预算无关）
   await say(ctx, '这条旧消息非常长非常长非常长非常长非常长非常长', 'old1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   await say(ctx, '新消息短', 'new1', at(8)); // 8h → 触发评审（范围应只含实际携带的）

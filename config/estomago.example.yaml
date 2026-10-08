@@ -63,7 +63,8 @@ windows:
   tool_input_reserve_tokens: 8000    # T：有界后续工具输入预留
   review_reserve_tokens: 8000        # R：换窗提醒及必要 hold 往返预留
   safety_reserve_tokens: 4000        # S：安全余量
-  recent_dialogue_budget_tokens: 12000   # 近期原话目标（新窗启动）
+  # WP5（2026-10-08）：recent_dialogue_budget_tokens 与 digest 段已退役——
+  # 新窗历史只经网页人工选集；旧配置带这些键会在启动日志披露为 retiredKeys
   bootstrap_target_tokens: 32000         # 新窗启动总目标
   model_context_capacity: null    # C：由实际模型/端点能力补齐；null=未测量
   threshold_status: awaiting_measurement

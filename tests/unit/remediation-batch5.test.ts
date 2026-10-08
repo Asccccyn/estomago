@@ -156,7 +156,7 @@ test('F06：预算裁剪后 manifest 与实际装载正文一一对应（正文�
   const t = orT(() => '', log);
   const root = tempRoot('r5b-');
   // 近期预算 ~4 token（10 字符）：旧消息很长被裁，新消息短必进
-  const ctx = compose(root, t, mariposaOk, { windows: { recent_dialogue_budget_tokens: 4 } });
+  const ctx = compose(root, t, mariposaOk); // WP5：12k 键已退役；首窗初始轨迹本就无既往历史
   await say(ctx, '旧消息A内容很长很长很长很长很长', 'o1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const traj = ctx.trajectory.forWindow(win1.id)!;
