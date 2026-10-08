@@ -672,7 +672,8 @@ async function loadRuntimeSettings() {
     }
     if (runtimeBar.effortSel) {
       runtimeBar.effortSel.innerHTML = '';
-      for (const e of data.effort_options || ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      runtimeBar.effortSel.title = data.effort_options_verified === false ? '模型档位元数据暂不可达——清单未验证，个别档位可能被模型拒绝' : '按当前模型支持的档位生成';
+      for (const e of data.effort_options || ['default', 'low', 'medium', 'high', 'xhigh', 'max']) {
         const o = document.createElement('option');
         o.value = e;
         o.textContent = e === 'default' ? '思考深度：默认' : `思考：${e}`;
@@ -680,6 +681,7 @@ async function loadRuntimeSettings() {
       }
       runtimeBar.effortSel.value = data.reasoning_effort?.override ?? 'default';
       if (data.driver === 'deepseek') runtimeBar.effortSel.disabled = true; // DS 无 effort 参数
+      void data.effort_options_verified;
     }
     runtimeBar.loaded = true;
   } catch { /* 面板未就绪时静默（boot 会重试一次） */ }

@@ -23,6 +23,7 @@ import type { RoutingService } from '../routing/service.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import type { TurnSupervisor } from '../runtime/supervisor.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
+import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import type { AuthService } from '../auth/tokens.ts';
 import { buildReadyReport } from '../observability/health.ts';
 import { buildTimeContext } from '../time/context.ts';
@@ -227,12 +228,20 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const cfg = d.config.openrouter;
       const effModel = d.settings ? d.settings.effectiveOrModel(cfg.model) : cfg.model;
       const effEffort = d.settings ? (d.settings.reasoningEffort() ?? 'default') : 'default';
+      // 档位按当前生效模型的真实支持生成（OR 公开元数据；强制思考模型
+      // 没有 none/minimal——此前静态全表会在这些模型上吃 400）
+      let efforts: string[] | null = null;
+      if (d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' && effModel) {
+        const meta = await fetchOrModelMeta(cfg.base_url, effModel);
+        efforts = effortsForModel(meta);
+      }
       return json(res, 200, {
         driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
         or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
         reasoning_effort: { effective: effEffort, override: d.settings?.reasoningEffort() ?? null, config_default: cfg.reasoning },
         model_options: cfg.model_options ?? [],
-        effort_options: ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        effort_options: efforts ?? ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        effort_options_verified: efforts !== null,
         note: '切模型=运行边界变化，下一条消息将等待历史选集确认后换窗；切思考深度=立即生效，不换窗（上下文复用）',
       });
     }
@@ -249,6 +258,19 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         const v = body.reasoning_effort;
         const ok = v === null || v === 'default' || ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(v as string);
         if (!ok) return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
+        // 按生效模型的真实档位校验（元数据可及时；不可达时放行，
+        // 真请求若被 OR 拒绝会如实失败——不冒称已验证）
+        if (v !== null && v !== 'default') {
+          const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
+          const effModel = d.settings.effectiveOrModel(d.config.openrouter.model);
+          if (driver === 'openrouter' && effModel) {
+            const meta = await fetchOrModelMeta(d.config.openrouter.base_url, effModel);
+            const allowed = effortsForModel(meta);
+            if (allowed && !allowed.includes(v as string)) {
+              return json(res, 422, { error: { code: 'effort_not_supported', message: `当前模型 ${effModel} 不支持思考档位 ${v}（强制思考模型没有 none/minimal）`, supported: allowed } });
+            }
+          }
+        }
         d.settings.set('reasoning_effort', v === 'default' ? null : (v as string | null));
       }
       const cfg2 = d.config.openrouter;

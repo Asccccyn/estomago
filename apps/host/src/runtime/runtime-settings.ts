@@ -19,6 +19,51 @@ export type RuntimeSettingsRow = {
   updated_at: string;
 };
 
+// —— OR 模型元数据（公开 /api/v1/models，免费零私人数据；§6.2 要求核对） ——
+// 档位支持因模型而异：如 claude-fable-5.1 强制思考（mandatory=true）且
+// 只支持 max/xhigh/high/medium/low——none/minimal 会被 OR 400 拒绝。
+export type OrModelReasoningMeta = { supported_efforts?: string[]; mandatory?: boolean };
+
+const _metaCache = new Map<string, { meta: OrModelReasoningMeta | null; fetchedAt: number }>();
+const META_TTL_MS = 60 * 60 * 1000;
+
+/** 测试注入点（离线套件不打网络） */
+export function setModelMetaForTests(model: string, meta: OrModelReasoningMeta | null): void {
+  _metaCache.set(model, { meta, fetchedAt: Date.now() });
+}
+
+export function clearModelMetaCache(): void {
+  _metaCache.clear();
+}
+
+export async function fetchOrModelMeta(baseUrl: string, model: string): Promise<OrModelReasoningMeta | null> {
+  const hit = _metaCache.get(model);
+  if (hit && Date.now() - hit.fetchedAt < META_TTL_MS) return hit.meta;
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/models`, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json() as { data?: Array<{ id?: string; reasoning?: OrModelReasoningMeta }> };
+    const row = (data.data ?? []).find((m) => m.id === model);
+    const meta = row?.reasoning ?? null;
+    _metaCache.set(model, { meta, fetchedAt: Date.now() });
+    return meta;
+  } catch {
+    return null; // 元数据不可达=未验证（设置面如实标注，不阻塞）
+  }
+}
+
+/** 按模型真实支持计算档位清单（default=回落哨兵；非强制思考才允许 none）。
+ *  返回 null=元数据不可用（未验证，调用方回落静态全表并如实标注）。 */
+export function effortsForModel(meta: OrModelReasoningMeta | null): string[] | null {
+  if (!meta) return null; // 元数据不可达=未验证
+  const supported = (meta.supported_efforts ?? []).filter((e) => e !== 'none' && e !== 'minimal');
+  if (supported.length === 0) return ['default']; // OR 对无档位选择的模型省略 supported_efforts——没有思考旋钮
+  const order = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const list = order.filter((e) => supported.includes(e));
+  if (meta.mandatory === false) list.unshift('none');
+  return ['default', ...list];
+}
+
 export class RuntimeSettingsService {
   private db: Db;
   constructor(db: Db) {
