@@ -89,6 +89,13 @@ test('跨会话隔离：不同 conversation 不共用 session', async () => {
 test('换窗产生新 session（新窗 sdk_session_id 从 null 开始）', async () => {
   const before = await dbSession();
   const win = host.windows.activeWindow('primary')!;
+  // WP3（2026-10-08 她裁定）：换窗历史只经人工选集——先确认选集再换窗
+  //（SDK 驱动测试环境：明确空选合法；rotate 不再是无选集旁路）
+  const confirmRes = await fetch(`${base}/api/v1/windows/${win.id}/context-selection/confirm`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ explicit_empty: true, idempotency_key: 'aud03-sel' }),
+  });
+  assert.equal(confirmRes.status, 200, `选集确认应 200：${await confirmRes.text()}`);
   const res = await fetch(`${base}/api/v1/windows/${win.id}/rotate`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
   assert.equal(res.status, 200);
   const newWin = host.windows.activeWindow('primary')!;
