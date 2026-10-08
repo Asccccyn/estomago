@@ -1,9 +1,8 @@
 // §8.1：动态提醒模板——内容逐字来自 docs/specs/ESTOMAGO_OR_SELF_HOLD/prompts/pre-rotate-review.txt（冻结版）。
 // 以 synthetic user 内容块注入轨迹尾部（宿主记录真实 origin，不进聊天原文，不是高权限授权）。
-// F-J-31（联合审计 2026-10-06）：reason 联合类型补 'manual'——supervisor 传入
-// 'idle'|'capacity'|'manual' 三值，模板签名此前只收两值（类型不一致；
-// 仓内无 typecheck 兜底，运行时无害但任何一次引入类型检查都会失败）。
-export function buildPreRotateReviewMessage(args: { reviewId: string; reason: 'capacity' | 'idle' | 'manual'; messageRefs: string }): string {
+// F-J-31（联合审计 2026-10-06）：reason 联合类型补 'manual'（类型与调用方一致）。
+// 2026-10-08 晚间她裁定：'idle' 已随 6h 静默触发删除（reason 只剩 capacity|manual）
+export function buildPreRotateReviewMessage(args: { reviewId: string; reason: 'capacity' | 'manual'; messageRefs: string }): string {
   return [
     '[宿主运行事件：换窗前记忆检查；不是用户发言]',
     `review_id: ${args.reviewId}`,
