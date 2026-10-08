@@ -252,7 +252,7 @@ export class TurnSupervisor {
           currentInput: estNow, nextInput: estNow, capacity: capacityNow,
           maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
           toolReserve: d.config.windows.tool_input_reserve_tokens, reviewReserve: d.config.windows.review_reserve_tokens,
-          safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens, warning: d.config.windows.warning_tokens,
+          safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens,
         });
         if (planNow.action === 'blocked_hard') {
           d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
@@ -538,7 +538,7 @@ export class TurnSupervisor {
     tailUserText: string;
     bootText?: string | null;
     /** WP3（2026-10-08）：人工选集装配——严格按确认的引用集合装载（E04：
-     *  不把 recent_dialogue_budget_tokens 设 0 代替拆分）。给出即忽略
+     *  不把"自动携带预算设 0"代替拆分——该预算键已随 WP5 退役）。给出即忽略
      *  dialogue 的自动预算挑选；可为空数组=明确空选（不带历史）。 */
     selectedMessages?: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     /** 选集间隙元数据（服务端按 sequence 计算，不相邻段如实披露） */
@@ -716,7 +716,6 @@ export class TurnSupervisor {
         reviewReserve: d.config.windows.review_reserve_tokens,
         safety: d.config.windows.safety_reserve_tokens,
         soft: d.config.windows.soft_limit_tokens,
-        warning: d.config.windows.warning_tokens,
         idleMs,
       });
       // WP5（2026-10-08 §1.5 她裁定）：容量预警推送/展示退役——不再发布
@@ -762,12 +761,13 @@ export class TurnSupervisor {
       return { rotated: false, blocked: `WRITES_UNRESOLVED:${unresolvedBefore.length}（存在结果未知的写操作，换窗前须核实）` };
     }
 
-    // 她裁定 2026-10-07 的总开关：关=换窗不发 hold 提醒（也不做昨天日结）。
-    // 记录 skipped 凭证如实定位（不伪造 reviewed/held 覆盖），直接换窗。
+    // 她裁定 2026-10-07 的总开关：关=换窗不发 hold 提醒（WP5 起该开关只
+    // 管提醒——日结已整链退役）。记录 skipped 凭证如实定位（不伪造
+    // reviewed/held 覆盖），直接换窗。
     if (d.config.reminders && !d.config.reminders.enabled) {
       d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, [], {
         reason: 'reminders_disabled',
-        note: '她裁定开关：关=不发评审提醒、不做昨天日结',
+        note: '她裁定开关：关=不发评审提醒',
       });
       return this.doRotate(o, reason, null, selectionId);
     }

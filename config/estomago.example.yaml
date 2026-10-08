@@ -58,7 +58,7 @@ windows:
   # 零点不触发换窗（现行规范硬规则）；有效软线 = min(soft, C-O-T-R-S)。
   rotate_on_business_date_change: false
   soft_limit_tokens: 64000        # 输入工作集软线
-  warning_tokens: 56000           # 前台预警线（不高于软线-8k）
+  # WP5：warning_tokens 预警线已退役（推送/展示均不再；软线与硬门保留）
   idle_before_next_user_ms: 21600000  # 6h：下一条真实用户消息到达时换窗
   tool_input_reserve_tokens: 8000    # T：有界后续工具输入预留
   review_reserve_tokens: 8000        # R：换窗提醒及必要 hold 往返预留

@@ -7,7 +7,6 @@ export type ModelContextSource =
   | 'current_i'
   | 'time_context'
   | 'user_input'
-  | 'recent_dialogue'
   | 'memory_recall'
   | 'verified_tool_fact'
   | 'handoff';
@@ -15,7 +14,7 @@ export type ModelContextSource =
 // 合法来源封闭集合（供 contract test 断言：永不包含 reasoning/thinking）
 export const MODEL_CONTEXT_SOURCES: readonly ModelContextSource[] = [
   'identity', 'rules', 'current_i', 'time_context', 'user_input',
-  'recent_dialogue', 'memory_recall', 'verified_tool_fact', 'handoff',
+  'memory_recall', 'verified_tool_fact', 'handoff',
 ];
 
 export type ModelContextSegment = {
