@@ -138,6 +138,7 @@ async function send() {
     }
     refreshSendButton();
     composer.focus();
+    void loadRuntimeSettings();
   } catch (err) {
     // F13：失败保留 pending（同幂等键同内容可重试），按钮保持可点
     console.warn('发送失败，保留待重试（同幂等键）', err);
@@ -637,6 +638,7 @@ async function boot() {
     }
     refreshSendButton();
     composer.focus();
+    void loadRuntimeSettings();
   } catch (err) {
     $('runtime-badge').textContent = '连接失败';
     console.error(err);
@@ -647,6 +649,90 @@ function scrollBottom() {
   const timeline = $('timeline');
   timeline.scrollTop = timeline.scrollHeight;
 }
+// —— 2026-10-08 她裁定：聊天窗内置换模型/思考深度（UI 美化她统一后改） ——
+const runtimeBar = { el: null, modelInput: null, effortSel: null, note: null, loaded: false };
+
+async function loadRuntimeSettings() {
+  try {
+    const res = await fetch('/api/v1/runtime-settings', { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const data = await res.json();
+    ensureRuntimeBar(data);
+    if (runtimeBar.modelInput) {
+      runtimeBar.modelInput.value = data.or_model?.override ?? '';
+      runtimeBar.modelInput.placeholder = data.or_model?.effective ? `当前：${data.or_model.effective}` : '未配置';
+      const dl = document.getElementById('model-options');
+      if (dl) {
+        for (const m of data.model_options || []) {
+          const opt = document.createElement('option');
+          opt.value = m;
+          dl.appendChild(opt);
+        }
+      }
+    }
+    if (runtimeBar.effortSel) {
+      runtimeBar.effortSel.innerHTML = '';
+      for (const e of data.effort_options || ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']) {
+        const o = document.createElement('option');
+        o.value = e;
+        o.textContent = e === 'default' ? '思考深度：默认' : `思考：${e}`;
+        runtimeBar.effortSel.appendChild(o);
+      }
+      runtimeBar.effortSel.value = data.reasoning_effort?.override ?? 'default';
+      if (data.driver === 'deepseek') runtimeBar.effortSel.disabled = true; // DS 无 effort 参数
+    }
+    runtimeBar.loaded = true;
+  } catch { /* 面板未就绪时静默（boot 会重试一次） */ }
+}
+
+function ensureRuntimeBar(data) {
+  if (runtimeBar.el) return;
+  const timeline = document.getElementById('timeline');
+  if (!timeline || !document.body) return;
+  const bar = document.createElement('div');
+  bar.id = 'runtime-settings-bar';
+  bar.style.cssText = 'display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid #2c3a4a;background:#101822;flex-wrap:wrap;font-size:13px;color:#8fa3b8';
+  const label = document.createElement('span');
+  label.textContent = '模型';
+  runtimeBar.modelInput = document.createElement('input');
+  runtimeBar.modelInput.setAttribute('list', 'model-options');
+  runtimeBar.modelInput.style.cssText = 'flex:1;min-width:180px;padding:4px 8px;background:#0b1118;border:1px solid #33465c;color:#dbe7f3;border-radius:6px';
+  runtimeBar.modelInput.placeholder = data?.or_model?.effective ? `当前：${data.or_model.effective}（清空=回落默认）` : '模型 ID（清空=回落默认）';
+  const dl = document.createElement('datalist');
+  dl.id = 'model-options';
+  runtimeBar.effortSel = document.createElement('select');
+  runtimeBar.effortSel.style.cssText = 'padding:4px 8px;background:#0b1118;border:1px solid #33465c;color:#dbe7f3;border-radius:6px';
+  runtimeBar.note = document.createElement('span');
+  runtimeBar.note.style.cssText = 'color:#6d8299';
+  runtimeBar.note.textContent = '切模型→下一条消息等你选历史后换窗；切思考→立即生效不换窗';
+  const modelBtn = document.createElement('button');
+  modelBtn.textContent = '换模型';
+  modelBtn.style.cssText = 'padding:4px 12px;border-radius:6px;border:1px solid #33465c;background:#182435;color:#dbe7f3';
+  modelBtn.onclick = async () => {
+    const v = (runtimeBar.modelInput.value || '').trim();
+    if (v && !window.confirm(`切换到 ${v}？运行边界变化——下一条消息会等你选历史后开新窗。`)) return;
+    const res = await fetch('/api/v1/runtime-settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ or_model: v || null }),
+    });
+    if (res.ok) { const d = await res.json(); window.alert(`模型已设：${d.or_model.effective ?? '（回落默认）'}`); loadRuntimeSettings(); }
+    else { const e = await res.json().catch(() => ({})); window.alert(`设置失败：${e?.error?.message ?? res.status}`); }
+  };
+  runtimeBar.effortSel.onchange = async () => {
+    const v = runtimeBar.effortSel.value;
+    const res = await fetch('/api/v1/runtime-settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ reasoning_effort: v }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); window.alert(`设置失败：${e?.error?.message ?? res.status}`); loadRuntimeSettings(); }
+  };
+  bar.appendChild(label); bar.appendChild(runtimeBar.modelInput); bar.appendChild(dl); bar.appendChild(modelBtn);
+  bar.appendChild(runtimeBar.effortSel); bar.appendChild(runtimeBar.note);
+  const host = timeline.parentNode ?? document.body;
+  host.insertBefore(bar, timeline);
+  runtimeBar.el = bar;
+}
+
 // —— WP3（2026-10-08 她裁定）：人工历史选集——换窗携带哪些历史由她勾选 ——
 // 实现约束：不依赖 innerHTML/querySelector（VM 测试桩无这些能力），
 // 全部 createElement/appendChild 组装；无 body 的环境（测试桩）自动跳过。

@@ -63,6 +63,7 @@ export type SupervisorDeps = {
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
+  settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -373,6 +374,15 @@ export class TurnSupervisor {
     return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
   }
 
+  /** 指纹输入视图：并入运行时 override（or_model）。reasoning 不参与指纹
+   *  ——effort 是逐请求生成参数，切换不构成运行边界变化（不换窗）。 */
+  private fingerprintConfigView(config: import('../config/schema.ts').Config): import('../identity/service.ts').BoundaryConfigInput {
+    if (!this.d.settings) return config;
+    const model = this.d.settings.effectiveOrModel(config.openrouter.model);
+    if (model === config.openrouter.model) return config;
+    return { ...config, openrouter: { ...config.openrouter, model } };
+  }
+
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */
   private drv(): { kind: 'openrouter' | 'deepseek'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
@@ -383,7 +393,11 @@ export class TurnSupervisor {
       return { kind: 'deepseek', model: ds.model!, maxTokens: ds.max_output_tokens, reasoning: null, charsPerToken: ds.estimate_chars_per_token, sessionId: (roomId) => dsSessionId(roomId, ds.model!) };
     }
     const or = this.d.config.openrouter;
-    return { kind: 'openrouter', model: or.model!, maxTokens: or.max_output_tokens, reasoning: or.reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, or.model!, null) };
+    // 2026-10-08：模型/推理等级经运行时 override（未设回落 config；模型变化
+    // 经指纹触发受控换窗；effort 仅生成参数即时生效）
+    const model = this.d.settings?.effectiveOrModel(or.model) ?? or.model;
+    const reasoning = this.d.settings?.effectiveReasoning(or.reasoning) ?? or.reasoning;
+    return { kind: 'openrouter', model: model!, maxTokens: or.max_output_tokens, reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, model!, null) };
   }
 
   private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
@@ -1009,7 +1023,7 @@ export class TurnSupervisor {
     // 处置=旧窗 CONTEXT_STALE + 按**新材料**直接建新窗（跳过对失效内容的评审，不伪造检查凭证）。
     // WP3（H07）：身份失效路径保留"不外发失效旧身份"的特殊处理，但同样
     // 要求选集确认——不能借身份失效绕过人工选择。
-    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
+    const expectedFingerprint = contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest);
     const maxSeqNow = () => (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m;
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
       if (gate.state !== 'READY') {
@@ -1175,7 +1189,9 @@ export class TurnSupervisor {
       }
     }
     // §7 AUD：人格/运行边界指纹变化 → 旧窗 CONTEXT_STALE，禁止 resume 旧 session
-    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
+    // 2026-10-08：指纹按生效视图（含 or_model override；reasoning 已不参与指纹——
+    // 换思考深度不换窗，上下文全复用）
+    const expectedFingerprint = contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest);
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
       d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');

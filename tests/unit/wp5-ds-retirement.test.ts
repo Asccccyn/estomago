@@ -52,7 +52,8 @@ test('D01：迁移 18 退役 daily_digests——fresh 与 v16 旧库均幂等，
   assert.equal(dbA.prepare("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='daily_digests'").get().n, 0, 'fresh 库无 daily_digests');
   // 重复迁移幂等
   migrate(dbA, sha256Hex);
-  assert.equal((dbA.prepare('SELECT COALESCE(MAX(version),0) v FROM schema_migrations').get() as { v: number }).v, 18);
+  const latestV = (dbx) => (dbx.prepare('SELECT COALESCE(MAX(version),0) v FROM schema_migrations').get() as { v: number }).v;
+  assert.equal(latestV(dbA) >= 18, true, '迁移链至少到 18（退役生效）；后续版本随功能推进');
   dbA.close();
   // v16 旧库（构造到迁移 16 为止，含 daily_digests 数据）→ 升级退役
   const rootB = tempRoot('wp5-d01b-');

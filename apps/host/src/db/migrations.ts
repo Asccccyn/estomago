@@ -591,6 +591,19 @@ CREATE TABLE IF NOT EXISTS daily_digests(
 `,
   },
   {
+    version: 19,
+    name: 'runtime-settings',
+    // 她裁定 2026-10-08：聊天窗内置换模型/推理等级——override 持久正本
+    //（config 文件仍是默认值来源；改设置不重启）
+    sql: `
+CREATE TABLE IF NOT EXISTS runtime_settings(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+  },
+  {
     version: 18,
     name: 'retire-daily-digests',
     // WP5（MANUAL_HANDOFF_JUDGE_SWITCH_V1，她裁定 2026-10-08）：DS 昨天日结

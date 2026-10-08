@@ -29,7 +29,9 @@ export function contextFingerprint(config: {
     JSON.stringify(config.runtime.builtin_tools),
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
     config.runtime.provider ?? 'claude-agent-sdk',
-    config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort(), config.openrouter.reasoning]) : null,
+    // 2026-10-08 她裁定：reasoning 不参与指纹——推理等级是逐请求生成参数，
+    // 切换不构成运行边界变化（上下文/窗口全复用；型号仍参与）
+    config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort()]) : null,
     config.deepseek ? JSON.stringify([config.deepseek.model, config.deepseek.max_output_tokens]) : null,
   ];
   return sha256Hex(parts.join('\u0001'));

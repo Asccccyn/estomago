@@ -28,6 +28,7 @@ import { ManualSelectionService } from './context/manual-selection.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
 import { HostToolExecutor } from './runtime/host-tools.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
+import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -108,7 +109,13 @@ export class Host {
     // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源；窗口
     // 切换事务与 supervisor 共用同一服务实例（选集消费原子性）
     const selections = new ManualSelectionService(db);
-    const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config, selections);
+    // 2026-10-08 她裁定：运行时换模型/推理等级——override 持久正本；
+    // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
+    const settings = new RuntimeSettingsService(db);
+    const windows = new WindowManager(db, events, identity, paths.handoffsDir, () => {
+      const effModel = settings.effectiveOrModel(opts.config.openrouter.model);
+      return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
+    }, selections);
     const auth = new AuthService(paths);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
@@ -154,6 +161,7 @@ export class Host {
       checkpoint,
       trajectory,
       selections,
+      settings,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {
@@ -173,6 +181,7 @@ export class Host {
       auth,
       archiveSync,
       selections,
+      settings,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {
