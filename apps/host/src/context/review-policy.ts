@@ -23,6 +23,11 @@ export type ManifestEntry = {
   seq: number;
   origin: 'dialogue' | 'tool' | 'control' | 'retrieval' | 'protocol';
   visible: boolean;
+  // WP4（2026-10-08，§7.2）：conversation_read 片段级已见的码点半开区间
+  //（缺省=整条已见）。只在"实际进入下一模型请求"后由 supervisor 并入；
+  // 不另建第二套覆盖系统。
+  char_start?: number;
+  char_end?: number;
 };
 
 export type ReviewRangeItem = { id: string; revision: number; seq: number };
