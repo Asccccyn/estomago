@@ -458,7 +458,7 @@ async function loadOlderEvents() {
     const eventsSection = body.querySelector('.rec-section:last-child');
     const rows = (older.events ?? []).filter((e) => !seenEventIds.has(e.eventId)).map((e) => {
       seenEventIds.add(e.eventId);
-      const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
+      const label = { 'archive.sync': '原文同步', 'context.warning': '上下文提示', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
       return `<div class="rec-event">${fmtTime(e.occurredAt)}　${esc(label)}</div>`;
     }).join('');
     if (eventsSection && rows) eventsSection.insertAdjacentHTML('afterbegin', rows);
@@ -484,7 +484,7 @@ async function loadRecords() {
       <div>当前窗口：${s.epochId ?? '无'}</div></div>`);
     rows.push(`<div class="rec-section"><h4>上下文容量</h4>
       <div>当前输入估计：${fmtNum(s.context.estimatedInput)}（${s.context.estimateQuality}）　上次实际：${fmtNum(s.context.lastActualInput)}</div>
-      <div>预警线 ${fmtNum(s.context.effectiveWarning ?? 56000)} / 有效软线 ${fmtNum(s.context.effectiveSoft)}${s.context.hardCapacity == null ? '（模型容量未测量——不画百分比）' : ` / 硬容量 ${fmtNum(s.context.hardCapacity)}`}</div></div>`);
+      <div>有效软线 ${fmtNum(s.context.effectiveSoft)}${s.context.hardCapacity == null ? '（模型容量未测量——不画百分比）' : ` / 硬容量 ${fmtNum(s.context.hardCapacity)}`}</div></div>`); // WP5：预警线展示已退役
     rows.push(`<div class="rec-section"><h4>记忆与换窗</h4>
       <div>最近检查：${s.review ? `${s.review.status}${s.review.decision ? `（${s.review.decision === 'no_new_hold' ? '零新增' : `已完成 hold ${s.review.holdCount ?? 0} 条`}）` : ''}${s.review.rangeCount != null ? `　范围 ${s.review.rangeCount} 条` : ''}${s.review.isCurrentWindow ? '' : '（上一窗口的结果，换窗不抹去）'}` : '还没有检查过'}</div>
       <div>书签位置：${s.bookmark ? `已见到第 ${s.bookmark.seenSequence} 条（${fmtTime(s.bookmark.updatedAt)}）` : '本房间还没有成功 hold 书签'}</div>
@@ -504,12 +504,12 @@ async function loadRecords() {
     seenEventIds.clear();
     const evRows = (ev.events ?? []).slice().reverse().filter((e) => (seenEventIds.has(e.eventId) ? false : seenEventIds.add(e.eventId)))
       .map((e) => {
-        const label = { 'archive.sync': '原文同步', 'context.warning': '容量预警', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
+        const label = { 'archive.sync': '原文同步', 'context.warning': '上下文提示', 'review.sent': '换窗检查', 'review.failed': '检查失败', 'window.rotated': '已换窗' }[e.kind] ?? e.kind;
         const p = e.payload ?? {};
         const detail = e.kind === 'archive.sync' ? `：${p.state ?? ''}${p.messages ? ` ${p.messages} 条` : ''}`
-          : e.kind === 'context.warning' ? `：估计 ${p.estimate ?? '?'} / 软线 ${p.effective_soft ?? '?'}`
+          : e.kind === 'context.warning' ? `：${p.note ?? p.code ?? ''}`
           : e.kind === 'review.sent' ? `：关注 ${p.focus_count ?? '?'} 条`
-          : e.kind === 'window.rotated' ? `：${p.reason === 'idle' ? '长时间静默' : p.reason === 'manual' ? '手动' : p.reason === 'manual-stale-context' ? '手动（身份/上下文已变化）' : p.reason === 'capacity' ? '容量' : String(p.reason)}${p.review_id ? '（检查通过）' : ''}`
+          : e.kind === 'window.rotated' ? `：${p.reason === 'manual' ? '手动' : p.reason === 'manual-stale-context' ? '手动（身份/上下文已变化）' : p.reason === 'capacity' ? '容量' : String(p.reason)}${p.review_id ? '（检查通过）' : ''}`
           : '';
         return `<div class="rec-event">${fmtTime(e.occurredAt)}　${esc(label)}${esc(detail)}</div>`;
       }).join('');

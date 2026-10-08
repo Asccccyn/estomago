@@ -77,6 +77,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
     integrations: { mariposa: { base_url: 'http://m.test', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
+    windows: { soft_limit_tokens: 1500 },
     ...configOver,
   });
   const paths = buildPaths(root);
@@ -125,7 +126,7 @@ test('F04：同批 complete+hold（complete 在前），hold 结果未知 → �
   const ctx = compose(root, orT, mariposa);
   await say(ctx, '第一句', 'f1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  await say(ctx, '触发评审', 'f2', at(8));
+  await say(ctx, `触发评审${'很长的容量触发内容。'.repeat(500)}`, 'f2', at(8)); // 2026-10-08 晚间：静默不换窗——容量触发
   const review = ctx.db.prepare('SELECT status FROM rotation_reviews ORDER BY created_at DESC LIMIT 1').get() as { status: string };
   assert.equal(review.status, 'failed', 'hold unknown → complete 核验失败，评审不签发完成凭证');
   const effects = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").all() as Array<{ state: string }>;
@@ -222,7 +223,7 @@ test('F08：unknown hold 阻断评审；hold.status 恢复后放行并推进书�
   const win1 = ctx.windows.activeWindow('c1')!;
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM tool_side_effects WHERE state='unknown'").get() as { n: number }).n, 1, '503=unknown 不是 failed');
   holdFail = false;
-  const sub2 = await say(ctx, '次日触发评审', 'u2', at(26));
+  const sub2 = await say(ctx, `次日触发评审${'很长的容量触发内容。'.repeat(500)}`, 'u2', at(26));
   // 恢复探测：hold.status 有真实回执 → committed + 书签；随后评审正常完成并换窗
   const effect = ctx.db.prepare("SELECT state, memory_id FROM tool_side_effects WHERE kind='hold'").get() as { state: string; memory_id: string };
   assert.equal(effect.state, 'committed', '按原 operation_id 恢复成功');
@@ -249,7 +250,7 @@ test('F08b：hold.status 明确无提交证据 → 解除阻塞（failed_resolve
   const ctx = compose(root, orT, mariposa);
   await say(ctx, 'hold 未知', 'v1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const sub2 = await say(ctx, '触发评审', 'v2', at(26));
+  const sub2 = await say(ctx, `触发评审${'很长的容量触发内容。'.repeat(500)}`, 'v2', at(26));
   const effect = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").get() as { state: string };
   assert.equal(effect.state, 'failed_resolved', '服务端明确无提交证据=可判定的未提交（不是没发生）');
   assert.equal(ctx.checkpoint.forWindow(win1.id), null, '无提交则无书签');
