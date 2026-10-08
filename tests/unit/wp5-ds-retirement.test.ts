@@ -73,13 +73,14 @@ test('D01：迁移 18 退役 daily_digests——fresh 与 v16 旧库均幂等，
 test('D02：旧配置键披露——剥离不进运行时、不阻断启动、Config 回灌可往返', () => {
   const { config, issues } = validateConfig({
     digest: { provider: 'deepseek', max_messages: 400 },
-    windows: { recent_dialogue_budget_tokens: 12000 },
+    windows: { recent_dialogue_budget_tokens: 12000, warning_tokens: 56000 },
     runtime: { provider: 'deepseek' },
   });
   assert.equal(issues.length, 0, '退役键不是错误（不阻断启动）');
-  assert.deepEqual(config.retiredKeys, ['digest', 'windows.recent_dialogue_budget_tokens'], '结构化披露（不静默忽略）');
+  assert.deepEqual(config.retiredKeys, ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens'], '结构化披露（不静默忽略）');
   assert.equal('digest' in config, false);
   assert.equal('recent_dialogue_budget_tokens' in config.windows, false);
+  assert.equal('warning_tokens' in config.windows, false, '预警线配置键同样退役');
   assert.equal(config.reminders.enabled, true, 'reminders 开关保留（与摘要退役无关）');
   assert.notEqual(config.deepseek.model, undefined, 'DS 主聊天配置段保留');
   // Config 回灌当补丁（compose 惯用法）不再因 retiredKeys 报未知键
