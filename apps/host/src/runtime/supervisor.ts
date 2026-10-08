@@ -587,38 +587,6 @@ export class TurnSupervisor {
     };
   }
 
-  /** E05（MANUAL_HANDOFF_JUDGE_SWITCH_V1，2026-10-08）：旧窗评审输入重建——
-   *  无轨迹窗的评审范围/正文/已见清单按 12k 预算重建（审计 F06 完整回合组语义
-   *  原样保留）。这与新窗选集彻底分离：预算重建只服务"旧窗实际看过什么"的
-   *  证据单源，不再给任何新窗装历史（WP5 已退役自动携带）。
-   *  预算从 config 键退役为内部常量（D02：旧键不再被接受）。 */
-  private static readonly REVIEW_RECONSTRUCT_BUDGET_TOKENS = 12000;
-
-  private buildReviewReconstruction(o: {
-    conversationId: string;
-    materials: { identityText: string; rulesText: string; iText: string | null } | null;
-    dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
-  }): { selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; messages: OrMessage[] } {
-    const dv = this.drv();
-    const budgetChars = TurnSupervisor.REVIEW_RECONSTRUCT_BUDGET_TOKENS * (dv?.charsPerToken ?? 2.5);
-    const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
-    for (const m of o.dialogue) {
-      if (m.role === 'user' || groups.length === 0) groups.push([]);
-      groups[groups.length - 1]!.push(m);
-    }
-    const selected: typeof o.dialogue = [];
-    let used = 0;
-    for (let g = groups.length - 1; g >= 0; g--) {
-      const group = groups[g]!;
-      const groupChars = group.reduce((sum, m) => sum + m.content.length, 0);
-      if (used + groupChars > budgetChars) break;
-      used += groupChars;
-      selected.unshift(...group);
-    }
-    const messages: OrMessage[] = selected.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
-    return { selected, messages };
-  }
-
   // —— §4 换窗触发评估 + 换窗前一次提醒（同步执行于用户 turn 前；评审与凭证持久化）——
   private async rotateIfNeeded(o: {
     conversationId: string;
@@ -652,8 +620,12 @@ export class TurnSupervisor {
     // F-J-10（联合审计 2026-10-06）：无轨迹时 manifest=实际装载子集（buildEnvelope
     // selected，12k 预算内完整回合组）——此前用最近 200 条库投影，范围可含模型看不见
     // 的消息，签出覆盖信封外内容的 review（违反 §3.2.2"不扩大到全库"）
-    const manifest: ManifestEntry[] = trajManifest ?? this.buildReviewReconstruction({ conversationId: o.conversationId, materials: o.materials, dialogue }).selected
-      .map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+    // 2026-10-08 她裁定：无轨迹窗不再按 12k 预算猜测范围（原 F-J-10 回退已删）——
+    // 不知道它看过什么就明说不知道，与轨迹损坏同款处理，不签发范围凭证
+    if (trajRow === null) {
+      return { rotated: false, blocked: 'ROTATION_RANGE_UNKNOWN:窗口无已见记录（从未装配过信封）——不猜测评审范围；请先让本窗完成一轮，或明确放弃本次检查' };
+    }
+    const manifest: ManifestEntry[] = trajManifest!;
     // R12（复审 2026-10-07）：单一正本——范围、评审正文、seenMessages、
     // 书签高水位、凭证依据全部由同一份"实际评审输入清单"驱动。追赶投影
     // 此前只进范围与正文，已见集合仍取旧 manifest——catchup 原话进了评审
@@ -661,9 +633,10 @@ export class TurnSupervisor {
     const trajEarly = d.trajectory?.forWindow(o.window.id) ?? null;
     const trajMaxEarly = trajEarly?.manifest && trajEarly.manifest.length > 0 ? Math.max(...trajEarly.manifest.map((m) => m.seq)) : -1;
     const unifiedCatchup = trajEarly ? this.catchupEntries(o.conversationId, dialogue, trajMaxEarly) : [];
-    const effectiveManifest: ManifestEntry[] = trajRow !== null
-      ? [...(trajManifest ?? []), ...unifiedCatchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }))]
-      : manifest;
+    const effectiveManifest: ManifestEntry[] = [
+      ...(trajManifest ?? []),
+      ...unifiedCatchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true })),
+    ];
 
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
@@ -693,17 +666,7 @@ export class TurnSupervisor {
     // 临界消息在旧窗超软线却不触发提醒/换窗（既有问题，硬门不受影响）
     const nextWithIncoming = workingSet + Math.ceil(currentInputLen / dv.charsPerToken);
 
-    // §4.1：6h 比较=本条入站消息之前的 last_real_user_at（不先更新再相减）；occurred_at 在修订行上
-    const lastUser = (d.db.prepare(
-      `SELECT r.occurred_at FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       WHERE m.conversation_id = ? AND m.speaker = 'owner' AND m.sequence < ? ORDER BY m.sequence DESC LIMIT 1`,
-    ).get(o.conversationId, o.currentInputSequence) as { occurred_at: string | null } | undefined)?.occurred_at ?? null;
-    const currentAt = (d.db.prepare(
-      `SELECT r.occurred_at FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       WHERE m.conversation_id = ? AND m.sequence = ?`,
-    ).get(o.conversationId, o.currentInputSequence) as { occurred_at: string | null } | undefined)?.occurred_at ?? null;
-    const idleMs = lastUser && currentAt ? Math.max(0, Date.parse(currentAt) - Date.parse(lastUser)) : 0;
-
+        // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=64k 软线）
     const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比），idle 触发照常
     let plan: ReturnType<typeof rotationPlan> | null = null;
     if (!o.force) {
@@ -716,7 +679,6 @@ export class TurnSupervisor {
         reviewReserve: d.config.windows.review_reserve_tokens,
         safety: d.config.windows.safety_reserve_tokens,
         soft: d.config.windows.soft_limit_tokens,
-        idleMs,
       });
       // WP5（2026-10-08 §1.5 她裁定）：容量预警推送/展示退役——不再发布
       // 预警事件；软线计算（rotate 触发）与硬门（blocked_hard）照常保留。
@@ -727,7 +689,7 @@ export class TurnSupervisor {
       }
       if (plan.action !== 'rotate') return { rotated: false, blocked: null };
     }
-    const reason: 'idle' | 'capacity' | 'manual' = o.force ? 'manual' : plan!.reason === 'idle' ? 'idle' : 'capacity';
+    const reason: 'capacity' | 'manual' = o.force ? 'manual' : 'capacity';
 
     // WP3（2026-10-08 她裁定，H07 全入口统一）：换窗历史携带只经人工选集。
     // 需要换窗而无"本窗源"的已确认方案 → 持久 awaiting + 阻断本 attempt
@@ -823,13 +785,12 @@ export class TurnSupervisor {
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = trajEarly;
-    const fallbackBase = this.buildReviewReconstruction({ conversationId: o.conversationId, materials: o.materials, dialogue }).messages;
     // F-J-39 + R12：评审正文追赶投影=同一份 unifiedCatchup（与范围/已见清单
     // 同源——失败回合的已发输入/已发布原话有真实派发证据，属"截至本次已
     // 携带高水位"）
     const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
-    const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : fallbackBase;
+    const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
     const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: reviewMessages.filter((m) => m.role === 'system').length, prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
@@ -880,7 +841,7 @@ export class TurnSupervisor {
     return this.doRotate(o, reason, review.id, selectionId);
   }
 
-  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'idle' | 'capacity' | 'manual', reviewId: string | null, selectionId: string | null = null): { rotated: boolean; blocked: string | null } {
+  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'capacity' | 'manual', reviewId: string | null, selectionId: string | null = null): { rotated: boolean; blocked: string | null } {
     // 审计 F05：评审期间可能已被并发换窗（手动/上一轮迟到返回）——只对评审针对的那个旧窗切换，
     // 活动指针已变则本轮评审作废（凭证留档），绝不叠加第二次轮转。
     const active = this.d.windows.activeWindow(o.conversationId);

@@ -47,7 +47,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 2400 } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -137,40 +137,19 @@ test('F-J-09 断言有效性：tools 变化会被 assertAppendOnly 识别（对�
   assert.throws(() => assertAppendOnly(prev, changed), /PREFIX_PROFILE_CHANGED:tools/, 'tools 漂移被抓（previousPayload 用冻结快照后该断言在跨轮间有意义）');
 });
 
-test('F-J-10：无轨迹窗手动换窗——评审范围=实际装载子集，不含 12k 预算外的更旧消息', async () => {
-  const root = tempRoot('jab2-manual-');
+test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——如实阻断，不再按 12k 猜测范围', async () => {
+  const root = tempRoot('jab2-fj10-');
   let gen = 0;
-  const reviewLog: string[] = [];
-  const transport: OrTransport = async (payload) => {
-    const msgs = payload.messages as Array<{ role: string; content: unknown }>;
-    const lastUser = [...msgs].reverse().find((m) => m.role === 'user');
-    const textOf = (m: { content: unknown }): string => typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((b) => (b as { text?: string }).text ?? '').join('\n') : '';
-    const t = lastUser ? textOf(lastUser) : '';
-    gen++;
-    if (t.includes('宿主运行事件')) {
-      const rid = t.match(/review_id: (\S+)/)?.[1] ?? '';
-      reviewLog.push(t);
-      return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody(`g${gen}`, `rc-${gen}`, { review_id: rid, decision: 'no_new_hold' }).replace('memory_hold', 'context_review_complete')) };
-    }
-    return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) };
-  };
+  const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
   const ctx = compose(root, transport, mariposaOk);
-  await say(ctx, '种子回合', 's0', T0);
+  await say(ctx, '第一条', 'f1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  // 三大组历史（每组 ~10k 字，预算 12k token×1.5=18k 字符 → 只装最新 1-2 组）
-  for (let g = 0; g < 3; g++) {
-    await say(ctx, `组${g}标记_OG${g}_` + '字'.repeat(10000), `big${g}`, new Date(Date.parse(T0) + (g + 1) * 3600_000).toISOString());
-  }
   // 模拟"无轨迹窗口"（v11 前旧行/轨迹缺失场景）
-  ctx.db.prepare('DELETE FROM window_trajectories WHERE window_id = ?').run(win1.id);
+  ctx.db.prepare('DELETE FROM window_trajectories').run();
+  void win1;
   const r = await ctx.supervisor.manualRotate('c1');
-  assert.equal(r.ok, true, `手动换窗应成功（得到 ${JSON.stringify(r)}）`);
-  const row = ctx.db.prepare("SELECT range_keys_json FROM rotation_reviews WHERE room_id='c1' AND status='completed' ORDER BY updated_at DESC LIMIT 1").get() as { range_keys_json: string };
-  const keys = JSON.parse(row.range_keys_json) as string[];
-  assert.ok(keys.length > 0, '有非空范围（库里确有消息）');
-  // 范围 ⊆ 信封实际装载：最旧的大组不该在范围里（18k 预算装不下三组 30k）
-  const oldestIn = keys.some((k) => k.startsWith('big0'));
-  assert.equal(oldestIn, false, `无轨迹 fallback 范围应=selected 子集（最旧组 big0 不应入范围；实际 keys=${keys.length} 条）`);
+  assert.equal(r.ok, false, '无已见记录的窗口不再签发范围凭证');
+  assert.ok(r.ok === false && r.reason.startsWith('ROTATION_RANGE_UNKNOWN'), `如实阻断：${r.reason.slice(0, 60)}`);
   ctx.db.close();
 });
 
@@ -187,12 +166,12 @@ test('F-J-40：skipped_empty 凭证携带定位依据（basis_json）', async ()
   const H = 60 * 60 * 1000;
   await say(ctx, '第一条', 'b1', T0);
   await say(ctx, '第二条要记事', 'b2', new Date(Date.parse(T0) + H).toISOString());
-  await say(ctx, '第三条七小时后', 'b3', new Date(Date.parse(T0) + 8 * H).toISOString());
+  await say(ctx, `第三条长消息容量触发${'内容填充。'.repeat(400)}`, 'b3', new Date(Date.parse(T0) + 8 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低后容量触发
   const row = ctx.db.prepare("SELECT basis_json, status FROM rotation_reviews WHERE status='skipped_empty' LIMIT 1").get() as { basis_json: string | null; status: string } | undefined;
   assert.ok(row, '存在 skipped_empty 凭证');
   const basis = row!.basis_json ? JSON.parse(row!.basis_json) as Record<string, unknown> : null;
   assert.ok(basis, 'basis_json 已落（迁移 v14）');
-  assert.equal(basis!.reason, 'idle');
+  assert.equal(basis!.reason, 'capacity', '2026-10-08：静默触发已删——容量触发');
   assert.equal(basis!.bookmark_seen_sequence, 3, '依据含书签高水位');
   // R12（复审 2026-10-07）单一正本：失败回合的**已发输入**有真实派发证据，
   // 计入实际评审输入清单（追赶投影）——高水位含它，引用核对不再 QUOTE_MATCH_FAILED

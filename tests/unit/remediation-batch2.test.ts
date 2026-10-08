@@ -153,10 +153,10 @@ test('F06：预算裁剪留新丢旧；未实际携带的消息不进评审范�
     return hasTool ? textBody('g2', 'ok') : textBody('g1', '回复');
   });
   const root = tempRoot('rm2-f06-');
-  const ctx = compose(root, t, mariposaOk); // WP5：12k 键已退役（断言与预算无关）
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { soft_limit_tokens: 1800 } } }); // 2026-10-08 晚间：静默不换窗——容量触发
   await say(ctx, '这条旧消息非常长非常长非常长非常长非常长非常长', 'old1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  await say(ctx, '新消息短', 'new1', at(8)); // 8h → 触发评审（范围应只含实际携带的）
+  await say(ctx, `新消息很长以触发容量换窗${'内容填充。'.repeat(2200)}`, 'new1', at(8)); // 2026-10-08：8h 本身不再触发——软线压低后容量触发（范围应只含实际携带的）
   // 初始轨迹 manifest：旧长消息被预算裁掉、不在已见清单
   const traj1 = ctx.trajectory.forWindow(win1.id)!;
   const manifestIds = traj1.manifest.map((m) => m.seq);

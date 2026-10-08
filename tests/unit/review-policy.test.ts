@@ -73,10 +73,10 @@ test('completeReview：零 hold 放行、holds_completed 须真有成功写、un
   assert.throws(() => completeReview(review, { review_id: 'rev1', decision: 'no_new_hold' }, { ...inv, epochRevision: 4 }, []), /REVIEW_SCOPE_MISMATCH/, '普通聊天伪造 review 文字不能完成');
 });
 
-test('rotationPlan：56k 仅 warn、64k 进 rotate、容量不足 blocked、pending 只等安全点、idle 触发', () => {
+test('rotationPlan：64k 进 rotate、容量不足 blocked、pending 只等安全点、静默不换窗（2026-10-08 晚间她裁定）', () => {
   const base = { capacity: 200000, maxOutput: 8192 };
   const warn = rotationPlan({ ...base, currentInput: 57000 });
-  assert.equal(warn.action, 'warn', '56k 预警不自动叫模型');
+  assert.equal(warn.action, 'continue', 'WP5：预警动作退役——原 warn 区间不换窗不叫模型（行为等价）');
   const rotate = rotationPlan({ ...base, currentInput: 64500 });
   assert.equal(rotate.action, 'rotate');
   assert.equal(rotate.reason, 'capacity');
@@ -86,9 +86,8 @@ test('rotationPlan：56k 仅 warn、64k 进 rotate、容量不足 blocked、pend
   assert.equal(blocked.action, 'blocked_hard');
   const small = rotationPlan({ capacity: 80000, maxOutput: 8192, currentInput: 45000, soft: 40000 });
   assert.equal(small.action, 'rotate', 'C-O-T-R-S 压低有效软线（soft=40000<安全输入≈51808）：远小于 64k 也触发');
-  const idle = rotationPlan({ ...base, currentInput: 100, idleMs: 6 * 60 * 60 * 1000 });
-  assert.equal(idle.action, 'rotate');
-  assert.equal(idle.reason, 'idle');
-  const stillChat = rotationPlan({ ...base, currentInput: 100, idleMs: 5 * 60 * 60 * 1000 });
-  assert.equal(stillChat.action, 'continue', '累计收费大但当前输入小 → 不误换');
+  // 6h 静默触发已删除：idleMs 不再是输入，隔多久回来都不因时间换窗
+  const afterLongIdle = rotationPlan({ ...base, currentInput: 100 });
+  assert.equal(afterLongIdle.action, 'continue', '累计收费大但当前输入小 → 不误换（静默同样不换）');
+  assert.equal(afterLongIdle.reason, null);
 });
