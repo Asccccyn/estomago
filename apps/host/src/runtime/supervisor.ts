@@ -212,11 +212,20 @@ export class TurnSupervisor {
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
-  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null }> {
+  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
     let envelope = o.envelope;
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
+    // WP4（§7.2，2026-10-08）：conversation_read 的片段级已见——工具结果
+    // **实际进入下一模型请求**（onDispatch 首发即真实发出）才从 pending 转
+    // active；仅取到工具结果而未发送（停止/轮次耗尽/错误收口）不算已见（O05）
+    const toolSeenActive: ManifestEntry[] = [];
+    let roundPendingSeen: ManifestEntry[] = [];
+    const seqOf = (id: string): number => {
+      const row = d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(id) as { sequence: number } | undefined;
+      return row?.sequence ?? 0;
+    };
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
       const captured: MatchedCompleteBlock[] = [];
       let lastText = null as string | null; // 闭包内赋值（wrapped）：外层流分析按声明类型读（F-J-31）
@@ -247,7 +256,7 @@ export class TurnSupervisor {
         });
         if (planNow.action === 'blocked_hard') {
           d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
-          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null };
+          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
         }
       }
       const payloadJson = JSON.stringify(envelope);
@@ -258,6 +267,12 @@ export class TurnSupervisor {
           d.db.prepare('UPDATE provider_requests SET sent_at = ?, attempt_no = ?, generation_id = COALESCE(?, generation_id) WHERE id = ?')
             .run(nowIso, 0, info.generationId ?? null, prqId);
           lastPrqId = prqId;
+          // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
+          // 进入模型视野——pending 片段转正为已见
+          if (roundPendingSeen.length > 0) {
+            toolSeenActive.push(...roundPendingSeen);
+            roundPendingSeen = [];
+          }
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at, sent_at, attempt_no, generation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
@@ -282,17 +297,17 @@ export class TurnSupervisor {
       if (lastPrqId !== prqId) {
         d.db.prepare("UPDATE provider_requests SET outcome = 'SUPERSEDED_BY_RETRY' WHERE id = ? AND outcome IS NULL").run(prqId);
       }
-      if (result.outcome !== 'completed') return { result, finalMessages: null, lastSentMessages: null };
+      if (result.outcome !== 'completed') return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
         // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
         const finalMessages = lastText !== null && lastText.length > 0
           ? [...envelope.messages, { role: 'assistant', content: [{ type: 'text', text: lastText }] } as unknown as OrMessage]
           : envelope.messages;
-        return { result, finalMessages, lastSentMessages: envelope.messages };
+        return { result, finalMessages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive };
       }
       if (round === MAX_TOOL_ROUNDS) {
-        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null };
+        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // O05：轮次耗尽=末轮工具结果未发出，pending 不转正
       }
       prevEnvelope = envelope;
       // F13：已发布正文随 assistant 消息续传（原样保留，§2.2）；opaque reasoning 片段作为
@@ -324,7 +339,7 @@ export class TurnSupervisor {
       for (const t of ordered) {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
-          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null };
+          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
         }
         let args: Record<string, unknown>;
         try {
@@ -336,16 +351,26 @@ export class TurnSupervisor {
         const exec = await d.tools!.execute(t.tool_name ?? '', args, {
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
-          seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? [])], // D13：含流式期间新发布的已见原话
+          seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: result.requestId ?? lastPrqId,
         });
+        // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
+        // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
+        if (exec.seenAdditions && exec.seenAdditions.length > 0) {
+          for (const a of exec.seenAdditions) {
+            roundPendingSeen.push({
+              id: a.id, revision: a.revision, seq: seqOf(a.id), origin: 'tool', visible: true,
+              ...(a.char_start !== undefined ? { char_start: a.char_start, char_end: a.char_end } : {}),
+            });
+          }
+        }
         envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
-        return { result, finalMessages: null, lastSentMessages: null }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
+        return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null };
+    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
   }
 
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
@@ -828,7 +853,7 @@ export class TurnSupervisor {
         envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
         conversationId: o.conversationId, windowId: o.window.id,
         turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
-        seenMessages: effectiveManifest.map((m) => ({ id: m.id, revision: m.revision })), // D13+R12：评审视野=本窗实际已见清单（单一正本，含追赶投影）
+        seenMessages: effectiveManifest.map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })), // D13+R12：评审视野=本窗实际已见清单（单一正本，含追赶投影；WP4 保片段范围）
       }));
     } finally {
       if (this.active.get(stopKey) === reviewRun) this.active.delete(stopKey);
@@ -1357,7 +1382,7 @@ export class TurnSupervisor {
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单
     const orSeenBase: ReadonlyArray<{ id: string; revision: number }> = orTraj
-      ? [...(orTraj.manifest ?? []).map((m) => ({ id: m.id, revision: m.revision })), ...catchupManifest.map((m) => ({ id: m.id, revision: m.revision })), ...(inputMessage ? [{ id: inputMessage.id, revision: effective.revision }] : [])]
+      ? [...(orTraj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })), ...catchupManifest.map((m) => ({ id: m.id, revision: m.revision })), ...(inputMessage ? [{ id: inputMessage.id, revision: effective.revision }] : [])]
       : catchupManifest.map((m) => ({ id: m.id, revision: m.revision }));
     // 记账模型：信封驱动用各自明确型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = dv ? dv.model : d.config.runtime.model;
@@ -1531,6 +1556,7 @@ export class TurnSupervisor {
     let result: import('./runner.ts').RunnerRunResult;
     let orFinalMessages: OrMessage[] | null = null;
     let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
+    let orToolSeen: ManifestEntry[] = []; // WP4：conversation_read 片段已见（实际进入请求的部分）
     if (orEnvelope !== null) {
       // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
       const loop = await this.runOrToolLoop({
@@ -1544,6 +1570,7 @@ export class TurnSupervisor {
       result = loop.result;
       orFinalMessages = loop.finalMessages;
       orLastSentMessages = loop.lastSentMessages;
+      orToolSeen = loop.toolSeen;
     } else {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
@@ -1640,7 +1667,7 @@ export class TurnSupervisor {
       // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
-      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions]);
+      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen]);
     }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {
