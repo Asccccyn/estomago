@@ -67,10 +67,10 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
   return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
 };
 
-test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 失败 → 隔 7h 新消息触发换窗不再被 ROTATION_RANGE_INVALID 阻断', async () => {
+test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 失败 → 容量触发换窗不再被 ROTATION_RANGE_INVALID 阻断', async () => {
   const root = tempRoot('jab1-lock-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 2200 } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -117,8 +117,8 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   const manifest = JSON.parse(trajRow.manifest_json ?? '[]') as Array<{ seq: number }>;
   const manifestMax = manifest.reduce((mx, x) => Math.max(mx, x.seq), 0);
   assert.equal(manifestMax, 2, '失败回合输入不入清单——书签(3)高于清单高水位(2)，旧代码在此抛 BOOKMARK_OUTSIDE_MANIFEST');
-  // 第三步：隔 7h 新消息触发 idle 换窗——不再死锁
-  const t3 = await say('第三条：七小时后回来', 'j3', new Date(Date.parse(T0) + 8 * H).toISOString());
+  // 第三步：长消息越软线触发容量换窗（2026-10-08 晚间裁定：静默不再触发；时间仍隔 8h 以证明静默无关）——不再死锁
+  const t3 = await say(`第三条：${'很长的容量触发内容。'.repeat(160)}`, 'j3', new Date(Date.parse(T0) + 8 * H).toISOString());
   const att3 = db.prepare('SELECT state, window_id FROM attempts WHERE id = ?').get(t3.attemptId) as { state: string; window_id: string };
   assert.equal(att3.state, 'completed', '换窗触发后本回合正常收口（旧代码：整 turn 被 ROTATION_RANGE_INVALID 阻断）');
   const win2 = windows.activeWindow('c1')!;

@@ -18,6 +18,7 @@ import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
+import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
@@ -81,7 +82,7 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
 
 function compose(root: string, orTransport: OrTransport, mariposa: MariposaTransport, configOver: Record<string, unknown> = {}) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, ...configOver });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 1500 }, ...configOver });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -95,7 +96,8 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint });
+  const trajectory = new WindowTrajectoryService(db); // 生产恒接线——原测试缺线，此前靠 12k 回退掩盖
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, windows, reviews, checkpoint, supervisor };
 }
@@ -110,15 +112,15 @@ async function say(ctx: ReturnType<typeof compose>, content: string, clientMsgId
   return sub;
 }
 
-test('6h 静默触发：一次提醒 → 零新增放行 → CAS 换窗 → 本轮输入只进新窗一次', async () => {
+test('容量触发（原 6h 静默触发，2026-10-08 晚间裁定改为 64k 唯一基线）：一次提醒 → 零新增放行 → CAS 换窗 → 本轮输入只进新窗一次', async () => {
   const log: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];
   const root = tempRoot('orrot1-');
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'no_new_hold', log), mariposaOk);
   await say(ctx, '早上的话', 'r1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const sub2 = await say(ctx, '七小时后的新话题', 'r2', new Date(Date.parse(T0) + 7 * H).toISOString());
+  const sub2 = await say(ctx, `七小时后的新话题${'很长的容量触发内容。'.repeat(450)}`, 'r2', new Date(Date.parse(T0) + 7 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低+长消息容量触发
   // 评审发生了（一次、零新增）并完成
-  const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE status = 'completed'").get() as { id: string; decision: string };
+    const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE status = 'completed'").get() as { id: string; decision: string };
   assert.equal(reviewRow.decision, 'no_new_hold');
   assert.ok(log.some((l) => l.purpose === 'pre_rotate_review' && l.lastUser.includes(reviewRow.id)), '提醒携带宿主签发的 review_id');
   // 换窗：旧窗 CLOSED，新窗 ACTIVE，本轮 turn 在新窗
@@ -137,7 +139,7 @@ test('评审中 hold：收据落账本 → holds_completed 放行 → 书签推�
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'hold_then_complete', log), mariposaOk);
   await say(ctx, '第一天', 'h1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  await say(ctx, '第二天回来', 'h2', new Date(Date.parse(T0) + 25 * H).toISOString());
+  await say(ctx, `第二天回来${'很长的容量触发内容。'.repeat(450)}`, 'h2', new Date(Date.parse(T0) + 25 * H).toISOString());
   // 评审：模型 hold（真实收据）→ holds_completed → 换窗
   const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE status='completed'").get() as { decision: string; memory_ids_json: string };
   assert.equal(reviewRow.decision, 'holds_completed');
@@ -178,7 +180,7 @@ test('模型不完成评审：如实阻断（不伪造完成凭证、不换窗�
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk);
   await say(ctx, '第一句', 'b1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const sub2 = await say(ctx, '第二句', 'b2', new Date(Date.parse(T0) + 8 * H).toISOString());
+  const sub2 = await say(ctx, `第二句${'很长的容量触发内容。'.repeat(450)}`, 'b2', new Date(Date.parse(T0) + 8 * H).toISOString());
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub2.attemptId) as { state: string; blocked_reason: string };
   assert.equal(att.state, 'blocked');
   assert.ok(att.blocked_reason.startsWith('ROTATION_REVIEW_FAILED'), '评审未完成不绕过');
@@ -210,9 +212,10 @@ test('跨窗继承：旧窗书签前内容焦点豁免，不重复评审（§3.2
   const root = tempRoot('orrot6-');
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'hold_then_complete', log), mariposaOk);
   await say(ctx, '第一段话', 'k1', T0);
-  await say(ctx, '触发并 hold', 'k2', new Date(Date.parse(T0) + 25 * H).toISOString());
+  // 2026-10-08 晚间：静默不换窗——长消息容量触发（时间间隔保留证明与静默无关）
+  await say(ctx, `触发并 hold${'很长的容量触发内容。'.repeat(450)}`, 'k2', new Date(Date.parse(T0) + 25 * H).toISOString());
   assert.equal(log.filter((l) => l.purpose === 'pre_rotate_review').length, 2, '评审#1：hold + complete 两轮');
-  await say(ctx, '再触发', 'k3', new Date(Date.parse(T0) + 51 * H).toISOString());
+  await say(ctx, `再触发${'很长的容量触发内容。'.repeat(450)}`, 'k3', new Date(Date.parse(T0) + 51 * H).toISOString());
   // 评审#2 焦点只含未检查内容；k1/a1（书签之前/已检查）不重复出现
   const secondReview = log.filter((l) => l.purpose === 'pre_rotate_review')[2];
   assert.ok(secondReview, '评审#2 发生（有新未检查内容 k2/a2）');

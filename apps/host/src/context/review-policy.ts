@@ -142,15 +142,18 @@ export function completeReview(review: RotationReview, args: ReviewCompleteArgs,
 // —— 换窗调度（§4.1/§4.2）——
 export type RotationPlanResult = {
   effectiveSoft: number;
-  effectiveWarning: number;
+
   safeInput: number;
-  action: 'blocked_hard' | 'wait_safe' | 'rotate' | 'warn' | 'continue';
-  reason: 'capacity' | 'idle' | null;
+  action: 'blocked_hard' | 'wait_safe' | 'rotate' | 'continue'; // WP5：'warn' 预警动作已退役（原 warn 区间=continue，不叫模型不变）
+  // 2026-10-08 晚间她裁定：'idle' 触发退役——静默只是睡觉（醒来继续原窗，
+  // 缓存冷如实计费），换窗唯一自动基线=64k 软线
+  reason: 'capacity' | null;
 };
 
 /**
  * 64k 是一次输入的工作集软线（不是累计计费 token）；有效软线=min(soft, C-O-T-R-S)。
- * idle 比较由调用方传入已算好的间隔（§4.1：入站消息之前的 last_real_user_at，不先更新再相减）。
+ * 2026-10-08 晚间她裁定：6h 静默不再触发换窗（睡觉≠换窗）；换窗唯一自动
+ * 基线=软线，静默恢复继续原窗（缓存冷如实计费，不夜间定时调用）。
  */
 export function rotationPlan(input: {
   currentInput: number;
@@ -161,8 +164,6 @@ export function rotationPlan(input: {
   reviewReserve?: number;
   safety?: number;
   soft?: number;
-  warning?: number;
-  idleMs?: number;
   pendingTurn?: boolean;
   pendingRoute?: boolean;
 }): RotationPlanResult {
@@ -171,18 +172,16 @@ export function rotationPlan(input: {
   const reviewReserve = input.reviewReserve ?? 8000;
   const safety = input.safety ?? 4000;
   const soft = input.soft ?? 64000;
-  const warning = input.warning ?? 56000;
-  const idleMs = input.idleMs ?? 0;
-  const nums = [input.currentInput, nextInput, input.capacity, input.maxOutput, toolReserve, reviewReserve, safety, soft, warning, idleMs];
+  const nums = [input.currentInput, nextInput, input.capacity, input.maxOutput, toolReserve, reviewReserve, safety, soft];
   requireThat(nums.every(nonNegInt), 'TOKEN_OR_TIME_INVALID');
   const safeInput = input.capacity - input.maxOutput - toolReserve - reviewReserve - safety;
   requireThat(safeInput > 0, 'MODEL_CAPACITY_TOO_SMALL');
   const effectiveSoft = Math.min(soft, safeInput);
-  const effectiveWarning = Math.max(0, Math.min(warning, effectiveSoft - 8000));
-  const common = { effectiveSoft, effectiveWarning, safeInput };
+  const common = { effectiveSoft, safeInput };
   if (input.currentInput > safeInput) return { ...common, action: 'blocked_hard', reason: 'capacity' };
-  const reason = idleMs >= 6 * 60 * 60 * 1000 ? 'idle' : Math.max(input.currentInput, nextInput) >= effectiveSoft ? 'capacity' : null;
+  const reason = Math.max(input.currentInput, nextInput) >= effectiveSoft ? 'capacity' : null;
   if (reason && ((input.pendingTurn ?? false) || (input.pendingRoute ?? false))) return { ...common, action: 'wait_safe', reason };
   if (reason) return { ...common, action: 'rotate', reason };
-  return { ...common, action: Math.max(input.currentInput, nextInput) >= effectiveWarning ? 'warn' : 'continue', reason: null };
+  // WP5：预警线动作退役——原 warn 区间（预警线~软线）按 continue（不换窗不叫模型，行为等价）
+  return { ...common, action: 'continue', reason: null };
 }
