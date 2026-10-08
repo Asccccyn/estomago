@@ -25,6 +25,7 @@ import { MariposaClient } from './integrations/mariposa/client.ts';
 import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
 import { DailyDigestService } from './digest/daily.ts';
 import { RotationReviewService } from './context/rotation-review.ts';
+import { ManualSelectionService } from './context/manual-selection.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
 import { HostToolExecutor } from './runtime/host-tools.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
@@ -105,7 +106,10 @@ export class Host {
     const reasoning = new ReasoningService(db, events);
     const usage = new UsageCollector(db);
     const routing = new RoutingService(db, events, messages);
-    const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config);
+    // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源；窗口
+    // 切换事务与 supervisor 共用同一服务实例（选集消费原子性）
+    const selections = new ManualSelectionService(db);
+    const windows = new WindowManager(db, events, identity, paths.handoffsDir, opts.config, selections);
     const auth = new AuthService(paths);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
@@ -152,6 +156,7 @@ export class Host {
       reviews,
       checkpoint,
       trajectory,
+      selections,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {
@@ -170,6 +175,7 @@ export class Host {
       supervisor,
       auth,
       archiveSync,
+      selections,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {

@@ -590,6 +590,35 @@ CREATE TABLE IF NOT EXISTS daily_digests(
 );
 `,
   },
+  {
+    version: 17,
+    name: 'manual-context-selections',
+    // WP3（MANUAL_HANDOFF_JUDGE_SWITCH_V1，她裁定 2026-10-08）：人工历史
+    // 选集——新窗历史携带的唯一来源（引用既有消息，不复制正文）。
+    // awaiting(items=NULL，未提交≠空选) / confirmed(items='[]'=明确空选)
+    // / consumed / cancelled；同一源窗至多一条活跃方案（部分唯一索引）。
+    sql: `
+CREATE TABLE IF NOT EXISTS context_selections(
+  selection_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  source_window_id TEXT NOT NULL,
+  expected_window_revision INTEGER NOT NULL,
+  source_cutoff_sequence INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('awaiting','confirmed','consumed','cancelled')),
+  items_json TEXT,
+  selection_hash TEXT,
+  target_window_id TEXT,
+  idempotency_key TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_selections_active
+  ON context_selections(conversation_id, source_window_id)
+  WHERE status IN ('awaiting','confirmed');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_context_selections_idem
+  ON context_selections(idempotency_key) WHERE idempotency_key IS NOT NULL;
+`,
+  },
 ];;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用

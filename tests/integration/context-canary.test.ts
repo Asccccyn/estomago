@@ -61,7 +61,11 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
   await pollUntil(async () => (await (await api('GET', `/api/v1/turns/${s2.turn_id}`)).json()).turn.state === 'completed', 8000);
 
   // B. 换窗：handoff / bootstrap candidate / identity receipt 0 命中
+  // WP3（2026-10-08 她裁定）：换窗历史只经人工选集——先确认选集（空选，
+  // 本测关注 CoT canary 而非历史）再换窗
   const win = host.windows.activeWindow('primary')!;
+  const confirm = await api('POST', `/api/v1/windows/${win.id}/context-selection/confirm`, { explicit_empty: true, idempotency_key: 'canary-sel' });
+  assert.equal(confirm.status, 200, `选集确认应 200：${await confirm.text()}`);
   const rot = await api('POST', `/api/v1/windows/${win.id}/rotate`, {});
   assert.equal(rot.status, 200);
   await sleep(200);

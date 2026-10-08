@@ -62,6 +62,7 @@ export type SupervisorDeps = {
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   digest?: { yesterdaySection(signal?: AbortSignal): Promise<string | null>; ensureYesterday(signal?: AbortSignal): Promise<{ day: string; summary: string } | null> }; // 昨天日结（她裁定 2026-10-07；未注入则无日结段）
+  selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -517,6 +518,12 @@ export class TurnSupervisor {
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
     bootText?: string | null;
+    /** WP3（2026-10-08）：人工选集装配——严格按确认的引用集合装载（E04：
+     *  不把 recent_dialogue_budget_tokens 设 0 代替拆分）。给出即忽略
+     *  dialogue 的自动预算挑选；可为空数组=明确空选（不带历史）。 */
+    selectedMessages?: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
+    /** 选集间隙元数据（服务端按 sequence 计算，不相邻段如实披露） */
+    selectionGaps?: Array<{ after_seq: number; before_seq: number; skipped: number }>;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
     const dv = this.drv()!;
     const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * dv.charsPerToken; // 粗估（§11.1 估计口径，不冒充精确）
@@ -530,22 +537,33 @@ export class TurnSupervisor {
     if (o.bootText && o.bootText.length > 0) {
       messages.push({ role: 'system', content: [{ type: 'text', text: o.bootText }] });
     }
-    // F06 + D08（审计 3655d60）：从最新**完整回合组**向前装预算（一组=一条用户消息+其后连续助手回复）——
-    // 整组放不下就整组排除（留旧丢新不允许，留答丢问也不允许：不产生缺用户输入的孤立助手回复）。
-    // 旧实现按单消息累计，预算临界时会留下回答却截掉问题。
-    const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
-    for (const m of o.dialogue) {
-      if (m.role === 'user' || groups.length === 0) groups.push([]);
-      groups[groups.length - 1]!.push(m);
-    }
-    const selected: typeof o.dialogue = [];
-    let used = 0;
-    for (let g = groups.length - 1; g >= 0; g--) {
-      const group = groups[g]!;
-      const groupChars = group.reduce((s, m) => s + m.content.length, 0);
-      if (used + groupChars > budgetChars) break; // 整组放不下：本组及更旧全部不装
-      used += groupChars;
-      selected.unshift(...group);
+    let selected: typeof o.dialogue = [];
+    if (o.selectedMessages) {
+      // WP3：人工选集——顺序=服务端 sequence（已由选集服务排好）；
+      // 不要求相邻（间隙由 selectionGaps 元数据披露，不假装连续对话）
+      selected = o.selectedMessages.map((m) => ({ id: m.message_id, revision: m.revision, sequence: m.sequence, role: m.role, content: m.content }));
+      if (o.selectionGaps && o.selectionGaps.length > 0) {
+        const gapNote = `[context/selection-gaps：以下位置之间有未选入的历史消息，按你的选择跳过——${o.selectionGaps.map((g) => `seq ${g.after_seq} 与 ${g.before_seq} 之间略过 ${g.skipped} 条`).join('；')}]`;
+        messages.push({ role: 'system', content: [{ type: 'text', text: gapNote }] });
+      }
+    } else {
+      // F06 + D08（审计 3655d60）：从最新**完整回合组**向前装预算（一组=一条用户消息+其后连续助手回复）——
+      // 整组放不下就整组排除（留旧丢新不允许，留答丢问也不允许：不产生缺用户输入的孤立助手回复）。
+      // 旧实现按单消息累计，预算临界时会留下回答却截掉问题。
+      // 【WP5 待退役】自动 12k 携带——人工选集全面接通后删除该回退。
+      const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
+      for (const m of o.dialogue) {
+        if (m.role === 'user' || groups.length === 0) groups.push([]);
+        groups[groups.length - 1]!.push(m);
+      }
+      let used = 0;
+      for (let g = groups.length - 1; g >= 0; g--) {
+        const group = groups[g]!;
+        const groupChars = group.reduce((s, m) => s + m.content.length, 0);
+        if (used + groupChars > budgetChars) break; // 整组放不下：本组及更旧全部不装
+        used += groupChars;
+        selected.unshift(...group);
+      }
     }
     for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
@@ -674,6 +692,27 @@ export class TurnSupervisor {
     }
     const reason: 'idle' | 'capacity' | 'manual' = o.force ? 'manual' : plan!.reason === 'idle' ? 'idle' : 'capacity';
 
+    // WP3（2026-10-08 她裁定，H07 全入口统一）：换窗历史携带只经人工选集。
+    // 需要换窗而无"本窗源"的已确认方案 → 持久 awaiting + 阻断本 attempt
+    //（blocked 即释放房间串行锁——H08：等她确认期间 confirm 可达，输入
+    // 已保存；未提交≠空选，绝不自动携带/自动清空）。旧窗 hold 评审范围
+    // 不受选集影响（selection/seen/hold_checkpoint 三清单分离，H10）。
+    let selectionId: string | null = null;
+    if (d.selections) {
+      const confirmed = d.selections.confirmedFor(o.conversationId);
+      if (confirmed && confirmed.source_window_id === o.window.id) {
+        selectionId = confirmed.selection_id;
+      } else {
+        const awaiting = d.selections.ensureAwaiting({
+          conversationId: o.conversationId,
+          sourceWindowId: o.window.id,
+          expectedWindowRevision: o.window.revision,
+          cutoffSequence: o.currentInputSequence - 1,
+        });
+        return { rotated: false, blocked: `CONTEXT_SELECTION_REQUIRED:换窗前请确认新窗携带哪些历史原文（selection_id=${awaiting.selection_id}）；当前输入已保存，确认后自动继续` };
+      }
+    }
+
     // 审计 F05：评审互斥——同窗已有活跃评审（自动/手动）时不重复开评审，恢复走同 review_id 有界重试
     if (d.reviews.activeForWindow(o.window.id)) {
       return { rotated: false, blocked: o.force ? 'REVIEW_IN_PROGRESS（评审进行中，手动换窗被拒）' : 'ROTATION_ALREADY_IN_PROGRESS' };
@@ -692,7 +731,7 @@ export class TurnSupervisor {
         reason: 'reminders_disabled',
         note: '她裁定开关：关=不发评审提醒、不做昨天日结',
       });
-      return this.doRotate(o, reason, null);
+      return this.doRotate(o, reason, null, selectionId);
     }
 
     // —— §3.2 评审范围：书签之后、扣除已完成同范围凭证的真实原话 ——
@@ -719,7 +758,7 @@ export class TurnSupervisor {
     }
     const rangeKeys = range.map(rawKey);
     if (d.reviews.completedForRange(o.conversationId, rangeKeys)) {
-      return this.doRotate(o, reason, null); // 同范围有效凭证：直接换窗不再次收费检查（§4.3）
+      return this.doRotate(o, reason, null, selectionId); // 同范围有效凭证：直接换窗不再次收费检查（§4.3）
     }
     if (range.length === 0) {
       // F-J-40：空范围凭证携带定位依据（书签/清单高水位/触发原因/凭证计数）——
@@ -732,7 +771,7 @@ export class TurnSupervisor {
         manifest_entries: effectiveManifest.length,
         carried_exempt: carriedExempt.length,
       }); // §3.2.5：空范围不叫模型
-      return this.doRotate(o, reason, null);
+      return this.doRotate(o, reason, null, selectionId);
     }
     // §3.3 有界恢复（审计 P2-1）：同窗评审失败达上限后不再自动发评审（每次评审都是真实付费请求）。
     // 恢复路径：评审成功换新窗（新窗计数自动重置）或人工处理（修提示/型号后手动换窗）。
@@ -800,24 +839,160 @@ export class TurnSupervisor {
       d.events.publish('review.failed', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { code: result.errorCode ?? 'MODEL_DID_NOT_COMPLETE' } });
       return { rotated: false, blocked: `ROTATION_REVIEW_FAILED:${result.errorCode ?? 'MODEL_DID_NOT_COMPLETE'}` };
     }
-    return this.doRotate(o, reason, review.id);
+    return this.doRotate(o, reason, review.id, selectionId);
   }
 
-  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'idle' | 'capacity' | 'manual', reviewId: string | null): { rotated: boolean; blocked: string | null } {
+  private doRotate(o: { conversationId: string; window: import('../windows/manager.ts').WindowRow; gate: import('../identity/service.ts').GateResult; currentInputSequence: number }, reason: 'idle' | 'capacity' | 'manual', reviewId: string | null, selectionId: string | null = null): { rotated: boolean; blocked: string | null } {
     // 审计 F05：评审期间可能已被并发换窗（手动/上一轮迟到返回）——只对评审针对的那个旧窗切换，
     // 活动指针已变则本轮评审作废（凭证留档），绝不叠加第二次轮转。
     const active = this.d.windows.activeWindow(o.conversationId);
     if (!active || active.id !== o.window.id) {
       return { rotated: false, blocked: 'ROTATION_SUPERSEDED:窗口已被并发切换，本次评审结果留档不重复换窗' };
     }
-    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null });
+    // WP3：选集消费与窗口指针切换同一事务（E07 原子提交——selection
+    // consumed + target_window_id + ACTIVE 指针要么全成要么全回滚）
+    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
-    this.d.events.publish('window.rotated', { conversationId: o.conversationId, entityRef: rotated.window.id, scope: 'private', payload: { reason, review_id: reviewId } });
+    this.d.events.publish('window.rotated', { conversationId: o.conversationId, entityRef: rotated.window.id, scope: 'private', payload: { reason, review_id: reviewId, selection_id: selectionId } });
     return { rotated: true, blocked: null };
   }
 
   /** 审计 F05：手动换窗入口——与自动换窗同一条评审管线（同互斥/恢复/未决检查/CAS），
    *  不再存在绕过评审的直转旁路。SDK 驱动（无评审线）保持 v0.2.2 行为（running/票据检查仍在 manager）。 */
+  // —— WP3（MANUAL_HANDOFF_JUDGE_SWITCH_V1）：人工选集的宿主面 ——
+
+  /** 选集容量估计上下文（§6.2：选集+A/B 系统段+待回答输入一起算；
+   *  未知 tokenizer 标 rough；界=有效软线 min(soft, C-O-T-R-S)——装得下
+   *  还要过请求级容量终检，这里只做选集级预检）。 */
+  private selectionEstimateContext(tailInputChars: number): { charsPerToken: number; systemChars: number; tailInputChars: number; capacityBoundTokens: number } | null {
+    const d = this.d;
+    const dv = this.drv();
+    if (!dv) {
+      // SDK 驱动（无信封映射）：粗估回退——不做选集级容量预检（请求级
+      // 容量门仍在 SDK 侧），系统段记 0、界=不设限；tokenizer 未知=rough
+      return { charsPerToken: 1.5, systemChars: 0, tailInputChars, capacityBoundTokens: Number.MAX_SAFE_INTEGER };
+    }
+    const gate = d.identity.evaluateGate(d.db, { driver: dv.kind });
+    const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
+    const systemChars = (materials?.identityText.length ?? 0) + (materials?.rulesText.length ?? 0) + (materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
+    const w = d.config.windows;
+    const capacity = w.model_context_capacity ?? Number.MAX_SAFE_INTEGER;
+    const bound = Math.min(w.soft_limit_tokens, capacity - dv.maxTokens - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens);
+    return { charsPerToken: dv.charsPerToken, systemChars, tailInputChars, capacityBoundTokens: Math.max(0, bound) };
+  }
+
+  /** 选择面截止水位：最后一条"已了结"消息（其 turn 非 pending/blocked）——
+   *  待回答与排队输入不得作为历史带入（H04）。 */
+  private selectionCutoffSequence(conversationId: string): number {
+    const row = this.d.db.prepare(
+      `SELECT MAX(m.sequence) AS m FROM messages m
+       LEFT JOIN turns t ON t.input_message_id = m.id
+       WHERE m.conversation_id = ? AND (t.id IS NULL OR t.state NOT IN ('pending','blocked'))`,
+    ).get(conversationId) as { m: number | null };
+    return row?.m ?? 0;
+  }
+
+  /** 待回答/排队输入的总字符（容量估计并入"当前待回答输入"，H04/H05）。 */
+  private selectionPendingInputChars(conversationId: string): number {
+    const row = this.d.db.prepare(
+      `SELECT COALESCE(SUM(LENGTH(r.content)), 0) AS chars FROM messages m
+       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+       JOIN turns t ON t.input_message_id = m.id
+       WHERE m.conversation_id = ? AND t.state IN ('pending','blocked')`,
+    ).get(conversationId) as { chars: number };
+    return row?.chars ?? 0;
+  }
+
+  /** preview（§6.2）：只读核验——不跑模型、不 hold、不换窗、不写选集。 */
+  selectionPreview(conversationId: string, windowId: string, items: Array<{ message_id: string; revision?: number; content_hash?: string }>): { ok: true; result: Record<string, unknown> } | { ok: false; error: { code: string } & Record<string, unknown> } {
+    const d = this.d;
+    if (!d.selections) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '选集服务未接线' } };
+    const win = d.windows.get(windowId);
+    if (!win || win.conversation_id !== conversationId) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_WINDOW', detail: '窗口不存在或不属于该房间' } };
+    const est = this.selectionEstimateContext(this.selectionPendingInputChars(conversationId));
+    if (!est) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '无可用信封驱动（聊天模型未配置）' } };
+    const cutoff = this.selectionCutoffSequence(conversationId);
+    return d.selections.preview({ conversationId, sourceWindowId: windowId, expectedWindowRevision: win.revision, items, cutoffSequence: cutoff, estimate: est, capacityBoundTokens: est.capacityBoundTokens });
+  }
+
+  /** confirm（§6.2/§6.3）：幂等确认；有被选集阻断的待回答输入时确认后
+   *  自动换窗+原 input_message_id 恢复（只发一次，不重复 submit）。 */
+  async selectionConfirm(o: {
+    conversationId: string;
+    windowId: string;
+    items: Array<{ message_id: string; revision?: number; content_hash?: string }>;
+    explicitEmpty: boolean;
+    idempotencyKey: string | null;
+    expectedWindowRevision?: number;
+  }): Promise<{ ok: true; selection_id: string; rotated: boolean; windowId: string | null; resumed: number } | { ok: false; error: { code: string } & Record<string, unknown> }> {
+    const d = this.d;
+    if (!d.selections) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '选集服务未接线' } };
+    const win = d.windows.get(o.windowId);
+    const isSentinel = o.windowId.startsWith('csel-src-');
+    if (!win && !isSentinel) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_WINDOW', detail: '窗口不存在或不属于该房间' } };
+    if (win && win.conversation_id !== o.conversationId) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_WINDOW', detail: '窗口不属于该房间' } };
+    const est = this.selectionEstimateContext(this.selectionPendingInputChars(o.conversationId));
+    if (!est) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '无可用信封驱动（聊天模型未配置）' } };
+    const cutoff = this.selectionCutoffSequence(o.conversationId);
+    const confirmed = d.selections.confirm({
+      conversationId: o.conversationId,
+      sourceWindowId: o.windowId,
+      // 显式携带的 expected_window_revision 优先（§6.2 preview→confirm
+      // 期间窗口被并发轮转的 CAS；未携带按当前窗口修订）
+      expectedWindowRevision: o.expectedWindowRevision ?? (win ? win.revision : 0),
+      items: o.items,
+      explicitEmpty: o.explicitEmpty,
+      idempotencyKey: o.idempotencyKey,
+      cutoffSequence: cutoff,
+      estimate: est,
+      capacityBoundTokens: est.capacityBoundTokens,
+    });
+    if (!confirmed.ok) return { ok: false, error: confirmed.error as { code: string } & Record<string, unknown> };
+    // 有被选集阻断的待回答输入 → 确认即恢复（换窗/建窗 + 原输入重派一次）
+    const blockedRows = d.db.prepare(
+      "SELECT COUNT(*) n FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' WHERE t.conversation_id = ? AND t.state='blocked'",
+    ).get(o.conversationId) as { n: number };
+    if (blockedRows.n === 0) {
+      return { ok: true, selection_id: confirmed.selection.selection_id, rotated: false, windowId: null, resumed: 0 };
+    }
+    const resumed = await this.resumeAfterSelectionConfirm(o.conversationId);
+    return resumed.ok
+      ? { ok: true, selection_id: confirmed.selection.selection_id, rotated: true, windowId: resumed.windowId, resumed: resumed.resumed }
+      : { ok: false, error: { code: 'CONTEXT_SELECTION_RESUME_FAILED', detail: resumed.reason.slice(0, 200), selection_id: confirmed.selection.selection_id, resumed: resumed.resumed } };
+  }
+
+  /** 确认后的恢复（§6.3）：同一串行队列 → 换窗（或无活动窗时建窗）→
+   *  以原 input_message_id 重派被阻断输入（不 submitUserMessage，不重复
+   *  归档）。旧窗 hold 提醒/unknown 恢复在换窗管线内照常执行。 */
+  async resumeAfterSelectionConfirm(conversationId: string): Promise<{ ok: true; windowId: string; resumed: number } | { ok: false; reason: string; resumed: number }> {
+    return this.runSerialized(conversationId, async () => {
+      const d = this.d;
+      let rot: { ok: true; windowId: string } | { ok: false; reason: string };
+      if (d.windows.activeWindow(conversationId)) {
+        rot = await this.manualRotateInner(conversationId);
+      } else {
+        // 无活动窗（H13 分支的恢复）：按已确认选集直接建窗
+        const dv = this.drv();
+        const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
+        const confirmed = d.selections?.confirmedFor(conversationId) ?? null;
+        const selId = confirmed && confirmed.status === 'confirmed' ? confirmed.selection_id : undefined;
+        const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId });
+        rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
+      }
+      const rows = d.db.prepare(
+        "SELECT DISTINCT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' WHERE t.conversation_id = ? AND t.state='blocked'",
+      ).all(conversationId) as Array<{ id: string }>;
+      for (const r of rows) {
+        tx(d.db, () => {
+          d.db.prepare("UPDATE attempts SET state='pending', blocked_reason=NULL WHERE turn_id=? AND state='blocked' AND blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%'").run(r.id);
+          d.db.prepare("UPDATE turns SET state='pending', completed_at=NULL WHERE id=? AND state='blocked'").run(r.id);
+        });
+        this.enqueue(r.id); // 链尾排队（当前串行任务结束后执行）
+      }
+      return rot.ok ? { ok: true, windowId: rot.windowId, resumed: rows.length } : { ok: false, reason: rot.reason, resumed: rows.length };
+    });
+  }
+
   async manualRotate(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
     // 审计 F05：手动换窗占用房间串行链——与 turn/自动评审/另一个手动调用互斥，
     // 评审等待期间新 chat 排队而非并发发送
@@ -833,29 +1008,64 @@ export class TurnSupervisor {
     // D02（审计 3655d60）：手动换窗与普通回合同一上下文指纹门——身份/规则/驱动变化后旧窗轨迹失效，
     // 不得把旧 system/协议轨迹再发给模型评审（§4.4 安全性优先于提醒：被撤换的身份内容不外发）。
     // 处置=旧窗 CONTEXT_STALE + 按**新材料**直接建新窗（跳过对失效内容的评审，不伪造检查凭证）。
+    // WP3（H07）：身份失效路径保留"不外发失效旧身份"的特殊处理，但同样
+    // 要求选集确认——不能借身份失效绕过人工选择。
     const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
+    const maxSeqNow = () => (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m;
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
       if (gate.state !== 'READY') {
         d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
         return { ok: false, reason: `IDENTITY_BLOCKED：${gate.reasons.join('; ')}（旧窗已标失效，新材料就绪后重试手动换窗）` };
       }
+      // WP3 选集门（与主线同一规则：无本窗源的已确认方案 → awaiting 阻断）
+      let staleSelectionId: string | null = null;
+      if (d.selections) {
+        const confirmed = d.selections.confirmedFor(conversationId);
+        if (confirmed && confirmed.source_window_id === window.id) {
+          staleSelectionId = confirmed.selection_id;
+        } else {
+          const awaiting = d.selections.ensureAwaiting({
+            conversationId, sourceWindowId: window.id,
+            expectedWindowRevision: window.revision,
+            cutoffSequence: maxSeqNow(),
+          });
+          return { ok: false, reason: `CONTEXT_SELECTION_REQUIRED:身份变化换窗同样需要确认历史选集（selection_id=${awaiting.selection_id}）` };
+        }
+      }
       // 先按旧窗 CAS 轮转（rotate 需要 ACTIVE 旧窗），成功后给旧窗补记失效原因——
       // 旧窗终态=CLOSED+ROTATED_CONTEXT_STALE，新窗按新材料装配，失效轨迹零外发。
       const r = d.windows.rotate({
         conversationId, gate,
-        maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m,
+        maxSequence: maxSeqNow(),
         assembledOptions: null,
+        selectionId: staleSelectionId ?? undefined,
       });
       if (r.ok) {
         d.db.prepare("UPDATE windows SET blocked_reason = 'ROTATED_CONTEXT_STALE' WHERE id = ?").run(window.id);
-        d.events.publish('window.rotated', { conversationId, entityRef: r.window.id, scope: 'private', payload: { reason: 'manual-stale-context', review_id: null, stale_window: window.id } });
+        d.events.publish('window.rotated', { conversationId, entityRef: r.window.id, scope: 'private', payload: { reason: 'manual-stale-context', review_id: null, stale_window: window.id, selection_id: staleSelectionId } });
         return { ok: true, windowId: r.window.id };
       }
       d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
       return { ok: false, reason: `IDENTITY_STALE_ROTATE_FAILED:${r.reason.slice(0, 80)}` };
     }
     if (!dv || !d.tools || !d.reviews || !d.checkpoint) {
-      const r = d.windows.rotate({ conversationId, gate, maxSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(conversationId) as { m: number }).m, assembledOptions: null });
+      // SDK 驱动（无评审线）保持 v0.2.2 行为 + WP3 选集门（H07 全入口统一：
+      // SDK 新窗用独立 session 与同一引用选集，不残留自动历史回退）
+      let sdkSelectionId: string | null = null;
+      if (d.selections) {
+        const confirmed = d.selections.confirmedFor(conversationId);
+        if (confirmed && confirmed.source_window_id === window.id) {
+          sdkSelectionId = confirmed.selection_id;
+        } else {
+          const awaiting = d.selections.ensureAwaiting({
+            conversationId, sourceWindowId: window.id,
+            expectedWindowRevision: window.revision,
+            cutoffSequence: maxSeqNow(),
+          });
+          return { ok: false, reason: `CONTEXT_SELECTION_REQUIRED:换窗前请确认新窗携带哪些历史原文（selection_id=${awaiting.selection_id}）` };
+        }
+      }
+      const r = d.windows.rotate({ conversationId, gate, maxSequence: maxSeqNow(), assembledOptions: null, selectionId: sdkSelectionId ?? undefined });
       return r.ok ? { ok: true, windowId: r.window.id } : { ok: false, reason: r.reason };
     }
     if (gate.state !== 'READY') return { ok: false, reason: `IDENTITY_BLOCKED：${gate.reasons.join('; ')}（旧窗保持 ACTIVE）` };
@@ -935,6 +1145,29 @@ export class TurnSupervisor {
     // —— 窗口与 session（AUD-03）——
     let window = d.windows.activeWindow(turn.conversation_id);
     if (!window) {
+      // WP3（H13，她裁定 2026-10-08）：已有历史但无活动窗**不擅自空选**——
+      // 锚定 awaiting 等人工确认；只有真正全新的空房间才自动建首窗
+      //（first_window_empty：无历史可带，自动空初始化合法）。恢复锚=最近
+      // 一个窗口行（任意状态）；无窗口行的存量历史用哨兵源。
+      if (dv && d.selections) {
+        // H13 判据=**已了结**历史（其 turn 非 pending/blocked）——本输入
+        // 自身还在 pending，不能把自己算成"已有历史"（首条消息即建窗）
+        const histCount = (d.db.prepare(
+          `SELECT COUNT(*) n FROM messages m LEFT JOIN turns t ON t.input_message_id = m.id
+           WHERE m.conversation_id = ? AND (t.id IS NULL OR t.state NOT IN ('pending','blocked'))`,
+        ).get(turn.conversation_id) as { n: number }).n;
+        if (histCount > 0) {
+          const lastWin = d.db.prepare('SELECT id, revision FROM windows WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1').get(turn.conversation_id) as { id: string; revision: number } | undefined;
+          const awaiting = d.selections.ensureAwaiting({
+            conversationId: turn.conversation_id,
+            sourceWindowId: lastWin?.id ?? `csel-src-${turn.conversation_id}`,
+            expectedWindowRevision: lastWin?.revision ?? 0,
+            cutoffSequence: (d.db.prepare('SELECT COALESCE(MAX(sequence),0) AS m FROM messages WHERE conversation_id = ?').get(turn.conversation_id) as { m: number }).m,
+          });
+          this.blockAttempt(attempt.id, turnId, turn.conversation_id, `CONTEXT_SELECTION_REQUIRED:本房间已有历史但当前无活动窗口，请先确认新窗携带哪些历史（selection_id=${awaiting.selection_id}）；输入已保存`, 'blocked');
+          return;
+        }
+      }
       d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
@@ -962,14 +1195,20 @@ export class TurnSupervisor {
     if (dv && d.trajectory) {
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (!trajExists) {
+        // WP3：新窗历史装配只经人工选集（forTargetWindow 命中=消费过选集的
+        // 新窗，严格按引用装配；空选=不带历史）。无选集命中的窗（真全新
+        // 首窗/升级兼容期）维持旧自动回退——由 WP5 随 DS/12k 一并退役。
         const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage ? inputMessage.sequence - 1 : Number.MAX_SAFE_INTEGER);
         // D2（她批准 2026-10-06）：新窗轨迹初始化时装入开窗资料（缓存点 B）——
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
         const boot0 = await this.windowBootstrap(window.id, prepSignal);
-        const built0 = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
+        const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
+        const built0 = sel0
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadContents(sel0.items ?? []), selectionGaps: d.selections!.gapsOf(sel0.items ?? []) })
+          : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
-        // 不再按索引错配到历史前缀 ID（正文含 B、清单含 A 的错配源头）
+        // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
         d.trajectory.init(window.id, built0.envelope.messages.slice(0, -1), baseManifest);
       }
@@ -995,7 +1234,12 @@ export class TurnSupervisor {
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
             const bootR = await this.windowBootstrap(window.id, prepSignal);
-            const builtR = this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
+            // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
+            // 绑定 target_window_id；无命中=兼容期自动回退）
+            const selR = d.selections?.forTargetWindow(window.id) ?? null;
+            const builtR = selR
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadContents(selR.items ?? []), selectionGaps: d.selections!.gapsOf(selR.items ?? []) })
+              : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }

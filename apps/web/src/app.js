@@ -187,6 +187,20 @@ function renderMessage(dto, { update = false } = {}) {
   bubble.appendChild(meta);
   // F-J-08（联合审计 2026-10-06）：用户消息编辑入口——修订链/outbox 由服务端
   // editUserMessage 同事务保证（不无痕重写）；编辑不自动触发重新生成
+  // WP3（2026-10-08）：人工历史选集——选择模式下给消息加勾选（只 owner/
+  // 已发布 assistant 可选；system/tool 天然不在 messages 面里）
+  if (selection.active && (dto.speaker === 'owner' || dto.speaker === 'assistant')) {
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'sel-cb';
+    cb.checked = selection.ids.has(dto.id);
+    cb.onchange = () => {
+      if (cb.checked) selection.ids.add(dto.id);
+      else selection.ids.delete(dto.id);
+      updateSelectionBar();
+    };
+    bubble.insertBefore(cb, bubble.firstChild);
+  }
   if (dto.speaker === 'owner') {
     const editBtn = document.createElement('button');
     editBtn.className = 'edit-btn';
@@ -633,5 +647,121 @@ function scrollBottom() {
   const timeline = $('timeline');
   timeline.scrollTop = timeline.scrollHeight;
 }
+// —— WP3（2026-10-08 她裁定）：人工历史选集——换窗携带哪些历史由她勾选 ——
+// 实现约束：不依赖 innerHTML/querySelector（VM 测试桩无这些能力），
+// 全部 createElement/appendChild 组装；无 body 的环境（测试桩）自动跳过。
+const selection = { active: false, ids: new Set(), windowId: null };
+const selectionBar = { el: null, toggle: null, info: null, preview: null, confirm: null, empty: null, clear: null };
+
+async function activeWindowId() {
+  const rt = await fetch(`/api/v1/conversations/${CONVERSATION}/runtime`, { credentials: 'same-origin' });
+  if (!rt.ok) return null;
+  const data = await rt.json();
+  return (data.active_window && data.active_window.id) || null;
+}
+
+function mkSelBtn(text, onClick) {
+  const b = document.createElement('button');
+  b.textContent = text;
+  b.onclick = onClick;
+  return b;
+}
+
+function ensureSelectionBar() {
+  if (selectionBar.el) return selectionBar.el;
+  const existing = document.getElementById('selection-bar');
+  if (existing) { selectionBar.el = existing; return existing; }
+  const bar = document.createElement('div');
+  bar.id = 'selection-bar';
+  selectionBar.toggle = mkSelBtn('选历史', toggleSelection);
+  selectionBar.info = document.createElement('span');
+  selectionBar.preview = mkSelBtn('预览', previewSelection);
+  selectionBar.confirm = mkSelBtn('确认换窗', () => confirmSelection(false));
+  selectionBar.empty = mkSelBtn('不带历史（明确空选）', () => { if (window.confirm('确认新窗不带任何历史？（明确空选是你本人的显式选择）')) confirmSelection(true); });
+  selectionBar.clear = mkSelBtn('清空', () => { selection.ids.clear(); rerenderSelection(); });
+  bar.appendChild(selectionBar.toggle);
+  bar.appendChild(selectionBar.info);
+  bar.appendChild(selectionBar.preview);
+  bar.appendChild(selectionBar.confirm);
+  bar.appendChild(selectionBar.empty);
+  bar.appendChild(selectionBar.clear);
+  // 挂载：body 可用则挂 body；否则（无 DOM 宿主）本模块整体保持惰性
+  const host = document.body || document.getElementById('timeline');
+  if (host && typeof host.appendChild === 'function') host.appendChild(bar);
+  else return null;
+  selectionBar.el = bar;
+  updateSelectionBar();
+  return bar;
+}
+
+function toggleSelection() {
+  selection.active = !selection.active;
+  selection.ids.clear();
+  void activeWindowId().then((id) => { selection.windowId = id; updateSelectionBar(); });
+  rerenderSelection();
+}
+
+function rerenderSelection() {
+  if (selectionBar.el || document.body) ensureSelectionBar();
+  if (!selectionBar.el) return;
+  for (const dto of state.messages.values()) renderMessage(dto, { update: true });
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  if (!selectionBar.el) return;
+  const on = selection.active;
+  selectionBar.toggle.textContent = on ? '退出选择' : '选历史';
+  selectionBar.preview.hidden = !on;
+  selectionBar.confirm.hidden = !on;
+  selectionBar.empty.hidden = !on;
+  selectionBar.clear.hidden = !(on && selection.ids.size > 0);
+  selectionBar.info.textContent = on
+    ? `已选 ${selection.ids.size} 条——勾选要带进下一个窗口的历史；不勾并确认空选=明确不带历史`
+    : '换窗前在这里勾选新窗要携带的历史原文';
+}
+
+async function selectionItems() {
+  const items = [];
+  for (const dto of state.messages.values()) {
+    if (selection.ids.has(dto.id)) items.push({ message_id: dto.id, revision: dto.revision.revision, content_hash: dto.revision.content_hash });
+  }
+  return items;
+}
+
+async function previewSelection() {
+  if (!selection.windowId) selection.windowId = await activeWindowId();
+  if (!selection.windowId) { window.alert('当前无活动窗口'); return; }
+  const res = await fetch(`/api/v1/windows/${selection.windowId}/context-selection/preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+    body: JSON.stringify({ conversation_id: CONVERSATION, items: await selectionItems() }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { window.alert(`核验未通过：${(data && data.error && data.error.code) || res.status}\n${JSON.stringify((data && data.error && data.error.detail) || {}, null, 1).slice(0, 500)}`); return; }
+  const p = data.preview || {};
+  const gaps = (p.gaps || []).map((g) => `seq ${g.after_seq}→${g.before_seq} 之间略过 ${g.skipped} 条`).join('；');
+  window.alert(`已选 ${p.count} 条（粗估 ${p.estimated_tokens} token / 上限 ${p.capacity_bound_tokens}${p.fits ? '' : `，超限 ${p.deficit_tokens}`}）${gaps ? `\n间隙：${gaps}` : ''}\n勾选的正文由服务端按真实修订装配；确认后才真正换窗。`);
+}
+
+async function confirmSelection(explicitEmpty) {
+  if (!selection.windowId) selection.windowId = await activeWindowId();
+  if (!selection.windowId) { window.alert('当前无活动窗口'); return; }
+  const items = explicitEmpty ? [] : await selectionItems();
+  if (!explicitEmpty && items.length === 0) { window.alert('未勾选任何消息：要么勾选，要么点"不带历史（明确空选）"——未提交不等于空选'); return; }
+  if (!window.confirm(explicitEmpty ? '确认新窗不带任何历史？' : `确认携带已选 ${items.length} 条历史换窗？当前待回答消息会自动继续。`)) return;
+  const res = await fetch(`/api/v1/windows/${selection.windowId}/context-selection/confirm`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+    body: JSON.stringify({ conversation_id: CONVERSATION, items, explicit_empty: explicitEmpty, idempotency_key: `sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { window.alert(`确认失败：${(data && data.error && data.error.code) || res.status}\n${JSON.stringify((data && data.error && data.error.detail) || {}, null, 1).slice(0, 500)}`); return; }
+  const sel = (data && data.selection) || {};
+  window.alert(sel.rotated ? `已确认并换窗（${sel.resumed || 0} 条待回答消息自动继续）` : '已确认（当前无待回答消息，下次换窗按此选集）');
+  selection.active = false;
+  selection.ids.clear();
+  rerenderSelection();
+}
+if (typeof document !== 'undefined' && document.body) ensureSelectionBar();
+
 void boot;
 boot();
