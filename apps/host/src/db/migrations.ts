@@ -591,6 +591,17 @@ CREATE TABLE IF NOT EXISTS daily_digests(
 `,
   },
   {
+    version: 18,
+    name: 'retire-daily-digests',
+    // WP5（MANUAL_HANDOFF_JUDGE_SWITCH_V1，她裁定 2026-10-08）：DS 昨天日结
+    // 整链退役——派生表 DROP（幂等）；历史迁移 16 不改；已发给旧窗口的日结
+    // 文本属过去输入证据，不篡改。messages/revisions/outbox/checkpoints/
+    // reviews 全部保留。
+    sql: `
+DROP TABLE IF EXISTS daily_digests;
+`,
+  },
+  {
     version: 17,
     name: 'manual-context-selections',
     // WP3（MANUAL_HANDOFF_JUDGE_SWITCH_V1，她裁定 2026-10-08）：人工历史

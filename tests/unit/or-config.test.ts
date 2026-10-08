@@ -20,7 +20,11 @@ test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ �
   assert.equal(config.windows.tool_input_reserve_tokens, 8000);
   assert.equal(config.windows.review_reserve_tokens, 8000);
   assert.equal(config.windows.safety_reserve_tokens, 4000);
-  assert.equal(config.windows.recent_dialogue_budget_tokens, 12000);
+  // WP5（D02）：recent_dialogue_budget_tokens 已退役——不进配置、出现即披露
+  assert.equal('recent_dialogue_budget_tokens' in config.windows, false);
+  const retired = buildConfig({ digest: { provider: 'deepseek', max_messages: 5 }, windows: { recent_dialogue_budget_tokens: 999 } });
+  assert.deepEqual(retired.retiredKeys, ['digest', 'windows.recent_dialogue_budget_tokens'], '旧键被剥离并披露（不静默接受）');
+  assert.equal('digest' in retired, false);
   assert.equal(config.windows.bootstrap_target_tokens, 32000);
   assert.equal(config.windows.model_context_capacity, null, 'C 未测量不假定');
 });

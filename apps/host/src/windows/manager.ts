@@ -206,7 +206,6 @@ export class WindowManager {
       candidate_window_id: candidateId,
       conversation_id: window.conversation_id,
       cutoff_sequence: cutoff,
-      recent_dialogue_budget_tokens: null,
       includes_reasoning: false,
       unanswered_questions: [],
       unfinished_actions: [],
