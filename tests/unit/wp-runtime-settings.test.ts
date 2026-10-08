@@ -55,6 +55,25 @@ test('档位清单与 OR 文档一致（default 是回落哨兵不是 OR 值）'
   assert.deepEqual([...REASONING_EFFORTS], ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 });
 
+// —— 按模型真实档位生成（2026-10-08 她 catch：none 在强制思考模型上报错） ——
+import { effortsForModel } from '../../apps/host/src/runtime/runtime-settings.ts';
+
+test('effortsForModel：强制思考模型（fable-5.1 实测形态）无 none/minimal', () => {
+  // OR 实测：anthropic/claude-fable-5.1 → supported=[max,xhigh,high,medium,low], mandatory=true
+  const efforts = effortsForModel({ supported_efforts: ['max', 'xhigh', 'high', 'medium', 'low'], mandatory: true });
+  assert.deepEqual(efforts, ['default', 'low', 'medium', 'high', 'xhigh', 'max'], 'fable/opus-5.5 形态：五档+default，没有 none/minimal');
+});
+
+test('effortsForModel：非强制思考模型允许 none（关思考）', () => {
+  const efforts = effortsForModel({ supported_efforts: ['max', 'high', 'medium', 'low'], mandatory: false });
+  assert.deepEqual(efforts, ['default', 'none', 'low', 'medium', 'high', 'max']);
+});
+
+test('effortsForModel：元数据不可达=null；无档位选择的模型只剩 default', () => {
+  assert.equal(effortsForModel(null), null, '不可达=未验证（调用方回落全表并如实标注）');
+  assert.deepEqual(effortsForModel({}), ['default'], 'OR 对无档位选择的模型省略 supported_efforts——没有思考旋钮');
+});
+
 // —— 端到端：换模型走受控换窗；换思考深度不换窗 ——
 import { Readable } from 'node:stream';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
