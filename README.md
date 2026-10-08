@@ -55,6 +55,7 @@
 - **WP2（2026-10-08）**：`memory_recall_next` 宿主工具——只消费 Mariposa 冻结结果集（memory.recall.page；零检索/零判断/零 COUNT），`memory_recall` 去 slice(0,20) 并透传页合同字段（judge_mode/pagination/retrieval_coverage）；RECALL_POLICY_CHANGED 如实上抛；refine 与分页游标分槽。65/65+tsc 0。
 - **WP3（2026-10-08）**：人工历史选集换窗——`context_selections`（迁移17）四态选集（awaiting≠空选），全部换窗入口统一选集门（手动/容量/静默/身份失效/SDK/无活动窗），rotate 切换事务原子消费，新窗轨迹严格按选集装配（不再自动 12k），preview/confirm 端点+确认后原输入恢复一次，网页勾选栏；H 系列 7 新测试+全套件 66/66+tsc 0。
 - **WP4（2026-10-08）**：`conversation_read` 只读原文回读——锚点前后/序号范围/游标三模式，片段级已见（码点范围）经"实际进入下一请求"才转正并入 manifest，resolveQuotes 范围门（已读可引用/未读不放行），sync_state 如实、思考/草稿零命中、零副作用；O01-O08 共 9 新测试，全套件 67/67+tsc 0。
+- **WP5（2026-10-08）**：DS 日结与自动 12k 携带**整链退役**——digest 服务/注入/配置段删除（迁移 18 DROP daily_digests，旧键 retiredKeys 披露），新窗历史唯一来源=人工选集，旧窗评审重建保持证据单源，容量预警事件退役；D01-D05 退役测试+全套件 67/67+tsc 0。
 
 > **基线口径**：代码基线=本仓库 HEAD（每批提交即推进，测试数以最新批为准）；`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 为冻结规范正文。任何审计包/交接包/邮件附件里的 source 副本都是**当时的历史快照**（含审计输入包 `~/Documents/Codex/…/estomago-audit-*/source/`），不作为基线引用。
 
