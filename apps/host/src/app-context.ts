@@ -23,7 +23,6 @@ import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
 import { MariposaClient } from './integrations/mariposa/client.ts';
 import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
-import { DailyDigestService } from './digest/daily.ts';
 import { RotationReviewService } from './context/rotation-review.ts';
 import { ManualSelectionService } from './context/manual-selection.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
@@ -136,11 +135,9 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync });
     const trajectory = new WindowTrajectoryService(db);
-    const digest = new DailyDigestService({ db, config: opts.config });
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,
-      digest,
       messages,
       events,
       identity,

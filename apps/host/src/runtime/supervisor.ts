@@ -61,8 +61,8 @@ export type SupervisorDeps = {
   checkpoint?: HoldCheckpointService;
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
-  digest?: { yesterdaySection(signal?: AbortSignal): Promise<string | null>; ensureYesterday(signal?: AbortSignal): Promise<{ day: string; summary: string } | null> }; // 昨天日结（她裁定 2026-10-07；未注入则无日结段）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
+  // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -448,7 +448,7 @@ export class TurnSupervisor {
   }
 
   // 信封（§5.1/§5.5/§7.1，OR/DS 共用）：固定前缀=身份+当前 I+批准规则+宿主片段（审计 F02：I 完整装载）；
-  // 近期原话从**最新一条向前**装满预算（审计 F06：裁剪留新丢旧）；尾部=输入/评审事件。
+  // WP5（2026-10-08）：近期原话自动携带已退役——历史只经人工选集（selectedMessages）。
   // 身份映射隔离：型号/输出上限/粗估系数/session 派生按驱动取值（drv()）；DS 不发 session_id（runner 序列化丢弃）。
   /** D2：本窗开窗资料文本（B 点）——每窗取一次；Mariposa 不可达时返回
    *  null 并发布 context.warning（如实降级，不阻塞消息）。 */
@@ -499,14 +499,8 @@ export class TurnSupervisor {
           seg.push(`[I 当前的话超窗未全载（全文共 ${String(iSeg.total_chars ?? '?')} 字，续读走 bootstrap.next）——已载入部分如上]`);
         }
       }
-      // 昨天日结（她裁定 2026-10-07）：昨天（上海自然日）未归档闲聊的话题
-      // 索引——DS 写、与换窗提醒共用一个开关；空/失败/关闭=不注入不伪造
-      try {
-        const digest = await d.digest?.yesterdaySection(signal);
-        if (digest) seg.push(digest);
-      } catch {
-        d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'digest', code: 'unavailable', note: '昨天日结不可用——不带该段，不伪造' } });
-      }
+      // WP5（2026-10-08 她裁定）：DS 昨天日结段已整链退役——不再生成、不再
+      // 注入；已发给旧窗口的日结文本属过去输入证据，不篡改
       t = seg.length > 1 ? seg.join('\n') : '';
       this.bootstrapByWindow.set(windowId, t);
       return t || null;
@@ -551,7 +545,6 @@ export class TurnSupervisor {
     selectionGaps?: Array<{ after_seq: number; before_seq: number; skipped: number }>;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
     const dv = this.drv()!;
-    const budgetChars = this.d.config.windows.recent_dialogue_budget_tokens * dv.charsPerToken; // 粗估（§11.1 估计口径，不冒充精确）
     const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
@@ -572,23 +565,11 @@ export class TurnSupervisor {
         messages.push({ role: 'system', content: [{ type: 'text', text: gapNote }] });
       }
     } else {
-      // F06 + D08（审计 3655d60）：从最新**完整回合组**向前装预算（一组=一条用户消息+其后连续助手回复）——
-      // 整组放不下就整组排除（留旧丢新不允许，留答丢问也不允许：不产生缺用户输入的孤立助手回复）。
-      // 旧实现按单消息累计，预算临界时会留下回答却截掉问题。
-      // 【WP5 待退役】自动 12k 携带——人工选集全面接通后删除该回退。
-      const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
-      for (const m of o.dialogue) {
-        if (m.role === 'user' || groups.length === 0) groups.push([]);
-        groups[groups.length - 1]!.push(m);
-      }
-      let used = 0;
-      for (let g = groups.length - 1; g >= 0; g--) {
-        const group = groups[g]!;
-        const groupChars = group.reduce((s, m) => s + m.content.length, 0);
-        if (used + groupChars > budgetChars) break; // 整组放不下：本组及更旧全部不装
-        used += groupChars;
-        selected.unshift(...group);
-      }
+      // WP5（2026-10-08 她裁定，D03）：自动 12k 携带整链退役——新窗历史唯一
+      // 来源=人工选集；无选集的窗不带历史（空房首窗本来就无历史可带；
+      // 已有历史的房间无活动窗/换窗均被 WP3 选集门拦截）。旧窗评审的
+      // 范围/正文重建走 buildReviewReconstruction（单一正本不变）。
+      selected = [];
     }
     for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
     messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
@@ -604,6 +585,38 @@ export class TurnSupervisor {
       },
       selected, // 审计 F06：manifest 必须从实际装载子集生成，不能按索引回映全量前缀
     };
+  }
+
+  /** E05（MANUAL_HANDOFF_JUDGE_SWITCH_V1，2026-10-08）：旧窗评审输入重建——
+   *  无轨迹窗的评审范围/正文/已见清单按 12k 预算重建（审计 F06 完整回合组语义
+   *  原样保留）。这与新窗选集彻底分离：预算重建只服务"旧窗实际看过什么"的
+   *  证据单源，不再给任何新窗装历史（WP5 已退役自动携带）。
+   *  预算从 config 键退役为内部常量（D02：旧键不再被接受）。 */
+  private static readonly REVIEW_RECONSTRUCT_BUDGET_TOKENS = 12000;
+
+  private buildReviewReconstruction(o: {
+    conversationId: string;
+    materials: { identityText: string; rulesText: string; iText: string | null } | null;
+    dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
+  }): { selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; messages: OrMessage[] } {
+    const dv = this.drv();
+    const budgetChars = TurnSupervisor.REVIEW_RECONSTRUCT_BUDGET_TOKENS * (dv?.charsPerToken ?? 2.5);
+    const groups: Array<Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>> = [];
+    for (const m of o.dialogue) {
+      if (m.role === 'user' || groups.length === 0) groups.push([]);
+      groups[groups.length - 1]!.push(m);
+    }
+    const selected: typeof o.dialogue = [];
+    let used = 0;
+    for (let g = groups.length - 1; g >= 0; g--) {
+      const group = groups[g]!;
+      const groupChars = group.reduce((sum, m) => sum + m.content.length, 0);
+      if (used + groupChars > budgetChars) break;
+      used += groupChars;
+      selected.unshift(...group);
+    }
+    const messages: OrMessage[] = selected.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
+    return { selected, messages };
   }
 
   // —— §4 换窗触发评估 + 换窗前一次提醒（同步执行于用户 turn 前；评审与凭证持久化）——
@@ -639,7 +652,7 @@ export class TurnSupervisor {
     // F-J-10（联合审计 2026-10-06）：无轨迹时 manifest=实际装载子集（buildEnvelope
     // selected，12k 预算内完整回合组）——此前用最近 200 条库投影，范围可含模型看不见
     // 的消息，签出覆盖信封外内容的 review（违反 §3.2.2"不扩大到全库"）
-    const manifest: ManifestEntry[] = trajManifest ?? this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).selected
+    const manifest: ManifestEntry[] = trajManifest ?? this.buildReviewReconstruction({ conversationId: o.conversationId, materials: o.materials, dialogue }).selected
       .map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // R12（复审 2026-10-07）：单一正本——范围、评审正文、seenMessages、
     // 书签高水位、凭证依据全部由同一份"实际评审输入清单"驱动。追赶投影
@@ -706,9 +719,9 @@ export class TurnSupervisor {
         warning: d.config.windows.warning_tokens,
         idleMs,
       });
-      if (plan.action === 'warn') {
-        d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { estimate: workingSet, quality: lastActual !== null ? 'calibrated_rough' : 'rough', effective_warning: plan.effectiveWarning, effective_soft: plan.effectiveSoft } });
-      }
+      // WP5（2026-10-08 §1.5 她裁定）：容量预警推送/展示退役——不再发布
+      // 预警事件；软线计算（rotate 触发）与硬门（blocked_hard）照常保留。
+      // bootstrap 不可用/缓存保护未覆盖等其他 context.warning 诊断不受影响。
       // 审计 F03：blocked_hard 是硬门——超安全输入上界不得继续发送；交调用方按待恢复收口，不静默放行
       if (plan.action === 'blocked_hard') {
         return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复` };
@@ -810,7 +823,7 @@ export class TurnSupervisor {
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = trajEarly;
-    const fallbackBase = this.buildEnvelope({ conversationId: o.conversationId, materials: o.materials, dialogue, tailUserText: ' ' }).envelope.messages.slice(0, -1);
+    const fallbackBase = this.buildReviewReconstruction({ conversationId: o.conversationId, materials: o.materials, dialogue }).messages;
     // F-J-39 + R12：评审正文追赶投影=同一份 unifiedCatchup（与范围/已见清单
     // 同源——失败回合的已发输入/已发布原话有真实派发证据，属"截至本次已
     // 携带高水位"）
