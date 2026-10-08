@@ -1,5 +1,6 @@
 // §3：ContextAssembler —— 只做结构/来源/顺序/权限/预算槽位/证据/排除项。
-// 策略未批准：recent_dialogue / memory_recall / handoff / 预算数值一律 CONTEXT_POLICY_NOT_APPROVED（不填默认值）。
+// 策略未批准：memory_recall / handoff / 预算数值一律 CONTEXT_POLICY_NOT_APPROVED（不填默认值）。
+// WP5（2026-10-08）：recent_dialogue 来源已随自动携带退役整链移除。
 // 确定性来源（time_context / user_input）按现行运行时规则装配。
 import type { ModelContextSegment, ReasoningProjection } from './types.ts';
 import { CONTEXT_POLICY_VERSION, ContextPolicyNotApprovedError } from './policy.ts';
@@ -35,9 +36,9 @@ export function assembleContext(input: AssembleInput, deps: { loadRecentDialogue
   push('time_context', input.timeContextJson, 'time', null);
   push('user_input', input.userInput.content, 'input', `message:${input.inputMessageId ?? 'none'}#r${input.userInput.revision}`);
   // 策略依赖来源：明确排除 + NOT_APPROVED（不猜默认值）
-  const excluded = ['recent_dialogue', 'memory_recall', 'handoff'];
+  const excluded = ['memory_recall', 'handoff'];
   if (deps.loadRecentDialogue || deps.loadRecall || deps.loadHandoff) {
-    throw new ContextPolicyNotApprovedError('recent_dialogue/memory_recall/handoff 装配依赖 Context Policy');
+    throw new ContextPolicyNotApprovedError('loadRecentDialogue/memory_recall/handoff 装配依赖 Context Policy（recent_dialogue 来源已退役）');
   }
   return {
     segments,
