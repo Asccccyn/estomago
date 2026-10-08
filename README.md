@@ -58,6 +58,7 @@
 - **WP5（2026-10-08）**：DS 日结与自动 12k 携带**整链退役**——digest 服务/注入/配置段删除（迁移 18 DROP daily_digests，旧键 retiredKeys 披露），新窗历史唯一来源=人工选集，旧窗评审重建保持证据单源，容量预警事件退役；D01-D05 退役测试+全套件 67/67+tsc 0。
 - **WP7（2026-10-08）**：I01/I03 双端合同穿透——M 真实 registry 三模式包经 E 真 client/工具层字段保真（68/68+tsc 0）。I02 真浏览器操作与 live 项（Codex 实机/生产重启）单列待执行。
 - **2026-10-08 晚间（她裁定）**：6h 静默换窗触发删除（换窗唯一自动基线=64k 软线；醒来继续原窗）；无轨迹窗 12k 评审回退删除（如实阻断 ROTATION_RANGE_UNKNOWN，不猜范围）——7 个测试改容量触发/阻断断言，68/68+tsc 0。
+- **2026-10-08 晚间二批（她裁定）**：聊天窗内置换模型/思考深度——`runtime_settings`（迁移 19）持久 override，GET/PUT /api/v1/runtime-settings；换模型=运行边界变化走受控换窗（指纹按生效视图，WindowManager 经 provider 存新窗指纹），思考深度（OR reasoning.effort 七档）=逐请求参数立即生效**不换窗**（reasoning 退出 contextFingerprint）；聊天窗顶部常驻设置栏（模型输入+档位下拉；UI 美化她统一后改）；4 新测试。
 
 > **基线口径**：代码基线=本仓库 HEAD（每批提交即推进，测试数以最新批为准）；`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 为冻结规范正文。任何审计包/交接包/邮件附件里的 source 副本都是**当时的历史快照**（含审计输入包 `~/Documents/Codex/…/estomago-audit-*/source/`），不作为基线引用。
 

@@ -29,12 +29,15 @@ export type WindowRow = {
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput, selections?: ManualSelectionService) {
+  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService) {
     this.db = db;
     this.events = events;
     this.identity = identity;
     this.handoffsDir = handoffsDir;
-    this.config = config ?? null;
+    // config 可为静态对象或 provider 函数（2026-10-08：运行时 override——
+    // 新窗创建时按生效型号/边界存指纹；既有调用方传对象照常工作）
+    this.config = typeof config === 'function' ? null : (config ?? null);
+    this.configProvider = typeof config === 'function' ? config : null;
     this.selections = selections ?? null;
   }
   private db: Db;
@@ -42,6 +45,7 @@ export class WindowManager {
   private identity: IdentityService;
   private handoffsDir: string;
   private config: BoundaryConfigInput | null;
+  private configProvider: (() => BoundaryConfigInput) | null;
   private selections: ManualSelectionService | null;
 
   activeWindow(conversationId: string): WindowRow | null {
@@ -227,6 +231,7 @@ export class WindowManager {
   }
 
   private identityConfig(): BoundaryConfigInput {
+    if (this.configProvider) return this.configProvider();
     if (!this.config) throw new Error('CONFIG_ERROR: WindowManager 未收到 config，无法计算上下文指纹');
     return this.config;
   }

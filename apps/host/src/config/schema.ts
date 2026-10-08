@@ -31,6 +31,7 @@ export type OpenRouterConfig = {
   retry_max_attempts_after_initial: number; // §9.2 建议初值 2
   reasoning: Record<string, unknown> | null; // 未批准推理覆盖=null（§10：不照搬 SDK effort）
   estimate_chars_per_token: number; // §11.1 粗估系数（拉丁文本≈2.5；中文场景偏低，靠真实 usage 校准兜底）
+  model_options: string[]; // 2026-10-08：聊天窗换模型下拉的可选项（空=自由输入；档位正本=OR reasoning.effort）
 };
 
 // DeepSeek 官方直连配置段（2026-10-05 她裁定：DS 官方 key 不经 OpenRouter）。
@@ -114,7 +115,6 @@ export type Config = {
   windows: {
     rotate_on_business_date_change: boolean; // 现行规范 §4.1：零点不触发换窗（默认 false）
     soft_limit_tokens: number; // 输入工作集软线（§4.1 初值 64000；有效软线=min(此值, C-O-T-R-S)）
-    warning_tokens: number; // 前台预警线（初值 56000；不高于软线-8k）
     idle_before_next_user_ms: number; // 距上一条真实用户消息≥6h → 下一条真实交互到达时换窗
     tool_input_reserve_tokens: number; // T（§4.2 初值 8k）
     review_reserve_tokens: number; // R：换窗提醒及必要 hold 往返预留（8k）
@@ -266,6 +266,7 @@ export const CONFIG_DEFAULTS: Config = {
     retry_max_attempts_after_initial: 2,
     reasoning: null,
     estimate_chars_per_token: 2.5,
+    model_options: [],
   },
   // DS 官方直连默认：model=null（未配置即阻断）；key 只经环境变量名引用；
   // 无缓存/路由参数（DS 自动上下文缓存）；中文对话为主 → 粗估系数 1.5（§11.1 估计带精度，usage 校准兜底）。
@@ -292,13 +293,12 @@ export const CONFIG_DEFAULTS: Config = {
     expected_rules_version: null,
     probe_evidence_max_age_days: 30,
   },
-  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值（config/implementation-target.json）：
-  // 56k 预警 / 64k 软线 / 6h 静默 / 12k 近期原话 / 32k 启动目标 / T8k R8k S4k。
+  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值：64k 软线 / 6h 静默 / T8k R8k S4k。
+  // WP5（2026-10-08）：56k 预警与 12k 近期原话已退役（spec §4.1 修订）。
   // 这些是配置初值，不是上游极限或最优成本结论；C=null 必须由实际端点能力补齐。
   windows: {
     rotate_on_business_date_change: false,
     soft_limit_tokens: 64000,
-    warning_tokens: 56000,
     idle_before_next_user_ms: 21600000,
     tool_input_reserve_tokens: 8000,
     review_reserve_tokens: 8000,
@@ -412,6 +412,7 @@ const SHAPE: SectionSpec = { section: {
     retry_max_attempts_after_initial: 'number',
     reasoning: 'json?',
     estimate_chars_per_token: 'number',
+    model_options: 'string[]',
   } },
   reminders: { section: { enabled: 'boolean' } },
   deepseek: { section: {
@@ -426,7 +427,7 @@ const SHAPE: SectionSpec = { section: {
     probe_evidence_max_age_days: 'number?',
   } },
   windows: { section: {
-    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number', warning_tokens: 'number',
+    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number',
     idle_before_next_user_ms: 'number', tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
     safety_reserve_tokens: 'number', bootstrap_target_tokens: 'number',
     model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',
@@ -587,7 +588,7 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
 /** WP5（D02，MANUAL_HANDOFF_JUDGE_SWITCH_V1）：已退役配置键——出现即从补丁
  *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
  *  读取处负责把披露写进日志/启动报告） */
-export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens'] as const;
+export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];
