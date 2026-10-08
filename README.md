@@ -51,6 +51,7 @@
 - **5405ed2**（D2+G-J-01）：开窗资料 B 点注入+memory_recall 按需召回工具（她批"能收口的都收了"）。
 - **c8f2bae**（联合审计返修 B1）：跨仓 P1 三项——quotes 引用身份改 source_msg: 前缀（F-J-01，修复带引用 hold 必被拒的跨仓断裂）/书签高于清单改合法空范围防换窗死锁（F-J-02）/回执绑定 1:1 校验（F-J-54）；真实双端探针 R01/R02 通过（审计包 probes/b1）。
 - **36fd6df**（mariposa-1005B 并行批）：接口根因适配——classifyError 按 httpStatus 优先分类（修 mariposa 结构化 429=RATE_LIMITED 被判永久 dead 的真根因）、mood 需配 creation_mode 的前置拦截、心情词表改 `memory.mood.vocab` 动态拉取（正本唯一，不再硬编码）；52/52 绿。
+- **WP0（2026-10-08，glm/manual-handoff-20261008 分支）**：现行正本修订 `MANUAL_HANDOFF_JUDGE_SWITCH_V1` 落档——新窗装配改人工选集（§5/§5.5，12k 自动携带与容量预警展示退役）、DS 日结整链退役条款（§5.6）、判断总开关纯消费合同（§8.4）、原文回读 conversation_read（§8.5）；本批只改文档，代码施工 WP1-WP7 逐批推进。
 
 > **基线口径**：代码基线=本仓库 HEAD（每批提交即推进，测试数以最新批为准）；`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 为冻结规范正文。任何审计包/交接包/邮件附件里的 source 副本都是**当时的历史快照**（含审计输入包 `~/Documents/Codex/…/estomago-audit-*/source/`），不作为基线引用。
 
