@@ -505,7 +505,7 @@ export class TurnSupervisor {
             let evCur = (it.event_text_next as Record<string, unknown> | undefined) ?? null;
             let evTotal: number | null = typeof it.event_text_total_chars === 'number' ? it.event_text_total_chars : null;
             let guard = 0;
-            while (evCur && snapId && guard < 32) {
+            while (evCur && snapId && guard < 64) {
               guard++;
               let rn: Awaited<ReturnType<import('../integrations/mariposa/client.ts').MariposaClient['bootstrapNext']>>;
               try {
@@ -529,7 +529,7 @@ export class TurnSupervisor {
           let words = Array.isArray(words0) ? [...words0] : [];
           let wCur = (it.our_words_next as Record<string, unknown> | undefined) ?? null;
           let wguard = 0;
-          while (wCur && snapId && wguard < 32) {
+          while (wCur && snapId && wguard < 64) {
             wguard++;
             let wn: Awaited<ReturnType<import('../integrations/mariposa/client.ts').MariposaClient['bootstrapNext']>>;
             try {
