@@ -927,7 +927,7 @@ export class TurnSupervisor {
       bootText: boot,
       dialogue: [],
       tailUserText: ' ',
-      selectedMessages: d.selections ? d.selections.loadContents(selItems) : [],
+      selectedMessages: d.selections ? (d.selections.loadContents(selItems).loaded) : [],
       selectionGaps: d.selections ? d.selections.gapsOf(selItems) : [],
     });
     const manifest = built.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -1315,7 +1315,7 @@ export class TurnSupervisor {
         const boot0 = await this.windowBootstrap(window.id, prepSignal);
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
         const built0 = sel0
-          ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadContents(sel0.items ?? []), selectionGaps: d.selections!.gapsOf(sel0.items ?? []) })
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadContents(sel0.items ?? []).loaded, selectionGaps: d.selections!.gapsOf(sel0.items ?? []) })
           : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
@@ -1348,7 +1348,7 @@ export class TurnSupervisor {
             // 绑定 target_window_id；无命中=兼容期自动回退）
             const selR = d.selections?.forTargetWindow(window.id) ?? null;
             const builtR = selR
-              ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadContents(selR.items ?? []), selectionGaps: d.selections!.gapsOf(selR.items ?? []) })
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: (d.selections!.loadContents(selR.items ?? []).loaded), selectionGaps: d.selections!.gapsOf(selR.items ?? []) })
               : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
@@ -1445,7 +1445,7 @@ export class TurnSupervisor {
           materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
           dialogue: [],
           tailUserText: prompt,
-          selectedMessages: dv && d.selections && fallbackSel ? d.selections.loadContents(fallbackSel.items ?? []) : [],
+          selectedMessages: dv && d.selections && fallbackSel ? (d.selections.loadContents(fallbackSel.items ?? []).loaded) : [],
         }).envelope.messages : []);
     const orMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
@@ -1473,7 +1473,13 @@ export class TurnSupervisor {
     // F-J-09：跨轮 previousPayload 的 tools 取**已发送冻结快照**（本窗首发定格），
     // 不用本轮重建结果充当"上一请求"——若当前信封 tools 与冻结快照漂移（回归），
     // append-only 断言可在跨轮间抓到（此前两边恒同源=结构性失明）
-    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...orEnvelope, tools: this.windowTools(window.id), messages: [...orTraj.messages, ...catchupMessages] } : null;
+    // WP-05（B16）：append-only 断言的 previousEnvelope 不携带 reasoning——
+    // effort 是逐请求生成参数（她裁定 2026-10-08：换思考深度不换窗、
+    // reasoning 已退出 contextFingerprint），跨轮比较该键会误杀合法的
+    // 档位切换；轨迹正本（messages）仍是断言主体
+    const { reasoning: _prevReasoning, ...orPrevParams } = orEnvelope !== null ? orEnvelope : ({} as OrRequestEnvelope);
+    void _prevReasoning;
+    const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...(orPrevParams as OrRequestEnvelope), tools: this.windowTools(window.id), messages: [...orTraj.messages, ...catchupMessages] } : null;
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单

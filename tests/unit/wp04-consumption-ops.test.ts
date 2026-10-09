@@ -199,3 +199,20 @@ test('d/j2：PUT {有效 model+非法 effort} → 422 且零写入', async () =>
   assert.ok(src.includes('orModelIdIssue(nextModel)'), 'or_model 过配置层形状门');
   // 服务级等价断言：形状门存在即可覆盖 422 路径（HTTP 层无 Host 夹具）
 });
+
+// --------------------------------------------------- B15 迁移 upTo 回归
+
+test('B15：migrate(db, h, 17) 应用到 17 为止（迁移数组按版本升序）', async () => {
+  const { migrate } = await import('../../apps/host/src/db/migrations.ts');
+  const root = tempRoot('wp5-b15-');
+  const db = openDatabase(path.join(root, 'data'));
+  const r = migrate(db, sha256Hex, 17);
+  assert.equal(r.applied.at(-1), 17, '最后应用=17');
+  const v = db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number };
+  assert.equal(v.v, 17, 'schema 停在 17');
+  // 表形状：17 有 context_selections、无 18 daily_digests DROP/19 runtime_settings
+  const has = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
+  assert.ok(has('context_selections'), 'v17 表在');
+  assert.ok(!has('runtime_settings'), 'v19 表不在');
+  db.close();
+});

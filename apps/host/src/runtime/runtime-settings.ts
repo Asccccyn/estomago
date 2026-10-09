@@ -26,6 +26,8 @@ export type OrModelReasoningMeta = { supported_efforts?: string[]; mandatory?: b
 
 const _metaCache = new Map<string, { meta: OrModelReasoningMeta | null; fetchedAt: number }>();
 const META_TTL_MS = 60 * 60 * 1000;
+// WP-05（B17）：负结果短 TTL——端点故障期不反复吃 8s 超时（60s 后可重试）
+const META_NEG_TTL_MS = 60_000;
 
 /** 测试注入点（离线套件不打网络） */
 export function setModelMetaForTests(model: string, meta: OrModelReasoningMeta | null): void {
@@ -38,7 +40,7 @@ export function clearModelMetaCache(): void {
 
 export async function fetchOrModelMeta(baseUrl: string, model: string): Promise<OrModelReasoningMeta | null> {
   const hit = _metaCache.get(model);
-  if (hit && Date.now() - hit.fetchedAt < META_TTL_MS) return hit.meta;
+  if (hit && Date.now() - hit.fetchedAt < (hit.meta ? META_TTL_MS : META_NEG_TTL_MS)) return hit.meta;
   try {
     // WP-04（CX-11/C-017）：baseUrl 可能已含 /api/v1（配置默认如此）——
     // 先剥尾部再拼，否则双拼 404（元数据恒不可达被当"未验证"）
