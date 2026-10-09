@@ -112,10 +112,12 @@ export class Host {
     // 2026-10-08 她裁定：运行时换模型/推理等级——override 持久正本；
     // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
     const settings = new RuntimeSettingsService(db);
+    // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
+    const trajectory = new WindowTrajectoryService(db);
     const windows = new WindowManager(db, events, identity, paths.handoffsDir, () => {
       const effModel = settings.effectiveOrModel(opts.config.openrouter.model);
       return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
-    }, selections);
+    }, selections, trajectory);
     const auth = new AuthService(paths);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
@@ -141,7 +143,6 @@ export class Host {
     const checkpoint = new HoldCheckpointService(db);
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync });
-    const trajectory = new WindowTrajectoryService(db);
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,

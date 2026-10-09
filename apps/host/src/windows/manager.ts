@@ -11,6 +11,7 @@ import { genId } from '../util/id.ts';
 import type { EventService } from '../events/service.ts';
 import { contextFingerprint, type BoundaryConfigInput, type GateResult, type IdentityService } from '../identity/service.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
+import type { WindowTrajectoryService } from '../runtime/window-trajectory.ts';
 
 export type WindowRow = {
   id: string;
@@ -29,7 +30,7 @@ export type WindowRow = {
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService) {
+  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService, trajectory?: WindowTrajectoryService | null) {
     this.db = db;
     this.events = events;
     this.identity = identity;
@@ -39,6 +40,8 @@ export class WindowManager {
     this.config = typeof config === 'function' ? null : (config ?? null);
     this.configProvider = typeof config === 'function' ? config : null;
     this.selections = selections ?? null;
+    // WP-07（CX-09）：初始轨迹写入切换事务所需（可空——既有调用方兼容）
+    this.trajectorySvc = trajectory ?? null;
   }
   private db: Db;
   private events: EventService;
@@ -47,6 +50,7 @@ export class WindowManager {
   private config: BoundaryConfigInput | null;
   private configProvider: (() => BoundaryConfigInput) | null;
   private selections: ManualSelectionService | null;
+  private trajectorySvc: import('../runtime/window-trajectory.ts').WindowTrajectoryService | null;
 
   activeWindow(conversationId: string): WindowRow | null {
     const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(conversationId) as
@@ -80,7 +84,7 @@ export class WindowManager {
 
   // 创建并尝试激活新窗：NEW → PREPARING(+receipt) → READY → [tx 原子切换] ACTIVE | BLOCKED
   // WP3：selectionId 给出时，选集消费与激活同一事务（E07 原子提交）
-  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string }): { window: WindowRow; blockedReason: string | null } {
+  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { window: WindowRow; blockedReason: string | null } {
     const id = genId('win');
     const now = new Date().toISOString();
     tx(this.db, () => {
@@ -123,8 +127,13 @@ export class WindowManager {
       this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
       this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(id, o.conversationId);
       if (prev) this.db.prepare("UPDATE windows SET status = 'CLOSED', updated_at = ? WHERE id = ?").run(new Date().toISOString(), prev);
-      // WP3（E07）：选集 consumed+target 绑定与窗口激活同一事务
+      // WP3（E07）：选集 consumed+target 绑定与窗口激活同一事务；
+      // WP-07（CX-09）：初始轨迹同事务写入——激活返回时新窗已具备
+      // 完整可发送快照，不依赖下一轮懒初始化
       if (o.selectionId && this.selections) this.selections.consumeInTx(this.db, o.selectionId, id);
+      if (o.initialTrajectory && this.trajectorySvc) {
+        this.trajectorySvc.initInTx(this.db, id, o.initialTrajectory.messages, o.initialTrajectory.manifest);
+      }
       return prev;
     });
     void prevId;
@@ -137,7 +146,7 @@ export class WindowManager {
   // 不依赖可选 HTTP callback；HTTP 与直接服务调用无法绕过
   // WP3（E07）：selectionId 给出时，选集消费（consumed+target_window_id）
   // 与窗口指针切换同一事务——新窗未就绪则选集不被消费，失败整体回滚
-  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
     if (o.gate.state !== 'READY') {
@@ -189,8 +198,13 @@ export class WindowManager {
         this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), candidateId);
         this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(candidateId, o.conversationId);
         // WP3（E07）：选集消费与指针切换原子——输家整体回滚，不出现
-        // "选集已耗但新窗未激活"（或反之）的半状态
+        // "选集已耗但新窗未激活"（或反之）的半状态；
+        // WP-07（CX-09）：初始轨迹同事务写入（选集消费+窗口指针+轨迹
+        // 三位一体；调用方在事务外先行完成 bootstrap 获取与容量检查）
         if (o.selectionId && this.selections) this.selections.consumeInTx(this.db, o.selectionId, candidateId);
+        if (o.initialTrajectory && this.trajectorySvc) {
+          this.trajectorySvc.initInTx(this.db, candidateId, o.initialTrajectory.messages, o.initialTrajectory.manifest);
+        }
       });
     } catch (err) {
       this.setStatus(candidateId, 'BLOCKED', `switch_failed: ${(err as Error).message.slice(0, 80)}`);
