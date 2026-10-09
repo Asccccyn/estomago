@@ -144,6 +144,8 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
   const packet = {
     recall_session_id: 'rs_1', revision: 1, search_status: 'FOUND',
+    // WP-04（C10）：judge_mode 恒在信封（M 现行契约——夹具对齐）
+    judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
     candidates: [{ memory_id: '00001' }],
     continuation: { continue_request_ref: 'cont_abc', for_revision: 1 },
   };

@@ -40,7 +40,10 @@ export async function fetchOrModelMeta(baseUrl: string, model: string): Promise<
   const hit = _metaCache.get(model);
   if (hit && Date.now() - hit.fetchedAt < META_TTL_MS) return hit.meta;
   try {
-    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/v1/models`, { signal: AbortSignal.timeout(8000) });
+    // WP-04（CX-11/C-017）：baseUrl 可能已含 /api/v1（配置默认如此）——
+    // 先剥尾部再拼，否则双拼 404（元数据恒不可达被当"未验证"）
+    const root = baseUrl.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+    const res = await fetch(`${root}/api/v1/models`, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const data = await res.json() as { data?: Array<{ id?: string; reasoning?: OrModelReasoningMeta }> };
     const row = (data.data ?? []).find((m) => m.id === model);
@@ -56,11 +59,20 @@ export async function fetchOrModelMeta(baseUrl: string, model: string): Promise<
  *  返回 null=元数据不可用（未验证，调用方回落静态全表并如实标注）。 */
 export function effortsForModel(meta: OrModelReasoningMeta | null): string[] | null {
   if (!meta) return null; // 元数据不可达=未验证
-  const supported = (meta.supported_efforts ?? []).filter((e) => e !== 'none' && e !== 'minimal');
+  // WP-04（C-018）：supported 集是第一真源——mandatory=false 且支持
+  // minimal/none 就如实列出（此前一律滤掉，强制思考模型才该滤）；
+  // mandatory=true 才滤 none/minimal
+  const raw = meta.supported_efforts ?? [];
+  const mandatory = meta.mandatory === true;
+  // mandatory=true 才滤 none/minimal（强制思考模型没有这两档）；
+  // minimal 在非强制模型按 supported 如实保留（此前一律滤掉——C-018）
+  const supported = mandatory
+    ? raw.filter((e) => e !== 'none' && e !== 'minimal')
+    : raw;
   if (supported.length === 0) return ['default']; // OR 对无档位选择的模型省略 supported_efforts——没有思考旋钮
-  const order = ['low', 'medium', 'high', 'xhigh', 'max'];
+  const order = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const list = order.filter((e) => supported.includes(e));
-  if (meta.mandatory === false) list.unshift('none');
+  if (!mandatory) list.unshift('none'); // 思考可关（c5c3ad1 她批语义保持）
   return ['default', ...list];
 }
 

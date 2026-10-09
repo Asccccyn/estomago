@@ -186,7 +186,7 @@ test('F23：冻结批恢复未决 → 同流后续批（含新批）停发；恢
     return { ok: true, result: { operation_id: req.operation_id, committed_at: new Date().toISOString(), messages: req.messages.map((x) => ({ origin_message_id: x.origin_message_id, revision: x.revision, source_conversation_id: 'mc', source_message_id: `s-${x.origin_message_id}`, content_hash: x.content_hash })) } };
   };
   const root = tempRoot('r5c-');
-  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } } });
+  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
   const sync = new ArchiveSyncService({ db: ctx.db, events: ctx.events, logger: ctx.logger, client: new MariposaClient({ transport: m }), config: ctx.config });
   ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'A', clientMessageId: 'a1', occurredAt: T0 });
   await sync.drainOnce(); // A 冻结批次首发 → NOT_READY → 行回 pending
@@ -213,7 +213,7 @@ test('F24：坏 payload_ref 行不再炸掉整个 drain；后续正常行照常�
     return { ok: true, result: { operation_id: req.operation_id, committed_at: new Date().toISOString(), messages: req.messages.map((x) => ({ origin_message_id: x.origin_message_id, revision: x.revision, source_conversation_id: 'mc', source_message_id: `s-${x.origin_message_id}`, content_hash: x.content_hash })) } };
   };
   const root = tempRoot('r5d-');
-  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } } });
+  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
   const sync = new ArchiveSyncService({ db: ctx.db, events: ctx.events, logger: ctx.logger, client: new MariposaClient({ transport: m }), config: ctx.config });
   ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '正常消息', clientMessageId: 'ok1', occurredAt: T0 });
   ctx.db.prepare("INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at) VALUES ('bad1','archive:gone:1','mariposa.archive','不是JSON','pending',?,?)").run(new Date().toISOString(), new Date().toISOString());

@@ -24,6 +24,7 @@ import type { WindowManager } from '../windows/manager.ts';
 import type { TurnSupervisor } from '../runtime/supervisor.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
+import { orModelIdIssue } from '../config/schema.ts';
 import type { AuthService } from '../auth/tokens.ts';
 import { buildReadyReport } from '../observability/health.ts';
 import { buildTimeContext } from '../time/context.ts';
@@ -80,8 +81,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // 公共面只回状态码级摘要（component+status），detail（含路径/原因）不上未认证面
       const comps = (report as { components?: Record<string, { status: string; detail?: string }> }).components ?? {};
       const entries = Object.entries(comps);
-      return json(res, 200, {
-        ready: entries.length > 0 && entries.every(([, c]) => c.status === 'ok'),
+      const ready = entries.length > 0 && entries.every(([, c]) => c.status === 'ok');
+      // WP-04（JFA-E07）：ready=false → 503（监控按状态码分辨）；
+      // /health/live 保持 200（进程活着）
+      return json(res, ready ? 200 : 503, {
+        ready,
         degraded: entries.filter(([, c]) => c.status !== 'ok').map(([k, c]) => ({ component: k, status: c.status })),
       });
     }
@@ -249,30 +253,49 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     if (rtPut) {
       if (!d.settings) return json(res, 503, { error: { code: 'unavailable', message: '运行时设置服务未接线' } });
       const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown };
-      if (body.or_model !== undefined) {
-        if (body.or_model === null || body.or_model === '') d.settings.set('or_model', null);
-        else if (typeof body.or_model === 'string' && body.or_model.trim().length > 0 && body.or_model.length <= 128) d.settings.set('or_model', body.or_model.trim());
-        else return json(res, 422, { error: { code: 'invalid_model', message: 'or_model 必须是非空字符串或 null（回落默认）' } });
+      // WP-04（JFA-B05/CX-10/C-016）：两字段全验通过后一次性写入——
+      // 任一失败 422 且零写入（不再逐字段先写先错）；or_model 按配置层
+      // 同款形状门（orModelIdIssue：auto/latest/逗号拼单/未知形态拒）
+      const nextModel: string | null | undefined = body.or_model !== undefined
+        ? (body.or_model === null || body.or_model === ''
+            ? null
+            : typeof body.or_model === 'string' && body.or_model.trim().length > 0 && body.or_model.length <= 128
+              ? body.or_model.trim()
+              : undefined)
+        : undefined;
+      if (body.or_model !== undefined && nextModel === undefined) {
+        return json(res, 422, { error: { code: 'invalid_model', message: 'or_model 必须是非空字符串或 null（回落默认）' } });
       }
-      if (body.reasoning_effort !== undefined) {
-        const v = body.reasoning_effort;
-        const ok = v === null || v === 'default' || ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(v as string);
-        if (!ok) return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
-        // 按生效模型的真实档位校验（元数据可及时；不可达时放行，
-        // 真请求若被 OR 拒绝会如实失败——不冒称已验证）
-        if (v !== null && v !== 'default') {
-          const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
-          const effModel = d.settings.effectiveOrModel(d.config.openrouter.model);
-          if (driver === 'openrouter' && effModel) {
-            const meta = await fetchOrModelMeta(d.config.openrouter.base_url, effModel);
-            const allowed = effortsForModel(meta);
-            if (allowed && !allowed.includes(v as string)) {
-              return json(res, 422, { error: { code: 'effort_not_supported', message: `当前模型 ${effModel} 不支持思考档位 ${v}（强制思考模型没有 none/minimal）`, supported: allowed } });
-            }
+      if (nextModel !== undefined && nextModel !== null) {
+        const issue = orModelIdIssue(nextModel);
+        if (issue) return json(res, 422, { error: { code: 'invalid_model', message: issue, field: 'or_model' } });
+      }
+      let nextEffort: string | null | undefined = body.reasoning_effort !== undefined
+        ? (body.reasoning_effort === null || body.reasoning_effort === 'default'
+            ? null
+            : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(body.reasoning_effort as string)
+              ? (body.reasoning_effort as string)
+              : undefined)
+        : undefined;
+      if (body.reasoning_effort !== undefined && nextEffort === undefined) {
+        return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
+      }
+      // 按生效模型的真实档位校验（元数据可及时；不可达时放行，
+      // 真请求若被 OR 拒绝会如实失败——不冒称已验证）
+      if (nextEffort !== undefined && nextEffort !== null) {
+        const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
+        const effModel = d.settings.effectiveOrModel(d.config.openrouter.model);
+        if (driver === 'openrouter' && effModel) {
+          const meta = await fetchOrModelMeta(d.config.openrouter.base_url, effModel);
+          const allowed = effortsForModel(meta);
+          if (allowed && !allowed.includes(nextEffort)) {
+            return json(res, 422, { error: { code: 'effort_not_supported', message: `当前模型 ${effModel} 不支持思考档位 ${nextEffort}（强制思考模型没有 none/minimal）`, supported: allowed } });
           }
         }
-        d.settings.set('reasoning_effort', v === 'default' ? null : (v as string | null));
       }
+      // 全验通过：原子写入（一次请求=一次生效视图变更，无中间态）
+      if (nextModel !== undefined) d.settings.set('or_model', nextModel);
+      if (nextEffort !== undefined) d.settings.set('reasoning_effort', nextEffort);
       const cfg2 = d.config.openrouter;
       return json(res, 200, {
         or_model: { effective: d.settings.effectiveOrModel(cfg2.model), override: d.settings.orModel() },

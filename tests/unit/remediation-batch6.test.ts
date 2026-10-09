@@ -69,7 +69,7 @@ test('F08：损坏的 status 响应（200 无回执无 completed）保持 unknow
 test('F10：骨架 ACK（origin/revision 有、来源证据全 null）不再整批 acked', async () => {
   const root = tempRoot('r6-f10-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } } });
+  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
@@ -93,7 +93,7 @@ test('F10：骨架 ACK（origin/revision 有、来源证据全 null）不再整�
 test('F15：500 可重试不一次死；transport throw 超过 attempts 上限后 TRANSIENT_EXHAUSTED', async () => {
   const root = tempRoot('r6-f15-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } } });
+  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
@@ -141,7 +141,7 @@ test('F15：500 可重试不一次死；transport throw 超过 attempts 上限�
 test('F16：审计临界消息（信封化后 >1MiB）被拒——信封开销计入', async () => {
   const root = tempRoot('r6-f16-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } } });
+  const config = buildConfig({ archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);

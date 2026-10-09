@@ -22,6 +22,9 @@ export const INGEST_BATCH_MAX_MESSAGES = 50; // 契约建议初值：每请求 �
 export const INGEST_BATCH_MAX_BYTES = 1024 * 1024; // 规范化 JSON 总计 ≤1MiB
 export const INGEST_BATCH_MAX_ATTEMPTS = 10; // 瞬时错误有界重试（F15：超限 dead，不无限循环）
 
+// WP-04（JFA-C07）：本地批界（会话内可收缩——服务端 SOURCE_SELECTION_
+// TOO_LARGE 时减半重切；下限 64KiB 保证单条大消息仍能单独成批尝试）
+
 type OutboxRow = {
   id: string;
   operation_key: string; // archive:<message_id>:<revision>
@@ -41,6 +44,7 @@ type RevisionRow = { message_id: string; revision: number; kind: string; content
 export type DrainSummary = { batches: number; acked: number; retry_later: number; dead: number; skipped_disabled: boolean; stopped_streams: number };
 
 export class ArchiveSyncService {
+  private batchByteBudget = INGEST_BATCH_MAX_BYTES;
   private db: Db;
   private events: EventService;
   private logger: Logger;
@@ -265,8 +269,8 @@ export class ArchiveSyncService {
       // 黄金夹具互证见 tests/unit/joint-audit-b4-contract.test.ts
       const wrapBytes = (req: IngestRequest): number => serverNormalizedBytes(req);
       const candidateBytes = wrapBytes(candidateRequest([...messages, message]));
-      if (batchRows.length > 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) break; // 切批（候选留给下一批）
-      if (batchRows.length === 0 && candidateBytes > INGEST_BATCH_MAX_BYTES) {
+      if (batchRows.length > 0 && candidateBytes > this.batchByteBudget) break; // 切批（候选留给下一批）
+      if (batchRows.length === 0 && candidateBytes > this.batchByteBudget) {
         deadRows.push(row); // 单条连同信封超限：明确报错不截断（大对象路径不在本任务）
         continue;
       }
@@ -318,6 +322,17 @@ export class ArchiveSyncService {
     if (!result.ok) {
       const cls = classifyError(result.code, result.httpStatus); // 审计 1005B：传 httpStatus——429/423/50x 按 HTTP 语义判 retry，不再依赖码名字符串匹配
       const attempts = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
+      // WP-04（JFA-C07）：超限=服务端门比本地批界严——本批退回 pending 并
+      // 把本地批界减半（会话内记忆），下一轮按更小批重组重试（不无限：
+      // 重试上限仍计 attempts）
+      if (result.code === 'SOURCE_SELECTION_TOO_LARGE') {
+        this.batchByteBudget = Math.max(64 * 1024, Math.floor(this.batchByteBudget / 2));
+        this.logger.warn('archive_sync_rebatch_shrink', { op: meta.operationId, bytes: this.batchByteBudget });
+        this.markChunk(rows, 'pending', result.code);
+        this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'rebatch', code: result.code, next_batch_bytes: this.batchByteBudget, attempts } });
+        summary.retry_later += rows.length;
+        return 'retry_later';
+      }
       // F15：瞬时错误（SOURCE_NOT_READY/429/502/503/504）可重试但有界；领域冲突=dead
       if (cls === 'retry_later' && attempts <= INGEST_BATCH_MAX_ATTEMPTS) {
         this.markChunk(rows, 'pending', result.code);
