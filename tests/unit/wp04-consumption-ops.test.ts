@@ -186,10 +186,16 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   assert.equal(out.ok, true);
   const blob = Buffer.byteLength(JSON.stringify((out.output as Record<string, unknown>).entries ?? []), 'utf8');
   assert.ok(blob <= 16000 + 2400, `整页出站按真字节有界（实际 ${blob}B）`);
-  // 中文 9000 字条目被分片（真字节口径）——不整条直出
-  const entries = (out.output as { entries: Array<Record<string, unknown>> }).entries;
-  const hasFrag = entries.some((e) => e.fragment);
-  assert.ok(hasFrag, '中文超长条目产生分片（真 UTF-8 字节预算生效）');
+  // 二次回访（字节单口径）：5000 字≈15.2KB 能整装空页 → 首页整条交付
+  // m1；9000 字≈27KB 超整页 → 顺延后在续页分片（真字节口径生效）
+  const entries = (out.output as { entries: Array<Record<string, unknown>>; newer_cursor?: Record<string, unknown> }).entries;
+  const m1e = entries.find((e) => e.message_id === 'm1') as { fragment?: unknown; text?: string } | undefined;
+  assert.ok(m1e, '锚点 m1 在首页（预留优先）');
+  assert.equal(m1e.fragment, undefined, '5000 字整条交付（≤整页预算）');
+  const fragPage = await tools.execute('conversation_read', { __tool_call_id: 'c2', cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
+  assert.equal(fragPage.ok, true);
+  const fragEntries = (fragPage.output as { entries: Array<Record<string, unknown>> }).entries;
+  assert.ok(fragEntries.some((e) => e.fragment), '9000 字条目超整页预算在续页分片（真 UTF-8 字节口径）');
   db.close();
 });
 
@@ -210,7 +216,7 @@ test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入
 
 // ----------------- FU-001/FU-002（回访 run-035424）：设置 PUT 真实 HTTP/事务
 
-async function hostWithSettings(driver = 'mock') {
+async function hostWithSettings(driver = 'mock', orOver: Record<string, unknown> = {}) {
   const { Host } = await import('../../apps/host/src/app-context.ts');
   const { setModelMetaForTests, clearModelMetaCache } = await import('../../apps/host/src/runtime/runtime-settings.ts');
   clearModelMetaCache();
@@ -220,7 +226,7 @@ async function hostWithSettings(driver = 'mock') {
   const config = buildConfig({
     ...readyRuntimePatch(),
     runtime: { ...readyRuntimePatch().runtime, provider: driver },
-    openrouter: { model: 'anthropic/claude-audit-a', api_key_env: 'FU_AUDIT_OR_KEY' },
+    openrouter: { model: 'anthropic/claude-audit-a', api_key_env: 'FU_AUDIT_OR_KEY', ...orOver },
   });
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
   await host.start();
@@ -333,13 +339,13 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
   // 不重叠 + 拼回覆盖全文）
   const bodies = new Map<string, string>();
   for (let i = 1; i <= 10; i++) bodies.set(`m${i}`, `消息${i}号正文` + '长内容'.repeat(750));
-  const olderParts = new Map<string, Array<[number, number]>>();
-  const addRange = (id: string, start: number, end: number) => {
+  const olderParts = new Map<string, Array<{ start: number; end: number; text: string }>>();
+  const addRange = (id: string, start: number, end: number, text: string) => {
     const parts = olderParts.get(id) ?? [];
-    for (const [s, e] of parts) {
-      assert.ok(start >= e || end <= s, `older 翻页重叠交付 ${id}（${start}-${end} 与 ${s}-${e}）`);
+    for (const p of parts) {
+      assert.ok(start >= p.end || end <= p.start, `older 翻页重叠交付 ${id}（${start}-${end} 与 ${p.start}-${p.end}）`);
     }
-    parts.push([start, end]);
+    parts.push({ start, end, text });
     olderParts.set(id, parts);
   };
   let oc: Record<string, unknown> | null = { older_than: 11 };
@@ -352,9 +358,9 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
       if (!e.message_id) continue;
       const fr = e.fragment;
       if (fr && typeof fr.start_char === 'number' && typeof fr.end_char === 'number') {
-        addRange(e.message_id, fr.start_char, fr.end_char);
+        addRange(e.message_id, fr.start_char, fr.end_char, e.text ?? '');
       } else {
-        addRange(e.message_id, 0, [...(e.text ?? '')].length);
+        addRange(e.message_id, 0, [...(e.text ?? '')].length, e.text ?? '');
       }
     }
     const o = out.output as { has_more?: unknown; next_cursor?: Record<string, unknown> | null };
@@ -364,8 +370,44 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
   } while (oc);
   assert.equal(olderParts.size, 10, 'older 翻尽覆盖全部');
   for (const [id, parts] of olderParts) {
-    const delivered = parts.reduce((acc, [s, e]) => acc + (e - s), 0);
-    assert.equal(delivered, [...bodies.get(id)!].length, `${id} 分片拼回=全文`);
+    parts.sort((a, b) => a.start - b.start);
+    const body = bodies.get(id)!;
+    assert.equal(parts[0].start, 0, `${id} 从 0 起`);
+    for (let k = 1; k < parts.length; k++) {
+      assert.equal(parts[k - 1].end, parts[k].start, `${id} 分片区间首尾相接（无缺无重）`);
+    }
+    assert.equal(parts[parts.length - 1].end, [...body].length, `${id} 末片抵达全文长度`);
+    assert.equal(parts.map((p) => p.text).join(''), body, `${id} 实际正文逐字精确拼回（非等长覆盖）`);
   }
   db.close();
+});
+
+test('FU-001（二次回访）：null/default 清除回落配置默认的组合也按候选生效对校验', async () => {
+  // 配置：默认模型 A（仅 high）、默认档位 high；B 仅 low。
+  const c = await hostWithSettings('openrouter', { reasoning: { effort: 'high' } });
+  try {
+    c.setModelMetaForTests('anthropic/claude-audit-a', { supported_efforts: ['high'], mandatory: true });
+    c.setModelMetaForTests('anthropic/claude-audit-b', { supported_efforts: ['low'], mandatory: true });
+    // 建立状态：override B+low（合法组合 200）
+    const setup = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: 'anthropic/claude-audit-b', reasoning_effort: 'low' }) });
+    assert.equal(setup.status, 200);
+    // 红例1：or_model:null（清模型回落 A）+ 保留 low —— (A,low) 不支持 → 422 零写入
+    const r1 = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: null }) });
+    assert.equal(r1.status, 422, '清模型回落 A 后候选对 (A,low) 不支持——必须拒绝（此前 200）');
+    const after1 = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.equal(after1.or_model.override, 'anthropic/claude-audit-b', '拒绝后零写入（override 保持 B）');
+    assert.equal(after1.reasoning_effort.override, 'low');
+    // 红例2：reasoning_effort:null（清档位回落配置默认 high）+ override B —— (B,high) 不支持 → 422 零写入
+    const r2 = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ reasoning_effort: null }) });
+    assert.equal(r2.status, 422, '清档位回落配置默认 high 后候选对 (B,high) 不支持——必须拒绝（此前 200）');
+    const after2 = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.equal(after2.reasoning_effort.override, 'low', '拒绝后零写入（override 保持 low）');
+    // 对照：双清（回落 A+high，配置原生组合）→ 200
+    const okBoth = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: null, reasoning_effort: null }) });
+    assert.equal(okBoth.status, 200, '双清回落配置默认 (A,high) 合法');
+  } finally {
+    await c.host.stop();
+    delete process.env.FU_AUDIT_OR_KEY;
+    c.clearModelMetaCache();
+  }
 });

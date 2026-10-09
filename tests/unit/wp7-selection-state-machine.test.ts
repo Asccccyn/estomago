@@ -390,8 +390,9 @@ test('RRA-006（回访 run-035424）：分节正文续取被消费或如实披�
     const r1 = await say(c1, 'read current input', 'a', T0);
     assert.equal(c1.db.prepare('SELECT state FROM turns WHERE id=?').get(r1.turnId).state, 'completed');
     const text1 = payloadTexts(seen.at(-1)!);
-    assert.ok(nextCalls > 0 || text1.includes('event_text_next'),
-      'E 必须真实消费续取（bootstrap.next）或披露 event_text_next');
+    assert.ok(nextCalls > 0, '失败景也必须真实发起过续取调用（bootstrap.next）');
+    assert.ok(text1.includes('event_text_next'),
+      '续取失败时必须向模型披露 event_text_next（不只调过）');
     // 场景二：续取可用 → 全文进模型 payload（无截断标记）
     let offset = 2000;
     const okNext: MariposaTransport = async (cap) => {
