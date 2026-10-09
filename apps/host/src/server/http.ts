@@ -357,6 +357,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         deepseek: dsStatus,
         capabilities: d.capabilities.describe(),
         active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
+        // WP-07（CX-10）：无活动窗时附 awaiting 选集引用——UI 锚定确认
+        // 入口（preview/confirm 以 source_window_id 为目标，含哨兵源）
+        awaiting_selection: active ? null : (() => {
+          const row = d.selections?.awaitingFor(conversationId) ?? null;
+          return row ? { id: row.selection_id, source_window_id: row.source_window_id } : null;
+        })(),
         thresholds: {
           status: d.config.windows.threshold_status,
           model_context_capacity: d.config.windows.model_context_capacity,
