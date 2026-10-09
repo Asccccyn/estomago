@@ -681,7 +681,7 @@ export class TurnSupervisor {
     const nextWithIncoming = workingSet + Math.ceil(currentInputLen / dv.charsPerToken);
 
         // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=64k 软线）
-    const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比），idle 触发照常
+    const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=64k 软线
     let plan: ReturnType<typeof rotationPlan> | null = null;
     if (!o.force) {
       plan = rotationPlan({
@@ -921,11 +921,14 @@ export class TurnSupervisor {
     const d = this.d;
     if (!d.selections) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '选集服务未接线' } };
     const win = d.windows.get(windowId);
-    if (!win || win.conversation_id !== conversationId) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_WINDOW', detail: '窗口不存在或不属于该房间' } };
+    // WP-03（2026-10-09，JFA-009/B02）：哨兵源（csel-src-*）同 confirm 语义
+    // ——存量历史+无 ACTIVE 窗时 preview 也可核验（expectedWindowRevision=0）
+    const isSentinel = windowId.startsWith('csel-src-');
+    if ((!win && !isSentinel) || (win && win.conversation_id !== conversationId)) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_WINDOW', detail: '窗口不存在或不属于该房间' } };
     const est = this.selectionEstimateContext(this.selectionPendingInputChars(conversationId));
     if (!est) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNAVAILABLE', detail: '无可用信封驱动（聊天模型未配置）' } };
     const cutoff = this.selectionCutoffSequence(conversationId);
-    return d.selections.preview({ conversationId, sourceWindowId: windowId, expectedWindowRevision: win.revision, items, cutoffSequence: cutoff, estimate: est, capacityBoundTokens: est.capacityBoundTokens });
+    return d.selections.preview({ conversationId, sourceWindowId: windowId, expectedWindowRevision: win ? win.revision : 0, items, cutoffSequence: cutoff, estimate: est, capacityBoundTokens: est.capacityBoundTokens });
   }
 
   /** confirm（§6.2/§6.3）：幂等确认；有被选集阻断的待回答输入时确认后

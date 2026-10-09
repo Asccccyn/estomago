@@ -41,6 +41,11 @@ async function main(): Promise<void> {
   console.log(`[estomago] listening http://${bind}:${host.port}`);
   console.log(`[estomago] config: ${sourcePath}`);
   console.log(`[estomago] state: ${stateRoot}`);
+  // WP-03（2026-10-09，JFA-B08）：配置含退役键时启动即披露（example.yaml
+  // 承诺成真——不再功能上静默接受）；键被剥离不进运行时
+  if (config.retiredKeys?.length) {
+    console.warn(`[estomago] retired_config_keys: ${config.retiredKeys.join(', ')}（已剥离，不进运行时；请从配置文件移除）`);
+  }
   console.log(`[estomago] 认证 token 文件: ${host.auth.tokenFilePath()}（内容不出现在日志；首次登录在页面粘贴一次）`);
   const gate = host.identity.evaluateGate(host.db);
   if (gate.state !== 'READY') {
