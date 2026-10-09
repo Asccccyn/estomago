@@ -18,7 +18,17 @@ const rendered = template
   .replaceAll('__NODE_BIN__', nodeBin)
   .replaceAll('__PROJECT_ROOT__', REPO)
   .replaceAll('__STATE_ROOT__', stateRoot)
-  .replaceAll('__LOG_ROOT__', logRoot);
+  .replaceAll('__LOG_ROOT__', logRoot)
+  // RRA-020（2026-10-09 复审）：wrapper 式模板的 __HOME__ 占位此前
+  // 无替换——渲染产物残留占位使 bash 找不到 wrapper（KeepAlive 反复失败）
+  .replaceAll('__HOME__', os.homedir());
+
+// RRA-020：渲染产物不得残留任何占位（dry-run 也校验）
+const residual = rendered.match(/__[A-Z_]+__/g);
+if (residual) {
+  console.error(`[launchagent] 模板占位未全部替换：${[...new Set(residual)].join(', ')}`);
+  process.exit(2);
+}
 
 if (apply) {
   fs.mkdirSync(path.dirname(plistPath), { recursive: true });

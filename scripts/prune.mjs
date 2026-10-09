@@ -26,7 +26,9 @@ if (!fs.existsSync(dbFile)) {
 const db = new DatabaseSync(dbFile);
 
 // 与 apps/host/src/runtime/prune.ts 同判（脚本独立实现——不拉 TS 运行时）
-const cutoff = new Date(Date.now() - (dryRun ? 0 : keepDays) * 24 * 3600 * 1000).toISOString();
+// RRA-022（2026-10-09 复审）：dry-run 与真实执行同一筛选谓词（同一
+// cutoff）——预览=将执行集合，只差写入；此前 dryRun 用 0 天夸大清理
+const cutoff = new Date(Date.now() - keepDays * 24 * 3600 * 1000).toISOString();
 const fresh = db.prepare('SELECT id FROM windows ORDER BY updated_at DESC LIMIT ?').all(keepWindows) || [];
 const freshIds = fresh.map((r) => r.id);
 const ph = freshIds.length > 0 ? freshIds.map(() => '?').join(',') : "''";

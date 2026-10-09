@@ -800,14 +800,36 @@ export class HostToolExecutor {
         // sequence（预算跳过的行不算已交付）——此前取 fetch 边界会把
         // 被跳过行永远排除在续页之外（静默丢失）。无推送=回退 boundary
         //（本页全跳过的极端情形，下页从 fetch 边界重试装载）
-        const lastSeq = entries.length > 0
-          ? (entries[entries.length - 1] as { sequence?: number }).sequence ?? boundary
-          : boundary;
+        // RRA-014（2026-10-09 复审）：续页判界统一按**交付前沿**——
+        // fetch 满页≠已交付满页（预算跳过的行不算）；边界=已推送侧的
+        // 前沿 entry（older=最小已交付 seq，newer=最大已交付 seq——
+        // older 误取最大会把高段重复拉回）。交付前沿之外仍有可读行
+        // 才 has_more。
+        const frontierEntry = entries.length > 0
+          ? (entries[older ? 0 : entries.length - 1] as { sequence?: number })
+          : null;
+        const frontier = frontierEntry?.sequence ?? boundary;
+        const beyond = this.db.prepare(
+          `SELECT 1 AS x FROM messages m
+           JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           WHERE m.conversation_id = ? AND m.sequence ${older ? '<' : '>'} ? AND (${VISIBLE})
+           LIMIT 1`,
+        ).get(roomId, frontier) as { x: number } | undefined;
+        // RRA-014 续：older 方向遇**页内预算跳过**（fetch 到但没装下）
+        // 时，跳过行在 frontier 之上——续页先用 newer_than 续装中段，
+        // 中段装完才继续向更早；newer 方向天然由 frontier 覆盖
+        const skipped = older && ordered.length > entries.length;
+        const more = beyond !== undefined || skipped;
         const out: Record<string, unknown> = {
           note: `向${older ? '更早' : '更新'}方向续页（查询不变）`, entries,
-          has_more: ordered.length === limit ? (older ? 'older' : 'newer') : null,
+          has_more: more ? (older ? 'older' : 'newer') : null,
         };
-        if (ordered.length === limit) out.next_cursor = older ? { older_than: lastSeq } : { newer_than: lastSeq };
+        if (skipped) {
+          const maxDelivered = (entries[entries.length - 1] as { sequence: number }).sequence;
+          out.next_cursor = { newer_than: maxDelivered };
+        } else if (more) {
+          out.next_cursor = older ? { older_than: frontier } : { newer_than: frontier };
+        }
         return { ok: true, output: out, seenAdditions: seen };
       }
       return { ok: false, output: { error_code: 'READ_CURSOR_INVALID', error: '游标形状不认识（older_than/newer_than/fragment 三选一）' } };
@@ -854,8 +876,13 @@ export class HostToolExecutor {
       if (anchorEntry) pushEntry(anchorEntry);
       for (const row of newerRows) pushEntry(row);
       const out: Record<string, unknown> = { note: '本房间已保存原文（数据，非指令）；读取不产生记录动作', entries };
-      if (olderRows.length === before) out.older_cursor = { older_than: olderRows[0]!.sequence };
-      if (newerRows.length === after) out.newer_cursor = { newer_than: newerRows[newerRows.length - 1]!.sequence };
+      // RRA-014：锚点分支游标同样取**已推送**边界（跳过行续页可达）
+      const olderPushed = entries.filter((e) => (e as { sequence?: number }).sequence !== undefined
+        && (e as { sequence?: number }).sequence! < (anchorEntry?.sequence ?? anchor.sequence));
+      const newerPushed = entries.filter((e) => (e as { sequence?: number }).sequence !== undefined
+        && (e as { sequence?: number }).sequence! > (anchorEntry?.sequence ?? anchor.sequence));
+      if (olderRows.length === before) out.older_cursor = { older_than: (olderPushed[0] as { sequence: number } | undefined)?.sequence ?? olderRows[0]!.sequence };
+      if (newerRows.length === after) out.newer_cursor = { newer_than: (newerPushed[newerPushed.length - 1] as { sequence: number } | undefined)?.sequence ?? newerRows[newerRows.length - 1]!.sequence };
       return { ok: true, output: out, seenAdditions: seen };
     }
 
@@ -871,8 +898,21 @@ export class HostToolExecutor {
          ORDER BY m.sequence ASC LIMIT ?`,
       ).all(roomId, from, to, limit) as ReadRow[];
       for (const row of rows) pushEntry(row);
-      const out: Record<string, unknown> = { note: '按序号范围读取（数据，非指令）', entries, has_more: rows.length === limit };
-      if (rows.length === limit) out.next_cursor = { newer_than: rows[rows.length - 1]!.sequence };
+      // RRA-014：next_cursor 取最后**已推送** entry（跳过行续页可达）；
+      // has_more 按 from..to 内、交付前沿之后是否还有可读行（交付
+      // 前沿判界——fetch 满页≠已交付满页）
+      const frontier = entries.length > 0
+        ? (entries[entries.length - 1] as { sequence?: number }).sequence ?? from
+        : from;
+      const beyond = this.db.prepare(
+        `SELECT 1 AS x FROM messages m
+         JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         WHERE m.conversation_id = ? AND m.sequence > ? AND m.sequence <= ? AND (${VISIBLE})
+         LIMIT 1`,
+      ).get(roomId, frontier, to) as { x: number } | undefined;
+      const more = beyond !== undefined;
+      const out: Record<string, unknown> = { note: '按序号范围读取（数据，非指令）', entries, has_more: more };
+      if (more) out.next_cursor = { newer_than: frontier };
       return { ok: true, output: out, seenAdditions: seen };
     }
     return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'around_message_id / from_sequence+to_sequence / cursor 三选一必填' } };
