@@ -60,6 +60,7 @@
 - **2026-10-08 晚间（她裁定）**：6h 静默换窗触发删除（换窗唯一自动基线=64k 软线；醒来继续原窗）；无轨迹窗 12k 评审回退删除（如实阻断 ROTATION_RANGE_UNKNOWN，不猜范围）——7 个测试改容量触发/阻断断言，68/68+tsc 0。
 - **2026-10-08 晚间二批（她裁定）**：聊天窗内置换模型/思考深度——`runtime_settings`（迁移 19）持久 override，GET/PUT /api/v1/runtime-settings；换模型=运行边界变化走受控换窗（指纹按生效视图，WindowManager 经 provider 存新窗指纹），思考深度（OR reasoning.effort 七档）=逐请求参数立即生效**不换窗**（reasoning 退出 contextFingerprint）；聊天窗顶部常驻设置栏（模型输入+档位下拉；UI 美化她统一后改）；4 新测试。
 - **2026-10-08 晚间三批（她 catch 修复）**：思考档位按模型真实支持生成（OR 公开元数据 supported_efforts/mandatory 驱动下拉+PUT 校验；fable-5.1/opus-5.5 实测五档无 none/minimal；无旋钮模型只剩 default；元数据不可达=未验证如实标注）——`c5c3ad1` 已部署生产。
+- **WP-03（2026-10-09，联合审计返修 run-160858）**：测试债清偿+配置退役披露——三死键全链退役（6h/零点/bootstrap_target：类型/默认/SHAPE/校验删净，RETIRED 六键+启动 `retired_config_keys` 日志）；records.ts `effectiveWarning` 残尾切除（tsc 0）；选集无活动窗死锁修复（GET awaiting 端点、preview 认哨兵源、前端锚回落+幂等键会话复用+confirm 刷新重取，B12）；or-config/audit-d-fixes 两红测试改退役断言；全套件 69/69+tsc 0。
 
 > **基线口径**：代码基线=本仓库 HEAD（每批提交即推进，测试数以最新批为准）；`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 为冻结规范正文。任何审计包/交接包/邮件附件里的 source 副本都是**当时的历史快照**（含审计输入包 `~/Documents/Codex/…/estomago-audit-*/source/`），不作为基线引用。
 

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateConfig, buildConfig } from '../../apps/host/src/config/schema.ts';
 
-test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ 零点换窗退役', () => {
+test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ 6h/零点/bootstrap 退役', () => {
   const { config, issues } = validateConfig({});
   assert.equal(issues.length, 0);
   assert.equal(config.runtime.provider, 'claude-agent-sdk', '默认仍 SDK：切 OR 是显式配置动作');
@@ -12,20 +12,23 @@ test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ �
   assert.equal(config.openrouter.max_output_tokens, 8192);
   assert.equal(config.openrouter.cache_ttl, '1h');
   assert.deepEqual(config.openrouter.provider_only, ['anthropic']);
-  // §4.1 工程初值
-  assert.equal(config.windows.rotate_on_business_date_change, false, '零点不触发换窗（旧默认 true 已退役）');
+  // §4.1 工程初值（WP-03 JFA-005：6h/零点/bootstrap_target 三键已退役）
   assert.equal(config.windows.soft_limit_tokens, 64000);
-  assert.equal(config.windows.warning_tokens, 56000);
-  assert.equal(config.windows.idle_before_next_user_ms, 21600000);
   assert.equal(config.windows.tool_input_reserve_tokens, 8000);
   assert.equal(config.windows.review_reserve_tokens, 8000);
   assert.equal(config.windows.safety_reserve_tokens, 4000);
-  // WP5（D02）：recent_dialogue_budget_tokens 已退役——不进配置、出现即披露
+  // 退役键：不进配置面，出现即披露
+  for (const key of ['idle_before_next_user_ms', 'rotate_on_business_date_change', 'bootstrap_target_tokens']) {
+    assert.equal(key in config.windows, false, `${key} 已退役，不得留在 config.windows`);
+  }
   assert.equal('recent_dialogue_budget_tokens' in config.windows, false);
-  const retired = buildConfig({ digest: { provider: 'deepseek', max_messages: 5 }, windows: { recent_dialogue_budget_tokens: 999 } });
-  assert.deepEqual(retired.retiredKeys, ['digest', 'windows.recent_dialogue_budget_tokens'], '旧键被剥离并披露（不静默接受）');
+  const retired = buildConfig({ digest: { provider: 'deepseek', max_messages: 5 }, windows: { recent_dialogue_budget_tokens: 999, idle_before_next_user_ms: 1, rotate_on_business_date_change: true, bootstrap_target_tokens: 1, warning_tokens: 1 } });
+  assert.deepEqual(
+    retired.retiredKeys,
+    ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens'],
+    '全部退役键被剥离并披露（不静默接受）',
+  );
   assert.equal('digest' in retired, false);
-  assert.equal(config.windows.bootstrap_target_tokens, 32000);
   assert.equal(config.windows.model_context_capacity, null, 'C 未测量不假定');
 });
 
@@ -40,13 +43,16 @@ test('退役字段：旧预算键现在是未知键（不忽略）', () => {
   }
 });
 
-test('硬规则不可放宽：TTL/fallback/压缩/零点换窗', () => {
+test('硬规则不可放宽：TTL/fallback/压缩', () => {
   // 硬规则 path 提取自带尾随空格（历史行为）——断言用 trim 后比较
   const hasIssue = (raw: Record<string, unknown>, path: string) => validateConfig(raw).issues.some((i) => i.path.trim() === path);
   assert.ok(hasIssue({ openrouter: { cache_ttl: '5m' } }, 'openrouter.cache_ttl'), '1h 是产品合同');
   assert.ok(hasIssue({ openrouter: { allow_fallbacks: true } }, 'openrouter.allow_fallbacks'));
   assert.ok(hasIssue({ openrouter: { disable_context_compression: false } }, 'openrouter.disable_context_compression'));
-  assert.ok(hasIssue({ windows: { rotate_on_business_date_change: true } }, 'windows.rotate_on_business_date_change'));
+  // 零点换窗键已整体退役（WP-03 JFA-005）——出现值不再走校验，而是剥离+披露
+  const rotated = validateConfig({ windows: { rotate_on_business_date_change: true } });
+  assert.equal(rotated.issues.length, 0);
+  assert.deepEqual(rotated.config.retiredKeys, ['windows.rotate_on_business_date_change']);
   assert.ok(hasIssue({ openrouter: { provider_only: [] } }, 'openrouter.provider_only'));
   assert.ok(hasIssue({ openrouter: { base_url: 'http://insecure.example' } }, 'openrouter.base_url'));
 });

@@ -219,8 +219,8 @@ test('H09：幂等键重复只应用一次；expected_window_revision 冲突拒'
 test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放）→确认选集→原输入恢复一次', async () => {
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp3-int-');
-  // 软线调小：第二条消息即触发换窗（走容量路径）
-  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 2200, warning_tokens: 2000 } } as never);
+  // 软线调小：第二条消息即触发换窗（走容量路径；warning_tokens 已退役不再配置）
+  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 2200 } } as never);
   // H13 正例：真全新空房 → 首条消息自动建窗（不要求选集）
   // 历史在其后种行（模拟更早已归档的存量原文进入本房间）
   const s1 = await say(ctx, '今天聊点新的', 'm1', T0);
@@ -300,8 +300,13 @@ test('H13：已有历史但无活动窗 → awaiting 阻断；真全新空房自
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(s1.attemptId) as { state: string; blocked_reason: string };
   assert.equal(att.state, 'blocked');
   assert.ok(att.blocked_reason.startsWith('CONTEXT_SELECTION_REQUIRED'), '已有历史无活动窗：不擅自空选');
-  // 确认（哨兵源）→ 建窗恢复
+  // WP-03（JFA-009/B02）：preview 也认哨兵源——无活动窗不核验就确认的前端
+  // 死锁路径不存在了
   const awaiting = ctx.selections.awaitingFor('c1')!;
+  assert.ok(awaiting.source_window_id.startsWith('csel-src-'), '无活动窗的 awaiting 源是哨兵');
+  const pre = ctx.supervisor.selectionPreview('c1', awaiting.source_window_id, [{ message_id: 'old1' }]);
+  assert.equal(pre.ok, true, JSON.stringify(pre));
+  // 确认（哨兵源）→ 建窗恢复
   const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: [{ message_id: 'old1' }], explicitEmpty: false, idempotencyKey: 'h13' });
   assert.equal(confirm.ok, true, JSON.stringify(confirm));
   await ctx.supervisor.waitIdle();

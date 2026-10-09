@@ -282,6 +282,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
     // —— WP3（2026-10-08 她裁定）：人工历史选集 ——
 
+    // WP-03（2026-10-09，JFA-009/B02）：当前 awaiting 选集行——无活动窗时
+    // 前端的 fallback 锚（source_window_id 是 preview/confirm 的合法目标，
+    // 含 csel-src-* 哨兵源；无 awaiting 返回 null，真首窗语义不变）
+    const selAwaiting = /^GET \/api\/v1\/conversations\/([^/]+)\/context-selection$/.exec(route);
+    if (selAwaiting) {
+      const conversationId = decodeURIComponent(selAwaiting[1]!);
+      const row = d.selections?.awaitingFor(conversationId) ?? null;
+      return json(res, 200, { selection: row ? { id: row.selection_id, status: row.status, source_window_id: row.source_window_id } : null });
+    }
+
     // preview（§6.2）：只读核验（引用/修订/hash/发布状态/间隙/粗估）——
     // 不跑模型、不 hold、不换窗、不写选集
     const selPreview = /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/preview$/.exec(route);

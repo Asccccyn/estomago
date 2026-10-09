@@ -113,13 +113,10 @@ export type Config = {
     probe_evidence_max_age_days: number | null;
   };
   windows: {
-    rotate_on_business_date_change: boolean; // 现行规范 §4.1：零点不触发换窗（默认 false）
     soft_limit_tokens: number; // 输入工作集软线（§4.1 初值 64000；有效软线=min(此值, C-O-T-R-S)）
-    idle_before_next_user_ms: number; // 距上一条真实用户消息≥6h → 下一条真实交互到达时换窗
     tool_input_reserve_tokens: number; // T（§4.2 初值 8k）
     review_reserve_tokens: number; // R：换窗提醒及必要 hold 往返预留（8k）
     safety_reserve_tokens: number; // S（4k）
-    bootstrap_target_tokens: number; // 新窗启动总目标（§5.5 旧值；WP5 起新窗历史只经人工选集）
     model_context_capacity: number | null; // C：实际所选模型/端点容量；null=未测量（不假定）
     threshold_status: string;
     normal_rotation_uses_new_session: boolean;
@@ -293,17 +290,17 @@ export const CONFIG_DEFAULTS: Config = {
     expected_rules_version: null,
     probe_evidence_max_age_days: 30,
   },
-  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值：64k 软线 / 6h 静默 / T8k R8k S4k。
-  // WP5（2026-10-08）：56k 预警与 12k 近期原话已退役（spec §4.1 修订）。
+  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值：64k 软线 / T8k R8k S4k。
+  // WP5（2026-10-08）：56k 预警与 12k 近期原话已退役（spec §4.1 修订）；
+  // WP-03（2026-10-09，JFA-005）：6h 静默（idle_before_next_user_ms）、零点
+  // 换窗（rotate_on_business_date_change）、bootstrap_target_tokens 三键
+  // 一并退役——唯一自动换窗基线=64k 软线，新窗历史只经人工选集。
   // 这些是配置初值，不是上游极限或最优成本结论；C=null 必须由实际端点能力补齐。
   windows: {
-    rotate_on_business_date_change: false,
     soft_limit_tokens: 64000,
-    idle_before_next_user_ms: 21600000,
     tool_input_reserve_tokens: 8000,
     review_reserve_tokens: 8000,
     safety_reserve_tokens: 4000,
-    bootstrap_target_tokens: 32000,
     model_context_capacity: null,
     threshold_status: 'awaiting_measurement',
     normal_rotation_uses_new_session: true,
@@ -427,9 +424,9 @@ const SHAPE: SectionSpec = { section: {
     probe_evidence_max_age_days: 'number?',
   } },
   windows: { section: {
-    rotate_on_business_date_change: 'boolean', soft_limit_tokens: 'number',
-    idle_before_next_user_ms: 'number', tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
-    safety_reserve_tokens: 'number', bootstrap_target_tokens: 'number',
+    soft_limit_tokens: 'number',
+    tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
+    safety_reserve_tokens: 'number',
     model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',
   } },
   time: { section: {
@@ -571,7 +568,6 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     [Number.isSafeInteger(c.deepseek.retry_max_attempts_after_initial) && c.deepseek.retry_max_attempts_after_initial >= 0, 'deepseek.retry_max_attempts_after_initial 必须是非负整数'],
     [c.deepseek.estimate_chars_per_token > 0 && c.deepseek.estimate_chars_per_token <= 10, 'deepseek.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
     [c.openrouter.estimate_chars_per_token > 0 && c.openrouter.estimate_chars_per_token <= 10, 'openrouter.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
-    [c.windows.rotate_on_business_date_change === false, 'windows.rotate_on_business_date_change 必须为 false（现行规范：零点不触发换窗）'],
   ];
   for (const [ok, msg] of fixed) if (!ok) issues.push({ path: msg.slice(0, msg.indexOf('必须')), message: msg });
   // §6.1：型号已配置时必须是明确 ID（未配置不在此报错——selectRunner 会以 *_MODEL_NOT_CONFIGURED 阻断并显示）
@@ -587,8 +583,10 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
 
 /** WP5（D02，MANUAL_HANDOFF_JUDGE_SWITCH_V1）：已退役配置键——出现即从补丁
  *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
- *  读取处负责把披露写进日志/启动报告） */
-export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens'] as const;
+ *  读取处负责把披露写进日志/启动报告）。
+ *  WP-03（2026-10-09，JFA-005）：6h 静默/零点换窗/bootstrap_target_tokens
+ *  三键并入退役——唯一自动换窗基线=64k 软线（红线 E-18） */
+export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];

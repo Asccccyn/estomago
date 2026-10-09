@@ -738,7 +738,7 @@ function ensureRuntimeBar(data) {
 // —— WP3（2026-10-08 她裁定）：人工历史选集——换窗携带哪些历史由她勾选 ——
 // 实现约束：不依赖 innerHTML/querySelector（VM 测试桩无这些能力），
 // 全部 createElement/appendChild 组装；无 body 的环境（测试桩）自动跳过。
-const selection = { active: false, ids: new Set(), windowId: null };
+const selection = { active: false, ids: new Set(), windowId: null, idempotencyKey: null };
 const selectionBar = { el: null, toggle: null, info: null, preview: null, confirm: null, empty: null, clear: null };
 
 async function activeWindowId() {
@@ -746,6 +746,23 @@ async function activeWindowId() {
   if (!rt.ok) return null;
   const data = await rt.json();
   return (data.active_window && data.active_window.id) || null;
+}
+
+// WP-03（2026-10-09，JFA-009/B02）：无活动窗时取 awaiting 选集行的
+// source_window_id（csel-src-* 哨兵源是后端认可的 preview/confirm 目标）
+async function awaitingSelectionWindowId() {
+  const res = await fetch(`/api/v1/conversations/${CONVERSATION}/context-selection`, { credentials: 'same-origin' });
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => ({}));
+  return (data.selection && data.selection.source_window_id) || null;
+}
+
+// 选集目标窗：活动窗优先；无活动窗回落 awaiting 选集行——存量历史+
+// 无 ACTIVE 窗（CONTEXT_SELECTION_REQUIRED）不再死锁；都没有=真首窗
+async function selectionAnchorWindowId() {
+  const active = await activeWindowId();
+  if (active) return active;
+  return awaitingSelectionWindowId();
 }
 
 function mkSelBtn(text, onClick) {
@@ -785,7 +802,9 @@ function ensureSelectionBar() {
 function toggleSelection() {
   selection.active = !selection.active;
   selection.ids.clear();
-  void activeWindowId().then((id) => { selection.windowId = id; updateSelectionBar(); });
+  // B12：幂等键在选集会话内生成一次，confirm 复用（双击/网络重试同键 200 幂等）
+  selection.idempotencyKey = selection.active ? `sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` : null;
+  void selectionAnchorWindowId().then((id) => { selection.windowId = id; updateSelectionBar(); });
   rerenderSelection();
 }
 
@@ -818,8 +837,9 @@ async function selectionItems() {
 }
 
 async function previewSelection() {
-  if (!selection.windowId) selection.windowId = await activeWindowId();
-  if (!selection.windowId) { window.alert('当前无活动窗口'); return; }
+  // JFA-009/B02：无活动窗时回落 awaiting 选集行（哨兵源可 preview）
+  selection.windowId = await selectionAnchorWindowId();
+  if (!selection.windowId) { window.alert('当前无活动窗口，也没有待确认的历史选集——发送第一条消息产生窗口后再选择'); return; }
   const res = await fetch(`/api/v1/windows/${selection.windowId}/context-selection/preview`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
     body: JSON.stringify({ conversation_id: CONVERSATION, items: await selectionItems() }),
@@ -832,14 +852,15 @@ async function previewSelection() {
 }
 
 async function confirmSelection(explicitEmpty) {
-  if (!selection.windowId) selection.windowId = await activeWindowId();
-  if (!selection.windowId) { window.alert('当前无活动窗口'); return; }
+  // B12：confirm 时刷新重取目标窗（不沿用 toggle 时的快照——期间可能已换窗）
+  selection.windowId = await selectionAnchorWindowId();
+  if (!selection.windowId) { window.alert('当前无活动窗口，也没有待确认的历史选集——发送第一条消息产生窗口后再选择'); return; }
   const items = explicitEmpty ? [] : await selectionItems();
   if (!explicitEmpty && items.length === 0) { window.alert('未勾选任何消息：要么勾选，要么点"不带历史（明确空选）"——未提交不等于空选'); return; }
   if (!window.confirm(explicitEmpty ? '确认新窗不带任何历史？' : `确认携带已选 ${items.length} 条历史换窗？当前待回答消息会自动继续。`)) return;
   const res = await fetch(`/api/v1/windows/${selection.windowId}/context-selection/confirm`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-    body: JSON.stringify({ conversation_id: CONVERSATION, items, explicit_empty: explicitEmpty, idempotency_key: `sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
+    body: JSON.stringify({ conversation_id: CONVERSATION, items, explicit_empty: explicitEmpty, idempotency_key: selection.idempotencyKey || `sel-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { window.alert(`确认失败：${(data && data.error && data.error.code) || res.status}\n${JSON.stringify((data && data.error && data.error.detail) || {}, null, 1).slice(0, 500)}`); return; }
