@@ -799,6 +799,13 @@ export class HostToolExecutor {
     //（此前续页翻成无上界 newer_than，3..7 读到 12）；resume 携带分片
     // 所属的方向上下文（片尽后回到方向续页，链不断）。
     const cursor = (args.cursor && typeof args.cursor === 'object' && !Array.isArray(args.cursor)) ? args.cursor as Record<string, unknown> : null;
+    // 二次回访（2026-10-10）：**显式空游标**（调用方回传上一页缺失的
+    // next_cursor，值 null/undefined）=上一页已到末尾——返回诚实的空
+    // 续页而不是"三选一必填"错误（翻尽即终止后链式调用方的最后一次
+    // 探测不应 4xx；完全不带 cursor 键的调用仍走必填门）
+    if ('cursor' in args && (args.cursor === null || args.cursor === undefined)) {
+      return { ok: true, output: { note: '空续页（游标为空——上一页已到末尾）', entries, has_more: null }, seenAdditions: seen };
+    }
     /** 页内装至多一个未完分片（未完分片=页终止）：同页第二个未完分片
      *  只会有一个能进 next_cursor 链，先出现者尾段被搁死（RRA-014
      *  回访抓到的实际缺陷）。 */
