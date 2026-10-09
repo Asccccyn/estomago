@@ -102,14 +102,24 @@ export class RuntimeSettingsService {
 
   /** 写入（人触发；空串/null = 清除 override 回落默认）。 */
   set(key: string, value: string | null): void {
+    this.setMany([[key, value]]);
+  }
+
+  /** FU-002（回访 2026-10-09）：多键**单事务**写入——一次请求=一次
+   *  生效视图变更。此前两字段各开事务：第二写失败（如 trigger 拒绝
+   *  INSERT）后第一写已提交，GET 见到半提交状态。 */
+  setMany(entries: Array<[string, string | null]>): void {
+    if (entries.length === 0) return;
     tx(this.db, () => {
-      if (value === null || value === '') {
-        this.db.prepare('DELETE FROM runtime_settings WHERE key = ?').run(key);
-      } else {
-        this.db.prepare(
-          `INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        ).run(key, value, new Date().toISOString());
+      for (const [key, value] of entries) {
+        if (value === null || value === '') {
+          this.db.prepare('DELETE FROM runtime_settings WHERE key = ?').run(key);
+        } else {
+          this.db.prepare(
+            `INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+          ).run(key, value, new Date().toISOString());
+        }
       }
     });
   }

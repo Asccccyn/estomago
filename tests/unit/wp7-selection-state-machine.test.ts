@@ -362,3 +362,54 @@ test('RRA-016/WP07-T2 拆分：bootstrap 503=无 B 降级不阻塞换窗（D2 �
   assert.equal(turn2.state, 'completed', '恢复轮在新窗完成（B 缺席如实，不伪造已载）');
   ctx.db.close();
 });
+
+test('RRA-006（回访 run-035424）：分节正文续取被消费或如实披露（不再静默把首节当全文）', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const full = 'EVENT_CANARY-' + '甲'.repeat(4000);
+  // M 服务端分节形状（4013 字事件 → 首节 2000 + event_text_next）
+  const packet = {
+    snapshot_id: 'snap_rra006_e',
+    memory_days: { items: [{
+      memory_id: 'mem_rra006', memory_date: '2026-10-09',
+      original_title: 'synthetic', event_text: full.slice(0, 2000),
+      event_text_truncated: true, event_text_total_chars: full.length,
+      event_text_next: { memory_id: 'mem_rra006', field: 'event_text', offset: 2000 },
+    }] },
+    plans: { items: [] }, anniversaries: { items: [] },
+  };
+  // 场景一：续取失败（如 schema 拒绝/传输错）→ E 必须调过 bootstrap.next
+  // 且向模型披露 event_text_next（不静默截断）
+  let nextCalls = 0;
+  const failing: MariposaTransport = async (cap) => {
+    if (cap === 'bootstrap.get') return { ok: true, result: packet };
+    if (cap === 'bootstrap.next') { nextCalls++; return { ok: false, code: 'SCHEMA_VIOLATION', httpStatus: 422 }; }
+    return { ok: false, code: 'X', httpStatus: 404 };
+  };
+  const c1 = compose(tempRoot('wp7-rra006a-'), dsTransport(seen), failing);
+  try {
+    const r1 = await say(c1, 'read current input', 'a', T0);
+    assert.equal(c1.db.prepare('SELECT state FROM turns WHERE id=?').get(r1.turnId).state, 'completed');
+    const text1 = payloadTexts(seen.at(-1)!);
+    assert.ok(nextCalls > 0 || text1.includes('event_text_next'),
+      'E 必须真实消费续取（bootstrap.next）或披露 event_text_next');
+    // 场景二：续取可用 → 全文进模型 payload（无截断标记）
+    let offset = 2000;
+    const okNext: MariposaTransport = async (cap) => {
+      if (cap === 'bootstrap.get') return { ok: true, result: packet };
+      if (cap === 'bootstrap.next') {
+        nextCalls++;
+        const chunk = full.slice(offset, Math.min(full.length, offset + 2000));
+        offset += 2000;
+        return { ok: true, result: { section: 'memory_item', memory_id: 'mem_rra006', field: 'event_text', content: chunk, offset: offset - 2000, total_chars: full.length, next_cursor: offset < full.length ? { memory_id: 'mem_rra006', field: 'event_text', offset } : null } };
+      }
+      return { ok: false, code: 'X', httpStatus: 404 };
+    };
+    const c2 = compose(tempRoot('wp7-rra006b-'), dsTransport(seen), okNext);
+    const r2 = await say(c2, 'read full input', 'b', T0);
+    assert.equal(c2.db.prepare('SELECT state FROM turns WHERE id=?').get(r2.turnId).state, 'completed');
+    const text2 = payloadTexts(seen.at(-1)!);
+    assert.ok(text2.includes(full), '续取可用时全文进入模型 payload（4013 字非前 2000）');
+  } finally {
+    c1.db.close();
+  }
+});

@@ -195,7 +195,9 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
 
 test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入', async () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/http.ts'), 'utf8');
-  assert.ok(src.includes('nextModel !== undefined) d.settings.set'), '两字段全验后一次性写入');
+  // FU-002（回访 2026-10-09）：两字段单事务提交（setMany）——形状接线
+  // 检查；真实 HTTP/事务原子断言在下方 FU-001/FU-002 测试
+  assert.ok(src.includes('d.settings.setMany(writes)'), '两字段单事务写入（setMany）');
   assert.ok(src.includes('orModelIdIssue(nextModel)'), 'or_model 过配置层形状门');
   // RRA-016：真实判定行为断言（不依赖 HTTP Host 夹具——直测形状函数
   // 与 PUT 等价；orModelIdIssue 即 PUT 的 422 判据）
@@ -204,6 +206,73 @@ test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入
   assert.ok(orModelIdIssue('anthropic/claude-opus-latest'), 'latest 拒');
   assert.ok(orModelIdIssue('a,b,c'), '逗号拼单拒');
   assert.equal(orModelIdIssue('anthropic/claude-test-1'), null, '合法 ID 放行');
+});
+
+// ----------------- FU-001/FU-002（回访 run-035424）：设置 PUT 真实 HTTP/事务
+
+async function hostWithSettings(driver = 'mock') {
+  const { Host } = await import('../../apps/host/src/app-context.ts');
+  const { setModelMetaForTests, clearModelMetaCache } = await import('../../apps/host/src/runtime/runtime-settings.ts');
+  clearModelMetaCache();
+  const root = tempRoot('fu-settings-');
+  writeApprovedIdentity(root);
+  process.env.FU_AUDIT_OR_KEY = 'synthetic-not-real';
+  const config = buildConfig({
+    ...readyRuntimePatch(),
+    runtime: { ...readyRuntimePatch().runtime, provider: driver },
+    openrouter: { model: 'anthropic/claude-audit-a', api_key_env: 'FU_AUDIT_OR_KEY' },
+  });
+  const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
+  await host.start();
+  const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const url = `http://127.0.0.1:${host.port}/api/v1/runtime-settings`;
+  return { host, url, headers, setModelMetaForTests, clearModelMetaCache };
+}
+
+test('FU 对照：语法非法 effort 422 且 model 保持', async () => {
+  const c = await hostWithSettings();
+  try {
+    const r = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: 'anthropic/claude-audit-b', reasoning_effort: 'invalid-effort' }) });
+    const after = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.equal(r.status, 422);
+    assert.equal(after.or_model.effective, 'anthropic/claude-audit-a', '非法输入零写入');
+  } finally {
+    await c.host.stop();
+    delete process.env.FU_AUDIT_OR_KEY;
+  }
+});
+
+test('FU-001：组合换模型+档位按候选模型元数据校验（旧 A 支持不代表新 B 支持）', async () => {
+  const c = await hostWithSettings('openrouter');
+  try {
+    c.setModelMetaForTests('anthropic/claude-audit-a', { supported_efforts: ['high'], mandatory: true });
+    c.setModelMetaForTests('anthropic/claude-audit-b', { supported_efforts: ['low'], mandatory: true });
+    const r = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: 'anthropic/claude-audit-b', reasoning_effort: 'high' }) });
+    assert.equal(r.status, 422, 'high 对候选模型 B 不支持——按候选配置拒绝');
+    const after = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.equal(after.or_model.effective, 'anthropic/claude-audit-a', '拒绝后零写入（model 仍是 A）');
+    const ok = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: 'anthropic/claude-audit-b', reasoning_effort: 'low' }) });
+    assert.equal(ok.status, 200, '对照：B+low（候选支持）通过');
+  } finally {
+    await c.host.stop();
+    delete process.env.FU_AUDIT_OR_KEY;
+    c.clearModelMetaCache();
+  }
+});
+
+test('FU-002：第二字段写失败（trigger 拒绝）整体回滚——无半提交', async () => {
+  const c = await hostWithSettings();
+  try {
+    c.host.db.exec("CREATE TRIGGER audit_reject_effort BEFORE INSERT ON runtime_settings WHEN NEW.key='reasoning_effort' BEGIN SELECT RAISE(ABORT,'AUDIT_SYNTHETIC_WRITE_FAILURE'); END;");
+    const r = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ or_model: 'anthropic/claude-audit-b', reasoning_effort: 'low' }) });
+    assert.equal(r.status, 500, '写入失败如实 500');
+    const after = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.equal(after.or_model.effective, 'anthropic/claude-audit-a', 'effort 写失败不得提交已换的 model（单事务回滚）');
+  } finally {
+    await c.host.stop();
+    delete process.env.FU_AUDIT_OR_KEY;
+  }
 });
 
 // --------------------------------------------------- B15 迁移 upTo 回归
@@ -259,18 +328,33 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
     assert.ok(pages < 30, 'range 不收敛');
   } while (cursor);
   assert.equal(seenIds.size, 10, `range 翻尽须覆盖全部 10 条（实际 ${seenIds.size}）——跳过行续页可达（RRA-014）`);
-  // older 交付前沿：向更早翻页不重复已交付
-  const seenOlder = new Set<string>();
+  // older 交付前沿：向更早翻页不重复交付（RRA-014 回访 2026-10-09 语义：
+  // 长行可分片跨页续取——同消息多片=渐进交付，非重复；断言片区间
+  // 不重叠 + 拼回覆盖全文）
+  const bodies = new Map<string, string>();
+  for (let i = 1; i <= 10; i++) bodies.set(`m${i}`, `消息${i}号正文` + '长内容'.repeat(750));
+  const olderParts = new Map<string, Array<[number, number]>>();
+  const addRange = (id: string, start: number, end: number) => {
+    const parts = olderParts.get(id) ?? [];
+    for (const [s, e] of parts) {
+      assert.ok(start >= e || end <= s, `older 翻页重叠交付 ${id}（${start}-${end} 与 ${s}-${e}）`);
+    }
+    parts.push([start, end]);
+    olderParts.set(id, parts);
+  };
   let oc: Record<string, unknown> | null = { older_than: 11 };
   pages = 0;
   do {
     const out = await tools.execute('conversation_read', {
       __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
     assert.equal(out.ok, true);
-    for (const e of (out.output as { entries: Array<{ message_id?: string }> }).entries) {
-      if (e.message_id) {
-        assert.ok(!seenOlder.has(e.message_id), `older 翻页重复交付 ${e.message_id}`);
-        seenOlder.add(e.message_id);
+    for (const e of (out.output as { entries: Array<{ message_id?: string; text?: string; fragment?: { start_char?: number; end_char?: number } }> }).entries) {
+      if (!e.message_id) continue;
+      const fr = e.fragment;
+      if (fr && typeof fr.start_char === 'number' && typeof fr.end_char === 'number') {
+        addRange(e.message_id, fr.start_char, fr.end_char);
+      } else {
+        addRange(e.message_id, 0, [...(e.text ?? '')].length);
       }
     }
     const o = out.output as { has_more?: unknown; next_cursor?: Record<string, unknown> | null };
@@ -278,6 +362,10 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
     pages += 1;
     assert.ok(pages < 30, 'older 不收敛');
   } while (oc);
-  assert.equal(seenOlder.size, 10, 'older 翻尽覆盖全部且零重复');
+  assert.equal(olderParts.size, 10, 'older 翻尽覆盖全部');
+  for (const [id, parts] of olderParts) {
+    const delivered = parts.reduce((acc, [s, e]) => acc + (e - s), 0);
+    assert.equal(delivered, [...bodies.get(id)!].length, `${id} 分片拼回=全文`);
+  }
   db.close();
 });
