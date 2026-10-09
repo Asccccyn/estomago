@@ -1344,7 +1344,7 @@ export class TurnSupervisor {
         d.trajectory.init(window.id, built0.envelope.messages.slice(0, -1), baseManifest);
       }
     }
-    // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线/6h 静默）→ 一次提醒 → CAS 换窗；
+    // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线——唯一自动基线，6h 静默已退役）→ 一次提醒 → CAS 换窗；
     // 评审失败如实阻断本 attempt（不绕过、不伪造完成凭证）。
     if (dv && inputMessage) {
       const rotation = await this.rotateIfNeeded({

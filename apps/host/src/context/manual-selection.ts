@@ -234,14 +234,13 @@ export class ManualSelectionService {
       const hit = this.db.prepare('SELECT * FROM context_selections WHERE idempotency_key = ?').get(o.idempotencyKey) as RawRow | undefined;
       if (hit && hit.status === 'confirmed') return { ok: true, selection: toRow(hit) };
     }
-    const window = this.db.prepare('SELECT revision FROM windows WHERE id = ?').get(o.sourceWindowId) as { revision: number } | undefined;
+    const window = this.db.prepare('SELECT id FROM windows WHERE id = ?').get(o.sourceWindowId) as { id: string } | undefined;
     if (!window && !o.sourceWindowId.startsWith('csel-src-')) return { ok: false, error: { code: 'CONTEXT_SELECTION_REVISION_CONFLICT', detail: '源窗口不存在' } };
-    // 哨兵源（csel-src-*）：无活动窗的存量历史恢复锚——无窗口行可 CAS，
-    // expectedWindowRevision 恒 0（ensureAwaiting 建立时的约定）
-    const currentRevision = window ? window.revision : 0;
-    if (currentRevision !== o.expectedWindowRevision) {
-      return { ok: false, error: { code: 'CONTEXT_SELECTION_REVISION_CONFLICT', detail: `窗口修订已前进（期望 ${o.expectedWindowRevision}，当前 ${currentRevision}）；请刷新后重选` } };
-    }
+    // WP-05（B11）：旧「expectedWindowRevision CAS」分支删除——windows.revision
+    // 自建窗起从不递增（恒真分支，误读为有并发防护）；不能改为递增
+    //（会使存量 awaiting 行的期望修订失效）。窗口被并发轮转的防护由
+    // confirm 后的恢复路径承担：旧窗 CLOSED → activeWindow 为 null →
+    // 走 createWindow 分支按选集建新窗（§6.3），不依赖本比较。
     let items: SelectionItem[] = [];
     if (o.items.length > 0) {
       const v = this.validateItems(o.conversationId, o.items, o.cutoffSequence);
