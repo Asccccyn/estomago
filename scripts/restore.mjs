@@ -19,11 +19,17 @@ const src = path.resolve(args[fileIdx]);
 const destDirInput = path.resolve(args[intoIdx + 1]);
 if (!fs.existsSync(src)) fail('SOURCE_MISSING', `备份不存在：${src}`);
 
+// WP-09（CX-14/C-024）：两侧同 canonical 空间——prodRoot 与目标侧都过
+// realpath（父目录链+最终分量），HOME 别名/尾分量 symlink 不再绕过
 const prodRoot = path.resolve(`${process.env.HOME ?? ''}/Library/Application Support/estomago`);
+const prodReal = fs.existsSync(prodRoot) ? fs.realpathSync(prodRoot) : prodRoot;
 // §21：父目录链 realpath 检查——不能通过 symlink 父目录绕过隔离规则
 const destParentReal = fs.realpathSync(path.dirname(destDirInput));
-const destReal = path.resolve(destParentReal, path.basename(destDirInput));
-if (destReal === prodRoot || destReal.startsWith(prodRoot + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向（或经 symlink 指向）生产状态根');
+// 最终分量存在（含其本身是 symlink 的情形）也要解析进同一命名空间
+const destReal = fs.existsSync(destDirInput)
+  ? fs.realpathSync(destDirInput)
+  : path.resolve(destParentReal, path.basename(destDirInput));
+if (destReal === prodReal || destReal.startsWith(prodReal + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向（或经 symlink 指向）生产状态根');
 // manifest hash 校验（§21）：backup.manifest.json / *.manifest.json 若提供 sha256 则必须匹配
 const manifestCandidate = src.replace(/\.sqlite3$/, '') + '.manifest.json';
 if (fs.existsSync(manifestCandidate)) {
@@ -116,5 +122,20 @@ fs.writeFileSync(destFile.replace(/\.sqlite3$/, '') + '.restore-manifest.json', 
   restored_at: new Date().toISOString(), source: src, source_sha256: srcHash,
   side_effects: 'DISABLED', promote: '正式启用需单独显式流程（本脚本不 promote）',
 }, null, 2));
+// WP-09（E08 收口）：备份同组 meta/ 恢复配置引用到隔离根（token 保持 600）；
+// plist/launchd env 仍需人工（restore-manifest 如实声明）
+const metaDir = src.replace(/\.sqlite3$/, '') + '.meta';
+if (fs.existsSync(metaDir)) {
+  const cfgDest = path.join(destDirInput, 'config');
+  fs.mkdirSync(cfgDest, { recursive: true });
+  for (const f of ['config.yaml', 'auth.token']) {
+    const from = path.join(metaDir, f);
+    if (fs.existsSync(from)) {
+      fs.copyFileSync(from, path.join(cfgDest, f));
+      if (f === 'auth.token') fs.chmodSync(path.join(cfgDest, f), 0o600);
+      console.log(`[restore] meta/${f} 已恢复到隔离根 config/`);
+    }
+  }
+}
 console.log(`[restore] 已恢复到隔离目录：${destFile}`);
 console.log('[restore] 副作用默认关闭：验证时不要配置推送/归档/模型凭据；promote 生产是独立显式流程。');
