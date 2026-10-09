@@ -1092,6 +1092,16 @@ export class TurnSupervisor {
         if (rot === null) {
           const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
           rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
+          // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
+          // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
+          // 连续模型恢复的第二/三窗复用第一次的旧 B（违反新窗必拉最新）
+          if (created.window.status === 'ACTIVE') {
+            const pendingBoot = this.bootstrapByWindow.get(`pending:${conversationId}`);
+            if (pendingBoot !== undefined) {
+              this.bootstrapByWindow.set(created.window.id, pendingBoot);
+              this.bootstrapByWindow.delete(`pending:${conversationId}`);
+            }
+          }
         }
       }
       const rows = d.db.prepare(

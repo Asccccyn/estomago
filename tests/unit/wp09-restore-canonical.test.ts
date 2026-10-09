@@ -93,7 +93,8 @@ test('meta 恢复：备份同组 meta/ 的 config+token 进隔离根（600）', 
     const fresh = path.join(t, 'restore-meta');
     const r = runRestore(db, fresh, homeA);
     assert.equal(r.code, 0, r.out.slice(0, 160));
-    assert.ok(fs.existsSync(path.join(fresh, 'config/config.yaml')), 'config 恢复');
+    assert.ok(fs.existsSync(path.join(fresh, 'config/estomago.yaml')), 'config 恢复为应用可读名（RRA-019）');
+    assert.ok(!fs.existsSync(path.join(fresh, 'config/config.yaml')), '不再残留归档名副本');
     assert.ok(fs.existsSync(path.join(fresh, 'config/auth.token')), 'token 恢复');
     const mode = fs.statSync(path.join(fresh, 'config/auth.token')).mode & 0o777;
     assert.equal(mode, 0o600, 'token 600');

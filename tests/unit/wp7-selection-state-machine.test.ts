@@ -333,3 +333,32 @@ test('T5：confirmed 再确认——同键幂等重放；异键结构化冲突�
   assert.equal(row.idempotency_key, 'wp7-t5-key', '冲突路径不改动既有方案');
   db.close();
 });
+
+
+test('RRA-016/WP07-T2 拆分：bootstrap 503=无 B 降级不阻塞换窗（D2 语义，区别于轨迹写失败回滚）', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const root = tempRoot('wp7-t2c-');
+  // bootstrap 持续 503（传输故障→windowBootstrap catch 归 null 降级）
+  const slow503: MariposaTransport = async (cap) => {
+    if (cap === 'bootstrap.get') return { ok: false, code: 'HTTP_503', httpStatus: 503 };
+    return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
+  };
+  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 2200 } });
+  await say(ctx, '第一条消息', 'm1', T0);
+  const win1 = ctx.windows.activeWindow('c1')!;
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
+  const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
+  ctx.supervisor.enqueue(s2.turnId);
+  await ctx.supervisor.waitIdle();
+  const awaiting = ctx.selections.awaitingFor('c1')!;
+  const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: [], explicitEmpty: true, idempotencyKey: 'wp7-t2c' });
+  // D2 裁定（2026-10-06）：bootstrap 传输失败=无 B 降级，不阻塞消息/
+  // 换窗——与轨迹写失败（initInTx 抛→整体回滚保旧窗）是两种不同失败
+  assert.equal(confirm.ok, true, JSON.stringify(confirm).slice(0, 200));
+  await ctx.supervisor.waitIdle();
+  const win2 = ctx.windows.activeWindow('c1')!;
+  assert.notEqual(win2.id, win1.id, '无 B 降级下换窗照常完成');
+  const turn2 = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(s2.turnId) as { state: string };
+  assert.equal(turn2.state, 'completed', '恢复轮在新窗完成（B 缺席如实，不伪造已载）');
+  ctx.db.close();
+});

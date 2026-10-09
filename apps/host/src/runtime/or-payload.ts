@@ -98,7 +98,11 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
 export function assertAppendOnly(previous: Record<string, unknown>, current: Record<string, unknown>): boolean {
   const p = withoutCacheMarkers(previous);
   const c = withoutCacheMarkers(current);
-  for (const key of ['model', 'session_id', 'provider', 'tools', 'reasoning'] as const) {
+  // RRA-017（2026-10-09 复审）：reasoning 退出稳定前缀比较键——
+  // effort 是逐请求生成参数（她裁定 2026-10-08：换思考深度不换窗、
+  // reasoning 已退出 contextFingerprint），把每次请求可合法变化的
+  // 参数钉进 append-only 比较会把合法换档请求整轮拒发（0 派发）
+  for (const key of ['model', 'session_id', 'provider', 'tools'] as const) {
     requireThat(JSON.stringify(p[key] ?? null) === JSON.stringify(c[key] ?? null), `PREFIX_PROFILE_CHANGED:${key}`);
   }
   const pm = p.messages as OrMessage[];
