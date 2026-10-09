@@ -193,7 +193,7 @@ test('H06：preview 后编辑所选消息 → 旧 hash/revision 确认 = STALE �
   db.close();
 });
 
-test('H09：幂等键重复只应用一次；expected_window_revision 冲突拒', async () => {
+test('H09：幂等键重复只应用一次；expected_window_revision 仅留痕不比较（B11）', async () => {
   const root = tempRoot('wp3-h09-');
   writeApprovedIdentity(root);
   const db = openDatabase(path.join(root, 'data'));
@@ -208,9 +208,15 @@ test('H09：幂等键重复只应用一次；expected_window_revision 冲突拒'
   assert.equal(b.ok, true);
   const rows = db.prepare("SELECT COUNT(*) n FROM context_selections WHERE status='confirmed'").get() as { n: number };
   assert.equal(rows.n, 1, '重复幂等请求不产生第二份方案');
-  // 修订冲突
+  // WP-05（B11）：旧「expectedWindowRevision 冲突拒」恒真分支已删——
+  // windows.revision 自建窗起从不递增（CAS 永真=假防护）；窗口被并发
+  // 轮转的防护由恢复路径承担（旧窗 CLOSED→走 createWindow 分支）。
+  // 期望修订参数保留在行上（审计留痕），confirm 不再比较。
   const c = svc.confirm({ conversationId: 'c1', sourceWindowId: 'w1', expectedWindowRevision: 99, items: [], explicitEmpty: true, idempotencyKey: 'idem-2', cutoffSequence: 0, estimate: { charsPerToken: 1.5, systemChars: 0, tailInputChars: 0 }, capacityBoundTokens: 1000 });
-  assert.equal((c as { error: { code: string } }).error.code, 'CONTEXT_SELECTION_REVISION_CONFLICT');
+  // 已 confirmed 的方案再确认（异键）→ CX-08 结构化冲突（与期望修订
+  // 无关——revision 比较已随恒真分支删除）
+  assert.equal((c as { error: { code: string } }).error.code,
+    'CONTEXT_SELECTION_ALREADY_CONFIRMED');
   db.close();
 });
 

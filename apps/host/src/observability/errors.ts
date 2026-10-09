@@ -14,6 +14,3 @@ export function stableErrorCode(err: unknown): string {
 }
 
 // 供 route_error 等处使用：不落原始 message
-export function safeErrorFields(err: unknown, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return { code: stableErrorCode(err), ...extra };
-}
