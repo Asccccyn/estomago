@@ -1,125 +1,129 @@
 {
- "ok": true,
- "data": {
-  "recall_session_id": "rs_d2ae750210e4",
-  "revision": 1,
-  "intent": "recall_event",
-  "status": "ACTIVE",
-  "search_status": "FOUND",
-  "delivery_action": "needs_validation",
-  "instruction_authority": "none",
-  "content_role": "retrieved_memory",
-  "coverage": {
-   "truncated": false,
-   "event": "complete_within_scope",
-   "stage_filter": {
-    "WIDE": 1,
-    "MID": 0,
-    "CORE": 0,
-    "gap": 0
-   },
-   "lexical_scorer": "scope-stage-bm25-v1",
-   "event_pool": {
-    "scanned": 1,
-    "truncated": false
-   },
-   "dense_event": "not_requested",
-   "judge": "evaluated",
-   "judge_cache": {
-    "hits": 0,
-    "misses": 1,
-    "requests": 0
-   }
-  },
-  "candidates": [
-   {
-    "resource_ref": "memory:00001",
-    "candidate_ref": "memory:00001",
-    "memory_id": "00001",
-    "channel": "event",
-    "representation": "full",
-    "content_version": "1",
-    "representation_version": "1",
-    "projection_version": "retrieval_projection_v1",
-    "memory_date": "2026-10-07",
-    "matched_by": [
-     "keyword"
-    ],
-    "matched_fields": [
-     "event_text",
-     "original_title"
-    ],
-    "_matched": {
-     "event_text": "中 秋 我 们 一 起 去 天 台 看 月 亮 她 很 开 心 我 们 约 好 明 年 继 续",
-     "original_title": "中 秋 天 台"
-    },
-    "rrf_score": 0.016393,
-    "evidence": [
-     {
-      "evidence_kind": "authored_event",
-      "content_role": "retrieved_memory",
-      "instruction_authority": "none",
-      "field": "event_text",
-      "source_ref": "memory:00001",
-      "source_version": "1",
+  "ok": true,
+  "data": {
+    "recall_session_id": "rs_d2ae750210e4",
+    "revision": 1,
+    "intent": "recall_event",
+    "status": "ACTIVE",
+    "search_status": "FOUND",
+    "delivery_action": "needs_validation",
+    "instruction_authority": "none",
+    "content_role": "retrieved_memory",
+    "coverage": {
       "truncated": false,
-      "snippet": "中 秋 我 们 一 起 去 天 台 看 月 亮 她 很 开 心 我 们 约 好 明 年 继 续"
-     },
-     {
-      "evidence_kind": "structured_fact",
-      "content_role": "retrieved_memory",
-      "instruction_authority": "none",
-      "field": "categories",
-      "source_ref": "memory:00001",
-      "source_version": null,
-      "truncated": false,
-      "structured_value": {
-       "categories": [
-        "daily"
-       ]
+      "event": "complete_within_scope",
+      "stage_filter": {
+        "WIDE": 1,
+        "MID": 0,
+        "CORE": 0,
+        "gap": 0
+      },
+      "lexical_scorer": "scope-stage-bm25-v1",
+      "event_pool": {
+        "scanned": 1,
+        "truncated": false
+      },
+      "dense_event": "not_requested",
+      "judge": "evaluated",
+      "judge_cache": {
+        "hits": 0,
+        "misses": 1,
+        "requests": 0
       }
-     }
-    ],
-    "judge": {
-     "candidate_ref": "memory:00001",
-     "candidate_version": "1",
-     "relevance_signal": 0.9,
-     "support_signal": null,
-     "contradiction_signal": null,
-     "provider_confidence": null,
-     "confidence_kind": "not_applicable",
-     "evaluation_status": "evaluated",
-     "model_id": "synthetic",
-     "prompt_version": "synthetic",
-     "input_projection_version": "retrieval_projection_v1",
-     "receipt_id": ""
     },
-    "version_receipt": "rc_02f66275ff",
-    "evidence_requirement_met": false
-   }
-  ],
-  "missing": [],
-  "conflicts": [],
-  "degraded_reasons": [],
-  "continuation": {
-   "continue_request_ref": "cont_fcc1f9bf69e9",
-   "for_revision": 1
-  },
-  "budget": {
-   "rounds_used": 1,
-   "rounds_remaining_in_burst": 2,
-   "bursts_used": 1,
-   "bursts_max": 3,
-   "rounds_max_total": 9,
-   "output_limits": {
-    "json_bytes": 24576,
-    "body_chars": 4000,
-    "candidates": 3,
-    "per_candidate_chars": 600
-   }
-  },
-  "token_count": "unavailable",
-  "created": true,
-  "query_fingerprint": "2535ce3086152895d56e309193588adffcfa7f7238d3bd2913ed215cfa677ea0"
- }
+    "candidates": [
+      {
+        "resource_ref": "memory:00001",
+        "candidate_ref": "memory:00001",
+        "memory_id": "00001",
+        "channel": "event",
+        "representation": "full",
+        "content_version": "1",
+        "representation_version": "1",
+        "projection_version": "retrieval_projection_v1",
+        "memory_date": "2026-10-07",
+        "matched_by": [
+          "keyword"
+        ],
+        "matched_fields": [
+          "event_text",
+          "original_title"
+        ],
+        "_matched": {
+          "event_text": "中 秋 我 们 一 起 去 天 台 看 月 亮 她 很 开 心 我 们 约 好 明 年 继 续",
+          "original_title": "中 秋 天 台"
+        },
+        "rrf_score": 0.016393,
+        "evidence": [
+          {
+            "evidence_kind": "authored_event",
+            "content_role": "retrieved_memory",
+            "instruction_authority": "none",
+            "field": "event_text",
+            "source_ref": "memory:00001",
+            "source_version": "1",
+            "truncated": false,
+            "snippet": "中 秋 我 们 一 起 去 天 台 看 月 亮 她 很 开 心 我 们 约 好 明 年 继 续"
+          },
+          {
+            "evidence_kind": "structured_fact",
+            "content_role": "retrieved_memory",
+            "instruction_authority": "none",
+            "field": "categories",
+            "source_ref": "memory:00001",
+            "source_version": null,
+            "truncated": false,
+            "structured_value": {
+              "categories": [
+                "daily"
+              ]
+            }
+          }
+        ],
+        "judge": {
+          "candidate_ref": "memory:00001",
+          "candidate_version": "1",
+          "relevance_signal": 0.9,
+          "support_signal": null,
+          "contradiction_signal": null,
+          "provider_confidence": null,
+          "confidence_kind": "not_applicable",
+          "evaluation_status": "evaluated",
+          "model_id": "synthetic",
+          "prompt_version": "synthetic",
+          "input_projection_version": "retrieval_projection_v1",
+          "receipt_id": ""
+        },
+        "version_receipt": "rc_02f66275ff",
+        "evidence_requirement_met": false
+      }
+    ],
+    "missing": [],
+    "conflicts": [],
+    "degraded_reasons": [],
+    "continuation": {
+      "continue_request_ref": "cont_fcc1f9bf69e9",
+      "for_revision": 1
+    },
+    "budget": {
+      "rounds_used": 1,
+      "rounds_remaining_in_burst": 2,
+      "bursts_used": 1,
+      "bursts_max": 3,
+      "rounds_max_total": 9,
+      "output_limits": {
+        "json_bytes": 24576,
+        "body_chars": 4000,
+        "candidates": 3,
+        "per_candidate_chars": 600
+      }
+    },
+    "token_count": "unavailable",
+    "created": true,
+    "query_fingerprint": "2535ce3086152895d56e309193588adffcfa7f7238d3bd2913ed215cfa677ea0",
+    "judge_mode": "on",
+    "judgement_status": "evaluated",
+    "judged_count": 1,
+    "judge_policy_revision": 1
+  }
 }

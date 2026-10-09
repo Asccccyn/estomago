@@ -29,7 +29,7 @@ test('R04：真实失败→dead 批→requeue 原子复活→原 op 有效 ACK�
   const root = tempRoot('r04-');
   const config = buildConfig({
     archive: { enabled: true, source_scope: 'estomago-primary-live' },
-    integrations: { mariposa: { base_url: 'http://mariposa.test', credential_ref: 'T' } },
+    integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'T' } },
   });
   buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));

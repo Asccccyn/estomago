@@ -123,6 +123,10 @@ test('D2：Mariposa 不可达→无 B 降级不阻塞；消息照常收口', asy
 
 const recallResult = {
   recall_session_id: 'rs_1', revision: 1, search_status: 'FOUND',
+  // WP-04（C10）：judge_mode 恒在信封（M 现行契约）；off 分页时
+  // pagination 必需——夹具对齐真实形状
+  judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
+  judge_policy_revision: 1,
   candidates: [{ memory_id: '00001', original_title: '天台看月亮', text: '她约今晚天台看月亮' }],
   continuation: { continue_request_ref: 'cont_abc', for_revision: 1 },
 };

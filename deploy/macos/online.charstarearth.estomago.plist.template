@@ -5,22 +5,16 @@
   <key>Label</key>
   <string>online.charstarearth.estomago</string>
 
+  <!-- WP-04（JFA-E02）：wrapper 式——秘密经 start.sh source 受保护 env 文件，
+       零秘密落 plist；KeepAlive 拉回时 env 由 wrapper 保证齐全 -->
   <key>ProgramArguments</key>
   <array>
-    <string>__NODE_BIN__</string>
-    <string>__PROJECT_ROOT__/apps/host/src/main.ts</string>
+    <string>/bin/bash</string>
+    <string>__HOME__/Data/estomago-secrets/start.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>__PROJECT_ROOT__</string>
-
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>ESTOMAGO_HOME</key>
-    <string>__STATE_ROOT__</string>
-    <key>PATH</key>
-    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
-  </dict>
 
   <key>StandardOutPath</key>
   <string>__LOG_ROOT__/launchd.out.log</string>
