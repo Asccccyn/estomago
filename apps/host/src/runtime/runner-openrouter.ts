@@ -155,6 +155,10 @@ export class OpenRouterRunner implements AgentRunner {
   }
 
   private isTransientNetworkError(err: unknown): boolean {
+    // WP-05（D19）：优先按 Node 网络错误 cause code 判定（结构化、不受
+    // 消息文案变化影响）；消息匹配仅兜底（旧 fetch 包装无 cause 时）
+    const causeCode = String(((err as { cause?: { code?: string } })?.cause)?.code ?? '').toUpperCase();
+    if (/^(ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE|ETIMEDOUT|UND_ERR|ABORT_ERR)/.test(causeCode)) return true;
     const m = String((err as Error)?.message ?? err).toLowerCase();
     return m.includes('network') || m.includes('timeout') || m.includes('timed out') || m.includes('econnreset') ||
       m.includes('econnrefused') || m.includes('enotfound') || m.includes('eai_again') || m.includes('fetch failed') ||
