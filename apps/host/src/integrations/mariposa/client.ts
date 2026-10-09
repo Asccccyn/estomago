@@ -35,6 +35,10 @@ export function classifyError(code: string, httpStatus?: number): 'retry_later' 
         || httpStatus === 503 || httpStatus === 504) return 'retry_later';
   }
   if (code === 'SOURCE_NOT_READY' || code === 'AUTH_LOCKED') return 'retry_later';
+  // WP-04（JFA-C06/C07）：超限是"可恢复-减半重切"信号不是 dead——服务端
+  // 度量与服务端门同源，客户端按更保守批界重切后重试（批次有界重试上限
+  // 仍生效，不会无限循环）
+  if (code === 'SOURCE_SELECTION_TOO_LARGE') return 'retry_later';
   if (code === 'HTTP_429' || code === 'HTTP_500' || code === 'HTTP_502' || code === 'HTTP_503' || code === 'HTTP_504') return 'retry_later';
   return 'dead';
 }
@@ -237,6 +241,12 @@ export class MariposaClient {
    *  snapshot 游标续取，宿主当前只消费首页摘要）。 */
   async bootstrapGet(signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('bootstrap.get', { profile: 'estomago' }, signal);
+  }
+
+  /** WP-04（CX-12/C-021a）：开窗分节续取（宿主内部装载长 I/plans 至
+   *  完整——不新增模型工具，§5.1"长内容用领域分页读取至完整"）。 */
+  async bootstrapNext(snapshotId: string, cursor: Record<string, unknown>, section: string, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('bootstrap.next', { snapshot_id: snapshotId, cursor, section }, signal);
   }
 
   /** episode（她批 2026-10-07"做吧"）：scope 内分页读取事件状态。

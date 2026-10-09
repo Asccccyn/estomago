@@ -506,11 +506,31 @@ export class TurnSupervisor {
         seg.push('临近纪念：');
         for (const it of anns) seg.push(`- ${JSON.stringify(it)}`);
       }
-      const iSeg = data.i as { content?: unknown; truncated?: boolean; total_chars?: number } | undefined;
-      if (iSeg && typeof iSeg.content === 'string' && iSeg.content.length > 0) {
-        seg.push(`I（当前的话）：${iSeg.content}`);
-        if (iSeg.truncated === true) {
-          seg.push(`[I 当前的话超窗未全载（全文共 ${String(iSeg.total_chars ?? '?')} 字，续读走 bootstrap.next）——已载入部分如上]`);
+      const iSeg0 = data.i as { content?: unknown; truncated?: boolean; total_chars?: number; next_cursor?: Record<string, unknown> } | undefined;
+      if (iSeg0 && typeof iSeg0.content === 'string' && iSeg0.content.length > 0) {
+        // WP-04（CX-12/C-021a）：长 I 宿主内部续取至完整（bootstrap.next
+        // 循环拼接；guard 有界防活锁；失败=如实保留已载段+提示，不阻塞）
+        let iText = iSeg0.content;
+        let iCursor = iSeg0.next_cursor ?? null;
+        let guard = 0;
+        const snapId = typeof data.snapshot_id === 'string' ? data.snapshot_id : null;
+        while (iCursor && snapId && guard < 32) {
+          guard++;
+          let rn: Awaited<ReturnType<import('../integrations/mariposa/client.ts').MariposaClient['bootstrapNext']>>;
+          try {
+            rn = await mc.bootstrapNext(snapId, iCursor, 'i', signal);
+          } catch {
+            break;
+          }
+          if (!rn.ok) break;
+          const r = rn.result as { content?: unknown; next_cursor?: Record<string, unknown> | null };
+          if (typeof r.content !== 'string' || r.content.length === 0) break;
+          iText += r.content;
+          iCursor = r.next_cursor ?? null;
+        }
+        seg.push(`I（当前的话）：${iText}`);
+        if (iCursor) {
+          seg.push(`[I 当前的话超窗未全载（续取未完成，已载入部分如上）]`);
         }
       }
       // WP5（2026-10-08 她裁定）：DS 昨天日结段已整链退役——不再生成、不再
@@ -1223,7 +1243,9 @@ export class TurnSupervisor {
       // 锚定 awaiting 等人工确认；只有真正全新的空房间才自动建首窗
       //（first_window_empty：无历史可带，自动空初始化合法）。恢复锚=最近
       // 一个窗口行（任意状态）；无窗口行的存量历史用哨兵源。
-      if (dv && d.selections) {
+      // WP-04（JFA-B06）：判据去 dv——SDK 驱动有历史无活动窗同样锚定
+      // awaiting（§5.5.7 全入口统一，不再只对信封驱动生效）
+      if (d.selections) {
         // H13 判据=**已了结**历史（其 turn 非 pending/blocked）——本输入
         // 自身还在 pending，不能把自己算成"已有历史"（首条消息即建窗）
         const histCount = (d.db.prepare(

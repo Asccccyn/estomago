@@ -56,7 +56,7 @@ function fakeServer(onCall?: (cap: string, payload: Record<string, unknown>) => 
 function compose(root: string, transport: MariposaTransport) {
   const config = buildConfig({
     archive: { enabled: true, source_scope: 'estomago-primary-live' },
-    integrations: { mariposa: { base_url: 'http://mariposa.test', credential_ref: 'MARIPOSA_TEST_TOKEN' } },
+    integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MARIPOSA_TEST_TOKEN' } },
   });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));

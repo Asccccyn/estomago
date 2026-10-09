@@ -73,6 +73,48 @@ add('platform', { release: os.release(), type: os.type(), machine: os.machine() 
 fs.mkdirSync(path.join(REPO, 'reports'), { recursive: true });
 fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report.checks, null, 2));
+
+// —— WP-04（JFA-E01/E02）：库体积报告 + 监听进程 env 键名核验 ——
+try {
+  const { DatabaseSync } = await import('node:sqlite');
+  const stateRoot = process.env.ESTOMAGO_HOME || path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
+  const dbFile = path.join(stateRoot, 'data', 'chat.sqlite3');
+  if (fs.existsSync(dbFile)) {
+    const db = new DatabaseSync(dbFile, { readOnly: true });
+    const tables = ['provider_requests', 'runtime_stream_events', 'reasoning_blocks', 'usage_observations', 'outbox', 'messages'];
+    const sizes = {};
+    for (const t of tables) {
+      try { sizes[t] = db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get().n; } catch { sizes[t] = null; }
+    }
+    const payloadHeavy = db.prepare("SELECT COUNT(*) AS n FROM provider_requests WHERE payload_json IS NOT NULL").get().n;
+    const stat = fs.statSync(dbFile);
+    report.db_growth = { db_bytes: stat.size, db_mb: Math.round(stat.size / 1048576 * 10) / 10, table_rows: sizes, provider_requests_with_payload: payloadHeavy };
+    db.close();
+  }
+} catch (err) {
+  report.db_growth = { error: String(err && err.message ? err.message : err).slice(0, 120) };
+}
+// env 键名核验（INCIDENT 教训：只比对键名集合，绝不输出值）
+try {
+  const { execFileSync } = await import('node:child_process');
+  const out = execFileSync('/bin/sh', ['-c', "ps eww $(lsof -ti tcp:18787 -sTCP:LISTEN 2>/dev/null | head -1) 2>/dev/null | tail -1"], { encoding: 'utf8', timeout: 5000 }).trim();
+  if (out) {
+    const keys = new Set();
+    for (const m of out.matchAll(/([A-Z_][A-Z0-9_]+)=/g)) keys.add(m[1]);
+    const required = ['ESTOMAGO_HOME', 'PATH'];
+    report.listener_env = {
+      keys_present: [...required].filter((k) => keys.has(k)),
+      keys_missing: [...required].filter((k) => !keys.has(k)),
+      credential_keys_present: ['OPENROUTER_API_KEY', 'DEEPSEEK_API_KEY', 'MARIPOSA_CREDENTIAL'].filter((k) => keys.has(k)),
+      note: '只报键名集合，不输出任何值',
+    };
+  } else {
+    report.listener_env = { note: '无监听进程（18787）' };
+  }
+} catch {
+  report.listener_env = { note: 'env 探测不可用' };
+}
+
 console.log(`\n[doctor] 报告已写入 ${reportPath}（只读检查；全部产品验收仍为 NOT_EXECUTED）`);
 
 function probePort(host, port_) {

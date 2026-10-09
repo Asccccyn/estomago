@@ -1,0 +1,31 @@
+#!/bin/bash
+# WP-04（JFA-E02）：launchd 自愈 env 完整性 wrapper（照 mariposa 事故整改
+# 先例 INCIDENT_mariposa_launchd_20261008 §整改）——秘密零落 plist：
+# 本脚本 source 受保护 env 文件后 exec 主进程；KeepAlive 拉回时 env 齐全。
+#
+# 安装（部署机执行，权限 700）：
+#   cp deploy/macos/start.sh.template ~/Data/estomago-secrets/start.sh
+#   chmod 700 ~/Data/estomago-secrets/start.sh
+#   # 编辑：__PROJECT_ROOT__ 占位替换 + 在 SECRETS_ENV 指向的文件里放凭据键
+# 重启链：bootout → bootstrap → kill 监听者验证 KeepAlive 拉回且 env 键名齐全
+#（doctor.mjs 的 env 键名核验只比对键名集合，不输出任何值）
+
+set -euo pipefail
+
+PROJECT_ROOT="__PROJECT_ROOT__"
+SECRETS_ENV="$HOME/Data/estomago-secrets/estomago.env"
+
+# 受保护 env 文件（600，键名清单见 backend.env.example：
+# OPENROUTER_API_KEY / DEEPSEEK_API_KEY / MARIPOSA_CREDENTIAL 等）
+if [ -f "$SECRETS_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$SECRETS_ENV"
+  set +a
+fi
+
+# 非秘密 env（与旧 plist 相同）
+export ESTOMAGO_HOME="$HOME/Library/Application Support/estomago"
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
+
+exec node "$PROJECT_ROOT/apps/host/src/main.ts"

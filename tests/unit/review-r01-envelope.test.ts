@@ -83,6 +83,7 @@ test('R01：冻结版双层信封（反例原始形状）→ 结构化报错，�
   assert.equal(out.ok, false, '双层信封=形状错误，必须失败');
   assert.equal(out.output.error_code, 'RECALL_ENVELOPE_INVALID');
   const missing = (out.output.missing_fields as string[]).sort();
-  assert.deepEqual(missing, ['candidates', 'recall_session_id', 'search_status'],
+  // WP-04（C10）：judge_mode 恒必需（M 现行契约）——负例同样披露
+  assert.deepEqual(missing, ['candidates', 'judge_mode', 'recall_session_id', 'search_status'],
     '缺失的必需字段如实披露');
 });

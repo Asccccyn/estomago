@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // 一致性备份（01 §18.2/T15）：SQLite VACUUM INTO 快照（等价在线备份，不忽略 WAL），
 // 附 manifest（schema 版本、消息水位、时间）。只落本地 backups/；异机/外置备份另行配置。
+// WP-04（JFA-E08）：备份恢复集补全——同批复制 config/auth.token 到 meta/（token 600）；
+// 轮转保留最近 N 份（backup.keep，默认 10）；报告列出人工恢复缺口（plist/env）。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 const stateRoot = process.env.ESTOMAGO_HOME || path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
 const dbFile = path.join(stateRoot, 'data', 'chat.sqlite3');
 const backupDir = path.join(stateRoot, 'backups');
+const KEEP = Number(process.env.ESTOMAGO_BACKUP_KEEP || 10);
 
 if (!fs.existsSync(dbFile)) {
   console.error(`[backup] 数据库不存在：${dbFile}（还没有可备份的数据）`);
@@ -16,7 +19,8 @@ if (!fs.existsSync(dbFile)) {
 }
 fs.mkdirSync(backupDir, { recursive: true });
 const ts = new Date().toISOString().replace(/[:.]/g, '-');
-const target = path.join(backupDir, `chat-${ts}.sqlite3`);
+const stamp = `chat-${ts}`;
+const target = path.join(backupDir, `${stamp}.sqlite3`);
 
 const db = new DatabaseSync(dbFile);
 db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -32,6 +36,23 @@ const snap = new DatabaseSync(target, { readOnly: true });
 const schema = snap.prepare('SELECT MAX(version) AS v FROM schema_migrations').get();
 const watermark = snap.prepare('SELECT COUNT(*) AS n, MAX(sequence) AS m FROM messages').get();
 snap.close();
+
+// WP-04（E08）：恢复集补全——config 与 auth.token 进 meta/（token 600）
+const metaDir = path.join(backupDir, `${stamp}.meta`);
+fs.mkdirSync(metaDir, { recursive: true });
+const metaFiles = [];
+const configSrc = path.join(stateRoot, 'config', 'estomago.yaml');
+if (fs.existsSync(configSrc)) {
+  fs.copyFileSync(configSrc, path.join(metaDir, 'config.yaml'));
+  metaFiles.push('config.yaml');
+}
+const tokenSrc = path.join(stateRoot, 'config', 'auth.token');
+if (fs.existsSync(tokenSrc)) {
+  fs.copyFileSync(tokenSrc, path.join(metaDir, 'auth.token'));
+  fs.chmodSync(path.join(metaDir, 'auth.token'), 0o600);
+  metaFiles.push('auth.token');
+}
+
 const manifest = {
   created_at: new Date().toISOString(),
   schema_version: schema?.v ?? 0,
@@ -40,10 +61,30 @@ const manifest = {
   source: dbFile,
   file: target,
   source_sha256: snapHash,
-  contains_credentials: false,
+  contains_credentials: metaFiles.includes('auth.token'),
+  meta_files: metaFiles,
+  manual_restore_gaps: [
+    'LaunchAgent plist 与其 env 引用不在备份集（部署文件，人工核对 deploy/macos/）',
+    '外部凭据（OR/DS/Mariposa key）只在环境变量引用，值不落备份——恢复需重新注入',
+  ],
   note: '本地恢复点；异机/外置备份需另行配置并加密（18.2）',
 };
-const manifestPath = target.replace(/\.sqlite3$/, '.manifest.json');
+const manifestPath = path.join(backupDir, `${stamp}.manifest.json`);
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 console.log(`[backup] ${target}`);
 console.log(`[backup] ${manifestPath}`);
+if (metaFiles.length > 0) console.log(`[backup] meta/: ${metaFiles.join(', ')}`);
+
+// WP-04（E08）：轮转——按创建时间保留最近 KEEP 份（快照+meta+manifest 同组）
+const groups = new Set(fs.readdirSync(backupDir).filter((f) => f.startsWith('chat-')).map((f) => f.replace(/\.(sqlite3|manifest\.json|meta)$/, '')));
+const sorted = [...groups].sort(); // 时间戳字典序=时间序
+let removed = 0;
+for (const g of sorted.slice(0, Math.max(0, sorted.length - KEEP))) {
+  for (const suffix of ['.sqlite3', '.manifest.json']) {
+    const f = path.join(backupDir, g + suffix);
+    if (fs.existsSync(f)) { fs.rmSync(f); removed++; }
+  }
+  const m = path.join(backupDir, g + '.meta');
+  if (fs.existsSync(m)) { fs.rmSync(m, { recursive: true }); removed++; }
+}
+console.log(`[backup] 轮转：保留最近 ${KEEP} 份，本轮清理 ${removed} 个文件`);

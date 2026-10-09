@@ -76,7 +76,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' },
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
-    integrations: { mariposa: { base_url: 'http://m.test', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
+    integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
     windows: { soft_limit_tokens: 1500 },
     ...configOver,
   });
@@ -130,7 +130,11 @@ test('F04：同批 complete+hold（complete 在前），hold 结果未知 → �
   const review = ctx.db.prepare('SELECT status FROM rotation_reviews ORDER BY created_at DESC LIMIT 1').get() as { status: string };
   assert.equal(review.status, 'failed', 'hold unknown → complete 核验失败，评审不签发完成凭证');
   const effects = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").all() as Array<{ state: string }>;
-  assert.ok(effects.every((e) => e.state === 'unknown'), '写操作保持 unknown（不被 no_new_hold 抹掉）');
+  // WP-04（JFA-C05）：同窗 unknown 活跃时后续 memory_hold 被宿主拦截
+  //（收口 cancelled=未发出，防重复写）——unknown 本身不被 no_new_hold
+  // 抹掉；且不存在 running/committed
+  assert.ok(effects.some((e) => e.state === 'unknown'), '写操作保持 unknown（不被 no_new_hold 抹掉）');
+  assert.ok(effects.every((e) => e.state === 'unknown' || e.state === 'cancelled'), `无 running/committed/failed（实际 ${effects.map((e) => e.state).join(',')}）`);
   assert.equal(ctx.windows.activeWindow('c1')!.id, win1.id, '未换窗');
   const att = ctx.db.prepare("SELECT state, blocked_reason FROM attempts ORDER BY rowid DESC LIMIT 1").get() as { state: string; blocked_reason: string };
   assert.equal(att.state, 'blocked');
@@ -262,7 +266,7 @@ test('F08b：hold.status 明确无提交证据 → 解除阻塞（failed_resolve
 function syncCompose(root: string, mariposa: MariposaTransport) {
   const config = buildConfig({
     archive: { enabled: true, source_scope: 'sync-test' },
-    integrations: { mariposa: { base_url: 'http://m.test', credential_ref: null } },
+    integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } },
   });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));

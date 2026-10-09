@@ -561,6 +561,9 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     [c.openrouter.disable_context_compression === true, 'openrouter.disable_context_compression 必须为 true（供应商压缩显式关闭）'],
     [Array.isArray(c.openrouter.provider_only) && c.openrouter.provider_only.length > 0, 'openrouter.provider_only 必须非空（限定上游集合）'],
     [c.openrouter.base_url.startsWith('https://'), 'openrouter.base_url 必须 https（不降级明文）'],
+    // WP-04（JFA-C09）：mariposa base_url 纪律——loopback 允许 http（本机
+    // 联调），非 loopback 强制 https（对齐 OR/DS 门，凭据不落明文链路）
+    [(() => { const u = c.integrations.mariposa.base_url; return u == null || u === '' || u.startsWith('https://') || /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/.*)?$/.test(u); })(), 'integrations.mariposa.base_url 必须 https（loopback 除外）'],
     [c.openrouter.api_key_env.length > 0, 'openrouter.api_key_env 必须指定（凭据只经环境变量名引用）'],
     // DS 直连段硬规则（§6.1 同款纪律：https、凭据只经环境变量名、有界重试、粗估系数合理区间）
     [c.deepseek.base_url.startsWith('https://'), 'deepseek.base_url 必须 https（不降级明文）'],
