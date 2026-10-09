@@ -485,7 +485,28 @@ export class TurnSupervisor {
       if (days.length > 0) {
         seg.push('近三日记忆：');
         for (const it of days) {
-          seg.push(`- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）${Array.isArray(it.mood_tags) && it.mood_tags.length > 0 ? ' 心情:' + (it.mood_tags as unknown[]).join('/') : ''}`);
+          // WP-06 6D-2（D-6，她 2026-10-09 裁定）：桶渲染含时间/心情
+          // 标签+心情文字/事件正文/我们的话；有边桶附关系注释行
+          //（服务端摘要——明细走 relations.list；无边省略）
+          let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）`;
+          if (Array.isArray(it.mood_tags) && (it.mood_tags as unknown[]).length > 0) {
+            line += ' 心情:' + (it.mood_tags as unknown[]).join('/');
+          }
+          if (typeof it.mood_text === 'string' && it.mood_text.length > 0) {
+            line += `（心情文字：${it.mood_text}）`;
+          }
+          seg.push(line);
+          if (typeof it.event_text === 'string' && it.event_text.length > 0) {
+            seg.push(`  事件：${it.event_text}`);
+          }
+          const words = it.our_words as Array<{ speaker?: string; text?: string }> | undefined;
+          if (Array.isArray(words) && words.length > 0) {
+            seg.push(`  我们的话：${words.map((w) => `${w.speaker === 'qiaosheng' ? '她' : '我'}「${w.text ?? ''}」`).join(' ')}`);
+          }
+          const rel = it.relations as { count?: number; types?: string[] } | undefined;
+          if (rel && typeof rel.count === 'number' && rel.count > 0) {
+            seg.push(`  关联：${rel.count} 条（${(rel.types ?? []).join('/')}；明细走 relations.list）`);
+          }
         }
       }
       // R11（复审 2026-10-07）：移除无状态字符串截断——服务端包本就有界
