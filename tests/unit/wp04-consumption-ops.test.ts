@@ -193,11 +193,17 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   db.close();
 });
 
-test('d/j2：PUT {有效 model+非法 effort} → 422 且零写入', async () => {
+test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入', async () => {
   const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/http.ts'), 'utf8');
   assert.ok(src.includes('nextModel !== undefined) d.settings.set'), '两字段全验后一次性写入');
   assert.ok(src.includes('orModelIdIssue(nextModel)'), 'or_model 过配置层形状门');
-  // 服务级等价断言：形状门存在即可覆盖 422 路径（HTTP 层无 Host 夹具）
+  // RRA-016：真实判定行为断言（不依赖 HTTP Host 夹具——直测形状函数
+  // 与 PUT 等价；orModelIdIssue 即 PUT 的 422 判据）
+  const { orModelIdIssue } = await import('../../apps/host/src/config/schema.ts');
+  assert.ok(orModelIdIssue('auto'), 'auto 拒（PUT→422 invalid_model）');
+  assert.ok(orModelIdIssue('anthropic/claude-opus-latest'), 'latest 拒');
+  assert.ok(orModelIdIssue('a,b,c'), '逗号拼单拒');
+  assert.equal(orModelIdIssue('anthropic/claude-test-1'), null, '合法 ID 放行');
 });
 
 // --------------------------------------------------- B15 迁移 upTo 回归
@@ -214,5 +220,64 @@ test('B15：migrate(db, h, 17) 应用到 17 为止（迁移数组按版本升序
   const has = (t: string) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);
   assert.ok(has('context_selections'), 'v17 表在');
   assert.ok(!has('runtime_settings'), 'v19 表不在');
+  db.close();
+});
+
+
+// ------------------------------------------- RRA-014 回读交付前沿
+
+test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复', async () => {
+  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
+  const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
+  const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
+  const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
+  const { db } = freshDb(tempRoot('rra014-'));
+  db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private','2026-01-01')").run();
+  // 10 条 ~3000 中文：range 10 装不完整页（真字节预算），跳过行须续页可达
+  for (let i = 1; i <= 10; i++) {
+    const body = `消息${i}号正文` + '长内容'.repeat(750);
+    db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES (?,?,?,'owner','text',1,'2026-01-01','2026-01-01')").run(`m${i}`, 'c1', i);
+    db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(`m${i}`, body, sha256Hex(body));
+  }
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
+  // range 1..10 翻尽：全部 10 条都到
+  const seenIds = new Set<string>();
+  let cursor: Record<string, unknown> | null = null;
+  let pages = 0;
+  do {
+    const out = await tools.execute('conversation_read', {
+      __tool_call_id: `c${pages}`,
+      ...(cursor ? { cursor } : { from_sequence: 1, to_sequence: 10 }) } as never, CTX);
+    assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
+    for (const e of (out.output as { entries: Array<{ message_id?: string }> }).entries) {
+      if (e.message_id) seenIds.add(e.message_id);
+    }
+    const o = out.output as { has_more?: boolean; next_cursor?: Record<string, unknown> | null };
+    cursor = o.has_more ? o.next_cursor! : null;
+    pages += 1;
+    assert.ok(pages < 30, 'range 不收敛');
+  } while (cursor);
+  assert.equal(seenIds.size, 10, `range 翻尽须覆盖全部 10 条（实际 ${seenIds.size}）——跳过行续页可达（RRA-014）`);
+  // older 交付前沿：向更早翻页不重复已交付
+  const seenOlder = new Set<string>();
+  let oc: Record<string, unknown> | null = { older_than: 11 };
+  pages = 0;
+  do {
+    const out = await tools.execute('conversation_read', {
+      __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
+    assert.equal(out.ok, true);
+    for (const e of (out.output as { entries: Array<{ message_id?: string }> }).entries) {
+      if (e.message_id) {
+        assert.ok(!seenOlder.has(e.message_id), `older 翻页重复交付 ${e.message_id}`);
+        seenOlder.add(e.message_id);
+      }
+    }
+    const o = out.output as { has_more?: unknown; next_cursor?: Record<string, unknown> | null };
+    oc = o.has_more ? o.next_cursor! : null;
+    pages += 1;
+    assert.ok(pages < 30, 'older 不收敛');
+  } while (oc);
+  assert.equal(seenOlder.size, 10, 'older 翻尽覆盖全部且零重复');
   db.close();
 });

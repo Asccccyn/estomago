@@ -71,9 +71,6 @@ add('timezone', { system: Intl.DateTimeFormat().resolvedOptions().timeZone, busi
 add('platform', { release: os.release(), type: os.type(), machine: os.machine() });
 
 fs.mkdirSync(path.join(REPO, 'reports'), { recursive: true });
-fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-console.log(JSON.stringify(report.checks, null, 2));
-
 // —— WP-04（JFA-E01/E02）：库体积报告 + 监听进程 env 键名核验 ——
 try {
   const { DatabaseSync } = await import('node:sqlite');
@@ -131,3 +128,7 @@ function probePort(host, port_) {
     });
   });
 }
+
+fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+console.log(JSON.stringify(report.checks, null, 2));
+

@@ -20,15 +20,30 @@ const destDirInput = path.resolve(args[intoIdx + 1]);
 if (!fs.existsSync(src)) fail('SOURCE_MISSING', `备份不存在：${src}`);
 
 // WP-09（CX-14/C-024）：两侧同 canonical 空间——prodRoot 与目标侧都过
-// realpath（父目录链+最终分量），HOME 别名/尾分量 symlink 不再绕过
+// realpath（父目录链+最终分量），HOME 别名/尾分量 symlink 不再绕过。
+// RRA-023（2026-10-09 复审）：生产根**不存在**时也 canonical 化——
+// 取最近存在祖先 realpath+剩余后缀（新机/末段未建场景下 HOME 别名
+// 不再使 lexical 逃逸比较）
+function canonicalize(p) {
+  let cur = path.resolve(p);
+  const suffix = [];
+  while (!fs.existsSync(cur)) {
+    suffix.unshift(path.basename(cur));
+    const parent = path.dirname(cur);
+    if (parent === cur) break;
+    cur = parent;
+  }
+  try {
+    cur = fs.realpathSync(cur);
+  } catch { /* 保持 resolve */ }
+  return suffix.length > 0 ? path.join(cur, ...suffix) : cur;
+}
 const prodRoot = path.resolve(`${process.env.HOME ?? ''}/Library/Application Support/estomago`);
-const prodReal = fs.existsSync(prodRoot) ? fs.realpathSync(prodRoot) : prodRoot;
+const prodReal = canonicalize(prodRoot);
 // §21：父目录链 realpath 检查——不能通过 symlink 父目录绕过隔离规则
 const destParentReal = fs.realpathSync(path.dirname(destDirInput));
 // 最终分量存在（含其本身是 symlink 的情形）也要解析进同一命名空间
-const destReal = fs.existsSync(destDirInput)
-  ? fs.realpathSync(destDirInput)
-  : path.resolve(destParentReal, path.basename(destDirInput));
+const destReal = canonicalize(destDirInput);
 if (destReal === prodReal || destReal.startsWith(prodReal + path.sep)) fail('DEST_IS_PRODUCTION', '--into 不得指向（或经 symlink 指向）生产状态根');
 // manifest hash 校验（§21）：backup.manifest.json / *.manifest.json 若提供 sha256 则必须匹配
 const manifestCandidate = src.replace(/\.sqlite3$/, '') + '.manifest.json';
@@ -128,12 +143,15 @@ const metaDir = src.replace(/\.sqlite3$/, '') + '.meta';
 if (fs.existsSync(metaDir)) {
   const cfgDest = path.join(destDirInput, 'config');
   fs.mkdirSync(cfgDest, { recursive: true });
-  for (const f of ['config.yaml', 'auth.token']) {
-    const from = path.join(metaDir, f);
+  // RRA-019（2026-10-09 复审）：归档名→应用恢复名映射——备份里的
+  // config.yaml 映射为 config/estomago.yaml（loadConfig 只认此名，
+  // 此前原样拷 config.yaml 导致恢复后无法自动读取原配置）
+  for (const [srcName, destName] of [['config.yaml', 'estomago.yaml'], ['auth.token', 'auth.token']]) {
+    const from = path.join(metaDir, srcName);
     if (fs.existsSync(from)) {
-      fs.copyFileSync(from, path.join(cfgDest, f));
-      if (f === 'auth.token') fs.chmodSync(path.join(cfgDest, f), 0o600);
-      console.log(`[restore] meta/${f} 已恢复到隔离根 config/`);
+      fs.copyFileSync(from, path.join(cfgDest, destName));
+      if (destName === 'auth.token') fs.chmodSync(path.join(cfgDest, destName), 0o600);
+      console.log(`[restore] meta/${srcName} 已恢复为隔离根 config/${destName}`);
     }
   }
 }
