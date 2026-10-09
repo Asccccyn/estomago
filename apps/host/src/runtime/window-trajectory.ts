@@ -39,6 +39,16 @@ export class WindowTrajectoryService {
     });
   }
 
+  /** WP-07（CX-09）：切换事务内写入初始轨迹——由 WindowManager 的
+   *  rotate/createWindow 事务回调调用（换窗成功返回时新窗已具备完整
+   *  可发送快照：选集消费+窗口指针+初始轨迹同一事务）。 */
+  initInTx(db: Db, windowId: string, messages: OrMessage[], manifest: ManifestEntry[]): void {
+    const exists = db.prepare('SELECT 1 AS x FROM window_trajectories WHERE window_id = ?').get(windowId);
+    if (exists) return;
+    db.prepare('INSERT INTO window_trajectories(window_id, messages_json, last_boundary_json, manifest_json, updated_at) VALUES (?,?,NULL,?,?)')
+      .run(windowId, JSON.stringify(messages), JSON.stringify(manifest), new Date().toISOString());
+  }
+
   /** 审计 F27：只为旧轨迹行回填重建出的 manifest（不动消息/边界） */
   replaceManifest(windowId: string, manifest: ManifestEntry[]): void {
     tx(this.db, () => {

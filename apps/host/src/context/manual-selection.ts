@@ -40,7 +40,9 @@ export type SelectionValidationError =
   | { code: 'CONTEXT_SELECTION_FORBIDDEN_KIND'; message_ids: string[] }
   | { code: 'CONTEXT_SELECTION_INCLUDES_PENDING_INPUT'; message_ids: string[] }
   | { code: 'CONTEXT_SELECTION_TOO_LARGE'; estimated_tokens: number; bound_tokens: number; deficit_tokens: number }
-  | { code: 'CONTEXT_SELECTION_REVISION_CONFLICT'; detail: string };
+  | { code: 'CONTEXT_SELECTION_REVISION_CONFLICT'; detail: string }
+  // WP-07（CX-08）：已确认方案不可重复确认/修改——结构化冲突（带既有方案定位）
+  | { code: 'CONTEXT_SELECTION_ALREADY_CONFIRMED'; detail: string; selection_id: string; status: string };
 
 export type EstimateContext = { charsPerToken: number; systemChars: number; tailInputChars: number };
 
@@ -253,8 +255,16 @@ export class ManualSelectionService {
     }
     const hash = sha256Hex(items.map((it) => `${it.message_id}@${it.revision}`).join(','));
     const existing = this.activeForWindow(o.conversationId, o.sourceWindowId);
+    // WP-07（CX-08）：已 confirmed 的方案不可再次确认/修改——同幂等键
+    // 重放已在上方命中返回；到这里仍是 confirmed=另一次提交（不同键/
+    // 无键），返回结构化冲突（带既有 selection_id/status），不 UPDATE
+    // 重建、不产生新 id 错配（旧链：genId 新 id + UPDATE 旧行 + get(新
+    // id)=null → 上游 undefined 崩 500）
+    if (existing && existing.status === 'confirmed') {
+      return { ok: false, error: { code: 'CONTEXT_SELECTION_ALREADY_CONFIRMED', detail: '已有确认方案待换窗消费；如需改选，先在新窗确认后重新发起', selection_id: existing.selection_id, status: existing.status } };
+    }
     const now = new Date().toISOString();
-    const id = existing && existing.status === 'awaiting' ? existing.selection_id : genId('csel');
+    const id = existing ? existing.selection_id : genId('csel');
     try {
       tx(this.db, () => {
         if (existing && existing.status === 'awaiting') {
@@ -262,11 +272,6 @@ export class ManualSelectionService {
             "UPDATE context_selections SET status='confirmed', expected_window_revision=?, source_cutoff_sequence=?, items_json=?, selection_hash=?, idempotency_key=?, updated_at=? WHERE selection_id=? AND status='awaiting'",
           ).run(o.expectedWindowRevision, o.cutoffSequence, JSON.stringify(items), hash, o.idempotencyKey, now, id);
           if (Number(c.changes) !== 1) throw new Error('confirm_conflict: awaiting 方案已被并发变更');
-        } else if (existing && existing.status === 'confirmed') {
-          const c = this.db.prepare(
-            "UPDATE context_selections SET expected_window_revision=?, source_cutoff_sequence=?, items_json=?, selection_hash=?, idempotency_key=?, updated_at=? WHERE selection_id=? AND status='confirmed'",
-          ).run(o.expectedWindowRevision, o.cutoffSequence, JSON.stringify(items), hash, o.idempotencyKey, now, existing.selection_id);
-          if (Number(c.changes) !== 1) throw new Error('confirm_conflict: 已确认方案已被并发消费');
         } else {
           this.db.prepare(
             `INSERT INTO context_selections(selection_id, conversation_id, source_window_id, expected_window_revision, source_cutoff_sequence, status, items_json, selection_hash, idempotency_key, created_at, updated_at)
