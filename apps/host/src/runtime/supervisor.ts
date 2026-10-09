@@ -525,8 +525,24 @@ export class TurnSupervisor {
               seg.push(`  [事件正文分节未全载（event_text_next 续取未完成；已载 ${evText.length}${evTotal ? '/' + evTotal : ''} 字）]`);
             }
           }
-          const words0 = it.our_words as Array<{ speaker?: string; text?: string }> | undefined;
-          let words = Array.isArray(words0) ? [...words0] : [];
+          // B 批（她 2026-10-10 批 JSON 瘦身）：M 的 our_words 出站改为
+          // 说话人分组 [{"speaker": s, "texts": [...]}]——展平后渲染，
+          // 文本与旧逐条形状逐字一致；旧形状（{speaker,text} 逐条）也
+          // 容错接受（回滚/混布期双形状）
+          const flattenWords = (arr: unknown): Array<{ speaker?: string; text?: string }> => {
+            const out: Array<{ speaker?: string; text?: string }> = [];
+            for (const g of Array.isArray(arr) ? arr : []) {
+              const gr = g as { speaker?: string; texts?: unknown[]; text?: string };
+              if (gr && Array.isArray(gr.texts)) {
+                for (const t of gr.texts) if (typeof t === 'string') out.push({ speaker: gr.speaker, text: t });
+              } else if (gr && typeof gr.text === 'string') {
+                out.push(gr);
+              }
+            }
+            return out;
+          };
+          const words0 = it.our_words as unknown;
+          let words = flattenWords(words0);
           let wCur = (it.our_words_next as Record<string, unknown> | undefined) ?? null;
           let wguard = 0;
           while (wCur && snapId && wguard < 64) {
@@ -540,7 +556,7 @@ export class TurnSupervisor {
             if (!wn.ok) break;
             const wr = wn.result as { items?: Array<{ speaker?: string; text?: string }>; next_cursor?: Record<string, unknown> | null };
             if (!Array.isArray(wr.items) || wr.items.length === 0) break;
-            words = words.concat(wr.items);
+            words = words.concat(flattenWords(wr.items));
             wCur = wr.next_cursor ?? null;
           }
           if (words.length > 0) {
