@@ -194,6 +194,13 @@ export class WindowManager {
       tx(this.db, () => {
         const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(o.conversationId) as { active_window_id: string | null };
         if (conv?.active_window_id !== current.id) throw new Error('switch_conflict: 活动指针已被并发修改');
+        // WP-05（JFA-E06）：FENCE 事务内复检——prepare 期间（网络/IO）
+        // 可能有新 turn 进入 running 或新路由票据 pending；锁内重查非零
+        // → 整体回滚（旧窗保持 ACTIVE），封掉 prepare 前检查的 TOCTOU 窗口
+        const runningNow = (this.db.prepare("SELECT COUNT(*) n FROM turns WHERE conversation_id = ? AND state = 'running'").get(o.conversationId) as { n: number }).n;
+        if (runningNow > 0) throw new Error('FENCE_ACTIVE: 切换事务内发现生成中 turn（prepare 期间新进入），回滚');
+        const pendingRouteNow = (this.db.prepare("SELECT COUNT(*) n FROM route_decisions WHERE conversation_id = ? AND state = 'pending'").get(o.conversationId) as { n: number }).n;
+        if (pendingRouteNow > 0) throw new Error('ROUTE_PENDING: 切换事务内发现待决路由票据，回滚');
         this.db.prepare("UPDATE windows SET status = 'CLOSED', cutoff_sequence = ?, updated_at = ? WHERE id = ?").run(o.maxSequence, new Date().toISOString(), current.id);
         this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), candidateId);
         this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(candidateId, o.conversationId);

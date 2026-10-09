@@ -1,3 +1,5 @@
+// D17（run-160858）：本文件含 INTENTIONAL_PLACEHOLDER 占位——有意为之，
+// 不是遗漏；追踪见审计包 run-160858 FINDINGS D17。
 // §3/§30：Context Policy 占位——策略未批准前一切策略依赖能力返回 CONTEXT_POLICY_NOT_APPROVED，
 // 绝不静默使用默认值。policy_version = null（等char Context Policy v1）。
 export interface ContextPolicy {

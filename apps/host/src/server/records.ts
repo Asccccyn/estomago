@@ -32,7 +32,10 @@ export function buildRecordSnapshot(d: {
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
   const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok' ? (d.runnerSelection.runner.kind as RecordSnapshot['driver']) : 'unknown';
-  const exactModel = driver === 'openrouter' ? d.config.openrouter.model : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model;
+  // WP-05（B14）：exactModel 经注入的 runtime settings 取生效值（与设置页
+  //  同源——override 后不再显示配置默认型号）；无注入回落 config
+  const orEff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
+  const exactModel = driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model;
   // §11.1：本地粗估 + 实际 usage 校准；粗估系数按驱动（DS 默认 1.5——中文场景；OR 默认 2.5），精度分级如实
   const charsPerToken = driver === 'deepseek' ? d.config.deepseek.estimate_chars_per_token : driver === 'openrouter' ? d.config.openrouter.estimate_chars_per_token : 2.5;
 
@@ -97,6 +100,8 @@ export function buildRecordSnapshot(d: {
   const usageDayStartUtcIso = new Date(
     Date.UTC(shanghaiNow.getUTCFullYear(), shanghaiNow.getUTCMonth(), shanghaiNow.getUTCDate()) - SHANGHAI_OFFSET_MS
   ).toISOString();
+  // WP-05（B18）：usageByPurpose 按房间过滤（经 attempts/turns join——
+  // 多房间共库时不再把别的房间费用算进来；usageDay 语义为上海自然日）
   const purposeCost = d.db.prepare(`
     SELECT COALESCE(pr.purpose, 'unknown') AS purpose,
            COUNT(*) AS n,
@@ -104,9 +109,10 @@ export function buildRecordSnapshot(d: {
            SUM(CASE WHEN u.cost_usd IS NULL THEN 1 ELSE 0 END) AS unknown_n
     FROM usage_observations u
     LEFT JOIN provider_requests pr ON pr.id = u.request_id
-    WHERE u.observed_at >= ?
+    LEFT JOIN attempts a ON a.id = u.attempt_id
+    WHERE u.observed_at >= ? AND (a.id IS NULL OR a.turn_id IN (SELECT id FROM turns WHERE conversation_id = ?))
     GROUP BY COALESCE(pr.purpose, 'unknown')
-  `).all(usageDayStartUtcIso) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
+  `).all(usageDayStartUtcIso, conversationId) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
   return {
     roomId: conversationId,
     cursor: lastEventSequence !== null ? String(lastEventSequence) : null,

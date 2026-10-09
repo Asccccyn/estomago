@@ -46,6 +46,8 @@ runtime:
   auth_and_billing_verified: false
   capability_state: unknown
 identity:
+  # F04：能力探针证据有效期（天）——过期观测按 stale 阻断；null=不按时间过期
+  probe_evidence_max_age_days: null
   approved_identity_ref: null
   approved_identity_hash: null
   i_source: mariposa
@@ -55,20 +57,26 @@ identity:
   unobservable_fields_are_unknown: true
 windows:
   # ESTOMAGO_OR_SELF_HOLD §4：换窗容量预算（工程初值，非上游极限）。
-  # 零点不触发换窗（现行规范硬规则）；有效软线 = min(soft, C-O-T-R-S)。
-  rotate_on_business_date_change: false
+  # 有效软线 = min(soft, C-O-T-R-S)。唯一自动换窗基线=64k 软线——
+  # 6h 静默（idle_before_next_user_ms）、零点换窗（rotate_on_business_
+  # date_change）、bootstrap_target_tokens、warning_tokens、digest 段、
+  # recent_dialogue_budget_tokens 均已退役（WP-03/WP5，2026-10-09）；
+  # 旧配置带这些键会在启动日志披露为 retired_config_keys（不静默接受）
   soft_limit_tokens: 64000        # 输入工作集软线
-  # WP5：warning_tokens 预警线已退役（推送/展示均不再；软线与硬门保留）
-  idle_before_next_user_ms: 21600000  # 6h：下一条真实用户消息到达时换窗
   tool_input_reserve_tokens: 8000    # T：有界后续工具输入预留
   review_reserve_tokens: 8000        # R：换窗提醒及必要 hold 往返预留
   safety_reserve_tokens: 4000        # S：安全余量
-  # WP5（2026-10-08）：recent_dialogue_budget_tokens 与 digest 段已退役——
-  # 新窗历史只经网页人工选集；旧配置带这些键会在启动日志披露为 retiredKeys
-  bootstrap_target_tokens: 32000         # 新窗启动总目标
   model_context_capacity: null    # C：由实际模型/端点能力补齐；null=未测量
   threshold_status: awaiting_measurement
   normal_rotation_uses_new_session: true
+
+# 换窗 hold 提醒开关（她裁定 2026-10-07；WP5 起只管提醒——日结已退役）
+reminders:
+  enabled: true
+
+# OR 型号候选（设置页下拉数据源；空=手填；免费公开元数据无私人数据）
+openrouter:
+  model_options: []
 
 # OpenRouter 主接入（ESTOMAGO_OR_SELF_HOLD §6）：与 SDK 认证/装配完全分离。
 # model=null 表示"模型未配置"（运行时如实阻断，不猜默认型号）；key 只经环境变量名引用。

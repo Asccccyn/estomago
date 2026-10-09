@@ -299,15 +299,22 @@ export class ManualSelectionService {
     if (Number(c.changes) !== 1) throw new Error('selection_consume_conflict: 方案已非 confirmed（并发消费/取消）');
   }
 
-  /** 读取已确认/已消费选集的正文（按真实修订，服务端正本）。 */
-  loadContents(items: SelectionItem[]): Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> {
-    const out: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> = [];
+  /** 读取已确认/已消费选集的正文（按真实修订，服务端正本）。
+   *  WP-05（B13）：缺修订行不再 silent continue——差异随返回值披露
+   *  （装配方如实标注 manifest 缺席，不冒充完整装载）。 */
+  loadContents(items: SelectionItem[]): { loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; missing: Array<{ message_id: string; revision: number }> } {
+    const loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> = [];
+    const missing: Array<{ message_id: string; revision: number }> = [];
     for (const it of items) {
       const row = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(it.message_id, it.revision) as { content: string } | undefined;
-      if (!row) continue; // 修订被清理等极端情况：跳过并已在 manifest 缺席中体现
-      out.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content });
+      if (!row) {
+        missing.push({ message_id: it.message_id, revision: it.revision });
+        continue;
+      }
+      loaded.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content });
     }
-    return out.sort((a, b) => a.sequence - b.sequence);
+    loaded.sort((a, b) => a.sequence - b.sequence);
+    return { loaded, missing };
   }
 }
 
