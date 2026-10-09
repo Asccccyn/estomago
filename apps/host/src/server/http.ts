@@ -280,18 +280,17 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (body.reasoning_effort !== undefined && nextEffort === undefined) {
         return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
       }
-      // FU-001（回访 2026-10-09）：按**候选配置**校验——先合并本次 patch
-      // 形成候选（model-only 变更继承现行 effort），再用**候选 model**的
-      // 真实档位校验候选 effort（此前用当前旧 model 校验：换成仅支持 low
-      // 的 B 时 high 也 200 落库）。元数据可及时校验；不可达时放行，真
-      // 请求若被 OR 拒绝会如实失败——不冒称已验证
-      const candidateModel = nextModel !== undefined && nextModel !== null
-        ? nextModel
-        : d.settings.effectiveOrModel(d.config.openrouter.model);
+      // FU-001（二次回访 2026-10-10）：按合并 patch 后的**真实生效对**
+      // 校验——此前 null/default 清除回落配置默认的组合不经校验：
+      // 模型清空回落 A+low、档位清空回落 B+high 均被 200 落库。候选
+      // 模型=patch ?? override ?? 配置默认；候选档位=patch ?? override
+      // ?? 配置默认 effort（含 model-only 继承）。元数据可及时校验；
+      // 不可达时放行，真请求若被 OR 拒绝会如实失败——不冒称已验证
+      const candidateModel = (nextModel !== undefined ? nextModel : d.settings.orModel())
+        ?? d.config.openrouter.model;
       const defEffort = (d.config.openrouter.reasoning as { effort?: unknown } | null | undefined)?.effort;
-      const candidateEffort = nextEffort !== undefined
-        ? nextEffort
-        : (d.settings.reasoningEffort() ?? (typeof defEffort === 'string' && defEffort !== 'default' ? defEffort : null));
+      const defEffortStr = typeof defEffort === 'string' && defEffort !== 'default' ? defEffort : null;
+      const candidateEffort = (nextEffort !== undefined ? nextEffort : d.settings.reasoningEffort()) ?? defEffortStr;
       if (candidateEffort !== null && candidateModel) {
         const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
         if (driver === 'openrouter') {

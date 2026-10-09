@@ -136,3 +136,86 @@ test('RRA014 RED→FIX：分片预算按转义后真实 JSON 字节（≤16000�
     assert.equal(pieces.join(''), '\u0001'.repeat(4000), '控制字符分片拼回逐字一致');
   } finally { c.db.close(); }
 });
+
+// ------------ 二次回访（2026-10-10 run-073728）：字节单口径装页合同 ------------
+// 根因：残留的 `cpLen<=3000` 码点门与整条顺延分支冲突——3001/4000 ASCII、
+// 4000 中文等"能放空页"的行既不整装也不分片（range 静默结束、older 同
+// 游标空页活锁）。修复后尺寸判定单口径=真实 JSON 字节。
+
+for (const [label, body] of [['ascii3000', 'A'.repeat(3000)], ['ascii3001', 'A'.repeat(3001)], ['ascii4000', 'A'.repeat(4000)], ['cjk4000', '甲'.repeat(4000)]] as const) {
+  test(`RRA014-2 字节单口径：${label} 能放空页必须整条交付`, async () => {
+    const c = makeExecutor(tempRoot('rra14b2-'));
+    try {
+      seed(c, 'm1', body, 1);
+      const r = await c.executor.execute('conversation_read', { from_sequence: 1, to_sequence: 1 }, CTX);
+      assert.equal(r.ok, true);
+      assert.equal(r.output.entries.length, 1, '整行放得下空页——不得消失');
+      assert.equal(r.output.entries[0].text, body);
+      assert.equal(r.output.entries[0].fragment, undefined, '能整装不得碎片化');
+      assert.ok(Buffer.byteLength(JSON.stringify(r.output), 'utf8') <= 16000);
+    } finally { c.db.close(); }
+  });
+}
+
+test('RRA014-2 字节单口径：older 在 4000 ASCII 行上必须前进（不空页活锁）', async () => {
+  const c = makeExecutor(tempRoot('rra14b2o-'));
+  try {
+    seed(c, 'm1', 'A'.repeat(4000), 1);
+    const r = await c.executor.execute('conversation_read', { cursor: { older_than: 2 } }, CTX);
+    assert.ok(r.output.entries.length > 0, '非空输入必须前进（此前空页+同游标活锁）');
+    assert.equal(r.output.entries[0].text, 'A'.repeat(4000), '整条交付');
+    assert.equal(r.output.entries[0].fragment, undefined);
+    if (r.output.next_cursor) {
+      const r2 = await c.executor.execute('conversation_read', { cursor: r.output.next_cursor }, CTX);
+      assert.equal(r2.output.entries.length, 0, '翻尽后自然终止');
+      assert.equal(r2.output.next_cursor, undefined);
+    } else {
+      assert.equal(r.output.has_more, null, '单行翻尽即终止');
+    }
+  } finally { c.db.close(); }
+});
+
+test('RRA014-2 超限控制字符：全部页 ≤16000、片区间首尾相接、逐字拼回', async () => {
+  const c = makeExecutor(tempRoot('rra14b2e-'));
+  try {
+    const expected = '\u0001'.repeat(10000);
+    seed(c, 'm1', expected, 1);
+    const rows: Array<{ text: string; fragment: { start_char: number; end_char: number } }> = [];
+    const bytes: number[] = [];
+    let args: Record<string, unknown> = { from_sequence: 1, to_sequence: 1 };
+    for (let i = 0; i < 30; i++) {
+      const r = await c.executor.execute('conversation_read', args, CTX);
+      assert.equal(r.ok, true);
+      const b = Buffer.byteLength(JSON.stringify(r.output), 'utf8');
+      bytes.push(b);
+      assert.ok(b <= 16000, `第 ${i + 1} 页 ${b}B 超 16000`);
+      rows.push(...(r.output.entries as typeof rows));
+      if (!r.output.next_cursor) break;
+      args = { cursor: r.output.next_cursor };
+      assert.ok(i < 29, '必须收敛');
+    }
+    assert.equal(rows.map((x) => x.text).join(''), expected, '逐字拼回');
+    let pos = 0;
+    for (const x of rows) {
+      assert.equal(x.fragment.start_char, pos, '片区间首尾相接');
+      pos = x.fragment.end_char;
+    }
+    assert.equal(pos, 10000);
+  } finally { c.db.close(); }
+});
+
+test('RRA014-2 对照：两条 2995 中文整行分页各自整条交付（顺延不碎片化）', async () => {
+  const c = makeExecutor(tempRoot('rra14b2d-'));
+  try {
+    const bodies = ['row1:' + '中'.repeat(2990), 'row2:' + '中'.repeat(2990)];
+    bodies.forEach((v, i) => seed(c, `m${i + 1}`, v, i + 1));
+    const r = await c.executor.execute('conversation_read', { from_sequence: 1, to_sequence: 2 }, CTX);
+    const r2 = await c.executor.execute('conversation_read', { cursor: r.output.next_cursor }, CTX);
+    assert.deepEqual(r.output.entries.map((x: { sequence: number }) => x.sequence), [1]);
+    assert.deepEqual(r2.output.entries.map((x: { sequence: number }) => x.sequence), [2]);
+    assert.equal(r.output.entries[0].text, bodies[0]);
+    assert.equal(r2.output.entries[0].text, bodies[1]);
+    assert.equal(r.output.entries[0].fragment, undefined);
+    assert.equal(r2.output.entries[0].fragment, undefined);
+  } finally { c.db.close(); }
+});
