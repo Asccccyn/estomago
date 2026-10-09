@@ -753,21 +753,29 @@ export class HostToolExecutor {
     const entries: Array<Record<string, unknown>> = [];
     let budgetUsed = 0;
     const pageBudget = (): number => OUTPUT_MAX_JSON_BYTES - ENVELOPE_RESERVE_BYTES - budgetUsed;
-    /** 装一条（整条或首页分片）；返回是否装下。装不下=顺延下页
-     *（不 pop、不丢）——调用方遇 false 即止（装页=取序前缀，前沿
-     * 之外全部续页可达，不产生页内断带）。页首必须装下 ≥1 字片段
-     *（空页+同游标=活锁）。 */
+    /** 装一条（整条优先；仅单条超**整页**预算才分片——与 M paging 同
+     *  契约：整条放不下=顺延下页整条交付，不页内碎片化）；返回是否
+     *  装下。未完分片=页终止（同页第二个未完分片只有一个能进
+     *  next_cursor 链，先出现者尾段被搁死——RRA-014 回访实际缺陷）。
+     *  页首必须装下 ≥1 字片段（空页+同游标=活锁）。 */
     const pushEntry = (row: ReadRow): boolean => {
       const cpLen = [...row.content].length;
       const whole = entryOf(row);
-      if (cpLen <= FRAGMENT_CHARS && jsonBytes(whole) <= pageBudget()) {
+      const wholeBytes = jsonBytes(whole);
+      if (cpLen <= FRAGMENT_CHARS && wholeBytes <= pageBudget()) {
         entries.push(whole);
-        budgetUsed += jsonBytes(whole);
+        budgetUsed += wholeBytes;
         trackSeen(row);
         return true;
       }
-      // 整条放不下（码点超宽或转义后字节超预算）→ 分片：宽度折半至
-      // 放得下；非页首时窄于 FRAGMENT_MIN_CHARS 的碎屑顺延（页首豁免）
+      // 整条放得下**空页预算**（单条未超整页）→ 顺延下页整条交付，
+      // 不页内分片（对照契约：整行条目=单 entry；此前一页内给能整装
+      // 的行做碎片化，破坏整行交付形状）
+      if (wholeBytes <= OUTPUT_MAX_JSON_BYTES - ENVELOPE_RESERVE_BYTES) {
+        return false;
+      }
+      // 单条超整页预算（码点超宽或转义后字节超限）→ 分片：宽度折半
+      // 至放得下；非页首时窄于 FRAGMENT_MIN_CHARS 的碎屑顺延（页首豁免）
       let width = FRAGMENT_CHARS;
       while (width >= 1) {
         const end = Math.min(cpLen, width);
