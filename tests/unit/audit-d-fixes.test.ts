@@ -385,7 +385,7 @@ test('D18：持续坏 ACK（op 匹配但空 messages）消耗同一预算，超�
 });
 
 // —— 表面/计量：D23/D25 ——
-test('D23：记录快照带 effectiveWarning（小容量下不是假的 56000）', () => {
+test('D23：记录快照无 effectiveWarning（WP-03 退役），软线按实际容量收缩', () => {
   const root = tempRoot('d23-');
   const ctx = baseCtx(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { model_context_capacity: 40000 } });
@@ -395,8 +395,11 @@ test('D23：记录快照带 effectiveWarning（小容量下不是假的 56000）
   const windows = new WindowManager(ctx.db, events, identity, buildPaths(root).handoffsDir, config);
   const runner = { status: 'ok' as const, runner: new DeepSeekRunner({ retryMax: 0 }, async () => ({ status: 200, headers: new Map(), body: frameStream(textBody('g', 'x')) })) };
   const snap = buildRecordSnapshot({ db: ctx.db, config, windows, runnerSelection: runner }, 'c1', null);
-  // 容量 40000 → safeInput=11808 → effectiveSoft=11808 → warning=min(56000, 3808)=3808
-  assert.equal(snap.context.effectiveWarning, 3808, '预警线按实际容量收缩（不再固定 56000）');
+  // 容量 40000 → safeInput=11808 → effectiveSoft=11808（软线收缩正断言保留）
+  assert.equal(snap.context.effectiveSoft, 11808, '软线按实际容量收缩');
+  // WP-03（2026-10-09，JFA-001/E-3）：warning_tokens 与 effectiveWarning 已退役
+  // ——快照不再携带该键（API 契约同步收窄，网页已不读）
+  assert.equal('effectiveWarning' in snap.context, false, 'effectiveWarning 已切除（df66e7c 残尾清偿）');
   ctx.db.close();
 });
 
