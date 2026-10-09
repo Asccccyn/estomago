@@ -280,22 +280,34 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (body.reasoning_effort !== undefined && nextEffort === undefined) {
         return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
       }
-      // 按生效模型的真实档位校验（元数据可及时；不可达时放行，
-      // 真请求若被 OR 拒绝会如实失败——不冒称已验证）
-      if (nextEffort !== undefined && nextEffort !== null) {
+      // FU-001（回访 2026-10-09）：按**候选配置**校验——先合并本次 patch
+      // 形成候选（model-only 变更继承现行 effort），再用**候选 model**的
+      // 真实档位校验候选 effort（此前用当前旧 model 校验：换成仅支持 low
+      // 的 B 时 high 也 200 落库）。元数据可及时校验；不可达时放行，真
+      // 请求若被 OR 拒绝会如实失败——不冒称已验证
+      const candidateModel = nextModel !== undefined && nextModel !== null
+        ? nextModel
+        : d.settings.effectiveOrModel(d.config.openrouter.model);
+      const defEffort = (d.config.openrouter.reasoning as { effort?: unknown } | null | undefined)?.effort;
+      const candidateEffort = nextEffort !== undefined
+        ? nextEffort
+        : (d.settings.reasoningEffort() ?? (typeof defEffort === 'string' && defEffort !== 'default' ? defEffort : null));
+      if (candidateEffort !== null && candidateModel) {
         const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
-        const effModel = d.settings.effectiveOrModel(d.config.openrouter.model);
-        if (driver === 'openrouter' && effModel) {
-          const meta = await fetchOrModelMeta(d.config.openrouter.base_url, effModel);
+        if (driver === 'openrouter') {
+          const meta = await fetchOrModelMeta(d.config.openrouter.base_url, candidateModel);
           const allowed = effortsForModel(meta);
-          if (allowed && !allowed.includes(nextEffort)) {
-            return json(res, 422, { error: { code: 'effort_not_supported', message: `当前模型 ${effModel} 不支持思考档位 ${nextEffort}（强制思考模型没有 none/minimal）`, supported: allowed } });
+          if (allowed && !allowed.includes(candidateEffort)) {
+            return json(res, 422, { error: { code: 'effort_not_supported', message: `候选生效模型 ${candidateModel} 不支持思考档位 ${candidateEffort}`, supported: allowed } });
           }
         }
       }
-      // 全验通过：原子写入（一次请求=一次生效视图变更，无中间态）
-      if (nextModel !== undefined) d.settings.set('or_model', nextModel);
-      if (nextEffort !== undefined) d.settings.set('reasoning_effort', nextEffort);
+      // FU-002（回访）：全验通过后**单事务**写入（setMany）——此前两字段
+      // 各开事务，第二写失败后第一写已提交（半提交状态）
+      const writes: Array<[string, string | null]> = [];
+      if (nextModel !== undefined) writes.push(['or_model', nextModel]);
+      if (nextEffort !== undefined) writes.push(['reasoning_effort', nextEffort]);
+      d.settings.setMany(writes);
       const cfg2 = d.config.openrouter;
       return json(res, 200, {
         or_model: { effective: d.settings.effectiveOrModel(cfg2.model), override: d.settings.orModel() },
