@@ -112,8 +112,10 @@ try {
   const version = db.prepare("SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations").get()?.v ?? 0;
   const walMode = db.prepare('PRAGMA journal_mode').get();
   console.log(`[restore] 备份校验 OK：schema v${version}，journal=${JSON.stringify(walMode)}`);
-  const CURRENT_SCHEMA = 19; // 与 apps/host/src/db/migrations.ts 最新版本同步（v19=runtime-settings）
-  if (version > CURRENT_SCHEMA) fail('BACKUP_INCOMPATIBLE', `备份 schema v${version} 高于当前代码支持的版本`);
+  // 单一口径：支持版本从迁移模块推导（v20 死表清退批改——此前硬编码 19
+  // 与迁移链分叉，备份高于手写值即误拒 BACKUP_INCOMPATIBLE）
+  const { SUPPORTED_SCHEMA_VERSION } = await import('../apps/host/src/db/migrations.ts');
+  if (version > SUPPORTED_SCHEMA_VERSION) fail('BACKUP_INCOMPATIBLE', `备份 schema v${version} 高于当前代码支持的版本 v${SUPPORTED_SCHEMA_VERSION}`);
   db.close();
 } catch (e) {
   if (String(e.message).includes('拒绝') || String(e.message).includes('BACKUP')) throw e;

@@ -26,7 +26,8 @@ export class MessageService {
         this.db
           .prepare('INSERT INTO conversations(id, owner_service, scope, title, created_at) VALUES (?, ?, ?, ?, ?)')
           .run(conversationId, 'estomago', 'private', title, new Date().toISOString());
-        this.db.prepare('INSERT INTO members(conversation_id, participant_id, role) VALUES (?, ?, ?)').run(conversationId, 'owner', 'owner');
+        // members 表随迁移 v20 清退（1 写 0 读；她 2026-10-10 批）——
+        // 建房只落 conversations 行
       });
     }
   }
