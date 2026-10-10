@@ -119,7 +119,73 @@ test('找话⑤：M 的 round2_raw 提示不被压扁成"改问题续查"', asyn
   assert.equal(out.ok, true);
   const note = String(out.output.continuation_note ?? '');
   assert.ok(note.includes('原话证据不足'), '如实传达 M 的证据不足提示');
-  assert.ok(note.includes('round2'), '指明深搜入口');
+  // 找话二批后：提示指向 E 层真实入口（deep_search 参数），不再引 M 能力名
+  assert.ok(note.includes('deep_search=true'), '指明深搜的真实调用参数');
   assert.ok(!note.startsWith('续查（同一召回会话内收窄/换角度）'), '不得压扁成普通续查提示');
+  db.close();
+});
+
+// ------------ 找话第二批：Round2 原文深搜 ------------
+const round2Page = {
+  recall_session_id: 'rs_w', revision: 2, search_status: 'FOUND',
+  judge_mode: 'off', judge_policy_revision: 3, judgement_status: 'bypassed_by_user', judged_count: 0,
+  candidates: [{ resource_ref: 'source_msg:sm1', channel: 'raw', excerpt: '……我们去看海吧……', evidence: [{ evidence_kind: 'raw_verbatim', snippet: '我们去看海吧' }] }],
+  pagination: { result_set_id: 'rps_r2', returned_count: 1, candidate_total: 1, has_more: false, next_cursor: null },
+};
+
+test('深搜①：deep_search 走 memory.recall.round2 独立入口（session+reason 闭集+幂等 op）', async () => {
+  const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
+  const mariposa: MariposaTransport = async (cap, payload) => {
+    calls.push({ cap, payload: payload as Record<string, unknown> });
+    return { ok: true, result: round2Page };
+  };
+  const { tools, db } = makeTools(mariposa);
+  const out = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: '看海原话', channel: 'words', refine_session_id: 'rs_w', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  assert.equal(out.ok, true);
+  assert.equal(calls[0]!.cap, 'memory.recall.round2', '独立入口（不经 channels 绕）');
+  const p = calls[0]!.payload as Record<string, unknown>;
+  assert.equal(p.session_id, 'rs_w');
+  assert.equal(p.reason, 'EVIDENCE_INSUFFICIENT');
+  assert.ok(String(p.operation_id).startsWith('es-r2-'), '宿主派生幂等 op');
+  assert.equal(out.output.channel, 'raw', '深搜结果回显 raw');
+  assert.equal(out.output.deep_search, true);
+  assert.ok(JSON.stringify(out.output.candidates).includes('我们去看海吧'), '原文证据穿透');
+  db.close();
+});
+
+test('深搜②：缺 session / 缺 reason 明确拒绝', async () => {
+  const mariposa: MariposaTransport = async () => ({ ok: true, result: round2Page });
+  const { tools, db } = makeTools(mariposa);
+  const a = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: 'x', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  assert.equal(a.ok, false);
+  assert.ok(String(a.output.error).includes('refine_session_id'), '缺会话指明');
+  const b = await tools.execute('memory_recall', { __tool_call_id: 'd2', query: 'x', deep_search: true, refine_session_id: 'rs_w' }, CTX);
+  assert.equal(b.ok, false);
+  assert.ok(String(b.output.error).includes('deep_reason'), '缺理由指明');
+  db.close();
+});
+
+test('深搜③：S13 门拒绝如实上抛（含指引），不冒充空结果', async () => {
+  const mariposa: MariposaTransport = async () => ({ ok: false, code: 'ROUND2_GATE_DENIED', httpStatus: 403 });
+  const { tools, db } = makeTools(mariposa);
+  const out = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: 'x', deep_search: true, refine_session_id: 'rs_w', deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  assert.equal(out.ok, false);
+  assert.equal(out.output.error_code, 'RECALL_ROUND2_GATE_DENIED');
+  assert.ok(String(out.output.message ?? '').includes('门未满足'), '如实告知门核验失败');
+  db.close();
+});
+
+test('深搜④：round2_raw 提示现在指向真实入口（deep_search 参数）', async () => {
+  const mariposa: MariposaTransport = async () => ({
+    ok: true,
+    result: { ...wordsPage, continuation: { available: true, action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
+  });
+  const { tools, db } = makeTools(mariposa);
+  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海原话', channel: 'words' }, CTX);
+  assert.equal(out.ok, true);
+  const note = String(out.output.continuation_note ?? '');
+  assert.ok(note.includes('deep_search=true'), '指引真实参数');
+  assert.ok(note.includes('EVIDENCE_INSUFFICIENT'));
+  assert.ok(!note.includes('暂未接入'), '不再是暂未接入');
   db.close();
 });
