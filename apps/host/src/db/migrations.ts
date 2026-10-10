@@ -643,7 +643,26 @@ CREATE TABLE IF NOT EXISTS runtime_settings(
 );
 `,
   },
-];;
+  {
+    version: 20,
+    name: 'drop-dead-tables',
+    // 她 2026-10-10 批"删吧"（run-160858 复审开放项）：清退零读零写死表
+    // wakeups/effects 与 1 写 0 读的 members（写入点已同步移除，
+    // messages/service.ts ensureConversation）。audit_events **保留**——
+    // prune 维护审计（runtime/prune.ts、scripts/prune.mjs）在写，破坏性
+    // 维护动作的审计账本属合法保留，非死表（复审勘误：审计期"4 死表"
+    // 的口径在 WP-04 prune 落地后对 audit_events 已过时）。
+    sql: `
+DROP TABLE IF EXISTS wakeups;
+DROP TABLE IF EXISTS effects;
+DROP TABLE IF EXISTS members;
+`,
+  },
+];
+
+// 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
+// v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
+export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations(
