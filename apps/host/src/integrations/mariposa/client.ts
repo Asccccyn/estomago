@@ -301,6 +301,31 @@ export class MariposaClient {
     });
   }
 
+  /** I/计划只读批（2026-10-10）：M 的 i 系与 plan 系读面透传。 */
+  async iGet(): Promise<MariposaCallResult> {
+    return this.transport('i.get', {});
+  }
+  async iItemsList(): Promise<MariposaCallResult> {
+    return this.transport('i.items.list', {});
+  }
+  async iItemGet(itemId: string): Promise<MariposaCallResult> {
+    return this.transport('i.item.get', { item_id: itemId });
+  }
+  async iItemHistory(itemId: string): Promise<MariposaCallResult> {
+    return this.transport('i.item.history', { item_id: itemId });
+  }
+  async iVersionsRead(): Promise<MariposaCallResult> {
+    return this.transport('i.versions.read', {});
+  }
+  async planList(states?: string[]): Promise<MariposaCallResult> {
+    const args: Record<string, unknown> = {};
+    if (Array.isArray(states) && states.length > 0) args.states = states;
+    return this.transport('plan.list', args);
+  }
+  async planGet(planId: string): Promise<MariposaCallResult> {
+    return this.transport('plan.get', { plan_id: planId });
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {
