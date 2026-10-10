@@ -395,6 +395,57 @@ export class MariposaClient {
     return this.transport('memory.keep.revoke', { mark_id: markId });
   }
 
+  /** 纠错+删除审批批（2026-10-10 她排期"继续"）：关系/话语来源/原文
+   *  绑定三族纠错 + 关系链接/列表 + 删除审批（decide=jiaming 独占）。 */
+  async relationsCorrect(args: { relationId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { relation_id: args.relationId, correction_action: args.correctionAction, operation_id: args.operationId };
+    if (args.replacement) payload.replacement = args.replacement;
+    if (args.note) payload.note = args.note;
+    return this.transport('memory.relations.correct', payload);
+  }
+  async relationsLink(args: { fromMemory: string; toMemory: string; relationType: string; customLabel?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { from_memory: args.fromMemory, to_memory: args.toMemory, relation_type: args.relationType };
+    if (args.customLabel) payload.custom_label = args.customLabel;
+    return this.transport('memory.relations.link', payload);
+  }
+  async relationsList(memoryId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.relations.list', { memory_id: memoryId });
+  }
+  async wordSourceCorrect(args: { wordId: string; correctionAction: string; operationId: string; expectedSourceVersion: number; expectedSourceRef?: string | null; replacement?: Record<string, unknown> }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { word_id: args.wordId, correction_action: args.correctionAction, operation_id: args.operationId, expected_source_version: args.expectedSourceVersion };
+    if (args.expectedSourceRef !== undefined) payload.expected_source_ref = args.expectedSourceRef;
+    if (args.replacement) payload.replacement = args.replacement;
+    return this.transport('memory.our_words.source.correct', payload);
+  }
+  async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { binding_id: args.bindingId, correction_action: args.correctionAction, operation_id: args.operationId };
+    if (args.replacement) payload.replacement = args.replacement;
+    if (args.note) payload.note = args.note;
+    return this.transport('source.binding.correct', payload);
+  }
+  async correctionsList(args: { endpoint?: string; instanceId?: string; domain?: string; limit?: number }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = {};
+    if (args.endpoint) payload.endpoint = args.endpoint;
+    if (args.instanceId) payload.instance_id = args.instanceId;
+    if (args.domain) payload.domain = args.domain;
+    if (typeof args.limit === 'number') payload.limit = args.limit;
+    return this.transport('relations.corrections.list', payload);
+  }
+  async deletionDecide(args: { requestId: string; decision: 'approve' | 'reject'; rejectionReason?: string; operationId: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { request_id: args.requestId, decision: args.decision, operation_id: args.operationId };
+    if (args.rejectionReason) payload.rejection_reason = args.rejectionReason;
+    return this.transport('memory.deletion.decide', payload);
+  }
+  async deletionGet(requestId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.deletion.get', { request_id: requestId });
+  }
+  async deletionList(args: { status?: string; memoryId?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = {};
+    if (args.status) payload.status = args.status;
+    if (args.memoryId) payload.memory_id = args.memoryId;
+    return this.transport('memory.deletion.list', payload);
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {

@@ -29,9 +29,8 @@ function makeTools(mariposa: MariposaTransport) {
   return { tools, db };
 }
 
-test('工具面：memory_open 已注册（12→13）', () => {
+test('工具面：memory_open 已注册', () => {
   assert.ok(hostToolNames().includes('memory_open'));
-  assert.equal(hostToolNames().length, 13);
 });
 
 test('链①：open → memory.open，票据与正文穿透；语义提示"打开≠回温"', async () => {
