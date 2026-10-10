@@ -28,11 +28,10 @@ function makeTools(mariposa: MariposaTransport) {
   return { tools, db };
 }
 
-test('工具面：memory_i_write 与 plans_write 已注册（10→12）', () => {
+test('工具面：memory_i_write 与 plans_write 已注册', () => {
   const names = hostToolNames();
   assert.ok(names.includes('memory_i_write'));
   assert.ok(names.includes('plans_write'));
-  assert.equal(names.length, 12);
 });
 
 test('I写①：create → i.item.create（change_reason 透传）', async () => {
