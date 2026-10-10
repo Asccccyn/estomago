@@ -368,6 +368,33 @@ export class MariposaClient {
     return this.transport(cap, { plan_id: planId, expected_version: expectedVersion });
   }
 
+  /** 明确打开/回忆/留链批（2026-10-10）：M 的 memory.open→view.confirm
+   *  →recollections.append（keep_wide 附带留标记）→keeps 链透传。
+   *  语义铁律：召回/回读返回正文 ≠ 明确打开——回温与"留"只经本链。 */
+  async memoryOpen(memoryId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.open', { memory_id: memoryId });
+  }
+  async viewConfirm(memoryId: string, receiptId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.view.confirm', { memory_id: memoryId, receipt_id: receiptId });
+  }
+  async recollectionsAppend(args: { memoryId: string; receiptId: string; text: string; keepWide?: boolean }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { memory_id: args.memoryId, receipt_id: args.receiptId, text: args.text };
+    if (args.keepWide === true) payload.keep_wide = true;
+    return this.transport('memory.recollections.append', payload);
+  }
+  async recollectionsRevise(recollectionId: string, text: string): Promise<MariposaCallResult> {
+    return this.transport('memory.recollections.revise', { recollection_id: recollectionId, text });
+  }
+  async recollectionsList(memoryId: string, includeHistory?: boolean): Promise<MariposaCallResult> {
+    return this.transport('memory.recollections.list', { memory_id: memoryId, ...(includeHistory === true ? { include_history: true } : {}) });
+  }
+  async keepsList(memoryId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.keeps.list', { memory_id: memoryId });
+  }
+  async keepRevoke(markId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.keep.revoke', { mark_id: markId });
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {
