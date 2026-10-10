@@ -162,8 +162,9 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   await tools.execute('memory_recall', { __tool_call_id: 'c2', query: '中秋', lexical_terms: ['中秋', '月亮'] }, CTX);
   plan = (calls[1]!.payload as { query_plan: Record<string, unknown> }).query_plan;
   assert.deepEqual(plan.lexical_terms, ['中秋', '月亮'], '模型可补精确词项');
-  // 续查：refine 回原 session（不是另起 start）
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c3', query: '就中秋那天', refine_session_id: 'rs_1', refine_continue_ref: 'cont_abc' }, CTX);
+  // 续查：refine 回原 session（不是另起 start）。找话第一批（2026-10-10）
+  // 新合同：续查必须显式携带 channel（省略被拒——不静默回落查事件）
+  const out = await tools.execute('memory_recall', { __tool_call_id: 'c3', query: '就中秋那天', channel: 'event', refine_session_id: 'rs_1', refine_continue_ref: 'cont_abc' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[2]!.cap, 'memory.recall.refine', '续查走 refine');
   const p3 = calls[2]!.payload as Record<string, unknown>;
