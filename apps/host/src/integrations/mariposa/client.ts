@@ -274,13 +274,16 @@ export class MariposaClient {
 
   /** R02（复审 2026-10-07）：同会话续查（refine）——回到原 session 收窄/
    *  换角度，不是另起 start。request_ref 用服务端给的 continue 引用。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string }): Promise<MariposaCallResult> {
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[] }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
       query_plan: {
         original_request: args.query,
         semantic_query: args.query,
-        channels: ['event'],
+        // 找话第一批（林石见复核）：refine 必须显式携带查询目标——
+        // M 的 validate_query_plan 对省略 channels 缺省 ['event']，
+        // 静默缺省会把找话续查变成查事件；类型层强制非可选
+        channels: args.channels,
         request_ref: args.continueRef,
       },
     });
@@ -288,7 +291,7 @@ export class MariposaClient {
 
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[] }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.start', {
       query_plan: {
         original_request: args.query,
@@ -296,7 +299,9 @@ export class MariposaClient {
         // 只认显式 semantic_query 不回填；此前词项为空时整句被当 exact
         // phrase 匹配，自然语言问题必然 0 命中
         semantic_query: args.query,
-        channels: ['event'],
+        // 找话第一批（2026-10-10 她排期/林石见复核）：查询目标显式
+        // 透传（['words']=专项找我们的话）；缺省=['event'] 保持旧行为
+        channels: args.channels && args.channels.length > 0 ? args.channels : ['event'],
         ...(args.lexicalTerms && args.lexicalTerms.length > 0 ? { lexical_terms: args.lexicalTerms } : {}),
       },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
