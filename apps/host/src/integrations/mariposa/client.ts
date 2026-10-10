@@ -326,6 +326,48 @@ export class MariposaClient {
     return this.transport('plan.get', { plan_id: planId });
   }
 
+  /** I/计划写入批（2026-10-10）：M 的 i.item.create/revise/restore 与
+   *  plan.create/update/complete/cancel（complete/cancel 为薄实现入口）。
+   *  M 侧按 jiaming 主体权限与 CAS（expected_revision/version）核验。 */
+  async iItemCreate(args: { content: string; changeReason?: string; relations?: unknown[] }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { content: args.content };
+    if (args.changeReason) payload.change_reason = args.changeReason;
+    if (Array.isArray(args.relations)) payload.relations = args.relations;
+    return this.transport('i.item.create', payload);
+  }
+  async iItemRevise(args: { itemId: string; content: string; expectedRevision: number; changeReason?: string; informedByRevision?: number; relations?: unknown[] }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { item_id: args.itemId, content: args.content, expected_revision: args.expectedRevision };
+    if (args.changeReason) payload.change_reason = args.changeReason;
+    if (typeof args.informedByRevision === 'number') payload.informed_by_revision = args.informedByRevision;
+    if (Array.isArray(args.relations)) payload.relations = args.relations;
+    return this.transport('i.item.revise', payload);
+  }
+  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision, expected_revision: args.expectedRevision };
+    if (args.changeReason) payload.change_reason = args.changeReason;
+    return this.transport('i.item.restore', payload);
+  }
+  async planCreate(args: { title: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { title: args.title, operation_id: args.operationId };
+    if (typeof args.content === 'string') payload.content = args.content;
+    if (typeof args.state === 'string') payload.state = args.state;
+    if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
+    if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
+    return this.transport('plan.create', payload);
+  }
+  async planUpdate(args: { planId: string; expectedVersion: number; title?: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { plan_id: args.planId, expected_version: args.expectedVersion, operation_id: args.operationId };
+    if (typeof args.title === 'string') payload.title = args.title;
+    if (typeof args.content === 'string') payload.content = args.content;
+    if (typeof args.state === 'string') payload.state = args.state;
+    if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
+    if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
+    return this.transport('plan.update', payload);
+  }
+  async planSetState(cap: 'plan.complete' | 'plan.cancel', planId: string, expectedVersion: number): Promise<MariposaCallResult> {
+    return this.transport(cap, { plan_id: planId, expected_version: expectedVersion });
+  }
+
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
   async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {
