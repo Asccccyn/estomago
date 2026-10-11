@@ -175,8 +175,16 @@ export class BackgroundScheduler {
       this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?').run(overrideDueIso, nowIso, task.id);
     } else if (task.schedule_kind === 'interval' && task.interval_ms && task.interval_ms > 0) {
       this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?').run(new Date(nowMs + task.interval_ms).toISOString(), nowIso, task.id);
+    } else if (task.schedule_kind === 'daily') {
+      // AUD-18 P2：daily 推进到次日 local_time（Asia/Shanghai）
+      const nextDay = new Date(nowMs + 86_400_000);
+      const nextLocal = new Date(nextDay.getTime() + 8 * 3_600_000);
+      const hhmm = task.local_time ?? '09:00';
+      const [hh, mm] = hhmm.split(':').map(Number);
+      nextLocal.setUTCHours(hh ?? 9, mm ?? 0, 0, 0);
+      this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?').run(new Date(nextLocal.getTime() - 8 * 3_600_000).toISOString(), nowIso, task.id);
     } else {
-      // daily：次日 local_time（Asia/Shanghai）；cache_idle：等待证据重算（目标清除，等 recalc）
+      // cache_idle：等待证据重算（目标清除，等 recalc）
       this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, task.id);
     }
   }

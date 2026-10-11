@@ -196,6 +196,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // EXEC_V1 §03.5.2：附件先全量校验（存在/available/格式匹配 presentation），全过才进消息事务；
       // 不接受 URL/磁盘路径/Base64——必须先经 /api/v1/assets 建立资产
       const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+      // AUD-33 P2：附件数量上限
+      if (attachments.length > d.config.media.max_attachments_per_message) {
+        return json(res, 422, { error: { code: 'too_many_attachments', message: `附件数量超过上限 ${d.config.media.max_attachments_per_message}` } });
+      }
       const parsedAttachments: Array<{ asset_id: string; presentation: 'image' | 'sticker' | 'voice'; caption?: string | null }> = [];
       for (const a of attachments as Array<Record<string, unknown>>) {
         if (typeof a?.asset_id !== 'string' || !a.asset_id) return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].asset_id 必填（先经资产创建/导入）' } });
@@ -554,8 +558,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!/^\d{4}-\d{2}$/.test(month)) return json(res, 400, { error: { code: 'bad_month', message: 'month 必须是 YYYY-MM' } });
       const result = buildCalendarMonth({
         db: d.db, config: d.config,
-        mariposaReady: d.config.integrations.mariposa.base_url !== null,
-        superpositionReady: d.config.integrations.superposition.base_url !== null,
+        mariposaReady: false,
+        superpositionReady: false,
         contentReady: d.contentClient !== null && d.contentClient !== undefined,
       }, month);
       if (!result) return json(res, 400, { error: { code: 'bad_month', message: '月份非法' } });
@@ -568,7 +572,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const sources = ['chat', 'memory', 'plans', 'stars', 'reminders', 'future_notes', 'creations'] as const;
       const summary: Record<string, unknown> = {};
       for (const src of sources) {
-        const r = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: d.config.integrations.mariposa.base_url !== null, superpositionReady: d.config.integrations.superposition.base_url !== null, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, src, null, 1);
+        const r = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: false, superpositionReady: false, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, src, null, 1);
         if (r) summary[src] = { status: r.status, has_items: r.items.length > 0 || r.has_more };
       }
       return json(res, 200, { date, timezone: 'Asia/Shanghai', sources: summary });
@@ -582,7 +586,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const limit = Number(url.searchParams.get('limit')) || POLICY_CONSTANTS.pagination.default_limit;
       if (limit < 1 || limit > POLICY_CONSTANTS.pagination.max_limit) return json(res, 400, { error: { code: 'limit_invalid', message: `limit 必须在 1..${POLICY_CONSTANTS.pagination.max_limit}` } });
       const cursor = url.searchParams.get('cursor');
-      const result = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: d.config.integrations.mariposa.base_url !== null, superpositionReady: d.config.integrations.superposition.base_url !== null, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, source as CalendarSource, cursor, limit);
+      const result = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: false, superpositionReady: false, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, source as CalendarSource, cursor, limit);
       if (!result) return json(res, 400, { error: { code: 'bad_date', message: '日期非法' } });
       return json(res, 200, result);
     }

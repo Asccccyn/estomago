@@ -31,8 +31,8 @@ export class BackgroundSettingsService {
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
     const stored = row ? JSON.parse(row.value) as { autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null } : null;
     const es = effectiveSettings(this.config, rev, stored);
-    if (stored?.autonomous_daily_cost_cap_usd !== undefined && stored.autonomous_daily_cost_cap_usd !== null) es.autonomous.daily_cost_cap_usd = stored.autonomous_daily_cost_cap_usd;
-    if (stored?.keepwarm_daily_cost_cap_usd !== undefined && stored.keepwarm_daily_cost_cap_usd !== null) es.keepwarm.daily_cost_cap_usd = stored.keepwarm_daily_cost_cap_usd;
+    if ('autonomous_daily_cost_cap_usd' in (stored ?? {})) es.autonomous.daily_cost_cap_usd = stored?.autonomous_daily_cost_cap_usd ?? null;
+    if ('keepwarm_daily_cost_cap_usd' in (stored ?? {})) es.keepwarm.daily_cost_cap_usd = stored?.keepwarm_daily_cost_cap_usd ?? null;
     return es;
   }
 
@@ -61,8 +61,8 @@ export class BackgroundSettingsService {
       }
       // 预算上限写入（有限正数才接受；null=显式未配置）
       const caps: Record<string, unknown> = {};
-      if (opts.patch.autonomous_daily_cost_cap_usd !== undefined) caps.autonomous_daily_cost_cap_usd = opts.patch.autonomous_daily_cost_cap_usd;
-      if (opts.patch.keepwarm_daily_cost_cap_usd !== undefined) caps.keepwarm_daily_cost_cap_usd = opts.patch.keepwarm_daily_cost_cap_usd;
+      if ('autonomous_daily_cost_cap_usd' in opts.patch) caps.autonomous_daily_cost_cap_usd = opts.patch.autonomous_daily_cost_cap_usd ?? null;
+      if ('keepwarm_daily_cost_cap_usd' in opts.patch) caps.keepwarm_daily_cost_cap_usd = opts.patch.keepwarm_daily_cost_cap_usd ?? null;
       const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
       const stored = row ? JSON.parse(row.value) as Record<string, unknown> : {};
       const merged = { ...stored, ...Object.fromEntries(Object.entries(opts.patch).filter(([, v]) => typeof v === 'boolean')), ...caps };
@@ -70,6 +70,17 @@ export class BackgroundSettingsService {
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(SETTINGS_KEY, JSON.stringify(merged), nowIso);
       const nextRev = current + 1;
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(REVISION_KEY, String(nextRev), nowIso);
+      // AUD-07 P2：开启保温 → 自动创建/恢复系统保温任务（cache_idle 型）
+      if (opts.patch.keepwarm_enabled === true) {
+        const existingKw = this.db.prepare("SELECT id FROM background_tasks WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle' AND conversation_id = 'primary'").get() as { id: string } | undefined;
+        if (!existingKw) {
+          this.db.prepare(
+            "INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, created_at, updated_at) VALUES ('bgt_keepwarm_system', 'primary', 'jiaming', 'keepwarm', 1, 1, 'cache_idle', NULL, NULL, 'Asia/Shanghai', NULL, NULL, '{}', 'system', ?, ?)",
+          ).run(nowIso, nowIso);
+        } else {
+          this.db.prepare('UPDATE background_tasks SET enabled = 1, updated_at = ? WHERE id = ?').run(nowIso, existingKw.id);
+        }
+      }
       // §7.2.1：关闭自主 → 尚未执行的领取（claimed、零派发）标 cancelled（正在执行的由调度器 fence）
       if (opts.patch.autonomous_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'AUTONOMOUS_DISABLED', result_code = 'AUTONOMOUS_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'autonomous'").run(nowIso, nowIso);
