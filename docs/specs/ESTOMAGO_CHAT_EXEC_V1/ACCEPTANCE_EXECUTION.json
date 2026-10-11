@@ -30,12 +30,12 @@
       "evidence_required": [
         "基线SHA/差异文件清单/更新落点"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "4e26a83",
+      "command": "python3 docs/specs/ESTOMAGO_CHAT_EXEC_V1/tools/verify_package.py . && python3 docs/specs/ESTOMAGO_CHAT_EXEC_V1/tools/preflight.py --repo <estomago> --package .",
+      "environment": "read-only preflight on worktree glm/chat-exec-v1-20261011",
+      "observed": "verify 1839 checks PASS（40需求/114验收/48路由/32工具/18fixtures）；preflight expected=actual=4971ebc8fda939a20ae8e6f04bc68a2c216a7ea1，changed_baseline_files=[]，working_tree_entries=[]，BASELINE_MATCH；未 reset/未覆盖任何改动；真实 provider 默认 claude-agent-sdk、OR/DS model=null 未配置即阻断（记录于 IMPLEMENTATION_MAP §0，README 不代替运行配置）",
+      "evidence_path": "docs/specs/ESTOMAGO_CHAT_EXEC_V1/IMPLEMENTATION_MAP.md",
       "blocked_dependency": null
     },
     {
@@ -61,12 +61,12 @@
       "evidence_required": [
         "迁移前后安全字段差异/transport计数"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "(本提交)",
+      "command": "node --test tests/unit/exec-v1-wp0-base.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME（/tmp/exec-v1-base03*）",
+      "observed": "3/3 pass：旧配置（无新段）升级后既有字段保留（port/model/cache_ttl/soft_limit），auto/keepwarm=false、两处 daily_cost_cap_usd=null（未配置≠无限）、reminders.enabled=true 不受牵连；validateConfig 同步纯函数零网络；常量面 50min/60min/1请求/0工具/loopback 全数核对；费用上限 0、时间 9:00、端口 70000 均被硬规则拒绝",
+      "evidence_path": "tests/unit/exec-v1-wp0-base.test.ts",
       "blocked_dependency": null
     },
     {
@@ -92,12 +92,12 @@
       "evidence_required": [
         "三个路径的schema与fixture行hash"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "(本提交)",
+      "command": "node --test tests/unit/exec-v1-wp0-base.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME（/tmp/exec-v1-base03a/b-，node:sqlite WAL）",
+      "observed": "fresh 一次迁移 v1..v20（applied=20，schemaVersion=20）；v19 历史库写入正文后重启只补 [20]，content/content_hash/revision=1/current_revision=1 全不变；再跑 applied=[] 且 schema_migrations 计数=20（幂等无重复）；v21+ 落地时同测试文件扩展真实中断注入复验",
+      "evidence_path": "tests/unit/exec-v1-wp0-base.test.ts",
       "blocked_dependency": null
     },
     {
