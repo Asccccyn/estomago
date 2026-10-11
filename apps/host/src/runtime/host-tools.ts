@@ -366,6 +366,56 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'content_post_create',
+      description: '以周家明身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。',
+      parameters: {
+        type: 'object',
+        properties: {
+          presentation: { type: 'string', enum: ['post', 'letter'] },
+          title: { type: 'string', maxLength: 200 },
+          body: { type: 'string', maxLength: 40000 },
+          asset_ids: { type: 'array', items: { type: 'string' }, maxItems: 8 },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
+        },
+        required: ['body', 'idempotency_key'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'content_comment_create',
+      description: '对私密朋友圈帖子添加评论。',
+      parameters: {
+        type: 'object',
+        properties: {
+          post_id: { type: 'string', minLength: 1, maxLength: 128 },
+          body: { type: 'string', minLength: 1, maxLength: 10000 },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
+        },
+        required: ['post_id', 'body', 'idempotency_key'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'content_posts_list',
+      description: '列出私密朋友圈帖子（分页）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          cursor: { type: 'string' },
+          limit: { type: 'number' },
+          presentation: { type: 'string', enum: ['post', 'letter'] },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'background_complete',
       description: '结束本次自主活动。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。仅自主活动回合可用。',
       parameters: {
@@ -537,7 +587,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null }) {
+  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null }) {
     this.db = deps.db;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
@@ -545,15 +595,53 @@ export class HostToolExecutor {
     this.archiveSync = deps.archiveSync ?? null;
     this.media = deps.media ?? null;
     this.messages = deps.messages ?? null;
+    this.contentClient = deps.contentClient ?? null;
   }
 
   private media: import('../media/assets.ts').MediaService | null;
   private messages: import('../messages/service.ts').MessageService | null;
+  private contentClient: import('../integrations/content/client.ts').ContentClient | null;
 
   /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
    *  能力面由 Mariposa 白名单圈定）。 */
   mariposaClient(): MariposaClient | null {
     return this.mariposa;
+  }
+
+  /** EXEC_V1 §06.4.3（WP5）：模型工具调 content——actor 从受控执行上下文派生为 jiaming。 */
+  private async contentPostCreate(args: { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
+    const { contentForward } = await import('../integrations/content/client.ts');
+    const r = await contentForward(this.contentClient, {
+      method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
+      body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
+      headers: { 'Idempotency-Key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
+    });
+    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
+    return { ok: false, output: { error_code: 'CONTENT_POST_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+  }
+
+  private async contentCommentCreate(args: { post_id: string; body: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const { contentForward } = await import('../integrations/content/client.ts');
+    const r = await contentForward(this.contentClient, {
+      method: 'POST', path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`, actor: 'jiaming',
+      body: { body: args.body },
+      headers: { 'Idempotency-Key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
+    });
+    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
+    return { ok: false, output: { error_code: 'CONTENT_COMMENT_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+  }
+
+  private async contentPostsList(args: { cursor?: string; limit?: number; presentation?: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const { contentForward } = await import('../integrations/content/client.ts');
+    const params = new URLSearchParams();
+    if (args.cursor) params.set('cursor', args.cursor);
+    if (args.limit && args.limit > 0 && args.limit <= 100) params.set('limit', String(args.limit));
+    if (args.presentation) params.set('presentation', args.presentation);
+    const r = await contentForward(this.contentClient, { method: 'GET', path: `/api/v1/content/posts?${params}`, actor: 'jiaming' });
+    return { ok: r.status === 200, output: r.body as Record<string, unknown> };
   }
 
   /** EXEC_V1 §04.6.2：结束自主活动——noop 是成功结果（§6.2），无产出不构成失败。仅自主回合有效。 */
@@ -607,7 +695,7 @@ export class HostToolExecutor {
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -627,6 +715,9 @@ export class HostToolExecutor {
     if (name === 'episode_list') return this.episodeList(checked.value, ctx);
     if (name === 'episode_get') return this.episodeGet(checked.value, ctx);
     if (name === 'episode_apply') return this.episodeApply(checked.value, ctx);
+    if (name === 'content_post_create') return await this.contentPostCreate(checked.value as { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx);
+    if (name === 'content_comment_create') return await this.contentCommentCreate(checked.value as { post_id: string; body: string; idempotency_key: string }, ctx);
+    if (name === 'content_posts_list') return await this.contentPostsList(checked.value as { cursor?: string; limit?: number; presentation?: string }, ctx);
     if (name === 'background_complete') return this.backgroundComplete(checked.value as { outcome: 'done' | 'noop' }, ctx);
     if (name === 'chat_send_text') return this.chatSendText(checked.value as { text: string; idempotency_key: string }, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
