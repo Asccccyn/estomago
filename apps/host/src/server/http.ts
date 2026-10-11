@@ -628,10 +628,27 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串' } });
       const draftRevision = typeof body.client_draft_revision === 'number' ? body.client_draft_revision : typeof body.client_draft_revision === 'string' ? body.client_draft_revision : null;
       if (draftRevision === null) return json(res, 400, { error: { code: 'bad_draft_revision', message: 'client_draft_revision 必填（防慢响应覆盖新草稿）' } });
-      // 附件元数据：只接受受控形状（正文/base64 不进入；图片按已核规则才可带 known_tokens）
+      // 附件元数据（§9：媒体预览只读取 est 已有资产元数据）——asset_id 由服务端查库取真实
+      // mime/byte_size；kind 按资产实际类型推导，不信客户端自报（图片规则未核→未知，不猜）
       const attachments: AttachmentEstimateMeta[] = [];
       if (Array.isArray(body.attachments)) {
         for (const a of body.attachments as Array<Record<string, unknown>>) {
+          if (typeof a?.asset_id === 'string' && a.asset_id) {
+            if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+            try {
+              const asset = d.media.getAsset(a.asset_id);
+              const kind = asset.mime_type.startsWith('image/') && asset.ingest_purpose === 'chat_sticker' ? 'image'
+                : asset.mime_type.startsWith('image/') ? 'image'
+                  : asset.mime_type.startsWith('audio/') ? 'audio'
+                    : asset.mime_type.startsWith('video/') ? 'video'
+                      : 'code_artifact';
+              attachments.push({ kind, fingerprint: asset.content_sha256, bytes: asset.byte_size, known_tokens: null });
+            } catch (err) {
+              if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+              throw err;
+            }
+            continue;
+          }
           const kind = a?.kind;
           if (kind !== 'image' && kind !== 'audio' && kind !== 'video' && kind !== 'code_artifact') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].kind 非法' } });
           if (typeof a.fingerprint !== 'string' || !a.fingerprint) return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].fingerprint 必填' } });
