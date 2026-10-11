@@ -811,6 +811,81 @@ CREATE INDEX IF NOT EXISTS idx_asset_refs_asset ON asset_external_refs(asset_id,
 ALTER TABLE message_revisions ADD COLUMN message_fingerprint TEXT;
 `,
   },
+  {
+    version: 26,
+    name: 'background-tasks-runs-dispatches',
+    // ESTOMAGO_CHAT_EXEC_V1 §04.8（WP4）：有界后台三张小表——不做通用工作流。
+    // tasks：三类任务（autonomous/keepwarm/reminder；schedule_kind 首版 once/daily/interval/cache_idle）；
+    // runs：一次领取（occurrence_key 唯一防并发双领；状态机 §9.1；首派发启动 60min 冷却）；
+    // dispatches：逐次收费预占/重试计数/未知结果恢复（每真实尝试独立定位）。
+    sql: `
+CREATE TABLE IF NOT EXISTS background_tasks(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('autonomous','keepwarm','reminder')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  revision INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('once','daily','interval','cache_idle')),
+  scheduled_at TEXT,
+  next_due_at TEXT,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  local_time TEXT,
+  interval_ms INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by_actor_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_bg_tasks_due ON background_tasks(enabled, next_due_at);
+CREATE TABLE IF NOT EXISTS background_runs(
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  task_revision INTEGER NOT NULL,
+  occurrence_key TEXT NOT NULL UNIQUE,
+  scheduled_for TEXT,
+  state TEXT NOT NULL CHECK (state IN ('claimed','running','cancelling','completed','noop','skipped','cancelled','failed','unknown')),
+  window_id TEXT, window_revision INTEGER, driver TEXT, model TEXT,
+  settings_revision INTEGER,
+  budget_snapshot_json TEXT,
+  claimed_at TEXT, first_dispatch_started_at TEXT, finished_at TEXT,
+  model_requests_started INTEGER NOT NULL DEFAULT 0,
+  tool_calls_started INTEGER NOT NULL DEFAULT 0,
+  output_tokens_observed INTEGER NOT NULL DEFAULT 0,
+  reserved_cost_micro_usd INTEGER NOT NULL DEFAULT 0,
+  known_cost_micro_usd INTEGER NOT NULL DEFAULT 0,
+  unknown_cost_count INTEGER NOT NULL DEFAULT 0,
+  result_code TEXT, cancel_reason TEXT,
+  cache_observation_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bg_runs_open_kind ON background_runs(actor_id, kind) WHERE state IN ('claimed','running','cancelling');
+CREATE TABLE IF NOT EXISTS background_dispatches(
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  logical_action_key TEXT NOT NULL,
+  attempt_no INTEGER NOT NULL,
+  dispatch_kind TEXT NOT NULL CHECK (dispatch_kind IN ('model','tool','delivery')),
+  capability_name TEXT,
+  operation_id TEXT,
+  provider_request_id TEXT,
+  external_receipt_ref TEXT,
+  state TEXT NOT NULL CHECK (state IN ('reserved','started','settled','cancelled_before_send','unknown')),
+  budget_day TEXT,
+  reserved_cost_micro_usd INTEGER NOT NULL DEFAULT 0,
+  actual_cost_micro_usd INTEGER,
+  dispatch_started_at TEXT, response_received_at TEXT, settled_at TEXT,
+  outcome_code TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (run_id, logical_action_key, attempt_no)
+);
+CREATE INDEX IF NOT EXISTS idx_bg_dispatches_run ON background_dispatches(run_id);
+`,
+  },
 ];
 
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
