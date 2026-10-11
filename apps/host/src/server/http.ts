@@ -779,11 +779,22 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
           const end = m[2] === '' ? bytes.length - 1 : Math.min(bytes.length - 1, Number(m[2]));
           if (start > end || start >= bytes.length) return json(res, 416, { error: { code: 'range_not_satisfiable', message: '区间越界' } });
           const slice = bytes.subarray(start, end + 1);
-          res.writeHead(206, { 'Content-Type': mime, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' });
+          const isActiveR = mime === 'image/svg+xml' || mime === 'text/html';
+          const activeHeadersR: Record<string, string> = isActiveR ? {
+            'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+            'Content-Disposition': 'attachment; filename="asset"',
+          } : {};
+          res.writeHead(206, { 'Content-Type': mime, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeadersR });
           res.end(slice);
           return;
         }
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' });
+        // AUD-03 P1 修复：active MIME（SVG/HTML）在 content 端点也加隔离——不只靠 preview 路由
+        const isActiveMime = mime === 'image/svg+xml' || mime === 'text/html';
+        const activeHeaders: Record<string, string> = isActiveMime ? {
+          'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+          'Content-Disposition': 'attachment; filename="asset"',
+        } : {};
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeaders });
         res.end(bytes);
         return;
       } catch (err) {

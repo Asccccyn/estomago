@@ -68,6 +68,17 @@ export class BackgroundScheduler {
     for (const [runId, c] of this.aborts) { this.cancelRequested.add(runId); c.abort(); }
   }
 
+  /** AUD-02 P1 修复：按 kind 终止运行中的后台执行（关闭开关时调用）。 */
+  disableKind(kind: 'autonomous' | 'keepwarm'): void {
+    for (const [runId, c] of this.aborts) {
+      const row = this.d.db.prepare('SELECT kind FROM background_runs WHERE id = ?').get(runId) as { kind: string } | undefined;
+      if (row?.kind === kind) {
+        this.cancelRequested.add(runId);
+        c.abort();
+      }
+    }
+  }
+
   /** §7.1 聊天抢占：用户消息入库后立即取消当前背景活动的可取消步骤。 */
   notePendingUserChat(): void {
     for (const [runId, c] of this.aborts) {

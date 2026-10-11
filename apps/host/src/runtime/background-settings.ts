@@ -40,6 +40,9 @@ export class BackgroundSettingsService {
    * §7.2 原子写入：单事务内持久 enabled + 递增 revision + 未执行自主领取标 cancelled。
    * expectedRevision 不匹配=REVISION_CONFLICT（If-Match 409）。返回新 revision。
    */
+  /** AUD-02 修复：关闭时终止运行中执行的回调（由 scheduler 装配时注入） */
+  onDisable: ((kind: 'autonomous' | 'keepwarm') => void) | null = null;
+
   applyUpdate(opts: { expectedRevision: number; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number } {
     return tx(this.db, () => {
       const current = this.revision();
@@ -70,9 +73,13 @@ export class BackgroundSettingsService {
       // §7.2.1：关闭自主 → 尚未执行的领取（claimed、零派发）标 cancelled（正在执行的由调度器 fence）
       if (opts.patch.autonomous_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'AUTONOMOUS_DISABLED', result_code = 'AUTONOMOUS_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'autonomous'").run(nowIso, nowIso);
+        // AUD-02 P1 修复：终止运行中的自主执行——cancel Set + abort
+        this.onDisable?.('autonomous');
       }
       if (opts.patch.keepwarm_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'keepwarm'").run(nowIso, nowIso);
+        // AUD-02 P1 修复：终止运行中的保温执行
+        this.onDisable?.('keepwarm');
       }
       return { revision: nextRev };
     });
