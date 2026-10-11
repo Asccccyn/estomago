@@ -195,6 +195,54 @@ export type Config = {
     stop_transcript_main_capture: boolean;
     capability_state: string;
   };
+  // ESTOMAGO_CHAT_EXEC_V1（policy-defaults.json 是默认值唯一机器正本）：
+  // 这里只接入 adjustable=true 的运行面键；adjustable=false 的策略常量在
+  // config/policy-constants.ts，不盲目展开成可改配置。旧配置升级后
+  // autonomous/keepwarm 默认关闭（enabled=false 是交付状态，不是缺陷）。
+  background: {
+    autonomous: {
+      enabled: boolean; // 三开关之一：自主活动（模型生成类后台）
+      max_model_requests_per_run: number;
+      max_output_tokens_per_run: number;
+      max_tool_calls_per_run: number;
+      max_run_ms: number;
+      paid_tools_enabled: boolean; // 只限外部收费工具；开启仍需 cap+价格+凭据核验（422 门在运行面）
+      daily_cost_cap_usd: number | null; // null=未配置→该用途后台付费禁止；不是无限
+    };
+    keepwarm: {
+      enabled: boolean; // 三开关之一：缓存保温（与自主独立）
+      max_output_tokens_per_run: number;
+      max_run_ms: number;
+      daily_cost_cap_usd: number | null; // 与自主日预算独立
+    };
+    reminders: {
+      enabled: boolean; // 三开关之一：普通定时投递（不生成内容，不控制系统红点）
+      delivery_grace_ms: number; // 超过只显示错过，不批量补推
+      default_local_time: string; // 仅前端时间选择初值；任务 API 必须带完整 scheduled_at
+    };
+  };
+  content: {
+    enabled: boolean; // 代码完整交付后本地联调可开；服务未运行时如实显示状态
+    port: number; // 同机工程初值；bind_host 固定 loopback（policy-constants）
+  };
+  system_alerts: {
+    usage_settlement_grace_ms: number; // 已结束且应有 usage 的请求宽限
+    summary_refresh_debounce_ms: number; // SSE 触发的合并刷新
+  };
+  token_estimates: {
+    debounce_ms: number; // 输入预览本地纯计算节流
+    max_body_bytes: number; // JSON 草稿+资产 ID 上限；无图像 base64/旧历史全文
+  };
+  media: {
+    max_image_bytes: number; // 存储上限≠供应商请求上限
+    max_audio_bytes: number;
+    max_video_bytes: number;
+    max_code_artifact_bytes: number; // SVG/HTML 文本，仅保存与隔离查看
+    max_attachments_per_message: number;
+    import_timeout_ms: number;
+    max_redirects: number; // 每跳重校验目的地；禁私网/本地元数据地址
+    auto_physical_gc_enabled: boolean; // 首版保守保留
+  };
 };
 
 export type IntegrationConfig = {
@@ -379,6 +427,34 @@ export const CONFIG_DEFAULTS: Config = {
     stop_transcript_main_capture: false,
     capability_state: 'unknown',
   },
+  // ESTOMAGO_CHAT_EXEC_V1 policy-defaults：新增段默认值（adjustable 面）。
+  // autonomous/keepwarm enabled=false 是首版交付状态；费用上限 null=未配置。
+  background: {
+    autonomous: {
+      enabled: false,
+      max_model_requests_per_run: 4,
+      max_output_tokens_per_run: 4096,
+      max_tool_calls_per_run: 8,
+      max_run_ms: 120000,
+      paid_tools_enabled: false,
+      daily_cost_cap_usd: null,
+    },
+    keepwarm: { enabled: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null },
+    reminders: { enabled: true, delivery_grace_ms: 300000, default_local_time: '09:00' },
+  },
+  content: { enabled: false, port: 18788 },
+  system_alerts: { usage_settlement_grace_ms: 60000, summary_refresh_debounce_ms: 1000 },
+  token_estimates: { debounce_ms: 250, max_body_bytes: 524288 },
+  media: {
+    max_image_bytes: 20971520,
+    max_audio_bytes: 33554432,
+    max_video_bytes: 67108864,
+    max_code_artifact_bytes: 262144,
+    max_attachments_per_message: 8,
+    import_timeout_ms: 30000,
+    max_redirects: 3,
+    auto_physical_gc_enabled: false,
+  },
 };
 
 // —— 显式类型树（AUD-19 修复）：每个叶子的类型显式声明，不从默认值推导 ——
@@ -468,6 +544,28 @@ const SHAPE: SectionSpec = { section: {
     signature_to_ui: 'boolean', archive_to_mariposa: 'boolean', include_in_handoff: 'boolean',
     tts_enabled: 'boolean', push_enabled: 'boolean', auto_rewrite_with_model: 'boolean',
     stop_transcript_main_capture: 'boolean', capability_state: 'string?',
+  } },
+  background: { section: {
+    autonomous: { section: {
+      enabled: 'boolean', max_model_requests_per_run: 'number', max_output_tokens_per_run: 'number',
+      max_tool_calls_per_run: 'number', max_run_ms: 'number', paid_tools_enabled: 'boolean',
+      daily_cost_cap_usd: 'number?',
+    } },
+    keepwarm: { section: {
+      enabled: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
+      daily_cost_cap_usd: 'number?',
+    } },
+    reminders: { section: {
+      enabled: 'boolean', delivery_grace_ms: 'number', default_local_time: 'string',
+    } },
+  } },
+  content: { section: { enabled: 'boolean', port: 'number' } },
+  system_alerts: { section: { usage_settlement_grace_ms: 'number', summary_refresh_debounce_ms: 'number' } },
+  token_estimates: { section: { debounce_ms: 'number', max_body_bytes: 'number' } },
+  media: { section: {
+    max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
+    max_code_artifact_bytes: 'number', max_attachments_per_message: 'number',
+    import_timeout_ms: 'number', max_redirects: 'number', auto_physical_gc_enabled: 'boolean',
   } },
 } };
 
@@ -571,6 +669,40 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     [Number.isSafeInteger(c.deepseek.retry_max_attempts_after_initial) && c.deepseek.retry_max_attempts_after_initial >= 0, 'deepseek.retry_max_attempts_after_initial 必须是非负整数'],
     [c.deepseek.estimate_chars_per_token > 0 && c.deepseek.estimate_chars_per_token <= 10, 'deepseek.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
     [c.openrouter.estimate_chars_per_token > 0 && c.openrouter.estimate_chars_per_token <= 10, 'openrouter.estimate_chars_per_token 必须在 (0,10]（§11.1 粗估系数带精度）'],
+    // ESTOMAGO_CHAT_EXEC_V1 policy-defaults validation_rules：
+    // 后台限额有限正数；费用上限 null=未配置（禁止该用途付费）或有限正数；
+    // 时间初值只做形状校验——完整 scheduled_at 由任务 API 层强制，host 不暗补当前时间。
+    ...(() => {
+      const posInt = (v: number) => Number.isSafeInteger(v) && v >= 1;
+      const posMs = (v: number) => Number.isFinite(v) && v > 0;
+      const capOk = (v: number | null) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0);
+      const a = c.background.autonomous, k = c.background.keepwarm, r = c.background.reminders;
+      const checks: Array<[boolean, string]> = [
+        [posInt(a.max_model_requests_per_run), 'background.autonomous.max_model_requests_per_run 必须是 ≥1 的整数'],
+        [posInt(a.max_output_tokens_per_run), 'background.autonomous.max_output_tokens_per_run 必须是 ≥1 的整数'],
+        [Number.isSafeInteger(a.max_tool_calls_per_run) && a.max_tool_calls_per_run >= 0, 'background.autonomous.max_tool_calls_per_run 必须是 ≥0 的整数'],
+        [posMs(a.max_run_ms), 'background.autonomous.max_run_ms 必须为正数'],
+        [capOk(a.daily_cost_cap_usd), 'background.autonomous.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止该用途后台付费，不是无限）'],
+        [posInt(k.max_output_tokens_per_run), 'background.keepwarm.max_output_tokens_per_run 必须是 ≥1 的整数'],
+        [posMs(k.max_run_ms), 'background.keepwarm.max_run_ms 必须为正数'],
+        [capOk(k.daily_cost_cap_usd), 'background.keepwarm.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止保温付费，不是无限）'],
+        [posMs(r.delivery_grace_ms), 'background.reminders.delivery_grace_ms 必须为正数'],
+        [/^([01]\d|2[0-3]):[0-5]\d$/.test(r.default_local_time), 'background.reminders.default_local_time 必须是 HH:MM（仅前端初值，API 仍须带完整 scheduled_at）'],
+        [Number.isSafeInteger(c.content.port) && c.content.port >= 1 && c.content.port <= 65535, 'content.port 必须在 1..65535'],
+        [posMs(c.system_alerts.usage_settlement_grace_ms), 'system_alerts.usage_settlement_grace_ms 必须为正数'],
+        [posMs(c.system_alerts.summary_refresh_debounce_ms), 'system_alerts.summary_refresh_debounce_ms 必须为正数'],
+        [posMs(c.token_estimates.debounce_ms), 'token_estimates.debounce_ms 必须为正数'],
+        [posInt(c.token_estimates.max_body_bytes), 'token_estimates.max_body_bytes 必须是 ≥1 的整数'],
+        [posInt(c.media.max_image_bytes), 'media.max_image_bytes 必须是 ≥1 的整数'],
+        [posInt(c.media.max_audio_bytes), 'media.max_audio_bytes 必须是 ≥1 的整数'],
+        [posInt(c.media.max_video_bytes), 'media.max_video_bytes 必须是 ≥1 的整数'],
+        [posInt(c.media.max_code_artifact_bytes), 'media.max_code_artifact_bytes 必须是 ≥1 的整数'],
+        [posInt(c.media.max_attachments_per_message), 'media.max_attachments_per_message 必须是 ≥1 的整数'],
+        [posMs(c.media.import_timeout_ms), 'media.import_timeout_ms 必须为正数'],
+        [Number.isSafeInteger(c.media.max_redirects) && c.media.max_redirects >= 0, 'media.max_redirects 必须是 ≥0 的整数'],
+      ];
+      return checks;
+    })(),
   ];
   for (const [ok, msg] of fixed) if (!ok) issues.push({ path: msg.slice(0, msg.indexOf('必须')), message: msg });
   // §6.1：型号已配置时必须是明确 ID（未配置不在此报错——selectRunner 会以 *_MODEL_NOT_CONFIGURED 阻断并显示）

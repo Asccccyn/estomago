@@ -1,0 +1,277 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_CHAT_EXEC_V1",
+  "data_policy": "全为虚构ID/正文/数字，仅用于离线语义回放；不是生产数据或价格。",
+  "cases": [
+    {
+      "id": "F-CACHE-ROLL",
+      "kind": "cache_schedule",
+      "cache_ttl_ms": 3600000,
+      "idle_after_ms": 3000000,
+      "events": [
+        {
+          "request_start": "2026-10-11T02:00:00Z",
+          "cache_read": 1000
+        },
+        {
+          "request_start": "2026-10-11T02:35:00Z",
+          "cache_read": 1200
+        }
+      ],
+      "expected": {
+        "next_keepwarm_at": "2026-10-11T03:25:00Z",
+        "send_at_old_due": false
+      }
+    },
+    {
+      "id": "F-CACHE-UNKNOWN",
+      "kind": "cache_observation",
+      "request_start": "2026-10-11T02:35:00Z",
+      "http_status": 200,
+      "cache_read": null,
+      "cache_write": null,
+      "expected": {
+        "refresh_evidence": false,
+        "status": "unknown",
+        "unexpected_miss": false
+      }
+    },
+    {
+      "id": "F-CACHE-COLD",
+      "kind": "cache_cold_restart",
+      "last_cache_start": "2026-10-11T02:00:00Z",
+      "restart_at": "2026-10-11T06:00:00Z",
+      "expected": {
+        "keepwarm_requests": 0,
+        "delete_raw": false
+      }
+    },
+    {
+      "id": "F-ROLL60",
+      "kind": "autonomous_cooldown",
+      "last_first_dispatch": "2026-10-11T02:59:00Z",
+      "another_task_due": "2026-10-11T03:01:00Z",
+      "min_interval_ms": 3600000,
+      "expected": {
+        "next_legal_at": "2026-10-11T03:59:00Z",
+        "second_run_at_due": false
+      }
+    },
+    {
+      "id": "F-CANCEL",
+      "kind": "cancel_race",
+      "order": [
+        "reserve_attempt",
+        "await_transport_slot",
+        "disable_committed",
+        "disable_returned",
+        "old_closure_resumes"
+      ],
+      "expected": {
+        "new_transport_calls": 0,
+        "normal_block_is_critical": false,
+        "actual_previous_cost_retained": true
+      }
+    },
+    {
+      "id": "F-UNKNOWN-COST",
+      "kind": "unknown_cost",
+      "reserved_micro_usd": 25000,
+      "transport_begun": true,
+      "usage_received": false,
+      "restart": true,
+      "expected": {
+        "reservation_retained_micro_usd": 25000,
+        "billable_retry": false,
+        "actual_cost": null
+      }
+    },
+    {
+      "id": "F-ALERT-READ",
+      "kind": "alert_read_race",
+      "alert_id": "alert_fixture",
+      "seen_sequence_submitted": 100,
+      "current_sequence": 102,
+      "old_seen": 98,
+      "expected": {
+        "seen_sequence": 100,
+        "unread": true,
+        "lifecycle": "open"
+      }
+    },
+    {
+      "id": "F-ALERT-REPLAY",
+      "kind": "alert_dedupe",
+      "observation_ids": [
+        "A",
+        "B",
+        "A",
+        "B"
+      ],
+      "expected": {
+        "occurrence_count": 2
+      }
+    },
+    {
+      "id": "F-OR-TOKENS",
+      "kind": "usage_normalization",
+      "provider": "openrouter",
+      "input_total": 100,
+      "cache_read_subset": 80,
+      "expected": {
+        "input_total": 100
+      }
+    },
+    {
+      "id": "F-SDK-TOKENS",
+      "kind": "usage_normalization",
+      "provider": "sdk",
+      "uncached_input": 20,
+      "cache_read": 80,
+      "cache_write": 0,
+      "expected": {
+        "input_total": 100
+      }
+    },
+    {
+      "id": "F-SH-DAY",
+      "kind": "calendar_half_open",
+      "date": "2026-10-11",
+      "timezone": "Asia/Shanghai",
+      "start_utc": "2026-10-10T16:00:00Z",
+      "end_utc": "2026-10-11T16:00:00Z",
+      "messages": [
+        {
+          "id": "m0",
+          "occurred_at": "2026-10-10T15:59:59.999Z"
+        },
+        {
+          "id": "m1",
+          "occurred_at": "2026-10-10T16:00:00Z"
+        },
+        {
+          "id": "m2",
+          "occurred_at": "2026-10-11T15:59:59.999Z"
+        },
+        {
+          "id": "m3",
+          "occurred_at": "2026-10-11T16:00:00Z"
+        }
+      ],
+      "expected": {
+        "included_ids": [
+          "m1",
+          "m2"
+        ]
+      }
+    },
+    {
+      "id": "F-EVENT-DATE",
+      "kind": "calendar_source_dates",
+      "bucket": {
+        "id": "bucket_fixture",
+        "event_date": "2026-09-03",
+        "created_at": "2026-10-11T02:00:00Z"
+      },
+      "star": {
+        "id": "star_fixture",
+        "special_dates": [
+          "2026-12-01"
+        ],
+        "created_at": "2026-10-11T02:00:00Z"
+      },
+      "expected": {
+        "bucket_day": "2026-09-03",
+        "star_days": [
+          "2026-12-01"
+        ],
+        "created_day_is_event": false,
+        "star_open_calls": 0
+      }
+    },
+    {
+      "id": "F-BUDGET-DAY",
+      "kind": "budget_day",
+      "dispatch_started_at": "2026-10-11T15:59:00Z",
+      "usage_observed_at": "2026-10-11T16:01:00Z",
+      "expected": {
+        "budget_day": "2026-10-11",
+        "observed_local_day": "2026-10-12"
+      }
+    },
+    {
+      "id": "F-FEED-DELETE",
+      "kind": "feed_delete",
+      "post_author": "jiaming",
+      "comment_author": "qiaosheng",
+      "acting_author": "jiaming",
+      "expected": {
+        "post_body_removed": true,
+        "comment_preserved": true,
+        "tombstone_retained": true,
+        "new_comments_allowed": false
+      }
+    },
+    {
+      "id": "F-ASSET-DELETE",
+      "kind": "asset_ref_protection",
+      "asset_id": "asset_fixture",
+      "references": [
+        "message:m1/revision:1",
+        "album:a1"
+      ],
+      "delete_reference": "album:a1",
+      "expected": {
+        "physical_file_deleted": false,
+        "message_readable": true
+      }
+    },
+    {
+      "id": "F-NOTE-FREEZE",
+      "kind": "future_note_freeze",
+      "note_id": "note_fixture",
+      "frozen_revision": 3,
+      "later_edited_revision": 4,
+      "occurrence_id": "occ_fixture",
+      "expected": {
+        "sent_revision": 3,
+        "message_count_after_retry": 1,
+        "automatic_model_reply": false
+      }
+    },
+    {
+      "id": "F-PREVIEW-STALE",
+      "kind": "preview_race",
+      "latest_draft_revision": 8,
+      "latest_attachment_fingerprint": "new_hash",
+      "responses": [
+        {
+          "draft_revision": 8,
+          "attachment_fingerprint": "new_hash"
+        },
+        {
+          "draft_revision": 7,
+          "attachment_fingerprint": "old_hash"
+        }
+      ],
+      "expected": {
+        "applied_draft_revision": 8
+      }
+    },
+    {
+      "id": "F-SEGMENTS",
+      "kind": "segmented_usage",
+      "segment_estimates": [
+        12,
+        19,
+        9
+      ],
+      "single_request_output_actual": 70,
+      "expected": {
+        "visible_text_estimate_sum": 40,
+        "actual_output_total": 70,
+        "actual_summary_count": 1
+      }
+    }
+  ]
+}
