@@ -128,7 +128,16 @@ export class DeepSeekRunner implements AgentRunner {
     }
 
     let publishedAny = false;
+    const payloadWireJson = JSON.stringify(payload); // EXEC_V1：最终发包体证据（wire_v1）
     for (let attempt = 0; ; attempt++) {
+      // EXEC_V1 02 §4.2：每次 transport 前准入（含全部重试路径）；宿主拒绝则不发出
+      if (req.onBeforeDispatch) {
+        try {
+          await req.onBeforeDispatch({ attemptIndex: attempt, payloadWireJson });
+        } catch (err) {
+          return this.errorResult(err instanceof ContractError ? err : new ContractError('DISPATCH_ADMISSION_REJECTED'), attempt);
+        }
+      }
       let response: OrTransportResponse;
       try {
         response = await this.transport(payload, req.abortController.signal);

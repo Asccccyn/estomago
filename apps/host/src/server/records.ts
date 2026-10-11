@@ -3,6 +3,7 @@
 import type { Db } from '../db/connection.ts';
 import type { Config } from '../config/schema.ts';
 import type { WindowManager } from '../windows/manager.ts';
+import { lastCacheEvidence, keepwarmTargetAtMs } from '../runtime/cache-observation.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
 
 export type RecordSnapshot = {
@@ -12,7 +13,7 @@ export type RecordSnapshot = {
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
-  cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' } };
+  cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' }; cacheEvidenceState: 'dispatch_started_at' | 'legacy_observed_at' | 'no_evidence'; nextKeepwarmEstimateAt: string | null };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
@@ -20,6 +21,8 @@ export type RecordSnapshot = {
   holdEffects: Array<{ state: string; verified: boolean; memoryId: string | null; updatedAt: string; bindingDetail: string | null }>;
   // F-J-34：用量按 purpose 分列（chat / pre_rotate_review / unknown）
   usageDay: string; // 上海自然日（R18：日累计口径，非滚动 24h）
+  // EXEC_V1 §04.12（WP2）：后台能力状态按驱动如实——SDK 背景未验证=阻断；DS 自动缓存不借 1h/50min 语义
+  backgroundPolicy: { driver: string; backgroundEligible: boolean; reason: string };
   usageByPurpose: Array<{ purpose: string; count: number; knownCostUsd: number | null; unknownCount: number }>;
 };
 
@@ -82,11 +85,11 @@ export function buildRecordSnapshot(d: {
         : raw.pending > 0 || !raw.enabled ? 'saved_pending_sync'
           : raw.acked > 0 ? 'synced' : 'saved_pending_sync';
 
-  // F18：TTL 从请求开始计时（provider_requests.created_at），不是流结束后的 usage 入库时刻
-  // 审计 F18：TTL 只锚定真实发送的请求（sent_at 非空）——容量门前/未发送的 planned 行不刷新热时限
-  const requestStartedAt = win
-    ? (d.db.prepare('SELECT sent_at FROM provider_requests WHERE window_id = ? AND sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(win.id) as { sent_at: string } | undefined)?.sent_at ?? null
-    : null;
+  // EXEC_V1 §04.5（WP2）：缓存计时依据=**经缓存读写证据确认**的请求 dispatch_started_at
+  //（旧逻辑取最近任意 sent_at——200 无缓存证据/失败请求都会虚刷热时限，违反 CACHE-03）
+  const cacheEvidence = win ? lastCacheEvidence(d.db, win.id) : null;
+  const requestStartedAt = cacheEvidence?.startedAt ?? null;
+  const nextKeepwarmMs = keepwarmTargetAtMs(cacheEvidence);
   const observedAt = lastUsage?.observed_at ?? null;
   const costRow = win
     ? (d.db.prepare("SELECT cost_usd FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id WHERE (u.window_id = ? OR a.window_id = ?) AND u.cost_usd IS NOT NULL ORDER BY u.observed_at DESC LIMIT 1").get(win.id, win.id) as { cost_usd: number } | undefined)
@@ -140,8 +143,11 @@ export function buildRecordSnapshot(d: {
         : null,
       lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
-      // §7.3：OR 1h 从真实发送开始估计；DS 自动缓存无公开固定 TTL——不画估计线，只报观测
+      // §7.3：OR 1h 从**缓存证据请求**开始估计（始终是估计——路由黏性/上游空闲过期独立存在）；
+      // DS 自动缓存无公开固定 TTL——不画估计线，只报观测
       estimatedExpiresAt: driver === 'deepseek' ? null : (requestStartedAt ? new Date(Date.parse(requestStartedAt) + 60 * 60 * 1000).toISOString() : null),
+      cacheEvidenceState: cacheEvidence ? (cacheEvidence.legacy ? 'legacy_observed_at' : 'dispatch_started_at') : 'no_evidence',
+      nextKeepwarmEstimateAt: nextKeepwarmMs !== null ? new Date(nextKeepwarmMs).toISOString() : null, // 显示用估计（实际调度=WP4）
       keeperEnabled: false,
     },
     review: reviewRow ? { id: reviewRow.id, status: reviewRow.status, decision: reviewRow.decision, holdCount, rangeCount: reviewRow.range_count ?? null, windowId: reviewRow.window_id, isCurrentWindow: reviewRow.window_id === (win?.id ?? null) } : null,
@@ -156,6 +162,13 @@ export function buildRecordSnapshot(d: {
     // "绑定未接通"占位（联调已证 msb_ 绑定真实存在）；rawSync 是原文归档同步，
     // 不是桶的绑定状态，两者不混。
     usageDay,
+    backgroundPolicy: driver === 'openrouter'
+      ? { driver, backgroundEligible: true, reason: 'eligible_or_anthropic_path' }
+      : driver === 'deepseek'
+        ? { driver, backgroundEligible: false, reason: 'AUTO_CACHE_NO_FIXED_TTL' }
+        : driver === 'claude-agent-sdk'
+          ? { driver, backgroundEligible: false, reason: 'SDK_BACKGROUND_POLICY_UNVERIFIED' }
+          : { driver: String(driver), backgroundEligible: false, reason: 'UNKNOWN_DRIVER' },
     usageByPurpose: purposeCost.map((r) => ({
       purpose: r.purpose, count: r.n,
       knownCostUsd: r.known_cost ?? null,
