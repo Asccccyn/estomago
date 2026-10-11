@@ -28,6 +28,7 @@ import type { MediaService, IngestPurpose } from '../media/assets.ts';
 import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { contentProxyWithAssets } from '../integrations/content/client.ts';
+import { buildCalendarMonth, buildCalendarDayItems, type CalendarSource } from './calendar-routes.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
 import type { AuthService } from '../auth/tokens.ts';
@@ -517,6 +518,45 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const before = url.searchParams.get('before') !== null ? Number(url.searchParams.get('before')) : null;
       const mode = before !== null ? 'older' : url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21/F26：最近页/向更早/历史正向
       return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
+    }
+
+    // —— EXEC_V1 §06.7（WP6）：日历读聚合（月概要=计数/标记；日详情=分源分页）——
+    if (route === 'GET /api/v1/calendar/month') {
+      const month = url.searchParams.get('month') ?? '';
+      if (!/^\d{4}-\d{2}$/.test(month)) return json(res, 400, { error: { code: 'bad_month', message: 'month 必须是 YYYY-MM' } });
+      const result = buildCalendarMonth({
+        db: d.db, config: d.config,
+        mariposaReady: d.config.integrations.mariposa.base_url !== null,
+        superpositionReady: d.config.integrations.superposition.base_url !== null,
+        contentReady: d.contentClient !== null && d.contentClient !== undefined,
+      }, month);
+      if (!result) return json(res, 400, { error: { code: 'bad_month', message: '月份非法' } });
+      return json(res, 200, result);
+    }
+    if (route === 'GET /api/v1/calendar/day') {
+      const date = url.searchParams.get('date') ?? '';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: { code: 'bad_date', message: 'date 必须是 YYYY-MM-DD' } });
+      // 日概要：各来源状态+入口（不返回全部原文）
+      const sources = ['chat', 'memory', 'plans', 'stars', 'reminders', 'future_notes', 'creations'] as const;
+      const summary: Record<string, unknown> = {};
+      for (const src of sources) {
+        const r = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: d.config.integrations.mariposa.base_url !== null, superpositionReady: d.config.integrations.superposition.base_url !== null, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, src, null, 1);
+        if (r) summary[src] = { status: r.status, has_items: r.items.length > 0 || r.has_more };
+      }
+      return json(res, 200, { date, timezone: 'Asia/Shanghai', sources: summary });
+    }
+    if (route === 'GET /api/v1/calendar/day/items') {
+      const date = url.searchParams.get('date') ?? '';
+      const source = url.searchParams.get('source') ?? '';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: { code: 'bad_date', message: 'date 必须是 YYYY-MM-DD' } });
+      const validSources = ['chat', 'memory', 'plans', 'stars', 'reminders', 'future_notes', 'creations'];
+      if (!validSources.includes(source)) return json(res, 400, { error: { code: 'bad_source', message: `source 必须是 ${validSources.join('|')}` } });
+      const limit = Number(url.searchParams.get('limit')) || POLICY_CONSTANTS.pagination.default_limit;
+      if (limit < 1 || limit > POLICY_CONSTANTS.pagination.max_limit) return json(res, 400, { error: { code: 'limit_invalid', message: `limit 必须在 1..${POLICY_CONSTANTS.pagination.max_limit}` } });
+      const cursor = url.searchParams.get('cursor');
+      const result = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: d.config.integrations.mariposa.base_url !== null, superpositionReady: d.config.integrations.superposition.base_url !== null, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, source as CalendarSource, cursor, limit);
+      if (!result) return json(res, 400, { error: { code: 'bad_date', message: '日期非法' } });
+      return json(res, 200, result);
     }
 
     // —— EXEC_V1 §06.4/5（WP5）：content 薄代理——浏览器经 est 认证→派生 qiaosheng→转发 loopback ——
