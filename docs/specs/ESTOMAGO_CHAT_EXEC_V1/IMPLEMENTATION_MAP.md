@@ -11,7 +11,7 @@
 | 基线 SHA | `4971ebc8fda939a20ae8e6f04bc68a2c216a7ea1`（preflight `BASELINE_MATCH`：42 文件哈希一致、工作树干净、无脏文件） |
 | 执行包自检 | `verify_package.py` PASS：1839 checks / 40 需求 / 114 验收 / 48 路由 / 32 模型工具 / 18 fixtures |
 | 运行时 | Node ≥22.18（engines）；运行依赖仅 `@anthropic-ai/claude-agent-sdk@0.3.283`（锁定安装，OR 模式不加载） |
-| DB 迁移起点 | 现最高 **v20**；本轮所有新迁移从 **v21** 起由集成者（GLM 本轮）顺序分配，各工作包不抢号 |
+| DB 迁移起点 | 接包时 v20；本轮已推进至 **v23**（v21 system_alerts / v22 usage 归属 / v23 修订快照，全部 additive；后续仍由集成者顺序分配 |
 | 测试入口 | 根 `package.json`：`npm run typecheck`、`npm test`（runner 内置临时 `ESTOMAGO_HOME` + `ESTOMAGO_TEST_MODE` + 逐文件串行；79 个测试文件） |
 | 生产实例 | `~/Library/Application Support/estomago` **存在**（本轮只 ls 顶层确认存在性）——本轮全部改动在工作树+隔离临时根进行，不触碰生产；部署类动作单列待她批准 |
 | OR/DS 配置 | 现行配置默认 `runtime.provider=claude-agent-sdk`、OR/DS `model=null`（未配置即阻断，不猜默认型号——沿用前代口径） |
@@ -64,8 +64,8 @@
 | 批次 | 状态 | 出口要点（07 §4） |
 |---|---|---|
 | WP0 基线与合同 | **本轮交付** | 本文件 + 配置接线 + 迁移登记 + 行为基准（见下） |
-| WP1 消耗可见与 token | 待做 | 系统红点四件一条链；字段级 actual；纯估计器；后台归属预留 |
-| WP2 上下文与缓存 | 待做 | transport 前 admission/dispatch 起点；TTL 三态；SDK 核验；64k/手选/hold 不动 |
+| WP1 消耗可见与 token | **已交付（0615877）** | v21 系统告警三表+服务+3 路由；v22 usage 归属列+字段级 fields+按日汇总+USAGE_MISSING 宽限 sweep；v23 修订快照列；estimator 纯函数+token-estimates 路由+web 三层显示；验收 21/21 PASS |
+| WP2 上下文与缓存 | 待做（WP1 已先行：TTL 三态显示+温缓存未命中五条件门+SDK 未核提醒服务能力） | transport 前 admission/dispatch 起点；SDK 最终 options 核验；64k/手选/hold 不动 |
 | WP3 聊天媒体底座 | 待做 | 一条垂直链（上传→asset→revision→UI→模型→重启重取） |
 | WP4 有界后台 | 待做 | 三开关/账本/50min/60min/聊天抢占/重启恢复 |
 | WP5 内容与朋友圈 | 待做 | content 进程 + 双 actor + 三相册/作品/留言 |
