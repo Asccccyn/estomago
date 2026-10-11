@@ -144,7 +144,7 @@ export class OpenRouterRunner implements AgentRunner {
         await this.sleepRetryAfter(response.headers.get('retry-after'), attempt);
         continue;
       }
-      req.onDispatch?.({ attemptIndex: attempt, generationId: response.headers.get('x-generation-id') }); // F17：2xx=真实发送
+      req.onDispatch?.({ attemptIndex: attempt, generationId: response.headers.get('x-generation-id') });
       if (response.status < 200 || response.status >= 300) {
         // 401/402/配置 400 及其他非 2xx：不自动重试，不改模型/上游（§9.2）
         const code = response.status === 401 || response.status === 403 ? 'OR_AUTH_ERROR'

@@ -670,7 +670,7 @@ export class HostToolExecutor {
     }
     const opKey = `tool-creation:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.client_operation_id}`;
     try {
-      const a = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: 'creation_icon', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
+      const a = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
       return { ok: true, output: { asset_id: a.id, mime_type: mime, byte_size: a.byte_size, saved: true } };
     } catch (err) {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };

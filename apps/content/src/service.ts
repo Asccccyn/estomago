@@ -157,7 +157,7 @@ export class ContentServer {
   }
 
   async start(): Promise<void> {
-    await new Promise<void>((resolve) => { this.server = createServer((req, res) => { void this.handle(req, res).catch((err) => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'internal', message: String((err as Error).message).slice(0, 80) } })); }); }); this.server.listen(this.port ?? 0, '127.0.0.1', () => resolve()); });
+    await new Promise<void>((resolve) => { this.server = createServer((req, res) => { void this.handle(req, res).catch((err) => { res.writeHead(500, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'internal', message: String((err as Error).message).slice(0, 80) } })); }); }); this.server.listen(this.port, '127.0.0.1', () => resolve()); });
     const addr = this.server!.address();
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.port;
   }
@@ -255,7 +255,8 @@ export class ContentServer {
         const id = genId('post');
         const t = now();
         this.db.prepare('INSERT INTO feed_posts(id, author_actor, presentation, title, body, created_at, published_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(id, actor, presentation, title, text, t, t, t);
-        for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(id, dedupeAssetIds(assetIds)[i], i, null);
+        const unique = [...new Set(assetIds)];
+        for (let i = 0; i < unique.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(id, unique[i], i, null);
         return { status: 201, body: this.postDto(this.postRow(id)!) };
       });
     }

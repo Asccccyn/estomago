@@ -1914,6 +1914,7 @@ export class TurnSupervisor {
                     writeTokens: ev.usage.cache_creation_input_tokens ?? null,
                     inputTotal: ev.usage.input_tokens ?? null,
                     dispatchStartedAt: prq?.dispatch_started_at ?? null,
+                    usageCompleteness: ev.completeness,
                   });
                 } catch { /* 观测失败不影响回合记账 */ }
               }
