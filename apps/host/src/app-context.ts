@@ -31,6 +31,8 @@ import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 import { SystemAlertService } from './observability/system-alerts.ts';
 import { MediaService } from './media/assets.ts';
+import { BackgroundSettingsService } from './runtime/background-settings.ts';
+import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -60,6 +62,7 @@ export class Host {
   readonly supervisor: TurnSupervisor;
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
+  readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
   port = 0;
@@ -88,6 +91,7 @@ export class Host {
     this.supervisor = deps.supervisor;
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
+    this.scheduler = deps.scheduler ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
   }
@@ -178,6 +182,27 @@ export class Host {
       media,
     });
 
+    // EXEC_V1 WP4：后台设置+调度器（宿主内单实例；自主/保温模型执行器=接线批，交付期 readiness=false）
+    const bgSettings = new BackgroundSettingsService(db, opts.config);
+    const scheduler = new BackgroundScheduler({
+      db, config: opts.config, settings: bgSettings, alerts,
+      // §7.1 聊天优先：有活动/待处理回合即视为忙
+      chatBusy: () => (db.prepare("SELECT COUNT(*) n FROM turns WHERE state IN ('pending','running','route_pending')").get() as { n: number }).n > 0,
+      executor: {
+        async executeRun(input) {
+          if (input.kind === 'reminder') {
+            // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
+            const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
+            const msg = messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` });
+            events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
+            return { outcome: 'completed', result_code: 'delivered' };
+          }
+          // 自主/保温执行器=下一批（supervisor 模型回路接线）；如实失败不冒充
+          return { outcome: 'failed', result_code: 'BACKGROUND_EXECUTOR_NOT_READY' };
+        },
+      },
+    });
+    const bgExecutorReady = { autonomous: false, keepwarm: false };
     const deps: Omit<RequestDeps, 'config'> = {
       paths,
       db,
@@ -198,6 +223,9 @@ export class Host {
       settings,
       alerts,
       media,
+      bgSettings,
+      scheduler,
+      bgExecutorReady,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {
@@ -230,10 +258,13 @@ export class Host {
     void this.archiveSync.drainOnce().catch((err) => {
       this.logger.warn('archive_sync_startup_failed', { code: stableErrorCode(err) });
     });
+    // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
+    this.scheduler?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
   async stop(): Promise<void> {
+    this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
     await new Promise<void>((resolve) => {

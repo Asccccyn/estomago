@@ -92,7 +92,7 @@ test('§9.1/9.2：状态机合法跃迁；重启孤儿=skipped/进行中=unknown
 test('BACKGROUND-02/CW-23：设置原子写+revision 门；关闭自主使未执行领取失效', () => {
   const { db, settings } = setup();
   assert.equal(settings.effective().autonomous.enabled, false, 'CW-01：默认关闭');
-  const r1 = settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true } });
+  const r1 = settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
   assert.equal(r1.revision, 1);
   assert.equal(settings.effective().autonomous.enabled, true);
   assert.throws(() => settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: false } }), /REVISION_CONFLICT/); // 旧 If-Match 拒
@@ -143,7 +143,7 @@ test('CW-05/BACKGROUND-06：聊天抢占——用户输入取消后台执行，�
   // 打开自主+预算，seed 到期任务
   const events2 = new EventService(db);
   const settings2 = new BackgroundSettingsService(db, buildConfig({ background: { autonomous: { enabled: true, daily_cost_cap_usd: 5 } } }));
-  settings2.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true } });
+  settings2.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
   seedTask(db, { kind: 'autonomous', next_due_at: '2026-10-11T02:00:00.000Z' });
   const alerts2 = new SystemAlertService(db, events2);
   const sched2 = new BackgroundScheduler({ db, config: buildConfig({ background: { autonomous: { enabled: true, daily_cost_cap_usd: 5 } } }), settings: settings2, alerts: alerts2, executor: { async executeRun(input) { if (input.kind === 'autonomous') await gate; return { outcome: 'noop' }; } }, chatBusy: () => false, now: () => Date.parse('2026-10-11T02:00:00.000Z'), tickMs: 60000 });
@@ -209,7 +209,7 @@ test('CW-12：重启恢复——孤儿 claimed(零派发)=skipped；进行中=un
   assert.ok(lastCacheEvidence(db, win), '证据可派生');
   const events2 = new EventService(db);
   const settings2 = new BackgroundSettingsService(db, buildConfig({}));
-  settings2.applyUpdate({ expectedRevision: 0, patch: { keepwarm_enabled: true } });
+  settings2.applyUpdate({ expectedRevision: 0, patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
   seedTask(db, { kind: 'keepwarm', schedule_kind: 'cache_idle', next_due_at: '2026-10-11T02:40:00.000Z' }); // 旧 10:40 目标
   const sched2 = new BackgroundScheduler({ db, config: buildConfig({}), settings: settings2, alerts: new SystemAlertService(db, events2), executor: { async executeRun() { return { outcome: 'noop' }; } }, chatBusy: () => false, now: () => Date.parse('2026-10-11T02:45:00.000Z'), tickMs: 1 });
   sched2.start();
