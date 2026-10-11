@@ -39,6 +39,7 @@ export class MessageService {
     clientMessageId: string;
     occurredAt?: string | null;
     kind?: MessageKind;
+    tokenEstimateJson?: string | null; // EXEC_V1 §05.7.2：发送前估计快照（调用方算好；与 content_hash 无关）
   }): SubmitWithTurnResult {
     const content = normalizeNewlines(opts.content);
     if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
@@ -101,7 +102,7 @@ export class MessageService {
            VALUES (?,?,?,?,?,?,1,?,?)`,
         )
         .run(messageId, opts.conversationId, seqRow.next, 'owner', opts.kind ?? 'text', opts.clientMessageId, occurredAt, nowIso);
-      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content, occurredAt, receivedAt: nowIso, source: 'client_submit' });
+      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content, occurredAt, receivedAt: nowIso, source: 'client_submit', tokenEstimateJson: opts.tokenEstimateJson ?? null });
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
       const turnId = genId('turn');
       const attemptId = genId('att');
@@ -115,7 +116,7 @@ export class MessageService {
   }
 
   // 用户编辑：新 revision + supersedes + 归档 outbox 同事务（AUD-15/07）
-  editUserMessage(messageId: string, newContent: string): MessageDto {
+  editUserMessage(messageId: string, newContent: string, tokenEstimateJson?: string | null): MessageDto {
     const content = normalizeNewlines(newContent);
     if (isBlankContent(content)) throw new BlankMessageError('编辑后正文仅空白，拒绝');
     const msg = this.getMessage(messageId);
@@ -133,6 +134,7 @@ export class MessageService {
         receivedAt: nowIso,
         source: 'client_edit',
         supersedes: msg.current_revision,
+        tokenEstimateJson: tokenEstimateJson ?? null, // 编辑=新 revision+新快照；旧修订旧快照不动
       });
       this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
       this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
@@ -195,20 +197,21 @@ export class MessageService {
     receivedAt: string;
     source: string;
     supersedes?: number | null;
+    tokenEstimateJson?: string | null;
   }): void {
     this.db
       .prepare(
-        `INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, supersedes_revision, occurred_at, received_at, source)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, supersedes_revision, occurred_at, received_at, source, token_estimate_json)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source);
+      .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source, opts.tokenEstimateJson ?? null);
   }
 
   getMessage(messageId: string): MessageDto | null {
     const row = this.db
       .prepare(
         `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
          WHERE m.id = ?`,
       )
@@ -225,7 +228,7 @@ export class MessageService {
       const rows = this.db
         .prepare(
           `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
            WHERE m.conversation_id = ?
            ORDER BY m.sequence DESC LIMIT ?`,
@@ -239,7 +242,7 @@ export class MessageService {
       const older = this.db
         .prepare(
           `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
            WHERE m.conversation_id = ? AND m.sequence < ?
            ORDER BY m.sequence DESC LIMIT ?`,
@@ -250,7 +253,7 @@ export class MessageService {
     const rows = this.db
       .prepare(
         `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision
+                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
          WHERE m.conversation_id = ? AND m.sequence > ?
          ORDER BY m.sequence LIMIT ?`,
@@ -282,6 +285,7 @@ type MessageRow = {
   occurred_at: string;
   received_at: string;
   supersedes_revision: number | null;
+  token_estimate_json: string | null;
 };
 
 function rowToDto(r: MessageRow): MessageDto {
@@ -303,6 +307,8 @@ function rowToDto(r: MessageRow): MessageDto {
       occurred_at: r.occurred_at,
       received_at: r.received_at,
       supersedes_revision: r.supersedes_revision,
+      token_estimate: r.token_estimate_json ? (JSON.parse(r.token_estimate_json) as MessageDto['revision']['token_estimate']) : null,
+      attachments: [], // WP3 媒体底座接入前恒空
     },
   };
 }

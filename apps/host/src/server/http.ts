@@ -23,6 +23,8 @@ import type { RoutingService } from '../routing/service.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import type { TurnSupervisor } from '../runtime/supervisor.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
+import type { SystemAlertService } from '../observability/system-alerts.ts';
+import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
 import type { AuthService } from '../auth/tokens.ts';
@@ -31,6 +33,8 @@ import { buildTimeContext } from '../time/context.ts';
 import { buildRecordSnapshot, listRecordEvents } from './records.ts';
 import { genId } from '../util/id.ts';
 import type { SubmitMessageRequest } from '../../../../packages/contracts/src/api.ts';
+import { estimateTokens, snapshotFor, ESTIMATOR_REVISION, type AttachmentEstimateMeta } from '../usage/estimator.ts';
+import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../app-context.ts';
 
 export type RequestDeps = {
@@ -50,6 +54,7 @@ export type RequestDeps = {
   supervisor: TurnSupervisor;
   selections?: ManualSelectionService; // WP3（2026-10-08）：人工历史选集
   settings?: import('../runtime/runtime-settings.ts').RuntimeSettingsService; // 2026-10-08：换模型/推理等级
+  alerts?: SystemAlertService; // EXEC_V1 WP1：系统异常红点（未装配时端点如实降级）
   auth: AuthService;
   archiveSync?: {
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
@@ -62,6 +67,18 @@ const SSE_PAGE_LIMIT = 1000;
 const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开，游标重连）
 const SSE_DRAIN_TIMEOUT_MS = 20_000;
 const sseDrainTimeoutMs = (): number => Number(process.env.ESTOMAGO_SSE_DRAIN_TIMEOUT_MS) || SSE_DRAIN_TIMEOUT_MS; // 测试可覆盖；生产默认不变
+
+/** EXEC_V1 §05.8：预估上下文（模型/系数/输出上限按当前驱动与生效 override 取值） */
+function estimateContextFor(d: RequestDeps): { model: string | null; charsPerToken: number; outputCap: number | null } {
+  const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
+  if (driver === 'deepseek') return { model: d.config.deepseek.model, charsPerToken: d.config.deepseek.estimate_chars_per_token, outputCap: d.config.deepseek.max_output_tokens };
+  if (driver === 'openrouter') {
+    const eff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
+    return { model: eff, charsPerToken: d.config.openrouter.estimate_chars_per_token, outputCap: d.config.openrouter.max_output_tokens };
+  }
+  if (driver === 'mock') return { model: 'mock', charsPerToken: 2.5, outputCap: 1024 };
+  return { model: d.config.runtime.model, charsPerToken: 2.5, outputCap: null };
+}
 
 export async function handleRequest(req: IncomingMessage, res: ServerResponse, d: RequestDeps): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -136,7 +153,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const existing = d.messages.getMessage(messageId);
       if (!existing || existing.conversation_id !== conversationId) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
       try {
-        const message = d.messages.editUserMessage(messageId, body.content);
+        // EXEC_V1 §05.7.2：编辑=新 revision+新发送前快照（旧修订旧快照不动）
+        const ec = estimateContextFor(d);
+        const snapJson = JSON.stringify(snapshotFor({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments: [], outputCapTokens: ec.outputCap }, new Date().toISOString()));
+        const message = d.messages.editUserMessage(messageId, body.content, snapJson);
         // R16（复审 2026-10-07）：编辑有自己的接线——发布修订事件（SSE 可见，
         // 客户端按 ID/修订吸收）并触发现有归档（编辑已在同事务写 outbox；
         // 归档失败不撤销本地编辑，drain 自带重试/死信路径）
@@ -166,7 +186,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
       let submitted;
       try {
-        submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null });
+        // EXEC_V1 §05.7.2：随 revision 保存发送前估计快照（估计刷新不影响 content_hash/修订号）
+        const ec = estimateContextFor(d);
+        const snapJson = JSON.stringify(snapshotFor({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments: [], outputCapTokens: ec.outputCap }, new Date().toISOString()));
+        submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null, tokenEstimateJson: snapJson });
       } catch (err) {
         if ((err as Error).message.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: (err as Error).message } });
         if ((err as Error).message.includes('INVALID_OCCURRED_AT')) return json(res, 422, { error: { code: 'invalid_occurred_at', message: (err as Error).message } });
@@ -466,8 +489,99 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
     }
 
-    const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);
-    if (usageTurn) {
+    // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
+    if (route === 'POST /api/v1/token-estimates') {
+      const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);
+      const body = rawBody as { conversation_id?: unknown; client_draft_revision?: unknown; content?: unknown; attachments?: unknown; include_request_estimate?: unknown };
+      if (typeof body.conversation_id !== 'string' || !body.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
+      if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串' } });
+      const draftRevision = typeof body.client_draft_revision === 'number' ? body.client_draft_revision : typeof body.client_draft_revision === 'string' ? body.client_draft_revision : null;
+      if (draftRevision === null) return json(res, 400, { error: { code: 'bad_draft_revision', message: 'client_draft_revision 必填（防慢响应覆盖新草稿）' } });
+      // 附件元数据：只接受受控形状（正文/base64 不进入；图片按已核规则才可带 known_tokens）
+      const attachments: AttachmentEstimateMeta[] = [];
+      if (Array.isArray(body.attachments)) {
+        for (const a of body.attachments as Array<Record<string, unknown>>) {
+          const kind = a?.kind;
+          if (kind !== 'image' && kind !== 'audio' && kind !== 'video' && kind !== 'code_artifact') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].kind 非法' } });
+          if (typeof a.fingerprint !== 'string' || !a.fingerprint) return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].fingerprint 必填' } });
+          const known = typeof a.known_tokens === 'number' && Number.isFinite(a.known_tokens) && a.known_tokens >= 0 ? a.known_tokens : null;
+          attachments.push({ kind, fingerprint: a.fingerprint, bytes: typeof a.bytes === 'number' ? a.bytes : null, known_tokens: known });
+        }
+      }
+      const ec = estimateContextFor(d);
+      // 请求投影（§8.3/§9）：当前活动窗最近一次真实发送 payload 的序列化粗估（含系统/工具/历史），
+      // 加本条草稿；无法无副作用重建（无活动窗=等人工选集 / 窗内尚无已发送投影）→ request 不可用，
+      // message 照给——绝不只把 messages 正文相加冒充完整请求，也不替用户零选。
+      let requestProjection: Parameters<typeof estimateTokens>[0]['requestProjection'] = null;
+      if (body.include_request_estimate === true) {
+        const win = d.windows.activeWindow(body.conversation_id);
+        if (!win) {
+          requestProjection = { tokens: null, unavailable_reason: 'pending_selection' };
+        } else {
+          const winRev = (d.db.prepare('SELECT revision FROM windows WHERE id = ?').get(win.id) as { revision: number } | undefined)?.revision ?? null;
+          const row = d.db.prepare('SELECT payload_json, id FROM provider_requests WHERE window_id = ? AND sent_at IS NOT NULL AND payload_json IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(win.id) as { payload_json: string; id: string } | undefined;
+          if (!row) {
+            requestProjection = { tokens: null, unavailable_reason: 'no_sent_projection', window_id: win.id, window_revision: winRev };
+          } else {
+            const payloadTokens = Math.ceil([...row.payload_json].length / Math.max(ec.charsPerToken, 0.1));
+            const draft = estimateTokens({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments, outputCapTokens: ec.outputCap });
+            requestProjection = {
+              tokens: draft.message_total_tokens === null ? null : payloadTokens + draft.message_total_tokens, // 附件未知 → 请求预估未知，不猜
+              unavailable_reason: draft.message_total_tokens === null ? 'unavailable' : null,
+              window_id: win.id, window_revision: winRev,
+              projection_version: 'last_sent_payload_v1', payload_projection_hash: sha256Hex(row.id),
+            };
+          }
+        }
+      }
+      const estimate = estimateTokens({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments, outputCapTokens: ec.outputCap, requestProjection });
+      const modelSnapshotId = sha256Hex(`${ec.model ?? 'null'}|${ec.charsPerToken}|${ESTIMATOR_REVISION}`);
+      const attachmentFingerprint = attachments.length === 0 ? null : sha256Hex(attachments.map((a) => `${a.kind}:${a.fingerprint}:${a.known_tokens ?? 'u'}`).join('|'));
+      return json(res, 200, {
+        client_draft_revision: draftRevision,
+        model_snapshot_id: modelSnapshotId,
+        window_id: estimate.source_window_id,
+        window_revision: estimate.source_window_revision,
+        attachment_fingerprint: attachmentFingerprint,
+        chars_per_token: ec.charsPerToken, // 客户端本地粗估复用同一系数（§7.3 分段气泡显示）
+        projection_version: estimate.projection_version,
+        estimate,
+        stale_after_state_change: true, // 前端只应用同时匹配 draft_revision/model_snapshot/附件指纹的响应
+      });
+    }
+
+    // —— ESTOMAGO_CHAT_EXEC_V1 §05（WP1）：系统异常红点 ——
+    // 快照/summary 只读；read 单调幂等。告警产生与恢复是内部服务接口，
+    // 不向浏览器开放任意 code 创建或自填"已修复"（§5 末段）。
+    if (route === 'GET /api/v1/system-alerts/summary') {
+      if (!d.alerts) return json(res, 200, { unread_anomaly_count: 0, open_count: 0, highest_open_severity: null, snapshot_sequence: d.events.maxSequence(), service: 'not_configured' });
+      return json(res, 200, d.alerts.summary(d.alerts.uiActorId));
+    }
+    if (route === 'GET /api/v1/system-alerts') {
+      if (!d.alerts) return json(res, 200, { items: [], next_cursor: null, has_more: false, unread_anomaly_count: 0, open_count: 0, snapshot_sequence: d.events.maxSequence(), service: 'not_configured' });
+      const lifecycle = url.searchParams.get('lifecycle');
+      return json(res, 200, d.alerts.list({
+        actorId: d.alerts.uiActorId,
+        lifecycle: lifecycle === 'open' || lifecycle === 'resolved' ? lifecycle : 'all',
+        unreadOnly: url.searchParams.get('unread_only') === 'true',
+        limit: Number(url.searchParams.get('limit')) || undefined,
+        cursor: url.searchParams.get('cursor'),
+      }));
+    }
+    if (route === 'POST /api/v1/system-alerts/read') {
+      if (!d.alerts) return json(res, 200, { accepted: 0, service: 'not_configured' });
+      const body = (await readJson(req, d)) as { items?: Array<{ alert_id?: unknown; seen_event_sequence?: unknown }> };
+      const items = Array.isArray(body.items) ? body.items : [];
+      if (items.length > POLICY_CONSTANTS.system_alerts.read_batch_max) {
+        return json(res, 400, { error: { code: 'read_batch_too_large', message: `单次最多 ${POLICY_CONSTANTS.system_alerts.read_batch_max} 条` } });
+      }
+      const accepted = d.alerts.markRead(d.alerts.uiActorId, items
+        .map((it) => ({ alert_id: typeof it?.alert_id === 'string' ? it.alert_id : '', seen_event_sequence: Number(it?.seen_event_sequence) }))
+        .filter((it) => it.alert_id !== '' && Number.isSafeInteger(it.seen_event_sequence) && it.seen_event_sequence >= 0));
+      return json(res, 200, accepted);
+    }
+
+    const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);    if (usageTurn) {
       return json(res, 200, d.usage.summaryForTurn(decodeURIComponent(usageTurn[1]!)));
     }
 
@@ -643,12 +757,12 @@ class ClientBodyError extends Error {
   }
 }
 
-async function readJson(req: IncomingMessage, d: RequestDeps): Promise<unknown> {
+async function readJson(req: IncomingMessage, d: RequestDeps, maxBytes = 5 * 1024 * 1024): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     size += (chunk as Buffer).length;
-    if (size > 5 * 1024 * 1024) throw new ClientBodyError(413, 'payload_too_large', '请求体超过 5MiB 上限');
+    if (size > maxBytes) throw new ClientBodyError(413, 'payload_too_large', `请求体超过上限`);
     chunks.push(chunk as Buffer);
   }
   if (chunks.length === 0) return {};

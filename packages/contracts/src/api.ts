@@ -3,6 +3,17 @@
 
 export type MessageKind = 'text' | 'sticker' | 'voice' | 'system';
 
+export type TokenEstimateSnapshotDto = {
+  // EXEC_V1 §05.7.2：发送时快照（随 revision 不可变；旧消息 null——不得伪造）
+  model: string | null;
+  estimator_revision: string;
+  quality: string;
+  message_text_tokens: number;
+  message_media_tokens: number | null;
+  message_total_tokens: number | null;
+  computed_at: string;
+};
+
 export type MessageRevisionDto = {
   revision: number;
   content: string; // LF 规范化后的多行正文（原样，不 trim）
@@ -11,6 +22,8 @@ export type MessageRevisionDto = {
   occurred_at: string;
   received_at: string;
   supersedes_revision: number | null;
+  token_estimate: TokenEstimateSnapshotDto | null; // additive（v23）：发送前估计快照
+  attachments: unknown[]; // additive（WP3 媒体底座接入；本期恒 []）
 };
 
 export type MessageDto = {
