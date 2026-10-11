@@ -416,6 +416,22 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'creation_save_artifact',
+      description: '保存char写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。',
+      parameters: {
+        type: 'object',
+        properties: {
+          format: { type: 'string', enum: ['svg', 'html'] },
+          content: { type: 'string', minLength: 1, maxLength: 262144 },
+          client_operation_id: { type: 'string', minLength: 1, maxLength: 128 },
+        },
+        required: ['format', 'content', 'client_operation_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'background_complete',
       description: '结束本次自主活动。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。仅自主活动回合可用。',
       parameters: {
@@ -644,6 +660,23 @@ export class HostToolExecutor {
     return { ok: r.status === 200, output: r.body as Record<string, unknown> };
   }
 
+  /** §03.6.3（MEDIA-09/CREATION-03）：保存 SVG/HTML 小作品→持久资产。不执行代码；宿主无 eval/shell。 */
+  private async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const mime = args.format === 'svg' ? 'image/svg+xml' : 'text/html';
+    // 内容安全检查：SVG 不允许 <script>；HTML 允许内联脚本（在沙箱 iframe 内执行——宿主不执行）
+    if (args.format === 'svg' && /<script/i.test(args.content)) {
+      return { ok: false, output: { error_code: 'SVG_SCRIPT_FORBIDDEN', detail: 'SVG 图标不允许内嵌脚本（HTML 作品请用 format=html 走沙箱预览）' } };
+    }
+    const opKey = `tool-creation:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.client_operation_id}`;
+    try {
+      const a = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: 'creation_icon', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
+      return { ok: true, output: { asset_id: a.id, mime_type: mime, byte_size: a.byte_size, saved: true } };
+    } catch (err) {
+      return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
+    }
+  }
+
   /** EXEC_V1 §04.6.2：结束自主活动——noop 是成功结果（§6.2），无产出不构成失败。仅自主回合有效。 */
   private backgroundComplete(args: { outcome: 'done' | 'noop' }, ctx: ToolExecContext): ToolExecResult {
     if (ctx.purpose !== 'proactive_turn') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅自主活动回合可用' } };
@@ -695,7 +728,7 @@ export class HostToolExecutor {
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -718,6 +751,7 @@ export class HostToolExecutor {
     if (name === 'content_post_create') return await this.contentPostCreate(checked.value as { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx);
     if (name === 'content_comment_create') return await this.contentCommentCreate(checked.value as { post_id: string; body: string; idempotency_key: string }, ctx);
     if (name === 'content_posts_list') return await this.contentPostsList(checked.value as { cursor?: string; limit?: number; presentation?: string }, ctx);
+    if (name === 'creation_save_artifact') return await this.creationSaveArtifact(checked.value as { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx);
     if (name === 'background_complete') return this.backgroundComplete(checked.value as { outcome: 'done' | 'noop' }, ctx);
     if (name === 'chat_send_text') return this.chatSendText(checked.value as { text: string; idempotency_key: string }, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
