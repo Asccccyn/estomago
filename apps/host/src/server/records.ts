@@ -12,7 +12,7 @@ export type RecordSnapshot = {
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
-  cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false };
+  cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' } };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
   rawSync: { state: 'saved_pending_sync' | 'synced' | 'partial' | 'failed' | 'unknown'; enabled: boolean; pending: number; failed: number; acked: number };
@@ -123,6 +123,16 @@ export function buildRecordSnapshot(d: {
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
       requestedTtl: driver === 'deepseek' ? 'auto' : '1h',
+      // EXEC_V1 02 §4.1：请求意图（desired）、最终发包（effective）与核实状态三分离——
+      // 显示"请求 1h"不等于"实际已生效 1h"；SDK 无装配证据=sdk_unverified（ALERT-07），
+      // OR=已请求待证据，DS=自动缓存观测（无 TTL 参数）
+      ttlVerification: driver === 'deepseek'
+        ? { desired: 'auto', effective: null, verification: 'auto_observed' }
+        : driver === 'openrouter'
+          ? { desired: '1h', effective: null, verification: 'requested' }
+          : driver === 'claude-agent-sdk'
+            ? { desired: '1h', effective: null, verification: 'sdk_unverified' }
+            : { desired: driver === 'mock' ? '1h' : 'auto', effective: null, verification: 'unknown' },
       lastRead: lastUsage?.cache_read_input_tokens ?? null,
       lastWrite: lastUsage?.cache_creation_input_tokens ?? null,
       lastNoncached: lastUsage && lastUsage.input_tokens !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null

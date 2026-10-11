@@ -658,6 +658,84 @@ DROP TABLE IF EXISTS effects;
 DROP TABLE IF EXISTS members;
 `,
   },
+  {
+    version: 21,
+    name: 'system-alerts',
+    // ESTOMAGO_CHAT_EXEC_V1 §05（WP1）：独立持久系统异常红点。
+    // system_alerts 聚合行（dedupe_key 唯一；复发 reopen 不并新故障）；
+    // system_alert_reads 按读者记已见 sequence（已读≠恢复）；system_alert_observations
+    // 是稳定 observation_id 消费账本——乱序重放同一输入不重复计数（ALERT-04）。
+    sql: `
+CREATE TABLE IF NOT EXISTS system_alerts(
+  id TEXT PRIMARY KEY,
+  scope_kind TEXT NOT NULL,
+  scope_id TEXT NOT NULL DEFAULT '',
+  code TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK (severity IN ('info','warning','critical')),
+  dedupe_key TEXT NOT NULL UNIQUE,
+  lifecycle TEXT NOT NULL DEFAULT 'open' CHECK (lifecycle IN ('open','resolved')),
+  revision INTEGER NOT NULL DEFAULT 1,
+  first_occurred_at TEXT NOT NULL,
+  last_occurred_at TEXT NOT NULL,
+  resolved_at TEXT,
+  occurrence_count INTEGER NOT NULL DEFAULT 1,
+  last_event_sequence INTEGER NOT NULL DEFAULT 0,
+  safe_summary_json TEXT NOT NULL DEFAULT '{}',
+  related_request_id TEXT,
+  related_run_id TEXT,
+  related_turn_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_alerts_last_event ON system_alerts(last_event_sequence DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_system_alerts_lifecycle ON system_alerts(lifecycle, severity);
+CREATE TABLE IF NOT EXISTS system_alert_reads(
+  actor_id TEXT NOT NULL,
+  alert_id TEXT NOT NULL,
+  seen_event_sequence INTEGER NOT NULL,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (actor_id, alert_id)
+);
+CREATE TABLE IF NOT EXISTS system_alert_observations(
+  observation_id TEXT PRIMARY KEY,
+  alert_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_system_alert_obs_alert ON system_alert_observations(alert_id);
+`,
+  },
+  {
+    version: 22,
+    name: 'usage-attribution',
+    // ESTOMAGO_CHAT_EXEC_V1 §05.6（WP1）：所有费用要有归属——按派发时上海日聚合
+    //（budget_day 来自 dispatch_started_at；usage.observed_at 只是证据时间）；
+    // purpose/background_run_id 为 WP4 后台预留（本批不启动后台）。
+    // 旧记录无可靠派发时间：budget_day 取 observed_at 的上海日并标 legacy_observed_at=1，
+    // 不回填虚构时间。attempt/turn 保持 NOT NULL——后台跑（proactive_turn/cache_keepalive）
+    // 沿既有 trigger 建 turn，费用不因"没有用户消息 turn"从统计中消失。
+    sql: `
+ALTER TABLE usage_observations ADD COLUMN purpose TEXT;
+ALTER TABLE usage_observations ADD COLUMN background_run_id TEXT;
+ALTER TABLE usage_observations ADD COLUMN budget_day TEXT;
+ALTER TABLE usage_observations ADD COLUMN dispatch_started_at TEXT;
+ALTER TABLE usage_observations ADD COLUMN legacy_observed_at INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_usage_budget_day ON usage_observations(budget_day, purpose);
+UPDATE usage_observations
+   SET budget_day = strftime('%Y-%m-%d', observed_at, '+8 hours'),
+       legacy_observed_at = 1
+ WHERE budget_day IS NULL;
+`,
+  },
+  {
+    version: 23,
+    name: 'revision-token-estimate',
+    // ESTOMAGO_CHAT_EXEC_V1 §05.7.2/§9（WP1）：随 message revision 保存发送前估计快照。
+    // additive：旧消息 NULL（显示层不得伪造"发送时估计"；本地按当前模型粗估必须另标）。
+    // 估计刷新不改 content_hash/修订号——快照是独立列，旧 revision 旧快照原样保留。
+    sql: `
+ALTER TABLE message_revisions ADD COLUMN token_estimate_json TEXT;
+`,
+  },
 ];
 
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
