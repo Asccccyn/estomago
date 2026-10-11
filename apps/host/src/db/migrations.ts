@@ -736,6 +736,24 @@ UPDATE usage_observations
 ALTER TABLE message_revisions ADD COLUMN token_estimate_json TEXT;
 `,
   },
+  {
+    version: 24,
+    name: 'provider-dispatch-evidence',
+    // ESTOMAGO_CHAT_EXEC_V1 02 §4.2 / 04 §5.1、§8.3（WP2）：每次真实 transport 前落
+    // dispatch_started_at（旧 onDispatch 在响应后，429/网络重试不进回调——不能靠它计费/续期）。
+    // sent_at 语义保持"真实发送确认（响应头已到）"，与 dispatch_started_at 分列。
+    // payload_wire_json=payload_format='wire_v1' 是最终发包体证据（旧行 null=envelope_legacy，
+    // 不重写历史冒充）。background_* 两列为 WP4 预留（本批不启动后台）。
+    sql: `
+ALTER TABLE provider_requests ADD COLUMN dispatch_started_at TEXT;
+ALTER TABLE provider_requests ADD COLUMN background_run_id TEXT;
+ALTER TABLE provider_requests ADD COLUMN background_dispatch_id TEXT;
+ALTER TABLE provider_requests ADD COLUMN payload_wire_json TEXT;
+ALTER TABLE provider_requests ADD COLUMN payload_format TEXT;
+CREATE INDEX IF NOT EXISTS idx_provider_requests_dispatch ON provider_requests(window_id, dispatch_started_at);
+CREATE INDEX IF NOT EXISTS idx_provider_requests_bg_run ON provider_requests(background_run_id) WHERE background_run_id IS NOT NULL;
+`,
+  },
 ];
 
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
