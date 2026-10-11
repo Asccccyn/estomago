@@ -189,20 +189,33 @@ export class MessageService {
   }
 
   // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
-  publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind }): MessageDto {
-    const messageId = genId('msg');
+  publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[] }): MessageDto {
     const nowIso = new Date().toISOString();
+    // EXEC_V1 §03.6.3：chat_send_attachment 幂等——同 client_message_id 重发返回原消息，
+    // 复用既有 (conversation, client_message_id) 唯一索引，不另建工具专用消息通道
+    if (opts.clientMessageId) {
+      const dup = this.db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?').get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
+      if (dup) return this.getMessage(dup.id)!;
+    }
+    const messageId = genId('msg');
     tx(this.db, () => {
       const seqRow = this.db
         .prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?')
         .get(opts.conversationId) as { next: number };
       this.db
         .prepare(
-          `INSERT INTO messages(id, conversation_id, sequence, speaker, turn_id, kind, current_revision, published_at, created_at)
-           VALUES (?,?,?,?,?,?,1,?,?)`,
+          `INSERT INTO messages(id, conversation_id, sequence, speaker, turn_id, kind, client_message_id, current_revision, published_at, created_at)
+           VALUES (?,?,?,?,?,?,?,1,?,?)`,
         )
-        .run(messageId, opts.conversationId, seqRow.next, 'assistant', opts.turnId, opts.kind ?? 'text', nowIso, nowIso);
-      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish' });
+        .run(messageId, opts.conversationId, seqRow.next, 'assistant', opts.turnId, opts.kind ?? 'text', opts.clientMessageId ?? null, nowIso, nowIso);
+      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish', fingerprint: messageFingerprint(opts.content, opts.attachments ?? []) });
+      const atts = opts.attachments ?? [];
+      for (let i = 0; i < atts.length; i++) {
+        this.db.prepare(
+          `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
+           VALUES (?,?,?,?,?,?,NULL,NULL,?)`,
+        ).run(messageId, 1, i, atts[i]!.asset_id, atts[i]!.presentation, atts[i]!.caption ?? null, nowIso);
+      }
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
     });
     return this.getMessage(messageId)!;

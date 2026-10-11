@@ -47,9 +47,12 @@
     <section id="timeline" class="timeline" aria-live="polite"></section>
 
     <div class="composer-wrap">
+      <button id="attach-btn" class="ghost" aria-label="添加附件（图片/贴纸）">📎</button>
+      <input id="attach-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden multiple />
       <textarea id="composer" rows="3" placeholder="输入…（Enter 换行；发送用右侧按钮）" spellcheck="false"></textarea>
       <button id="send-btn" class="send" disabled>发送</button>
     </div>
+    <div id="attach-queue" class="attach-queue" aria-live="polite"></div>
     <div class="composer-hint">Enter 只换行；多行正文将作为一条消息完整保存</div>
     <div id="estimate-line" class="estimate-line" aria-live="polite"></div>
     <details id="estimate-detail" class="estimate-detail" hidden><summary>本次请求预估详情</summary><div id="estimate-detail-body"></div></details>

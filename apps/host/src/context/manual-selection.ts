@@ -7,6 +7,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
+import { CONSERVATIVE_IMAGE_TOKENS } from '../media/model-input.ts';
 
 export type SelectionItem = {
   message_id: string;
@@ -15,6 +16,7 @@ export type SelectionItem = {
   speaker: 'owner' | 'assistant';
   content_hash: string;
   content_chars: number;
+  image_count?: number; // EXEC_V1 §03.6.1：该修订图片/表情数（容量保守估算用）
 };
 
 export type SelectionRow = {
@@ -55,6 +57,7 @@ type ItemRow = {
   kind: string;
   revision: number;
   content_hash: string;
+  image_count?: number;
   content_chars: number;
 };
 
@@ -138,14 +141,17 @@ export class ManualSelectionService {
       seen.add(it.message_id);
       const row = this.db.prepare(
         `SELECT m.id, m.sequence, m.speaker, m.current_revision, m.published_at, m.kind,
-                r.revision, r.content_hash, LENGTH(r.content) AS content_chars
+                r.revision, r.content_hash, LENGTH(r.content) AS content_chars,
+                (SELECT COUNT(*) FROM message_attachments ma WHERE ma.message_id = m.id AND ma.revision = r.revision AND ma.presentation IN ('image','sticker')) AS image_count
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
          WHERE m.id = ? AND m.conversation_id = ?`,
       ).get(it.message_id, conversationId) as ItemRow | undefined;
       if (!row) { unknown.push(it.message_id); continue; }
       // 只允许真实 owner 消息与已正式发布的助手消息；system/tool/草稿不可选
       if (row.speaker === 'owner') {
-        if (row.kind !== 'text' && row.kind !== 'multimodal') { forbidden.push(it.message_id); continue; }
+        // EXEC_V1 §03.6.1：语音/贴纸是真实聊天消息——只在前端勾得动、后端却拒绝是旧缺陷；
+        // 仍拒绝 system（宿主专用）。附件按固定 revision 装载（loadContents）。
+        if (row.kind !== 'text' && row.kind !== 'multimodal' && row.kind !== 'sticker' && row.kind !== 'voice') { forbidden.push(it.message_id); continue; }
       } else if (row.speaker === 'assistant') {
         if (!row.published_at) { forbidden.push(it.message_id); continue; }
       } else { forbidden.push(it.message_id); continue; }
@@ -157,7 +163,7 @@ export class ManualSelectionService {
         conflicts.push({ message_id: it.message_id, expected_revision: wantRev, current_revision: row.current_revision });
         continue;
       }
-      valid.push({ message_id: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content_hash: row.content_hash, content_chars: row.content_chars });
+      valid.push({ message_id: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content_hash: row.content_hash, content_chars: row.content_chars, image_count: (row as ItemRow & { image_count?: number }).image_count ?? 0 });
     }
     if (unknown.length > 0) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_MESSAGE', message_ids: unknown } };
     if (forbidden.length > 0) return { ok: false, error: { code: 'CONTEXT_SELECTION_FORBIDDEN_KIND', message_ids: forbidden } };
@@ -181,7 +187,10 @@ export class ManualSelectionService {
    *  预计装下仍由请求级容量终检兜底）。 */
   estimateTokens(items: SelectionItem[], est: EstimateContext): number {
     const selectedChars = items.reduce((s, it) => s + it.content_chars, 0);
-    return Math.ceil((selectedChars + est.systemChars + est.tailInputChars) / est.charsPerToken);
+    // EXEC_V1 §03.6.1：媒体成本进容量估算——图片按保守 token 计（未核实计量方式，标 rough），
+    // 不把 Base64 字符数当 token（§8 estiamtor 同源常量）
+    const imageTokens = items.reduce((s, it) => s + (it as { image_count?: number }).image_count! * CONSERVATIVE_IMAGE_TOKENS, 0);
+    return Math.ceil((selectedChars + est.systemChars + est.tailInputChars) / est.charsPerToken) + imageTokens;
   }
 
   /** preview：只读核验（不写库、不跑模型、不 hold、不换窗）。 */
@@ -301,8 +310,8 @@ export class ManualSelectionService {
   /** 读取已确认/已消费选集的正文（按真实修订，服务端正本）。
    *  WP-05（B13）：缺修订行不再 silent continue——差异随返回值披露
    *  （装配方如实标注 manifest 缺席，不冒充完整装载）。 */
-  loadContents(items: SelectionItem[]): { loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; missing: Array<{ message_id: string; revision: number }> } {
-    const loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> = [];
+  loadContents(items: SelectionItem[]): { loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }>; missing: Array<{ message_id: string; revision: number }> } {
+    const loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }> = [];
     const missing: Array<{ message_id: string; revision: number }> = [];
     for (const it of items) {
       const row = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(it.message_id, it.revision) as { content: string } | undefined;
@@ -310,7 +319,9 @@ export class ManualSelectionService {
         missing.push({ message_id: it.message_id, revision: it.revision });
         continue;
       }
-      loaded.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content });
+      // EXEC_V1 §03.6.1：附件按该修订的绑定装载（不以当前附件冒充旧版本）；容量估算含媒体成本
+      const attachments = this.db.prepare('SELECT asset_id, presentation, caption, derived_text, derived_source FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(it.message_id, it.revision) as Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }>;
+      loaded.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content, attachments });
     }
     loaded.sort((a, b) => a.sequence - b.sequence);
     return { loaded, missing };

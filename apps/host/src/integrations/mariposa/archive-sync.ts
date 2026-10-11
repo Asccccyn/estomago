@@ -53,13 +53,32 @@ export class ArchiveSyncService {
   private enabled: boolean;
   private draining = false;
 
-  constructor(deps: { db: Db; events: EventService; logger: Logger; client: MariposaClient; config: Config }) {
+  private alerts: import('../../observability/system-alerts.ts').SystemAlertService | null;
+  constructor(deps: { db: Db; events: EventService; logger: Logger; client: MariposaClient; config: Config; alerts?: import('../../observability/system-alerts.ts').SystemAlertService | null }) {
     this.db = deps.db;
     this.events = deps.events;
     this.logger = deps.logger;
+    this.alerts = deps.alerts ?? null;
     this.client = deps.client;
     this.streamId = deps.config.archive.source_scope ?? 'estomago-primary-live';
     this.enabled = deps.config.archive.enabled && deps.config.integrations.mariposa.base_url !== null;
+    this.disclosedAssetContract = false;
+  }
+
+  private disclosedAssetContract: boolean;
+
+  /** §03.10.1：含附件消息的媒体归档状态分列（文字照常/媒体 blocked），每进程聚合披露一次。 */
+  private attachmentCount(messageId: string, revision: number): number {
+    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM message_attachments WHERE message_id = ? AND revision = ?').get(messageId, revision) as { n: number }).n;
+    if (n > 0 && !this.disclosedAssetContract) {
+      this.disclosedAssetContract = true;
+      this.alerts?.observe({
+        code: 'ASSET_ARCHIVE_CONTRACT_UNVERIFIED', scopeKind: 'integration', scopeId: 'mariposa',
+        dedupeKey: 'asset-archive:contract-unverified', observationId: 'asset-archive:contract-unverified:1',
+        safeSummary: { title: '附件归档合同未核实——文字归档照常，媒体归档暂不发送', reason: 'mariposa_assets_schema_unverified', action_taken: 'text_only_archived' },
+      });
+    }
+    return n;
   }
 
   rawSyncState(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } {
@@ -248,6 +267,10 @@ export class ArchiveSyncService {
         : rev.kind === 'sticker' ? 'sticker_message'
         : rev.kind === 'voice' ? 'voice_message'
         : rev.kind,
+        // EXEC_V1 §03.10.1（M2 分列）：Mariposa 附件 schema 未核——含附件消息的文字归档照常，
+        // 媒体归档状态如实 blocked（ASSET_ARCHIVE_CONTRACT_UNVERIFIED），不把 assets:[] 冒充
+        // "连附件已全部归档"。合同核实落地（M4）前每批只聚合披露一次。
+        ...(this.attachmentCount(msg.id, rev.revision) > 0 ? { assets_note: 'media_archive_blocked_contract_unverified' } : {}),
         occurred_at: rev.occurred_at,
         received_at: rev.received_at,
         published_at: msg.published_at,

@@ -278,6 +278,13 @@ export class MediaService {
     return this.db.prepare('SELECT asset_id, presentation, caption, derived_text, derived_source FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, revision) as Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }>;
   }
 
+  /** §03.6：按真实修订投影（content+attachments）——supervisor 全部装配入口共用。 */
+  projectForRevision(messageId: string, revision: number): { content: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> } {
+    const rev = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(messageId, revision) as { content: string } | undefined;
+    if (!rev) throw new MediaError('ASSET_NOT_FOUND', 404, `修订不存在 ${messageId}@${revision}`);
+    return { content: rev.content, attachments: this.listMessageAttachments(messageId, revision) };
+  }
+
   /** 校验发送附件：存在/available/格式匹配 presentation（§5.2 先全量校验再入事务）。 */
   validateForSend(items: Array<{ asset_id: string; presentation: string }>): void {
     for (const it of items) {
