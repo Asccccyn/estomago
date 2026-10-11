@@ -27,6 +27,7 @@ import type { SystemAlertService } from '../observability/system-alerts.ts';
 import type { MediaService, IngestPurpose } from '../media/assets.ts';
 import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
+import { contentProxyWithAssets } from '../integrations/content/client.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
 import type { AuthService } from '../auth/tokens.ts';
@@ -61,6 +62,7 @@ export type RequestDeps = {
   bgSettings?: import('../runtime/background-settings.ts').BackgroundSettingsService; // EXEC_V1 WP4
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
+  contentClient?: import('../integrations/content/client.ts').ContentClient | null; // EXEC_V1 WP5：内容服务薄代理
   auth: AuthService;
   archiveSync?: {
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
@@ -515,6 +517,26 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const before = url.searchParams.get('before') !== null ? Number(url.searchParams.get('before')) : null;
       const mode = before !== null ? 'older' : url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21/F26：最近页/向更早/历史正向
       return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
+    }
+
+    // —— EXEC_V1 §06.4/5（WP5）：content 薄代理——浏览器经 est 认证→派生 qiaosheng→转发 loopback ——
+    const contentMatch = url.pathname.startsWith('/api/v1/content/');
+    if (contentMatch) {
+      if (!d.contentClient) return json(res, 503, { error: { code: 'content_unavailable', message: '内容服务未启用或不可达（聊天不受影响）' } });
+      const method = req.method as 'GET' | 'POST' | 'PUT' | 'DELETE';
+      // 浏览器经 est 认证→actor=qiaosheng（§06.3.1：不能由请求体/头自报作者）
+      const actor = 'qiaosheng' as const;
+      const fwdHeaders: Record<string, string> = {};
+      for (const h of ['idempotency-key', 'if-match']) {
+        const v = req.headers[h];
+        if (typeof v === 'string' && v) fwdHeaders[h] = v;
+      }
+      let fwdBody: Record<string, unknown> | undefined;
+      if (method === 'POST' || method === 'PUT') {
+        try { fwdBody = (await readJson(req, d)) as Record<string, unknown>; } catch { fwdBody = {}; }
+      }
+      const result = await contentProxyWithAssets({ client: d.contentClient, media: d.media ?? null, db: d.db, method, path: url.pathname + url.search, actor, body: fwdBody, headers: fwdHeaders });
+      return json(res, result.status, result.body);
     }
 
     // —— EXEC_V1 §04.11（WP4）：后台设置/任务/运行（Idempotency-Key；PUT/DELETE 另带 If-Match）——
