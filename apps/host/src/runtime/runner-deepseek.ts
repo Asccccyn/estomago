@@ -153,7 +153,9 @@ export class DeepSeekRunner implements AgentRunner {
         await this.sleepRetryAfter(response.headers.get('retry-after'), attempt);
         continue;
       }
-      req.onDispatch?.({ attemptIndex: attempt, generationId: response.headers.get('x-generation-id') });
+      if (response.status >= 200 && response.status < 300) {
+        req.onDispatch?.({ attemptIndex: attempt, generationId: response.headers.get('x-generation-id') });
+      }
       if (response.status < 200 || response.status >= 300) {
         const code = response.status === 401 || response.status === 403 ? 'DS_AUTH_ERROR'
           : response.status === 402 ? 'DS_PAYMENT_REQUIRED'

@@ -97,7 +97,7 @@ test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对
 
 test('幂等（HTTP 层）：同 client_message_id 重发 → duplicate 且不新增消息/turn', async () => {
   const first = await submit('幂等测试', 'int-dup-1');
-  const res = await api('POST', '/api/v1/conversations/primary/messages', { content: '幂等测试（重试）', client_message_id: 'int-dup-1' });
+  const res = await api('POST', '/api/v1/conversations/primary/messages', { content: '幂等测试', client_message_id: 'int-dup-1' }); // 她 1011：同内容重试
   assert.equal(res.status, 200, '幂等命中返回 200 而非新建 201');
   const data = (await res.json()) as { duplicate: boolean; message: { id: string }; turn_id: string | null };
   assert.equal(data.duplicate, true);

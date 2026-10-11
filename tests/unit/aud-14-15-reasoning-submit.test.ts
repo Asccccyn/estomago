@@ -50,7 +50,7 @@ test('AUD-15：消息有、turn/outbox 缺（崩溃间隙）→ 同 key 重试�
   db.prepare('DELETE FROM turns WHERE id = ?').run(r.turnId);
   db.prepare('DELETE FROM outbox').run();
   // 同幂等键重试 → 自愈
-  const retry = svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '崩溃前（重试）', clientMessageId: 'k15' });
+  const retry = svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '崩溃前', clientMessageId: 'k15' });
   assert.equal(retry.duplicate, true);
   assert.equal(retry.repaired, true);
   assert.ok(retry.turnId, 'turn 必须被补齐');

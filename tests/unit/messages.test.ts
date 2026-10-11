@@ -16,17 +16,27 @@ test('多行正文是一条消息：CRLF 规范化为 LF，行序/空行保留�
   assert.equal((db.prepare('SELECT turn_id FROM messages WHERE id=?').get(r.message.id) as { turn_id: string }).turn_id, r.turnId);
 });
 
-test('幂等：相同 client_message_id 重试返回原记录 + 完整 side effects', () => {
+test('幂等：相同 client_message_id + 相同内容重试返回原记录 + 完整 side effects', () => {
   const { db } = makeDb();
   const svc = new MessageService(db);
   svc.ensureConversation('c1');
   const first = svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '你好', clientMessageId: 'cmid-dup' });
-  const second = svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '你好（重试同键）', clientMessageId: 'cmid-dup' });
+  const second = svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '你好', clientMessageId: 'cmid-dup' }); // 她 1011 裁定：同内容重试
   assert.equal(second.duplicate, true);
   assert.equal(second.message.id, first.message.id);
-  assert.equal(second.message.revision.content, '你好');
   assert.equal(second.turnId, first.turnId);
   assert.equal((db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n, 1);
+});
+
+test('AUD-29（她 1011 裁定）：同键不同内容=IDEMPOTENCY_CONFLICT', () => {
+  const { db } = makeDb();
+  const svc = new MessageService(db);
+  svc.ensureConversation('c1');
+  svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '你好', clientMessageId: 'cmid-conflict' });
+  assert.throws(
+    () => svc.submitUserMessageWithTurn({ conversationId: 'c1', content: '不同内容', clientMessageId: 'cmid-conflict' }),
+    /IDEMPOTENCY_CONFLICT/,
+  );
 });
 
 test('仅空白拒绝；不 trim 重写正文', () => {
