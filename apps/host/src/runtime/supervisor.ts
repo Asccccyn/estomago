@@ -822,7 +822,7 @@ export class TurnSupervisor {
     // 整体注回追赶投影，绕过人工选集（新窗历史唯一来源=选集）。
     // 跨窗历史一律走选集；追赶只服务"同窗内上一轨迹落盘后新发布的消息"。
     const sentChatTurnIds = new Set((this.d.db.prepare(
-      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.sent_at IS NOT NULL AND pr.window_id = ?",
+      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.dispatch_started_at IS NOT NULL AND pr.window_id = ?",
     ).all(windowId) as Array<{ tid: string | null }>).map((r) => r.tid).filter((t): t is string => t !== null));
     return dialogue.filter((m) => m.sequence > trajMaxSeq && m.turnId !== null && sentChatTurnIds.has(m.turnId));
   }
