@@ -228,9 +228,10 @@ function renderMessage(dto, { update = false } = {}) {
       const next = window.prompt('修改这条消息（整体多行正文，保存后形成新修订）', dto.revision.content);
       if (next === null || next === dto.revision.content) return;
       const res = await fetch(`/api/v1/conversations/${encodeURIComponent(dto.conversation_id ?? CONVERSATION)}/messages/${encodeURIComponent(dto.id)}`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ content: next }),
+        method: 'PUT', headers: { 'Content-Type': 'application/json', 'If-Match': `"${dto.current_revision}"` }, credentials: 'same-origin', body: JSON.stringify({ content: next }),
       });
       if (res.ok) { const data = await res.json(); absorbMessage(data.message, { update: true }); }
+      else if (res.status === 428 || res.status === 409) { const e = await res.json().catch(() => ({})); window.alert(`${e?.error?.message ?? '版本已变化'}——请刷新后重新编辑`); }
       else { const e = await res.json().catch(() => ({})); window.alert(`编辑失败：${e?.error?.message ?? res.status}`); }
     };
     bubble.appendChild(editBtn);

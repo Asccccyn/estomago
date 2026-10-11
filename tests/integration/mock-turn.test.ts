@@ -239,7 +239,7 @@ test('F-J-08/F-J-48：用户消息编辑修订（PUT）+ before 反向翻页', a
   });
   const msg1 = ((await post1.json()) as { message: { id: string; current_revision: number; revision: { revision: number; content: string } } }).message;
   const put = await fetch(`${base}/api/v1/conversations/primary/messages/${msg1.id}`, {
-    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base, 'if-match': `"${msg1.current_revision}"` },
     body: JSON.stringify({ content: '编辑后的新话' }),
   });
   assert.equal(put.status, 200);
@@ -248,7 +248,7 @@ test('F-J-08/F-J-48：用户消息编辑修订（PUT）+ before 反向翻页', a
   assert.equal(edited.revision.content, '编辑后的新话');
   // 空白编辑拒绝
   const putBlank = await fetch(`${base}/api/v1/conversations/primary/messages/${msg1.id}`, {
-    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base },
+    method: 'PUT', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base, 'if-match': `"${edited.current_revision}"` },
     body: JSON.stringify({ content: '   ' }),
   });
   assert.equal(putBlank.status, 422);
