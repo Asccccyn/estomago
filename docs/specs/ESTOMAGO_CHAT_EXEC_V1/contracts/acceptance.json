@@ -1,0 +1,3326 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_CHAT_EXEC_V1",
+  "state": "SPECIFICATION_ONLY_NOT_IMPLEMENTED",
+  "execution_policy": "在实际实现仓库复制执行记录，保留本包原始NOT_EXECUTED；PASS必须附真实行为证据，外部服务缺合同标BLOCKED_DEPENDENCY。",
+  "allowed_execution_states": [
+    "NOT_EXECUTED",
+    "PASS",
+    "FAIL",
+    "BLOCKED_DEPENDENCY"
+  ],
+  "external_contract_boundary": "external_contract场景先核当前schema/能力；离线fixture只证明适配器，真实服务验收须另有证据和既有授权。",
+  "fixture_file": "fixtures/semantic-cases.json",
+  "cases": [
+    {
+      "id": "BASE-01",
+      "title": "当前HEAD和源码事实重新定位",
+      "work_package": "WP0",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-EXT-01"
+      ],
+      "verification": "source_contract",
+      "preconditions": [
+        "目标仓库可能已前进"
+      ],
+      "steps": [
+        "运行只读preflight",
+        "检查改变的职责文件和当前AGENTS"
+      ],
+      "expected": [
+        "不reset或覆盖别人的改动",
+        "记录真实provider与未核运行状态，README不代替运行配置"
+      ],
+      "evidence_required": [
+        "基线SHA/差异文件清单/更新落点"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BASE-02",
+      "title": "旧配置升级与新默认不偷偷启用收费",
+      "work_package": "WP0",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-CACHE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "隔离旧配置含已有模型身份与路径"
+      ],
+      "steps": [
+        "加载新增schema并迁移"
+      ],
+      "expected": [
+        "保留现配置",
+        "auto/keepwarm false、日金额null",
+        "无模型网络请求"
+      ],
+      "evidence_required": [
+        "迁移前后安全字段差异/transport计数"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BASE-03",
+      "title": "迁移中断与fresh install",
+      "work_package": "WP0",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时ESTOMAGO_HOME和样例旧DB"
+      ],
+      "steps": [
+        "分别创建新库/升级旧库/在迁移事务中断后重启"
+      ],
+      "expected": [
+        "消息正文hash和旧revision不变",
+        "新表只建立一次",
+        "无生产路径、模型调用或数据丢失"
+      ],
+      "evidence_required": [
+        "三个路径的schema与fixture行hash"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-01",
+      "title": "正常冷缓存与温缓存意外未命中区分",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-CACHE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "控制相同prefix/model/cache evidence与usage"
+      ],
+      "steps": [
+        "分别输入冷启动read0/温态read0/字段缺失/部分命中"
+      ],
+      "expected": [
+        "只有符合完整温态条件的read0触发未命中异常",
+        "缺失显示unknown，部分命中不称全命中"
+      ],
+      "evidence_required": [
+        "四组通知数/状态/usage字段"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-02",
+      "title": "告警已读与恢复独立",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "已有open未读warning"
+      ],
+      "steps": [
+        "读通知后提交seen_sequence",
+        "读取open和红点计数",
+        "再输入同条件的真实恢复证据"
+      ],
+      "expected": [
+        "已读后红点可消失但open保留",
+        "恢复后历史仍在",
+        "已读动作不调用模型或resolve"
+      ],
+      "evidence_required": [
+        "DB两种状态/SSE序号/transport0"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-03",
+      "title": "并发新告警不会被全部已读吞掉",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "用户看到同告警sequence100"
+      ],
+      "steps": [
+        "在读请求到达前写入sequence102的复发",
+        "提交仅100的已读值",
+        "重连"
+      ],
+      "expected": [
+        "102仍未读",
+        "seen不倒退",
+        "重连与另一页面同一快照"
+      ],
+      "evidence_required": [
+        "读写交错记录与最终计数"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-04",
+      "title": "乱序重放不增加真实异常次数",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "两次真实observation A/B有来源唯一ID"
+      ],
+      "steps": [
+        "投递A、B、A与SSE重复",
+        "重启后回放"
+      ],
+      "expected": [
+        "occurrence_count=2",
+        "旧A重放不当新复发",
+        "不依赖只比较last_observation"
+      ],
+      "evidence_required": [
+        "输入序列/来源去重约束/最终计数"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-05",
+      "title": "正常关闭去重与真实越界分开",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-WAKE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "有待恢复后台闭包"
+      ],
+      "steps": [
+        "关auto并恢复旧闭包",
+        "竞争领取同一occurrence",
+        "另注入绕过准入的故障"
+      ],
+      "expected": [
+        "前两种被正常门拦无critical",
+        "真正越界有critical且停止后续路径",
+        "关闭提醒总开关也不隐藏告警"
+      ],
+      "evidence_required": [
+        "三种情况派发数/告警数/开关revision"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-06",
+      "title": "错误信息不泄漏私人正文或凭据",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "fixture错误含假凭据样式/URL参数/私人正文标记"
+      ],
+      "steps": [
+        "触发模型/媒体/外部失败并读SSE与中心"
+      ],
+      "expected": [
+        "只允许安全摘要及ID/hash计数",
+        "私密片段不进日志和公开错误",
+        "系统通知不写聊天/hold"
+      ],
+      "evidence_required": [
+        "脱敏检查结果/事件类别/消息数"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-07",
+      "title": "SDK未核TTL不假报已生效",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-CACHE-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "source_contract",
+      "preconditions": [
+        "final SDK options没有TTL证据"
+      ],
+      "steps": [
+        "切显示到SDK运行状态",
+        "读缓存状态"
+      ],
+      "expected": [
+        "desired1h与effective unknown分开",
+        "一次可聚合未核提醒",
+        "没有硬编码requested1h冒充实际"
+      ],
+      "evidence_required": [
+        "final options白名单摘要/DTO/UI"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALERT-08",
+      "title": "独立系统入口与小屏可见",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-SYSTEM-02"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "手机和桌面宽度的测试页面；系统/聊天/feed分别有事件"
+      ],
+      "steps": [
+        "查看顶栏、抽屉和历史",
+        "模拟SSE断开并重连"
+      ],
+      "expected": [
+        "系统红点可访问名称明确",
+        "正常换窗及feed未读不混成故障",
+        "后端快照恢复未读而非localStorage单点"
+      ],
+      "evidence_required": [
+        "人工UI记录/后端计数与重连结果"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-01",
+      "title": "stream/result去重与累计快照",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "同request有partial、complete与累计事件"
+      ],
+      "steps": [
+        "以乱序和重复delivery输入collector"
+      ],
+      "expected": [
+        "完整终值保留且只加一次",
+        "累计不是新增请求",
+        "矛盾终值产生可核异常"
+      ],
+      "evidence_required": [
+        "按request与turn两级结果/事件ID"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-02",
+      "title": "token完整与费用未知分开",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "一请求token齐但服务不提供cost，另一请求usage全未知"
+      ],
+      "steps": [
+        "汇总并查看UI"
+      ],
+      "expected": [
+        "完整token不被清空",
+        "complete_cost为null，known subtotal和unknown count保留",
+        "正常不报美元的能力不每条报警"
+      ],
+      "evidence_required": [
+        "各字段聚合JSON/UI标签"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-03",
+      "title": "OR和SDK缓存token分类不双加",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "OR输入100含缓存80；SDK未缓存20+读80"
+      ],
+      "steps": [
+        "分别归一化并汇总"
+      ],
+      "expected": [
+        "两者总输入均100",
+        "不把OR读80再加到100",
+        "按真实provider解释字段"
+      ],
+      "evidence_required": [
+        "fixture字段到统一字段映射"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-04",
+      "title": "后台无用户turn、取消和迟到usage仍记账",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-TOKEN-02",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "一个无用户turn的keepwarm和一个取消的proactive工具"
+      ],
+      "steps": [
+        "完成/取消后接收真实usage",
+        "按用途/日期查看"
+      ],
+      "expected": [
+        "费用没有因turn JOIN消失",
+        "取消不把已发费用改零",
+        "迟到usage按原request去重"
+      ],
+      "evidence_required": [
+        "request/run/day三向账本对账"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-05",
+      "title": "跨午夜预算日与观察日不混",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "派发于上海23:59、usage于次日00:01"
+      ],
+      "steps": [
+        "结算实际费用",
+        "读两日汇总"
+      ],
+      "expected": [
+        "归派发时budget_day",
+        "不移动预占或释放到新日",
+        "历史无派发时间标legacy来源"
+      ],
+      "evidence_required": [
+        "budget_day/observed_at/两个日期汇总"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "USAGE-06",
+      "title": "费用缺失宽限与未知结果恢复",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-SYSTEM-01",
+        "U-SYSTEM-02",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "已可能收费请求结束无应有usage"
+      ],
+      "steps": [
+        "推进虚拟宽限时钟",
+        "关闭功能/重启",
+        "回到同operation核对真实结果"
+      ],
+      "expected": [
+        "宽限后告警且预占保留",
+        "不发第二次请求来确认费用",
+        "有确证才结算/恢复"
+      ],
+      "evidence_required": [
+        "虚拟时间/预占余额/查询与收费请求计数"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-01",
+      "title": "混合文字的可见粗估与单一算法",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "中文/ASCII/组合字符/代码多行fixture"
+      ],
+      "steps": [
+        "在编辑器、发送快照、历史预览调用同estimator"
+      ],
+      "expected": [
+        "Unicode码点口径和profile版本一致",
+        "rough标签可见，不伪称exact",
+        "换行正文仍是一条消息"
+      ],
+      "evidence_required": [
+        "四类输入的DTO与调用来源"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-02",
+      "title": "单条正文与完整请求输入分开",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "当前窗含身份、tools、历史与新草稿"
+      ],
+      "steps": [
+        "读取预估详情"
+      ],
+      "expected": [
+        "本条不等于完整请求",
+        "回复上限不叫必然输出",
+        "缓存输入仍占上下文，工具续答/重试另计"
+      ],
+      "evidence_required": [
+        "分项预估/最终规范投影摘要"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-03",
+      "title": "所有预估均无外部副作用",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "无活动窗或等手选；附件仅本地ID"
+      ],
+      "steps": [
+        "连续编辑和打开预览",
+        "看旧消息与通知"
+      ],
+      "expected": [
+        "模型/外部计数/媒体下载/转写请求均0",
+        "无草稿持久化/hold/换窗",
+        "request unavailable而本条估计仍可给"
+      ],
+      "evidence_required": [
+        "网络stub计数/DB前后允许差异"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-04",
+      "title": "晚到预估不能覆盖新草稿",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "两次draft和模型/附件状态不同"
+      ],
+      "steps": [
+        "反序返回两个预览响应"
+      ],
+      "expected": [
+        "只应用匹配draft/model/window/attachment指纹的新值",
+        "过期响应丢弃",
+        "预览失败不禁正常发送"
+      ],
+      "evidence_required": [
+        "响应排列/最终UI值"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-05",
+      "title": "历史修订保存发送时快照",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-CHAT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "发送一条后切模型并编辑它"
+      ],
+      "steps": [
+        "分别查看旧revision、新revision和无旧快照历史"
+      ],
+      "expected": [
+        "旧估计不回写",
+        "新revision有新快照",
+        "旧缺失只能标当前模型粗估",
+        "估计变化不改正文hash"
+      ],
+      "evidence_required": [
+        "修订链/estimate模型和hash"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-06",
+      "title": "分段回复实际费用只显示一次",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "一次模型请求输出三气泡并有隐藏reasoning/工具开销"
+      ],
+      "steps": [
+        "渲染每条消息与整轮统计"
+      ],
+      "expected": [
+        "正文可每条粗估",
+        "整轮actual只出现/累计一次",
+        "不按字数摊成精确气泡实际token"
+      ],
+      "evidence_required": [
+        "UI和聚合请求数/总额"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "TOKEN-07",
+      "title": "未知图片与转写不双计",
+      "work_package": "WP1",
+      "requirement_ids": [
+        "U-TOKEN-01",
+        "U-TOKEN-02",
+        "U-MEDIA-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "图片缺已核token规则；语音仅转写文本入模型"
+      ],
+      "steps": [
+        "读取预估和实际发送投影"
+      ],
+      "expected": [
+        "图片总量null且known文字小计保留",
+        "不按base64长度估图",
+        "只计算实际入模型的转写文字，Siren费用单列"
+      ],
+      "evidence_required": [
+        "附件metadata/estimate质量/输入组成"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-01",
+      "title": "OR 直接驱动保持 1h 与禁压缩的最终发包合同",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-CACHE-01",
+        "U-CACHE-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "配置明确的 OR Anthropic 型号，注入记录最终请求体的 transport 与 SDK 加载观察点。"
+      ],
+      "steps": [
+        "通过真实 runner 选择和 payload builder 发送一次合成聊天请求。",
+        "捕获实际交给 transport 的请求体及已加载驱动。",
+        "使用下一轮合法追加消息重复发送，另构造一份改写旧历史的请求。"
+      ],
+      "expected": [
+        "OR 路径不加载或调用 Claude Agent SDK。",
+        "最终请求包含 1h 缓存控制和关闭 context-compression 的控制，允许的断点数不超合同上限。",
+        "合法追加请求通过；改写旧历史的请求在 transport 前被拒绝。",
+        "这些结果只证明本地发包与门控，不证明供应商实际接受了参数或产生缓存命中。"
+      ],
+      "evidence_required": [
+        "驱动加载记录、transport 调用计数及脱敏请求体证据。",
+        "前缀合法与非法两组请求的结果码。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-02",
+      "title": "缓存倒计时采用有读写证据的请求开始时间并滚动顺延",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-01",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "当前窗口有效，已配置测试用保温预算，响应头与 usage 到达可人为延迟。"
+      ],
+      "steps": [
+        "在 10:00 开始请求，延迟响应并返回非零缓存读写观测。",
+        "在 10:35 再开始一次同一有效前缀请求，并返回有效缓存观测。",
+        "推进虚拟时钟经过 10:50，再推进到 11:25，期间不加入其他活动。"
+      ],
+      "expected": [
+        "第一次计时依据 10:00 的 dispatch_started_at，不依据响应或 usage 到达时间。",
+        "10:35 的有效观测将保温目标移动到 11:25，10:50 不再发送旧维护请求。",
+        "11:25 只领取一次当前合法维护机会，估计到期明确标为估计。"
+      ],
+      "evidence_required": [
+        "请求开始、响应、观测和下次到期时间的时间线。",
+        "10:50 与 11:25 的任务领取和实际派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-03",
+      "title": "成功 HTTP、缺失 usage 与失败尝试都不能伪造缓存刷新",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-01",
+        "U-SYSTEM-01",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "已有一个已知缓存计时基准，并分别准备缺失 cache 字段、明确零读写、429 与网络失败响应。"
+      ],
+      "steps": [
+        "依次发送各类合成请求，保留完整尝试账本。",
+        "检查缓存刷新基准及展示的已知／未知字段。",
+        "检查是否为确认缓存而启动额外模型调用。"
+      ],
+      "expected": [
+        "单纯收到 200、缺失 cache 字段、明确零读写或失败尝试均不把缓存基准刷新为当前时间。",
+        "null 不改成 0，也不改成命中；没有可靠温缓存前提时不产生缓存异常红点。",
+        "每次 transport 尝试仍保留派发记录，不额外调用模型诊断或追求命中。"
+      ],
+      "evidence_required": [
+        "各响应夹具、缓存快照前后对比和派发总数。",
+        "相关系统告警与运行结果记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-04",
+      "title": "保温最多一个请求且不执行工具、不污染主窗轨迹",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-01",
+        "U-CONTEXT-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "当前窗口具有规范轨迹和冻结的工具快照，保温返回夹具包含 tool_calls 与 usage。"
+      ],
+      "steps": [
+        "执行一次到期保温，捕获最终 wire payload。",
+        "尝试处理夹具中的工具请求。",
+        "结束维护后发送下一条正常聊天，并比较维护前后的原文、书签和规范轨迹。"
+      ],
+      "expected": [
+        "保温仅一次模型请求，工具执行为 0，没有工具续答请求。",
+        "保持当前 tools 快照；维护尾消息不进入正式原文、人工选集、hold 书签或主窗规范轨迹。",
+        "实际维护请求体及 usage 保留于受保护证据中，不因不推进主窗而被删除。",
+        "下一次正常聊天以前一份规范轨迹为比较基准，前缀校验通过。"
+      ],
+      "evidence_required": [
+        "维护 wire payload 与 payload_format、usage 和工具调用计数。",
+        "规范轨迹、原文、书签的前后哈希及随后聊天结果。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-05",
+      "title": "聊天或到期自主活动刷新缓存后取消重复保温",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-01",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "保温已到期，分别准备用户待处理聊天和合法到期自主活动两种场景。"
+      ],
+      "steps": [
+        "先让保温进入待领取状态，再持久化用户输入。",
+        "完成用户聊天并返回新的有效缓存观测，重新计算到期时间。",
+        "在独立场景中让合法自主活动与保温同时到期，并由自主活动返回有效缓存观测。"
+      ],
+      "expected": [
+        "用户聊天先获得执行位，旧保温不排在其前面。",
+        "到期自主活动在无用户工作时先于保温执行；新缓存观测取消重复维护机会。",
+        "不会为同一旧缓存时点多发送一次保温请求，仍保持单主模型并发约束。"
+      ],
+      "evidence_required": [
+        "两个场景的领取顺序、主模型并发数和 transport 计数。",
+        "任务到期时间变化及作废旧机会的证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-06",
+      "title": "已冷缓存不被后台保温重新付费建立",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-01",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "一期 allow_cold_start=false，保温开启且测试预算就绪，最后缓存证据已超过 1h。"
+      ],
+      "steps": [
+        "模拟宿主睡眠数小时后恢复并触发一次调度检查。",
+        "检查旧维护机会与保温状态。",
+        "随后完成一次普通聊天产生新的有效缓存观测，再推进 50 分钟。"
+      ],
+      "expected": [
+        "恢复时不补跑保温、不进行冷写，记录 KEEPWARM_CACHE_ALREADY_COLD。",
+        "未形成新缓存观测前没有反复付费维护尝试。",
+        "普通聊天的新观测重新建立未来保温机会，50 分钟后至多执行一次。"
+      ],
+      "evidence_required": [
+        "恢复前后请求数量、缓存状态与任务时间线。",
+        "新的聊天观测与后续唯一维护执行的关联。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-07",
+      "title": "SDK 与 DS 的未验证能力不能显示为已落实 1h",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-CACHE-02",
+        "U-WAKE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "准备 SDK 未含 TTL／压缩控制证据的装配与 DS 自动缓存配置；禁止使用真实 SDK 模型调用。"
+      ],
+      "steps": [
+        "分别读取两个驱动的缓存记录快照。",
+        "在 SDK 路径请求启用背景模型活动，在 DS 路径请求启用固定 1h 的保温。",
+        "保留 SDK 手动聊天入口的可见状态，但不执行真实模型。"
+      ],
+      "expected": [
+        "SDK 显示实际证据缺失或 unknown，不能显示已生效 1h；SDK 背景执行被能力门阻断。",
+        "DS 显示自动缓存语义，不能借用 OR 固定 TTL 或 50 分钟保证。",
+        "无模型页面、关闭开关和普通提醒保持可用。",
+        "夹具只验证未验证状态与阻断行为，不作为 SDK 或供应商支持的证明。"
+      ],
+      "evidence_required": [
+        "各驱动的 desired／effective／verification 快照和阻断结果。",
+        "SDK 背景及固定 TTL 保温的实际模型派发计数为 0。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CACHE-08",
+      "title": "真实上游强制插件配置与本地禁压缩冲突必须可见",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CACHE-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "获得目标 OR 账户实际生效插件／覆盖策略的授权只读来源；本场景不修改账户设置。",
+        "没有该来源时保留 NOT_EXECUTED 或外部能力阻断记录，不以 fake adapter 证明实际账户状态。"
+      ],
+      "steps": [
+        "核对目标型号、provider 与账户层 Prevent overrides 等实际覆盖约束。",
+        "将真实观察到的强制压缩冲突与本地禁压缩策略比较。",
+        "若无法取得有效配置证据，明确记录不可核实的部分。"
+      ],
+      "expected": [
+        "观察到强制压缩冲突时阻断受影响背景执行，并产生 UPSTREAM_COMPACTION_POLICY_CONFLICT 的受控告警。",
+        "不能因为本地 payload 有 enabled=false 就声称必然覆盖账户规则。",
+        "未核实的外部状态保持 unknown，不改模型、不换 TTL、不修改上游账户来伪装成功。"
+      ],
+      "evidence_required": [
+        "账户配置证据来源、时间、目标型号与 provider。",
+        "冲突判定和阻断记录，或外部来源不可用的明确原因。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTEXT-01",
+      "title": "后台达到容量门时必须等待手选原文",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CONTEXT-01",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "当前窗口接近 64000 软线，后台新输入使下一请求需换窗，尚无确认选集。"
+      ],
+      "steps": [
+        "触发一次合法自主任务并进入既有容量判断。",
+        "检查是否创建待确认选集以及后台终态。",
+        "在用户没有确认前重复调度和恢复一次。"
+      ],
+      "expected": [
+        "沿用既有容量与选择门，记录 CONTEXT_SELECTION_REQUIRED。",
+        "不自动空选、不自动压缩、不注入固定 12k 或日摘要。",
+        "等待确认期间没有新的自主或无预算评审模型请求，原文保持可读。"
+      ],
+      "evidence_required": [
+        "窗口状态、待确认选集和背景 run 记录。",
+        "重复调度前后的模型请求计数及原文完整性证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTEXT-02",
+      "title": "明确零选只改变新窗输入，不删除原文",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CONTEXT-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "有包含未 hold 原文的旧窗口，人工选集处于待确认状态。"
+      ],
+      "steps": [
+        "通过真实确认入口提交空选集。",
+        "完成一次新窗请求并捕获最终输入投影。",
+        "重新读取旧聊天、修订记录和未绑定原文。"
+      ],
+      "expected": [
+        "确认 0 条后可以受控换窗；新窗不擅带旧历史、固定上下文段或自动摘要。",
+        "原文及修订记录仍存在，未 hold 或未绑定不影响留存。",
+        "空选集有真实确认来源，未提交状态不会被同样处理。"
+      ],
+      "evidence_required": [
+        "空选确认回执、新窗口输入投影与窗口关联。",
+        "旧原文和修订记录的前后数量及哈希。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTEXT-03",
+      "title": "静默、午夜和缓存过期不能自动换窗或遗忘",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-CONTEXT-01",
+        "U-CONTEXT-02",
+        "U-CACHE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "当前窗口远低于容量软线，含普通原文、未 hold 原文和既有修订。"
+      ],
+      "steps": [
+        "推进虚拟时钟跨北京时间午夜并静默超过 6 小时，使缓存估计过期。",
+        "重新打开聊天，再提交一条不触发容量门的短消息。",
+        "检查窗口 ID、已保存消息、修订与实际请求。"
+      ],
+      "expected": [
+        "仅时间变化与缓存冷却不自动更换窗口。",
+        "后续聊天继续原窗口，缓存冷却如实展示，不伪造保温成功。",
+        "原文和修订没有被摘要替换、清除或根据 hold 状态过滤。"
+      ],
+      "evidence_required": [
+        "跨时段窗口 ID、消息／修订哈希及请求轨迹。",
+        "缓存状态与模型调用时间线。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTEXT-04",
+      "title": "换窗前评审允许不 hold，范围沿用实际已见书签",
+      "work_package": "WP2",
+      "requirement_ids": [
+        "U-CONTEXT-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "已确认合法选集，旧窗存在成功 hold 书签及其后的实际已见原文；使用合成无新 hold 的评审完成响应。"
+      ],
+      "steps": [
+        "触发既有换窗前评审，捕获评审范围与工具上下文。",
+        "返回合法 no_new_hold 完成结果，继续受控换窗。",
+        "检查是否额外调用小模型、创建桶或重写旧书签。"
+      ],
+      "expected": [
+        "评审沿用真实已见清单和成功书签口径，不扫描全库制造漏记任务。",
+        "no_new_hold 是可接受结果，不强制创建记忆或反复评审直到有产出。",
+        "不增加小模型扫描、滚动摘要或第二套记忆，原文不受影响。"
+      ],
+      "evidence_required": [
+        "评审清单、完成回执和窗口切换记录。",
+        "模型、hold 写入次数以及书签前后对比。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CHAT-01",
+      "title": "多行正文、独立发送键与 IME 语义保持",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-CHAT-02",
+        "U-MEDIA-01"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "使用独立临时 ESTOMAGO_HOME 和测试身份，模型 transport 使用离线 fixture。",
+        "聊天页面已接入文字和附件草稿。"
+      ],
+      "steps": [
+        "输入包含中文、空行和首尾空格的多行正文，依次按 Enter 和 IME 确认键。",
+        "加入一张测试图片，再点击独立发送按钮。",
+        "读取持久化消息及页面重开后的气泡。"
+      ],
+      "expected": [
+        "Enter 只换行，IME 确认不发送；只有独立发送按钮创建消息。",
+        "多行正文仍是一条消息，只规范化换行，不 trim 或按行拆分。",
+        "附件与该消息稳定关联，不改变文字草稿守卫。"
+      ],
+      "evidence_required": [
+        "录屏或逐步 UI 观察记录。",
+        "对应消息 DTO、数据库 revision 与发送请求次数的脱敏证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CHAT-02",
+      "title": "媒体改造后流式、分段、停止和历史重连不回退",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "隔离数据库中准备超过一页的测试消息。",
+        "离线驱动可发送分段文字、重复 SSE 事件及可中断的后续输出。"
+      ],
+      "steps": [
+        "执行一轮包含分段文字与附件发布的测试回合，在后续输出完成前停止。",
+        "断开 SSE 后携原游标重连，并模拟一次重复事件。",
+        "重启宿主后分页读取历史。"
+      ],
+      "expected": [
+        "已正式发布的文字和附件仅出现一次，停止后没有新正式气泡。",
+        "重连不漏已提交消息，分页不会因加入附件丢失或重排历史。",
+        "前端展示顺序与服务器消息序列一致。"
+      ],
+      "evidence_required": [
+        "事件序列、消息序列和停止前后发布数量。",
+        "隔离重启及分页测试结果。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CHAT-03",
+      "title": "附件发送保持原子事务和完整请求幂等",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "已创建一份 available 资产、一份 pending 资产和一份不同内容资产。",
+        "测试可在消息事务提交前注入故障。"
+      ],
+      "steps": [
+        "发送空文字加有效图片，再发送空文字无附件和带 pending 附件的请求。",
+        "同一 client_message_id 与 Idempotency-Key 重放成功请求。",
+        "保留幂等键但改变正文、附件 ID 或顺序。",
+        "在 message、revision、附件绑定、outbox、turn、attempt 的提交前注入故障。"
+      ],
+      "expected": [
+        "空文字只有具备有效附件才允许发送；无效附件不会形成半条正式消息。",
+        "同键同指纹返回原结果，同键不同指纹返回冲突。",
+        "成功只有一套完整记录，失败事务不留下半套 side effects。"
+      ],
+      "evidence_required": [
+        "请求和响应码、幂等键与脱敏指纹。",
+        "各关联表在成功、重放和回滚后的行数及一致性断言。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CHAT-04",
+      "title": "文字编辑保留附件修订与既有原文 hash",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-MEDIA-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "存在一条带附件的 owner 测试消息。",
+        "修改接口已支持 If-Match 和 Idempotency-Key。"
+      ],
+      "steps": [
+        "用当前 If-Match 修改文字并保留原附件。",
+        "用相同幂等键及原 If-Match 重放，再以另一操作使用过期 If-Match 修改。",
+        "分别读取新旧 revision 和对应附件绑定。"
+      ],
+      "expected": [
+        "第一次修改产生一条新 revision；合法重放不再增加 revision；新操作的过期版本被拒绝。",
+        "新旧版本均保留正确附件，旧引用不被删除。",
+        "content_hash 继续只使用既有文字算法，附件指纹和估计元数据不会改变旧 hash。"
+      ],
+      "evidence_required": [
+        "各 revision 的正文 hash、附件绑定及引用结果。",
+        "合法重放和版本冲突的响应与修订计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-01",
+      "title": "资产上传、授权读取与重启后字节一致",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-MEDIA-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "临时媒体目录可写，使用非私人的已知 hash 图片和音频 fixture。",
+        "资产上传及读取接口已实现。"
+      ],
+      "steps": [
+        "通过 POST /api/v1/assets 上传测试文件并读取元数据。",
+        "通过授权 content 路由取回字节，关闭并重启宿主后再次读取。",
+        "检查数据库媒体表及响应字段。"
+      ],
+      "expected": [
+        "仅实际保存及校验成功后返回 available 和稳定 asset_id。",
+        "前后字节 hash 一致，不依赖浏览器 Blob URL。",
+        "表名为 media_assets，HTTP 资源名仍为 assets；响应不泄漏绝对路径或凭据。"
+      ],
+      "evidence_required": [
+        "上传、重启前后读取的状态与文件 hash。",
+        "媒体表结构与脱敏 API 样例。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-02",
+      "title": "大小、类型和保存失败不会产生假成功资产",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "使用受控流模拟超限文件、伪装图片的 HTML 和中途断流。",
+        "测试可注入媒体目录写入失败。"
+      ],
+      "steps": [
+        "分别提交超限响应、扩展名为图片但实际为 HTML 的文件、中途断流和磁盘写入失败。",
+        "检查临时文件、已有资产和失败请求返回。",
+        "尝试将失败操作的 pending 资产作为聊天附件发送。"
+      ],
+      "expected": [
+        "分别返回稳定的大小、类型或保存错误，不把 pending/failed 标为 available。",
+        "只清理本次临时文件，不损坏既有媒体。",
+        "失败资产不能变成正式消息附件，日志没有二进制或私人正文。"
+      ],
+      "evidence_required": [
+        "各故障注入点、错误码和文件残留清单。",
+        "消息拒绝结果及已有资产 hash 对照。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-03",
+      "title": "图片 URL 是导入来源，已有资产发送不重复搬文件",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-03",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "受控下载 transport 提供一份可随后失效的图片资源。",
+        "media_import 和 chat_send_attachment 使用真实本地媒体服务。"
+      ],
+      "steps": [
+        "从测试 URL 导入图片并记录下载次数与 asset_id。",
+        "使源 URL 失效后重开本地图片，再用原 asset_id 发送。",
+        "使用同一幂等键重放导入或发送请求。"
+      ],
+      "expected": [
+        "源 URL 失效不影响已保存文件，结果引用稳定 asset_id。",
+        "发送已有资产不重新下载或复制图片文件。",
+        "重放不创建第二份逻辑资产或重复气泡。"
+      ],
+      "evidence_required": [
+        "下载计数、asset_id、源失效后读取 hash。",
+        "工具回执及消息数量。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-04",
+      "title": "URL 导入限制实际连接目标和凭据传播",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-03",
+        "U-EXT-07"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "使用完全受控的 DNS、连接和重定向 fixture，不访问真实内网或外网。",
+        "普通 URL 导入与已配置可信服务适配器可分别观测。"
+      ],
+      "steps": [
+        "尝试 file URL、带凭据 URL、环回/私网地址和公网重定向到私网。",
+        "模拟 DNS 检查后连接目标变化，以及超过跳转和响应大小限制。",
+        "检查出站 headers；再以可信服务资源 ID 请求已配置服务。"
+      ],
+      "expected": [
+        "不允许的目的地不会被实际连接；每跳重新校验且检查结果与实际连接一致。",
+        "不转发 est 会话 token 或其他站点 Cookie。",
+        "可信服务只接受自身资源 ID 或受约束路径，不能被模型当作任意内网代理。"
+      ],
+      "evidence_required": [
+        "DNS/连接目标及未派发计数断言。",
+        "脱敏出站 header 白名单和错误分类结果。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-05",
+      "title": "图片真实进入驱动输入，未知视觉能力明确阻断",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-02",
+        "U-MODEL-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备已核实视觉输入格式的驱动 fixture及明确不支持视觉的驱动配置。",
+        "Provider transport 仅捕获请求，不调用真实模型。"
+      ],
+      "steps": [
+        "发送带已知图片资产的消息，捕获实际交给 transport 的完整 payload。",
+        "把所选驱动切换为不支持或未核实视觉的状态，再发送图片。",
+        "检查本地消息、请求派发和前端状态。"
+      ],
+      "expected": [
+        "支持分支含正确视觉块及对应图片内容，不是 URL 普通文字或只有资产元数据。",
+        "未支持分支保存本地消息但返回 MODEL_VISION_UNAVAILABLE，不丢图后继续回答或静默切换型号。",
+        "本用例证明输入接线，不把离线 payload 检查写成真实模型识图验收。"
+      ],
+      "evidence_required": [
+        "脱敏 wire payload 结构与图片内容 hash。",
+        "未支持分支的派发次数、持久化记录和错误状态。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-06",
+      "title": "历史选择与原文回读携带正确 revision 的媒体",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-MEDIA-02",
+        "U-CONTEXT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "测试历史中包含空正文图片、owner 语音、贴纸及有多个 revision 的消息。",
+        "人工选择和媒体投影器已连接，未使用真实模型。"
+      ],
+      "steps": [
+        "选择上述真实媒体消息并读取 loadContents 结果。",
+        "按已选 revision 装配模型输入，再通过 conversation_read 或 media_read 按需读取旧图。",
+        "模拟资产只返回元数据和实际返回视觉块两种分支。"
+      ],
+      "expected": [
+        "真实语音/贴纸不因旧 kind 过滤被拒；空正文图片没有被当作空记录跳过。",
+        "装载对应固定 revision 的附件，旧版本不被当前附件替换。",
+        "仅实际送入视觉块的资产记录为已见，元数据读取不冒充看图。"
+      ],
+      "evidence_required": [
+        "选集输入、加载结果与最终媒体投影的对应清单。",
+        "旧 revision 附件 hash 和已见证据差异。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-07",
+      "title": "助手附件发布保持顺序并能恢复未知结果",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-MEDIA-03",
+        "U-CHAT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "测试工具循环包含先文字、再附件、后文字的输出。",
+        "可在附件消息已提交而工具回执返回前中断执行。"
+      ],
+      "steps": [
+        "执行 chat_send_attachment 并在提交后注入回执丢失。",
+        "以同一工具操作恢复执行并继续后续文字。",
+        "查看消息序列、发布事件与原操作回执。"
+      ],
+      "expected": [
+        "附件仅发布一次，不被普通分段逻辑再发一遍。",
+        "先文字、附件、后文字按真实发布顺序保存。",
+        "未知结果先回查原操作，不换新键重复发布。"
+      ],
+      "evidence_required": [
+        "故障注入时间、工具 operation_id 和恢复回执。",
+        "正式消息顺序、附件消息数量及 outbox 关联。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-08",
+      "title": "语音原件、转写来源和贴纸显示形成完整本地链",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-EXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "Siren 使用明确标识的离线结果 fixture，配置已选定先转写或先持久化消息的单一流程。",
+        "准备音频、转写及贴纸测试资源。"
+      ],
+      "steps": [
+        "执行语音上传、转写成功和转写失败路径。",
+        "重开已成功语音消息并播放原件、查看派生转写标记。",
+        "发送没有含义说明的贴纸，检查显示和消息类型。"
+      ],
+      "expected": [
+        "原音频持久保存，转写明确为派生内容，不改成用户亲自输入的正文。",
+        "转写失败保留音频/草稿或待处理状态，不空输入调用模型。",
+        "贴纸无需先填写含义即可发送；本地用例不声称 Siren 已真实接通或通话已完成。"
+      ],
+      "evidence_required": [
+        "音频 hash、转写来源字段和模型派发计数。",
+        "历史播放/贴纸渲染记录及失败状态。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-09",
+      "title": "纪念代码文件可持久保存且不会在宿主执行",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-CREATION-01",
+        "U-MEDIA-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "creation_save_artifact 使用同一媒体服务，代码内容为专用测试 fixture。",
+        "对 shell、构建进程和外部 HTTP 调用设置观察计数。"
+      ],
+      "steps": [
+        "分别以 svg/html 保存内容并按 asset_id 重新读取。",
+        "同 client_operation_id 重放，再用原键改变代码。",
+        "提交任意路径、未允许 format 或超限内容；尝试把不支持的 active MIME 当普通聊天附件发送。"
+      ],
+      "expected": [
+        "文件持久保存，重放复用原结果，同键不同内容冲突。",
+        "没有 shell、构建或代码执行，也没有任意 URL 请求。",
+        "纪念用途的格式许可不自动扩大聊天附件许可，本用例不自动发布作品记录。"
+      ],
+      "evidence_required": [
+        "资产 MIME、用途、hash 和幂等结果。",
+        "进程/外部调用零计数及类型拒绝证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-10",
+      "title": "本地资产引用守卫保护历史 revision 和 pending pin",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-CONTEXT-02",
+        "U-ALBUM-04"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "只使用 est 媒体服务 fixture，不执行相册、帖子或作品业务 CRUD。",
+        "同一资产含一个历史 message_attachments 引用及一个 protected 外部操作 pin。"
+      ],
+      "steps": [
+        "解除外部引用后查询有效引用并尝试受控物理清理。",
+        "另外对仅有 protected pin 的资产模拟操作结果未知与恢复。",
+        "使用正确引用 revision 解除引用并重放原 If-Match/幂等键，再尝试越权重放。"
+      ],
+      "expected": [
+        "历史消息 revision 仍引用时返回 ASSET_REFERENCED，文件不被删除。",
+        "protected pin 在结果未知时继续保护文件，不因超时自动释放。",
+        "合法重放返回原解除回执，越权不能取得或执行他人引用操作。"
+      ],
+      "evidence_required": [
+        "有效引用查询结果、文件存在性/hash 与清理拒绝状态。",
+        "reference revision、owner_revision 和幂等恢复回执。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "MEDIA-11",
+      "title": "共享媒体授权与直接打开 active MIME 的隔离",
+      "work_package": "WP3",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-MEDIA-03",
+        "U-CREATION-01"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "使用 qiaosheng/jiaming 测试映射和一份双方已共享资产。",
+        "准备带无害权限探测脚本的 SVG/HTML 测试文件及未认证浏览器上下文。"
+      ],
+      "steps": [
+        "由另一方引用已共享资产，再由未认证或不受信 actor 读取同一资产。",
+        "在隔离预览和直接打开资产地址两条路径加载测试 SVG/HTML。",
+        "观察主站来源权限、写接口调用和响应安全头。"
+      ],
+      "expected": [
+        "created_by 只记录来源，不把双方共享资产变成创建者独占；未授权读取仍被拒绝。",
+        "直接打开和 iframe 预览都不能获得 est 主站凭据或内容写权限。",
+        "尚未实现安全预览的 active MIME 只能下载并明确标未支持预览。"
+      ],
+      "evidence_required": [
+        "脱敏授权结果、响应头及浏览器观察记录。",
+        "探测脚本未取得主站权限、未产生写操作的计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-01",
+      "title": "安装与升级默认关闭后台收费但保留显式提醒",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-02",
+        "U-CACHE-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "分别准备 fresh 数据库和 v20 升级数据库，未配置生产费用额度。"
+      ],
+      "steps": [
+        "完成迁移并启动宿主，读取有效背景设置。",
+        "推进时间经过多个调度周期。",
+        "创建一个显式 enabled 的普通文本提醒并推进至到期。"
+      ],
+      "expected": [
+        "autonomous=false、keepwarm=false、两个 daily_cost_cap_usd=null，没有后台模型或外部收费请求。",
+        "创建的普通提醒按自身开关投递，不被后台收费默认关闭误伤。",
+        "迁移不恢复死 wakeups、旧摘要表或隐式后台流程。"
+      ],
+      "evidence_required": [
+        "两条迁移路径的有效设置与 schema 状态。",
+        "模型／付费工具计数和普通提醒投递回执。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-02",
+      "title": "前端三开关与服务端有效状态一致并持久化",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-02",
+        "U-CACHE-01"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "在隔离宿主打开真实设置页面，使用测试额度与能力夹具，不连接真实付费服务。"
+      ],
+      "steps": [
+        "尝试在美元预算缺失时打开自动唤醒。",
+        "填入测试预算后分别切换自主、保温和普通提醒，观察服务端有效状态。",
+        "刷新页面并重启隔离宿主，再检查开关及状态说明。"
+      ],
+      "expected": [
+        "预算缺失时启用被拒绝，页面不显示后台已有效开启。",
+        "三个开关独立；普通提醒与现有换窗 hold 提醒开关不混淆。",
+        "设置持久化且页面显示实际阻断原因，不只有按钮本地变化。",
+        "关闭文案说明已产生费用和已完成动作保留，不宣称退款或撤回。"
+      ],
+      "evidence_required": [
+        "页面截图、设置请求／响应、重启前后快照。",
+        "对应模型／付费工具实际派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-03",
+      "title": "滚动 60 分钟在多任务与跨房间下仍统一",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-02",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "同一授权主体有多个测试任务和允许访问的测试房间。",
+        "自主任务分别由江乔生UI和周家明工具设置，但执行身份均为获准jiaming"
+      ],
+      "steps": [
+        "在 10:59 让第一轮开始首次可能收费派发。",
+        "在 11:01 尝试另一任务，再修改任务 ID 或选择同主体另一房间触发。",
+        "推进至满 60 分钟后检查下一次合法机会。"
+      ],
+      "expected": [
+        "11:01 的新一轮被冷却门阻止，不能按钟表小时分桶绕过。",
+        "同主体的任务、任务 ID 或房间变化不重置冷却。",
+        "只有到达合法时间后才允许下一轮，显示的 effective_due_at 与门控一致。",
+        "created_by不同不改变actor_id执行主体，不获得第二份60分钟额度"
+      ],
+      "evidence_required": [
+        "各 task／room 的主体归属、first_dispatch_started_at 和结果码。",
+        "冷却边界两侧的模型派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-04",
+      "title": "相同 occurrence 并发领取只产生一个 owner 和派发",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "准备一个到期任务，两个回调读取到相同 occurrence_key。"
+      ],
+      "steps": [
+        "并发执行两次领取，再重放同一个到期回调。",
+        "让唯一成功领取者继续派发并完成。",
+        "检查运行账本、唯一约束结果及系统通知。"
+      ],
+      "expected": [
+        "最多一条有效 owner 和一次实际派发，不因随机 run ID 绕过 occurrence 去重。",
+        "被唯一约束正常阻止的重复领取只留去重诊断，不被当作真实重复收费。",
+        "已完成 occurrence 重放不再次执行。"
+      ],
+      "evidence_required": [
+        "并发领取结果、唯一约束证据和 occurrence 关联。",
+        "transport 计数、运行记录及告警状态。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-05",
+      "title": "关闭自动唤醒能拦住预占后和重试中的竞态派发",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-03",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "自主执行包含可控的预占后 await、重试等待和多工具批次，使用真实取消控制器。"
+      ],
+      "steps": [
+        "让运行停在预占完成但尚未调用 transport 的检查点。",
+        "通过设置接口关闭自动唤醒并等待响应，再释放检查点和重试等待。",
+        "另在一批工具完成第一项后关闭，释放剩余工具步骤。"
+      ],
+      "expected": [
+        "关闭接口返回后不再启动新的自主 transport、重试或下一工具。",
+        "尚未发送的预占按真实证据释放；已开始动作不伪造撤销或退款。",
+        "正常门控拦截记录取消原因与设置版本，不当作关开关本身的系统故障。"
+      ],
+      "evidence_required": [
+        "关闭回执时间、取消代号、预占与 transport／工具开始时间线。",
+        "实际派发计数、运行终态和已知／未知费用记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-06",
+      "title": "用户输入优先抢占正在执行的后台活动",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-WAKE-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "存在一个运行中的自主活动和一个等待中的保温机会。"
+      ],
+      "steps": [
+        "自主模型运行时持久化一条用户消息。",
+        "观察取消信号、下一工具准入和串行链执行顺序。",
+        "完成用户请求并检查活动数及等待任务重判。"
+      ],
+      "expected": [
+        "用户输入入库后立即请求取消可取消背景步骤。",
+        "背景活动不继续占据长工具链；用户在已有取消宽限内取得执行位。",
+        "仍只有一个主模型执行位，待处理保温重新核定而不是抢在聊天前面执行。"
+      ],
+      "evidence_required": [
+        "用户入库、取消、执行位交接和请求开始时间线。",
+        "最大并发数及后续工具派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-07",
+      "title": "自主 no-op 正常结束且不会自动发出最终说明",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-FEED-02",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "分别准备 background_complete(noop) 和无公开动作的正常终态响应。"
+      ],
+      "steps": [
+        "让合法自主任务使用两类夹具分别完成。",
+        "推进调度器并检查是否把无产出视为失败重试。",
+        "读取正式聊天、朋友圈、hold 写入与运行记录。"
+      ],
+      "expected": [
+        "两种无动作完成都可正常记录为 noop，不强制写原因、消息、图片或 hold。",
+        "普通最终说明不自动发布到私聊或朋友圈。",
+        "本轮没有因无产出重试，下一轮仍遵守原冷却。"
+      ],
+      "evidence_required": [
+        "终态回执及模型调用次数。",
+        "正式聊天、帖子和 hold 写入次数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-08",
+      "title": "工具续答与 driver 内部重试全部进入同一预算",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-TOKEN-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "一轮测试预算最多 3 次模型尝试；夹具包含首次 429、随后工具调用响应及工具结果续答。"
+      ],
+      "steps": [
+        "发送第一尝试得到 429，在剩余预算内重试并返回工具调用。",
+        "执行工具并发送第三次模型尝试，返回包含输出和计费 reasoning 的 usage。",
+        "尝试继续第四次模型调用。"
+      ],
+      "expected": [
+        "429、重试和续答均有独立 dispatch，携带同一 run，共累计 3 次。",
+        "输出与 reasoning 累计进入原整轮预算，工具批次各项分别计数。",
+        "第四次请求在 transport 前被阻止，不因新 purpose 或新逻辑步骤取得额度。"
+      ],
+      "evidence_required": [
+        "逐 dispatch 的尝试号、run 归属、开始时间及结果。",
+        "总请求／工具／输出计数和被阻止调用的证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-09",
+      "title": "外部付费默认门不能由模型声明绕过",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-SYSTEM-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "注册一个免费只读工具和一个适配器明确标价的收费工具，paid_tools_enabled=false。"
+      ],
+      "steps": [
+        "在自主活动中先请求免费工具，再请求收费工具。",
+        "在收费请求参数中加入模型声称免费的字段并重试准入。",
+        "随后在独立场景启用付费工具但不提供可信费用上界。"
+      ],
+      "expected": [
+        "免费日常工具按身份正常使用。",
+        "收费工具在总门关闭时不派发，模型参数不能改写适配器计费属性。",
+        "费用上界未知时即使允许付费工具也不派发，不把 unknown 当免费。"
+      ],
+      "evidence_required": [
+        "工具注册计费元数据、请求参数和准入结果。",
+        "免费与收费工具分别的实际执行计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-10",
+      "title": "未知费用保持预占，余额不足时不能继续派发",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-TOKEN-02",
+        "U-SYSTEM-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "使用仅供测试的整数费用单位：日上限 100，第一笔预占 70，下一笔需预占 40。"
+      ],
+      "steps": [
+        "派发第一笔并使费用结果未知。",
+        "尝试预占和派发下一笔。",
+        "用可核实回执结算第一笔实际费用为 50，再重新检查同一后续动作的准入。"
+      ],
+      "expected": [
+        "未知期间 70 的预占不释放，第二笔在派发前被阻止。",
+        "真实回执结算后按实际余额重新计算，不能双重累计或双重释放。",
+        "界面分别显示已知费用和未核实额度，不将未知费用或总费用补零。"
+      ],
+      "evidence_required": [
+        "每一步前后的预占、已知费用和日余额。",
+        "第二笔被阻止及结算后重新准入的事务证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-11",
+      "title": "外部动作超时后只能核实结果，不能自动收费重放",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-SYSTEM-01",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "收费工具可能已接受请求，适配器提供稳定 operation ID 与不收费状态查询。"
+      ],
+      "steps": [
+        "发出一次工具动作后模拟响应失联。",
+        "关闭自动唤醒并恢复该未知操作。",
+        "通过同一 operation ID 查询并返回已完成收据。"
+      ],
+      "expected": [
+        "动作先保持 unknown 和费用预占，不将超时等同未执行。",
+        "关闭期间不重新执行收费动作，但允许不收费的结果查询和结算。",
+        "收据只结算原操作，已完成资产或消息不重复生成。"
+      ],
+      "evidence_required": [
+        "收费请求、状态查询次数及 operation ID 一致性。",
+        "unknown 到结算的账本变化和用户可见状态。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-12",
+      "title": "重启不会补跑积欠自主活动或重复已发请求",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-03",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "数据库含无 dispatch 的孤儿 claimed、已开始的 orphan run，以及错过数小时的周期自主任务。"
+      ],
+      "steps": [
+        "模拟宿主停止后推进数小时，再启动恢复。",
+        "检查孤儿执行分类和未来任务时间。",
+        "连续触发恢复与到期回调，观察是否重发旧动作。",
+        "另模拟系统时间向后跳，再恢复"
+      ],
+      "expected": [
+        "未发送孤儿可标 skipped；已开始而结果不明的执行保留 unknown 及预占。",
+        "周期任务只计算未来合法时刻，不补跑过去每小时。",
+        "重复恢复不会重发已经开始的模型或收费工具；只允许有界不收费核实。",
+        "向后跳不缩短冷却，暂停新后台收费并报告CLOCK_OR_RECOVERY_UNCERTAIN；向前跳不补跑"
+      ],
+      "evidence_required": [
+        "恢复前后任务／run／dispatch 快照。",
+        "未来 due 时间、历史 operation 对账与实际派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-13",
+      "title": "普通提醒不受自主冷却和保温开关限制",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-02",
+        "U-CALENDAR-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "自主总开关关闭或仍在 60 分钟冷却内，保温关闭，普通提醒总开关与任务开关均启用。"
+      ],
+      "steps": [
+        "通过任务服务创建一个指定时刻的预写文本提醒。",
+        "推进到期并重放一次同 occurrence 的投递回调。",
+        "检查投递与模型调用。"
+      ],
+      "expected": [
+        "预写提醒按时投递，不需要主模型生成且不占用自主机会。",
+        "同 occurrence 只投递一次，使用统一投递幂等服务。",
+        "不因提醒投递而开启自主或保温，模型请求数为 0。"
+      ],
+      "evidence_required": [
+        "任务创建和唯一投递回执。",
+        "同 occurrence 重放结果及模型派发计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-14",
+      "title": "提醒关闭与过期宽限不会隐藏故障或批量补推",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-02",
+        "U-SYSTEM-01",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "已有一条未解决系统异常及一个普通提醒，使用统一政策中的到期宽限。"
+      ],
+      "steps": [
+        "关闭普通提醒投递，推进至提醒到期并超过宽限。",
+        "重新开启普通提醒投递并刷新任务列表。",
+        "读取系统通知摘要与原异常。"
+      ],
+      "expected": [
+        "过期提醒保留可见的错过状态，不在重新开启后批量补推。",
+        "系统异常与未核实费用不受普通提醒开关隐藏或自动解决。",
+        "整个过程无主模型调用。"
+      ],
+      "evidence_required": [
+        "提醒状态、投递次数与重新开启回执。",
+        "系统通知的 lifecycle／未读状态和模型计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-15",
+      "title": "取消后迟到用量仍计账但迟到公开输出被挡",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-03",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "自主请求已开始，响应流的文本与 usage 可独立延迟，含同请求重复 usage 观测。"
+      ],
+      "steps": [
+        "在请求开始后停止该次执行。",
+        "释放迟到文本、工具请求和 usage，并重放一次相同计量观测。",
+        "读取聊天、工具执行和费用汇总。"
+      ],
+      "expected": [
+        "取消后的新公开文本及工具动作不再发布或执行。",
+        "真实迟到 usage 仍记到原 request／run，只累计一次。",
+        "停止不清零已发生费用，也不把当前运行后续步骤重新启动。"
+      ],
+      "evidence_required": [
+        "取消 fence 与迟到事件时间线。",
+        "公开消息／工具计数及去重后的 usage／费用记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-16",
+      "title": "幂等重试先查合法回执，再判断新操作版本",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-WAKE-01",
+        "U-WAKE-02",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "使用真实 HTTP 认证、Idempotency-Key 与 If-Match，以及工具的对应参数映射。"
+      ],
+      "steps": [
+        "用合法版本成功更新任务或设置，再让资源版本通过另一次合法修改增加。",
+        "重放第一操作的相同 key、载荷与旧 If-Match；再测试相同 key 不同载荷及新 key 旧版本。",
+        "以另一无权主体请求读取同 key 回执。"
+      ],
+      "expected": [
+        "合法相同操作重放返回原回执，不因当前版本已增长而误拒或再次执行。",
+        "相同 key 不同业务载荷被拒；没有可重放回执的新操作才按统一合同检查 If-Match。",
+        "鉴权在回执查询前生效，无权主体不能读取或重放他人结果。",
+        "工具映射复用同一幂等与版本服务，不形成不同语义。"
+      ],
+      "evidence_required": [
+        "请求头／工具参数、资源 revision 和各类响应。",
+        "实际写入次数、回执关联及无权请求结果。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "BACKGROUND-17",
+      "title": "后台预评审与自主请求共用整轮额度",
+      "work_package": "WP4",
+      "requirement_ids": [
+        "U-CONTEXT-01",
+        "U-CONTEXT-02",
+        "U-WAKE-03",
+        "U-TOKEN-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "独立临时 ESTOMAGO_HOME，ESTOMAGO_TEST_MODE=1，串行执行，使用虚拟时钟、合成数据和无网络 transport；不使用真实凭据或调用真实付费服务。",
+        "人工选集已合法确认，背景活动需要一次 pre_rotate_review；整轮请求上限设为 2。"
+      ],
+      "steps": [
+        "由该背景执行触发一次预评审，再继续一次自主模型请求。",
+        "尝试发送第三次续答请求。",
+        "在另一等待手选的场景触发相同背景任务。"
+      ],
+      "expected": [
+        "预评审与自主请求携带同一 background_run_id，虽然 purpose 不同，请求／输出／时长／费用仍归同一预算。",
+        "两次请求合计为 2，第三次在 transport 前被阻止。",
+        "等待人工选集时不另起一个无背景预算的评审请求。"
+      ],
+      "evidence_required": [
+        "两类 purpose 的 request／run／dispatch 关联和累计额度。",
+        "第三次准入拒绝及等待选集场景的零派发证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-01",
+      "title": "一个可选内容服务停机不阻断聊天，并如实显示不可用",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-FEED-01",
+        "U-ALBUM-02",
+        "U-CREATION-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "隔离实例启用 est 与一个 apps/content 进程，使用各自持久库和测试会话。",
+        "聊天驱动采用不计费的受控替身；内容库已有可读取对象。"
+      ],
+      "steps": [
+        "从同一前端读取帖子、相册和作品，记录公开路径及内容进程监听地址。",
+        "停止 content 后，继续读取聊天历史、发送测试聊天并打开原内容页面。",
+        "恢复 content 后重试原读取；另外验证默认端口被占用时给出明确启动失败。"
+      ],
+      "expected": [
+        "浏览器只经 est 的既有会话访问 /api/v1/content/*；content 仅监听 loopback，端口可配置。",
+        "内容故障不阻断聊天和历史；已打开页面显示内容服务不可用，不能伪装为空列表。",
+        "恢复后原内容仍在；albums、feed、creations、future-notes 共用一个 content 服务和一个 SQLite，无每功能新服务器。",
+        "端口冲突不静默启动另一份服务或改用未知地址。"
+      ],
+      "evidence_required": [
+        "前端操作录像或自动化轨迹、停机时聊天及内容响应记录。",
+        "启动配置、监听地址、进程清单与持久库职责清单。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-02",
+      "title": "作者由真实宿主身份派生，拒绝冒充与第三方访问",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01",
+        "U-ALBUM-02",
+        "U-CALENDAR-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备江乔生登录会话、周家明受控模型工具上下文及无权限测试上下文。",
+        "能够直接向测试 content 端口发送缺少或无效内部服务凭据的请求。"
+      ],
+      "steps": [
+        "分别通过前端与宿主工具创建帖子、评论和未来留言，检查保存的 author_actor。",
+        "在请求体、查询参数和客户端内部身份头中尝试填写另一个 actor；用维护上下文尝试代发。",
+        "使用未登录会话、第三 actor 和无效内部凭据读取或写入内容。"
+      ],
+      "expected": [
+        "前端真实身份映射为 qiaosheng，模型工具真实身份映射为 jiaming，显示名分别为江乔生、周家明。",
+        "客户端伪造身份头被移除，body、query 或工具自报作者均不能改变可信作者；维护上下文不能默认冒名发言。",
+        "content 验证内部凭据与双人 actor 集合；无权限请求返回明确拒绝且没有内容写入。",
+        "双方读取未来留言不等于获得以对方身份安排投递的权限。"
+      ],
+      "evidence_required": [
+        "两种合法入口及各类伪造请求的脱敏输入、响应和持久作者记录。",
+        "宿主身份映射与 content 二次授权的调用轨迹。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-03",
+      "title": "全部内容写入遵守幂等键和精确版本合同",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01",
+        "U-ALBUM-02",
+        "U-CREATION-01",
+        "U-CALENDAR-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "为帖子、评论、相册、作品及未来留言准备各一组可写对象。",
+        "使用同一套可重复的请求矩阵覆盖 HTTP 与对应宿主工具。"
+      ],
+      "steps": [
+        "重复提交同一创建请求，并模拟已提交但响应丢失后用原 Idempotency-Key 重试；同 key 改正文再提交。",
+        "以相同 If-Match 并发更新同一对象；分别尝试缺失、错误、通配符和多版本 If-Match，并尝试在 body/query 重复传控制字段。",
+        "执行带版本和幂等键的删除及重复删除，核对工具 expected_revision/idempotency_key 到头部的映射。"
+      ],
+      "expected": [
+        "每个同 key 同请求最多产生一个业务结果；同 key 不同请求返回 idempotency_conflict。",
+        "同版本并发写最多一方成功；版本冲突不覆盖正文、不改任务、不释放资产。",
+        "新增 HTTP 副作用必须有 Idempotency-Key，PUT/DELETE 还必须有精确 If-Match；读取或写入返回对应 revision/ETag。",
+        "无效头部和重复控制字段被明确拒绝；工具与 HTTP 复用同一业务实现，已成功操作的重试返回原结果。"
+      ],
+      "evidence_required": [
+        "覆盖各资源与写入方法的输入矩阵、响应、对象数量及版本变化记录。",
+        "工具到 HTTP 映射证据和响应丢失恢复轨迹。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-04",
+      "title": "媒体引用跨服务中断后恢复，已发布附件不被回收",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-ALBUM-04",
+        "U-FEED-01",
+        "U-CREATION-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "隔离媒体库支持受控故障注入、引用核对及 GC 演练。",
+        "同一资产已被聊天与至少一个内容对象引用，另备一份替换附件。"
+      ],
+      "steps": [
+        "分别在新增引用 pin 后、content 事务提交后、引用确认前中断宿主，再以同 key 恢复。",
+        "模拟替换附件时 content 明确失败和提交结果未知，执行本地 reconcile 与 GC。",
+        "删除一个内容关联，核对其他引用；记录完整调用方向和数据归属。"
+      ],
+      "expected": [
+        "明确成功只保留一个内容对象，正文与附件集合在 content 本地事务一起提交。",
+        "状态未知时保留保护；新增附件先 pin，旧附件在内容成功更新后才释放，失败不使旧内容丢图。",
+        "恢复可收敛引用；删除一处不会破坏聊天或其他内容引用，GC 不误删仍受保护资产。",
+        "字节、引用账本和补偿记录归 est；content 不同步反调 est，不另建永久文件仓库、队列或协调服务。"
+      ],
+      "evidence_required": [
+        "每个故障点的持久意图、内容提交结果、引用与 pin 前后快照。",
+        "重启恢复、reconcile、GC 后文件可读结果及调用方向轨迹。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-05",
+      "title": "未来留言正文与一次性调度分责，安排失败不冒充成功",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-WAKE-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "content 和 est 现有 background task 测试服务可用，采用可控时钟。",
+        "两种可信作者入口均可创建自己的未来留言。"
+      ],
+      "steps": [
+        "仅保存带正文或有效附件的未来留言，确认没有自动执行任务。",
+        "执行保存并安排，在正文成功后注入任务创建失败，再使用原操作键恢复安排。",
+        "并发尝试为同一留言建立两条启用且未完成的投递任务；测试只给日期时的前端时间说明。"
+      ],
+      "expected": [
+        "content 保存作者、正文、附件和版本；est 保存 source_ref、目标时间及执行状态，没有第二份可独立编辑的留言正本。",
+        "第二步失败明确显示留言已保存但尚未安排；同操作恢复不重复正文或任务。",
+        "第一版使用现有 kind=reminder、schedule_kind=once；同一留言最多一条启用且未完成的任务。",
+        "仅保存不触发投递；日期缺少时间时使用界面已明确展示的配置默认时间，不能偷偷选择当前时刻。"
+      ],
+      "evidence_required": [
+        "正文与任务的脱敏持久记录、失败和恢复响应、并发任务结果。",
+        "前端保存及时间说明截图、调度注册清单。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-06",
+      "title": "未来留言冻结版本确定，编辑不会改写已发消息",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-WAKE-02",
+        "U-CHAT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "受控投递链能够暂停于冻结前和冻结后，且记录 note revision 与 occurrence。",
+        "分别准备 qiaosheng 和 jiaming 的留言，含可识别正文和附件。"
+      ],
+      "steps": [
+        "在冻结前完成一次合法编辑，再继续到期投递。",
+        "在另一 occurrence 冻结后编辑源留言，再完成该次投递；随后读取源留言与已发消息。",
+        "观察两种作者投递是否经过会自动启动主模型的普通用户输入入口。"
+      ],
+      "expected": [
+        "冻结前编辑可被本次投递读取；冻结后本次保持已冻结作者、正文、附件、note ID 和 revision。",
+        "后改源留言不改写已发消息；未来再次明确安排可读取新版，不能伪称修改了历史消息。",
+        "消息保留真实作者，qiaosheng 的留言不能变成 jiaming 回复。",
+        "普通留言走既有消息保存/展示层，不调用模型补文，也不因用户角色自动启动模型。"
+      ],
+      "evidence_required": [
+        "冻结快照、源版本与最终消息的逐项对照及 occurrence/operation ID。",
+        "短临界区或 fence 轨迹、模型调用计数和消息入口记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-07",
+      "title": "停止或删除先于投递提交时阻止发送，失败结果如实返回",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-WAKE-02",
+        "U-ALBUM-04"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "未来留言任务已领取但尚未不可撤销提交，可暂停其最终提交。",
+        "准备当前及过期 note revision，并可注入 content 删除失败。"
+      ],
+      "steps": [
+        "让合法停止或删除先取得持久 fence，再恢复原投递提交。",
+        "使用过期 If-Match 或非作者请求删除，检查关联任务和媒体保护是否被改变。",
+        "让任务取消成功但 content 删除失败，以同 key 重试并重启恢复。"
+      ],
+      "expected": [
+        "停止或删除先取得 fence 时，最终提交重新核对后不产生消息。",
+        "鉴权或版本校验失败不提前取消任务、不释放媒体、不改正文。",
+        "取消成功而源删除失败明确返回部分完成，保持投递停止；同 key 恢复完成原操作。",
+        "重启后已删除留言的孤儿任务不能继续发送；没有新调度器或锁服务。"
+      ],
+      "evidence_required": [
+        "竞争顺序、task revision/fence、最终消息数量及资产保护记录。",
+        "过期版本、无权请求、部分失败和同 key 恢复的实际响应。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-08",
+      "title": "投递先提交或收据未知时保持单消息且不虚报撤回",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-CHAT-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "未来留言含附件，现有消息投递层支持按稳定 operation ID 查询提交结果。",
+        "能够模拟消息已提交但收据丢失，以及仅 outbox 接受尚未确认落点。"
+      ],
+      "steps": [
+        "让消息先提交，再停止或删除源留言。",
+        "在收据丢失时重放到期回调及停止/删除操作，使用原 occurrence 派生的同一 operation ID 恢复。",
+        "观察 outbox 已接受但未确认最终落点期间的前端状态，并执行引用核对。"
+      ],
+      "expected": [
+        "提交先完成时返回 already_committed 与允许读取的 message ID；后删源留言不撤回或改写历史。",
+        "重复回调与未知结果恢复只产生一条最终消息，不能因读取到新 revision 或重试而更换发送 ID。",
+        "结果未知显示待核实；仅 outbox 接受显示待投递，不能宣称已送达或手机已收到。",
+        "已发消息的附件继续受保护；源留言自己的引用移除不会破坏历史消息。"
+      ],
+      "evidence_required": [
+        "同一 occurrence/operation ID 的提交收据、回调及恢复链路。",
+        "源删除前后消息、附件可读性与前端状态证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CONTENT-09",
+      "title": "到期无法读取留言时不发空消息，恢复遵守现有宽限",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-WAKE-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "采用第 04 章现有宽限与恢复配置、受控时钟和不计费模型调用计数器。",
+        "准备可读、已删除、正文及附件不完整和暂不可达的未来留言场景。"
+      ],
+      "steps": [
+        "在任务到期前分别令 content 停机、源留言删除或附件不可用。",
+        "推进时钟跨越有效宽限，再恢复服务；分别观察可恢复和已错过场景。",
+        "在任务开关或普通提醒总开关关闭时重复到期处理。"
+      ],
+      "expected": [
+        "读取失败或不完整时不保存空消息、不猜正文、不调用模型补文，也不写成功状态。",
+        "错误、暂不可达和已错过按既有规则可见；有界恢复不无限补发，不突发发送积压留言。",
+        "任务开关、总开关、可信作者、会话权限及 fence 在最终投递前仍有效。",
+        "content 不拥有定时器；恢复复用 est 现有任务和消息链。"
+      ],
+      "evidence_required": [
+        "各失败分支的任务状态、重试次数、时钟推进与最终消息数量。",
+        "模型调用为零及服务恢复后的实际状态证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-01",
+      "title": "双方经真实入口互相看帖、发帖和评论",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01",
+        "U-FEED-02"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "同一前端已有江乔生会话，周家明具有受控宿主工具入口。",
+        "隔离空间无公众访问，备有一张已授权资产。"
+      ],
+      "steps": [
+        "江乔生在前端发布普通帖和带图帖，周家明使用工具读取并评论。",
+        "周家明使用 content_post_create 发布 letter 展示帖，江乔生在前端阅读并评论。",
+        "双方再次读取双方帖子及评论，刷新并重新登录后检查持久展示。"
+      ],
+      "expected": [
+        "双方都可查看、发布和评论；作者显示与可信 actor 一致，图片引用可重读。",
+        "普通帖和 letter 使用同一评论机制，没有因发帖入口不同而形成另一份帖子。",
+        "未认证访问不可见；不需要额外建立第二个账号体系。"
+      ],
+      "evidence_required": [
+        "两种入口的完整操作录像、工具响应与对应帖子/评论 ID。",
+        "刷新后页面截图及脱敏作者持久记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-02",
+      "title": "本人帖子和评论可编辑删除，另一人的内容拒绝修改",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "两位作者各有帖子及评论，记录各对象当前 revision。",
+        "工程默认采用仅作者可编辑删除帖子和评论。"
+      ],
+      "steps": [
+        "双方分别更新和删除本人帖子、本人评论，使用正确版本和幂等键。",
+        "尝试修改或删除另一人的帖子、另一人的评论，包括在自己帖子下的对方评论。",
+        "重复读取被拒对象并核对版本、正文和媒体引用。"
+      ],
+      "expected": [
+        "本人操作成功并递增 revision；删除按合同留下必要墓碑。",
+        "另一人的内容返回 forbidden，不能借帖子所有权获得删除对方评论的权限。",
+        "拒绝不产生正文、版本或引用变动，维护能力不隐式参与日常操作。"
+      ],
+      "evidence_required": [
+        "两位作者的合法和越权请求矩阵、响应及对象前后对照。",
+        "涉及媒体时的引用不变证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-03",
+      "title": "删除帖子保留他人评论，移除原文附件并禁止新增评论",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "作者甲的帖子带附件，作者乙已评论；另有一篇无评论帖子。",
+        "附件同时被聊天或相册引用。"
+      ],
+      "steps": [
+        "作者甲删除含乙评论的帖子，再通过列表、详情和评论分页读取。",
+        "尝试向墓碑帖子新增评论，再让乙按自身权限处理自己的评论。",
+        "删除无评论帖子，核对列表与共享媒体。"
+      ],
+      "expected": [
+        "删除后的普通接口不再暴露原帖子正文、标题和自身附件关联。",
+        "乙的评论不被级联删除，保留可解释的帖子墓碑；新增评论返回 parent_deleted。",
+        "无评论墓碑不占普通列表；其他对象引用的媒体仍可读取。",
+        "删除帖子的操作不会替乙删除或编辑评论。"
+      ],
+      "evidence_required": [
+        "数据库外键/删除行为及删除前后 API 输出。",
+        "墓碑展示、被拒评论和共享附件可读性证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-04",
+      "title": "评论和帖子稳定分页，独立评论工具可读完全部",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备超过两页的帖子及单帖评论，其中多条时间戳相同。",
+        "可在翻页之间插入新内容和编辑旧内容。"
+      ],
+      "steps": [
+        "以默认 limit 翻完帖子及评论，期间新增和编辑内容，再刷新发起新遍历。",
+        "使用 content_comments_list 独立遍历评论，核对 content_post_get 不将一页评论标成全部。",
+        "交换不同帖子、排序或筛选的游标，并提交 limit 超过 100。"
+      ],
+      "expected": [
+        "帖子按 published_at 与 id 降序，评论按 created_at 与 id 升序，游标遍历无重复或遗漏。",
+        "首次遍历上界固定；新内容由刷新读取，编辑不重排已读序列。",
+        "游标绑定资源、筛选和排序，跨范围复用被拒；超限明确返回参数错误。",
+        "前端和工具都能跟随 next cursor 读完评论，保留准确 has_more。"
+      ],
+      "evidence_required": [
+        "种子 ID 集合与逐页实际 ID 对照、并发操作时间线。",
+        "工具分页记录、游标拒绝响应和索引/排序合同证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-05",
+      "title": "发表时间独立，letter 只改变展示且不恢复旧系统",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-02",
+        "U-CALENDAR-03",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "使用可控时钟准备普通帖、letter 帖及更早创建的未来留言。",
+        "Mariposa 适配器提供写调用审计，避免调用实际模型。"
+      ],
+      "steps": [
+        "发布两种展示帖并检查服务端 published_at，尝试在后续更新中改写发表时间。",
+        "编辑较早帖子，创建或编辑未来留言，再核对 feed 排序和对象来源。",
+        "发布 letter 并读取其评论，检查旧 letter、建桶、hold 等外部写调用。"
+      ],
+      "expected": [
+        "published_at 由服务端确定并保持不变；编辑只更新 updated_at/revision，不能把旧帖顶为新发表。",
+        "未来留言的 created_at 不作为帖子发表时间，也不自动出现在 feed；第一版不存在隐式草稿定时发布。",
+        "post/letter 共享 feed_posts 正本和评论机制，只改变 presentation。",
+        "发 letter 不调用 Mariposa 旧 letter 能力，不自动建桶或 hold。"
+      ],
+      "evidence_required": [
+        "时间字段、排序结果和被拒的发表时间改写请求。",
+        "两种 presentation 的数据及外部写调用为零记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "FEED-06",
+      "title": "自愿分享可正常不发帖，新朋友圈与扎西德勒完全分开",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-FEED-01",
+        "U-FEED-02",
+        "U-WAKE-03",
+        "U-EXT-04"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "自主活动使用受控替身，可返回 no-op 或明确请求发布。",
+        "content 与扎西德勒适配器分别记录读写调用。"
+      ],
+      "steps": [
+        "执行一轮没有帖子、评论和作品的自主活动，观察结果与任务状态。",
+        "分别模拟 content 发布失败和扎西德勒不可用，再检查是否跨平台补发。",
+        "读取新 feed 并核对数据库、发布任务和调度注册。"
+      ],
+      "expected": [
+        "无分享正常结束，不出现欠交、强制补发、催交或小模型检查。",
+        "两种朋友圈不共用帖子/评论正本，不默认同步或转发；失败不自动向另一个服务发布。",
+        "content 不创建自主模型定时器，明确发帖仍经同一宿主工具与身份控制。",
+        "新 feed 仅为双人私密空间，无公众主页、关注或推荐流。"
+      ],
+      "evidence_required": [
+        "no-op 运行结果、调度注册和模型调用记录。",
+        "双适配器调用日志、失败响应及数据归属证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALBUM-01",
+      "title": "周家明可独立归档重要照片，真实资产可长期重读",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-MEDIA-03",
+        "U-MEDIA-01",
+        "U-ALBUM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备授权本地图片、受控生成结果和允许下载的短期 URL，导入走第 03 章资产服务。",
+        "周家明使用真实受控工具上下文，江乔生使用前端会话。"
+      ],
+      "steps": [
+        "周家明导入图片得到 asset_id，再通过 content_album_add 归档为 important_photos 并添加备注。",
+        "让原 URL 过期，刷新、重新登录并重启服务后再读取原图。",
+        "江乔生归档另一图片；将已有 asset_id 再用于帖子或作品，核对字节存储。"
+      ],
+      "expected": [
+        "导入保存真实字节及稳定资产，而非仅保留临时外链；两种作者均能通过各自入口完成归档。",
+        "原 URL 失效及重启后图片仍能读取，来源和备注可追溯。",
+        "已有资产仅新增关联，不重新下载或复制永久文件；content 只保存 asset_id 和元数据。"
+      ],
+      "evidence_required": [
+        "导入结果、归档对象及来源信息，原链接失效后的图片读取证据。",
+        "重启前后资产 ID、文件摘要与引用对照。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALBUM-02",
+      "title": "共享相册移除无需逐项审批，其他正本与引用不被连删",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-ALBUM-04",
+        "U-ALBUM-01",
+        "U-ALBUM-02",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "同一图片绑定截图条目、our_words、帖子和聊天，另有重要照片事件引用。",
+        "双方均能操作共享相册，外部读写适配器开启审计。"
+      ],
+      "steps": [
+        "由非最初添加者更新共享条目的说明，再移除该条目。",
+        "检查删除流程是否额外要求每次人工审批，并读取其他引用位置。",
+        "读取源 our_words、桶及聊天原文，执行资产引用核对与 GC 演练。"
+      ],
+      "expected": [
+        "双方可以维护和移除共享相册归档；依赖正常认证、版本和幂等合同，不增加逐项审批流程。",
+        "移除只解除该相册条目与其关联，不修改或删除 our_words、桶、原文。",
+        "仍被聊天、帖子或其他内容使用的图片继续存在，不能把归档删除误作物理删除。"
+      ],
+      "evidence_required": [
+        "双方操作结果、前端完整删除流程及引用前后快照。",
+        "源对象读取对照、外部删除调用为零和 GC 后可读证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALBUM-03",
+      "title": "从我们的话真实搜索结果按稳定 ID 反查绑定截图",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-ALBUM-01",
+        "U-EXT-01"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "已读取并记录当前 Mariposa 真实 our_words 搜索/读取 schema 和提交版本，使用隔离测试数据。",
+        "至少两个不同 our_words 对象，目标对象绑定超过一页截图；未接通真实合同则保持未执行。"
+      ],
+      "steps": [
+        "经源服务我们的话搜索取得真实 ID，再调用 content_album_list 的完整源引用过滤读取截图。",
+        "遍历所有结果，并把首个对象的游标用于另一个 ID、kind 或 service。",
+        "修改源话正文后重新搜索并反查，检查 content 是否保存了第二份可独立编辑的话全文索引。"
+      ],
+      "expected": [
+        "反查按 service、kind、source_id 的完整稳定引用命中，仅返回真实绑定截图。",
+        "游标绑定源对象及筛选，跨引用使用被拒；大于一页可完整读取。",
+        "话的正文与搜索权威留在 Mariposa，content 保存引用与截图信息，不复制新的可编辑正文正本。",
+        "源不可达与明确不存在分开报告，不把未核验的拟议 DTO 声称为外部既有 API。"
+      ],
+      "evidence_required": [
+        "已核验的真实 schema/版本、源搜索响应和反查 ID 对照。",
+        "全部分页及非法游标结果、content 存储字段检查。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALBUM-04",
+      "title": "表情含义可搜索并发送，图检索和生图均可替换",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-ALBUM-03",
+        "U-VISUAL-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备含双方自定义含义和未填含义的表情条目，关闭外部生图及向量服务。",
+        "聊天附件发送链已完成最小资产关联。"
+      ],
+      "steps": [
+        "双方更新共享表情含义，按含义文本搜索、选择并发送一张表情。",
+        "检索无匹配词和未填写含义的条目，观察空结果及编辑入口。",
+        "在禁用外部向量/生图服务时重复流程，并检查配置是否强绑未经核验的模型。"
+      ],
+      "expected": [
+        "人工定义的含义立即可用于文本搜索；没有含义允许后补，不自动编造固定解释。",
+        "选择后发送的是可重读的真实 asset 引用，不能仅发一串不受保护的临时链接。",
+        "第一期含义检索可独立运行，不要求付费生图或特定 embedding 模型。",
+        "外部生成或多模态检索保留可替换适配边界，没有提供时如实显示能力状态。"
+      ],
+      "evidence_required": [
+        "含义修改、搜索结果、聊天实际附件和重读记录。",
+        "外部服务关闭时的调用记录及配置依赖检查。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "ALBUM-05",
+      "title": "相册资产和源引用先校验，重复归档不覆盖共享说明",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-ALBUM-01",
+        "U-ALBUM-02",
+        "U-MEDIA-03"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备有效与无权资产、有效与不存在的源引用，以及可注入离线的源适配器。",
+        "已有同 kind、asset_id 的条目，含说明、含义及有效 revision。"
+      ],
+      "steps": [
+        "提交带无效资产、无权资产或不允许 kind 的归档，观察是否留下部分内容。",
+        "提交一组包含有效和无效源引用的截图归档；另测试源服务暂不可达。",
+        "使用另一幂等键重复归档同一 kind、asset_id，并携带不同说明。"
+      ],
+      "expected": [
+        "必要资产及完整关联验证全部成功后才提交内容，不把校验失败的引用悄悄丢掉并报告成功。",
+        "不存在、无权与暂不可达给出各自准确错误；先前独立上传的有效资产可以保留但不冒充归档成功。",
+        "同 kind、asset_id 只有一条归档；重复添加返回已有条目，不暗中覆盖另一人的说明或含义。",
+        "修改已有说明须显式更新并经过版本校验。"
+      ],
+      "evidence_required": [
+        "各失败分支响应和提交前后对象/关联数量。",
+        "重复归档返回值、原说明不变及资产保护证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CREATION-01",
+      "title": "纪念作品自愿建立，只有图标也能直接打开原桶",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CREATION-01",
+        "U-CREATION-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "有源桶只读/明确打开适配器和已授权 icon_asset_id。",
+        "可检查 background task、内容对象和外部写调用。"
+      ],
+      "steps": [
+        "创建一个新的源桶，检查是否自动生成纪念记录或待创作任务。",
+        "明确创建只有图标和 bucket_ref 的纪念记录，不提交 work_asset_id/work_kind。",
+        "读取详情并显式打开该纪念记录的桶入口。"
+      ],
+      "expected": [
+        "新桶不自动产生待创作任务、作品债务或强制动画；没有纪念记录属于正常状态。",
+        "图标加稳定桶引用是有效记录，作品字段成对省略即可。",
+        "图标入口直接定位源桶，沿已有明确打开流程；content 不复制桶正文或另造桶。",
+        "双方可经各自入口创建，默认只有创建者可更新或删除自己的纪念记录。"
+      ],
+      "evidence_required": [
+        "新桶前后任务/作品数量、icon-only 创建及详情响应。",
+        "显式打开调用轨迹与越权更新被拒记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CREATION-02",
+      "title": "后补作品沿用原纪念记录与真实事件日期",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CREATION-02",
+        "U-CALENDAR-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "源桶的真实发生日早于桶创建日及纪念记录创建日。",
+        "已有仅图标的纪念记录，并有后来生成的作品资产。"
+      ],
+      "steps": [
+        "在更晚日期给原纪念记录添加 work_asset_id/work_kind。",
+        "读取作品详情与日历事件归属，再在源服务更正真实发生日期并重新读取。",
+        "检查 content 是否提供可独立编辑的事件日期或自动复制桶。"
+      ],
+      "expected": [
+        "后补更新原记录和原 bucket_ref，不创建重复桶、待办或新的发生事件。",
+        "作品和桶显示源服务的真实 event_date，不能取上传日、created_at 或 updated_at。",
+        "源日期更正后聚合按当前正本反映；content 不持有独立可编辑的事件日期正本。",
+        "没有作品的记录仍有效，不被计为欠交。"
+      ],
+      "evidence_required": [
+        "补作品前后记录 ID、bucket_ref、时间字段与源桶数量对照。",
+        "源日期更正后的日历响应和作品展示截图。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CREATION-03",
+      "title": "小作品保存不执行，查看器不能访问会话或宿主写能力",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CREATION-01",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "使用第 03 章 creation_save_artifact 保存受限 SVG/HTML 资产，并备有安全测试脚本。",
+        "在隔离浏览器配置可观测的网络请求、导航和宿主消息监听。"
+      ],
+      "steps": [
+        "保存含脚本的作品，检查保存时服务端是否执行；将资产绑定作品后打开查看器。",
+        "尝试读取 est 凭据、调用发帖/删除 API、访问任意网络和顶层导航。",
+        "从错误 iframe 或实例伪造完成事件/任意跳转 URL，并测试 SVG 原始 HTML 注入。"
+      ],
+      "expected": [
+        "保存只是受限文件入库，不在服务端执行；content 只关联资产。",
+        "HTML 在隔离 sandbox 与 CSP 中运行，无宿主会话、写 API、任意网络或顶层跳转权限。",
+        "postMessage 按来源 iframe、实例和允许事件校验，不能信任作品自报 URL。",
+        "图标 SVG 按安全图像展示，不直接插入可执行原始 DOM。"
+      ],
+      "evidence_required": [
+        "资产保存阶段执行/网络记录、浏览器 sandbox/CSP 实际配置。",
+        "攻击输入、拦截结果、宿主写调用为零及错误来源事件被拒证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CREATION-04",
+      "title": "作品详情可读取，播放结束和异常时都有准确原事件入口",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-CREATION-01",
+        "U-CALENDAR-02"
+      ],
+      "verification": "manual_ui",
+      "preconditions": [
+        "有图标、图片、动画或受限 HTML 的代表性作品，且支持 content_creation_get。",
+        "可以模拟作品媒体失败、源桶明确不存在和源服务暂不可达。"
+      ],
+      "steps": [
+        "通过列表进入作品并调用 content_creation_get，核对完整资产和桶引用。",
+        "观看可播放作品直到结束，并在播放中使用可见的返回或桶入口。",
+        "分别触发媒体失败、源桶 404 和源服务不可用，再检查入口与提示。"
+      ],
+      "expected": [
+        "详情工具与 HTTP 返回真实作品引用，不只返回列表摘要。",
+        "播放结束显示醒目的事件入口；随时可返回，不要求强制看完。",
+        "播放失败仍保留原事件入口，源桶不存在与暂时不可读的提示明确不同，本地作品仍保留。",
+        "预加载、打开作品或播放完成本身不调用 memory_open/view.confirm；明确打开桶才按既有语义确认一次。"
+      ],
+      "evidence_required": [
+        "作品详情工具响应和前端正常/异常路径录像。",
+        "源读取与明确打开调用次数、404/503 分支截图。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CREATION-05",
+      "title": "游戏和情绪保持已批准的最小延期边界",
+      "work_package": "WP5",
+      "requirement_ids": [
+        "U-GAME-01",
+        "U-EMOTION-01",
+        "U-CREATION-02"
+      ],
+      "verification": "deferred_boundary",
+      "preconditions": [
+        "统一前端有游戏和心情入口的最小实现；心情读取只使用已核验并允许展示的 Mariposa 字段。",
+        "准备无心情记录、历史标签及带时间/源桶的真实形状测试数据。"
+      ],
+      "steps": [
+        "打开空游戏厅及已有作品入口，检查后台服务和任务注册。",
+        "分别展示无记录和历史心情标签，检查来源、时间及是否被标为当前心情。",
+        "检查是否新增评分、情绪坐标推导、排行榜、游戏引擎或每日创作任务。"
+      ],
+      "expected": [
+        "游戏厅真实展示空状态或作品入口，不虚构已有游戏、积分、排行榜、实时服务器。",
+        "只呈现实际允许的心情标签、来源和时间；无记录不补中性，历史不冒充当前。",
+        "情绪维度和数值模型保持待定，不从聊天或作品自动推导；自由心情文字仍受原读取边界约束。",
+        "空白和未创作不制造待办或欠交；该项只验延期边界，不宣称未实现的游戏或数值模型已完成。"
+      ],
+      "evidence_required": [
+        "空状态与历史标签界面截图、实际使用字段和来源映射。",
+        "服务/任务及模型调用清单、延期范围完成报告。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-01",
+      "title": "月历只读跨源摘要，单源故障如实降级",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-01",
+        "U-EXT-01",
+        "U-EXT-06"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "日历读聚合已接入受控的聊天、桶、计划、星重要日期与作品摘要适配器。",
+        "每个适配器能记录查询范围及响应体，可分别注入离线。"
+      ],
+      "steps": [
+        "请求一个 Asia/Shanghai 公历月，检查各源调用与最终摘要。",
+        "将其中一个源设为不可达，再请求同月和该源日详情。",
+        "模拟某源仅能返回有内容但未加载精确计数，检查界面与响应。"
+      ],
+      "expected": [
+        "月视图按自然月按需取计数/标记，不下载整月聊天正文、桶全文或星星正文。",
+        "独立源失败保留其他源结果并明确部分不可用，不能把未知计数显示成 0。",
+        "无法取得精确数量时如实表达有内容但计数未加载；单源不可达返回 source_unavailable 等准确语义。",
+        "聚合仅保存可重建读缓存或引用，不成为外部可编辑正本。"
+      ],
+      "evidence_required": [
+        "月请求及分源范围/载荷日志、故障前后摘要响应。",
+        "正常与部分不可用界面截图及缓存/数据职责检查。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-02",
+      "title": "日详情分源稳定分页，不把一页当成当天全部",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-01",
+        "U-CALENDAR-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "同一天同一源含超过两页对象，部分排序键时间相同。",
+        "准备另一日期和另一来源，以测试游标范围。"
+      ],
+      "steps": [
+        "读取日概要，再经 /api/v1/calendar/day/items 分页读取指定来源。",
+        "翻页期间增加新对象并编辑旧对象，随后刷新遍历。",
+        "跨日期、跨源复用游标，提交不合法日期及超过最大值的 limit。"
+      ],
+      "expected": [
+        "日概要与各源条目分开，分页后可读完有效范围，准确保留 next cursor/has_more。",
+        "不透明 keyset 游标绑定日期、来源、筛选、排序和遍历上界，不因新增或编辑重复漏项。",
+        "跨范围游标、无效日期、超限明确报错；默认 20、最大 100。",
+        "前端保留继续读取入口，尚有下一页时不能标成当天全部。"
+      ],
+      "evidence_required": [
+        "种子 ID 与全部分页结果对照、期间变更记录。",
+        "无效输入响应及前端多页读取录像。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-03",
+      "title": "北京时间自然日采用半开区间并跨内部聊天窗口",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-01",
+        "U-CALENDAR-02",
+        "U-CHAT-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "测试日为 2026-10-11，消息存储使用 UTC ISO 时间并保留毫秒。",
+        "在边界前后及至少两个内部窗口准备消息，含未 hold 的普通聊天。"
+      ],
+      "steps": [
+        "准备北京时间 10 月 10 日 23:59:59.999、11 日 00:00、11 日 23:59:59.999、12 日 00:00 的消息。",
+        "查询 2026-10-11 的当天全部聊天，并翻完全部页。",
+        "核对实际 UTC 查询边界、跨窗顺序及未 hold 消息。"
+      ],
+      "expected": [
+        "UTC 范围为 [2026-10-10T16:00:00Z,2026-10-11T16:00:00Z)，包含当日 00:00，排除次日 00:00。",
+        "毫秒边界不被日期截断或本机 UTC 时区误算。",
+        "完整当天聊天涵盖内部窗口切换及未 hold 消息；不依赖当前模型上下文或缓存存活。",
+        "原始消息时间不被日历转换改写。"
+      ],
+      "evidence_required": [
+        "种子消息 ID/UTC 时间与实际包含、排除集合。",
+        "查询边界、逐页结果及跨窗口关联记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-04",
+      "title": "事件按真实发生日归属，写入日和农历不被静默替代",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-01",
+        "U-CALENDAR-02",
+        "U-CREATION-02",
+        "U-CALENDAR-04"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备事件发生日、桶写入日、作品添加日均不同的样例及无发生日期样例。",
+        "准备明确公历年度日期与源仅标注农历但未提供可靠换算的日期记录。"
+      ],
+      "steps": [
+        "读取相关日期和月份的桶及作品条目，检查 event_date 来源。",
+        "修改桶正文但不改事件日期，再补作品；随后在源服务合法更正事件日期。",
+        "读取未知日期和未核验农历转换的条目，观察是否被自动塞入今天。"
+      ],
+      "expected": [
+        "桶和作品按源真实 event_date 归属，不用 created_at、updated_at、published_at 或导入日替代。",
+        "未知事件日期保持未归属，不推定为创建日或今天；源日期更正按正本反映。",
+        "公历年度重复按已明确合同处理；农历未核验时不静默当公历或猜转换。",
+        "后补作品不生成第二个事件或复制桶。"
+      ],
+      "evidence_required": [
+        "各样例时间字段、源适配映射与月/日结果对照。",
+        "未知日期及农历边界显示、源更正后的刷新结果。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-05",
+      "title": "相关原文和当天全部聊天分开，读取预取不触发打开确认",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-02",
+        "U-CONTEXT-02",
+        "U-EXT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "桶绑定跨天原文片段；同一天另有未 hold 且未绑定该桶的聊天。",
+        "源适配器分别记录只读查询和 memory_open/view.confirm 等明确打开动作。"
+      ],
+      "steps": [
+        "从日历标题卡片查看关联说明，并分别进入相关原文和当天全部聊天入口。",
+        "预取月历、日详情、搜索结果及作品并播放，检查明确打开计数。",
+        "明确打开桶一次，再核对其既有确认语义与原文定位。"
+      ],
+      "expected": [
+        "相关原文按源绑定引用精确定位，允许跨天；当天全部入口按自然日读完整聊天，两者不能互相替换。",
+        "未 hold 闲聊仍能在当天完整聊天中读取；内容服务不保存新的可编辑原文正本。",
+        "列表、关联校验、搜索、预取和作品播放不触发打开或续期确认。",
+        "明确打开桶才复用已有确认语义，页面与代理不能各确认一次。"
+      ],
+      "evidence_required": [
+        "两入口结果 ID 集合与源绑定对照、未 hold 消息可见证据。",
+        "全程只读/明确打开调用轨迹和确认次数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-06",
+      "title": "星星仅按重要日期显示，所有日历读取和提醒预览均不消费",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-04",
+        "U-EXT-06"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "已读取并记录当前 Superposition 重要日期读取及邀请/确认/拆星真实合同；使用隔离星星实例。",
+        "准备今天创建但无今日重要日期的星，以及有指定重要日期的星；记录剩余数和流程状态。"
+      ],
+      "steps": [
+        "在不同日历日期查看月摘要、日详情和重要日期提醒预览，多次刷新。",
+        "检查今天创建的星是否出现今日标记，并核对所有源请求是否只读允许的 special_dates/状态。",
+        "从明确入口进入原星星流程，确认仍遵守其邀请和确认；若合同未核验，检查动作保持关闭。"
+      ],
+      "expected": [
+        "只有源既有重要日期产生标记，create 日不自动成为拆星日。",
+        "日历读取、预加载和提醒展示均不取下一颗、不确认、不消费会话，不读取未允许星正文作预览。",
+        "刷新前后剩余数量、取星状态与确认状态完全一致；提醒投递不等于星已拆。",
+        "显式进入仍遵守原服务流程；未核验时保留待接状态，不能用模拟行为声称外部已接通。"
+      ],
+      "evidence_required": [
+        "真实合同版本/入口映射、各请求日志及前后星状态快照。",
+        "create 日和重要日界面对照、邀请/确认入口证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "CALENDAR-07",
+      "title": "计划正本在 Mariposa，提醒投递不改变计划完成状态",
+      "work_package": "WP6",
+      "requirement_ids": [
+        "U-CALENDAR-03",
+        "U-WAKE-02",
+        "U-NOTIFY-01",
+        "U-EXT-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "准备可编辑的源 plan、est 提醒任务及 content 未来留言，使用已核验的适配合同形状。",
+        "采用可控时钟、现有消息投递替身与模型调用计数器。"
+      ],
+      "steps": [
+        "从日历打开计划并编辑安排或状态，再直接读取源 plan 及聚合。",
+        "安排关联提醒和未来留言，推进至目标时间，观察当日展示、任务执行及消息保存。",
+        "比较投递前后 plan 状态，并分别模拟仅站内可见和未支持手机系统推送。"
+      ],
+      "expected": [
+        "正式计划正文、状态和安排日期只在 Mariposa 修改，est 保留任务执行信息，content 留言正文保持单一正本。",
+        "目标日展示来自计划/任务各自权威时间；提醒投递成功不自动把 plan 标为完成。",
+        "预写提醒和留言无需额外模型；保存、待投递、已保存到聊天和手机推送结果各自如实报告。",
+        "只有站内实时提醒或推送能力未支持时不能宣称离线手机系统提醒已送达。"
+      ],
+      "evidence_required": [
+        "源 plan 编辑与聚合响应对照、调度任务和消息记录。",
+        "投递前后 plan 状态、模型调用为零及不同通知能力状态截图。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-01",
+      "title": "Mariposa 既有 HTTP 与媒体原文合同逐项核实",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-01",
+        "U-MEDIA-01",
+        "U-CONTEXT-02"
+      ],
+      "verification": "source_contract",
+      "preconditions": [
+        "具备当前 est 基准；Mariposa 当前正本可读时固定其 SHA，不可读时明确记录合同待核。",
+        "不使用真实模型，不向生产写入来源或桶。"
+      ],
+      "steps": [
+        "对照实际客户端与 Mariposa 当前 schema/服务实现核实 HTTP 路径、信封、published_kind、assets 和 hash/ACK 语义。",
+        "检查纯文字既有链路与含附件归档状态的区分。",
+        "合同未核或不支持时，用本地 fixture 检查 ASSET_ARCHIVE_CONTRACT_UNVERIFIED 和待处理记录。"
+      ],
+      "expected": [
+        "保留既有 /api/capability HTTP 面及凭据边界，不为统一名词改造为 MCP。",
+        "不擅发新增 published_kind 或未支持资产对象，含附件消息不能用 assets 空数组宣称完整归档。",
+        "合同缺失登记 blocked，保留本地完整事实；离线行为证据不冒充 Mariposa 真实 ACK。"
+      ],
+      "evidence_required": [
+        "两侧 SHA、实际 schema/代码定位和逐字段合同矩阵，缺少项明确注明。",
+        "本地归档阻断与纯文字旧链行为证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-02",
+      "title": "Siren 转写、完整语音归档和流式通话分别核验",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-02",
+        "U-MEDIA-01"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "读取 Siren 当前代码或明确版本化合同；不可读时保留各入口待核状态。",
+        "默认不调用付费识别/合成，不建立真实通话。"
+      ],
+      "steps": [
+        "分别定位转写、纯合成、生成并归档、资源重取和实时流接口。",
+        "核对身份、消息关联、幂等、取消、超时及资源有效期。",
+        "对缺失或尚未接线的入口检查 est 是否返回明确状态，而非假成功。"
+      ],
+      "expected": [
+        "选择真实存在的 HTTP/MCP 业务入口，实时通话按真实流协议接线。",
+        "音频字节生成成功不等于聊天归档/历史可播放，语音条完成不等于实时通话完成。",
+        "未核的接口保持 blocked；fixture 成功只证明 est 适配代码。"
+      ],
+      "evidence_required": [
+        "Siren 版本和入口/资源生命周期合同清单。",
+        "语音条、归档、播放、通话四项独立状态及缺项清单。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-03",
+      "title": "oído 按真实 MCP 接缝预留而不内置听觉管线",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-03"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "只在取得 oído 当前可读代码/接口说明后识别实际工具；GitHub 未含实现不作为其本机未完成的证据。",
+        "没有当前合同则本用例的外部连接结果待核。"
+      ],
+      "steps": [
+        "记录 MCP 传输、初始化、工具名/schema、资源返回和频谱流通道。",
+        "核对 est 配置、工具映射、连接状态和断线错误位置。",
+        "确认实时流与大文件使用专用资源通道而不是巨型文字工具返回。"
+      ],
+      "expected": [
+        "听觉/频谱业务保留在 oído，est 只做工具适配与结果入口。",
+        "只填地址不能标记已接通；未知传输/schema 返回 INTEGRATION_CONTRACT_UNVERIFIED。",
+        "没有用假工具列表代替 oído 实际合同证据。"
+      ],
+      "evidence_required": [
+        "真实合同版本或明确缺失说明。",
+        "MCP 能力映射、资源通道和状态矩阵。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-04",
+      "title": "扎西德勒 MCP 工具按现有业务隔离接入",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-04",
+        "U-FEED-01"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "取得扎西德勒当前工具定义与协议版本，未取得则保持待核。",
+        "不向真实群聊或朋友圈发送任何内容。"
+      ],
+      "steps": [
+        "核对 MCP 传输、工具能力、身份作用域及结果合同。",
+        "检查 est 注册映射与新私密 content 模块的目标服务分离。",
+        "模拟能力未配置和调用失败，检查是否错误转发到另一个朋友圈。"
+      ],
+      "expected": [
+        "扎西德勒继续独立服务，工具目标由明确服务注册决定。",
+        "与新私密朋友圈不共用发布目标或默认同步，不在失败后改投另一个空间。",
+        "只有真实协议和接线证据齐备才报告对应能力已接通。"
+      ],
+      "evidence_required": [
+        "服务版本、MCP schema 与目标服务映射。",
+        "无跨目标回退的离线请求记录及未核项目状态。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-05",
+      "title": "Antinomy 共度能力复用现有正本与参与者身份",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-05"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "当前 Antinomy 阅读/进度/批注合同可读时固定版本；缺失则明确待核。",
+        "默认不改变真实阅读进度或发布批注。"
+      ],
+      "steps": [
+        "定位实际读取和操作接口及参与者身份表达。",
+        "检查 est adapter 是否映射 qiaosheng/jiaming 到真实服务身份而非默认共享一个进度。",
+        "检查配置故障和源服务离线的返回，以及 est/content 是否复制可独立编辑的阅读数据。"
+      ],
+      "expected": [
+        "书籍、进度、批注等业务正本仍在 Antinomy，est 只接入口和授权工具。",
+        "双方身份与进度不被混用。",
+        "合同或连接未核明确 blocked，离线不会返回空书架冒充正常。"
+      ],
+      "evidence_required": [
+        "当前源接口及身份映射合同。",
+        "数据库/代码归属检查和离线状态样例。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-06",
+      "title": "Superposition 日期读取与状态改变工具分清合同",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-06",
+        "U-CALENDAR-04"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "读取当前 Superposition 的重要日期、邀请/确认和取星合同；未知项保留待核。",
+        "禁止真实拆星或消费会话。"
+      ],
+      "steps": [
+        "在接口合同表中区分只读重要日期与会改变星星状态的动作。",
+        "对 est adapter 的调用目标做源代码或受控 transport 检查。",
+        "检查未核合同时的注册状态与错误，确认没有替代实现星星业务。"
+      ],
+      "expected": [
+        "日历/提醒接缝只映射只读重要日期与安全入口，不指向取下一颗或确认消费操作。",
+        "拆星动作继续服从原服务邀请与确认合同。",
+        "未知协议不启用动作，不用 fixture 宣称真实星星流程联调成功。"
+      ],
+      "evidence_required": [
+        "带版本的读/写接口分类与 est 调用映射。",
+        "静态或离线调用目标证据及未核清单。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-07",
+      "title": "X 和小红书复用用户已有外部浏览架构",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-EXT-07"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "能读取用户已有 X/小红书架构的连接方式时逐项记录；否则明确配置和合同待核。",
+        "本用例不登录新账户、不发布站外内容、不调用付费搜索。"
+      ],
+      "steps": [
+        "核对现有连接器的读取/搜索/媒体资源结果和授权方式。",
+        "检查 est 仅以明确注册的外部工具调用，网页资料不会成为身份/预算配置命令。",
+        "检查未配置、登录失效和读取失败时的状态及重试边界。"
+      ],
+      "expected": [
+        "不在 est 重新建立爬虫、浏览器账号或社交平台业务库。",
+        "本包没有新增站外社交发布，读取结果与可导入媒体按受控合同返回。",
+        "外部故障只影响该能力；未核访问不能以假搜索结果补齐。"
+      ],
+      "evidence_required": [
+        "已有连接器合同版本、权限和资源返回映射。",
+        "未配置/失败状态与外部调用边界检查记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-08",
+      "title": "MCP 客户端实际完成协议生命周期和结果转换",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-EXT-03",
+        "U-EXT-04",
+        "U-MEDIA-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "使用锁定版本 MCP 客户端和专用本地测试服务，明确它不是真实 oído/扎西德勒。",
+        "测试服务可返回文字、图片、资源链接、超时和断线。"
+      ],
+      "steps": [
+        "通过真实客户端执行初始化、tools/list、允许工具的 tools/call。",
+        "返回不同 MCP 内容块并检查媒体资产化和模型结果映射。",
+        "模拟取消、超时、断线及一个写操作结果未知。"
+      ],
+      "expected": [
+        "发生真实协议往返，不是配置静态工具表后直接返回 PASS。",
+        "未允许工具不自动开放，图片/资源结果不变成普通 Base64 正文。",
+        "取消与未知写结果有明确处理，不盲目重复；只将此结果计作 MCP 客户端离线验收。"
+      ],
+      "evidence_required": [
+        "测试服务与客户端版本、脱敏协议轨迹。",
+        "转换后的资产/工具结果及取消、未知结果计数。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-09",
+      "title": "OR 与 SDK 的工具装配分别证明，未接驱动不假通过",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-EXT-01",
+        "U-EXT-03",
+        "U-EXT-04"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "OR、SDK 使用各自受控运行 fixture，不加载真实账户会话。",
+        "保留基准 SDK 非空 MCP allowlist 的阻断测试。"
+      ],
+      "steps": [
+        "捕获 OR 模型可见工具与 est 工具循环，验证一个注册 MCP 调用确实落到客户端。",
+        "检查 SDK 最终 mcpServers 配置；分别覆盖映射已实现和未实现状态。",
+        "检查动态或恶意工具定义是否被当成 eval、new Function 或任意 shell 执行。"
+      ],
+      "expected": [
+        "OR 工具适配不依赖 SDK 路径；Mariposa 继续沿已有 HTTP 客户端。",
+        "SDK 映射未实现时明确 blocked，不能只删除旧门后静默丢工具。",
+        "每个驱动独立报告接线状态，没有动态执行远端代码的万能调用器。"
+      ],
+      "evidence_required": [
+        "各驱动最终工具配置、实际调用轨迹和 blocked 分支。",
+        "动态代码执行检查及锁定依赖版本。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-10",
+      "title": "站内到时可见与离线手机系统推送分别验收",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-NOTIFY-01"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "检查已有或选定推送能力及移动端所需条件；未知协议明确待核。",
+        "默认只做合同与离线适配检查，不发送真实通知。"
+      ],
+      "steps": [
+        "记录站内 SSE 提醒与手机系统推送的不同投递入口、回执和能力条件。",
+        "检查有订阅、无订阅、推送能力未配置和提供方错误的状态表达。",
+        "用离线 transport 检查脱敏推送请求；单列是否已有真实手机接收证据。"
+      ],
+      "expected": [
+        "站内页面可见不能被登记为离线手机推送已完成。",
+        "未支持/未配置推送明确显示对应状态，不用网页红点冒充系统通知。",
+        "没有经过授权的真实手机接收证据前，真实推送状态保持未验证；fixture 只证明适配。"
+      ],
+      "evidence_required": [
+        "推送合同及端侧条件、站内与手机两列能力状态。",
+        "离线请求样例及真实手机验收尚未执行的明确记录。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "INTEGRATION-11",
+      "title": "生图与图像检索使用已核外部合同且不虚构能力",
+      "work_package": "WP7",
+      "requirement_ids": [
+        "U-VISUAL-01",
+        "U-MEDIA-03"
+      ],
+      "verification": "external_contract",
+      "preconditions": [
+        "实际供应商/外部模型合同可读时固定版本，未选型或未核验时保持 disabled/blocked。",
+        "不付费生图，不下载新向量模型，不提交私人图片。"
+      ],
+      "steps": [
+        "分别核对生成、编辑、文字找图、图搜图的真实支持范围，不能互相代替。",
+        "检查生成结果为字节、资源引用或任务 ID 时的资产导入和原任务回查路径。",
+        "核对未配置、结果未知和只具备文本含义检索时的状态。"
+      ],
+      "expected": [
+        "不锁定未经核实的型号，不把向量检索写成图片生成能力。",
+        "图片先持久保存为 asset_id，结果未知先查询原任务，不重新创建计费任务。",
+        "文本含义检索可独立可用，外部多模态能力未核则如实待核，不阻塞基本聊天。"
+      ],
+      "evidence_required": [
+        "生成与各类检索的逐项能力合同和版本来源。",
+        "结果类型映射、任务回查与未配置状态的源代码/离线证据。"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "DELIVERY-01",
+      "title": "备份恢复覆盖两个DB和媒体",
+      "work_package": "WP8",
+      "requirement_ids": [
+        "U-CHAT-01",
+        "U-CONTEXT-02",
+        "U-ALBUM-04",
+        "U-FEED-01"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "隔离est/content各有fixture和引用文件"
+      ],
+      "steps": [
+        "用一致快照备份",
+        "恢复到新临时根并只读验证"
+      ],
+      "expected": [
+        "消息/feed/revision/已读/后台未知账本一致",
+        "资产可读、无孤立活跃引用",
+        "不靠复制活跃WAL主文件伪称备份"
+      ],
+      "evidence_required": [
+        "备份清单/恢复对照/无外部调用"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "DELIVERY-02",
+      "title": "跨模块一条完整离线链",
+      "work_package": "WP8",
+      "requirement_ids": [
+        "U-MEDIA-01",
+        "U-CONTEXT-01",
+        "U-WAKE-01",
+        "U-FEED-01",
+        "U-CALENDAR-01",
+        "U-SYSTEM-02"
+      ],
+      "verification": "offline_behavioral",
+      "preconditions": [
+        "测试模式fake adapters、隔离两服务与虚拟时钟"
+      ],
+      "steps": [
+        "文字和图片聊天后受控换窗",
+        "自主显式发feed，对方评论",
+        "日历读关联后关闭auto并重启"
+      ],
+      "expected": [
+        "图片和修订保留",
+        "双向内容作者准确",
+        "只读不拆星/hold",
+        "关闭后无后续付费，新告警与未知费用重启不丢"
+      ],
+      "evidence_required": [
+        "关键调用顺序/数量、身份、DB状态及代码提交"
+      ],
+      "status": "NOT_EXECUTED"
+    },
+    {
+      "id": "DELIVERY-03",
+      "title": "最终报告不把mock当实机",
+      "work_package": "WP8",
+      "requirement_ids": [
+        "U-MODEL-01",
+        "U-EXT-03",
+        "U-EXT-04",
+        "U-NOTIFY-01"
+      ],
+      "verification": "source_contract",
+      "preconditions": [
+        "已完成本仓实现但部分外部尚未提供"
+      ],
+      "steps": [
+        "对照每条验收与外部合同矩阵"
+      ],
+      "expected": [
+        "代码/离线测试/实机状态分开",
+        "未知依赖精确列字段与能力",
+        "没有自填PASS、生产部署或付费调用混入离线证据"
+      ],
+      "evidence_required": [
+        "四份报告/测试命令与环境/剩余合同"
+      ],
+      "status": "NOT_EXECUTED"
+    }
+  ]
+}

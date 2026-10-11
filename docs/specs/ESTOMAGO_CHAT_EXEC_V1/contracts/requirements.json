@@ -1,0 +1,843 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_CHAT_EXEC_V1",
+  "source_of_truth": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+  "requirements": [
+    {
+      "id": "U-CHAT-01",
+      "title": "文本聊天与连续历史",
+      "rule": "保留流式、分段、停止、修订、重连与分页；表面连续线程；日期分隔不等于换模型窗口",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP1",
+        "WP2",
+        "WP3",
+        "WP4",
+        "WP5",
+        "WP6",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "BASE-03",
+        "TOKEN-05",
+        "CONTEXT-03",
+        "CHAT-01",
+        "CHAT-02",
+        "CHAT-03",
+        "CHAT-04",
+        "MEDIA-07",
+        "BACKGROUND-06",
+        "CONTENT-01",
+        "CONTENT-06",
+        "CONTENT-08",
+        "CALENDAR-03",
+        "DELIVERY-01"
+      ]
+    },
+    {
+      "id": "U-CHAT-02",
+      "title": "输入语义",
+      "rule": "Enter 换行；独立发送键；IME 确认不发送；多行正文一条消息",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3"
+      ],
+      "acceptance_ids": [
+        "CHAT-01"
+      ]
+    },
+    {
+      "id": "U-MEDIA-01",
+      "title": "图片/贴纸/语音消息",
+      "rule": "附件可发可显可重新读取，真实资产与消息稳定关联",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP3",
+        "WP5",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "TOKEN-04",
+        "CHAT-01",
+        "CHAT-02",
+        "CHAT-03",
+        "CHAT-04",
+        "MEDIA-01",
+        "MEDIA-02",
+        "MEDIA-03",
+        "MEDIA-06",
+        "MEDIA-07",
+        "MEDIA-08",
+        "MEDIA-10",
+        "MEDIA-11",
+        "CONTENT-04",
+        "CONTENT-08",
+        "FEED-03",
+        "ALBUM-01",
+        "ALBUM-02",
+        "ALBUM-04",
+        "CREATION-03",
+        "INTEGRATION-01",
+        "INTEGRATION-02",
+        "INTEGRATION-08",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-MEDIA-02",
+      "title": "主模型真正看图",
+      "rule": "适配成所选模型的视觉输入；URL 文本不能冒充已看图",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP3"
+      ],
+      "acceptance_ids": [
+        "TOKEN-07",
+        "MEDIA-05",
+        "MEDIA-06"
+      ]
+    },
+    {
+      "id": "U-MEDIA-03",
+      "title": "周家明独立保存图片",
+      "rule": "可用文件/生成结果/可读 URL 导入；已有 asset 只归档，不重复搬文件",
+      "phase": "CORE+CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3",
+        "WP5",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "MEDIA-01",
+        "MEDIA-03",
+        "MEDIA-04",
+        "MEDIA-07",
+        "MEDIA-09",
+        "MEDIA-11",
+        "ALBUM-01",
+        "ALBUM-05",
+        "INTEGRATION-11"
+      ]
+    },
+    {
+      "id": "U-MODEL-01",
+      "title": "主模型与工具宿主",
+      "rule": "OR 主接入，DS 驱动保留，SDK 保留；不以 API key 身份推定运行路径",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP2",
+        "WP3",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "BASE-01",
+        "CACHE-01",
+        "CACHE-07",
+        "MEDIA-05",
+        "INTEGRATION-08",
+        "INTEGRATION-09",
+        "DELIVERY-03"
+      ]
+    },
+    {
+      "id": "U-CONTEXT-01",
+      "title": "上下文唯一策略",
+      "rule": "保持 64k 受控换窗、手选原文可零选、不自动 DS/滚动摘要",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP2",
+        "WP3",
+        "WP4",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "CACHE-04",
+        "CONTEXT-01",
+        "CONTEXT-02",
+        "CONTEXT-03",
+        "CONTEXT-04",
+        "MEDIA-06",
+        "BACKGROUND-17",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-CONTEXT-02",
+      "title": "原文与 hold",
+      "rule": "原文保存不依赖缓存/hold；换窗前提醒一次；周家明可不 hold",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP1",
+        "WP2",
+        "WP3",
+        "WP4",
+        "WP5",
+        "WP6",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "BASE-03",
+        "TOKEN-03",
+        "CACHE-04",
+        "CONTEXT-02",
+        "CONTEXT-03",
+        "CONTEXT-04",
+        "CHAT-04",
+        "MEDIA-10",
+        "BACKGROUND-07",
+        "BACKGROUND-17",
+        "FEED-05",
+        "CALENDAR-03",
+        "CALENDAR-05",
+        "INTEGRATION-01",
+        "DELIVERY-01"
+      ]
+    },
+    {
+      "id": "U-CACHE-01",
+      "title": "1h 缓存与滚动 50min 保温",
+      "rule": "同一有效前缀读写请求开始时计时；普通聊天成功刷新则顺延",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP1",
+        "WP2",
+        "WP4"
+      ],
+      "acceptance_ids": [
+        "BASE-02",
+        "ALERT-01",
+        "CACHE-01",
+        "CACHE-02",
+        "CACHE-03",
+        "CACHE-04",
+        "CACHE-05",
+        "CACHE-06",
+        "CONTEXT-03",
+        "BACKGROUND-01",
+        "BACKGROUND-02"
+      ]
+    },
+    {
+      "id": "U-CACHE-02",
+      "title": "防止隐式压缩",
+      "rule": "OR 明确禁压缩；SDK 最终设置核验；不把未验证显示成1h已生效",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP2"
+      ],
+      "acceptance_ids": [
+        "ALERT-07",
+        "CACHE-01",
+        "CACHE-07",
+        "CACHE-08"
+      ]
+    },
+    {
+      "id": "U-WAKE-01",
+      "title": "自动唤醒开关",
+      "rule": "前端明确开/关；后台也执行门控；关闭阻止新自主轮及后续可取消步骤",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP1",
+        "WP2",
+        "WP4",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "BASE-02",
+        "ALERT-05",
+        "CACHE-07",
+        "BACKGROUND-01",
+        "BACKGROUND-02",
+        "BACKGROUND-05",
+        "BACKGROUND-13",
+        "BACKGROUND-15",
+        "BACKGROUND-16",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-WAKE-02",
+      "title": "自设/聊天设置闹钟",
+      "rule": "双方可经各自身份设置；一份任务记录；普通投递与模型活动分责",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP4",
+        "WP5",
+        "WP6"
+      ],
+      "acceptance_ids": [
+        "BACKGROUND-01",
+        "BACKGROUND-02",
+        "BACKGROUND-03",
+        "BACKGROUND-13",
+        "BACKGROUND-14",
+        "BACKGROUND-16",
+        "CONTENT-05",
+        "CONTENT-06",
+        "CONTENT-07",
+        "CONTENT-09",
+        "CALENDAR-07"
+      ]
+    },
+    {
+      "id": "U-WAKE-03",
+      "title": "自主活动自由且有界",
+      "rule": "每滚动60min最多一轮；同窗串行、聊天优先、no-op正常、重试计原预算",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP2",
+        "WP4",
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "USAGE-04",
+        "USAGE-05",
+        "USAGE-06",
+        "CACHE-05",
+        "CACHE-06",
+        "CONTEXT-01",
+        "BACKGROUND-03",
+        "BACKGROUND-04",
+        "BACKGROUND-05",
+        "BACKGROUND-06",
+        "BACKGROUND-07",
+        "BACKGROUND-08",
+        "BACKGROUND-09",
+        "BACKGROUND-10",
+        "BACKGROUND-11",
+        "BACKGROUND-12",
+        "BACKGROUND-15",
+        "BACKGROUND-17",
+        "FEED-06"
+      ]
+    },
+    {
+      "id": "U-SYSTEM-01",
+      "title": "独立系统异常红点",
+      "rule": "后端已纳管的缓存/用量/预算/请求/工具消耗异常统一进入通知中心",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP2",
+        "WP4"
+      ],
+      "acceptance_ids": [
+        "ALERT-01",
+        "ALERT-05",
+        "ALERT-06",
+        "ALERT-07",
+        "ALERT-08",
+        "USAGE-01",
+        "USAGE-02",
+        "USAGE-04",
+        "USAGE-05",
+        "USAGE-06",
+        "CACHE-03",
+        "CACHE-08",
+        "BACKGROUND-08",
+        "BACKGROUND-09",
+        "BACKGROUND-10",
+        "BACKGROUND-11",
+        "BACKGROUND-14"
+      ]
+    },
+    {
+      "id": "U-SYSTEM-02",
+      "title": "异常可追溯",
+      "rule": "已读与恢复分开；重启/断线不漏；重复聚合，复发重新未读；不写聊天原文",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP4",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "ALERT-02",
+        "ALERT-03",
+        "ALERT-04",
+        "ALERT-06",
+        "ALERT-08",
+        "USAGE-06",
+        "BACKGROUND-04",
+        "BACKGROUND-05",
+        "BACKGROUND-11",
+        "BACKGROUND-12",
+        "BACKGROUND-14",
+        "BACKGROUND-16",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-TOKEN-01",
+      "title": "单条消息预计token",
+      "rule": "编辑中和保存后可见；正文估计/附件估计分开；不调用付费计数",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1"
+      ],
+      "acceptance_ids": [
+        "TOKEN-01",
+        "TOKEN-02",
+        "TOKEN-03",
+        "TOKEN-04",
+        "TOKEN-05",
+        "TOKEN-06",
+        "TOKEN-07"
+      ]
+    },
+    {
+      "id": "U-TOKEN-02",
+      "title": "请求预计与整轮实际",
+      "rule": "历史/身份/工具计入请求输入；实际按请求与轮归属，不平均摊到分段气泡",
+      "phase": "CORE",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP1",
+        "WP2",
+        "WP4"
+      ],
+      "acceptance_ids": [
+        "USAGE-01",
+        "USAGE-02",
+        "USAGE-03",
+        "USAGE-04",
+        "TOKEN-02",
+        "TOKEN-06",
+        "TOKEN-07",
+        "CACHE-02",
+        "CACHE-03",
+        "BACKGROUND-08",
+        "BACKGROUND-10",
+        "BACKGROUND-15",
+        "BACKGROUND-17"
+      ]
+    },
+    {
+      "id": "U-CALENDAR-01",
+      "title": "综合月历与日详情",
+      "rule": "前端内置、后端分源；Asia/Shanghai 公历自然月/日；月摘要按需，日详情分页",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP6",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "CALENDAR-01",
+        "CALENDAR-02",
+        "CALENDAR-03",
+        "CALENDAR-04",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-CALENDAR-02",
+      "title": "桶/原文层次",
+      "rule": "桶真实发生日→标题卡片→桶全文→绑定原文；另有当天全部聊天入口",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5",
+        "WP6"
+      ],
+      "acceptance_ids": [
+        "CREATION-02",
+        "CREATION-04",
+        "CALENDAR-02",
+        "CALENDAR-03",
+        "CALENDAR-04",
+        "CALENDAR-05"
+      ]
+    },
+    {
+      "id": "U-CALENDAR-03",
+      "title": "计划、提醒、未来留言",
+      "rule": "正式 plan 正本 Mariposa；调度正本 est；留言正文 content；按指定日展示/送达",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP4",
+        "WP5",
+        "WP6"
+      ],
+      "acceptance_ids": [
+        "BACKGROUND-13",
+        "CONTENT-02",
+        "CONTENT-03",
+        "CONTENT-05",
+        "CONTENT-06",
+        "CONTENT-07",
+        "CONTENT-08",
+        "CONTENT-09",
+        "FEED-05",
+        "CALENDAR-07"
+      ]
+    },
+    {
+      "id": "U-CALENDAR-04",
+      "title": "许愿星重要日",
+      "rule": "仅服务重要日；不显示今日写入，不自动取下一颗、不绕过邀请确认",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP6",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "CALENDAR-04",
+        "CALENDAR-06",
+        "INTEGRATION-06"
+      ]
+    },
+    {
+      "id": "U-ALBUM-01",
+      "title": "聊天截图相册",
+      "rule": "图片绑定 our_words 稳定ID；从“我们的话”搜索结果反查截图；不复制话的正文作另一索引正本",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "ALBUM-02",
+        "ALBUM-03",
+        "ALBUM-05"
+      ]
+    },
+    {
+      "id": "U-ALBUM-02",
+      "title": "重要照片相册",
+      "rule": "双方可通过各自入口添加/归档；来源可靠、文件持久；支持备注与事件引用",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "CONTENT-01",
+        "CONTENT-02",
+        "CONTENT-03",
+        "ALBUM-01",
+        "ALBUM-02",
+        "ALBUM-05"
+      ]
+    },
+    {
+      "id": "U-ALBUM-03",
+      "title": "表情包库",
+      "rule": "图片+双方定义的使用含义；可搜索/选择/发送；人工含义优先可用",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "ALBUM-04"
+      ]
+    },
+    {
+      "id": "U-ALBUM-04",
+      "title": "删除相册条目无需审批",
+      "rule": "删除条目/关联不连带删桶、我们的话、原文或仍被历史引用的图片文件",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3",
+        "WP5",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "MEDIA-10",
+        "CONTENT-04",
+        "CONTENT-07",
+        "ALBUM-02",
+        "DELIVERY-01"
+      ]
+    },
+    {
+      "id": "U-CREATION-01",
+      "title": "纪念空间",
+      "rule": "自制图标+可选动画/图片/小作品+桶引用；无作品图标直达桶；播放后显示桶入口",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3",
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "MEDIA-09",
+        "MEDIA-11",
+        "CONTENT-01",
+        "CONTENT-03",
+        "CONTENT-04",
+        "CREATION-01",
+        "CREATION-03",
+        "CREATION-04"
+      ]
+    },
+    {
+      "id": "U-CREATION-02",
+      "title": "自愿后补",
+      "rule": "不每桶建待办，不计欠交；后补作品仍关联原事件日期，不复制桶",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5",
+        "WP6"
+      ],
+      "acceptance_ids": [
+        "CREATION-01",
+        "CREATION-02",
+        "CREATION-05",
+        "CALENDAR-04"
+      ]
+    },
+    {
+      "id": "U-FEED-01",
+      "title": "双人私密朋友圈",
+      "rule": "与扎西德勒分开；双方均可看、发帖、评论；作者身份由宿主派生",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "CONTENT-01",
+        "CONTENT-02",
+        "CONTENT-03",
+        "CONTENT-04",
+        "FEED-01",
+        "FEED-02",
+        "FEED-03",
+        "FEED-04",
+        "FEED-06",
+        "INTEGRATION-04",
+        "DELIVERY-01",
+        "DELIVERY-02"
+      ]
+    },
+    {
+      "id": "U-FEED-02",
+      "title": "letter变形",
+      "rule": "普通动态/书信展示共用帖子正本；不恢复Mariposa旧letter系统；自主活动不强制发帖",
+      "phase": "CONTENT",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP4",
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "BACKGROUND-07",
+        "FEED-01",
+        "FEED-05",
+        "FEED-06"
+      ]
+    },
+    {
+      "id": "U-NOTIFY-01",
+      "title": "到时可见与手机提醒",
+      "rule": "开着页面有站内实时提醒；离线手机系统推送通过可用推送能力接入，未支持如实显示，不能只做网页红点就宣称已完成手机推送",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP6",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "CALENDAR-07",
+        "INTEGRATION-10",
+        "DELIVERY-03"
+      ]
+    },
+    {
+      "id": "U-VISUAL-01",
+      "title": "生图与图片检索",
+      "rule": "生图/多模态检索以外部能力接入；不锁定未经核实的具体模型；第一期表情含义检索可独立完成",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "ALBUM-04",
+        "INTEGRATION-11"
+      ]
+    },
+    {
+      "id": "U-EMOTION-01",
+      "title": "心情维度入口",
+      "rule": "仅显示Mariposa实际记录及关联；空白不补中性、历史心情不冒充当前；维度数值模型待定",
+      "phase": "DEFERRED_DESIGN",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "CREATION-05"
+      ]
+    },
+    {
+      "id": "U-GAME-01",
+      "title": "游戏厅",
+      "rule": "统一前端保留真实空页面/作品入口；不虚构已有游戏、积分、排行榜或服务器",
+      "phase": "DEFERRED_DESIGN",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5"
+      ],
+      "acceptance_ids": [
+        "CREATION-05"
+      ]
+    },
+    {
+      "id": "U-EXT-01",
+      "title": "Mariposa",
+      "rule": "复用既有HTTP能力面；补日历/媒体/关联所需只读适配；具体能力schema必须核当前正本",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP0",
+        "WP5",
+        "WP6",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "BASE-01",
+        "ALBUM-03",
+        "CALENDAR-01",
+        "CALENDAR-05",
+        "CALENDAR-07",
+        "INTEGRATION-01",
+        "INTEGRATION-09"
+      ]
+    },
+    {
+      "id": "U-EXT-02",
+      "title": "Siren",
+      "rule": "语音处理继续外置；HTTP/MCP业务入口按实际归档合同选，实时通话按已有流接口核对",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "MEDIA-08",
+        "INTEGRATION-02"
+      ]
+    },
+    {
+      "id": "U-EXT-03",
+      "title": "oído",
+      "rule": "用户指定MCP；频谱及听觉业务在它的后端；实时流/大文件另走合适数据通道",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "INTEGRATION-03",
+        "INTEGRATION-08",
+        "INTEGRATION-09",
+        "DELIVERY-03"
+      ]
+    },
+    {
+      "id": "U-EXT-04",
+      "title": "扎西德勒",
+      "rule": "用户指定MCP；不与新私密朋友圈合并",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP5",
+        "WP7",
+        "WP8"
+      ],
+      "acceptance_ids": [
+        "FEED-06",
+        "INTEGRATION-04",
+        "INTEGRATION-08",
+        "INTEGRATION-09",
+        "DELIVERY-03"
+      ]
+    },
+    {
+      "id": "U-EXT-05",
+      "title": "Antinomy",
+      "rule": "共度/读书保持已做项目，不重建阅读库",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "INTEGRATION-05"
+      ]
+    },
+    {
+      "id": "U-EXT-06",
+      "title": "Superposition",
+      "rule": "星星业务继续原项目；只读重要日期与受控进入原拆星流程",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP6",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "CALENDAR-01",
+        "CALENDAR-06",
+        "INTEGRATION-06"
+      ]
+    },
+    {
+      "id": "U-EXT-07",
+      "title": "X/小红书",
+      "rule": "复用用户现成架构，不在est重写浏览器或爬虫；授权工具可供自主活动调用",
+      "phase": "INTEGRATION",
+      "source": "01_REQUIREMENTS_AND_BOUNDARIES.md",
+      "work_packages": [
+        "WP3",
+        "WP7"
+      ],
+      "acceptance_ids": [
+        "MEDIA-04",
+        "INTEGRATION-07"
+      ]
+    }
+  ]
+}

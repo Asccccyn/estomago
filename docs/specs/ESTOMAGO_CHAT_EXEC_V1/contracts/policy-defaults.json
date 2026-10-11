@@ -1,0 +1,317 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_CHAT_EXEC_V1",
+  "status": "PROPOSED_EXECUTION_CONTRACT",
+  "source_of_truth": "新增值/策略的机器正本；不覆盖用户现有身份、模型、路径和凭据。",
+  "money": {
+    "storage_unit": "micro_usd",
+    "units_per_usd": 1000000,
+    "budget_day_source": "dispatch_started_at_in_Asia/Shanghai",
+    "unknown_cost": "retain_reservation",
+    "provider_prices": "must_verify_selected_model_or_tool; not_bundled"
+  },
+  "settings": [
+    {
+      "key": "cache.anthropic.requested_ttl",
+      "value": "1h",
+      "classification": "USER_DECISION",
+      "adjustable": false,
+      "notes": "策略常量映射现有OR cache_control；不是新增一个未透传的YAML TTL键。DS/未核SDK不得假报。"
+    },
+    {
+      "key": "background.keepwarm.idle_after_cache_ms",
+      "value": 3000000,
+      "classification": "USER_DECISION",
+      "adjustable": false,
+      "notes": "50分钟，从经实际缓存读写证据确认的dispatch开始计；普通聊天可顺延。"
+    },
+    {
+      "key": "background.autonomous.min_interval_ms",
+      "value": 3600000,
+      "classification": "USER_DECISION",
+      "adjustable": false,
+      "notes": "同一主体滚动60分钟最多一次首次实际派发，跨房间任务。"
+    },
+    {
+      "key": "windows.soft_limit_tokens",
+      "value": 64000,
+      "classification": "PRESERVED_EXISTING",
+      "adjustable": false,
+      "notes": "保留受控窗口软线；实际还受模型容量与输出/工具/评审/安全预留约束。"
+    },
+    {
+      "key": "runtime.max_active_primary_runners",
+      "value": 1,
+      "classification": "PRESERVED_EXISTING",
+      "adjustable": false,
+      "notes": "保持主模型同主体/宿主串行，不能由不同purpose绕过。"
+    },
+    {
+      "key": "background.autonomous.enabled",
+      "value": false,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "用户显式打开且预算/能力就绪才有效；关闭即时取消后续可取消步骤。"
+    },
+    {
+      "key": "background.keepwarm.enabled",
+      "value": false,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "与自主活动独立，保温也会消耗模型费用。"
+    },
+    {
+      "key": "background.reminders.enabled",
+      "value": true,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "仅投递明确启用的既有任务，不控制系统故障红点。"
+    },
+    {
+      "key": "background.autonomous.max_model_requests_per_run",
+      "value": 4,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "首次、续答、重试、后台触发评审全部计入。"
+    },
+    {
+      "key": "background.keepwarm.max_model_requests_per_run",
+      "value": 1,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "第一期只允许一次维护请求，不能UI调大绕过。"
+    },
+    {
+      "key": "background.autonomous.max_output_tokens_per_run",
+      "value": 4096,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "包括所有请求的计费reasoning和可见输出。"
+    },
+    {
+      "key": "background.keepwarm.max_output_tokens_per_run",
+      "value": 128,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "不兼容当前型号/推理配置时阻断，不暗中提高。"
+    },
+    {
+      "key": "background.autonomous.max_tool_calls_per_run",
+      "value": 8,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "同批多个工具逐个计数。"
+    },
+    {
+      "key": "background.keepwarm.max_tool_calls_per_run",
+      "value": 0,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "工具定义保持稳定但宿主不执行维护请求的任何工具。"
+    },
+    {
+      "key": "background.autonomous.max_run_ms",
+      "value": 120000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "包括等待、评审、重试与工具续答。"
+    },
+    {
+      "key": "background.keepwarm.max_run_ms",
+      "value": 30000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "过时/超时有界停止，无无限保温重试。"
+    },
+    {
+      "key": "background.autonomous.paid_tools_enabled",
+      "value": false,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "只限制外部收费工具；开启仍需可靠max-cost和用户预算。"
+    },
+    {
+      "key": "background.keepwarm.paid_tools_enabled",
+      "value": false,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "维护不允许外部工具。"
+    },
+    {
+      "key": "background.autonomous.daily_cost_cap_usd",
+      "value": null,
+      "classification": "UNCONFIGURED",
+      "adjustable": true,
+      "notes": "null表示未配置，禁止该用途后台付费；不是无限额或免费。"
+    },
+    {
+      "key": "background.keepwarm.daily_cost_cap_usd",
+      "value": null,
+      "classification": "UNCONFIGURED",
+      "adjustable": true,
+      "notes": "与自主日预算独立；不能猜测用户已批准某金额。"
+    },
+    {
+      "key": "background.keepwarm.allow_cold_start",
+      "value": false,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "第一期不以保温名义补冷写；需后续明确策略变更才开放。"
+    },
+    {
+      "key": "background.reminders.delivery_grace_ms",
+      "value": 300000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "5分钟，超过只显示错过，不批量补推。"
+    },
+    {
+      "key": "background.reminders.default_local_time",
+      "value": "09:00",
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "仅前端时间选择的可见初值；API仍提交明确scheduled_at；聊天设置必须回显北京时间。"
+    },
+    {
+      "key": "calendar.timezone",
+      "value": "Asia/Shanghai",
+      "classification": "USER_DECISION",
+      "adjustable": false,
+      "notes": "自然月日与预算业务日；UTC存储时刻。"
+    },
+    {
+      "key": "pagination.default_limit",
+      "value": 20,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": false,
+      "notes": "内容/系统通知/后台/日历新列表统一默认。"
+    },
+    {
+      "key": "pagination.max_limit",
+      "value": 100,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "超限返回参数错误，不能偷偷截断成完整结果。"
+    },
+    {
+      "key": "content.enabled",
+      "value": false,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "代码完整交付后本地联调可开启；服务未运行时如实显示状态。"
+    },
+    {
+      "key": "content.bind_host",
+      "value": "127.0.0.1",
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": false,
+      "notes": "本期独立content仅loopback，内部凭据仍必需。"
+    },
+    {
+      "key": "content.port",
+      "value": 18788,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "同机工程初值，启动前检查冲突，不自动改生产防火墙。"
+    },
+    {
+      "key": "system_alerts.usage_settlement_grace_ms",
+      "value": 60000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "已结束且应有usage的请求宽限；正常不提供美元的服务不每条报警。"
+    },
+    {
+      "key": "system_alerts.summary_refresh_debounce_ms",
+      "value": 1000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "SSE触发的合并刷新；非每秒强制轮询。"
+    },
+    {
+      "key": "system_alerts.read_batch_max",
+      "value": 100,
+      "classification": "V1_CONSTRAINT",
+      "adjustable": false,
+      "notes": "按已见sequence更新；当前快照之外新事件保持未读。"
+    },
+    {
+      "key": "token_estimates.debounce_ms",
+      "value": 250,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "输入预览本地纯计算；取消旧请求并核draft/model/attachment指纹。"
+    },
+    {
+      "key": "token_estimates.max_body_bytes",
+      "value": 524288,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "JSON草稿+资产ID上限；没有图像base64或旧历史全文。"
+    },
+    {
+      "key": "media.max_image_bytes",
+      "value": 20971520,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "20MiB存储上传上限，不代表模型视觉请求也接受该体积。"
+    },
+    {
+      "key": "media.max_audio_bytes",
+      "value": 33554432,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "32MiB持久资产上限，真实Siren/模型另核。"
+    },
+    {
+      "key": "media.max_video_bytes",
+      "value": 67108864,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "64MiB纪念作品上限，非本期任意视频聊天/模型输入。"
+    },
+    {
+      "key": "media.max_code_artifact_bytes",
+      "value": 262144,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "256KiB单文件SVG/HTML文本，仅保存和隔离查看。"
+    },
+    {
+      "key": "media.max_attachments_per_message",
+      "value": 8,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "混合kind/projection须03允许，另受模型真实限制。"
+    },
+    {
+      "key": "media.import_timeout_ms",
+      "value": 30000,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "包含受限跳转/读体；操作unknown不换key盲重试。"
+    },
+    {
+      "key": "media.max_redirects",
+      "value": 3,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "每跳重新校验目的地址与真实连接，禁止私网/本地元数据地址。"
+    },
+    {
+      "key": "media.auto_physical_gc_enabled",
+      "value": false,
+      "classification": "ENGINEERING_DEFAULT",
+      "adjustable": true,
+      "notes": "首版保守保留；若开启仍必须证明无消息/内容/任务/pin引用。"
+    }
+  ],
+  "validation_rules": [
+    "两类daily_cost_cap_usd开启前必须为有限正数，按微美元统一取整并显示；null不得解释为无限。",
+    "后台整数限额必须有限正数，keepwarm工具数固定0；收紧立即生效，放宽只影响后续run。",
+    "背景付费enabled=true时同时验证价格/预算/身份/能力/模型/凭据；不通过422并保留原有效状态。",
+    "日期只有前端可见的默认时间选择，任务API必须带完整可核时间，不在host暗补当前时间。",
+    "媒体上传存储上限和供应商请求上限分开；投影变化版本化，不修改旧hash。",
+    "实现可把策略常量归入相应现有模块；不得将所有表项盲目变成可用户修改的schema字段。"
+  ]
+}

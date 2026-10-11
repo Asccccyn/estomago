@@ -1,3 +1,5 @@
+> **历史快照（2026-10-11 起为前代规范的实施图）**：本文件是 `ESTOMAGO_OR_SELF_HOLD` 轮（2026-10-05）的 WP0 现场映射，所述进度反映当时状态。当前施工正本 = `ESTOMAGO_CHAT_EXEC_V1/IMPLEMENTATION_MAP.md`（2026-10-11 起）。本文件保留为审计证据，不删除。
+
 # WP0 · 现场映射与实施落点报告（IMPLEMENTATION_MAP）
 
 产出日期：2026-10-05　执行：程知行（GLM）　规范：`ESTOMAGO_OR_SELF_HOLD`（冻结核 2026-10-05）
