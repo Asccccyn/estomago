@@ -76,6 +76,11 @@ export class MessageService {
         .get(opts.conversationId, opts.clientMessageId) as { id: string; current_revision: number } | undefined;
       if (dup) {
 
+        // AUD-29（她 1011 裁定）：同键不同内容=幂等冲突——只在双方 fingerprint 非 null 时比较
+        const dupFp = (this.db.prepare('SELECT message_fingerprint FROM message_revisions WHERE message_id = ? AND revision = (SELECT current_revision FROM messages WHERE id = ?)').get(dup.id, dup.id) as { message_fingerprint: string | null } | undefined)?.message_fingerprint ?? null;
+        if (dupFp !== null && fingerprint !== dupFp) {
+          throw new Error('IDEMPOTENCY_CONFLICT: 同 client_message_id 对应不同正文/附件——请用新 ID 重新发送');
+        }
         // 幂等自愈：校验整套 side effects，缺什么补什么（同一事务）
         let repaired = false;
         const outbox = this.db
