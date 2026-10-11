@@ -197,12 +197,30 @@ export class Host {
             events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
             return { outcome: 'completed', result_code: 'delivered' };
           }
-          // 自主/保温执行器=下一批（supervisor 模型回路接线）；如实失败不冒充
-          return { outcome: 'failed', result_code: 'BACKGROUND_EXECUTOR_NOT_READY' };
+          // EXEC_V1 §04.10.2：付费模型预占须可信上界——价格未核验（runtime_settings 可配）→
+          // BUDGET_ESTIMATE_UNAVAILABLE，不开后台付费请求（unknown 不当免费）
+          const es = bgSettings.effective();
+          const drvCfg = opts.config.runtime.provider;
+          void drvCfg;
+          const modelRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
+          const price = modelRow ? JSON.parse(modelRow.value) as { input_micro_per_token?: number; output_micro_per_token?: number } : null;
+          if (!price || typeof price.input_micro_per_token !== 'number' || typeof price.output_micro_per_token !== 'number') {
+            return { outcome: 'failed', result_code: 'BUDGET_ESTIMATE_UNAVAILABLE', result_detail: '模型价格未核验（or_model_price 未配置）——后台付费请求不开' };
+          }
+          const kindCfg: { max_output_tokens_per_run: number } = input.kind === 'keepwarm' ? es.keepwarm : es.autonomous;
+          const r = await supervisor.runBackgroundTurn({
+            kind: input.kind as 'autonomous' | 'keepwarm',
+            runId: input.runId, conversationId: input.conversationId, payload: input.payload,
+            isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
+            recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, logicalActionKey: info.logicalActionKey, attemptNo: info.attemptNo, dispatchKind: info.dispatchKind, capabilityName: null, reservedCostMicroUsd: info.reservedCostMicroUsd }),
+            maxModelRequests: input.kind === 'keepwarm' ? 1 : es.autonomous.max_model_requests_per_run,
+            maxOutputTokens: kindCfg.max_output_tokens_per_run,
+          });
+          return { outcome: r.outcome, result_code: r.result_code };
         },
       },
     });
-    const bgExecutorReady = { autonomous: false, keepwarm: false };
+    const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡）
     const deps: Omit<RequestDeps, 'config'> = {
       paths,
       db,

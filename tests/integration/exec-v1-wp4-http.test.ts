@@ -28,7 +28,7 @@ test('BACKGROUND-01/02：默认三关状态如实；开自主无预算=422；有
   assert.equal(s0.autonomous.enabled, false); // CW-01：默认关闭
   assert.equal(s0.autonomous.daily_cost_cap_usd, null); // null=未配置非无限
   assert.equal(s0.reminders.enabled, true);
-  assert.equal(s0.executor_ready.autonomous, false); // 如实披露，不冒充
+  assert.equal(s0.executor_ready.autonomous, true); // 执行器已接线（付费请求另受价格门——BUDGET_ESTIMATE_UNAVAILABLE 如实挡）
   // 428：无 If-Match
   const noMatch = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'k1' }), body: JSON.stringify({ autonomous: { enabled: true, daily_cost_cap_usd: 5 } }) });
   assert.equal(noMatch.status, 428);
@@ -36,17 +36,13 @@ test('BACKGROUND-01/02：默认三关状态如实；开自主无预算=422；有
   const noBudget = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"0"', 'Idempotency-Key': 'k2' }), body: JSON.stringify({ autonomous: { enabled: true } }) });
   assert.equal(noBudget.status, 422);
   assert.equal(((await noBudget.json()) as { error: { code: string } }).error.code, 'background_budget_not_configured');
-  // 有预算但执行器未接线=422（不先开功能再等付费失败）
-  const notReady = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"0"', 'Idempotency-Key': 'k3' }), body: JSON.stringify({ autonomous: { enabled: true, daily_cost_cap_usd: 5 } }) });
-  assert.equal(notReady.status, 422);
-  assert.equal(((await notReady.json()) as { error: { code: string } }).error.code, 'background_executor_not_ready');
-  // 旧 If-Match 重放=409
+  // 有预算且执行器就绪=开启成功（付费派发另受价格未核验门挡，见 run 级 BUDGET_ESTIMATE_UNAVAILABLE）
+  const enableOk = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"0"', 'Idempotency-Key': 'k3' }), body: JSON.stringify({ autonomous: { enabled: true, daily_cost_cap_usd: 5 } }) });
+  assert.equal(enableOk.status, 200);
+  // 有预算+执行器就绪的开启在前面已把 revision 推到 1——旧 If-Match=409、新 If-Match=200
   const stale = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"0"', 'Idempotency-Key': 'k4' }), body: JSON.stringify({ reminders: { enabled: false } }) });
-  assert.equal(stale.status, 200); // k4 是新键——reminders 关闭成功（revision 0→1）
-  const stale2 = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"0"', 'Idempotency-Key': 'k5' }), body: JSON.stringify({ reminders: { enabled: true } }) });
-  assert.equal(stale2.status, 409, '旧 revision 拒（并发门）');
-  // 恢复 reminders 开
-  const ok = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"1"', 'Idempotency-Key': 'k6' }), body: JSON.stringify({ reminders: { enabled: true } }) });
+  assert.equal(stale.status, 409, '旧 revision 拒（并发门）');
+  const ok = await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"1"', 'Idempotency-Key': 'k5' }), body: JSON.stringify({ reminders: { enabled: true } }) });
   assert.equal(ok.status, 200);
 });
 
