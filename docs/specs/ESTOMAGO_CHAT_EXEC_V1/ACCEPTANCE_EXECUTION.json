@@ -900,13 +900,13 @@
         "维护 wire payload 与 payload_format、usage 和工具调用计数。",
         "规范轨迹、原文、书签的前后哈希及随后聊天结果。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
-      "evidence_path": null,
-      "blocked_dependency": "WP4 background-scheduler"
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "exec-v1-wp4-executor 实测：保温恰 1 次模型请求（purpose=cache_keepalive）+维护说明尾部；返回 tool_calls→0 工具执行+0 续答请求（KEEPWARM_TOOL_REFUSED）；维护尾不进正式原文/人工选集/hold 书签/主窗规范轨迹（轨迹 messages_json 前后一致）；实际请求体（wire 证据）与 usage 保留；下一次正常聊天 append-only 前缀校验通过（保温尾不进比较基准）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": null
     },
     {
       "id": "CACHE-05",
@@ -935,13 +935,13 @@
         "两个场景的领取顺序、主模型并发数和 transport 计数。",
         "任务到期时间变化及作废旧机会的证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
-      "evidence_path": null,
-      "blocked_dependency": "WP4 background-scheduler"
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "策略+调度层实测：聊天优先让出（CHAT_ACTIVE skip）；到期自主先于保温（AUTONOMOUS_FIRST，按主体查真实执行状态）；新缓存证据重算保温目标（10:00→10:35 证据→目标 11:25，旧 10:50 机会作废不发送）；单主模型并发约束保持（max_active_primary_runners=1 不变）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": null
     },
     {
       "id": "CACHE-06",
@@ -970,13 +970,13 @@
         "恢复前后请求数量、缓存状态与任务时间线。",
         "新的聊天观测与后续唯一维护执行的关联。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
-      "evidence_path": null,
-      "blocked_dependency": "WP4 background-scheduler"
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "实测：已冷（>1h）→KEEPWARM_CACHE_ALREADY_COLD 不补冷写；无证据→EVIDENCE_UNKNOWN 目标清空；重启不补跑（recalculate 从当前证据重算+once 任务执行即禁用）；恢复不爆发（重启处置：孤儿 skipped/进行中 unknown）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": null
     },
     {
       "id": "CACHE-07",
@@ -1751,12 +1751,12 @@
         "两条迁移路径的有效设置与 schema 状态。",
         "模型／付费工具计数和普通提醒投递回执。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "默认 autonomous=false/keepwarm=false/两 cap=null（wp4-http 实测 GET 初始态）；无后台模型请求（executor 默认不触发+价格门双挡）；已建提醒按时投递（reminder 不被付费开关误伤）；迁移 v26 不复活 wakeups/摘要表（纯新增三表）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1788,12 +1788,12 @@
         "页面截图、设置请求／响应、重启前后快照。",
         "对应模型／付费工具实际派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "三开关独立持久化+revision 门（wp4-http：无预算开自主=422 不生效/旧 If-Match=409/页面读同源 effective）；关闭文案含费用与动作保留说明；reminder 与换窗 hold 提醒（reminders.enabled 旧键）不混淆（不同配置段）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1825,12 +1825,12 @@
         "各 task／room 的主体归属、first_dispatch_started_at 和结果码。",
         "冷却边界两侧的模型派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "策略+调度实测：10:59 首派发后 11:01 第二轮被冷却门挡（合法下次=11:59 非整点分桶）；跨任务/换 ID/房间统一按 actor（background_runs 唯一打开执行索引+冷却按主体查询）；effective_due_at 与门控一致（advanceTask 按冷却目标重排）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1860,12 +1860,12 @@
         "并发领取结果、唯一约束证据和 occurrence 关联。",
         "transport 计数、运行记录及告警状态。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "occurrence_key 唯一约束实测：并发双领只一条执行（被拦领取静默去重不报警）；随机 run id 不绕过（唯一键含 task+revision+due）；已完成 occurrence 重放不执行（once 任务执行即禁用+state 终态拒派发）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1897,11 +1897,11 @@
         "实际派发计数、运行终态和已知／未知费用记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "设置面原子关闭+未执行领取即时失效已测；关闭 API 返回后竞态 transport 拦截=准入钩子在每次 transport 前查 cancelRequested（代码路径已落）+取消后拒新派发已测；\"关闭返回后不再启动新 transport\"的端到端竞态注入（预占后 await 中途关闭）待 WP8 联合审计批做真实注入复验",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1931,12 +1931,12 @@
         "用户入库、取消、执行位交接和请求开始时间线。",
         "最大并发数及后续工具派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "notePendingUserChat 挂消息入库路径（http POST→scheduler 即时 abort）；CW-05 单测：用户取消→后台闭包恢复→收口 cancelled/USER_CHAT_PREEMPTED；单主模型位保持（后台走同一 runSerialized 外的独立路径但 tools 循环互斥沿用 supervisor 串行链）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1967,12 +1967,12 @@
         "终态回执及模型调用次数。",
         "正式聊天、帖子和 hold 写入次数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "exec-v1-wp4-executor 实测：background_complete(noop)=成功结束（state=noop 不强制产出）；模型内部终答文本不自动发布（无 assistant 气泡）；无产出不重试（run 收口一次）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2003,12 +2003,12 @@
         "逐 dispatch 的尝试号、run 归属、开始时间及结果。",
         "总请求／工具／输出计数和被阻止调用的证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "实测：自主首请求+工具续答=2 次派发同一 run（model_requests_started=2 共用预算）；每尝试独立 dispatch 行；maxModelRequests 门在 transport 前拦截（admission throw=不发出）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2039,12 +2039,12 @@
         "免费与收费工具分别的实际执行计数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "付费工具注册表=WP7 外部合同批（当前无外部收费工具适配器）；免费日常工具正常（chat_send_text/background_complete 实测）；总门与\"模型参数不改计费属性\"在适配器落地时验收",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": "WP7 外部付费工具适配器"
     },
     {
       "id": "BACKGROUND-10",
@@ -2074,12 +2074,12 @@
         "每一步前后的预占、已知费用和日余额。",
         "第二笔被阻止及结算后重新准入的事务证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "机制层：dispatch 预占/结算分离（reserved→settled/unknown）；未知费用保留预占（settle null→state unknown 不释放）；日上限微美元整数门（budgetGate 实测 0.9+0.2>1.0 拒）；界面字段（已知+未核实分列）在 runs API 返回（known/unknown/reserved 三列）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2111,12 +2111,12 @@
         "unknown 到结算的账本变化和用户可见状态。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "结算链已落（真实 usage→settled；未知→unknown 保留预占）；外部收费动作超时的\"只核实不重放\"需外部工具适配器（WP7）才能端到端；调度器恢复期只做有界不收费核实（设计如此，代码路径在 recoverOnStart）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": "WP7 外部工具（端到端只核实不重放）"
     },
     {
       "id": "BACKGROUND-12",
@@ -2147,12 +2147,12 @@
         "恢复前后任务／run／dispatch 快照。",
         "未来 due 时间、历史 operation 对账与实际派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "重启处置实测：孤儿 claimed(零派发)=skipped/HOST_RESTART_BEFORE_SEND；进行中(有派发)=unknown+预占保留；周期任务只算未来（once 执行即禁用+interval 推进）；时钟回拨=BACKGROUND_CLOCK_REGRESSION 暂停；向前跳按过期规则（宽限外只显示错过）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2183,12 +2183,12 @@
         "任务创建和唯一投递回执。",
         "同 occurrence 重放结果及模型派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "提醒无模型投递实测（system 宿主消息+幂等链+零 turn）；同 occurrence 一次（once 禁用+client_message_id 幂等）；不开启自主/保温（开关独立）",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2219,12 +2219,12 @@
         "提醒状态、投递次数与重新开启回执。",
         "系统通知的 lifecycle／未读状态和模型计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "过期提醒：宽限内投递/超宽限显示错过（delivery_grace_ms 策略+任务 next_due 不回补）；系统异常独立于提醒开关（ALERT 体系不受 reminders 影响——结构分离）；重开不批量补推（once 已禁用；错过不重排）；零模型调用",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2256,11 +2256,11 @@
         "公开消息／工具计数及去重后的 usage／费用记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "取消后新派发被挡已测（recordDispatchStart 拒终态+cancel）；迟到 usage 记账=usage 归属实际承载行（WP2 已测）；迟到公开输出拦截=取消标记在发布链的端到端竞态注入待 WP8 批",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2293,12 +2293,12 @@
         "实际写入次数、回执关联及无权请求结果。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "通用幂等回执表（同键同指纹返回原回执的跨进程账本）=WP5 共享 HTTP 幂等服务落地时统一验收；当前各端点用各自唯一键+状态幂等（任务/引用/上传实测），回执级重放语义后补",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": "WP5 共享幂等回执服务"
     },
     {
       "id": "BACKGROUND-17",
@@ -2330,12 +2330,12 @@
         "第三次准入拒绝及等待选集场景的零派发证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "f6e38f2",
+      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
+      "observed": "后台触发的 pre_rotate_review 计入同 run 预算=需后台回合到达容量门（64k 场景）——长上下文后台场景在 WP8 联合审计批用真实大轨迹复验；机制位（同 background_run_id 归属+purpose 只分类）已就绪",
+      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
+      "blocked_dependency": "WP8 大轨迹联合审计批"
     },
     {
       "id": "CONTENT-01",
