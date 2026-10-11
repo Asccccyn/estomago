@@ -792,12 +792,12 @@
         "驱动加载记录、transport 调用计数及脱敏请求体证据。",
         "前缀合法与非法两组请求的结果码。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "单测：buildOrPayload 顶层 cache_control={ephemeral,1h}+plugins=[context-compression,enabled:false]+显式断点≤3（A/B/G）；assertAppendOnly 改写旧历史被拒（transport 前）；runner-openrouter 源零 SDK import（结构性）。supervisor 级：429 重试成功行 payload_wire_json(wire_v1) 实存同合同。只证明本地发包与门控——供应商实际接受/命中待真实验收",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -827,12 +827,12 @@
         "请求开始、响应、观测和下次到期时间的时间线。",
         "10:50 与 11:25 的任务领取和实际派发计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "计算面全测：计时基准=有非零读写证据请求的 dispatch_started_at（非 usage 到达）；10:00 证据→目标 10:50；插入 10:35 证据→lastCacheEvidence 取 10:35→目标 11:25（旧目标派生作废）；到期=+1h 恒为估计。调度器执行（实际到点领取/顺延）=WP4；records 已暴露 nextKeepwarmEstimateAt",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -863,12 +863,12 @@
         "各响应夹具、缓存快照前后对比和派发总数。",
         "相关系统告警与运行结果记录。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "单测：usage 缓存字段缺失（null≠0）/read=0且write=0/无 usage 行（失败请求）均不构成计时基准；observeCacheUsage 字段缺失不评不告警。supervisor 级：网络失败重试——发出但无响应的尝试保留 dispatch_started_at 行（sent_at=NULL 不冒充已发送），usage 只落实际承载行；无任何诊断性模型请求",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -904,9 +904,9 @@
       "implementation_commit": null,
       "command": null,
       "environment": null,
-      "observed": null,
+      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "WP4 background-scheduler"
     },
     {
       "id": "CACHE-05",
@@ -939,9 +939,9 @@
       "implementation_commit": null,
       "command": null,
       "environment": null,
-      "observed": null,
+      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "WP4 background-scheduler"
     },
     {
       "id": "CACHE-06",
@@ -974,9 +974,9 @@
       "implementation_commit": null,
       "command": null,
       "environment": null,
-      "observed": null,
+      "observed": "依赖 WP4 保温执行链/调度器（三开关、到期领取、聊天抢占）——WP2 已交付其依赖的派发账本、缓存证据链计算面与轨迹保护基线（轨迹推进仍只在真实回合发生）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "WP4 background-scheduler"
     },
     {
       "id": "CACHE-07",
@@ -1007,12 +1007,12 @@
         "各驱动的 desired／effective／verification 快照和阻断结果。",
         "SDK 背景及固定 TTL 保温的实际模型派发计数为 0。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "normalizer：compact system 事件→compact_boundary 显式识别（非 compact 不误标）；records：SDK ttlVerification=sdk_unverified（无一处显示已生效 1h）、backgroundPolicy=SDK_BACKGROUND_POLICY_UNVERIFIED 阻断；DS=AUTO_CACHE_NO_FIXED_TTL 不借 1h/50min；OR=requested 待证据。无模型页面/关开关不受影响（既有全量套件）",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1042,12 +1042,12 @@
         "账户配置证据来源、时间、目标型号与 provider。",
         "冲突判定和阻断记录，或外部来源不可用的明确原因。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "离线面：UPSTREAM_COMPACTION_POLICY_CONFLICT 注册为 CONTEXT_COMPACTION_UNEXPECTED(policy_conflict) critical 别名——观察即聚合告警；显示面 verification 恒为 requested/sdk_unverified，本地 enabled:false 不冒充必然覆盖账户规则。真实上游账户规则观察=待真实环境验收（04 §1 三态报告：代码完成+离线通过+供应商未验收）",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1077,12 +1077,12 @@
         "窗口状态、待确认选集和背景 run 记录。",
         "重复调度前后的模型请求计数及原文完整性证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "沿用既有容量与选集门（本批零改动）：wp7-selection-state-machine（awaiting/confirm 状态机）+joint-audit-b2（容量触发、等选集不空选）+wp3-manual-selection 全绿；仓内无滚动摘要/自动压缩/固定 12k 注入代码（02 核查延续，全量套件 87/87 无回归）",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1112,12 +1112,12 @@
         "空选确认回执、新窗口输入投影与窗口关联。",
         "旧原文和修订记录的前后数量及哈希。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "wp3-manual-selection（explicit_empty 确认零选换窗）+wp7-selection-state-machine（confirmed 幂等/异键拒绝）既有全绿：零选只换输入不删原文；未提交≠空选",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1149,12 +1149,12 @@
         "跨时段窗口 ID、消息／修订哈希及请求轨迹。",
         "缓存状态与模型调用时间线。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "joint-audit-b2 既有断言：静默不触发换窗（2026-10-08 裁定）、容量才触发；午夜/静默换窗键已退役（RETIRED_CONFIG_KEYS 披露，config-yaml 测试）；缓存到期不删原文——本批 estimatedExpiresAt 改证据化只影响显示",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1184,12 +1184,12 @@
         "评审清单、完成回执和窗口切换记录。",
         "模型、hold 写入次数以及书签前后对比。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "ab787bc",
+      "command": "npm test（87/87）；tests/unit/exec-v1-wp2-{cache,supervisor}.test.ts + 既有 wp3-manual-selection/wp7-selection-state-machine/joint-audit-b2/review-policy",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "review-policy/or-rotation 既有全绿：评审沿真实已见清单与成功书签，no_new_hold 可接受不强制产出；无小模型扫描/第二套记忆（本轮新增代码零此类路径）",
+      "evidence_path": "tests/unit/exec-v1-wp2-*.test.ts",
       "blocked_dependency": null
     },
     {
