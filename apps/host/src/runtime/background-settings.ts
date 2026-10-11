@@ -29,21 +29,40 @@ export class BackgroundSettingsService {
   effective(): EffectiveSettings {
     const rev = this.revision();
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
-    const stored = row ? JSON.parse(row.value) as { autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null } : null;
-    return effectiveSettings(this.config, rev, stored);
+    const stored = row ? JSON.parse(row.value) as { autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null } : null;
+    const es = effectiveSettings(this.config, rev, stored);
+    if (stored?.autonomous_daily_cost_cap_usd !== undefined && stored.autonomous_daily_cost_cap_usd !== null) es.autonomous.daily_cost_cap_usd = stored.autonomous_daily_cost_cap_usd;
+    if (stored?.keepwarm_daily_cost_cap_usd !== undefined && stored.keepwarm_daily_cost_cap_usd !== null) es.keepwarm.daily_cost_cap_usd = stored.keepwarm_daily_cost_cap_usd;
+    return es;
   }
 
   /**
    * §7.2 原子写入：单事务内持久 enabled + 递增 revision + 未执行自主领取标 cancelled。
    * expectedRevision 不匹配=REVISION_CONFLICT（If-Match 409）。返回新 revision。
    */
-  applyUpdate(opts: { expectedRevision: number; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean } }): { revision: number } {
+  applyUpdate(opts: { expectedRevision: number; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number } {
     return tx(this.db, () => {
       const current = this.revision();
       if (opts.expectedRevision !== current) throw new Error(`REVISION_CONFLICT:${current}`);
+      // §4.2 422 门：开启付费用途须预算已配（null=未配置非无限）+执行器就绪——不先开功能再等第一次付费失败
+      const readiness = opts.readiness ?? { autonomousExecutorReady: true, keepwarmExecutorReady: true };
+      if (opts.patch.autonomous_enabled === true) {
+        const cap = opts.patch.autonomous_daily_cost_cap_usd ?? (JSON.parse((this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as { value: string } | undefined)?.value ?? '{}') as { autonomous_daily_cost_cap_usd?: number | null }).autonomous_daily_cost_cap_usd ?? null;
+        if (cap === null || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:autonomous');
+        if (!readiness.autonomousExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:autonomous');
+      }
+      if (opts.patch.keepwarm_enabled === true) {
+        const cap = opts.patch.keepwarm_daily_cost_cap_usd ?? (JSON.parse((this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as { value: string } | undefined)?.value ?? '{}') as { keepwarm_daily_cost_cap_usd?: number | null }).keepwarm_daily_cost_cap_usd ?? null;
+        if (cap === null || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:keepwarm');
+        if (!readiness.keepwarmExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:keepwarm');
+      }
+      // 预算上限写入（有限正数才接受；null=显式未配置）
+      const caps: Record<string, unknown> = {};
+      if (opts.patch.autonomous_daily_cost_cap_usd !== undefined) caps.autonomous_daily_cost_cap_usd = opts.patch.autonomous_daily_cost_cap_usd;
+      if (opts.patch.keepwarm_daily_cost_cap_usd !== undefined) caps.keepwarm_daily_cost_cap_usd = opts.patch.keepwarm_daily_cost_cap_usd;
       const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
       const stored = row ? JSON.parse(row.value) as Record<string, unknown> : {};
-      const merged = { ...stored, ...Object.fromEntries(Object.entries(opts.patch).filter(([, v]) => typeof v === 'boolean')) };
+      const merged = { ...stored, ...Object.fromEntries(Object.entries(opts.patch).filter(([, v]) => typeof v === 'boolean')), ...caps };
       const nowIso = new Date().toISOString();
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(SETTINGS_KEY, JSON.stringify(merged), nowIso);
       const nextRev = current + 1;

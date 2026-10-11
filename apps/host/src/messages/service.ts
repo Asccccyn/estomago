@@ -221,6 +221,24 @@ export class MessageService {
     return this.getMessage(messageId)!;
   }
 
+  /** EXEC_V1 §04.13：预写提醒投递（speaker=system，宿主消息；幂等键防重复投递；归档 outbox 同链）。 */
+  publishSystemNotice(opts: { conversationId: string; content: string; clientMessageId: string }): MessageDto {
+    const nowIso = new Date().toISOString();
+    const dup = this.db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?').get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
+    if (dup) return this.getMessage(dup.id)!;
+    const messageId = genId('msg');
+    tx(this.db, () => {
+      const seqRow = this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?').get(opts.conversationId) as { next: number };
+      this.db.prepare(
+        `INSERT INTO messages(id, conversation_id, sequence, speaker, turn_id, kind, client_message_id, current_revision, published_at, created_at)
+         VALUES (?,?,?, 'system', NULL, 'system', ?, 1, ?, ?)`,
+      ).run(messageId, opts.conversationId, seqRow.next, opts.clientMessageId, nowIso, nowIso);
+      this.insertRevision({ messageId, revision: 1, kind: 'system', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'reminder_delivery', fingerprint: messageFingerprint(opts.content, []) });
+      this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
+    });
+    return this.getMessage(messageId)!;
+  }
+
   private insertOutbox(operationKey: string, payload: Record<string, unknown>, nowIso: string): void {
     this.db
       .prepare(
