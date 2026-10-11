@@ -39,7 +39,7 @@ import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecCont
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
-import { sha256Hex } from '../util/id.ts';
+import { sha256Hex, genId } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
@@ -199,6 +199,113 @@ export class TurnSupervisor {
     return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects };
   }
 
+  /**
+   * EXEC_V1 §04.5/§04.6（WP4 收尾）：后台模型回合——自主（proactive_turn）与保温（cache_keepalive）。
+   * 复用 runOrToolLoop（互斥/取消 fence/append-only/逐尝试派发账本/用量记账）。差异由 background 参数承载：
+   * 自主=宿主唤醒说明尾部+正常工具循环+背景预算；终答不自动发布（chat_send_text/background_complete 才公开）。
+   * 保温=最短维护说明尾部+单请求+工具执行门拒绝；**不推进轨迹/书签/选集**（finalMessages 丢弃，
+   * 请求证据与用量保留在 provider_requests/usage）。
+   */
+  async runBackgroundTurn(opts: {
+    kind: 'autonomous' | 'keepwarm';
+    runId: string;
+    conversationId: string;
+    payload: Record<string, unknown>;
+    isCancelRequested: () => boolean;
+    registerAbort: (c: AbortController) => void;
+    recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
+    maxModelRequests: number;
+    maxOutputTokens: number;
+  }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string; detail?: string }> {
+    const d = this.d;
+    const dv = this.drv();
+    if (dv === null) return { outcome: 'failed', result_code: 'SDK_BACKGROUND_POLICY_UNVERIFIED', detail: '当前驱动不支持后台回合（SDK 背景策略未验证）' };
+    const window = d.windows.activeWindow(opts.conversationId);
+    if (!window) return { outcome: 'failed', result_code: 'NO_ACTIVE_WINDOW' };
+    const pendingSel = d.selections ? d.selections.forTargetWindow(window.id) : null;
+    if (pendingSel && pendingSel.status === 'awaiting') return { outcome: 'failed', result_code: 'CONTEXT_SELECTION_REQUIRED', detail: '等待用户手选原文——后台不自动空选' };
+    const traj = d.trajectory?.forWindow(window.id) ?? null;
+    if (!traj || traj.messages.length === 0) return { outcome: 'failed', result_code: 'NO_TRAJECTORY', detail: '窗口尚无规范轨迹' };
+    const gate = d.identity.evaluateGate(d.db, { driver: dv.kind });
+    if (gate.state !== 'READY' || !gate.manifest) return { outcome: 'failed', result_code: 'IDENTITY_BLOCKED' };
+    const materials = d.identity.loadVerifiedMaterials(gate.manifest);
+    if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_BEFORE_START' };
+
+    // 尾部说明：宿主事件口径——不伪造用户消息（§6.3/§5.3）
+    const tailNote = opts.kind === 'keepwarm'
+      ? '[宿主缓存维护请求] 这不是用户消息。这是一次受限的缓存保温请求：请只回复"ok"，不要调用任何工具。'
+      : `[宿主自主活动窗口] 这是一次自主活动机会，不是来自乔生的新消息。${typeof opts.payload.intent === 'string' && opts.payload.intent.length > 0 ? `本次意图：${String(opts.payload.intent).slice(0, 200)}` : '你可以自由选择做什么，也可以什么都不做。'}要对乔生说话必须调用 chat_send_text；结束时调用 background_complete（outcome=noop 表示正常地什么都没做，不要求产出）。`;
+    const sysText = [materials?.identityText ?? '', materials?.iText ?? '', materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
+    const baseMessages: OrMessage[] = [
+      { role: 'system', content: [{ type: 'text', text: sysText }] },
+      ...traj.messages.slice(1), // 轨迹正本（system 段重建同源；历史按窗口冻结正本）
+      { role: 'user', content: [{ type: 'text', text: tailNote }] } as unknown as OrMessage,
+    ];
+    const { boundaries } = planBoundaries({ messages: baseMessages, systemMessageCount: baseMessages.filter((m) => m.role === 'system').length, prevBoundary: traj.lastBoundary });
+    const envelope: OrRequestEnvelope = {
+      model: dv.model,
+      sessionId: dv.sessionId(opts.conversationId),
+      messages: baseMessages,
+      tools: this.windowTools(window.id), // 同一冻结快照（§5.3 不为保温清空工具破坏前缀；执行门负责拒绝）
+      boundaries,
+      maxTokens: Math.min(opts.maxOutputTokens, dv.maxTokens),
+      reasoning: dv.reasoning,
+    };
+    const { reasoning: _r, ...prevParams } = envelope;
+    void _r;
+    const previousEnvelope: OrRequestEnvelope = { ...(prevParams as OrRequestEnvelope), messages: traj.messages };
+
+    // 后台 turn（无用户消息；trigger 区分用途——usage 按 purpose/预算日归属可查）
+    const nowIso = new Date().toISOString();
+    const turnId = genId('turn');
+    const attemptId = genId('att');
+    d.db.prepare(`INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES (?,?,?, 'pending', ?)`)
+      .run(turnId, opts.conversationId, opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', nowIso);
+    d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,NULL,'pending')").run(attemptId, turnId);
+    d.db.prepare("UPDATE background_runs SET state = 'running', window_id = ?, driver = ?, model = ?, updated_at = ? WHERE id = ?").run(window.id, dv.kind, dv.model, nowIso, opts.runId);
+
+    const controller = new AbortController();
+    opts.registerAbort(controller);
+    const loop = await this.runOrToolLoop({
+      envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
+      conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
+      onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => {
+        // 后台回合不发聊天气泡/思考流；用量照常入账（§05.6：后台无 handleEvent，此处最小挂钩）
+        if (ev.kind === 'usage') {
+          d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: dv.model, source: ev.source, completeness: ev.completeness });
+        }
+      },
+      seenSequence: 0, seenMessages: [],
+      previousEnvelope,
+      background: { runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested },
+    });
+    // §04.10.1：返回后逐笔结算——dispatch 经 provider_requests.background_dispatch_id 反查请求行，
+    // 再按 request_id 取真实 usage 费用；未知保留预占（state=unknown，不释放）
+    for (const bgd of d.db.prepare("SELECT bd.id AS id, pr.id AS prq_id FROM background_dispatches bd LEFT JOIN provider_requests pr ON pr.background_dispatch_id = bd.id WHERE bd.run_id = ? AND bd.state IN ('reserved','started')").all(opts.runId) as Array<{ id: string; prq_id: string | null }>) {
+      if (bgd.prq_id) d.db.prepare('UPDATE background_dispatches SET provider_request_id = ? WHERE id = ?').run(bgd.prq_id, bgd.id);
+      const cost = bgd.prq_id
+        ? (d.db.prepare('SELECT cost_usd FROM usage_observations WHERE request_id = ? ORDER BY observed_at DESC LIMIT 1').get(bgd.prq_id) as { cost_usd: number | null } | undefined)?.cost_usd ?? null
+        : null;
+      const micro = cost !== null ? Math.round(cost * 1_000_000) : null;
+      d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ?").run(micro === null ? 'unknown' : 'settled', micro, new Date().toISOString(), micro === null ? 'cost_unknown' : 'settled', bgd.id);
+      if (micro !== null) d.db.prepare('UPDATE background_runs SET known_cost_micro_usd = known_cost_micro_usd + ?, updated_at = ? WHERE id = ?').run(micro, new Date().toISOString(), opts.runId);
+    }
+    // 派发↔请求行关联（provider_requests.background_dispatch_id 已在准入时写）
+    const finishedState = loop.result.outcome === 'completed' ? 'completed' : 'failed';
+    const runRow = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
+    d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
+    if (opts.kind === 'keepwarm') {
+      // §5.3：保温不推进规范轨迹/书签/选集——finalMessages 直接丢弃；证据与用量已在 provider_requests 保留
+      return { outcome: loop.result.outcome === 'completed' ? 'completed' : 'failed', result_code: loop.result.errorCode ?? (loop.result.outcome === 'completed' ? 'keepwarm_ok' : 'KEEPWARM_FAILED') };
+    }
+    const completion = runRow?.result_code?.startsWith('complete:') === true ? runRow.result_code.slice('complete:'.length) : null;
+    if (loop.result.outcome === 'completed') {
+      return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: completion === 'noop' ? 'complete:noop' : 'complete:done' };
+    }
+    if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
+    return { outcome: 'failed', result_code: loop.result.errorCode ?? 'AUTONOMOUS_FAILED' };
+  }
+
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
    *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
   private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
@@ -231,6 +338,15 @@ export class TurnSupervisor {
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
+    /** EXEC_V1 §04.10（WP4 收尾）：后台回合——每次 transport 前过背景准入（取消/请求数/预算预占），
+     *  逐尝试记 dispatch 账；保温的工具执行门在此拒绝（工具定义保持冻结快照不破坏前缀）。 */
+    background?: {
+      runId: string;
+      kind: 'autonomous' | 'keepwarm';
+      maxModelRequests: number;
+      recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
+      isCancelRequested: () => boolean;
+    };
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
@@ -288,15 +404,27 @@ export class TurnSupervisor {
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
+        // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
+        if (o.background) {
+          if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
+          const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
+          if (started >= o.background.maxModelRequests) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
+        }
         const nowIso = new Date().toISOString();
+        let bgDispatchId: string | null = null;
+        if (o.background) {
+          const rec = o.background.recordDispatch({ logicalActionKey: `model:r${round}:a${info.attemptIndex}`, attemptNo: info.attemptIndex + 1, dispatchKind: 'model', reservedCostMicroUsd: 0 });
+          if (!rec.allowed) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
+          bgDispatchId = rec.dispatchId;
+        }
         if (info.attemptIndex === 0) {
-          d.db.prepare("UPDATE provider_requests SET dispatch_started_at = ?, attempt_no = 0, payload_wire_json = ?, payload_format = 'wire_v1' WHERE id = ?")
-            .run(nowIso, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, prqId);
+          d.db.prepare("UPDATE provider_requests SET dispatch_started_at = ?, attempt_no = 0, payload_wire_json = ?, payload_format = 'wire_v1', background_run_id = COALESCE(?, background_run_id), background_dispatch_id = COALESCE(?, background_dispatch_id) WHERE id = ?")
+            .run(nowIso, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, o.background?.runId ?? null, bgDispatchId, prqId);
           lastPrqId = prqId;
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-          d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex);
+          d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no, background_run_id, background_dispatch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
       };
@@ -343,7 +471,13 @@ export class TurnSupervisor {
         return { result, finalMessages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive };
       }
       if (round === MAX_TOOL_ROUNDS) {
-        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // O05：轮次耗尽=末轮工具结果未发出，pending 不转正
+        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // O05：轮次耗尽=末轮工具结果未发出， pending 不转正
+      }
+      // EXEC_V1 §04.5.3（CW-13）：保温请求的工具执行门——工具定义保持冻结快照（不破坏缓存前缀），
+      // 但宿主拒绝执行任何工具，也不发第二轮续答；请求证据与用量照常保留
+      if (o.background?.kind === 'keepwarm') {
+        d.logger.warn('keepwarm_tool_refused', { run_id: o.background.runId, tools: captured.map((t) => t.tool_name).join(',') });
+        return { result: { outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_TOOL_REFUSED', errorMessage: `保温工具执行已拒绝（${captured.length} 个）——无续答请求`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
       }
       prevEnvelope = envelope;
       // F13：已发布正文随 assistant 消息续传（原样保留，§2.2）；opaque reasoning 片段作为
@@ -385,7 +519,7 @@ export class TurnSupervisor {
         }
         args.__tool_call_id = t.tool_id;
         const exec = await d.tools!.execute(t.tool_name ?? '', args, {
-          roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose,
+          roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: result.requestId ?? lastPrqId,
