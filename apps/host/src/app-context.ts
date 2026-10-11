@@ -147,13 +147,13 @@ export class Host {
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
       credentialEnv: archiveCredRef,
     });
-    const archiveSync = new ArchiveSyncService({ db, events, logger, client: archiveMariposaClient, config: opts.config });
+    const archiveSync = new ArchiveSyncService({ db, events, logger, client: archiveMariposaClient, config: opts.config, alerts });
     // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经主模型凭据的客户端；
     // 端到端在 Mariposa 接口上线前 BLOCKED——客户端错误如实回给模型，不伪造成功）
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
-    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync });
+    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages });
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,
@@ -175,6 +175,7 @@ export class Host {
       selections,
       settings,
       alerts,
+      media,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {

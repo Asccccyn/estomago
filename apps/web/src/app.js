@@ -29,6 +29,8 @@ const state = {
   // EXEC_V1 §05：预估与系统红点（客户端零模型调用；慢响应只应用匹配草稿/模型/附件指纹的回包）
   estimate: { charsPerToken: 2.5, timer: null, inFlight: null, modelSnapshotId: null },
   alertsOpen: false,
+  // EXEC_V1 §03.5.3：待发附件队列（上传成功才有 asset_id；失败保留可重试，不产生半条消息）
+  attachments: [], // Array<{asset_id, presentation:'image', caption:null, name, status}>
 };
 
 // —— 认证 ——
@@ -121,11 +123,14 @@ async function send() {
   // F13：pending 携带自己的守卫冻结值——旧回执只允许按"它那次"的修订判断清空，绝不触碰新草稿
   state.pendingSend = { requestId: thisRequestId, draft: thisDraft, frozenRev: retryPending ? state.pendingSend.frozenRev : draftGuard.freeze() };
   const draft = buildOutgoingDraft(thisDraft, thisRequestId);
+  // EXEC_V1 §03.5.3：附件随发送提交（只带已就绪 asset；上传中/失败的保留在队列不清）
+  const readyAtts = state.attachments.filter((a) => a.status === 'ready' && a.asset_id).map((a) => ({ asset_id: a.asset_id, presentation: a.presentation }));
+  const body = readyAtts.length > 0 ? { ...draft, attachments: readyAtts } : draft;
   try {
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': draft.client_message_id },
-      credentials: 'same-origin', body: JSON.stringify(draft),
+      credentials: 'same-origin', body: JSON.stringify(body),
     });
     if (res.status === 401) { location.reload(); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -138,6 +143,9 @@ async function send() {
     if (settled && settled.requestId === thisRequestId && draftGuard.mayClear(settled.frozenRev) && composer.value === settled.draft) {
       composer.value = '';
       state.draftRevision = draftGuard.touch();
+      // 成功只清本次发送的就绪附件（上传中/失败项保留）
+      state.attachments = state.attachments.filter((a) => a.status !== 'ready');
+      renderAttachQueue();
     }
     refreshSendButton();
     composer.focus();
@@ -203,6 +211,33 @@ function renderMessage(dto, { update = false } = {}) {
     est.className = 'bubble-estimate';
     est.textContent = estimateText;
     bubble.appendChild(est);
+  }
+  // EXEC_V1 §03.5.3：附件渲染——img/audio 明确元素（不 innerHTML）；重进页面从数据库附件重建，
+  // 不依赖此前 Blob URL；取不到如实"附件暂不可用"
+  const atts = dto.revision.attachments ?? [];
+  if (atts.length > 0) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bubble-media';
+    for (const a of atts) {
+      const url = `/api/v1/assets/${encodeURIComponent(a.asset_id)}/content`;
+      if (a.presentation === 'voice') {
+        const au = document.createElement('audio');
+        au.controls = true;
+        au.preload = 'metadata';
+        au.src = url;
+        au.onerror = () => { au.remove(); const f = document.createElement('div'); f.className = 'unavailable'; f.textContent = '语音附件暂不可用'; wrap.appendChild(f); };
+        wrap.appendChild(au);
+        if (a.derived_text) { const t = document.createElement('div'); t.className = 'bubble-estimate'; t.textContent = `转写（来源：${a.derived_source ?? 'unspecified'}，派生文字）：${a.derived_text}`; wrap.appendChild(t); }
+      } else {
+        const img = document.createElement('img');
+        img.alt = a.caption ?? '附件图片';
+        img.loading = 'lazy';
+        img.src = url;
+        img.onerror = () => { img.remove(); const f = document.createElement('div'); f.className = 'unavailable'; f.textContent = '附件暂不可用'; wrap.appendChild(f); };
+        wrap.appendChild(img);
+      }
+    }
+    bubble.appendChild(wrap);
   }
   // F-J-08（联合审计 2026-10-06）：用户消息编辑入口——修订链/outbox 由服务端
   // editUserMessage 同事务保证（不无痕重写）；编辑不自动触发重新生成
@@ -1011,6 +1046,70 @@ async function refreshEstimate() {
 缓存部分占上下文；命中可能降低费用，无法预先保证。`;
     detail.hidden = false;
   } catch { line.textContent = '预计用量暂不可用'; }
+}
+
+
+
+// —— EXEC_V1 §03.5.3：附件上传队列（失败保留文字与未发附件；重试复用操作键；成功后只清本次草稿）——
+const attachBtn = $('attach-btn');
+const attachInput = $('attach-input');
+const attachQueue = $('attach-queue');
+
+function renderAttachQueue() {
+  if (!attachQueue) return;
+  attachQueue.replaceChildren();
+  for (const a of state.attachments) {
+    const item = document.createElement('div');
+    item.className = 'attach-item';
+    if (a.previewUrl) { const img = document.createElement('img'); img.src = a.previewUrl; img.alt = a.name; item.appendChild(img); }
+    const label = document.createElement('span');
+    label.textContent = a.status === 'uploading' ? `${a.name}：上传中…` : a.status === 'failed' ? `${a.name}：上传失败（点击重试）` : a.name;
+    item.appendChild(label);
+    if (a.status === 'failed') {
+      item.style.cursor = 'pointer';
+      item.onclick = () => void uploadAttachment(a);
+    }
+    const rm = document.createElement('button');
+    rm.className = 'ghost';
+    rm.textContent = '✕';
+    rm.setAttribute('aria-label', `移除附件 ${a.name}`);
+    rm.onclick = () => { state.attachments = state.attachments.filter((x) => x !== a); renderAttachQueue(); refreshSendButton(); };
+    item.appendChild(rm);
+    attachQueue.appendChild(item);
+  }
+}
+
+async function uploadAttachment(a) {
+  a.status = 'uploading';
+  a.opKey = a.opKey ?? `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  renderAttachQueue();
+  try {
+    const res = await fetch(`/api/v1/assets?purpose=${a.purpose}`, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': a.opKey },
+      body: a.file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { a.status = 'failed'; a.error = data?.error?.message ?? res.status; renderAttachQueue(); return; }
+    a.asset_id = data.asset_id;
+    a.status = 'ready';
+  } catch { a.status = 'failed'; }
+  renderAttachQueue();
+  refreshSendButton();
+}
+
+if (attachBtn && attachInput) {
+  attachBtn.onclick = () => attachInput.click();
+  attachInput.onchange = () => {
+    for (const f of attachInput.files ?? []) {
+      const presentation = 'image'; // 一期附件按钮=图片/贴纸文件（voice 录音入口属 M3 语音批）
+      state.attachments.push({ file: f, name: f.name, presentation, purpose: 'chat_image', status: 'uploading', previewUrl: URL.createObjectURL(f) });
+      void uploadAttachment(state.attachments[state.attachments.length - 1]);
+    }
+    attachInput.value = '';
+    renderAttachQueue();
+    refreshSendButton();
+  };
 }
 
 void boot;
