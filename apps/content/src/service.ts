@@ -17,7 +17,9 @@ const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 100;
 
 export class ContentError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) { super(message); }
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message: string) { super(message); this.status = status; this.code = code; }
 }
 
 type Db = DatabaseSync;
