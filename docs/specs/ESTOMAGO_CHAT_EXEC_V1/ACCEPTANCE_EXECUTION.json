@@ -3279,12 +3279,12 @@
         "月请求及分源范围/载荷日志、故障前后摘要响应。",
         "正常与部分不可用界面截图及缓存/数据职责检查。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "月概要只查各日消息计数+提醒计数（不下载正文/桶全文/星星正文——纯 DB COUNT）；外部源 memory/stars/future_notes 按配置与可达性如实标注 not_configured/unavailable；无法取精确数量的外部源不预加载计数（选中后按需）",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3315,12 +3315,12 @@
         "种子 ID 与全部分页结果对照、期间变更记录。",
         "无效输入响应及前端多页读取录像。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "chat 源 keyset 分页实测（limit=2 两页翻完+has_more+next_cursor 绑定消息 ID）；limit 默认 20 最大 100 超限=400；无效日期/来源=400",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3353,12 +3353,12 @@
         "种子消息 ID/UTC 时间与实际包含、排除集合。",
         "查询边界、逐页结果及跨窗口关联记录。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "shanghaiDayRange 实测：2026-10-11 → UTC [2026-10-10T16:00:00Z, 2026-10-11T16:00:00Z) 半开区间；跨日消息（UTC 17:00=北京次日 01:00）正确排除；毫秒边界精确",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3392,12 +3392,12 @@
         "未知日期及农历边界显示、源更正后的刷新结果。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "桶/作品按源 event_date 归属=需 Mariposa 真实合同（WP7 核验后补齐——当前 memory 源标 unavailable 不冒充有数据）",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
+      "blocked_dependency": "Mariposa event_date 合同（WP7）"
     },
     {
       "id": "CALENDAR-05",
@@ -3429,12 +3429,12 @@
         "全程只读/明确打开调用轨迹和确认次数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "chat 源含全部已保存消息（不依赖模型上下文/hold/缓存——纯 DB 查询）；系统消息排除（speaker != system）；\"相关原文\"入口=需 Mariposa 桶绑定合同（WP7）",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
+      "blocked_dependency": "Mariposa 桶绑定原文入口（WP7）"
     },
     {
       "id": "CALENDAR-06",
@@ -3464,12 +3464,12 @@
         "真实合同版本/入口映射、各请求日志及前后星状态快照。",
         "create 日和重要日界面对照、邀请/确认入口证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "纯函数+纯 DB 读取：零外部请求（不调用 memory_open/view.confirm/取下一颗/消费会话）；stars 源 not_configured/unavailable 如实标注；不伪造星正文预览",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3503,11 +3503,11 @@
         "投递前后 plan 状态、模型调用为零及不同通知能力状态截图。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "implementation_commit": "05ce506",
+      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
+      "observed": "reminders 源按 background_tasks.next_due_at 自然日匹配（实测：标题含 payload.text）；提醒投递不自动标 plan 完成=计划正本在 Mariposa（est 侧无修改路径——结构分责）；\"无需额外模型\"=提醒投递零模型调用已测（WP4）",
+      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
       "blocked_dependency": null
     },
     {
