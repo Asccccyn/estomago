@@ -520,6 +520,34 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
     }
 
+    // —— EXEC_V1 §03.5.1（WP3/MEDIA-11）：active MIME 隔离预览——CSP sandbox + nosniff ——
+    const sandboxPreview = /^GET \/api\/v1\/assets\/([^/]+)\/preview$/.exec(route);
+    if (sandboxPreview) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      try {
+        const id = decodeURIComponent(sandboxPreview[1]!);
+        const asset = d.media.getAsset(id);
+        // 只有 SVG/HTML 走沙箱路径；普通图片走 content 端点
+        if (asset.mime_type !== 'image/svg+xml' && asset.mime_type !== 'text/html') {
+          return json(res, 400, { error: { code: 'not_active_mime', message: '此资产不需要沙箱预览（走 content 端点）' } });
+        }
+        const { bytes, mime } = d.media.readContent(id);
+        // §03.5.1：不能只靠 iframe sandbox——资产 URL 被直接打开时也不能在 est 主站来源执行
+        res.writeHead(200, {
+          'Content-Type': mime,
+          'Content-Length': String(bytes.length),
+          'X-Content-Type-Options': 'nosniff',
+          'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'",
+          'Cache-Control': 'no-store',
+        });
+        res.end(bytes);
+        return;
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+
     // —— EXEC_V1 §06.7（WP6）：日历读聚合（月概要=计数/标记；日详情=分源分页）——
     if (route === 'GET /api/v1/calendar/month') {
       const month = url.searchParams.get('month') ?? '';
