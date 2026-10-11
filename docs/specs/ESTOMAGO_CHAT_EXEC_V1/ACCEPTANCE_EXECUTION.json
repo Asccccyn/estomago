@@ -2367,12 +2367,12 @@
         "前端操作录像或自动化轨迹、停机时聊天及内容响应记录。",
         "启动配置、监听地址、进程清单与持久库职责清单。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "est->content 503 降级实测：contentClient=null->/api/v1/content/* 全部返回 503 content_unavailable（聊天端点照常 200）；启用后可用",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2404,12 +2404,12 @@
         "两种合法入口及各类伪造请求的脱敏输入、响应和持久作者记录。",
         "宿主身份映射与 content 二次授权的调用轨迹。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：作者只来自宿主派生——浏览器经 est 代理->X-Actor=qiaosheng；模型工具->jiaming；body 无任何作者字段；jiaming 不能编辑 qiaosheng 的帖子（403 NOT_AUTHOR）；content 端验证 X-Actor 双人集合",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2442,12 +2442,12 @@
         "覆盖各资源与写入方法的输入矩阵、响应、对象数量及版本变化记录。",
         "工具到 HTTP 映射证据和响应丢失恢复轨迹。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：POST/PUT/DELETE 全带 Idempotency-Key（缺=400）；PUT/DELETE 另带 If-Match（缺=428/错=409/对=200+revision 递增）；同键同请求=原结果/同键异请求=409 IDEMPOTENCY_CONFLICT（content_receipts 表）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2481,12 +2481,12 @@
         "重启恢复、reconcile、GC 后文件可读结果及调用方向轨迹。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "est->content 资产校验+引用登记已落（contentProxyWithAssets）；跨服务中断恢复场景需 WP8 联合审计",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "跨服务中断恢复（WP8）"
     },
     {
       "id": "CONTENT-05",
@@ -2516,12 +2516,12 @@
         "正文与任务的脱敏持久记录、失败和恢复响应、并发任务结果。",
         "前端保存及时间说明截图、调度注册清单。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：future_notes 表无 deliver_at/调度字段（正文归 content、投递归 est 调度器——结构性分责）；est 侧 background_tasks 独立管理时间+投递状态",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2554,12 +2554,12 @@
         "短临界区或 fence 轨迹、模型调用计数和消息入口记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "留言编辑->revision 递增（实测）；已发送消息不改写=est 投递链冻结版本语义=待 WP8 联合审计",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "投递链冻结版本（WP8）"
     },
     {
       "id": "CONTENT-07",
@@ -2591,12 +2591,12 @@
         "过期版本、无权请求、部分失败和同 key 恢复的实际响应。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "删除留言=DELETE 墓碑（实测）；先于投递提交阻止发送=est 调度器与 content 跨服务事务=WP8 联合审计",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "跨服务事务（WP8）"
     },
     {
       "id": "CONTENT-08",
@@ -2628,12 +2628,12 @@
         "源删除前后消息、附件可读性与前端状态证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "投递幂等（background_runs occurrence 唯一）+消息投递 client_message_id 幂等已测；外部投递恢复链=WP8",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "外部投递恢复（WP8）"
     },
     {
       "id": "CONTENT-09",
@@ -2664,12 +2664,12 @@
         "模型调用为零及服务恢复后的实际状态证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "到期无法读取留言->不发空消息=est 调度器从 content 读取失败的真实场景注入=WP8",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "调度器读取失败注入（WP8）"
     },
     {
       "id": "FEED-01",
@@ -2698,12 +2698,12 @@
         "两种入口的完整操作录像、工具响应与对应帖子/评论 ID。",
         "刷新后页面截图及脱敏作者持久记录。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：qiaosheng 经 est 代理发帖（author=qiaosheng）；jiaming 经模型工具/直连发帖+评论（author=jiaming）；双方都可见列表+评论数",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2732,12 +2732,12 @@
         "两位作者的合法和越权请求矩阵、响应及对象前后对照。",
         "涉及媒体时的引用不变证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：本人编辑/删除通过（If-Match 正确+revision 递增）；非本人编辑=403 NOT_AUTHOR（jiaming 不能编辑 qiaosheng 帖子/留言）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2768,12 +2768,12 @@
         "数据库外键/删除行为及删除前后 API 输出。",
         "墓碑展示、被拒评论和共享附件可读性证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：删帖->列表隐藏；他人评论保留可见；已删帖子不再接受新评论（409 POST_DELETED）；评论作者仍可删自己的评论->墓碑（body=null）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2803,12 +2803,12 @@
         "种子 ID 集合与逐页实际 ID 对照、并发操作时间线。",
         "工具分页记录、游标拒绝响应和索引/排序合同证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "分页：keyset 游标绑定 (published_at,id)；limit 默认 20 最大 100 超限=400；评论独立分页 (created_at ASC,id ASC)；模型工具 content_posts_list 可读列表",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2840,12 +2840,12 @@
         "时间字段、排序结果和被拒的发表时间改写请求。",
         "两种 presentation 的数据及外部写调用为零记录。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：letter=同一 feed_posts 表+同一评论/编辑/删除/分页/幂等链（仅 presentation 字段区分）；published_at 服务端定不可编辑（updated_at+revision 才变）；不恢复 Mariposa 旧 letter",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2879,12 +2879,12 @@
         "双适配器调用日志、失败响应及数据归属证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "与扎西德勒完全分开=content 独立 SQLite 独立进程（无共享表/发布/同步逻辑）；自主活动可正常不发帖（runBackgroundTurn noop 语义已实测）。浏览器端到端=WP8 E2E 批",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "浏览器 E2E（WP8）"
     },
     {
       "id": "ALBUM-01",
@@ -2914,12 +2914,12 @@
         "导入结果、归档对象及来源信息，原链接失效后的图片读取证据。",
         "重启前后资产 ID、文件摘要与引用对照。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：重要照片相册 POST 添加（added_by_actor 宿主派生；双方均可）；asset_id 引用不搬文件",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2951,12 +2951,12 @@
         "双方操作结果、前端完整删除流程及引用前后快照。",
         "源对象读取对照、外部删除调用为零和 GC 后可读证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：相册移除（DELETE /album-entries/:id）->归档+关联全删；不删外部原文/文件；无需逐项审批",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -2987,12 +2987,12 @@
         "已核验的真实 schema/版本、源搜索响应和反查 ID 对照。",
         "全部分页及非法游标结果、content 存储字段检查。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：chat_screenshots 归档带 our_words 引用（refs 数组）；反查 GET ?source_service=mariposa&source_kind=our_words&source_id=ow_test_1->精确命中；游标绑定 kind+筛选",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3025,12 +3025,12 @@
         "外部服务关闭时的调用记录及配置依赖检查。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "表情包含义可搜索（GET ?q=文本查询匹配 caption/meaning）+发送走 chat_send_attachment（已测）；图检索/生图=外部可替换能力（WP7；未接不冒充）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "图检索/生图外部能力（WP7）"
     },
     {
       "id": "ALBUM-05",
@@ -3061,12 +3061,12 @@
         "各失败分支响应和提交前后对象/关联数量。",
         "重复归档返回值、原说明不变及资产保护证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：同 (kind,asset_id) 幂等返回既有（不覆盖别人写的 caption）；重复归档不新建记录",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3097,12 +3097,12 @@
         "新桶前后任务/作品数量、icon-only 创建及详情响应。",
         "显式打开调用轨迹与越权更新被拒记录。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：创建只需 bucket_id+icon_asset_id（work 可空=有效状态）；无作品=图标直达桶（bucket_ref 稳定引用）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3133,12 +3133,12 @@
         "补作品前后记录 ID、bucket_ref、时间字段与源桶数量对照。",
         "源日期更正后的日历响应和作品展示截图。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "实测：后补作品 PUT /creations/:id 添加 work_asset_id+work_kind->原记录 revision 递增；不另写桶",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
@@ -3170,12 +3170,12 @@
         "攻击输入、拦截结果、宿主写调用为零及错误来源事件被拒证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "作品保存工具 creation_save_artifact+Sandbox iframe 隔离预览=WP7/内容批后续项（当前 work_kind=html 只是元数据标记，无执行面）",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "Sandbox 隔离预览+creation_save_artifact（WP7）"
     },
     {
       "id": "CREATION-04",
@@ -3206,12 +3206,12 @@
         "源读取与明确打开调用次数、404/503 分支截图。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "播放完成/异常->原事件入口=前端作品查看器=WP7/前端批",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
+      "blocked_dependency": "前端作品查看器（WP7）"
     },
     {
       "id": "CREATION-05",
@@ -3242,12 +3242,12 @@
         "空状态与历史标签界面截图、实际使用字段和来源映射。",
         "服务/任务及模型调用清单、延期范围完成报告。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "45ea7e1",
+      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
+      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
+      "observed": "最小边界保持：游戏=DEFERRED_DESIGN（无代码无虚构游戏）；情绪=仅显示真实记录（无数值模型）；确认无越界实现——仓内零游戏/情绪数值代码",
+      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
       "blocked_dependency": null
     },
     {
