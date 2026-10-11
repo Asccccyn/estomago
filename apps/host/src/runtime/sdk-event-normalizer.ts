@@ -135,11 +135,15 @@ export class SdkEventNormalizer {
       }
       case 'system': {
         // F10：结构化 system 事件（model_refusal_fallback / model_refusal_no_fallback 等）不再丢弃
+        // EXEC_V1 02 §3（WP2）：compact 专项识别——SDK 自身压缩/摘要边界显式上报为
+        // compact_boundary（02 落点表），不再是泛化 unknown；usage 记账不受影响
         if (raw.session_id) this.session_id = raw.session_id;
         if (raw.request_id) this.request_id = raw.request_id;
+        const rawSubtype = typeof raw.subtype === 'string' && raw.subtype.length > 0 ? raw.subtype : 'unknown';
+        const isCompact = /compact/i.test(rawSubtype) || /\bcompact(ing|ion|ed)?\b/i.test(String(raw.content ?? raw.message ?? ''));
         out.push({
           kind: 'system_notice',
-          subtype: raw.subtype ?? 'unknown',
+          subtype: isCompact ? 'compact_boundary' : rawSubtype,
           content: raw.content ?? raw.message ?? null,
           original_model: raw.original_model ?? null,
           fallback_model: raw.fallback_model ?? null,

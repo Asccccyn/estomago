@@ -171,6 +171,7 @@ export class Host {
       trajectory,
       selections,
       settings,
+      alerts,
     });
 
     const deps: Omit<RequestDeps, 'config'> = {

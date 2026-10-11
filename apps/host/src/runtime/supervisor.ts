@@ -41,6 +41,7 @@ import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sd
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
+import { observeCacheUsage } from './cache-observation.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -64,6 +65,7 @@ export type SupervisorDeps = {
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
+  alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -261,28 +263,40 @@ export class TurnSupervisor {
         }
       }
       const payloadJson = JSON.stringify(envelope);
-      const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
-        // 审计 F17：重试的每次真实发送单独留证（首发放到本轮 planned 行，重试插新行）
+      // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
+      // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
+      // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
+      const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
         const nowIso = new Date().toISOString();
         if (info.attemptIndex === 0) {
-          d.db.prepare('UPDATE provider_requests SET sent_at = ?, attempt_no = ?, generation_id = COALESCE(?, generation_id) WHERE id = ?')
-            .run(nowIso, 0, info.generationId ?? null, prqId);
+          d.db.prepare("UPDATE provider_requests SET dispatch_started_at = ?, attempt_no = 0, payload_wire_json = ?, payload_format = 'wire_v1' WHERE id = ?")
+            .run(nowIso, info.payloadWireJson, prqId);
           lastPrqId = prqId;
+        } else {
+          const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+          d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, info.payloadWireJson, 'wire_v1', nowIso, nowIso, info.attemptIndex);
+          lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
+        }
+      };
+      let roundSeenPromoted = false; // 本轮首个真实响应=工具结果实际进入模型（429 重试后成功同算——修 O05 边角）
+      const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
+        // F17 语义保留：2xx=真实发送确认。行已在准入时建好——这里只确认 sent_at 与 generation。
+        const nowIso = new Date().toISOString();
+        d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
+          .run(nowIso, info.attemptIndex, info.generationId ?? null, lastPrqId);
+        if (!roundSeenPromoted) {
+          roundSeenPromoted = true;
           // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
           // 进入模型视野——pending 片段转正为已见
           if (roundPendingSeen.length > 0) {
             toolSeenActive.push(...roundPendingSeen);
             roundPendingSeen = [];
           }
-        } else {
-          const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-          d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at, sent_at, attempt_no, generation_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, nowIso, nowIso, info.attemptIndex, info.generationId ?? null);
-          lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
       };
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch }),
+        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -1715,6 +1729,20 @@ export class TurnSupervisor {
                 model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
+              // EXEC_V1 §04.5（WP2）：缓存证据观测——温态五条件门活接线（字段缺失/无派发起点=不评）
+              if (d.alerts && reqCtx?.requestId && ev.scope === 'request') {
+                try {
+                  const prq = d.db.prepare('SELECT dispatch_started_at FROM provider_requests WHERE id = ?').get(reqCtx.requestId) as { dispatch_started_at: string | null } | undefined;
+                  observeCacheUsage(d.alerts, {
+                    db: d.db, windowId: window.id, requestId: reqCtx.requestId,
+                    model: actualModelForUsage ?? configuredModelForUsage,
+                    readTokens: ev.usage.cache_read_input_tokens ?? null,
+                    writeTokens: ev.usage.cache_creation_input_tokens ?? null,
+                    inputTotal: ev.usage.input_tokens ?? null,
+                    dispatchStartedAt: prq?.dispatch_started_at ?? null,
+                  });
+                } catch { /* 观测失败不影响回合记账 */ }
+              }
               d.events.publish('usage.updated', {
                 conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
                 payload: { scope: ev.scope, usage: ev.usage, attempt_id: attempt.id },
@@ -1730,6 +1758,18 @@ export class TurnSupervisor {
             case 'system_notice':
               // F10：结构化 system 事件（只记 subtype/模型，不落 content 正文——隐私纪律）
               d.logger.info('sdk_system_notice', { turn_id: turnId, subtype: ev.subtype, original_model: ev.original_model, fallback_model: ev.fallback_model });
+              // EXEC_V1 02 §3 / 05 §2.1（WP2）：SDK 观测到未许可压缩——critical 告警；
+              // 只上报事实（policy_conflict 原因另行映射），原文/轨迹不受影响、不自动接管
+              if (ev.subtype === 'compact_boundary') {
+                try {
+                  d.alerts?.observe({
+                    code: 'CONTEXT_COMPACTION_UNEXPECTED', scopeKind: 'conversation', scopeId: turn.conversation_id,
+                    dedupeKey: `compact:${turnId}`, observationId: `compact:${turnId}`,
+                    safeSummary: { title: 'SDK 观测到未许可的上下文压缩', reason: 'sdk_compact_boundary', action_taken: 'alerted_only' },
+                    related: { turnId },
+                  });
+                } catch { /* 告警失败不影响回合 */ }
+              }
               if (ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
                 const actualModel = ev.subtype === 'model_refusal_fallback' ? (ev.fallback_model ?? null) : null;
                 try {

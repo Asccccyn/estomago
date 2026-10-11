@@ -117,8 +117,18 @@ export class OpenRouterRunner implements AgentRunner {
     }
 
     let publishedAny = false; // 已发布事件/已开始流 → 不再自动重试（§9.2 无已发布输出才重试）
+    const payloadWireJson = JSON.stringify(payload); // EXEC_V1：最终发包体证据（wire_v1）
 
     for (let attempt = 0; ; attempt++) {
+      // EXEC_V1 02 §4.2：每次真实 transport 前准入（含全部重试路径）——派发开始在此落账，
+      // 不是响应后的 onDispatch；宿主拒绝（抛错）则本次尝试不发出
+      if (req.onBeforeDispatch) {
+        try {
+          await req.onBeforeDispatch({ attemptIndex: attempt, payloadWireJson });
+        } catch (err) {
+          return this.errorResult(err instanceof ContractError ? err : new ContractError('DISPATCH_ADMISSION_REJECTED'), attempt);
+        }
+      }
       let response: OrTransportResponse;
       try {
         response = await this.transport(payload, req.abortController.signal);

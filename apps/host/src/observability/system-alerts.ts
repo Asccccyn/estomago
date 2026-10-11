@@ -41,6 +41,8 @@ export const ALERT_CODES: Readonly<Record<string, { severity: AlertSeverity; ali
   BACKGROUND_BUDGET_EXHAUSTED: { severity: 'warning', aliasOf: 'BACKGROUND_BUDGET_REACHED' },
   BACKGROUND_OUTCOME_UNKNOWN: { severity: 'warning', aliasOf: 'TOOL_OUTCOME_UNKNOWN' },
   BACKGROUND_CLOCK_REGRESSION: { severity: 'warning', aliasOf: 'CLOCK_OR_RECOVERY_UNCERTAIN' },
+  // 05 §2.1 末段：上游强制压缩策略冲突 → CONTEXT_COMPACTION_UNEXPECTED 的 policy_conflict 原因
+  UPSTREAM_COMPACTION_POLICY_CONFLICT: { severity: 'critical', aliasOf: 'CONTEXT_COMPACTION_UNEXPECTED' },
 };
 
 export type ObserveInput = {
