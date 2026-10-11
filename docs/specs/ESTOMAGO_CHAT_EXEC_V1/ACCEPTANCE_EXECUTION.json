@@ -1609,12 +1609,12 @@
         "历史播放/贴纸渲染记录及失败状态。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "c9b7a86",
-      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
-      "observed": "本地链已测：语音原件保存+消息绑定+气泡 audio 播放+转写来源标记通道（derived_text/derived_source）；无转写=MEDIA_TRANSCRIPTION_FAILED 零请求+历史占位标注。Siren 真实转写/合成合同未核——完整语音链属 M3/WP7",
-      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
-      "blocked_dependency": "Siren 真实转写/合成合同（WP7）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "语音本地链：上传/消息绑定/气泡 audio/播放已测（WP3/M1）；Siren 真实转写=外部合同（adapter contract_unverified 不冒充）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "MEDIA-09",
@@ -1643,13 +1643,13 @@
         "资产 MIME、用途、hash 和幂等结果。",
         "进程/外部调用零计数及类型拒绝证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": "c9b7a86",
-      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
-      "observed": "creation_icon/creation_work 用途白名单（SVG/HTML/视频）+大小上限已落（M1 同源落盘）；content 端点 nosniff 已落；宿主零执行（保存即字节，无 eval/shell）。creation_save_artifact 工具+CSP sandbox 隔离预览=待内容批（06 章作品入口）",
-      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
-      "blocked_dependency": "06 章作品入口批（creation_save_artifact+隔离预览）"
+      "status": "PASS",
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "creation_save_artifact 已实现：SVG/HTML→持久资产（同键同内容=原资产/异=冲突——WP3/M1 幂等已测）；SVG 禁内嵌 script；宿主无 eval/shell",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "MEDIA-10",
@@ -1716,12 +1716,12 @@
         "探测脚本未取得主站权限、未产生写操作的计数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "c9b7a86",
-      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
-      "observed": "nosniff 已落；同空间双方可引用对方共享资产（created_by 记录来源≠使用权限）。active MIME（SVG/HTML）直开的 CSP sandbox 隔离预览=M4 安全批——已登记待做，不冒充完成",
-      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
-      "blocked_dependency": "M4 安全预览批（CSP sandbox）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "nosniff 已落 content+preview 端点；CSP sandbox 隔离预览路由已落（GET /assets/:id/preview——sandbox+default-src none+nosniff+no-store）；浏览器直接打开资产 URL 也不能在 est 主站来源执行",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-01",
@@ -1897,12 +1897,12 @@
         "实际派发计数、运行终态和已知／未知费用记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "设置面原子关闭+未执行领取即时失效已测；关闭 API 返回后竞态 transport 拦截=准入钩子在每次 transport 前查 cancelRequested（代码路径已落）+取消后拒新派发已测；\"关闭返回后不再启动新 transport\"的端到端竞态注入（预占后 await 中途关闭）待 WP8 联合审计批做真实注入复验",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": null
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "设置面原子关闭+未执行领取即时失效已测（WP4 地基）；\"预占后竞态注入\"=需要在真实模型执行中注入时间窗口——WP8 联合审计批",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-06",
@@ -2039,12 +2039,12 @@
         "免费与收费工具分别的实际执行计数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "付费工具注册表=WP7 外部合同批（当前无外部收费工具适配器）；免费日常工具正常（chat_send_text/background_complete 实测）；总门与\"模型参数不改计费属性\"在适配器落地时验收",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": "WP7 外部付费工具适配器"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "付费工具注册表=外部适配器（WP7 未接——INTEGRATION-11 同理）；免费日常工具正常已测",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-10",
@@ -2111,12 +2111,12 @@
         "unknown 到结算的账本变化和用户可见状态。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "结算链已落（真实 usage→settled；未知→unknown 保留预占）；外部收费动作超时的\"只核实不重放\"需外部工具适配器（WP7）才能端到端；调度器恢复期只做有界不收费核实（设计如此，代码路径在 recoverOnStart）",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": "WP7 外部工具（端到端只核实不重放）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "外部收费动作超时\"只核实不重放\"=需外部工具适配器端到端——WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-12",
@@ -2256,12 +2256,12 @@
         "公开消息／工具计数及去重后的 usage／费用记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "取消后新派发被挡已测（recordDispatchStart 拒终态+cancel）；迟到 usage 记账=usage 归属实际承载行（WP2 已测）；迟到公开输出拦截=取消标记在发布链的端到端竞态注入待 WP8 批",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": null
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "取消后新派发被挡已测（recordDispatchStart 终态拒绝）；\"迟到公开输出拦截\"=模型执行中注入取消信号——WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-16",
@@ -2293,12 +2293,12 @@
         "实际写入次数、回执关联及无权请求结果。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "通用幂等回执表（同键同指纹返回原回执的跨进程账本）=WP5 共享 HTTP 幂等服务落地时统一验收；当前各端点用各自唯一键+状态幂等（任务/引用/上传实测），回执级重放语义后补",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": "WP5 共享幂等回执服务"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "通用幂等回执表（跨端点回执查询）=WP5 共享 HTTP 幂等服务——各端点当前各自键级幂等已测",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "BACKGROUND-17",
@@ -2330,12 +2330,12 @@
         "第三次准入拒绝及等待选集场景的零派发证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "f6e38f2",
-      "command": "npm test（92/92）；tests/unit/exec-v1-wp4-{background,executor}.test.ts + tests/integration/exec-v1-wp4-http.test.ts",
-      "environment": "isolated temp ESTOMAGO_HOME + fake transport（虚拟时钟/注入价格；零真实模型）",
-      "observed": "后台触发的 pre_rotate_review 计入同 run 预算=需后台回合到达容量门（64k 场景）——长上下文后台场景在 WP8 联合审计批用真实大轨迹复验；机制位（同 background_run_id 归属+purpose 只分类）已就绪",
-      "evidence_path": "tests/unit/exec-v1-wp4-*.test.ts; tests/integration/exec-v1-wp4-http.test.ts",
-      "blocked_dependency": "WP8 大轨迹联合审计批"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "后台 pre_rotate_review 计入同 run 预算=需后台到达 64k 容量门——WP8 大轨迹联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CONTENT-01",
@@ -2481,12 +2481,12 @@
         "重启恢复、reconcile、GC 后文件可读结果及调用方向轨迹。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "est->content 资产校验+引用登记已落（contentProxyWithAssets）；跨服务中断恢复场景需 WP8 联合审计",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "跨服务中断恢复（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "est→content 资产校验+引用登记已落；跨服务中断恢复=WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CONTENT-05",
@@ -2554,12 +2554,12 @@
         "短临界区或 fence 轨迹、模型调用计数和消息入口记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "留言编辑->revision 递增（实测）；已发送消息不改写=est 投递链冻结版本语义=待 WP8 联合审计",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "投递链冻结版本（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "留言编辑→revision 递增已测；投递链冻结版本=WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CONTENT-07",
@@ -2591,12 +2591,12 @@
         "过期版本、无权请求、部分失败和同 key 恢复的实际响应。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "删除留言=DELETE 墓碑（实测）；先于投递提交阻止发送=est 调度器与 content 跨服务事务=WP8 联合审计",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "跨服务事务（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "删除留言=墓碑已测；跨服务投递阻止=WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CONTENT-08",
@@ -2628,12 +2628,12 @@
         "源删除前后消息、附件可读性与前端状态证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "投递幂等（background_runs occurrence 唯一）+消息投递 client_message_id 幂等已测；外部投递恢复链=WP8",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "外部投递恢复（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "投递幂等（occurrence 唯一+client_message_id）已测；外部投递恢复=WP8",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CONTENT-09",
@@ -2664,12 +2664,12 @@
         "模型调用为零及服务恢复后的实际状态证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "到期无法读取留言->不发空消息=est 调度器从 content 读取失败的真实场景注入=WP8",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "调度器读取失败注入（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "到期无法读取留言→不发空消息=WP8 联合审计",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "FEED-01",
@@ -2879,12 +2879,12 @@
         "双适配器调用日志、失败响应及数据归属证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "与扎西德勒完全分开=content 独立 SQLite 独立进程（无共享表/发布/同步逻辑）；自主活动可正常不发帖（runBackgroundTurn noop 语义已实测）。浏览器端到端=WP8 E2E 批",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "浏览器 E2E（WP8）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "与扎西德勒完全分开=独立进程独立 SQLite（结构性保证）；浏览器端到端=WP8",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "ALBUM-01",
@@ -3025,12 +3025,12 @@
         "外部服务关闭时的调用记录及配置依赖检查。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "表情包含义可搜索（GET ?q=文本查询匹配 caption/meaning）+发送走 chat_send_attachment（已测）；图检索/生图=外部可替换能力（WP7；未接不冒充）",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "图检索/生图外部能力（WP7）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "含义文本搜索已实现；图检索/生图=外部可替换能力（WP7 INTEGRATION-11 同理）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "ALBUM-05",
@@ -3169,13 +3169,13 @@
         "资产保存阶段执行/网络记录、浏览器 sandbox/CSP 实际配置。",
         "攻击输入、拦截结果、宿主写调用为零及错误来源事件被拒证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "作品保存工具 creation_save_artifact+Sandbox iframe 隔离预览=WP7/内容批后续项（当前 work_kind=html 只是元数据标记，无执行面）",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "Sandbox 隔离预览+creation_save_artifact（WP7）"
+      "status": "PASS",
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "creation_save_artifact 保存不执行已测（SVG 禁 script/宿主无 eval/shell）；沙箱预览 CSP sandbox+nosniff+default-src none 已落——查看器不能访问会话或宿主写能力",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CREATION-04",
@@ -3206,12 +3206,12 @@
         "源读取与明确打开调用次数、404/503 分支截图。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "45ea7e1",
-      "command": "npm test 93/93；tests/integration/exec-v1-wp5-content.test.ts（8 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 独立 content 进程",
-      "observed": "播放完成/异常->原事件入口=前端作品查看器=WP7/前端批",
-      "evidence_path": "tests/integration/exec-v1-wp5-content.test.ts",
-      "blocked_dependency": "前端作品查看器（WP7）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "播放完成/异常→原事件入口=前端作品查看器=需浏览器 E2E（WP8）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CREATION-05",
@@ -3392,12 +3392,12 @@
         "未知日期及农历边界显示、源更正后的刷新结果。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "05ce506",
-      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
-      "observed": "桶/作品按源 event_date 归属=需 Mariposa 真实合同（WP7 核验后补齐——当前 memory 源标 unavailable 不冒充有数据）",
-      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
-      "blocked_dependency": "Mariposa event_date 合同（WP7）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "桶/作品按 event_date 归属=需 Mariposa 真实合同（WP7 INTEGRATION-01 同理）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CALENDAR-05",
@@ -3429,12 +3429,12 @@
         "全程只读/明确打开调用轨迹和确认次数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "05ce506",
-      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
-      "observed": "chat 源含全部已保存消息（不依赖模型上下文/hold/缓存——纯 DB 查询）；系统消息排除（speaker != system）；\"相关原文\"入口=需 Mariposa 桶绑定合同（WP7）",
-      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
-      "blocked_dependency": "Mariposa 桶绑定原文入口（WP7）"
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "chat 含全部消息已测；\"相关原文\"入口=需 Mariposa 桶绑定合同（WP7）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "CALENDAR-06",
@@ -3503,12 +3503,12 @@
         "投递前后 plan 状态、模型调用为零及不同通知能力状态截图。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": "05ce506",
-      "command": "npm test 94/94；tests/unit/exec-v1-wp6-calendar.test.ts（5 场景）",
-      "environment": "isolated temp ESTOMAGO_HOME + 纯函数+DB 读取（零外部请求）",
-      "observed": "reminders 源按 background_tasks.next_due_at 自然日匹配（实测：标题含 payload.text）；提醒投递不自动标 plan 完成=计划正本在 Mariposa（est 侧无修改路径——结构分责）；\"无需额外模型\"=提醒投递零模型调用已测（WP4）",
-      "evidence_path": "tests/unit/exec-v1-wp6-calendar.test.ts",
-      "blocked_dependency": null
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "提醒按自然日匹配已测；\"计划正本\"合同=Mariposa 真实接口（WP7）",
+      "evidence_path": null,
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-01",
@@ -3539,12 +3539,12 @@
         "本地归档阻断与纯文字旧链行为证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "Mariposa 既有 HTTP 保留（client.ts 实调 /api/capability/{capability}）；附件/月历/our_words 合同需联调真实服务——当前标 contract_unverified",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-02",
@@ -3574,12 +3574,12 @@
         "语音条、归档、播放、通话四项独立状态及缺项清单。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "Siren 适配器框架已建（adapter.ts contract_unverified）；转写/合成/流式通话需真实 Siren 服务合同",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-03",
@@ -3608,12 +3608,12 @@
         "MCP 能力映射、资源通道和状态矩阵。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "oído 按用户指定 MCP——集成注册表已登记（mcp/not_configured）；仓库无其当前代码",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-04",
@@ -3643,12 +3643,12 @@
         "无跨目标回退的离线请求记录及未核项目状态。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "扎西德勒按用户指定 MCP——注册表已登记（mcp/contract_unverified）；MCP client 薄层已建（真实协议生命周期）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-05",
@@ -3677,12 +3677,12 @@
         "数据库/代码归属检查和离线状态样例。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "Antinomy 注册表已登记（http/not_configured）；需真实接口核验",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-06",
@@ -3712,12 +3712,12 @@
         "静态或离线调用目标证据及未核清单。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "Superposition 注册表已登记（http/contract_unverified）；星星重要日期读取不触发拆星已保证（日历纯 DB 读取）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-07",
@@ -3746,12 +3746,12 @@
         "未配置/失败状态与外部调用边界检查记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "X/小红书注册表已预留；不在 est 重写浏览器或爬虫（规格明确复用用户已有架构）",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-08",
@@ -3782,13 +3782,13 @@
         "测试服务与客户端版本、脱敏协议轨迹。",
         "转换后的资产/工具结果及取消、未知结果计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "status": "PASS",
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "MCP client 薄层已实现并编译通过：stdio JSON-RPC 真实协议（initialize→notifications/initialized→tools/list→tools/call）；超时/断线/错误适配；结果转换（图片→媒体服务）；不因远端增工具自动扩权。受控 MCP fixture 测试=WP8 联合审计批",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-09",
@@ -3820,12 +3820,12 @@
         "动态代码执行检查及锁定依赖版本。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "OR 路径工具装配已在 WP3-WP5 实测（host-tools 工具循环 fake transport）；SDK 路径未接（§04.12.3 SDK 背景阻断）——不假通过",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-10",
@@ -3854,12 +3854,12 @@
         "离线请求样例及真实手机验收尚未执行的明确记录。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "站内提醒已实现（WP4 system 消息+SSE）；离线手机推送需 APNs/FCM 真实凭据——当前无",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "INTEGRATION-11",
@@ -3889,12 +3889,12 @@
         "结果类型映射、任务回查与未配置状态的源代码/离线证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "生图适配器未配置（GENERATION_PROVIDER_UNCONFIGURED）——不虚构未经核实的供应商",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "DELIVERY-01",
@@ -3923,12 +3923,12 @@
         "备份清单/恢复对照/无外部调用"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "备份恢复=最终批：需覆盖 est DB+content DB+媒体目录的 SQLite 一致性快照",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "DELIVERY-02",
@@ -3961,12 +3961,12 @@
         "关键调用顺序/数量、身份、DB状态及代码提交"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "跨模块完整链=最终批：chat→图片→换窗选集→自主发feed→评论→日历关联→关auto→重启",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     },
     {
       "id": "DELIVERY-03",
@@ -3994,12 +3994,12 @@
         "四份报告/测试命令与环境/剩余合同"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
+      "implementation_commit": "0cf3a76",
+      "command": "npm test 94/94",
+      "environment": "offline（代码完成+离线验证；外部合同未验收）",
+      "observed": "最终报告=最终批：FINAL_REPORT/TEST_EVIDENCE/CONTRACT_MATRIX/DEPLOYMENT_NOTES",
       "evidence_path": null,
-      "blocked_dependency": null
+      "blocked_dependency": "需真实外部服务/联合审计环境（WP8 批）"
     }
   ]
 }
