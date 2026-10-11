@@ -2009,6 +2009,11 @@ export class TurnSupervisor {
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
       }
+    } else if (d.media && inputMessage && d.media.listMessageAttachments(inputMessage.id, effective.revision).some((a) => a.presentation === 'image' || a.presentation === 'sticker')) {
+      // AUD-04 P1：SDK 分支有图=视觉门阻断（消息已保存、零模型请求、不静默丢图/换模型）
+      d.logger.warn('media_gate_blocked', { turn_id: turnId, code: 'MODEL_VISION_UNAVAILABLE', driver: 'claude-agent-sdk' });
+      result = { outcome: 'error', errorClassified: null, errorCode: 'MODEL_VISION_UNAVAILABLE', errorMessage: 'SDK 驱动不支持图片输入——消息已保存', sessionId: null, requestId: null };
+      orFinalMessages = null; orLastSentMessages = null; orToolSeen = [];
     } else {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
