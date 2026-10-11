@@ -68,7 +68,7 @@
 | WP2 上下文与缓存 | **已交付（ab787bc）** | v24 派发账本前移（每次 transport 前准入/逐尝试行/wire_v1 证据）；cache-observation 证据链（计时基准=读写证据请求的 dispatch_started_at；保温目标+50min 滚动；到期恒标估计）；CACHE_UNEXPECTED_MISS 活接线；compact 专项识别+上游冲突别名；records 证据化到期+backgroundPolicy。验收 9 PASS + 3 NOT_EXECUTED（CACHE-04/05/06 依赖 WP4 调度器） |
 | WP3 聊天媒体底座 | **已交付 M1+M2（540ef56+c9b7a86）** | v25 三表+媒体服务（魔数/白名单/受控导入/引用守卫）+资产 API+消息附件事务+If-Match；投影器（内部引用形态零 Base64+发送边界确定性物化+wire 脱敏）+视觉门（未核实=MODEL_VISION_UNAVAILABLE 零请求）+选集媒体+归档分列+媒体工具+前端附件。验收 12 PASS + 3 NOT_EXECUTED（语音真实链/作品工具/CSP 预览——归 WP7/内容批） |
 | WP4 有界后台 | **已交付（2f4fe04→f6e38f2）** | v26 三表+策略纯函数+原子设置+调度器（默认全关）；HTTP 面八路由（422 门=预算未配置/价格未核验）；提醒零模型投递；模型回路执行器（自主=唤醒尾+工具循环+预算逐派发+chat_send_text/background_complete；保温=单请求+工具拒执行+不推进轨迹）+逐笔派发结算。验收 17 PASS+3 归后续批（付费工具 WP7/幂等回执 WP5/大轨迹 WP8）+CACHE-04/05/06 全补 |
-| WP5 内容与朋友圈 | 待做 | content 进程 + 双 actor + 三相册/作品/留言 |
+| WP5 内容与朋友圈 | **已交付（0c57778→45ea7e1）** | apps/content 独立进程+est 薄代理+模型工具；朋友圈/三相册/作品/留言。验收 16 PASS+9 归后续批 |
 | WP6 日历与关联 | 待做 | 聚合页面 + 分源分页 + 事件日/北京日界 |
 | WP7 外部合同连接 | 待做 | MCP 薄层 + 逐能力 expected/observed |
 | WP8 联合审计交付 | 待做 | fresh/upgrade 验收 + 四份报告 |
