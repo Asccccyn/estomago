@@ -30,6 +30,7 @@ import { HostToolExecutor } from './runtime/host-tools.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 import { SystemAlertService } from './observability/system-alerts.ts';
+import { MediaService } from './media/assets.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -127,6 +128,8 @@ export class Host {
       return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
     }, selections, trajectory);
     const auth = new AuthService(paths);
+    // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
+    const media = new MediaService(db, paths.mediaDir, opts.config);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
     // 审计 F11（LC-050）：归档 worker 与主模型使用不同凭据引用（archive_credential_ref
@@ -193,6 +196,7 @@ export class Host {
       selections,
       settings,
       alerts,
+      media,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {

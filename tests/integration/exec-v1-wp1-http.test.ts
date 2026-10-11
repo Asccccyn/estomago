@@ -97,7 +97,7 @@ test('TOKEN-05：发送前快照随 revision 保存；编辑=新快照；估计�
   assert.equal(msg.revision.content_hash, sha256Hex('第一条带快照的消息')); // 估计与正文 hash 分离
   // 编辑 → 新 revision + 新快照
   const edit = await fetch(`${base}/api/v1/conversations/primary/messages/${encodeURIComponent(msg.id)}`, {
-    method: 'PUT', headers: auth({ 'Content-Type': 'application/json' }),
+    method: 'PUT', headers: auth({ 'Content-Type': 'application/json', 'If-Match': `"${msg.current_revision}"` }),
     body: JSON.stringify({ content: '编辑后的更长正文——新快照应当随之更新' }),
   });
   assert.equal(edit.status, 200);

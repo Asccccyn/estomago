@@ -23,7 +23,7 @@ export type MessageRevisionDto = {
   received_at: string;
   supersedes_revision: number | null;
   token_estimate: TokenEstimateSnapshotDto | null; // additive（v23）：发送前估计快照
-  attachments: unknown[]; // additive（WP3 媒体底座接入；本期恒 []）
+  attachments: MessageAttachmentDto[]; // v25 起从 message_attachments 按 revision 取；旧消息恒 []
 };
 
 export type MessageDto = {
@@ -39,11 +39,23 @@ export type MessageDto = {
   revision: MessageRevisionDto; // 当前有效修订
 };
 
+export type MessageAttachmentInput = {
+  asset_id: string; // 必须先经资产创建/导入取得（不接受 URL/路径/Base64）
+  presentation: 'image' | 'sticker' | 'voice';
+  caption?: string | null; // 图片/表情可选说明——不是用户亲笔正文
+};
+
+export type MessageAttachmentDto = MessageAttachmentInput & {
+  derived_text: string | null; // 派生文字（如语音转写）
+  derived_source: string | null; // 派生来源标记（如 siren:transcribe）
+};
+
 export type SubmitMessageRequest = {
-  content: string; // 多行正文；服务端只做换行规范化（\r\n|\r → \n），不 trim、不拆分
+  content: string; // 多行正文；服务端只做换行规范化（\r\n|\r → \n），不 trim、不拆分。有有效附件时允许空串
   client_message_id: string; // 幂等键：一次点击一个；重试复用
   kind?: MessageKind;
   occurred_at?: string | null;
+  attachments?: MessageAttachmentInput[]; // EXEC_V1 §03.5.2 additive
 };
 
 export type SubmitMessageResponse = {

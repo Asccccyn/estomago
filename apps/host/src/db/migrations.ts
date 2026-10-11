@@ -754,6 +754,63 @@ CREATE INDEX IF NOT EXISTS idx_provider_requests_dispatch ON provider_requests(w
 CREATE INDEX IF NOT EXISTS idx_provider_requests_bg_run ON provider_requests(background_run_id) WHERE background_run_id IS NOT NULL;
 `,
   },
+  {
+    version: 25,
+    name: 'media-assets',
+    // ESTOMAGO_CHAT_EXEC_V1 §03.4（WP3/M1）：媒体底座三表 + 修订指纹。
+    // asset_id=不可变内容身份；message_attachments 按 (message,revision,position) 固定（旧修订
+    // 引用计入禁止物理删除判断）；asset_external_refs 的 protected/committed/released 三态承担
+    // 内容后端引用与 pending pin（不再另设 pin 计数）。message_fingerprint 覆盖正文+有序附件，
+    // 不动旧 content_hash（Mariposa 合同不变）。
+    sql: `
+CREATE TABLE IF NOT EXISTS media_assets(
+  id TEXT PRIMARY KEY,
+  creation_operation_id TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK (state IN ('pending','available','failed','missing')),
+  mime_type TEXT NOT NULL,
+  byte_size INTEGER NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  storage_key TEXT NOT NULL,
+  width INTEGER, height INTEGER, duration_ms INTEGER,
+  origin TEXT NOT NULL CHECK (origin IN ('upload','import','generated','service')),
+  origin_service TEXT, origin_ref TEXT,
+  created_by TEXT NOT NULL,
+  ingest_purpose TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_assets_sha ON media_assets(content_sha256);
+CREATE TABLE IF NOT EXISTS message_attachments(
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  asset_id TEXT NOT NULL,
+  presentation TEXT NOT NULL CHECK (presentation IN ('image','sticker','voice')),
+  caption TEXT,
+  derived_text TEXT,
+  derived_source TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, revision, position)
+);
+CREATE INDEX IF NOT EXISTS idx_msg_attachments_asset ON message_attachments(asset_id);
+CREATE TABLE IF NOT EXISTS asset_external_refs(
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL,
+  owner_service TEXT NOT NULL,
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  owner_revision INTEGER,
+  revision INTEGER NOT NULL DEFAULT 1,
+  operation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('protected','committed','released')),
+  created_at TEXT NOT NULL,
+  released_at TEXT,
+  UNIQUE (asset_id, owner_service, owner_type, owner_id, operation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_refs_asset ON asset_external_refs(asset_id, state);
+ALTER TABLE message_revisions ADD COLUMN message_fingerprint TEXT;
+`,
+  },
 ];
 
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——

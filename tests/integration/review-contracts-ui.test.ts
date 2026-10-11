@@ -78,7 +78,7 @@ test('R16：PUT 编辑 → message.edited 事件 + 编辑修订真实归档出�
   assert.equal(post.status, 201, postText);
   const created = (JSON.parse(postText) as { message: { id: string } }).message;
   const put = await fetch(`${base}/api/v1/conversations/primary/messages/${encodeURIComponent(created.id)}`, {
-    method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json' },
+    method: 'PUT', headers: { ...authHeaders(), 'content-type': 'application/json', 'if-match': `"${(JSON.parse(postText).message).current_revision ?? 1}"` },
     body: JSON.stringify({ content: '编辑后正文（R16）' }),
   });
   assert.equal(put.status, 200, await put.text());
