@@ -122,12 +122,12 @@
       "evidence_required": [
         "四组通知数/状态/usage字段"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "五条件门 evaluateCacheMiss 全分支单测（冷启动/新窗/字段缺失=unknown 非 0/部分命中 read>0/换模型/前缀变化/超 TTL/无证据/不足最小长度→不触发；全齐备 read=0→触发）。传输侧真实证据接线在 WP2（cache 观测），分类器为纯函数已就位",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -154,12 +154,12 @@
       "evidence_required": [
         "DB两种状态/SSE序号/transport0"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "单测+HTTP 集成：已读清红点但 open_count 保留；markRead 不产生模型调用/不 resolve；resolve 后 lifecycle=resolved 历史仍在且 resolved_at 非空",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -186,12 +186,12 @@
       "evidence_required": [
         "读写交错记录与最终计数"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "同故障复发（新 observation）→sequence 更大→重新未读（102 不被旧已读吞掉）；seen 倒退提交被 max 门拒绝；新告警到达后 unread=2；两页面/重连读同一后端快照（summary 来自 DB 非 localStorage）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -217,12 +217,12 @@
       "evidence_required": [
         "输入序列/来源去重约束/最终计数"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "observation_id 消费账本：obs-r1/r2→occurrence=2；乱序重放 obs-r1→counted=false 且计数仍 2（不依赖只比较 last_dedupe）；新 obs-r3→3；账本行数=真实输入数",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -250,12 +250,12 @@
       "evidence_required": [
         "三种情况派发数/告警数/开关revision"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "AUTONOMOUS_DISABLED=info 不进异常未读计数；DISPATCH_AFTER_DISABLED=critical+停止后续路径语义（开关 revision/run 引用入 safe_summary）；BACKGROUND_BUDGET_EXHAUSTED 归一 BACKGROUND_BUDGET_REACHED；降级尝试（critical 标 info）被拒保持 critical；未注册 code 抛错",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -281,12 +281,12 @@
       "evidence_required": [
         "脱敏检查结果/事件类别/消息数"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "safe_summary 白名单（body/api_key/url_query 丢弃、title 保留）；SSE payload 仅 6 个元数据字段；通知不写聊天原文/hold（事件 kind 独立）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -313,12 +313,12 @@
       "evidence_required": [
         "final options白名单摘要/DTO/UI"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "records.cache.ttlVerification 三态（desired/effective=null/verification）；mock=unknown、OR=requested、SDK=sdk_unverified——无一处硬编码\"已生效 1h\"；服务面 CACHE_TTL_UNVERIFIED 聚合幂等（同 observation 重发 counted=false，occurrence=1）。自动观察挂点=WP2 最终 options 核验（开机观测会污染事件序列，已撤）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -345,12 +345,12 @@
       "evidence_required": [
         "人工UI记录/后端计数与重连结果"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "顶栏\"系统通知\"入口 aria-label 明确+徽标；系统红点只来自受控 ALERT_CODES（换窗/SSE/chat 未读不走 observe）；未读状态经 GET summary 从 DB 恢复（重启/断线重连同源）。浏览器全链路 E2E 在 WP8",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -376,12 +376,12 @@
       "evidence_required": [
         "按request与turn两级结果/事件ID"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "同 attempt+scope+request+model 幂等键：stream partial→result complete 只记一份且完整终值保留；两份 complete 关键字段冲突→新观测隔离+USAGE_INCONSISTENT(warning) 告警",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -407,12 +407,12 @@
       "evidence_required": [
         "各字段聚合JSON/UI标签"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "DS 无美元：fields.input_tokens.complete_total=100 完整、fields.cost_usd.unknown_count=1/complete_total=null——token 完整不被费用未知清空；正常不报美元能力不制造故障告警",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -437,12 +437,12 @@
       "evidence_required": [
         "fixture字段到统一字段映射"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "providerInputTotal：OR input=100(read80+write20)→100 不双加；SDK input=20+read80+write0→100；SDK 分类未知→null 不猜；端到端 OR+SDK 两 attempt 合计 200",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -470,12 +470,12 @@
       "evidence_required": [
         "request/run/day三向账本对账"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "cache_keepalive 后台 turn（无用户消息）经 provider_requests(purpose/sent_at) 归属：budget_day/purpose 落 usage 行；summaryByDay 从 usage 行出发不依赖 turn JOIN，后台费用可见",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -502,12 +502,12 @@
       "evidence_required": [
         "budget_day/observed_at/两个日期汇总"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "派发 2026-10-10T16:30Z（上海 10-11 00:30）→budget_day=2026-10-11，迟到证据不挪日；无请求行旧行 budget_day=证据日+legacy_observed_at=1（不虚构派发时刻）；上海日界 16:00Z 精确切换",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -536,12 +536,12 @@
       "evidence_required": [
         "虚拟时间/预占余额/查询与收费请求计数"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "宽限内/回合未终态不报；宽限后终态无 usage→USAGE_MISSING 幂等（再 sweep counted=0）；不发第二次请求确认费用；complete usage 到达后退出 breach 但告警不自动 resolve（无计时器）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -566,12 +566,12 @@
       "evidence_required": [
         "四类输入的DTO与调用来源"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "Unicode 码点统一口径（中文/ASCII/emoji astral/代码块同函数同系数，emoji 不按 UTF-16 双计）；quality=rough_text 可见+estimator_revision 版本化；换行正文整体一次估计（一条消息）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -597,12 +597,12 @@
       "evidence_required": [
         "分项预估/最终规范投影摘要"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "message_only 与 request_preview 分 scope；pending_selection 时 request=null 但 message 照给；完整投影 request>本条；output_cap 原样为上限不冒充预计生成",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -629,12 +629,12 @@
       "evidence_required": [
         "网络stub计数/DB前后允许差异"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "HTTP 集成实测：POST token-estimates 前后 messages/turns/attempts/trajectories/provider_requests 计数零变化；413/400 分界；预估失败后正常发送成功（不禁发送）",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -660,12 +660,12 @@
       "evidence_required": [
         "响应排列/最终UI值"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "服务端回包带 client_draft_revision+model_snapshot_id+attachment_fingerprint+stale_after_state_change；shouldApplyEstimate 纯函数单测（草稿更新/换模型/换附件指纹→旧回包丢弃；null 安全）；app.js 接线用守卫",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -692,12 +692,12 @@
       "evidence_required": [
         "修订链/estimate模型和hash"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "POST 消息→revision.token_estimate 快照（模型/版本/时间）；编辑→revision2+更大新快照；旧修订快照 DB 原样保留；content_hash=sha256(正文) 与估计分离",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -723,12 +723,12 @@
       "evidence_required": [
         "UI和聚合请求数/总额"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "气泡层：owner=发送时快照、assistant=正文约N（粗估）——DTO 无每气泡 actual 字段；整轮 actual 唯一来源 GET /turns/:id/usage（renderUsage 每 turn 单实例）+USAGE-01 去重保证不重复累计；不按字数摊分。三段气泡浏览器 E2E 在 WP8",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
@@ -755,12 +755,12 @@
       "evidence_required": [
         "附件metadata/estimate质量/输入组成"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "0615877",
+      "command": "npm test（85/85）；新测试文件 exec-v1-wp1-{alerts,usage,estimator,guard}.test.ts + integration/exec-v1-wp1-http.test.ts",
+      "environment": "isolated temp ESTOMAGO_HOME + mock/fake transport",
+      "observed": "图片未知→message_total=null 且 known_subtotal 保留+partial_media（不按 base64/bytes 估）；known_tokens 才计入；音频=转写文字未入模型不计 token（费用单列）；code_artifact 按字节粗估仍标 rough；快照不含请求维度",
+      "evidence_path": "tests/unit/exec-v1-wp1-*.test.ts; tests/integration/exec-v1-wp1-http.test.ts",
       "blocked_dependency": null
     },
     {
