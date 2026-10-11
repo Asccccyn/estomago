@@ -72,9 +72,10 @@ export class MessageService {
 
     return tx(this.db, () => {
       const dup = this.db
-        .prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?')
-        .get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
+        .prepare('SELECT id, current_revision FROM messages WHERE conversation_id = ? AND client_message_id = ?')
+        .get(opts.conversationId, opts.clientMessageId) as { id: string; current_revision: number } | undefined;
       if (dup) {
+
         // 幂等自愈：校验整套 side effects，缺什么补什么（同一事务）
         let repaired = false;
         const outbox = this.db
@@ -182,7 +183,16 @@ export class MessageService {
     if (isBlankContent(content)) throw new BlankMessageError('编辑后正文仅空白，拒绝');
     const nowIso = new Date().toISOString();
     const nextRev = row.current_revision + 1;
-    this.insertRevision({ messageId, revision: nextRev, kind: row.kind as MessageKind, content, occurredAt: nowIso, receivedAt: nowIso, source: 'route_edit', supersedes: row.current_revision });
+    // AUD-28 P2：路由编辑复制附件到新修订（与普通编辑一致）
+    const oldAtts = this.db.prepare('SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, row.current_revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;
+    const fp = messageFingerprint(content, oldAtts.map((a) => ({ asset_id: a.asset_id, presentation: a.presentation as MessageAttachmentInput['presentation'] })));
+    this.insertRevision({ messageId, revision: nextRev, kind: row.kind as MessageKind, content, occurredAt: nowIso, receivedAt: nowIso, source: 'route_edit', supersedes: row.current_revision, fingerprint: fp });
+    for (let i = 0; i < oldAtts.length; i++) {
+      this.db.prepare(
+        `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
+         SELECT message_id, ?, position, asset_id, presentation, caption, derived_text, derived_source, ? FROM message_attachments WHERE message_id = ? AND revision = ? AND position = ?`,
+      ).run(nextRev, nowIso, messageId, row.current_revision, i);
+    }
     this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
     this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
     return { revision: nextRev, contentHash: sha256Hex(content) };

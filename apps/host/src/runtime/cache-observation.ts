@@ -28,13 +28,13 @@ export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | nul
             pr.dispatch_started_at AS dispatch_at, pr.sent_at AS sent_at, u.observed_at AS observed_at
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
-     WHERE pr.window_id = ? AND u.completeness = 'complete'
+     WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
   ).get(windowId) as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
-  if (!row || row.read_t === null) return null; // 证据行必有 read 分类（写分类可为空——部分 provider 只报读）
+  if (!row) return null;
   const startedAt = row.dispatch_at ?? row.sent_at ?? row.observed_at;
   return {
     requestId: row.request_id,
@@ -42,7 +42,7 @@ export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | nul
     startedAt,
     legacy: row.dispatch_at === null, // 旧数据无派发时间：不虚构，标记来源
     model: row.model,
-    readTokens: row.read_t,
+    readTokens: row.read_t ?? 0,
     writeTokens: row.write_t ?? 0,
   };
 }
@@ -67,7 +67,7 @@ function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[
             pr.dispatch_started_at AS dispatch_at, pr.sent_at AS sent_at, u.observed_at AS observed_at
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
-     WHERE pr.window_id = ? AND u.completeness = 'complete'
+     WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
        AND COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) < ?
@@ -75,11 +75,11 @@ function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
   ).get(windowId, beforeStartedAt, beforeRequestIds[0] ?? '') as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
-  if (!row || row.read_t === null) return null;
+  if (!row) return null;
   return {
     requestId: row.request_id, windowId: row.window_id,
     startedAt: row.dispatch_at ?? row.sent_at ?? row.observed_at, legacy: row.dispatch_at === null,
-    model: row.model, readTokens: row.read_t, writeTokens: row.write_t ?? 0,
+    model: row.model, readTokens: row.read_t ?? 0, writeTokens: row.write_t ?? 0,
   };
 }
 
@@ -97,7 +97,9 @@ export function observeCacheUsage(alerts: SystemAlertService, input: {
   db: Db; windowId: string; requestId: string | null; model: string | null;
   readTokens: number | null; writeTokens: number | null; inputTotal: number | null;
   dispatchStartedAt: string | null;
+  usageCompleteness?: string;
 }): void {
+  if (input.usageCompleteness !== undefined && input.usageCompleteness !== 'complete') return;
   if (input.readTokens === null && input.writeTokens === null) return; // 字段缺失=unknown
   if (input.requestId === null || input.dispatchStartedAt === null) return; // 无派发起点=不猜温态
   if (input.readTokens !== null && input.readTokens > 0) return; // 命中（部分或全）不是 miss

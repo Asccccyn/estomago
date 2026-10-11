@@ -46,6 +46,8 @@ export function shanghaiDayRange(dateStr: string): { startUtc: string; endUtc: s
   const y = Number(dateStr.slice(0, 4)), m = Number(dateStr.slice(5, 7)), d = Number(dateStr.slice(8, 10));
   if (m < 1 || m > 12 || d < 1 || d > 31) return null;
   const startMs = Date.UTC(y, m - 1, d) - SHANGHAI_OFFSET_MS;
+  const check = new Date(startMs + SHANGHAI_OFFSET_MS);
+  if (check.getUTCFullYear() !== y || check.getUTCMonth() !== m - 1 || check.getUTCDate() !== d) return null;
   const endMs = startMs + 86_400_000;
   return { startUtc: new Date(startMs).toISOString(), endUtc: new Date(endMs).toISOString() };
 }
@@ -117,7 +119,7 @@ export function buildCalendarDayItems(d: {
     // 当天全部聊天（§06.7.3：半开区间；含未 hold/内部窗口切换——不依赖模型上下文）
     const rows = d.db.prepare('SELECT id, conversation_id, sequence, speaker, kind, created_at FROM messages WHERE created_at >= ? AND created_at < ? AND speaker != ? ORDER BY created_at ASC, id ASC')
       .all(range.startUtc, range.endUtc, 'system') as Array<{ id: string; conversation_id: string; sequence: number; speaker: string; kind: string; created_at: string }>;
-    const filtered = afterId !== null ? rows.filter((r) => r.id > afterId!) : rows;
+    const filtered = afterId !== null ? rows.filter((r) => r.id > afterId!) : rows; // AUD-23 已在排序键统一 (created_at,id)
     const page = filtered.slice(0, limit);
     base.items = page.map((r) => ({
       source_ref: { service: 'estomago', kind: 'message', id: r.id },

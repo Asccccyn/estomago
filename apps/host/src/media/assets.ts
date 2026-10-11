@@ -116,6 +116,7 @@ export class MediaService {
          VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?)`,
       ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso);
     } catch (err) {
+      try { for (const f of fs.readdirSync(absDir)) { if (f.includes('.tmp-')) fs.unlinkSync(path.join(absDir, f)); } } catch { /* 清理失败不掩盖 */ }
       if (err instanceof MediaError) throw err;
       throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '媒体目录写入失败');
     }
@@ -311,7 +312,7 @@ export function isPublicIp(ip: string): boolean {
   if (net.isIPv6(ip)) {
     const low = ip.toLowerCase();
     if (low === '::' || low === '::1') return false;
-    if (low.startsWith('fe80') || low.startsWith('fc') || low.startsWith('fd')) return false; // 链路本地/ULA
+    if (/^fe[89ab]/.test(low) || low.startsWith('fc') || low.startsWith('fd')) return false; // 链路本地/ULA
     if (low.startsWith('ff')) return false;
     if (low.startsWith('::ffff:')) return isPublicIp(low.slice(7)); // IPv4-mapped
     return true;
