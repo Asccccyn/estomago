@@ -154,10 +154,14 @@ export class MediaService {
     let current = url;
     for (let hop = 0; hop <= this.config.media.max_redirects; hop++) {
       const checked = await this.guardTarget(current);
-      const bytes = await this.fetchGuarded(checked.url, checked.hostForLookup);
-      const sniffed = sniffMime(bytes);
+      const r = await this.fetchGuarded(checked.url);
+      if (r.kind === 'redirect') {
+        current = r.next; // 逐跳回到 guardTarget 重查（§7.2：每次跳转重新检查，不能只查最初字符串）
+        continue;
+      }
+      const sniffed = sniffMime(r.bytes);
       if (sniffed === null || !sniffed.startsWith('image/')) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '目标不是图片（拒绝 HTML 错误页冒充）');
-      return this.saveBuffer({ bytes, purpose: 'chat_image', operationId: opts.operationId, createdBy: opts.createdBy, origin: 'import', originRef: opts.sourceUrl });
+      return this.saveBuffer({ bytes: r.bytes, purpose: 'chat_image', operationId: opts.operationId, createdBy: opts.createdBy, origin: 'import', originRef: opts.sourceUrl });
     }
     throw new MediaError('ASSET_SOURCE_NOT_ALLOWED', 422, '重定向次数超上限');
   }
@@ -177,10 +181,10 @@ export class MediaService {
     return { url: u, hostForLookup: host };
   }
 
-  private fetchGuarded(u: URL, lookupHost: string): Promise<Buffer> {
+  private fetchGuarded(u: URL): Promise<{ kind: 'bytes'; bytes: Buffer } | { kind: 'redirect'; next: URL }> {
     const timeoutMs = this.config.media.import_timeout_ms;
     const maxBytes = this.config.media.max_image_bytes;
-    return new Promise<Buffer>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { req.destroy(); reject(new MediaError('ASSET_IMPORT_FAILED', 504, '导入超时')); }, timeoutMs);
       // 连接层 lookup 锁定目标：解析结果必须全公网，且与 guardTarget 校验一致（§7.3 不做"先检查后另解析"）
       const guardedLookup: dns.LookupOptions & ((h: string, o: dns.LookupAllOptions, cb: (err: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => void) => void) = Object.assign(
@@ -197,8 +201,7 @@ export class MediaService {
         if (status >= 300 && status < 400 && res.headers.location) {
           clearTimeout(timer);
           res.resume();
-          const next = new URL(res.headers.location, u);
-          resolveFromRedirect(next); // 逐跳交回 guardTarget 重查（外层循环计数）
+          resolve({ kind: 'redirect', next: new URL(res.headers.location, u) }); // 逐跳交回外层 guardTarget 重查（§7.2）
           return;
         }
         if (status < 200 || status >= 300) { clearTimeout(timer); res.resume(); reject(new MediaError('ASSET_IMPORT_FAILED', 502, `来源返回 ${status}`)); return; }
@@ -209,15 +212,11 @@ export class MediaService {
           if (size > maxBytes) { clearTimeout(timer); req.destroy(); reject(new MediaError('ASSET_TOO_LARGE', 413, '导入流超过上限')); return; }
           chunks.push(c);
         });
-        res.on('end', () => { clearTimeout(timer); resolve(Buffer.concat(chunks)); });
+        res.on('end', () => { clearTimeout(timer); resolve({ kind: 'bytes', bytes: Buffer.concat(chunks) }); });
         res.on('error', () => { clearTimeout(timer); reject(new MediaError('ASSET_IMPORT_FAILED', 502, '下载中断')); });
       });
       req.on('error', (err) => { clearTimeout(timer); reject(new MediaError('ASSET_IMPORT_FAILED', 502, String((err as Error).message ?? err).slice(0, 80))); });
       req.end();
-      function resolveFromRedirect(next: URL): void {
-        (globalThis as { __estLastImportRedirect?: URL }).__estLastImportRedirect = next;
-        resolve(Buffer.alloc(0)); // 空缓冲=跳转信号（外层由 __estLastImportRedirect 续跳）
-      }
     });
   }
 

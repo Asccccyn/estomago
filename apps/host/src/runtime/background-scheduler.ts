@@ -177,8 +177,9 @@ export class BackgroundScheduler {
     for (const t of rows) {
       const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(t.conversation_id) as { id: string } | undefined;
       const evidence = win ? lastCacheEvidence(this.d.db, win.id) : null;
+      const autonomousOpen = (this.d.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind = 'autonomous' AND actor_id = ? AND state IN ('claimed','running','cancelling')").get(t.actor_id) as { n: number }).n > 0;
       const admit = evidence
-        ? keepwarmAdmission({ settings, evidenceStartedAtMs: Date.parse(evidence.startedAt), nowMs: this.now(), chatActive: this.d.chatBusy(), pendingUserInput: this.d.chatBusy(), autonomousRunOpen: false })
+        ? keepwarmAdmission({ settings, evidenceStartedAtMs: Date.parse(evidence.startedAt), nowMs: this.now(), chatActive: this.d.chatBusy(), pendingUserInput: this.d.chatBusy(), autonomousRunOpen: autonomousOpen })
         : { skip: 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN' as const };
       if (admit.skip !== null) {
         // 不可发=目标清空（不发旧维护请求；等新证据重排）
