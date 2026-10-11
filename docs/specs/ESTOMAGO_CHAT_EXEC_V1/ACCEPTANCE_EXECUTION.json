@@ -1220,12 +1220,12 @@
         "录屏或逐步 UI 观察记录。",
         "对应消息 DTO、数据库 revision 与发送请求次数的脱敏证据。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "输入语义零改动+全量回归：composer-logic/web-vm（IME 合成期零请求、compositionend 恢复）+M1 空正文+附件发送测试；Enter 仍只换行、独立发送键",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1255,12 +1255,12 @@
         "事件序列、消息序列和停止前后发布数量。",
         "隔离重启及分页测试结果。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "媒体改造后流式/分段/停止/重连不回退：exec-v1-wp3-model（图消息回合 completed、第二轮 append-only 通过）+全套件 89/89（mock-turn/or-supervisor/fresh-session-rotate/aud-03 等 SSE/会话链全绿）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1291,12 +1291,12 @@
         "请求和响应码、幂等键与脱敏指纹。",
         "各关联表在成功、重放和回滚后的行数及一致性断言。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M1 已测：附件先全量校验（ASSET_NOT_FOUND/NOT_READY/TYPE_UNSUPPORTED）再进消息/revision/outbox/turn/attempt 同事务；空正文+有效附件可发、无附件空正文拒绝、语音不混排；同 client_message_id 幂等（自愈路径沿用）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1327,12 +1327,12 @@
         "各 revision 的正文 hash、附件绑定及引用结果。",
         "合法重放和版本冲突的响应与修订计数。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M1 已测：编辑正文→新修订沿用同一套附件（复制绑定）；旧修订附件与 content_hash 原样；message_fingerprint 覆盖正文+有序附件且与 content_hash 分离；PUT If-Match 428/409/200",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1362,12 +1362,12 @@
         "上传、重启前后读取的状态与文件 hash。",
         "媒体表结构与脱敏 API 样例。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M1 已测：上传魔数校验+原子写盘+available；同目录重建服务（重启）字节一致；content 端点 MIME 与校验一致+Range 206+nosniff",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1396,12 +1396,12 @@
         "各故障注入点、错误码和文件残留清单。",
         "消息拒绝结果及已有资产 hash 对照。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M1 已测：超大=ASSET_TOO_LARGE、魔数不明=TYPE_UNSUPPORTED、用途不符拒绝、写失败=STORAGE_UNAVAILABLE；失败零资产行、无假成功 ID；同键异内容=IDEMPOTENCY_CONFLICT",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1431,12 +1431,12 @@
         "下载计数、asset_id、源失效后读取 hash。",
         "工具回执及消息数量。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "导入即持久保存（importFromUrl→saveBuffer 落盘资产）；已有 asset 发送走 asset_id 不重搬文件（工具/消息附件只引用）。真实公网导入行为=待真实环境验收（04 §1 三态：代码完成+离线通过+外网未验收）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1466,12 +1466,12 @@
         "DNS/连接目标及未派发计数断言。",
         "脱敏出站 header 白名单和错误分类结果。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "策略全测：isPublicIp 全表（环回/私网/链路本地/云元数据/CGNAT/ULA/IPv4-mapped）；https-only+拒凭据 URL+逐跳重查+连接层 lookup 锁定；字节/时长上限+HTML 错误页拒绝（魔数校验）；media_import 工具内网 URL=ASSET_SOURCE_NOT_ALLOWED 零连接",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1501,12 +1501,12 @@
         "脱敏 wire payload 结构与图片内容 hash。",
         "未支持分支的派发次数、持久化记录和错误状态。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M2 已测：fake transport 捕获实际 payload——image 块 base64=资产真实字节+media_type；DB 三处（payload_json/wire/轨迹）零 Base64；未核实视觉=MODEL_VISION_UNAVAILABLE 零模型请求消息保存、核实后放行（测试注入视觉缓存；生产核实源=OR /models input_modalities）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1537,12 +1537,12 @@
         "选集输入、加载结果与最终媒体投影的对应清单。",
         "旧 revision 附件 hash 和已见证据差异。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M2 已测：第二轮同窗 payload 仍含同图（轨迹引用→确定性物化，append-only 断言通过）；选集放行语音/贴纸+loadContents 按修订携带附件；容量估算含图片保守成本",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1573,12 +1573,12 @@
         "故障注入时间、工具 operation_id 和恢复回执。",
         "正式消息顺序、附件消息数量及 outbox 关联。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "chat_send_attachment：同调用重试=同一条消息（派生 client_message_id 幂等）；复用 MessageService 发布链/归档 outbox；附件按发布序列入消息序列。外部生成未知结果查询=生成适配器未接（WP7；INTEGRATION_CONTRACT_UNVERIFIED 如实）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1609,12 +1609,12 @@
         "历史播放/贴纸渲染记录及失败状态。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "本地链已测：语音原件保存+消息绑定+气泡 audio 播放+转写来源标记通道（derived_text/derived_source）；无转写=MEDIA_TRANSCRIPTION_FAILED 零请求+历史占位标注。Siren 真实转写/合成合同未核——完整语音链属 M3/WP7",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
+      "blocked_dependency": "Siren 真实转写/合成合同（WP7）"
     },
     {
       "id": "MEDIA-09",
@@ -1644,12 +1644,12 @@
         "进程/外部调用零计数及类型拒绝证据。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "creation_icon/creation_work 用途白名单（SVG/HTML/视频）+大小上限已落（M1 同源落盘）；content 端点 nosniff 已落；宿主零执行（保存即字节，无 eval/shell）。creation_save_artifact 工具+CSP sandbox 隔离预览=待内容批（06 章作品入口）",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
+      "blocked_dependency": "06 章作品入口批（creation_save_artifact+隔离预览）"
     },
     {
       "id": "MEDIA-10",
@@ -1679,12 +1679,12 @@
         "有效引用查询结果、文件存在性/hash 与清理拒绝状态。",
         "reference revision、owner_revision 和幂等恢复回执。"
       ],
-      "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
+      "status": "PASS",
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "M1 已测：isAssetReferenced——历史修订附件引用+protected/committed 外部引用都挡物理删除；released 不挡；解除引用 If-Match；同 operation 重放幂等",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
       "blocked_dependency": null
     },
     {
@@ -1716,12 +1716,12 @@
         "探测脚本未取得主站权限、未产生写操作的计数。"
       ],
       "status": "NOT_EXECUTED",
-      "implementation_commit": null,
-      "command": null,
-      "environment": null,
-      "observed": null,
-      "evidence_path": null,
-      "blocked_dependency": null
+      "implementation_commit": "c9b7a86",
+      "command": "npm test（89/89）；exec-v1-wp3-media + exec-v1-wp3-model + 既有 composer-logic/web-vm/mock-turn/or-supervisor",
+      "environment": "isolated temp ESTOMAGO_HOME + fake transport（零网络零真实模型）",
+      "observed": "nosniff 已落；同空间双方可引用对方共享资产（created_by 记录来源≠使用权限）。active MIME（SVG/HTML）直开的 CSP sandbox 隔离预览=M4 安全批——已登记待做，不冒充完成",
+      "evidence_path": "tests/integration/exec-v1-wp3-media.test.ts; tests/unit/exec-v1-wp3-model.test.ts",
+      "blocked_dependency": "M4 安全预览批（CSP sandbox）"
     },
     {
       "id": "BACKGROUND-01",

@@ -11,7 +11,7 @@
 | 基线 SHA | `4971ebc8fda939a20ae8e6f04bc68a2c216a7ea1`（preflight `BASELINE_MATCH`：42 文件哈希一致、工作树干净、无脏文件） |
 | 执行包自检 | `verify_package.py` PASS：1839 checks / 40 需求 / 114 验收 / 48 路由 / 32 模型工具 / 18 fixtures |
 | 运行时 | Node ≥22.18（engines）；运行依赖仅 `@anthropic-ai/claude-agent-sdk@0.3.283`（锁定安装，OR 模式不加载） |
-| DB 迁移起点 | 接包时 v20；本轮已推进至 **v24**（v21 system_alerts / v22 usage 归属 / v23 修订快照 / v24 provider 派发证据，全部 additive；后续仍由集成者顺序分配 |
+| DB 迁移起点 | 接包时 v20；本轮已推进至 **v25**（v21 system_alerts / v22 usage 归属 / v23 修订快照 / v24 provider 派发证据，全部 additive；后续仍由集成者顺序分配 |
 | 测试入口 | 根 `package.json`：`npm run typecheck`、`npm test`（runner 内置临时 `ESTOMAGO_HOME` + `ESTOMAGO_TEST_MODE` + 逐文件串行；79 个测试文件） |
 | 生产实例 | `~/Library/Application Support/estomago` **存在**（本轮只 ls 顶层确认存在性）——本轮全部改动在工作树+隔离临时根进行，不触碰生产；部署类动作单列待她批准 |
 | OR/DS 配置 | 现行配置默认 `runtime.provider=claude-agent-sdk`、OR/DS `model=null`（未配置即阻断，不猜默认型号——沿用前代口径） |
@@ -66,7 +66,7 @@
 | WP0 基线与合同 | **本轮交付** | 本文件 + 配置接线 + 迁移登记 + 行为基准（见下） |
 | WP1 消耗可见与 token | **已交付（0615877）** | v21 系统告警三表+服务+3 路由；v22 usage 归属列+字段级 fields+按日汇总+USAGE_MISSING 宽限 sweep；v23 修订快照列；estimator 纯函数+token-estimates 路由+web 三层显示；验收 21/21 PASS |
 | WP2 上下文与缓存 | **已交付（ab787bc）** | v24 派发账本前移（每次 transport 前准入/逐尝试行/wire_v1 证据）；cache-observation 证据链（计时基准=读写证据请求的 dispatch_started_at；保温目标+50min 滚动；到期恒标估计）；CACHE_UNEXPECTED_MISS 活接线；compact 专项识别+上游冲突别名；records 证据化到期+backgroundPolicy。验收 9 PASS + 3 NOT_EXECUTED（CACHE-04/05/06 依赖 WP4 调度器） |
-| WP3 聊天媒体底座 | 待做 | 一条垂直链（上传→asset→revision→UI→模型→重启重取） |
+| WP3 聊天媒体底座 | **已交付 M1+M2（540ef56+c9b7a86）** | v25 三表+媒体服务（魔数/白名单/受控导入/引用守卫）+资产 API+消息附件事务+If-Match；投影器（内部引用形态零 Base64+发送边界确定性物化+wire 脱敏）+视觉门（未核实=MODEL_VISION_UNAVAILABLE 零请求）+选集媒体+归档分列+媒体工具+前端附件。验收 12 PASS + 3 NOT_EXECUTED（语音真实链/作品工具/CSP 预览——归 WP7/内容批） |
 | WP4 有界后台 | 待做 | 三开关/账本/50min/60min/聊天抢占/重启恢复 |
 | WP5 内容与朋友圈 | 待做 | content 进程 + 双 actor + 三相册/作品/留言 |
 | WP6 日历与关联 | 待做 | 聚合页面 + 分源分页 + 事件日/北京日界 |
