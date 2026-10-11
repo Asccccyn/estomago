@@ -5,7 +5,7 @@
 //  - 刷新/换端回看：boot 拉取 messages + 每个 turn 的 reasoning
 //  - sequence 纪律：只应用 sequence > lastAppliedSequence 的事件；重连靠 Last-Event-ID
 //  - 路由"重新编辑"走真修订端点：原消息 revision+1，不新建 owner 消息
-import { canSend, buildOutgoingDraft, newClientMessageId, shouldSendOnKeydown, makeDraftGuard } from './composer-logic.js';
+import { canSend, buildOutgoingDraft, newClientMessageId, shouldSendOnKeydown, makeDraftGuard, shouldApplyEstimate } from './composer-logic.js';
 
 const CONVERSATION = 'primary';
 const $ = (id) => document.getElementById(id);
@@ -26,6 +26,9 @@ const state = {
   routeCloseTimer: null,      // F18：2s 关闭计时器（绑定票据，关下一张弹窗前必须核销）
   reasoningLabel: '思考',
   sse: null,
+  // EXEC_V1 §05：预估与系统红点（客户端零模型调用；慢响应只应用匹配草稿/模型/附件指纹的回包）
+  estimate: { charsPerToken: 2.5, timer: null, inFlight: null, modelSnapshotId: null },
+  alertsOpen: false,
 };
 
 // —— 认证 ——
@@ -70,7 +73,7 @@ $('token-submit').onclick = async () => {
 const composer = $('composer');
 composer.addEventListener('compositionstart', () => { state.composing = true; refreshSendButton(); });
 composer.addEventListener('compositionend', () => { state.composing = false; refreshSendButton(); });
-composer.addEventListener('input', () => { state.draftRevision = draftGuard.touch(); refreshSendButton(); });
+composer.addEventListener('input', () => { state.draftRevision = draftGuard.touch(); refreshSendButton(); scheduleEstimate(); });
 void shouldSendOnKeydown; // 无任何按键发送路径（规则单一事实源在 composer-logic.js）
 
 function refreshSendButton() {
@@ -186,6 +189,21 @@ function renderMessage(dto, { update = false } = {}) {
   meta.textContent = new Date(dto.revision.occurred_at).toLocaleString();
   if (dto.revision.revision > 1) meta.textContent += ` · 修订 ${dto.revision.revision}`;
   bubble.appendChild(meta);
+  // EXEC_V1 §05.7：气泡层 token 标注——owner=发送时快照（旧消息无快照不伪造）；
+  // assistant=可见文字本地粗估。整轮实际用量只在轮汇总出现一次（renderUsage），不摊进气泡。
+  let estimateText = '';
+  if (dto.speaker === 'owner' && dto.revision.token_estimate) {
+    const te = dto.revision.token_estimate;
+    estimateText = `发送时估计：正文约 ${te.message_text_tokens} token` + (te.message_media_tokens === null ? ' · 图片用量待估' : te.message_total_tokens !== null && te.message_total_tokens > te.message_text_tokens ? ` · 合计约 ${te.message_total_tokens}` : '');
+  } else if (dto.speaker === 'assistant' && dto.revision.content) {
+    estimateText = `正文约 ${Math.ceil([...dto.revision.content].length / state.estimate.charsPerToken)} token（粗估）`;
+  }
+  if (estimateText) {
+    const est = document.createElement('div');
+    est.className = 'bubble-estimate';
+    est.textContent = estimateText;
+    bubble.appendChild(est);
+  }
   // F-J-08（联合审计 2026-10-06）：用户消息编辑入口——修订链/outbox 由服务端
   // editUserMessage 同事务保证（不无痕重写）；编辑不自动触发重新生成
   // WP3（2026-10-08）：人工历史选集——选择模式下给消息加勾选（只 owner/
@@ -407,6 +425,9 @@ function handleEvent(data) {
         ? `模型已切换：${data.actual_model ?? '未知'}（原 ${data.original_model ?? '未知'}）——本回合已暂停`
         : '模型拒绝且未切换（无 fallback）——本回合按失败处理');
       break;
+    case 'system.alert.changed': // EXEC_V1 §05：红点状态以后端快照为准（非 localStorage 单点）
+      void refreshAlertSummary();
+      break;
     case 'route.resolved':
       state.routePending = null;
       clearTimeout(state.routeCloseTimer); // F18：票据已决，旧计时器作废
@@ -599,7 +620,9 @@ async function boot() {
     state.authorized = true;
     $('login-btn').hidden = true;
     $('records-btn').hidden = false;
+    $('alerts-btn').hidden = false;
     $('chat').hidden = false;
+    void refreshAlertSummary();
     // R20（复审 2026-10-07）：初次加载=最新一页（order=latest），"加载更早"向前
     // 游标才成立——此前默认取最早 500 条，before=最早序号 永远翻 0 条
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500&order=latest`, { credentials: 'same-origin' });
@@ -871,6 +894,123 @@ async function confirmSelection(explicitEmpty) {
   rerenderSelection();
 }
 if (typeof document !== 'undefined' && document.body) ensureSelectionBar();
+
+
+
+// —— EXEC_V1 §05：系统异常红点 + 单条消息 token 预估（零模型调用；预估失败不禁发送）——
+const ALERTS_PANEL_LIMIT = 50;
+
+async function refreshAlertSummary() {
+  const badge = $('alerts-badge');
+  if (!badge) return;
+  try {
+    const res = await fetch('/api/v1/system-alerts/summary', { credentials: 'same-origin' });
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s.unread_anomaly_count > 0) { badge.textContent = String(s.unread_anomaly_count); badge.hidden = false; }
+    else badge.hidden = true;
+    if (state.alertsOpen) void renderAlertsList();
+  } catch { /* 离线时红点保持现状；重连由 SSE/刷新再对齐 */ }
+}
+
+function fmtAlertItem(it) {
+  const sev = { critical: '严重', warning: '警告', info: '提示' }[it.severity] ?? it.severity;
+  const life = it.lifecycle === 'open' ? (it.unread ? '未读' : '待处理') : '已解决';
+  const sum = it.safe_summary ?? {};
+  const title = sum.title ?? sum.detail ?? it.code;
+  const extra = [
+    sum.action_taken ? `已采取：${sum.action_taken}` : null,
+    sum.unknown_count != null ? `未知分量 ${sum.unknown_count}` : null,
+    sum.count != null && Number(sum.count) > 1 ? `累计 ${sum.count} 次` : null,
+  ].filter(Boolean).join(' · ');
+  return `[${sev}] ${title}（${new Date(it.last_occurred_at).toLocaleString()} · ${life}${it.occurrence_count > 1 ? ` · 复发 ${it.occurrence_count} 次` : ''}）${extra ? `\n${extra}` : ''}`;
+}
+
+async function renderAlertsList() {
+  const body = $('alerts-body');
+  const readAllBtn = $('alerts-read-all');
+  if (!body) return;
+  try {
+    const res = await fetch(`/api/v1/system-alerts?lifecycle=all&limit=${ALERTS_PANEL_LIMIT}`, { credentials: 'same-origin' });
+    if (!res.ok) { body.innerHTML = '<p class="muted">系统通知暂不可用</p>'; return; }
+    const page = await res.json();
+    const div = document.createElement('div');
+    div.innerHTML = '<p class="muted">已读不等于恢复；未解决的异常继续留在待处理。朋友圈未读、聊天未读、普通闹钟不在这里。</p>';
+    for (const it of page.items ?? []) {
+      const row = document.createElement('div');
+      row.className = `alert-item sev-${it.severity}${it.lifecycle === 'resolved' ? ' resolved' : ''}`;
+      row.textContent = fmtAlertItem(it);
+      div.appendChild(row);
+    }
+    if ((page.items ?? []).length === 0) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = '当前没有系统异常。'; div.appendChild(p); }
+    if (page.has_more) { const p = document.createElement('p'); p.className = 'muted'; p.textContent = `（还有更多，仅显示最近 ${ALERTS_PANEL_LIMIT} 条）`; div.appendChild(p); }
+    body.replaceChildren(div);
+    if (readAllBtn) readAllBtn.dataset.snapshot = JSON.stringify((page.items ?? []).map((i) => ({ alert_id: i.alert_id, seen_event_sequence: i.last_event_sequence })));
+  } catch { body.innerHTML = '<p class="muted">系统通知暂不可用</p>'; }
+}
+
+// 空值守卫：测试 VM 的最小 DOM 可能没有这些元素（缺面板不崩聊天主链）
+const alertsBtn = $('alerts-btn');
+if (alertsBtn) alertsBtn.onclick = () => {
+  state.alertsOpen = true;
+  const panel = $('alerts-panel');
+  if (panel) panel.hidden = false;
+  void renderAlertsList();
+};
+const alertsClose = $('alerts-close');
+if (alertsClose) alertsClose.onclick = () => { state.alertsOpen = false; const panel = $('alerts-panel'); if (panel) panel.hidden = true; };
+const alertsReadAll = $('alerts-read-all');
+if (alertsReadAll) alertsReadAll.onclick = async () => {
+  const items = JSON.parse($('alerts-read-all').dataset.snapshot ?? '[]');
+  if (!Array.isArray(items) || items.length === 0) return;
+  // 只提交当前快照已返回的 ID 与 sequence——快照之后到达的新异常保持未读（§4 已读与恢复）
+  const res = await fetch('/api/v1/system-alerts/read', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+    body: JSON.stringify({ items }),
+  });
+  if (res.ok) { await renderAlertsList(); await refreshAlertSummary(); }
+  else { const e = await res.json().catch(() => ({})); window.alert(`标记已读失败：${e?.error?.message ?? res.status}`); }
+};
+
+function scheduleEstimate() {
+  clearTimeout(state.estimate.timer);
+  state.estimate.timer = setTimeout(() => void refreshEstimate(), 250); // policy-defaults token_estimates.debounce_ms
+}
+
+async function refreshEstimate() {
+  const content = composer.value;
+  const line = $('estimate-line');
+  if (!line) return;
+  if (!content.trim()) { line.textContent = ''; const det = $('estimate-detail'); if (det) det.hidden = true; return; }
+  const draftRevision = state.draftRevision;
+  const flight = Symbol('est');
+  state.estimate.inFlight = flight;
+  try {
+    const res = await fetch('/api/v1/token-estimates', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
+      body: JSON.stringify({ conversation_id: CONVERSATION, client_draft_revision: draftRevision, content, attachments: [], include_request_estimate: true }),
+    });
+    if (!res.ok) { line.textContent = '预计用量暂不可用'; return; } // 预估失败不禁发送（§9 末段）
+    const data = await res.json();
+    // TOKEN-04：只应用同时匹配 draft_revision/模型快照/附件指纹的响应——过期慢回包丢弃
+    if (state.estimate.inFlight !== flight || !shouldApplyEstimate(data, { draftRevision, modelSnapshotId: state.estimate.modelSnapshotId ?? data.model_snapshot_id, attachmentFingerprint: null })) return;
+    state.estimate.modelSnapshotId = data.model_snapshot_id;
+    if (typeof data.chars_per_token === 'number' && data.chars_per_token > 0) state.estimate.charsPerToken = data.chars_per_token;
+    const e = data.estimate ?? {};
+    const mediaNote = e.message_media_tokens === null && (e.unknown_components ?? []).length ? ' · 图片用量待估' : '';
+    line.textContent = `本条文字约 ${e.message_text_tokens ?? '?'} token${mediaNote}（粗估${e.model ? `，${e.model}` : ''}）`;
+    const detail = $('estimate-detail');
+    const dbody = $('estimate-detail-body');
+    if (!detail || !dbody) return;
+    const req = e.request_input_tokens != null
+      ? `本次请求输入约 ${e.request_input_tokens} token（含历史、身份、工具与本条）`
+      : `本次请求输入暂不可估${e.request_unavailable_reason === 'pending_selection' ? '（等待人工历史选集）' : ''}`;
+    dbody.textContent = `${req}
+回复输出上限 ${e.output_cap_tokens ?? '未知'}（后续工具续答/重试另计；不等于预计一定生成）
+缓存部分占上下文；命中可能降低费用，无法预先保证。`;
+    detail.hidden = false;
+  } catch { line.textContent = '预计用量暂不可用'; }
+}
 
 void boot;
 boot();

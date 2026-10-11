@@ -29,6 +29,7 @@ import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
 import { HostToolExecutor } from './runtime/host-tools.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
+import { SystemAlertService } from './observability/system-alerts.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -57,6 +58,7 @@ export class Host {
   readonly windows: WindowManager;
   readonly supervisor: TurnSupervisor;
   readonly auth: AuthService;
+  readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
   port = 0;
@@ -84,6 +86,7 @@ export class Host {
     this.windows = deps.windows;
     this.supervisor = deps.supervisor;
     this.auth = deps.auth;
+    this.alerts = deps.alerts ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
   }
@@ -100,11 +103,16 @@ export class Host {
 
     const events = new EventService(db);
     const messages = new MessageService(db);
+    // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
+    const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
     const capabilities = new CapabilityMatrix(opts.config);
     const runnerSelection = await selectRunner(opts.config);
+    // EXEC_V1 02 §4.1（ALERT-07）：SDK 无 TTL 装配证据——显示面经 records.ttlVerification
+    // 分离 desired/effective/verification（不得显示"已生效 1h"）。聚合告警在 WP2 核最终
+    // options 时按真实证据观察（开机观测会污染事件序列，不是证据点）。
     const reasoning = new ReasoningService(db, events);
-    const usage = new UsageCollector(db);
+    const usage = new UsageCollector(db, alerts); // EXEC_V1 WP1：矛盾终值→USAGE_INCONSISTENT 告警
     const routing = new RoutingService(db, events, messages);
     // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源；窗口
     // 切换事务与 supervisor 共用同一服务实例（选集消费原子性）
@@ -183,6 +191,7 @@ export class Host {
       archiveSync,
       selections,
       settings,
+      alerts,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {

@@ -48,3 +48,17 @@ export function makeDraftGuard() {
     mayClear(submittedRevision) { return revision === submittedRevision; },
   };
 }
+
+// EXEC_V1 §05.9（TOKEN-04）：预估回包应用守卫——只应用同时匹配
+// draft_revision、model_snapshot 与附件指纹的响应；过期慢回包一律丢弃。
+// 估计失败/丢弃绝不阻塞正常发送（发送走服务端容量与身份硬门）。
+export function shouldApplyEstimate(response, current) {
+  if (!response || typeof response !== 'object') return false;
+  if (!current || typeof current !== 'object') return false;
+  if (response.client_draft_revision !== current.draftRevision) return false;
+  if (response.model_snapshot_id !== current.modelSnapshotId) return false;
+  const respFp = response.attachment_fingerprint ?? null;
+  const curFp = current.attachmentFingerprint ?? null;
+  if (respFp !== curFp) return false;
+  return true;
+}

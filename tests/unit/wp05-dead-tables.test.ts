@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate } from '../../apps/host/src/db/migrations.ts';
+import { migrate, SUPPORTED_SCHEMA_VERSION } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { tempRoot } from '../helpers.ts';
 
@@ -17,7 +17,8 @@ test('v20：fresh 库不建死表，audit_events 保留', () => {
   const root = tempRoot('wp5-v20-fresh-');
   const db = openDatabase(path.join(root, 'data'));
   const r = migrate(db, sha256Hex);
-  assert.equal(r.applied.at(-1), 20, '最后应用=20');
+  // EXEC_V1 起 v21+ 继续顺延（本测试只关心 v20 死表行为，不钉链尾）
+  assert.ok((r.applied as number[]).includes(20), 'v20 已应用');
   assert.equal(has(db, 'wakeups'), false, 'wakeups 不再存在');
   assert.equal(has(db, 'effects'), false, 'effects 不再存在');
   assert.equal(has(db, 'members'), false, 'members 不再存在');
@@ -33,7 +34,7 @@ test('v20：v19 旧库升级后三表被 DROP（升级=fresh 同码收敛）', (
   assert.equal(has(db, 'wakeups'), true, 'v19 历史库仍有 wakeups');
   assert.equal(has(db, 'members'), true, 'v19 历史库仍有 members');
   const r = migrate(db, sha256Hex);
-  assert.deepEqual(r.applied, [20], '只补应用 v20');
+  assert.deepEqual(r.applied, [20, ...Array.from({ length: (SUPPORTED_SCHEMA_VERSION ?? 20) - 20 }, (_, i) => 21 + i)], 'v20 起补齐至当前链尾');
   assert.equal(has(db, 'wakeups'), false);
   assert.equal(has(db, 'effects'), false);
   assert.equal(has(db, 'members'), false);

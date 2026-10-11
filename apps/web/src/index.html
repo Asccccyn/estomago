@@ -11,6 +11,7 @@
     <span class="brand">estómago</span>
     <span id="runtime-badge" class="badge">连接中…</span>
     <button id="records-btn" class="ghost" hidden>记录</button>
+    <button id="alerts-btn" class="ghost" hidden aria-label="系统通知（异常中心）">系统通知<span id="alerts-badge" class="alerts-badge" hidden></span></button>
     <button id="login-btn" class="ghost" hidden>登录</button>
   </header>
 
@@ -22,6 +23,17 @@
     <div id="records-body" class="records-body">
       <p class="muted">打开面板只查询，不会触发模型调用、记忆写入或换窗。</p>
     </div>
+  </aside>
+
+  <aside id="alerts-panel" class="records-panel" hidden aria-label="系统通知面板">
+    <div class="records-head">
+      <strong>系统通知</strong>
+      <button id="alerts-close" class="ghost">关闭</button>
+    </div>
+    <div id="alerts-body" class="records-body">
+      <p class="muted">已读不等于恢复：未解决的异常仍留在待处理。红点只统计未读的 warning/critical。</p>
+    </div>
+    <div class="records-foot"><button id="alerts-read-all" class="ghost">把当前列表标为已读</button></div>
   </aside>
 
   <div id="login-panel" class="login-panel" hidden>
@@ -39,6 +51,8 @@
       <button id="send-btn" class="send" disabled>发送</button>
     </div>
     <div class="composer-hint">Enter 只换行；多行正文将作为一条消息完整保存</div>
+    <div id="estimate-line" class="estimate-line" aria-live="polite"></div>
+    <details id="estimate-detail" class="estimate-detail" hidden><summary>本次请求预估详情</summary><div id="estimate-detail-body"></div></details>
   </main>
 
   <dialog id="route-dialog">

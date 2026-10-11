@@ -98,7 +98,7 @@ test('BASE-03：fresh / 升级 / 迁移中断后重启——正文 hash 与 revi
   // 重启：同一文件重开，完成剩余迁移——只补缺失版本，旧数据不动
   const dbB2 = openDatabase(rootB);
   const resumed = migrate(dbB2, sha256Hex);
-  assert.deepEqual(resumed.applied, [SUPPORTED_SCHEMA_VERSION]);
+  assert.deepEqual(resumed.applied, Array.from({ length: SUPPORTED_SCHEMA_VERSION - 19 }, (_, i) => 20 + i)); // 只补缺失（v20..当前链尾）
   assert.equal(schemaVersion(dbB2), SUPPORTED_SCHEMA_VERSION);
   const row = dbB2
     .prepare(
