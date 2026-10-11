@@ -42,6 +42,7 @@ import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex } from '../util/id.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
+import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -66,6 +67,7 @@ export type SupervisorDeps = {
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
+  media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -197,6 +199,20 @@ export class TurnSupervisor {
     return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects };
   }
 
+  /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
+   *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+    if (this.d.media && messageId && revision) {
+      try {
+        const proj = this.d.media.projectForRevision(messageId, revision);
+        const text = opts.isCurrentInput && fallbackText !== proj.content ? fallbackText : proj.content;
+        const r = projectRevisionBlocks(text, proj.attachments, opts);
+        return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript };
+      } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
+    }
+    return { blocks: [{ type: 'text', text: fallbackText }], hasImage: false, hasVoiceWithoutTranscript: false };
+  }
+
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
   // 同样经 P2（previousPayload append-only 断言）。发布/记账语义由调用方 onEvent 决定。
   // 返回 finalMessages：成功回合的完整轨迹消息（含最终 assistant 文本），供轨迹持久化（§2.2）。
@@ -263,6 +279,11 @@ export class TurnSupervisor {
         }
       }
       const payloadJson = JSON.stringify(envelope);
+      // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
+      // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
+      // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
+      const matEnv = (env: typeof envelope): typeof envelope => (d.media ? materializeEnvelope(env, d.media) as typeof envelope : env);
+      const runEnvelope = matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
@@ -270,12 +291,12 @@ export class TurnSupervisor {
         const nowIso = new Date().toISOString();
         if (info.attemptIndex === 0) {
           d.db.prepare("UPDATE provider_requests SET dispatch_started_at = ?, attempt_no = 0, payload_wire_json = ?, payload_format = 'wire_v1' WHERE id = ?")
-            .run(nowIso, info.payloadWireJson, prqId);
+            .run(nowIso, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, prqId);
           lastPrqId = prqId;
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, info.payloadWireJson, 'wire_v1', nowIso, nowIso, info.attemptIndex);
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
       };
@@ -296,7 +317,7 @@ export class TurnSupervisor {
         }
       };
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(prevEnvelope) : null, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
+        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope: runEnvelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -684,7 +705,9 @@ export class TurnSupervisor {
     selectedMessages?: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     /** 选集间隙元数据（服务端按 sequence 计算，不相邻段如实披露） */
     selectionGaps?: Array<{ after_seq: number; before_seq: number; skipped: number }>;
-  }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }> } {
+    /** EXEC_V1 §03.6：当前输入消息（投影其附件进尾部；缺省=纯文本尾） */
+    tailMessage?: { id: string; revision: number } | null;
+  }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const dv = this.drv()!;
     const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
     const messages: OrMessage[] = [
@@ -712,9 +735,19 @@ export class TurnSupervisor {
       // 范围/正文重建走 buildReviewReconstruction（单一正本不变）。
       selected = [];
     }
-    for (const m of selected) messages.push({ role: m.role, content: [{ type: 'text', text: m.content }] });
-    messages.push({ role: 'user', content: [{ type: 'text', text: o.tailUserText }] });
+    // EXEC_V1 §03.6：历史与尾部统一走投影器（内部 asset_image 引用——轨迹/证据不含 Base64）
+    let envHasImage = false;
+    for (const m of selected) {
+      const proj = this.revisionBlocks(m.id, m.revision, m.content);
+      envHasImage = envHasImage || proj.hasImage;
+      messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
+    }
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true });
+    envHasImage = envHasImage || tailProj.hasImage;
+    messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
+      hasImage: envHasImage,
+      hasVoiceWithoutTranscript: tailProj.hasVoiceWithoutTranscript,
       envelope: {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
@@ -1544,24 +1577,31 @@ export class TurnSupervisor {
     // 回归以新形式复现）；评审请求（pre_rotate_review）不算证据（其信封不含聊天正文）。
     // F-J-39：追赶投影与评审路径同源（catchupEntries 单一实现）
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
+    // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史
     // 进新窗唯一途径=人工选集；同窗无轨迹的正常首轮已在上方懒初始化
     // 补建轨迹，到这里的 fallback 只剩轨迹意外缺失场景）
     const fallbackSel = dv && d.selections ? d.selections.forTargetWindow(window.id) : null;
-    const orBaseMessages: OrMessage[] = orTraj
-      ? [...orTraj.messages, ...catchupMessages]
-      : (dv ? this.buildEnvelope({
+    const fallbackBuild = (!orTraj && dv)
+      ? this.buildEnvelope({
           conversationId: turn.conversation_id,
           materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
           dialogue: [],
           tailUserText: prompt,
+          tailMessage: inputMessage ? { id: inputMessage.id, revision: effective.revision } : null,
           selectedMessages: dv && d.selections && fallbackSel ? (d.selections.loadContents(fallbackSel.items ?? []).loaded) : [],
-        }).envelope.messages : []);
+        })
+      : null;
+    const orBaseMessages: OrMessage[] = orTraj
+      ? [...orTraj.messages, ...catchupMessages]
+      : (fallbackBuild ? fallbackBuild.envelope.messages : []);
+    // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true });
     const orMessages: OrMessage[] = orTraj
-      ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: [{ type: 'text', text: prompt }] } as unknown as OrMessage]
+      ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: tailProjection.blocks } as unknown as OrMessage]
       : orBaseMessages;
     const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
@@ -1799,6 +1839,28 @@ export class TurnSupervisor {
     let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
     let orToolSeen: ManifestEntry[] = []; // WP4：conversation_read 片段已见（实际进入请求的部分）
     if (orEnvelope !== null) {
+      // EXEC_V1 §03.6（WP3/M2）媒体门：当前输入无转写语音→不空输入唤起模型；
+      // 含图但型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息已保存、零模型请求、不静默丢图/换模型）
+      const orHasImage = orMessages.some((m) => Array.isArray((m as { content: unknown }).content) && ((m as { content: Array<Record<string, unknown>> }).content.some((b) => b && b.type === 'asset_image')));
+      const tailVoiceBlocked = fallbackBuild ? fallbackBuild.hasVoiceWithoutTranscript : tailProjection.hasVoiceWithoutTranscript;
+      let mediaBlockedCode: string | null = null;
+      if (d.media) {
+        if (tailVoiceBlocked) mediaBlockedCode = 'MEDIA_TRANSCRIPTION_FAILED';
+        else if (orHasImage) {
+          let vision: boolean | null = visionSupportCached(orEnvelope.model);
+          if (vision === null && d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter') {
+            vision = await refreshVisionSupport(d.config.openrouter.base_url, orEnvelope.model);
+          }
+          if (vision !== true) mediaBlockedCode = 'MODEL_VISION_UNAVAILABLE';
+        }
+      }
+      if (mediaBlockedCode !== null) {
+        d.logger.warn('media_gate_blocked', { turn_id: turnId, code: mediaBlockedCode, model: orEnvelope.model, has_image: orHasImage });
+        result = { outcome: 'error', errorClassified: null, errorCode: mediaBlockedCode, errorMessage: mediaBlockedCode, sessionId: null, requestId: null };
+        orFinalMessages = null;
+        orLastSentMessages = null;
+        orToolSeen = [];
+      } else {
       // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
       const loop = await this.runOrToolLoop({
         envelope: orEnvelope, purpose: 'chat', activeReviewId: null,
@@ -1812,6 +1874,7 @@ export class TurnSupervisor {
       orFinalMessages = loop.finalMessages;
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
+      }
     } else {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {

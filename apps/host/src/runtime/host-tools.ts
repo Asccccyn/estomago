@@ -366,6 +366,36 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'media_import',
+      description: '把一个外部图片 URL 持久导入为本站资产（返回 asset_id/实际类型/大小）。链接只是导入来源；导入后用 asset_id 发送或建立内容引用。仅 https 公网图片。',
+      parameters: {
+        type: 'object',
+        properties: {
+          source_url: { type: 'string', minLength: 8, maxLength: 2048 },
+        },
+        required: ['source_url'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chat_send_attachment',
+      description: '以周家明当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
+      parameters: {
+        type: 'object',
+        properties: {
+          asset_id: { type: 'string', minLength: 1, maxLength: 128 },
+          presentation: { type: 'string', enum: ['image', 'sticker', 'voice'] },
+          content: { type: 'string', maxLength: 4000 },
+        },
+        required: ['asset_id', 'presentation'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'context_review_complete',
       description: '完成当前活跃的换窗前记忆检查。decision=no_new_hold（本次没有新增 hold 且无未决写操作）或 holds_completed（本次已有核实的成功 hold）。',
       parameters: {
@@ -477,13 +507,18 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null }) {
+  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null }) {
     this.db = deps.db;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
     this.checkpoint = deps.checkpoint;
     this.archiveSync = deps.archiveSync ?? null;
+    this.media = deps.media ?? null;
+    this.messages = deps.messages ?? null;
   }
+
+  private media: import('../media/assets.ts').MediaService | null;
+  private messages: import('../messages/service.ts').MessageService | null;
 
   /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
    *  能力面由 Mariposa 白名单圈定）。 */
@@ -491,8 +526,39 @@ export class HostToolExecutor {
     return this.mariposa;
   }
 
+  /** EXEC_V1 §03.6.3：外部图片持久导入（幂等键由 turn+请求稳定派生，模型不可指定他人操作）。 */
+  private async mediaImport(args: { source_url: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '媒体服务未装配' } };
+    const operationId = `tool-media-import:${ctx.turnId ?? 'noturn'}:${ctx.requestId}`;
+    try {
+      const a = await this.media.importFromUrl({ sourceUrl: args.source_url, operationId, createdBy: 'jiaming' });
+      return { ok: true, output: { asset_id: a.id, mime_type: a.mime_type, byte_size: a.byte_size, imported: true } };
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? 'ASSET_IMPORT_FAILED';
+      return { ok: false, output: { error_code: code, retryable: code === 'ASSET_IMPORT_FAILED' } };
+    }
+  }
+
+  /** EXEC_V1 §03.6.3：正式发布附件消息（复用 MessageService/发布链/归档 outbox；幂等=派生 client_message_id）。 */
+  private async chatSendAttachment(args: { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.messages || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '消息/媒体服务未装配' } };
+    try {
+      this.media.validateForSend([{ asset_id: args.asset_id, presentation: args.presentation }]);
+    } catch (err) {
+      return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_NOT_FOUND' } };
+    }
+    const kind = args.presentation === 'voice' ? 'voice' : args.presentation === 'sticker' ? 'sticker' : 'text';
+    const clientMessageId = `tool-send:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.asset_id}`;
+    const msg = this.messages.publishAssistantMessage({
+      conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.content ?? '', kind, clientMessageId,
+      attachments: [{ asset_id: args.asset_id, presentation: args.presentation }],
+    });
+    void this.archiveSync?.drainOnce().catch(() => { /* 归档失败走 drain 重试 */ });
+    return { ok: true, output: { message_id: msg.id, published: true } };
+  }
+
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -512,6 +578,8 @@ export class HostToolExecutor {
     if (name === 'episode_list') return this.episodeList(checked.value, ctx);
     if (name === 'episode_get') return this.episodeGet(checked.value, ctx);
     if (name === 'episode_apply') return this.episodeApply(checked.value, ctx);
+    if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
+    if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     return this.reviewComplete(checked.value, ctx);
   }
 
