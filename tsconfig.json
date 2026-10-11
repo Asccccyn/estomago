@@ -16,6 +16,6 @@
     "types": ["node"],
     "exactOptionalPropertyTypes": false
   },
-  "include": ["apps/host/src/**/*.ts", "packages/contracts/src/**/*.ts"],
+  "include": ["apps/host/src/**/*.ts", "apps/content/src/**/*.ts", "packages/contracts/src/**/*.ts"],
   "exclude": ["node_modules", "apps/web", "tests", "scripts"]
 }
