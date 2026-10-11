@@ -73,6 +73,27 @@ const manifestPath = path.join(backupDir, `${stamp}.manifest.json`);
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 console.log(`[backup] ${target}`);
 console.log(`[backup] ${manifestPath}`);
+
+// AUD-05 P1 修复：content SQLite + 媒体文件纳入备份集
+const contentDb = path.join(stateRoot, 'content', 'content.sqlite3');
+if (fs.existsSync(contentDb)) {
+  const contentTarget = path.join(backupDir, `${stamp}.content.sqlite3`);
+  const cdb = new DatabaseSync(contentDb, { readOnly: true });
+  cdb.exec(`VACUUM INTO '${contentTarget.replace(/'/g, "''")}'`);
+  cdb.close();
+  console.log(`[backup] content: ${contentTarget}`);
+}
+const mediaDir2 = path.join(stateRoot, 'media');
+if (fs.existsSync(mediaDir2)) {
+  const { execSync } = await import('node:child_process');
+  const mediaTarget = path.join(backupDir, `${stamp}.media.tar.gz`);
+  try {
+    execSync(`tar -czf '${mediaTarget}' -C '${mediaDir2}' .`, { stdio: 'pipe' });
+    console.log(`[backup] media: ${mediaTarget}`);
+  } catch (e) {
+    console.error(`[backup] 媒体归档失败（不阻断 DB 备份）：${e.message}`);
+  }
+}
 if (metaFiles.length > 0) console.log(`[backup] meta/: ${metaFiles.join(', ')}`);
 
 // WP-04（E08）：轮转——按创建时间保留最近 KEEP 份（快照+meta+manifest 同组）

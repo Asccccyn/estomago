@@ -223,7 +223,9 @@ export class Host {
         },
       },
     });
-    const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡）
+    const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
+    // AUD-02 P1：注入关闭→终止回调
+    bgSettings.onDisable = (kind) => scheduler.disableKind(kind);
     const deps: Omit<RequestDeps, 'config'> = {
       paths,
       db,
