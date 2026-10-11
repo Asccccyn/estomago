@@ -1,0 +1,819 @@
+{
+  "schema_version": 1,
+  "spec_id": "ESTOMAGO_CHAT_EXEC_V1",
+  "status": "PROPOSED_EXECUTION_CONTRACT",
+  "path_parameter_notation": "{id}与章节:id代表同一路由；不是两个端点。",
+  "http_rules": {
+    "auth": "public est session; content service credential + host-derived actor",
+    "mutations": "Idempotency-Key; PUT/DELETE also If-Match",
+    "missing_precondition_http": 428,
+    "conflict_http": 409,
+    "new_error_code_style": "UPPER_SNAKE_CASE",
+    "idempotency_order": "authorize, known exact replay, then new-operation revision check",
+    "read_exceptions": [
+      "POST /api/v1/token-estimates",
+      "POST /api/v1/system-alerts/read"
+    ],
+    "new_lists": "opaque bound keyset cursor; default20 max100; no silent truncation"
+  },
+  "routes": [
+    {
+      "id": "POST /api/v1/assets",
+      "method": "POST",
+      "path": "/api/v1/assets",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "受限单文件上传：chat或creation用途",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "POST /api/v1/assets/import",
+      "method": "POST",
+      "path": "/api/v1/assets/import",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "外部图片持久导入；不只保存URL",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/assets/{id}",
+      "method": "GET",
+      "path": "/api/v1/assets/{id}",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "资产授权元数据",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/assets/{id}/content",
+      "method": "GET",
+      "path": "/api/v1/assets/{id}/content",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "授权媒体字节及可用Range；active MIME隔离",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/assets/{id}/references",
+      "method": "POST",
+      "path": "/api/v1/assets/{id}/references",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "受控服务引用登记，内部面非任意浏览器/模型",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/assets/{id}/references/{referenceId}",
+      "method": "DELETE",
+      "path": "/api/v1/assets/{id}/references/{referenceId}",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_assets",
+      "change": "new",
+      "summary": "受控解除本对象引用；不能删除历史引用",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "POST /api/v1/conversations/{conversationId}/messages",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/messages",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_messages",
+      "change": "extend_existing",
+      "summary": "正文+attachments；保留client_message_id文本兼容",
+      "control": "legacy_message_id_compatible"
+    },
+    {
+      "id": "PUT /api/v1/conversations/{conversationId}/messages/{messageId}",
+      "method": "PUT",
+      "path": "/api/v1/conversations/{conversationId}/messages/{messageId}",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_messages",
+      "change": "extend_existing",
+      "summary": "修订文字保留附件；新增If-Match并同批升级UI",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/conversations/{conversationId}/messages",
+      "method": "GET",
+      "path": "/api/v1/conversations/{conversationId}/messages",
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "owner": "est_messages",
+      "change": "extend_existing",
+      "summary": "revision附件及估计快照",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/system-alerts",
+      "method": "GET",
+      "path": "/api/v1/system-alerts",
+      "contract": "05_SYSTEM_ALERTS_AND_TOKEN_ESTIMATES.md",
+      "owner": "est_observability",
+      "change": "new",
+      "summary": "有界列表+未读+仍open数",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/system-alerts/summary",
+      "method": "GET",
+      "path": "/api/v1/system-alerts/summary",
+      "contract": "05_SYSTEM_ALERTS_AND_TOKEN_ESTIMATES.md",
+      "owner": "est_observability",
+      "change": "new",
+      "summary": "持久红点快照",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/system-alerts/read",
+      "method": "POST",
+      "path": "/api/v1/system-alerts/read",
+      "contract": "05_SYSTEM_ALERTS_AND_TOKEN_ESTIMATES.md",
+      "owner": "est_observability",
+      "change": "new",
+      "summary": "只更新已见sequence，不resolve",
+      "control": "monotonic_seen_sequence"
+    },
+    {
+      "id": "POST /api/v1/token-estimates",
+      "method": "POST",
+      "path": "/api/v1/token-estimates",
+      "contract": "05_SYSTEM_ALERTS_AND_TOKEN_ESTIMATES.md",
+      "owner": "est_observability",
+      "change": "new",
+      "summary": "本地只读估计，不写消息或草稿",
+      "control": "readonly_computation"
+    },
+    {
+      "id": "GET /api/v1/turns/{id}/usage",
+      "method": "GET",
+      "path": "/api/v1/turns/{id}/usage",
+      "contract": "05_SYSTEM_ALERTS_AND_TOKEN_ESTIMATES.md",
+      "owner": "est_usage",
+      "change": "extend_existing",
+      "summary": "实际字段级完整度、已知小计/未知数",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/background/settings",
+      "method": "GET",
+      "path": "/api/v1/background/settings",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "三开关、有效状态、预算、revision",
+      "control": "read"
+    },
+    {
+      "id": "PUT /api/v1/background/settings",
+      "method": "PUT",
+      "path": "/api/v1/background/settings",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "用户调整三开关/限额，关闭即时生效",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/background/tasks",
+      "method": "GET",
+      "path": "/api/v1/background/tasks",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "有界任务列表",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/background/tasks",
+      "method": "POST",
+      "path": "/api/v1/background/tasks",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "创建reminder/autonomous，keepwarm系统维护不可复制",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/background/tasks/{id}",
+      "method": "PUT",
+      "path": "/api/v1/background/tasks/{id}",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "更新任务时间/内容引用/开关",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/background/tasks/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/background/tasks/{id}",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "取消未来任务，保留执行费用",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/background/runs",
+      "method": "GET",
+      "path": "/api/v1/background/runs",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "有界执行记录与费用归属",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/background/runs/{id}/stop",
+      "method": "POST",
+      "path": "/api/v1/background/runs/{id}/stop",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "owner": "est_background",
+      "change": "new",
+      "summary": "停止本轮，不隐式关闭总开关",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/content/posts",
+      "method": "GET",
+      "path": "/api/v1/content/posts",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "分页动态",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/content/posts/{id}",
+      "method": "GET",
+      "path": "/api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "动态详情",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/content/posts",
+      "method": "POST",
+      "path": "/api/v1/content/posts",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "发布自己的动态或letter样式",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/content/posts/{id}",
+      "method": "PUT",
+      "path": "/api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "更新本人动态",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/content/posts/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "删除本人正文但保留对方评论占位",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/content/posts/{id}/comments",
+      "method": "GET",
+      "path": "/api/v1/content/posts/{id}/comments",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "独立评论分页",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/content/posts/{id}/comments",
+      "method": "POST",
+      "path": "/api/v1/content/posts/{id}/comments",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "双方均可评论",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/content/comments/{id}",
+      "method": "PUT",
+      "path": "/api/v1/content/comments/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "更新本人评论",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/content/comments/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/content/comments/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "删除本人评论",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/content/albums/{kind}/entries",
+      "method": "GET",
+      "path": "/api/v1/content/albums/{kind}/entries",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "三类相册+文本/稳定源引用筛选",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/content/albums/{kind}/entries",
+      "method": "POST",
+      "path": "/api/v1/content/albums/{kind}/entries",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "共享相册添加已有asset",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/content/album-entries/{id}",
+      "method": "PUT",
+      "path": "/api/v1/content/album-entries/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "修改相册说明/含义/关联",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/content/album-entries/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/content/album-entries/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "仅移除相册归档",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/content/creations",
+      "method": "GET",
+      "path": "/api/v1/content/creations",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "自愿纪念列表",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/content/creations/{id}",
+      "method": "GET",
+      "path": "/api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "作品及事件引用详情",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/content/creations",
+      "method": "POST",
+      "path": "/api/v1/content/creations",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "创建图标/可选作品/桶引用",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/content/creations/{id}",
+      "method": "PUT",
+      "path": "/api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "后补作品或修改本人元数据",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/content/creations/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "移除本人的纪念记录，不删桶",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/content/future-notes",
+      "method": "GET",
+      "path": "/api/v1/content/future-notes",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "未来留言正文列表，非调度正本",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/content/future-notes/{id}",
+      "method": "GET",
+      "path": "/api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "留言当前正文版本",
+      "control": "read"
+    },
+    {
+      "id": "POST /api/v1/content/future-notes",
+      "method": "POST",
+      "path": "/api/v1/content/future-notes",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "创建本人预写留言",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "PUT /api/v1/content/future-notes/{id}",
+      "method": "PUT",
+      "path": "/api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "修改源留言，已发消息不回写",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "DELETE /api/v1/content/future-notes/{id}",
+      "method": "DELETE",
+      "path": "/api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "content_via_est_proxy",
+      "change": "new",
+      "summary": "先fence未发投递，再删除源正文",
+      "control": "idempotent_write"
+    },
+    {
+      "id": "GET /api/v1/calendar/month",
+      "method": "GET",
+      "path": "/api/v1/calendar/month",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "est_read_aggregator",
+      "change": "new",
+      "summary": "按月按源数量/状态",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/calendar/day",
+      "method": "GET",
+      "path": "/api/v1/calendar/day",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "est_read_aggregator",
+      "change": "new",
+      "summary": "轻量日概要及原文入口",
+      "control": "read"
+    },
+    {
+      "id": "GET /api/v1/calendar/day/items",
+      "method": "GET",
+      "path": "/api/v1/calendar/day/items",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "owner": "est_read_aggregator",
+      "change": "new",
+      "summary": "单源稳定分页，不消费星星",
+      "control": "read"
+    }
+  ],
+  "model_tools": [
+    {
+      "name": "background_task_list",
+      "route": "GET /api/v1/background/tasks",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "background_task_create",
+      "route": "POST /api/v1/background/tasks",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "background_task_update",
+      "route": "PUT /api/v1/background/tasks/{id}",
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_posts_list",
+      "route": "GET /api/v1/content/posts",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_post_get",
+      "route": "GET /api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_post_create",
+      "route": "POST /api/v1/content/posts",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_post_update",
+      "route": "PUT /api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_post_delete",
+      "route": "DELETE /api/v1/content/posts/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_comments_list",
+      "route": "GET /api/v1/content/posts/{id}/comments",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_comment_create",
+      "route": "POST /api/v1/content/posts/{id}/comments",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_comment_update",
+      "route": "PUT /api/v1/content/comments/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_comment_delete",
+      "route": "DELETE /api/v1/content/comments/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_album_list",
+      "route": "GET /api/v1/content/albums/{kind}/entries",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_album_add",
+      "route": "POST /api/v1/content/albums/{kind}/entries",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_album_update",
+      "route": "PUT /api/v1/content/album-entries/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_album_remove",
+      "route": "DELETE /api/v1/content/album-entries/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_creations_list",
+      "route": "GET /api/v1/content/creations",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_creation_get",
+      "route": "GET /api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_creation_create",
+      "route": "POST /api/v1/content/creations",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_creation_update",
+      "route": "PUT /api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_creation_delete",
+      "route": "DELETE /api/v1/content/creations/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_future_notes_list",
+      "route": "GET /api/v1/content/future-notes",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_future_note_get",
+      "route": "GET /api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_future_note_create",
+      "route": "POST /api/v1/content/future-notes",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_future_note_update",
+      "route": "PUT /api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "content_future_note_delete",
+      "route": "DELETE /api/v1/content/future-notes/{id}",
+      "contract": "06_CALENDAR_FEED_AND_CREATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "同一业务服务；写入工具参数映射统一幂等/版本头，不接受自报作者。"
+    },
+    {
+      "name": "media_import",
+      "route": null,
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "source_url；操作ID由宿主派生，真实持久导入。"
+    },
+    {
+      "name": "chat_send_attachment",
+      "route": null,
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "asset_id/presentation/content?；当前私聊显式发布；复用消息幂等。"
+    },
+    {
+      "name": "creation_save_artifact",
+      "route": null,
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "format=svg|html/content/client_operation_id；只保存受限文件，不执行或发布。"
+    },
+    {
+      "name": "media_read",
+      "route": null,
+      "contract": "03_CHAT_MEDIA_AND_INTEGRATIONS.md",
+      "status": "conditional",
+      "actor": "host_derived_jiaming",
+      "notes": "只有conversation_read不能表达真实媒体读取时才增加；不建立两个同义入口。"
+    },
+    {
+      "name": "chat_send_text",
+      "route": null,
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "text/client_operation_id；自主明确发布当前私聊，普通终答不默认发布。"
+    },
+    {
+      "name": "background_complete",
+      "route": null,
+      "contract": "04_CONTEXT_CACHE_WAKE.md",
+      "status": "new",
+      "actor": "host_derived_jiaming",
+      "notes": "outcome=done|noop；只用于proactive_turn，零额外请求正常结束。"
+    }
+  ],
+  "external_existing_interfaces": [
+    {
+      "service": "mariposa",
+      "method": "POST",
+      "path": "/api/capability/{capability}",
+      "status": "existing_client_path; remote schema verify separately",
+      "est_new_route": false
+    }
+  ],
+  "external_capability_status": [
+    {
+      "service": "mariposa",
+      "transport": "http",
+      "observed": "client_present",
+      "implementation_policy": "preserve_and_verify_media/calendar/words_refs"
+    },
+    {
+      "service": "siren",
+      "transport": "verify_existing_http_or_mcp",
+      "observed": "config_only",
+      "implementation_policy": "voice_message_and_realtime_separate"
+    },
+    {
+      "service": "oido",
+      "transport": "mcp",
+      "observed": "user_local_partial_not_in_repo",
+      "implementation_policy": "verify_real_tools_and_data_stream"
+    },
+    {
+      "service": "zashidele",
+      "transport": "mcp",
+      "observed": "config_only",
+      "implementation_policy": "separate_private_feed"
+    },
+    {
+      "service": "antinomy",
+      "transport": "verify_existing",
+      "observed": "not_wired_in_repo",
+      "implementation_policy": "reuse_reading_backend"
+    },
+    {
+      "service": "superposition",
+      "transport": "verify_existing",
+      "observed": "config_only",
+      "implementation_policy": "special_dates_read_without_consumption"
+    },
+    {
+      "service": "x_xiaohongshu",
+      "transport": "reuse_user_architecture",
+      "observed": "not_wired_in_repo",
+      "implementation_policy": "no_new_crawler_or_browser"
+    }
+  ],
+  "not_exposed": [
+    "raw_sql",
+    "arbitrary_shell",
+    "arbitrary_actor",
+    "system_alert_ack_as_qiaosheng_by_model",
+    "raise_background_global_budget_by_model"
+  ]
+}

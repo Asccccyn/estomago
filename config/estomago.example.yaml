@@ -192,3 +192,44 @@ reasoning:
   auto_rewrite_with_model: false
   stop_transcript_main_capture: false
   capability_state: unknown
+
+# —— ESTOMAGO_CHAT_EXEC_V1 新增段（policy-defaults.json adjustable 面）——
+# autonomous/keepwarm 首版默认关闭；daily_cost_cap_usd: null=未配置（该用途后台付费
+# 禁止），不是无限。adjustable=false 的策略常量（保温 50min/自主 60min 滚动间隔、
+# keepwarm 单请求/禁工具、分页 max 100 等）在 apps/host/src/config/policy-constants.ts。
+background:
+  autonomous:
+    enabled: false
+    max_model_requests_per_run: 4
+    max_output_tokens_per_run: 4096
+    max_tool_calls_per_run: 8
+    max_run_ms: 120000
+    paid_tools_enabled: false
+    daily_cost_cap_usd: null
+  keepwarm:
+    enabled: false
+    max_output_tokens_per_run: 128
+    max_run_ms: 30000
+    daily_cost_cap_usd: null
+  reminders:
+    enabled: true
+    delivery_grace_ms: 300000
+    default_local_time: '09:00'
+content:
+  enabled: false
+  port: 18788
+system_alerts:
+  usage_settlement_grace_ms: 60000
+  summary_refresh_debounce_ms: 1000
+token_estimates:
+  debounce_ms: 250
+  max_body_bytes: 524288
+media:
+  max_image_bytes: 20971520
+  max_audio_bytes: 33554432
+  max_video_bytes: 67108864
+  max_code_artifact_bytes: 262144
+  max_attachments_per_message: 8
+  import_timeout_ms: 30000
+  max_redirects: 3
+  auto_physical_gc_enabled: false

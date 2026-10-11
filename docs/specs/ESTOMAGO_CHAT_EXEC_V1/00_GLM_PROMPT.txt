@@ -1,0 +1,11 @@
+你在当前 Asccccyn/estomago 仓库执行 ESTOMAGO_CHAT_EXEC_V1。先读 README、01、02、07 和当前 AGENTS.md；运行本包只读 verify_package.py、preflight.py，记录当前 HEAD，别用历史 source 快照覆盖新代码。
+
+按 WP0→WP8 分批落地：保留精简聊天 host、一个统一前端、现有外部后端；新增内容功能集中在一个可选 apps/content。Mariposa 保留 HTTP；oído、扎西德勒按真实 MCP 合同接线；X/小红书不重写。日历前端内置、后端按来源分开。私密朋友圈与扎西德勒独立，双方可看、发、评论。
+
+必须同时落实：自动唤醒开关及后端真实取消；缓存 TTL 1h、50min滚动保温、自主60min独立限制；禁止隐式压缩替代用户上下文正本；系统异常独立持久红点；单条消息预计token、请求预计输入、整轮actual分开；真媒体文件/视觉/历史选集/引用保护；未来留言与提醒分责。
+
+具体合同以03–06为准。policy-defaults.json是默认值正本，费用上限null不是免费/无限，不捏造用户批准的金额。api-index是路由索引；acceptance.json全部NOT_EXECUTED，逐项运行真实实现的离线验收并给证据，不能复制成自填PASS。
+
+先把同仓代码、隔离测试、示例配置和可审差异做完。外部接口不明时继续独立工作，列明缺哪项schema/能力，不编造成功。未授权的生产部署、兄弟仓/网络/凭据变更、真实付费调用单列待执行，不用它们作为停下本仓施工的理由。
+
+每批交付变更、提交和实际测试证据，最终按07提交 FINAL_REPORT.md、TEST_EVIDENCE.md、CONTRACT_MATRIX.md、DEPLOYMENT_NOTES.md。不要换框架、加任务平台或给每个页面建后端。只将本包明确改动的条款替代旧规范，保留隐私、安全、输入与测试硬约束。
