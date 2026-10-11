@@ -366,6 +366,35 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'background_complete',
+      description: '结束本次自主活动。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。仅自主活动回合可用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          outcome: { type: 'string', enum: ['done', 'noop'] },
+        },
+        required: ['outcome'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chat_send_text',
+      description: '以char身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', minLength: 1, maxLength: 8000 },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
+        },
+        required: ['text', 'idempotency_key'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'media_import',
       description: '把一个外部图片 URL 持久导入为本站资产（返回 asset_id/实际类型/大小）。链接只是导入来源；导入后用 asset_id 发送或建立内容引用。仅 https 公网图片。',
       parameters: {
@@ -461,6 +490,7 @@ export type SeenRef = { id: string; revision: number; char_start?: number; char_
 
 export type ToolExecContext = {
   roomId: string;
+  backgroundRunId?: string | null; // EXEC_V1 §04.6.2：后台回合上下文（background_complete/noop 记账用）
   windowId: string;
   turnId: string | null;
   purpose: 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive';
@@ -526,6 +556,25 @@ export class HostToolExecutor {
     return this.mariposa;
   }
 
+  /** EXEC_V1 §04.6.2：结束自主活动——noop 是成功结果（§6.2），无产出不构成失败。仅自主回合有效。 */
+  private backgroundComplete(args: { outcome: 'done' | 'noop' }, ctx: ToolExecContext): ToolExecResult {
+    if (ctx.purpose !== 'proactive_turn') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅自主活动回合可用' } };
+    if (ctx.backgroundRunId) {
+      this.db.prepare("UPDATE background_runs SET result_code = ?, updated_at = ? WHERE id = ?").run(`complete:${args.outcome}`, new Date().toISOString(), ctx.backgroundRunId);
+    }
+    return { ok: true, output: { completed: true, outcome: args.outcome } };
+  }
+
+  /** EXEC_V1 §04.6.2：自主活动正式公开发言——复用正式发布链（幂等键派生；重试只发一次）。 */
+  private chatSendText(args: { text: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
+    if (!this.messages) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'chat') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID' } };
+    const clientMessageId = `tool-text:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
+    const msg = this.messages.publishAssistantMessage({ conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.text, clientMessageId });
+    void this.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
+    return { ok: true, output: { message_id: msg.id, published: true } };
+  }
+
   /** EXEC_V1 §03.6.3：外部图片持久导入（幂等键由 turn+请求稳定派生，模型不可指定他人操作）。 */
   private async mediaImport(args: { source_url: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '媒体服务未装配' } };
@@ -558,7 +607,7 @@ export class HostToolExecutor {
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -578,6 +627,8 @@ export class HostToolExecutor {
     if (name === 'episode_list') return this.episodeList(checked.value, ctx);
     if (name === 'episode_get') return this.episodeGet(checked.value, ctx);
     if (name === 'episode_apply') return this.episodeApply(checked.value, ctx);
+    if (name === 'background_complete') return this.backgroundComplete(checked.value as { outcome: 'done' | 'noop' }, ctx);
+    if (name === 'chat_send_text') return this.chatSendText(checked.value as { text: string; idempotency_key: string }, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     return this.reviewComplete(checked.value, ctx);

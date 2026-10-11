@@ -230,10 +230,11 @@ export class BackgroundScheduler {
     const nowMs = this.now();
     const nowIso = new Date(nowMs).toISOString();
     const dispatchId = genId('bgd');
-    const run = this.d.db.prepare('SELECT id, model_requests_started, tool_calls_started, first_dispatch_started_at FROM background_runs WHERE id = ?').get(input.runId) as { id: string; model_requests_started: number; tool_calls_started: number; first_dispatch_started_at: string | null } | undefined;
+    const run = this.d.db.prepare('SELECT id, state, model_requests_started, tool_calls_started, first_dispatch_started_at FROM background_runs WHERE id = ?').get(input.runId) as { id: string; state: string; model_requests_started: number; tool_calls_started: number; first_dispatch_started_at: string | null } | undefined;
     if (!run) return { allowed: false, dispatchId: '' };
-    // 取消后不再发（§7.2.3：关闭返回后不得开始新 transport）
+    // 取消后不再发（§7.2.3：关闭返回后不得开始新 transport）；终态 run 同样拒新派发
     if (this.cancelRequested.has(input.runId)) return { allowed: false, dispatchId: '' };
+    if (run.state !== 'claimed' && run.state !== 'running' && run.state !== 'cancelling') return { allowed: false, dispatchId: '' };
     tx(this.d.db, () => {
       this.d.db.prepare(
         `INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, capability_name, state, budget_day, reserved_cost_micro_usd, dispatch_started_at, created_at)
