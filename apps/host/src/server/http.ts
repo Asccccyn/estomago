@@ -24,6 +24,8 @@ import type { WindowManager } from '../windows/manager.ts';
 import type { TurnSupervisor } from '../runtime/supervisor.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
 import type { SystemAlertService } from '../observability/system-alerts.ts';
+import type { MediaService, IngestPurpose } from '../media/assets.ts';
+import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
@@ -55,6 +57,7 @@ export type RequestDeps = {
   selections?: ManualSelectionService; // WP3（2026-10-08）：人工历史选集
   settings?: import('../runtime/runtime-settings.ts').RuntimeSettingsService; // 2026-10-08：换模型/推理等级
   alerts?: SystemAlertService; // EXEC_V1 WP1：系统异常红点（未装配时端点如实降级）
+  media?: MediaService; // EXEC_V1 WP3：媒体服务（未装配时资产端点如实降级）
   auth: AuthService;
   archiveSync?: {
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
@@ -152,6 +155,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串（多行正文整体提交）' } });
       const existing = d.messages.getMessage(messageId);
       if (!existing || existing.conversation_id !== conversationId) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
+      // EXEC_V1 §03.5.2（07 §5）：编辑加并发前置条件——缺 If-Match 返回 428 提示刷新（不自动套最新覆盖）
+      const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
+      if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '编辑必须带 If-Match: "<revision>"（页面已更新，请刷新后重新编辑）' } });
+      if (Number(ifMatch) !== existing.current_revision) return json(res, 409, { error: { code: 'revision_conflict', message: `修订不匹配：当前 ${existing.current_revision}，请求基于 ${ifMatch}` } });
       try {
         // EXEC_V1 §05.7.2：编辑=新 revision+新发送前快照（旧修订旧快照不动）
         const ec = estimateContextFor(d);
@@ -180,6 +187,22 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const clientMessageId = body.client_message_id ?? idempotencyKey;
       if (!clientMessageId) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 client_message_id / Idempotency-Key' } });
       if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串（多行正文整体提交，不拆分）' } });
+      // EXEC_V1 §03.5.2：附件先全量校验（存在/available/格式匹配 presentation），全过才进消息事务；
+      // 不接受 URL/磁盘路径/Base64——必须先经 /api/v1/assets 建立资产
+      const attachments = Array.isArray(body.attachments) ? body.attachments : [];
+      const parsedAttachments: Array<{ asset_id: string; presentation: 'image' | 'sticker' | 'voice'; caption?: string | null }> = [];
+      for (const a of attachments as Array<Record<string, unknown>>) {
+        if (typeof a?.asset_id !== 'string' || !a.asset_id) return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].asset_id 必填（先经资产创建/导入）' } });
+        if (a.presentation !== 'image' && a.presentation !== 'sticker' && a.presentation !== 'voice') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].presentation 必须是 image|sticker|voice' } });
+        parsedAttachments.push({ asset_id: a.asset_id, presentation: a.presentation, caption: typeof a.caption === 'string' ? a.caption : null });
+      }
+      if (d.media && parsedAttachments.length > 0) {
+        try { d.media.validateForSend(parsedAttachments); }
+        catch (err) {
+          if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+          throw err;
+        }
+      }
       // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（房间必须
       // 已存在；归档 grant 也按 primary 钉死，第二房间同步本就会拒）
       const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
@@ -189,7 +212,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         // EXEC_V1 §05.7.2：随 revision 保存发送前估计快照（估计刷新不影响 content_hash/修订号）
         const ec = estimateContextFor(d);
         const snapJson = JSON.stringify(snapshotFor({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments: [], outputCapTokens: ec.outputCap }, new Date().toISOString()));
-        submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null, tokenEstimateJson: snapJson });
+        submitted = d.messages.submitUserMessageWithTurn({ conversationId, content: body.content, clientMessageId, occurredAt: body.occurred_at ?? null, attachments: parsedAttachments, tokenEstimateJson: snapJson });
       } catch (err) {
         if ((err as Error).message.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: (err as Error).message } });
         if ((err as Error).message.includes('INVALID_OCCURRED_AT')) return json(res, 422, { error: { code: 'invalid_occurred_at', message: (err as Error).message } });
@@ -489,6 +512,114 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
     }
 
+    // —— EXEC_V1 §03.5（WP3）：媒体资产 API（Idempotency-Key 必带；二进制上传流式限量）——
+    if (route === 'POST /api/v1/assets') {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const purpose = url.searchParams.get('purpose') ?? '';
+      const validPurposes = ['chat_image', 'chat_sticker', 'chat_voice', 'creation_icon', 'creation_work'];
+      if (!validPurposes.includes(purpose)) return json(res, 400, { error: { code: 'bad_purpose', message: `purpose 必须是 ${validPurposes.join('|')}` } });
+      const opKey = String(req.headers['idempotency-key'] ?? '');
+      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+      const cap = purpose === 'chat_voice' ? d.config.media.max_audio_bytes
+        : purpose === 'chat_image' || purpose === 'chat_sticker' ? d.config.media.max_image_bytes
+          : Math.max(d.config.media.max_code_artifact_bytes, d.config.media.max_video_bytes);
+      try {
+        const bytes = await readRawBody(req, cap);
+        const asset = await d.media.saveBuffer({ bytes, purpose: purpose as IngestPurpose, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' });
+        return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate });
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+    if (route === 'POST /api/v1/assets/import') {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const opKey = String(req.headers['idempotency-key'] ?? '');
+      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+      const body = (await readJson(req, d)) as { source_url?: unknown };
+      if (typeof body.source_url !== 'string' || !body.source_url) return json(res, 400, { error: { code: 'bad_source_url', message: 'source_url 必填' } });
+      try {
+        const asset = await d.media.importFromUrl({ sourceUrl: body.source_url, operationId: `import:${opKey}`, createdBy: 'qiaosheng' });
+        return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state });
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+    const assetGet = /^GET \/api\/v1\/assets\/([^/]+)$/.exec(route);
+    if (assetGet) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      try {
+        const a = d.media.getAsset(decodeURIComponent(assetGet[1]!));
+        return json(res, 200, { ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content` }); // 相对地址；不返回存储绝对路径/源站凭据
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+    const assetContent = /^GET \/api\/v1\/assets\/([^/]+)\/content$/.exec(route);
+    if (assetContent) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const id = decodeURIComponent(assetContent[1]!);
+      try {
+        const { bytes, mime } = d.media.readContent(id);
+        const range = String(req.headers.range ?? '');
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+        // 语音播放所需的最小 Range 行为（§5.1）：单区间
+        if (m && (m[1] !== '' || m[2] !== '')) {
+          const start = m[1] === '' ? Math.max(0, bytes.length - Number(m[2] || 0)) : Number(m[1]);
+          const end = m[2] === '' ? bytes.length - 1 : Math.min(bytes.length - 1, Number(m[2]));
+          if (start > end || start >= bytes.length) return json(res, 416, { error: { code: 'range_not_satisfiable', message: '区间越界' } });
+          const slice = bytes.subarray(start, end + 1);
+          res.writeHead(206, { 'Content-Type': mime, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' });
+          res.end(slice);
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff' });
+        res.end(bytes);
+        return;
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+    const refPost = /^POST \/api\/v1\/assets\/([^/]+)\/references$/.exec(route);
+    if (refPost) {
+      // §03.10.2：受控服务接口——调用方身份由宿主配置映射，不接受浏览器自报 owner_service 扩权
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const opKey = String(req.headers['idempotency-key'] ?? '');
+      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+      const body = (await readJson(req, d)) as { owner_service?: unknown; owner_type?: unknown; owner_id?: unknown; owner_revision?: unknown };
+      // 允许的内容域（WP5 接线前静态注册；浏览器可用但仅限登记引用，不构成授权扩面）
+      const ALLOWED_OWNERS: Record<string, string[]> = { content: ['album_entry', 'post', 'creation', 'future_note'] };
+      const os = String(body.owner_service ?? '');
+      const ot = String(body.owner_type ?? '');
+      if (!(os in ALLOWED_OWNERS) || !ALLOWED_OWNERS[os]!.includes(ot)) return json(res, 403, { error: { code: 'owner_not_allowed', message: '不允许的引用域' } });
+      if (typeof body.owner_id !== 'string' || !body.owner_id) return json(res, 400, { error: { code: 'bad_owner_id', message: 'owner_id 必填' } });
+      try {
+        const r = d.media.registerReference({ assetId: decodeURIComponent(refPost[1]!), ownerService: os, ownerType: ot, ownerId: body.owner_id, ownerRevision: typeof body.owner_revision === 'number' ? body.owner_revision : null, operationId: `ref:${opKey}` });
+        return json(res, 201, { reference_id: r.referenceId, revision: r.revision, state: r.state });
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+    const refDelete = /^DELETE \/api\/v1\/assets\/([^/]+)\/references\/([^/]+)$/.exec(route);
+    if (refDelete) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const opKey = String(req.headers['idempotency-key'] ?? '');
+      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+      const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
+      if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '解除引用必须带 If-Match: "<revision>"（请刷新后重试）' } });
+      try {
+        const r = d.media.releaseReference({ referenceId: decodeURIComponent(refDelete[2]!), expectedRevision: Number(ifMatch), operationId: `unref:${opKey}` });
+        return json(res, 200, { reference_id: r.referenceId, revision: r.revision, state: r.state });
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+
     // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
     if (route === 'POST /api/v1/token-estimates') {
       const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);
@@ -755,6 +886,18 @@ class ClientBodyError extends Error {
     this.status = status;
     this.code = code;
   }
+}
+
+/** §03.5.1：二进制上传不走 readJson——流式限量读原始字节。 */
+async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > maxBytes) throw new MediaError('ASSET_TOO_LARGE', 413, `超过上限 ${maxBytes} 字节`);
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(req: IncomingMessage, d: RequestDeps, maxBytes = 5 * 1024 * 1024): Promise<unknown> {

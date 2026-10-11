@@ -5,7 +5,8 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
-import { isBlankContent, normalizeNewlines, type MessageDto, type MessageKind } from '../../../../packages/contracts/src/api.ts';
+import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind } from '../../../../packages/contracts/src/api.ts';
+import { sha256Hex as sha256HexOf } from '../util/id.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
 
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
@@ -39,10 +40,23 @@ export class MessageService {
     clientMessageId: string;
     occurredAt?: string | null;
     kind?: MessageKind;
+    attachments?: MessageAttachmentInput[]; // EXEC_V1 §03.5.2：先经 http 层 validateForSend，此处只固定绑定
     tokenEstimateJson?: string | null; // EXEC_V1 §05.7.2：发送前估计快照（调用方算好；与 content_hash 无关）
   }): SubmitWithTurnResult {
     const content = normalizeNewlines(opts.content);
-    if (isBlankContent(content)) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
+    const attachments = opts.attachments ?? [];
+    // §03.3/5.2：空正文仅在至少一个有效附件时允许；§3.2 语音不与其他附件混合
+    if (isBlankContent(content) && attachments.length === 0) throw new BlankMessageError('正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）');
+    if (attachments.some((a) => a.presentation === 'voice') && attachments.length > 1) throw new Error('ATTACHMENT_MIX_INVALID: 语音消息不能与其他附件混合');
+    // kind 推导（§3.2）：voice/sticker 看附件；图片消息仍 kind=text（是否含图以附件 DTO 为准）
+    const derivedKind: MessageKind = attachments.length === 0 ? (opts.kind ?? 'text')
+      : attachments[0]!.presentation === 'voice' ? 'voice'
+        : attachments[0]!.presentation === 'sticker' ? 'sticker'
+          : 'text';
+    if (opts.kind !== undefined && opts.kind !== derivedKind && !(opts.kind === 'text' && derivedKind === 'text')) {
+      throw new Error(`KIND_MISMATCH: 声明 kind=${opts.kind} 与附件组合推导 ${derivedKind} 不一致`);
+    }
+    const fingerprint = messageFingerprint(content, attachments);
     this.ensureConversation(opts.conversationId);
     const nowIso = new Date().toISOString();
     // F14：occurred_at 必须是逐项日历校验通过的带时区 ISO 8601 绝对时间字符串或 null
@@ -101,8 +115,14 @@ export class MessageService {
           `INSERT INTO messages(id, conversation_id, sequence, speaker, kind, client_message_id, current_revision, published_at, created_at)
            VALUES (?,?,?,?,?,?,1,?,?)`,
         )
-        .run(messageId, opts.conversationId, seqRow.next, 'owner', opts.kind ?? 'text', opts.clientMessageId, occurredAt, nowIso);
-      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content, occurredAt, receivedAt: nowIso, source: 'client_submit', tokenEstimateJson: opts.tokenEstimateJson ?? null });
+        .run(messageId, opts.conversationId, seqRow.next, 'owner', derivedKind, opts.clientMessageId, occurredAt, nowIso);
+      this.insertRevision({ messageId, revision: 1, kind: derivedKind, content, occurredAt, receivedAt: nowIso, source: 'client_submit', tokenEstimateJson: opts.tokenEstimateJson ?? null, fingerprint });
+      for (let i = 0; i < attachments.length; i++) {
+        this.db.prepare(
+          `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
+           VALUES (?,?,?,?,?,?,NULL,NULL,?)`,
+        ).run(messageId, 1, i, attachments[i]!.asset_id, attachments[i]!.presentation, attachments[i]!.caption ?? null, nowIso);
+      }
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
       const turnId = genId('turn');
       const attemptId = genId('att');
@@ -125,6 +145,9 @@ export class MessageService {
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
       const nextRev = msg.current_revision + 1;
+      // §3.3：文字编辑沿用原附件——同一套绑定复制到新修订；旧修订附件引用原样保留
+      const oldAttachments = this.db.prepare('SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, msg.current_revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;
+      const fingerprint = messageFingerprint(content, oldAttachments.map((a) => ({ asset_id: a.asset_id, presentation: a.presentation as MessageAttachmentInput['presentation'] })));
       this.insertRevision({
         messageId,
         revision: nextRev,
@@ -135,7 +158,14 @@ export class MessageService {
         source: 'client_edit',
         supersedes: msg.current_revision,
         tokenEstimateJson: tokenEstimateJson ?? null, // 编辑=新 revision+新快照；旧修订旧快照不动
+        fingerprint,
       });
+      for (let i = 0; i < oldAttachments.length; i++) {
+        this.db.prepare(
+          `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
+           SELECT message_id, ?, position, asset_id, presentation, caption, derived_text, derived_source, ? FROM message_attachments WHERE message_id = ? AND revision = ? AND position = ?`,
+        ).run(nextRev, nowIso, messageId, msg.current_revision, i);
+      }
       this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
       this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
     });
@@ -198,13 +228,14 @@ export class MessageService {
     source: string;
     supersedes?: number | null;
     tokenEstimateJson?: string | null;
+    fingerprint?: string | null;
   }): void {
     this.db
       .prepare(
-        `INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, supersedes_revision, occurred_at, received_at, source, token_estimate_json)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        `INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, supersedes_revision, occurred_at, received_at, source, token_estimate_json, message_fingerprint)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
-      .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source, opts.tokenEstimateJson ?? null);
+      .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source, opts.tokenEstimateJson ?? null, opts.fingerprint ?? null);
   }
 
   getMessage(messageId: string): MessageDto | null {
@@ -216,7 +247,7 @@ export class MessageService {
          WHERE m.id = ?`,
       )
       .get(messageId) as MessageRow | undefined;
-    return row ? rowToDto(row) : null;
+    return row ? rowToDto(row, attachmentsFor(this.db, row.id, row.revision)) : null;
   }
 
   listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number; latest?: boolean }): MessageDto[] {
@@ -234,7 +265,7 @@ export class MessageService {
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, limit) as MessageRow[];
-      return rows.reverse().map(rowToDto);
+      return rows.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
     }
     // F-J-48（联合审计 2026-10-06）：beforeSequence=反向翻页（历史"加载更早"）——
     // 取 sequence < before 的最新 limit 条后翻回升序，与 after 语义对偶
@@ -248,7 +279,7 @@ export class MessageService {
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, opts.beforeSequence, limit) as MessageRow[];
-      return older.reverse().map(rowToDto);
+      return older.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
     }
     const rows = this.db
       .prepare(
@@ -259,7 +290,7 @@ export class MessageService {
          ORDER BY m.sequence LIMIT ?`,
       )
       .all(opts.conversationId, opts.afterSequence ?? 0, limit) as MessageRow[];
-    return rows.map(rowToDto);
+    return rows.map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
   }
 
   currentRevisionHash(messageId: string): string | null {
@@ -288,7 +319,8 @@ type MessageRow = {
   token_estimate_json: string | null;
 };
 
-function rowToDto(r: MessageRow): MessageDto {
+type AttachmentRow = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
+function rowToDto(r: MessageRow, attachments: AttachmentRow[] = []): MessageDto {
   return {
     id: r.id,
     conversation_id: r.conversation_id,
@@ -308,7 +340,17 @@ function rowToDto(r: MessageRow): MessageDto {
       received_at: r.received_at,
       supersedes_revision: r.supersedes_revision,
       token_estimate: r.token_estimate_json ? (JSON.parse(r.token_estimate_json) as MessageDto['revision']['token_estimate']) : null,
-      attachments: [], // WP3 媒体底座接入前恒空
+      attachments: attachments.map((a) => ({ asset_id: a.asset_id, presentation: a.presentation as MessageAttachmentInput['presentation'], caption: a.caption, derived_text: a.derived_text, derived_source: a.derived_source })),
     },
   };
+}
+
+/** §03.5.2：附件按该 revision 的绑定取——不以当前附件冒充旧版本。 */
+function attachmentsFor(db: import('../db/connection.ts').Db, messageId: string, revision: number): AttachmentRow[] {
+  return db.prepare('SELECT asset_id, presentation, caption, derived_text, derived_source FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, revision) as AttachmentRow[];
+}
+
+function messageFingerprint(content: string, attachments: Array<{ asset_id: string; presentation: string }>): string {
+  // §03.4.2：规范化正文+有序附件引用的本地指纹——与 content_hash 分离（Mariposa 合同不变）
+  return sha256HexOf(`${content}\u0000${attachments.map((a) => `${a.asset_id}:${a.presentation}`).join('|')}`);
 }
