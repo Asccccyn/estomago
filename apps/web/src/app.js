@@ -17,7 +17,10 @@ const state = {
   booting: false,
   authRedirecting: false,
   composing: false,
-  // F13：未完成发送的单一真源 { requestId, draft, frozenRev }（同 key 重试；成功回执只清自己的）
+  sending: false,
+  pinnedToBottom: true,
+  loadingEarlier: false,
+  // F13：冻结正文、附件和完整 body；同 key 重试复用原载荷，回执只清自己的。
   pendingSend: null,
   draftRevision: 0,          // AUD-17：每次用户输入 +1；发送时冻结
   pendingRouteEdit: null,     // { decisionId, messageId, original }
@@ -34,6 +37,9 @@ const state = {
   // EXEC_V1 §03.5.3：待发附件队列（上传成功才有 asset_id；失败保留可重试，不产生半条消息）
   attachments: [], // Array<{asset_id, presentation:'image', caption:null, name, status}>
 };
+
+const timelineContent = () => $('timeline-content') || $('timeline');
+const readyAttachments = () => state.attachments.filter((a) => a.status === 'ready' && a.asset_id);
 
 // —— 认证 ——
 function redirectToLogin() {
@@ -61,17 +67,23 @@ async function loadEarlier() {
   if (seqs.length === 0) return;
   const oldest = Math.min(...seqs);
   const timeline = $('timeline');
-  const anchorHeights = [document.documentElement.scrollHeight, timeline.scrollHeight];
   const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=200&before=${oldest}`, { credentials: 'same-origin' });
   if (res.status === 401) { redirectToLogin(); return; }
   if (!res.ok) return;
   const data = await res.json();
   const older = data.messages ?? [];
-  const hadScrollbar = window.scrollY > 0;
+  const oldHeight = timeline.scrollHeight;
+  const oldTop = timeline.scrollTop;
+  state.loadingEarlier = true;
+  state.pinnedToBottom = false;
   for (const m of older) absorbMessage(m);
-  if (hadScrollbar || anchorHeights[1] !== timeline.scrollHeight) {
-    window.scrollTo(0, Math.max(0, document.documentElement.scrollHeight - anchorHeights[0] + window.scrollY));
+  // 服务端历史页按 sequence 排序；旧 turn 需移到当前页之前，不能追加到末尾。
+  const content = timelineContent();
+  if (content.children) {
+    [...content.children].sort((a, b) => Number(a.dataset.sequence ?? Infinity) - Number(b.dataset.sequence ?? Infinity)).forEach((el) => content.appendChild(el));
   }
+  timeline.scrollTop = oldTop + timeline.scrollHeight - oldHeight;
+  state.loadingEarlier = false;
   if (older.length < 200) { const btn = $('load-earlier-btn'); if (btn) btn.hidden = true; }
 }
 $('retry-connection-btn').onclick = () => void boot();
@@ -80,24 +92,29 @@ $('retry-connection-btn').onclick = () => void boot();
 const composer = $('composer');
 composer.addEventListener('compositionstart', () => { state.composing = true; refreshSendButton(); });
 composer.addEventListener('compositionend', () => { state.composing = false; refreshSendButton(); });
-composer.addEventListener('input', () => { state.draftRevision = draftGuard.touch(); refreshSendButton(); scheduleEstimate(); });
+composer.addEventListener('input', () => { state.draftRevision = draftGuard.touch(); resizeComposer(); refreshSendButton(); scheduleEstimate(); });
 void shouldSendOnKeydown; // 无任何按键发送路径（规则单一事实源在 composer-logic.js）
 
 function refreshSendButton() {
   const editing = Boolean(state.pendingRouteEdit);
-  $('send-btn').textContent = editing ? '重新发送（修订）' : '发送';
+  const label = state.sending ? '正在发送' : editing ? '重新发送（修订）' : state.pendingSend ? '重试发送' : '发送';
+  $('send-btn').setAttribute('aria-label', label);
+  $('send-btn').title = label;
   // 输入硬规则：IME 合成期不得发送；有失败待重试的发送时按钮保持可点（重试入口不能死）
-  $('send-btn').disabled = state.composing || !(canSend(composer.value, { composing: false }) || Boolean(state.pendingSend));
+  $('send-btn').disabled = state.composing || state.sending || voiceInput.starting || Boolean(voiceInput.recorder) || !(canSend(composer.value, { composing: false, hasAttachment: !editing && readyAttachments().length > 0 }) || Boolean(state.pendingSend));
 }
 $('send-btn').addEventListener('click', () => void send());
 
 async function send() {
   // 输入硬规则第一条：IME 合成期（composing=true）不发送——对普通发送/修订/pending 重试统一生效，
   // 候选确认不能变成发送；重试路径不得覆盖该边界
-  if (state.composing) return;
+  if (state.composing || state.sending || voiceInput.starting || voiceInput.recorder) return;
   // F13：composer 为空但存在失败待重试的发送 → 按原内容同幂等键重试；composer 有新内容则发新请求（旧失败项作废）
   const retryPending = Boolean(state.pendingSend) && (composer.value === '' || composer.value === state.pendingSend.draft);
-  if (!canSend(composer.value, { composing: false }) && !retryPending) return;
+  if (!canSend(composer.value, { composing: false, hasAttachment: !state.pendingRouteEdit && readyAttachments().length > 0 }) && !retryPending) return;
+  state.sending = true;
+  scrollBottom(true);
+  refreshSendButton();
   // 路由编辑流（AUD-07）：走真修订端点，原消息 revision+1
   if (state.pendingRouteEdit) {
     const { decisionId } = state.pendingRouteEdit;
@@ -119,23 +136,33 @@ async function send() {
       }
       refreshSendButton();
       composer.focus();
-    } catch (err) {
-      console.warn('route edit 发送失败，将重试', err);
+    } catch {
+      setRoomBadge('修订发送失败，正文已保留，请重试');
+    } finally {
+      state.sending = false;
+      resizeComposer();
+      refreshSendButton();
     }
     return;
   }
   const thisRequestId = retryPending ? state.pendingSend.requestId : newClientMessageId();
   const thisDraft = retryPending ? state.pendingSend.draft : composer.value;
   // F13：pending 携带自己的守卫冻结值——旧回执只允许按"它那次"的修订判断清空，绝不触碰新草稿
-  state.pendingSend = { requestId: thisRequestId, draft: thisDraft, frozenRev: retryPending ? state.pendingSend.frozenRev : draftGuard.freeze() };
-  const draft = buildOutgoingDraft(thisDraft, thisRequestId);
-  // EXEC_V1 §03.5.3：附件随发送提交（只带已就绪 asset；上传中/失败的保留在队列不清）
-  const readyAtts = state.attachments.filter((a) => a.status === 'ready' && a.asset_id).map((a) => ({ asset_id: a.asset_id, presentation: a.presentation }));
-  const body = readyAtts.length > 0 ? { ...draft, attachments: readyAtts } : draft;
+  if (!retryPending) {
+    const draft = buildOutgoingDraft(thisDraft, thisRequestId);
+    const sentEntries = readyAttachments().slice();
+    const attachments = sentEntries.map((a) => ({ asset_id: a.asset_id, presentation: a.presentation, ...(a.caption != null ? { caption: a.caption } : {}) }));
+    // Let the host derive voice/sticker kind from validated attachments.
+    if (attachments.length) delete draft.kind;
+    // 同幂等键重试必须复用完整载荷；网络失败后新加的附件不混进旧请求。
+    state.pendingSend = { requestId: thisRequestId, draft: thisDraft, frozenRev: draftGuard.freeze(), sentEntries, body: attachments.length ? { ...draft, attachments } : draft };
+  }
+  const submittedSend = state.pendingSend;
+  const body = submittedSend.body ?? buildOutgoingDraft(thisDraft, thisRequestId);
   try {
     const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': draft.client_message_id },
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': thisRequestId },
       credentials: 'same-origin', body: JSON.stringify(body),
     });
     if (res.status === 401) { redirectToLogin(); return; }
@@ -149,16 +176,21 @@ async function send() {
     if (settled && settled.requestId === thisRequestId && draftGuard.mayClear(settled.frozenRev) && composer.value === settled.draft) {
       composer.value = '';
       state.draftRevision = draftGuard.touch();
-      // 成功只清本次发送的就绪附件（上传中/失败项保留）
-      state.attachments = state.attachments.filter((a) => a.status !== 'ready');
-      renderAttachQueue();
     }
+    // 只清本次成功提交的队列项；新加、失败及上传中的条目一律保留。
+    const sentEntries = submittedSend.sentEntries ?? [];
+    state.attachments = state.attachments.filter((a) => !sentEntries.includes(a));
+    for (const a of sentEntries) if (a.previewUrl) URL.revokeObjectURL(a.previewUrl);
+    renderAttachQueue();
     refreshSendButton();
     composer.focus();
     void loadRuntimeSettings();
-  } catch (err) {
+  } catch {
     // F13：失败保留 pending（同幂等键同内容可重试），按钮保持可点
-    console.warn('发送失败，保留待重试（同幂等键）', err);
+    setRoomBadge('发送失败，文字与附件已保留，点发送重试');
+  } finally {
+    state.sending = false;
+    resizeComposer();
     refreshSendButton();
   }
 }
@@ -169,7 +201,7 @@ function ensureTurnState(turnId) {
   if (!ts) {
     const element = document.createElement('div');
     element.className = 'turn';
-    $('timeline').appendChild(element); // 立即挂载，绝不 detached
+    timelineContent().appendChild(element); // 立即挂载，绝不 detached
     ts = { element, reasoningPanel: null, reasoningBody: null, dirty: false, inflight: false, usageEl: null, lastAttemptId: null };
     state.turns.set(turnId, ts);
   }
@@ -185,12 +217,14 @@ function absorbMessage(dto, { update = false } = {}) {
 }
 
 function renderMessage(dto, { update = false } = {}) {
-  const ts = dto.turn_id ? ensureTurnState(dto.turn_id) : { element: $('timeline') };
+  const ts = dto.turn_id ? ensureTurnState(dto.turn_id) : { element: timelineContent() };
+  if (dto.turn_id && typeof dto.sequence === 'number') ts.element.dataset.sequence = String(Math.min(Number(ts.element.dataset.sequence ?? Infinity), dto.sequence));
   let bubble = ts.element.querySelector(`[data-message-id="${dto.id}"]`);
   if (!bubble) {
     bubble = document.createElement('div');
     bubble.className = `bubble ${dto.speaker}`;
     bubble.dataset.messageId = dto.id;
+    if (typeof dto.sequence === 'number') bubble.dataset.sequence = String(dto.sequence);
     ts.element.appendChild(bubble);
   }
   bubble.innerHTML = '';
@@ -200,9 +234,13 @@ function renderMessage(dto, { update = false } = {}) {
   bubble.appendChild(body);
   const meta = document.createElement('div');
   meta.className = 'meta';
-  meta.textContent = new Date(dto.revision.occurred_at).toLocaleString();
+  meta.textContent = new Date(dto.revision.occurred_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  meta.title = new Date(dto.revision.occurred_at).toLocaleString();
+  meta.setAttribute('aria-label', meta.title);
   if (dto.revision.revision > 1) meta.textContent += ` · 修订 ${dto.revision.revision}`;
-  bubble.appendChild(meta);
+  const actions = document.createElement('div');
+  actions.className = 'message-actions';
+  actions.appendChild(meta);
   // EXEC_V1 §05.7：气泡层 token 标注——owner=发送时快照（旧消息无快照不伪造）；
   // assistant=可见文字本地粗估。整轮实际用量只在轮汇总出现一次（renderUsage），不摊进气泡。
   let estimateText = '';
@@ -215,8 +253,11 @@ function renderMessage(dto, { update = false } = {}) {
   if (estimateText) {
     const est = document.createElement('div');
     est.className = 'bubble-estimate';
-    est.textContent = estimateText;
-    bubble.appendChild(est);
+    const estimate = dto.speaker === 'owner' ? dto.revision.token_estimate?.message_text_tokens : Math.ceil([...dto.revision.content].length / state.estimate.charsPerToken);
+    est.textContent = `约 ${fmtNum(estimate)}`;
+    est.title = estimateText;
+    est.setAttribute('aria-label', estimateText);
+    actions.appendChild(est);
   }
   // EXEC_V1 §03.5.3：附件渲染——img/audio 明确元素（不 innerHTML）；重进页面从数据库附件重建，
   // 不依赖此前 Blob URL；取不到如实"附件暂不可用"
@@ -228,17 +269,40 @@ function renderMessage(dto, { update = false } = {}) {
       const url = `/api/v1/assets/${encodeURIComponent(a.asset_id)}/content`;
       if (a.presentation === 'voice') {
         const au = document.createElement('audio');
-        au.controls = true;
+        au.hidden = true;
         au.preload = 'metadata';
         au.src = url;
-        au.onerror = () => { au.remove(); const f = document.createElement('div'); f.className = 'unavailable'; f.textContent = '语音附件暂不可用'; wrap.appendChild(f); };
+        const player = document.createElement('button');
+        player.type = 'button'; player.className = 'voice-player'; player.setAttribute('aria-label', '播放语音');
+        const playIcon = document.createElement('span'); playIcon.className = 'voice-play-icon'; playIcon.textContent = '▶';
+        const wave = document.createElement('span'); wave.className = 'voice-wave'; wave.setAttribute('aria-hidden', 'true');
+        for (const height of [6, 12, 18, 10, 16, 8, 14, 20, 12, 16, 8, 5]) {
+          const bar = document.createElement('span'); bar.style.height = `${height}px`; wave.appendChild(bar);
+        }
+        const duration = document.createElement('span'); duration.className = 'voice-duration'; duration.textContent = '语音';
+        player.appendChild(playIcon); player.appendChild(wave); player.appendChild(duration);
+        const updateAudio = () => {
+          const playing = !au.paused && !au.ended;
+          playIcon.textContent = playing ? 'Ⅱ' : '▶'; player.setAttribute('aria-label', playing ? '暂停语音' : '播放语音');
+          const total = Number.isFinite(au.duration) ? au.duration : null;
+          duration.textContent = total == null ? '语音' : `${Math.ceil(playing ? au.currentTime : total)}″`;
+          if (total) [...wave.children].forEach((bar, i) => { bar.style.background = i / wave.children.length < au.currentTime / total ? '#6c6656' : ''; });
+        };
+        au.onloadedmetadata = updateAudio; au.ontimeupdate = updateAudio; au.onplay = updateAudio; au.onpause = updateAudio; au.onended = updateAudio;
+        player.onclick = async () => {
+          if (!au.paused) au.pause();
+          else { try { await au.play(); } catch { duration.textContent = '暂不能播放'; } }
+        };
+        au.onerror = () => { player.disabled = true; duration.textContent = '语音暂不可用'; player.setAttribute('aria-label', '语音附件暂不可用'); };
         wrap.appendChild(au);
-        if (a.derived_text) { const t = document.createElement('div'); t.className = 'bubble-estimate'; t.textContent = `转写（来源：${a.derived_source ?? 'unspecified'}，派生文字）：${a.derived_text}`; wrap.appendChild(t); }
+        wrap.appendChild(player);
+        if (a.derived_text) { const t = document.createElement('div'); t.className = 'voice-transcript'; t.title = '语音转写'; t.textContent = a.derived_text; wrap.appendChild(t); }
       } else {
         const img = document.createElement('img');
         img.alt = a.caption ?? '附件图片';
         img.loading = 'lazy';
         img.src = url;
+        img.addEventListener('load', () => scrollBottom());
         img.onerror = () => { img.remove(); const f = document.createElement('div'); f.className = 'unavailable'; f.textContent = '附件暂不可用'; wrap.appendChild(f); };
         wrap.appendChild(img);
       }
@@ -261,10 +325,30 @@ function renderMessage(dto, { update = false } = {}) {
     };
     bubble.insertBefore(cb, bubble.firstChild);
   }
+  if (dto.speaker === 'owner' || dto.speaker === 'assistant') {
+    const copyBtn = messageAction('copy', '复制正文', 'copy-btn');
+    copyBtn.onclick = async () => {
+      try {
+        if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) throw new Error('clipboard unavailable');
+        await navigator.clipboard.writeText(dto.revision.content ?? '');
+        copyBtn.title = '已复制';
+        copyBtn.setAttribute('aria-label', '已复制');
+      } catch { setRoomBadge('复制不可用，请长按消息正文复制'); }
+    };
+    actions.appendChild(copyBtn);
+    const selectBtn = messageAction('select', '选入换窗历史', 'select-message-btn');
+    selectBtn.setAttribute('aria-pressed', String(selection.ids.has(dto.id)));
+    selectBtn.onclick = () => {
+      if (!selection.active) toggleSelection();
+      selection.ids.add(dto.id);
+      rerenderSelection();
+    };
+    actions.appendChild(selectBtn);
+  }
   if (dto.speaker === 'owner') {
     const editBtn = document.createElement('button');
-    editBtn.className = 'edit-btn';
-    editBtn.textContent = '编辑';
+    editBtn.className = 'edit-btn message-action';
+    setActionIcon(editBtn, 'edit', '编辑');
     editBtn.onclick = async () => {
       const next = window.prompt('修改这条消息（整体多行正文，保存后形成新修订）', dto.revision.content);
       if (next === null || next === dto.revision.content) return;
@@ -275,8 +359,9 @@ function renderMessage(dto, { update = false } = {}) {
       else if (res.status === 428 || res.status === 409) { const e = await res.json().catch(() => ({})); window.alert(`${e?.error?.message ?? '版本已变化'}——请刷新后重新编辑`); }
       else { const e = await res.json().catch(() => ({})); window.alert(`编辑失败：${e?.error?.message ?? res.status}`); }
     };
-    bubble.appendChild(editBtn);
+    actions.appendChild(editBtn);
   }
+  bubble.appendChild(actions);
   scrollBottom();
 }
 
@@ -740,25 +825,127 @@ async function boot() {
   }
 }
 
-function scrollBottom() {
+function scrollBottom(force = false) {
   const timeline = $('timeline');
+  if (!timeline || state.loadingEarlier) return;
+  if (force) state.pinnedToBottom = true;
+  if (!state.pinnedToBottom) return;
   timeline.scrollTop = timeline.scrollHeight;
 }
+
+function resizeComposer() {
+  if (!composer.style || typeof composer.scrollHeight !== 'number') return;
+  const viewportHeight = typeof window !== 'undefined' ? (window.visualViewport?.height ?? window.innerHeight ?? 512) : 512;
+  const cap = Math.max(42, Math.min(128, viewportHeight * 0.25));
+  composer.style.height = 'auto';
+  composer.style.height = `${Math.min(cap, Math.max(42, composer.scrollHeight))}px`;
+  composer.style.overflowY = composer.scrollHeight > cap ? 'auto' : 'hidden';
+}
+
+function installViewportHandling() {
+  if (typeof window === 'undefined') return;
+  const timeline = $('timeline');
+  let previousHeight = timeline?.clientHeight;
+  let previousContentHeight = timeline?.scrollHeight;
+  const preserveScroll = () => {
+    scrollBottom();
+    previousHeight = timeline?.clientHeight;
+    previousContentHeight = timeline?.scrollHeight;
+  };
+  timeline?.addEventListener('scroll', () => {
+    if (timeline.clientHeight !== previousHeight || timeline.scrollHeight !== previousContentHeight) { preserveScroll(); return; }
+    if (!state.loadingEarlier) state.pinnedToBottom = timeline.scrollHeight - timeline.scrollTop - timeline.clientHeight < 48;
+  }, { passive: true });
+  timeline?.addEventListener('wheel', (event) => { if (event.deltaY < 0) state.pinnedToBottom = false; }, { passive: true });
+  let touchY = null;
+  timeline?.addEventListener('touchstart', (event) => { touchY = event.touches[0]?.clientY ?? null; }, { passive: true });
+  timeline?.addEventListener('touchmove', (event) => {
+    const y = event.touches[0]?.clientY;
+    if (touchY != null && y > touchY + 2) state.pinnedToBottom = false;
+    touchY = y ?? touchY;
+  }, { passive: true });
+  const updateViewport = () => {
+    const viewport = window.visualViewport;
+    // 缩放时保留浏览器的自然行为，避免缩放被错误识别成键盘。
+    if (viewport && viewport.scale != null && viewport.scale !== 1) return;
+    const height = viewport?.height ?? window.innerHeight;
+    document.documentElement?.style?.setProperty?.('--app-height', `${height}px`);
+    document.documentElement?.style?.setProperty?.('--app-offset-top', `${viewport?.offsetTop ?? 0}px`);
+    const shell = $('app-shell');
+    if (shell?.dataset) shell.dataset.keyboard = String(Boolean(viewport && window.innerHeight - viewport.height > 120 && document.activeElement === composer));
+    resizeComposer();
+    preserveScroll();
+  };
+  window.addEventListener?.('resize', updateViewport, { passive: true });
+  window.visualViewport?.addEventListener('resize', updateViewport, { passive: true });
+  window.visualViewport?.addEventListener('scroll', updateViewport, { passive: true });
+  composer.addEventListener('focus', updateViewport);
+  composer.addEventListener('blur', updateViewport);
+  if (typeof ResizeObserver !== 'undefined') {
+    const observer = new ResizeObserver(preserveScroll);
+    if (timeline) observer.observe(timeline);
+    if (timelineContent()) observer.observe(timelineContent());
+  }
+  updateViewport();
+  resizeComposer();
+}
+
+// 仅使用本地固定图标路径；消息、模型名称等外部文本不得进入 SVG markup。
+function setActionIcon(button, icon, label) {
+  const paths = {
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/>',
+    select: '<path d="m3 6 2 2 3-3m-5 11 2 2 3-3M12 6h9M12 12h9M12 18h9"/>',
+    edit: '<path d="m16 3 5 5-12 12-6 1 1-6L16 3Z"/><path d="m13 6 5 5"/>',
+  };
+  button.type = 'button';
+  button.title = label;
+  button.setAttribute('aria-label', label);
+  button.innerHTML = `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[icon] ?? ''}</svg>`;
+}
+function messageAction(icon, label, className) {
+  const button = document.createElement('button');
+  button.className = `message-action ${className}`;
+  setActionIcon(button, icon, label);
+  return button;
+}
 // —— 2026-10-08 她裁定：聊天窗内置换模型/思考深度（UI 美化她统一后改） ——
-const runtimeBar = { el: null, modelInput: null, effortSel: null, note: null, loaded: false };
+const runtimeBar = { el: null, modelInput: null, modelApply: null, effortSel: null, note: null, loaded: false, driver: null };
 
 async function loadRuntimeSettings() {
   try {
     const res = await fetch('/api/v1/runtime-settings', { credentials: 'same-origin' });
     if (!res.ok) return;
     const data = await res.json();
+    runtimeBar.driver = data.driver ?? null;
     ensureRuntimeBar(data);
+    const isOpenRouter = runtimeBar.driver === 'openrouter';
+    const driverLabel = { openrouter: 'OpenRouter', deepseek: 'DeepSeek 官方直连', 'claude-agent-sdk': 'Claude Agent SDK' }[runtimeBar.driver] ?? '模型通道未知';
+    if (runtimeBar.modelInput) runtimeBar.modelInput.disabled = !isOpenRouter;
+    if (runtimeBar.modelApply) runtimeBar.modelApply.disabled = !isOpenRouter;
+    if (runtimeBar.effortSel) runtimeBar.effortSel.disabled = !isOpenRouter;
+    let model = isOpenRouter ? data.or_model?.effective : null;
+    // runtime-settings 的 or_model 始终是 OR 配置，不能冒充其他驱动的实际模型。
+    if (!isOpenRouter) {
+      try {
+        const context = await fetch(`/api/v1/conversations/${CONVERSATION}/context-records`, { credentials: 'same-origin' });
+        if (context.status === 401) { redirectToLogin(); return; }
+        if (context.ok) { const snapshot = await context.json(); if (snapshot.driver === runtimeBar.driver) model = snapshot.exactModel ?? null; }
+      } catch { /* 没有实际型号证据时显示未知，不回落 OR 配置 */ }
+    }
+    const modelLabel = $('model-label');
+    if (modelLabel) modelLabel.textContent = isOpenRouter
+      ? [model ?? '模型未配置', data.reasoning_effort?.effective ?? data.reasoning_effort?.override].filter(Boolean).join(' · ')
+      : `${driverLabel} · ${model ?? '型号未知'}`;
+    if (runtimeBar.note) runtimeBar.note.textContent = isOpenRouter
+      ? '切模型→下一条消息等你选历史后换窗；切思考→立即生效不换窗'
+      : `当前使用${driverLabel}。这里的模型与思考设置仅适用于 OpenRouter。`;
     if (runtimeBar.modelInput) {
-      runtimeBar.modelInput.value = data.or_model?.override ?? '';
-      runtimeBar.modelInput.placeholder = data.or_model?.effective ? `当前：${data.or_model.effective}` : '未配置';
+      runtimeBar.modelInput.value = isOpenRouter ? data.or_model?.override ?? '' : model ?? '';
+      runtimeBar.modelInput.placeholder = model ? `当前：${model}` : '型号未知';
       const dl = document.getElementById('model-options');
       if (dl) {
-        for (const m of data.model_options || []) {
+        dl.innerHTML = '';
+        for (const m of isOpenRouter ? data.model_options || [] : []) {
           const opt = document.createElement('option');
           opt.value = m;
           dl.appendChild(opt);
@@ -767,15 +954,14 @@ async function loadRuntimeSettings() {
     }
     if (runtimeBar.effortSel) {
       runtimeBar.effortSel.innerHTML = '';
-      runtimeBar.effortSel.title = data.effort_options_verified === false ? '模型档位元数据暂不可达——清单未验证，个别档位可能被模型拒绝' : '按当前模型支持的档位生成';
-      for (const e of data.effort_options || ['default', 'low', 'medium', 'high', 'xhigh', 'max']) {
+      runtimeBar.effortSel.title = !isOpenRouter ? '由当前模型通道管理，不能通过 OpenRouter 设置修改' : data.effort_options_verified === false ? '模型档位元数据暂不可达——清单未验证，个别档位可能被模型拒绝' : '按当前模型支持的档位生成';
+      for (const e of isOpenRouter ? data.effort_options || ['default'] : ['default']) {
         const o = document.createElement('option');
         o.value = e;
-        o.textContent = e === 'default' ? '思考深度：默认' : `思考：${e}`;
+        o.textContent = !isOpenRouter ? '思考深度：由当前通道管理' : e === 'default' ? '思考深度：默认' : `思考：${e}`;
         runtimeBar.effortSel.appendChild(o);
       }
-      runtimeBar.effortSel.value = data.reasoning_effort?.override ?? 'default';
-      if (data.driver === 'deepseek') runtimeBar.effortSel.disabled = true; // DS 无 effort 参数
+      runtimeBar.effortSel.value = isOpenRouter ? data.reasoning_effort?.override ?? 'default' : 'default';
       void data.effort_options_verified;
     }
     runtimeBar.loaded = true;
@@ -788,45 +974,52 @@ function ensureRuntimeBar(data) {
   if (!timeline || !document.body) return;
   const bar = document.createElement('div');
   bar.id = 'runtime-settings-bar';
-  bar.style.cssText = 'display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid #2c3a4a;background:#101822;flex-wrap:wrap;font-size:13px;color:#8fa3b8';
+  bar.className = 'runtime-settings-bar';
   const label = document.createElement('span');
   label.textContent = '模型';
   runtimeBar.modelInput = document.createElement('input');
   runtimeBar.modelInput.setAttribute('list', 'model-options');
-  runtimeBar.modelInput.style.cssText = 'flex:1;min-width:180px;padding:4px 8px;background:#0b1118;border:1px solid #33465c;color:#dbe7f3;border-radius:6px';
+  runtimeBar.modelInput.className = 'runtime-model-input';
+  runtimeBar.modelInput.setAttribute('aria-label', '模型 ID');
   runtimeBar.modelInput.placeholder = data?.or_model?.effective ? `当前：${data.or_model.effective}（清空=回落默认）` : '模型 ID（清空=回落默认）';
   const dl = document.createElement('datalist');
   dl.id = 'model-options';
   runtimeBar.effortSel = document.createElement('select');
-  runtimeBar.effortSel.style.cssText = 'padding:4px 8px;background:#0b1118;border:1px solid #33465c;color:#dbe7f3;border-radius:6px';
+  runtimeBar.effortSel.className = 'runtime-effort-select';
+  runtimeBar.effortSel.setAttribute('aria-label', '思考深度');
   runtimeBar.note = document.createElement('span');
-  runtimeBar.note.style.cssText = 'color:#6d8299';
+  runtimeBar.note.className = 'runtime-note';
   runtimeBar.note.textContent = '切模型→下一条消息等你选历史后换窗；切思考→立即生效不换窗';
   const modelBtn = document.createElement('button');
+  runtimeBar.modelApply = modelBtn;
   modelBtn.textContent = '换模型';
-  modelBtn.style.cssText = 'padding:4px 12px;border-radius:6px;border:1px solid #33465c;background:#182435;color:#dbe7f3';
+  modelBtn.className = 'runtime-apply';
   modelBtn.onclick = async () => {
+    if (runtimeBar.driver !== 'openrouter') return;
     const v = (runtimeBar.modelInput.value || '').trim();
     if (v && !window.confirm(`切换到 ${v}？运行边界变化——下一条消息会等你选历史后开新窗。`)) return;
     const res = await fetch('/api/v1/runtime-settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
       body: JSON.stringify({ or_model: v || null }),
     });
-    if (res.ok) { const d = await res.json(); window.alert(`模型已设：${d.or_model.effective ?? '（回落默认）'}`); loadRuntimeSettings(); }
+    if (res.ok) { const d = await res.json(); state.estimate.modelSnapshotId = null; state.estimate.inFlight = null; window.alert(`模型已设：${d.or_model.effective ?? '（回落默认）'}`); await loadRuntimeSettings(); scheduleEstimate(); }
     else { const e = await res.json().catch(() => ({})); window.alert(`设置失败：${e?.error?.message ?? res.status}`); }
   };
   runtimeBar.effortSel.onchange = async () => {
+    if (runtimeBar.driver !== 'openrouter') return;
     const v = runtimeBar.effortSel.value;
     const res = await fetch('/api/v1/runtime-settings', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
       body: JSON.stringify({ reasoning_effort: v }),
     });
-    if (!res.ok) { const e = await res.json().catch(() => ({})); window.alert(`设置失败：${e?.error?.message ?? res.status}`); loadRuntimeSettings(); }
+    if (!res.ok) { const e = await res.json().catch(() => ({})); window.alert(`设置失败：${e?.error?.message ?? res.status}`); }
+    void loadRuntimeSettings();
   };
   bar.appendChild(label); bar.appendChild(runtimeBar.modelInput); bar.appendChild(dl); bar.appendChild(modelBtn);
   bar.appendChild(runtimeBar.effortSel); bar.appendChild(runtimeBar.note);
-  const host = timeline.parentNode ?? document.body;
-  host.insertBefore(bar, timeline);
+  const settingsHost = $('runtime-settings-host');
+  if (settingsHost) settingsHost.appendChild(bar);
+  else { const host = timeline.parentNode ?? document.body; host.insertBefore(bar, timeline); }
   runtimeBar.el = bar;
 }
 
@@ -875,6 +1068,7 @@ function ensureSelectionBar() {
   bar.id = 'selection-bar';
   selectionBar.toggle = mkSelBtn('选历史', toggleSelection);
   selectionBar.info = document.createElement('span');
+  selectionBar.info.className = 'selection-info';
   selectionBar.preview = mkSelBtn('预览', previewSelection);
   selectionBar.confirm = mkSelBtn('确认换窗', () => confirmSelection(false));
   selectionBar.empty = mkSelBtn('不带历史（明确空选）', () => { if (window.confirm('确认新窗不带任何历史？（明确空选是你本人的显式选择）')) confirmSelection(true); });
@@ -886,7 +1080,7 @@ function ensureSelectionBar() {
   bar.appendChild(selectionBar.empty);
   bar.appendChild(selectionBar.clear);
   // 挂载：body 可用则挂 body；否则（无 DOM 宿主）本模块整体保持惰性
-  const host = document.body || document.getElementById('timeline');
+  const host = $('selection-host') || $('chat') || document.body || document.getElementById('timeline');
   if (host && typeof host.appendChild === 'function') host.appendChild(bar);
   else return null;
   selectionBar.el = bar;
@@ -913,6 +1107,7 @@ function rerenderSelection() {
 function updateSelectionBar() {
   if (!selectionBar.el) return;
   const on = selection.active;
+  selectionBar.el.hidden = !on;
   selectionBar.toggle.textContent = on ? '退出选择' : '选历史';
   selectionBar.preview.hidden = !on;
   selectionBar.confirm.hidden = !on;
@@ -1053,19 +1248,22 @@ async function refreshEstimate() {
   const content = composer.value;
   const line = $('estimate-line');
   if (!line) return;
-  if (!content.trim()) { line.textContent = ''; const det = $('estimate-detail'); if (det) det.hidden = true; return; }
+  const attachments = readyAttachments().map((a) => ({ asset_id: a.asset_id }));
+  const attachmentSignature = JSON.stringify(attachments);
+  if (!content.trim() && attachments.length === 0) { line.textContent = ''; const det = $('estimate-detail'); if (det) det.hidden = true; return; }
   const draftRevision = state.draftRevision;
   const flight = Symbol('est');
   state.estimate.inFlight = flight;
   try {
     const res = await fetch('/api/v1/token-estimates', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
-      body: JSON.stringify({ conversation_id: CONVERSATION, client_draft_revision: draftRevision, content, attachments: [], include_request_estimate: true }),
+      body: JSON.stringify({ conversation_id: CONVERSATION, client_draft_revision: draftRevision, content, attachments, include_request_estimate: true }),
     });
     if (!res.ok) { line.textContent = '预计用量暂不可用'; return; } // 预估失败不禁发送（§9 末段）
     const data = await res.json();
     // TOKEN-04：只应用同时匹配 draft_revision/模型快照/附件指纹的响应——过期慢回包丢弃
-    if (state.estimate.inFlight !== flight || !shouldApplyEstimate(data, { draftRevision, modelSnapshotId: state.estimate.modelSnapshotId ?? data.model_snapshot_id, attachmentFingerprint: null })) return;
+    // 资产内容不可变：比对本地冻结的 asset IDs，服务端负责计算内容指纹。
+    if (state.estimate.inFlight !== flight || attachmentSignature !== JSON.stringify(readyAttachments().map((a) => ({ asset_id: a.asset_id }))) || !shouldApplyEstimate(data, { draftRevision: state.draftRevision, modelSnapshotId: state.estimate.modelSnapshotId ?? data.model_snapshot_id, attachmentFingerprint: attachments.length ? data.attachment_fingerprint : null })) return;
     state.estimate.modelSnapshotId = data.model_snapshot_id;
     if (typeof data.chars_per_token === 'number' && data.chars_per_token > 0) state.estimate.charsPerToken = data.chars_per_token;
     const e = data.estimate ?? {};
@@ -1099,7 +1297,11 @@ function renderAttachQueue() {
     item.className = 'attach-item';
     if (a.previewUrl) { const img = document.createElement('img'); img.src = a.previewUrl; img.alt = a.name; item.appendChild(img); }
     const label = document.createElement('span');
-    label.textContent = a.status === 'uploading' ? `${a.name}：上传中…` : a.status === 'failed' ? `${a.name}：上传失败（点击重试）` : a.name;
+    label.textContent = a.status === 'uploading' ? `${a.name}：上传中…`
+      : a.status === 'transcribing' ? '语音正在转文字…'
+      : a.status === 'uncertain' ? '转写结果未确认，音频已保留'
+      : a.status === 'failed' ? `${a.name}：${a.error || '未完成'}（点此重试）`
+      : a.presentation === 'voice' ? '语音已就绪，点箭头发送' : a.name;
     item.appendChild(label);
     if (a.status === 'failed') {
       item.style.cursor = 'pointer';
@@ -1109,44 +1311,270 @@ function renderAttachQueue() {
     rm.className = 'ghost';
     rm.textContent = '✕';
     rm.setAttribute('aria-label', `移除附件 ${a.name}`);
-    rm.onclick = () => { state.attachments = state.attachments.filter((x) => x !== a); renderAttachQueue(); refreshSendButton(); };
+    rm.onclick = (event) => { event?.stopPropagation?.(); state.attachments = state.attachments.filter((x) => x !== a); if (a.previewUrl) URL.revokeObjectURL(a.previewUrl); state.draftRevision = draftGuard.touch(); renderAttachQueue(); refreshSendButton(); scheduleEstimate(); };
     item.appendChild(rm);
     attachQueue.appendChild(item);
   }
 }
 
 async function uploadAttachment(a) {
+  if (a.inFlight) return;
+  a.inFlight = true;
   a.status = 'uploading';
   a.opKey = a.opKey ?? `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   renderAttachQueue();
   try {
+    if (!a.asset_id) {
     const res = await fetch(`/api/v1/assets?purpose=${a.purpose}`, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': a.opKey },
       body: a.file,
     });
+    if (res.status === 401) { redirectToLogin(); return; }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { a.status = 'failed'; a.error = data?.error?.message ?? res.status; renderAttachQueue(); return; }
     a.asset_id = data.asset_id;
+    }
+    if (a.presentation === 'voice') {
+      a.status = 'transcribing';
+      renderAttachQueue();
+      const transcription = await fetch(`/api/v1/assets/${encodeURIComponent(a.asset_id)}/transcribe`, {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': a.transcribeKey ??= newClientMessageId() },
+        body: JSON.stringify({ conversation_id: CONVERSATION }),
+      });
+      if (transcription.status === 401) { redirectToLogin(); return; }
+      const result = await transcription.json().catch(() => ({}));
+      if (!transcription.ok) {
+        const uncertain = ['voice_transcription_unconfirmed', 'siren_outcome_unknown'].includes(result.error?.code);
+        a.status = uncertain ? 'uncertain' : 'failed';
+        a.error = result.error?.message || '语音转写未完成';
+        if (!uncertain) a.transcribeKey = null;
+        renderAttachQueue();
+        refreshSendButton();
+        return;
+      }
+    }
     a.status = 'ready';
-  } catch { a.status = 'failed'; }
+  } catch { a.status = 'failed'; a.error = '网络暂不可用'; }
+  finally { a.inFlight = false; }
   renderAttachQueue();
   refreshSendButton();
+  scheduleEstimate();
 }
 
 if (attachBtn && attachInput) {
-  attachBtn.onclick = () => attachInput.click();
-  attachInput.onchange = () => {
-    for (const f of attachInput.files ?? []) {
+  attachBtn.onclick = () => { if ($('attach-menu')) togglePopover('attach-menu', 'attach-btn'); else attachInput.click(); };
+  const receiveImages = (input) => {
+    if (voiceInput.starting || voiceInput.recorder || state.attachments.some((a) => a.presentation === 'voice')) {
+      setRoomBadge('请先发送或移除当前语音，再添加图片');
+      input.value = '';
+      return;
+    }
+    for (const f of input.files ?? []) {
+      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.type)) {
+        setRoomBadge('当前支持 PNG、JPEG、GIF、WebP 图片，请先转换格式');
+        continue;
+      }
       const presentation = 'image'; // 一期附件按钮=图片/贴纸文件（voice 录音入口属 M3 语音批）
       state.attachments.push({ file: f, name: f.name, presentation, purpose: 'chat_image', status: 'uploading', previewUrl: URL.createObjectURL(f) });
       void uploadAttachment(state.attachments[state.attachments.length - 1]);
     }
-    attachInput.value = '';
+    input.value = '';
+    state.draftRevision = draftGuard.touch();
     renderAttachQueue();
     refreshSendButton();
+    scheduleEstimate();
   };
+  attachInput.onchange = () => receiveImages(attachInput);
+  const cameraInput = $('camera-input');
+  if (cameraInput) cameraInput.onchange = () => receiveImages(cameraInput);
+  for (const id of ['choose-image-btn', 'choose-file-btn']) if ($(id)) $(id).onclick = () => { closePopover('attach-menu', 'attach-btn'); attachInput.click(); };
+  if ($('choose-camera-btn')) $('choose-camera-btn').onclick = () => { closePopover('attach-menu', 'attach-btn'); (cameraInput || attachInput).click(); };
 }
+
+// 新外观的入口全部接现有宿主能力；面板只展示真实查询结果。
+function closePopover(panelId, buttonId) {
+  const panel = $(panelId);
+  if (panel) panel.hidden = true;
+  if (buttonId) $(buttonId)?.setAttribute('aria-expanded', 'false');
+}
+function togglePopover(panelId, buttonId) {
+  const panel = $(panelId);
+  if (!panel) return false;
+  const opening = panel.hidden;
+  for (const [other, button] of [['model-panel', 'model-toggle'], ['more-menu', 'more-btn'], ['attach-menu', 'attach-btn'], ['context-panel', 'context-btn']]) if (other !== panelId) closePopover(other, button);
+  panel.hidden = !opening;
+  $(buttonId)?.setAttribute('aria-expanded', String(opening));
+  return opening;
+}
+
+async function loadContextSummary() {
+  const body = $('context-summary');
+  if (!body) return;
+  body.textContent = '正在读取上下文…';
+  try {
+    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/context-records`, { credentials: 'same-origin' });
+    if (res.status === 401) { redirectToLogin(); return; }
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    const c = data.context ?? {};
+    const known = typeof c.hardCapacity === 'number' && c.hardCapacity > 0 && typeof c.estimatedInput === 'number';
+    const percent = known ? Math.round(c.estimatedInput / c.hardCapacity * 100) : null;
+    body.textContent = `当前输入估计：${fmtNum(c.estimatedInput)} token\n上次实际输入：${fmtNum(c.lastActualInput)} token\n${known ? `上下文约占 ${percent}% · 容量 ${fmtNum(c.hardCapacity)} token` : '模型总容量未知，暂不显示百分比'}\n有效换窗软线：${fmtNum(c.effectiveSoft)} token`;
+    const ring = $('context-ring-value');
+    if (ring) {
+      ring.style.opacity = known ? '1' : '0';
+      if (known) ring.style.strokeDashoffset = String(50.265 * (1 - Math.min(1, Math.max(0, percent / 100))));
+    }
+    $('context-btn')?.setAttribute('aria-label', known ? `查看上下文，估计已用 ${percent}%` : '查看上下文，容量未知');
+  } catch { body.textContent = '上下文暂不可用，请重新打开重试。'; }
+}
+
+async function loadWorkbench() {
+  const body = $('workbench-body');
+  if (!body) return;
+  body.textContent = '正在读取任务…';
+  try {
+    const [tasksRes, runsRes] = await Promise.all([
+      fetch(`/api/v1/background/tasks?conversation_id=${CONVERSATION}`, { credentials: 'same-origin' }),
+      fetch(`/api/v1/background/runs?conversation_id=${CONVERSATION}`, { credentials: 'same-origin' }),
+    ]);
+    if (tasksRes.status === 401 || runsRes.status === 401) { redirectToLogin(); return; }
+    if (!tasksRes.ok || !runsRes.ok) throw new Error();
+    const [tasksData, runsData] = await Promise.all([tasksRes.json(), runsRes.json()]);
+    body.replaceChildren();
+    const kindLabels = { reminder: '提醒', autonomous: '自主任务', cache_keepalive: '缓存保温' };
+    for (const [title, entries, isRun] of [['已设任务', tasksData.tasks ?? [], false], ['最近执行', runsData.runs ?? [], true]]) {
+      const section = document.createElement('section');
+      section.className = 'rec-section';
+      const heading = document.createElement('h4'); heading.textContent = title; section.appendChild(heading);
+      if (!entries.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = isRun ? '暂无执行记录。' : '暂无已设任务。'; section.appendChild(empty); }
+      for (const item of entries) {
+        const row = document.createElement('div'); row.className = 'workbench-item';
+        row.textContent = isRun
+          ? `${kindLabels[item.kind] ?? item.kind} · ${item.state}${item.result_code ? ` · ${item.result_code}` : ''}\n${fmtTime(item.created_at)}${item.finished_at ? ` → ${fmtTime(item.finished_at)}` : ''}`
+          : `${kindLabels[item.kind] ?? item.kind} · ${item.enabled ? '已启用' : '已停用'}\n下次：${fmtTime(item.next_due_at)}`;
+        section.appendChild(row);
+      }
+      body.appendChild(section);
+    }
+    const refresh = document.createElement('button'); refresh.className = 'ghost'; refresh.textContent = '刷新'; refresh.onclick = () => void loadWorkbench(); body.appendChild(refresh);
+  } catch { body.textContent = '任务暂不可用，请重新打开重试。'; }
+}
+
+if ($('model-toggle')) $('model-toggle').onclick = () => { if (togglePopover('model-panel', 'model-toggle')) void loadRuntimeSettings(); };
+if ($('model-close')) $('model-close').onclick = () => closePopover('model-panel', 'model-toggle');
+if ($('more-btn')) $('more-btn').onclick = () => togglePopover('more-menu', 'more-btn');
+if ($('context-btn')) $('context-btn').onclick = () => { if (togglePopover('context-panel', 'context-btn')) void loadContextSummary(); };
+if ($('context-close')) $('context-close').onclick = () => closePopover('context-panel', 'context-btn');
+if ($('history-select-btn')) $('history-select-btn').onclick = () => { closePopover('more-menu', 'more-btn'); toggleSelection(); };
+if ($('workbench-btn')) $('workbench-btn').onclick = () => { closePopover('more-menu', 'more-btn'); const panel = $('workbench-panel'); if (panel) panel.hidden = false; void loadWorkbench(); };
+if ($('workbench-close')) $('workbench-close').onclick = () => { const panel = $('workbench-panel'); if (panel) panel.hidden = true; };
+for (const id of ['records-btn', 'alerts-btn']) $(id)?.addEventListener('click', () => closePopover('more-menu', 'more-btn'));
+if (typeof document.addEventListener === 'function') document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  for (const [panel, button] of [['model-panel', 'model-toggle'], ['more-menu', 'more-btn'], ['attach-menu', 'attach-btn'], ['context-panel', 'context-btn']]) closePopover(panel, button);
+});
+
+const voiceInput = { recorder: null, stream: null, timer: null, started: 0, cancelled: false, starting: false, generation: 0 };
+
+function showVoiceStatus(message, recording = false) {
+  const status = $('voice-status');
+  if (!status) return;
+  status.hidden = !message;
+  status.textContent = message;
+  if (recording) {
+    const cancel = document.createElement('button');
+    cancel.className = 'ghost'; cancel.textContent = '取消录音';
+    cancel.onclick = () => stopVoiceRecording(true);
+    status.appendChild(cancel);
+  }
+}
+
+function stopVoiceRecording(cancel = false) {
+  voiceInput.generation++;
+  voiceInput.cancelled = cancel;
+  clearInterval(voiceInput.timer);
+  voiceInput.timer = null;
+  if (voiceInput.recorder?.state === 'recording') voiceInput.recorder.stop();
+  else voiceInput.stream?.getTracks().forEach((track) => track.stop());
+}
+
+async function startVoiceRecording() {
+  if (voiceInput.starting) return;
+  if (voiceInput.recorder) { stopVoiceRecording(false); return; }
+  if (state.attachments.length || state.pendingSend) { setRoomBadge('请先发送或移除当前附件，再开始录音'); return; }
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+    showVoiceStatus('此浏览器暂不支持录音，请使用支持麦克风的 Safari 或浏览器。'); return;
+  }
+  voiceInput.starting = true;
+  const generation = ++voiceInput.generation;
+  refreshSendButton();
+  try {
+    const status = await fetch('/api/v1/voice/status', { credentials: 'same-origin' });
+    if (status.status === 401) { redirectToLogin(); return; }
+    const capability = await status.json().catch(() => ({}));
+    if (generation !== voiceInput.generation || state.authRedirecting) return;
+    if (!status.ok || !capability.available) { showVoiceStatus('语音服务尚未就绪，暂时可以输入文字。'); return; }
+    const format = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find((type) => MediaRecorder.isTypeSupported(type));
+    if (!format) { showVoiceStatus('当前浏览器没有可用的录音格式。'); return; }
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (generation !== voiceInput.generation || state.authRedirecting || state.attachments.length) { stream.getTracks().forEach((track) => track.stop()); return; }
+    voiceInput.stream = stream;
+    voiceInput.cancelled = false;
+    voiceInput.started = Date.now();
+    const recorder = new MediaRecorder(stream, { mimeType: format });
+    const chunks = [];
+    let recordingError = '';
+    voiceInput.recorder = recorder;
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onerror = () => {
+      recordingError = '录音中断，请重新录制。';
+      voiceInput.cancelled = true;
+      stopVoiceRecording(true);
+      showVoiceStatus(recordingError);
+    };
+    recorder.onstop = () => {
+      clearInterval(voiceInput.timer);
+      stream.getTracks().forEach((track) => track.stop());
+      voiceInput.stream = null; voiceInput.recorder = null; voiceInput.timer = null;
+      $('voice-btn')?.setAttribute('aria-label', '录制语音');
+      $('voice-btn')?.setAttribute('aria-pressed', 'false');
+      refreshSendButton();
+      if (voiceInput.cancelled || state.authRedirecting) { showVoiceStatus(state.authRedirecting ? '' : recordingError); return; }
+      const blob = new Blob(chunks, { type: format });
+      if (!blob.size) { showVoiceStatus('没有录到音频，请重试。'); return; }
+      const entry = { file: blob, name: '语音', presentation: 'voice', purpose: 'chat_voice', status: 'uploading' };
+      state.attachments.push(entry);
+      state.draftRevision = draftGuard.touch();
+      showVoiceStatus('');
+      renderAttachQueue();
+      void uploadAttachment(entry);
+    };
+    recorder.start(1000);
+    $('voice-btn')?.setAttribute('aria-label', '结束录音');
+    $('voice-btn')?.setAttribute('aria-pressed', 'true');
+    refreshSendButton();
+    const tick = () => {
+      const seconds = Math.floor((Date.now() - voiceInput.started) / 1000);
+      showVoiceStatus(`录音中 ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} · 再点麦克风结束`, true);
+      if (seconds >= 120) stopVoiceRecording(false);
+    };
+    tick();
+    voiceInput.timer = setInterval(tick, 500);
+  } catch {
+    voiceInput.stream?.getTracks().forEach((track) => track.stop());
+    voiceInput.stream = null; voiceInput.recorder = null;
+    showVoiceStatus('未能开始录音，请检查麦克风权限后重试。');
+  } finally { voiceInput.starting = false; refreshSendButton(); }
+}
+if ($('voice-btn')) $('voice-btn').onclick = () => void startVoiceRecording();
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pagehide', () => stopVoiceRecording(true));
+}
+
+installViewportHandling();
 
 void boot;
 boot();

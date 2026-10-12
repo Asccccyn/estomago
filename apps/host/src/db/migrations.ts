@@ -888,6 +888,28 @@ CREATE INDEX IF NOT EXISTS idx_bg_dispatches_run ON background_dispatches(run_id
   },
 ];
 
+// 只添加新迁移，不更改已落盘迁移的 code_hash。
+MIGRATIONS.push({
+  version: 27,
+  name: 'trusted-voice-transcripts',
+  sql: `
+CREATE TABLE IF NOT EXISTS voice_transcripts(
+  asset_id TEXT PRIMARY KEY REFERENCES media_assets(id),
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  operation_key TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL CHECK(state IN ('processing','ready','failed','unknown')),
+  content_sha256 TEXT NOT NULL,
+  derived_text TEXT,
+  derived_source TEXT NOT NULL DEFAULT 'siren:transcribe',
+  language TEXT,
+  duration_ms INTEGER,
+  error_code TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
