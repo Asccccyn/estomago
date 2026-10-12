@@ -31,6 +31,7 @@ import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 import { SystemAlertService } from './observability/system-alerts.ts';
 import { MediaService } from './media/assets.ts';
+import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -135,6 +136,7 @@ export class Host {
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
     const media = new MediaService(db, paths.mediaDir, opts.config);
+    const voice = new VoiceService(db, media, opts.config);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
     // 审计 F11（LC-050）：归档 worker 与主模型使用不同凭据引用（archive_credential_ref
@@ -250,6 +252,7 @@ export class Host {
       scheduler,
       bgExecutorReady,
       contentClient,
+      voice,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {

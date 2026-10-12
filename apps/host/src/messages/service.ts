@@ -124,10 +124,17 @@ export class MessageService {
         .run(messageId, opts.conversationId, seqRow.next, 'owner', derivedKind, opts.clientMessageId, occurredAt, nowIso);
       this.insertRevision({ messageId, revision: 1, kind: derivedKind, content, occurredAt, receivedAt: nowIso, source: 'client_submit', tokenEstimateJson: opts.tokenEstimateJson ?? null, fingerprint });
       for (let i = 0; i < attachments.length; i++) {
+        // Only copy a trusted transcript of these exact stored bytes and this
+        // conversation. Client-supplied derived_text is deliberately ignored.
+        const transcript = attachments[i]!.presentation === 'voice'
+          ? this.db.prepare(`SELECT t.derived_text,t.derived_source FROM voice_transcripts t JOIN media_assets a ON a.id=t.asset_id
+              WHERE t.asset_id=? AND t.conversation_id=? AND t.state='ready' AND t.content_sha256=a.content_sha256`)
+              .get(attachments[i]!.asset_id, opts.conversationId) as { derived_text: string; derived_source: string } | undefined
+          : undefined;
         this.db.prepare(
           `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
-           VALUES (?,?,?,?,?,?,NULL,NULL,?)`,
-        ).run(messageId, 1, i, attachments[i]!.asset_id, attachments[i]!.presentation, attachments[i]!.caption ?? null, nowIso);
+           VALUES (?,?,?,?,?,?,?,?,?)`,
+        ).run(messageId, 1, i, attachments[i]!.asset_id, attachments[i]!.presentation, attachments[i]!.caption ?? null, transcript?.derived_text ?? null, transcript?.derived_source ?? null, nowIso);
       }
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
       const turnId = genId('turn');

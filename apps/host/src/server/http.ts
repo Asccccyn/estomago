@@ -60,6 +60,7 @@ export type RequestDeps = {
   settings?: import('../runtime/runtime-settings.ts').RuntimeSettingsService; // 2026-10-08：换模型/推理等级
   alerts?: SystemAlertService; // EXEC_V1 WP1：系统异常红点（未装配时端点如实降级）
   media?: MediaService; // EXEC_V1 WP3：媒体服务（未装配时资产端点如实降级）
+  voice?: import('../media/voice.ts').VoiceService;
   bgSettings?: import('../runtime/background-settings.ts').BackgroundSettingsService; // EXEC_V1 WP4
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
@@ -753,6 +754,23 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (r === null) return json(res, 404, { error: { code: 'not_found', message: '执行不存在' } });
       // §7.3：区分已停止/正在取消/待核实/已结束——返回实际状态，不拿按钮变灰当证据
       return json(res, 200, { run_id: decodeURIComponent(bgRunStop[1]!), state: r.state, stopping: r.state === 'cancelling' });
+    }
+
+    if (route === 'GET /api/v1/voice/status') {
+      return json(res, 200, d.voice?.status() ?? { available: false, reason: 'voice_unavailable', verification: 'blocked' });
+    }
+    const voiceTranscribe = /^POST \/api\/v1\/assets\/([^/]+)\/transcribe$/.exec(route);
+    if (voiceTranscribe) {
+      if (!d.voice) return json(res, 503, { error: { code: 'voice_unavailable', message: '语音服务未装配' } });
+      const opKey = String(req.headers['idempotency-key'] ?? '');
+      if (!opKey || opKey.length > 256) return json(res, 400, { error: { code: 'missing_idempotency', message: '需要有效 Idempotency-Key' } });
+      const body = (await readJson(req, d)) as { conversation_id?: unknown } | null;
+      if (!body || typeof body.conversation_id !== 'string' || !body.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
+      try { return json(res, 200, await d.voice.transcribe(decodeURIComponent(voiceTranscribe[1]!), body.conversation_id, opKey)); }
+      catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
     }
 
     // —— EXEC_V1 §03.5（WP3）：媒体资产 API（Idempotency-Key 必带；二进制上传流式限量）——

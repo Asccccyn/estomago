@@ -160,6 +160,29 @@ before(async () => {
 });
 after(async () => { await host.stop(); });
 
+test('HTTP voice configuration is explicit; uploaded audio cannot trust a browser transcript', async () => {
+  const unauthorized = await fetch(`${base}/api/v1/voice/status`);
+  assert.equal(unauthorized.status, 401);
+  const status = await (await fetch(`${base}/api/v1/voice/status`, { headers: auth() })).json();
+  assert.deepEqual(status, { available: false, reason: 'siren_not_configured', verification: 'blocked' });
+  const uploaded = await fetch(`${base}/api/v1/assets?purpose=chat_voice`, {
+    method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'voice-http-upload', Origin: base }),
+    body: Uint8Array.from([0x1a,0x45,0xdf,0xa3,0x01]),
+  });
+  assert.equal(uploaded.status, 201);
+  const asset = await uploaded.json() as { asset_id: string };
+  const endpoint = `${base}/api/v1/assets/${asset.asset_id}/transcribe`;
+  const headers = auth({ 'Content-Type': 'application/json', Origin: base });
+  const missingKey = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ conversation_id: 'primary' }) });
+  assert.equal(missingKey.status, 400);
+  const nullBody = await fetch(endpoint, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'asr-null' }, body: 'null' });
+  assert.equal(nullBody.status, 400);
+  const blocked = await fetch(endpoint, { method: 'POST', headers: { ...headers, 'Idempotency-Key': 'asr-http' }, body: JSON.stringify({ conversation_id: 'primary', derived_text: 'forged by client' }) });
+  assert.equal(blocked.status, 503);
+  assert.equal(((await blocked.json()) as { error: { code: string } }).error.code, 'siren_not_configured');
+  assert.equal((host.db.prepare('SELECT COUNT(*) n FROM voice_transcripts').get() as { n: number }).n, 0);
+});
+
 test('HTTP：上传→元数据→content(Range)→附件发送→编辑 If-Match(428/409/200)', async () => {
   // 1. 二进制上传（无 readJson；带 purpose + Idempotency-Key）
   const up = await fetch(`${base}/api/v1/assets?purpose=chat_image`, { method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'up-1', Origin: base }), body: new Uint8Array(PNG) });
