@@ -42,25 +42,10 @@ body {
   cursor: pointer;
 }
 
-.login-panel {
-  margin: 60px auto;
-  max-width: 480px;
-  padding: 24px;
-  background: var(--panel);
-  border-radius: 10px;
-}
-.login-panel input {
-  width: 100%;
-  padding: 8px;
-  margin: 8px 0;
-  background: #101216;
-  border: 1px solid #3a3f49;
-  color: var(--text);
-  border-radius: 6px;
-}
 .error { color: #d96459; }
 
 #chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+#chat[hidden] { display: none; }
 
 .timeline {
   flex: 1;

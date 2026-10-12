@@ -14,6 +14,8 @@ const draftGuard = makeDraftGuard(); // §19：普通发送与 route edit 共享
 
 const state = {
   authorized: false,
+  booting: false,
+  authRedirecting: false,
   composing: false,
   // F13：未完成发送的单一真源 { requestId, draft, frozenRev }（同 key 重试；成功回执只清自己的）
   pendingSend: null,
@@ -34,9 +36,20 @@ const state = {
 };
 
 // —— 认证 ——
+function redirectToLogin() {
+  if (state.authRedirecting) return;
+  state.authRedirecting = true;
+  state.authorized = false;
+  state.sse?.close();
+  state.sse = null;
+  $('chat').hidden = true;
+  $('retry-connection-btn').hidden = true;
+  location.replace('/login');
+}
+
 async function tryResume() {
-  const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500`, { credentials: 'same-origin' });
-  if (res.status === 401) return false;
+  const res = await fetch('/api/v1/auth/session', { credentials: 'same-origin', cache: 'no-store' });
+  if (res.status === 401) { redirectToLogin(); return false; }
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return true;
 }
@@ -50,6 +63,7 @@ async function loadEarlier() {
   const timeline = $('timeline');
   const anchorHeights = [document.documentElement.scrollHeight, timeline.scrollHeight];
   const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=200&before=${oldest}`, { credentials: 'same-origin' });
+  if (res.status === 401) { redirectToLogin(); return; }
   if (!res.ok) return;
   const data = await res.json();
   const older = data.messages ?? [];
@@ -60,16 +74,7 @@ async function loadEarlier() {
   }
   if (older.length < 200) { const btn = $('load-earlier-btn'); if (btn) btn.hidden = true; }
 }
-$('login-btn').hidden = false;
-$('login-btn').onclick = () => { $('login-panel').hidden = !$('login-panel').hidden; };
-$('token-submit').onclick = async () => {
-  const token = $('token-input').value.trim();
-  const res = await fetch('/api/v1/auth/login', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify({ token }),
-  });
-  if (res.ok) { $('login-panel').hidden = true; $('login-error').hidden = true; boot(); }
-  else { $('login-error').textContent = 'token 不正确或服务器拒绝'; $('login-error').hidden = false; }
-};
+$('retry-connection-btn').onclick = () => void boot();
 
 // —— composer：Enter 只换行；独立发送键；IME guard；幂等键 ——
 const composer = $('composer');
@@ -103,6 +108,7 @@ async function send() {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin',
         body: JSON.stringify({ choice: 'edit', content }),
       });
+      if (res.status === 401) { redirectToLogin(); return; }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       if (data.message) absorbMessage(data.message, { update: true });
@@ -132,7 +138,7 @@ async function send() {
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': draft.client_message_id },
       credentials: 'same-origin', body: JSON.stringify(body),
     });
-    if (res.status === 401) { location.reload(); return; }
+    if (res.status === 401) { redirectToLogin(); return; }
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     absorbMessage(data.message, { update: true });
@@ -401,9 +407,12 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 // —— SSE（AUD-09：lastAppliedSequence 纪律；重连靠 Last-Event-ID）——
 function connectSse() {
+  if (state.authRedirecting) return;
+  state.sse?.close();
   const es = new EventSource(`/api/v1/events?cursor=${state.lastSequence}&conversation_id=${CONVERSATION}`);
   state.sse = es;
   es.onmessage = (ev) => {
+    if (state.sse !== es || state.authRedirecting) return;
     let data;
     try { data = JSON.parse(ev.data); } catch { return; }
     if (typeof data.sequence === 'number') {
@@ -411,6 +420,18 @@ function connectSse() {
       state.lastSequence = data.sequence;
     }
     handleEvent(data);
+  };
+  // EventSource 不公开 HTTP 状态；只在会话端点明确返回 401 时离开聊天。
+  // 网络/服务端故障继续交给原连接重连，重复 error 共用一次检查。
+  let sessionCheck = null;
+  es.onerror = () => {
+    if (state.sse !== es || state.authRedirecting) return;
+    if (sessionCheck) return sessionCheck;
+    sessionCheck = fetch('/api/v1/auth/session', { credentials: 'same-origin', cache: 'no-store' })
+      .then((res) => { if (res.status === 401 && state.sse === es) redirectToLogin(); })
+      .catch(() => { /* 网络故障不代表会话失效 */ })
+      .finally(() => { sessionCheck = null; });
+    return sessionCheck;
   };
 }
 function handleEvent(data) {
@@ -639,34 +660,39 @@ $('route-edit').onclick = () => {
     messageId: orig?.id ?? null,
     original: orig?.revision.content ?? '',
   };
-  composer.value = state.originalPlaceholderGuard(state.pendingRouteEdit.original);
+  composer.value = state.pendingRouteEdit.original;
   state.draftRevision = draftGuard.touch();
   $('route-dialog').close(); // 票据仍 pending，直到修订发送成功
   setRoomBadge('编辑模式：修改后点"重新发送（修订）"');
   refreshSendButton();
   composer.focus();
 };
-state.originalPlaceholderGuard = (t) => t;
 
 // —— 启动（AUD-34：messages + reasoning 全量回看）——
 async function boot() {
-  if (state.authorized) return;
+  if (state.authorized || state.booting || state.authRedirecting) return;
+  state.booting = true;
+  $('retry-connection-btn').hidden = true;
+  $('runtime-badge').textContent = '连接中…';
   try {
-    if (!(await tryResume())) { $('login-panel').hidden = false; return; }
+    if (!(await tryResume()) || state.authRedirecting) return;
+    // R20（复审 2026-10-07）：初次加载=最新一页（order=latest），"加载更早"向前
+    // 游标才成立——此前默认取最早 500 条，before=最早序号 永远翻 0 条
+    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500&order=latest`, { credentials: 'same-origin' });
+    if (res.status === 401) { redirectToLogin(); return; }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (!Array.isArray(data?.messages)) throw new Error('Invalid messages response');
+    if (state.authRedirecting) return;
+    const turnIds = new Set();
+    for (const m of data.messages) { absorbMessage(m); if (m.turn_id) turnIds.add(m.turn_id); }
     state.authorized = true;
-    $('login-btn').hidden = true;
     $('records-btn').hidden = false;
     $('alerts-btn').hidden = false;
     $('chat').hidden = false;
     void refreshAlertSummary();
-    // R20（复审 2026-10-07）：初次加载=最新一页（order=latest），"加载更早"向前
-    // 游标才成立——此前默认取最早 500 条，before=最早序号 永远翻 0 条
-    const res = await fetch(`/api/v1/conversations/${CONVERSATION}/messages?limit=500&order=latest`, { credentials: 'same-origin' });
-    const data = await res.json();
-    const turnIds = new Set();
-    for (const m of data.messages ?? []) { absorbMessage(m); if (m.turn_id) turnIds.add(m.turn_id); }
     // F-J-48：满页说明可能有更早历史——露出"加载更早"入口（不足一页时隐藏由点击后处理）
-    if ((data.messages ?? []).length >= 500) {
+    if (data.messages.length >= 500 && !$('load-earlier-btn')) {
       const btn = document.createElement('button');
       btn.id = 'load-earlier-btn';
       btn.textContent = '加载更早的消息';
@@ -677,30 +703,40 @@ async function boot() {
     for (const turnId of turnIds) {
       try {
         const r = await fetch(`/api/v1/turns/${turnId}/reasoning`, { credentials: 'same-origin' });
+        if (r.status === 401) { redirectToLogin(); return; }
         if (r.ok) {
           const rd = await r.json();
           for (const block of rd.blocks) renderReasoningBlock(block);
         }
         const u = await fetch(`/api/v1/turns/${turnId}/usage`, { credentials: 'same-origin' });
+        if (u.status === 401) { redirectToLogin(); return; }
         if (u.ok) renderUsage(turnId, await u.json());
       } catch { /* 单 turn 失败不影响整体 */ }
     }
-    const es = state.sse;
-    void es;
-    connectSse();
     const rt = await fetch(`/api/v1/conversations/${CONVERSATION}/runtime`, { credentials: 'same-origin' });
+    if (rt.status === 401) { redirectToLogin(); return; }
+    if (!rt.ok) throw new Error(`HTTP ${rt.status}`);
     if (rt.ok) {
       const runtime = await rt.json();
       state.reasoningLabel = runtime.reasoning_label ?? '思考';
       if (runtime.identity?.state === 'READY' && !runtime.runner?.blocked) setRoomBadge(null);
       else { const badge = $('runtime-badge'); badge.textContent = '模型通道未就绪（可聊天保存，暂不回复）'; badge.className = 'badge warn'; }
     }
+    if (state.authRedirecting) return;
+    connectSse();
     refreshSendButton();
     composer.focus();
     void loadRuntimeSettings();
   } catch (err) {
+    if (state.authRedirecting) return;
+    state.authorized = false;
+    state.sse?.close();
+    state.sse = null;
     $('runtime-badge').textContent = '连接失败';
+    $('retry-connection-btn').hidden = false;
     console.error(err);
+  } finally {
+    state.booting = false;
   }
 }
 

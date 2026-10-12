@@ -1,0 +1,10 @@
+PromiseHand website subset of Long Cang / 有字库龙藏体
+Source: https://github.com/google/fonts/tree/main/ofl/longcang
+Author project: https://github.com/googlefonts/longcang
+Download: https://raw.githubusercontent.com/google/fonts/main/ofl/longcang/LongCang-Regular.ttf
+License: SIL Open Font License 1.1; preserved in promise-handwriting-OFL.txt
+Copyright 2018 The LongCang Project Authors
+Contains: userchar账号密码, printable ASCII U+0020–007E, U+2022 BULLET.
+FontTools subset, unmodified glyph outlines.
+CSS family may be set to PromiseHand.
+Comparison: Long Cang is more lively/non-square than Yozai, more readable than Liu Jian Mao Cao, and lighter than Ma Shan Zheng at login UI sizes.

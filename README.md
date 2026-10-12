@@ -39,6 +39,8 @@
 
 ## 2026-10-05 深夜批次（在上述 WP 状态之后；按时间序，多路并行）
 
+- **9456ed4（2026-10-12，欢迎回家登录接入）**：保留 V19 拉钩/红线/手写字素材，接通既有配对口令与会话恢复，删除旧 token 面板和预览占位逻辑，补登录/动画/聊天生命周期回归。
+
 - **e3babaa**：DS 官方直连驱动 + 身份映射隔离 + 第三方审计 P1/P2 修复（块级 cache_control 族判断、评审失败重试上限 3 次/窗、评审停止键）。
 - **9b08046**：memory_hold 契约对齐（标题必填≤30 字/九分类数组/补记日期），**引用=模型指认**——模型给 quotes 片段，网关在已见原话里逐字核对（失配整单拒·零副作用），说话人自动映射（owner=qiaosheng/assistant=jiaming），按 mariposa source_selections 钉住（收据+内容 hash+句内 offset）。
 - **ba41c18**（并行批）：mood 参数接入她冻结的七大类词表终版（mood_tags 枚举≤3 + mood_note 自由文字）。
@@ -100,13 +102,15 @@
 npm run doctor      # 只读环境检查 → reports/mac-doctor-*.json
 npm test            # 前台、串行、独立临时 ESTOMAGO_HOME（AGENTS.md 测试纪律）
 npm start           # 前台启动（127.0.0.1:18787；首次自动复制 example 配置）
-# 打开 http://127.0.0.1:18787 ；首次登录粘贴 $STATE_ROOT/config/auth.token 内容
+# 打开 http://127.0.0.1:18787 ；首次登录在密码栏粘贴 $STATE_ROOT/config/auth.token 内容
 npm stop / npm run status
 npm run backup      # SQLite VACUUM INTO 一致性快照 → $STATE/backups/
 npm run install-launchagent   # 渲染 LaunchAgent（默认 dry-run，--apply 才写盘）
 node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 # 真实冒烟（需她授权）：export DEEPSEEK_API_KEY=<官方平台key> && ESTOMAGO_DS_SMOKE=1 node scripts/ds-smoke.mjs
 ```
+
+登录入口使用已确认的拉钩与红线动效（V19）；未认证访问 `/` 转入 `/login`，有效会话直接回到聊天。账号栏“user”是单用户身份展示，密码栏提交既有配对口令；没有新增账号数据库或修改凭据。图片加载失败或系统要求减弱动态时直接显示可登录表单。
 
 零 npm 运行依赖（Node ≥ 22.18，原生 `.ts` type-stripping + `node:sqlite`）；开发依赖仅 `@anthropic-ai/claude-agent-sdk@0.3.283`（锁定安装，OR 模式不加载）。无凭据/无身份材料时按规格如实 `IDENTITY_BLOCKED`/blocked 降级，消息保存、时间线、SSE、思考通道照常——这是规格要求的形态，不是故障。
 
