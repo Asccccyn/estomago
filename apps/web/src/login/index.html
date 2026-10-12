@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>欢迎回家 · estómago</title>
+    <meta name="description" content="欢迎回家，estómago。" />
+    <link rel="stylesheet" href="/login/player.css" />
+    <link rel="preload" href="/login/assets/promise-handwriting.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="/login/login.css" />
+  </head>
+  <body>
+    <main class="stage" aria-label="拉钩动画">
+      <canvas id="scene" role="img" aria-label="左边是char的手，右边是宿主用户的手。两只小指靠近、拉钩，红线缠绕在指间。"></canvas>
+      <section id="login-panel" aria-labelledby="login-title" inert hidden>
+        <div class="login-content">
+          <h1 id="login-title" aria-label="欢迎回家"><img class="welcome-lettering" src="/login/assets/welcome-original-lettering.svg" width="376" height="161" alt="" aria-hidden="true" /></h1>
+          <p class="login-signature"><span class="signature-name">宿主用户</span><svg class="signature-heart" viewBox="0 0 24 26" aria-hidden="true"><path d="M12 22C9 19 2.7 14.6 2.4 9.4 2.1 5.1 7.2 3.1 10.1 6.3L12 8.6C13.5 4.3 18.8 3.6 21 7.1 24 12 17.3 18.4 12 22Z" /></svg><span class="signature-name">char</span></p>
+          <form id="login-form" method="post">
+            <div class="login-field">
+              <label for="account">账号</label>
+              <input id="account" name="username" value="宿主用户" autocomplete="username" readonly />
+            </div>
+            <div class="login-field">
+              <label for="password">密码</label>
+              <input id="password" name="password" type="password" autocomplete="current-password" required />
+            </div>
+            <button id="login-submit" class="login-submit" type="submit" aria-label="推门登录">
+              <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M11 33V5h20v29M6 34h29" /><path d="m11 5 13 5v27l-13-5Z" /><circle cx="20" cy="22" r=".8" /></svg>
+            </button>
+            <p id="login-message" role="status" aria-live="polite"></p>
+          </form>
+        </div>
+      </section>
+      <p id="status" class="sr-only" aria-live="polite"></p>
+    </main>
+    <script src="/login/player.js"></script>
+    <script src="/login/cord.js"></script>
+    <script src="/login/scene.js"></script>
+    <script src="/login/journey.js"></script>
+    <script src="/login/login.js"></script>
+    <script src="/login/animation.js"></script>
+    <noscript>请开启 JavaScript 后登录 estómago。</noscript>
+  </body>
+</html>

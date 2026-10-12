@@ -1,0 +1,154 @@
+@font-face {
+  font-family: "PromiseHand";
+  src: url("assets/promise-handwriting.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+#login-panel {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 12px 34px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #ddbbba transparent;
+  color: #703334;
+  background: transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+#login-panel[hidden] { display: none; }
+#login-panel[inert] { pointer-events: none; }
+.login-content { flex: 0 0 auto; width: 100%; max-width: 244px; margin: auto; }
+.login-signature {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: #a64a4f;
+  font-family: "PromiseHand", cursive;
+  font-size: 28px;
+  font-weight: 400;
+  line-height: 30px;
+  text-align: center;
+  white-space: nowrap;
+  opacity: var(--names-opacity, 0);
+}
+
+.signature-name { display: block; flex: 0 0 auto; }
+.signature-heart { flex: 0 0 22px; width: 22px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; transform: rotate(-7deg); }
+#login-title {
+  position: relative;
+  width: min(230px, 100%);
+  margin: 0 auto;
+  padding-bottom: 5px;
+  line-height: 0;
+  text-align: center;
+  opacity: var(--title-opacity, 0);
+}
+
+#login-title::after { content: ""; position: absolute; bottom: 0; left: 50%; width: 56px; height: 2px; border-radius: 2px; background: #b94750; transform: translateX(-50%); }
+
+.welcome-lettering {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+#login-form { margin: 0; }
+.login-field {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+  margin: 0;
+  opacity: var(--fields-opacity, 0);
+}
+.login-field + .login-field { margin-top: 6px; }
+#login-form label {
+  display: block;
+  margin: 0;
+  color: #95605a;
+  font-family: "PromiseHand", cursive;
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-align: left;
+}
+
+#login-form input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 2px 7px 5px;
+  border: 0;
+  border-bottom: 3px solid #b94750;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: #633334;
+  font-family: "PromiseHand", -apple-system, sans-serif;
+  font-size: 20px;
+  line-height: 1.5;
+  text-align: left;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+#login-form input:focus { border-bottom-color: #85232f; }
+.login-submit {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 60px;
+  min-height: 44px;
+  margin: 12px auto 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #fffaf7;
+  cursor: pointer;
+  touch-action: manipulation;
+  opacity: var(--door-opacity, 0);
+}
+
+.login-submit::before {
+  content: "";
+  position: absolute;
+  inset: 3px 0;
+  border-radius: 49% 46% 51% 45% / 48% 53% 45% 52%;
+  background: #b7434f;
+  transform: rotate(-4deg);
+}
+.login-submit svg { position: relative; display: block; width: 28px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.85; stroke-linecap: round; stroke-linejoin: round; }
+.login-submit:focus-visible { outline: 2px solid #b7605d; outline-offset: 3px; }
+.login-submit:active::before { background: #94313d; }
+#login-message {
+  min-height: 18px;
+  margin: 3px 0 0;
+  color: #9c5351;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  overflow-wrap: anywhere;
+  opacity: var(--door-opacity, 0);
+}
+
+@media (max-width: 359px) {
+  #login-panel { padding-right: 25px; padding-left: 25px; }
+}
+
+@media (hover: hover) {
+  .login-submit:hover::before { background: #a63743; }
+}

@@ -72,6 +72,22 @@ export type RequestDeps = {
 };
 
 const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
+// Only explicitly shipped public files are reachable. Never resolve a request path
+// directly beneath WEB_DIR (login assets must not expose source or state files).
+const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
+  ['/', { file: 'index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/app.js', { file: 'app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
+  ['/style.css', { file: 'style.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
+  ['/composer-logic.js', { file: 'composer-logic.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
+  ['/login', { file: 'login/index.html', type: 'text/html; charset=utf-8', cache: 'no-store' }],
+  ...['player.css', 'login.css'].map((file): [string, { file: string; type: string; cache: string }] =>
+    [`/login/${file}`, { file: `login/${file}`, type: 'text/css; charset=utf-8', cache: 'no-cache' }]),
+  ...['player.js', 'cord.js', 'scene.js', 'journey.js', 'animation.js', 'login.js'].map((file): [string, { file: string; type: string; cache: string }] =>
+    [`/login/${file}`, { file: `login/${file}`, type: 'text/javascript; charset=utf-8', cache: 'no-cache' }]),
+  ['/login/assets/pinky-cels-original.png', { file: 'login/assets/pinky-cels-original.png', type: 'image/png', cache: 'no-cache' }],
+  ['/login/assets/welcome-original-lettering.svg', { file: 'login/assets/welcome-original-lettering.svg', type: 'image/svg+xml', cache: 'no-cache' }],
+  ['/login/assets/promise-handwriting.woff2', { file: 'login/assets/promise-handwriting.woff2', type: 'font/woff2', cache: 'no-cache' }],
+]);
 const SSE_PAGE_LIMIT = 1000;
 const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开，游标重连）
 const SSE_DRAIN_TIMEOUT_MS = 20_000;
@@ -115,15 +131,27 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         degraded: entries.filter(([, c]) => c.status !== 'ok').map(([k, c]) => ({ component: k, status: c.status })),
       });
     }
+    if (url.pathname === '/api/v1/auth/login' || url.pathname === '/api/v1/auth/session') {
+      res.setHeader('Cache-Control', 'no-store');
+    }
     if (route === 'POST /api/v1/auth/login') {
-      const body = (await readJson(req, d)) as { token?: string };
-      if (!d.auth.verifyToken(typeof body.token === 'string' ? body.token : null)) {
+      if (!d.auth.originAllowed(req, String(req.headers.host ?? ''))) {
+        return json(res, 403, { error: { code: 'bad_origin', message: 'Origin 校验失败' } });
+      }
+      const body = (await readJson(req, d)) as { token?: unknown } | null;
+      const token = typeof body?.token === 'string' ? body.token : null;
+      if (!d.auth.verifyToken(token)) {
         return json(res, 401, { error: { code: 'unauthorized', message: 'token 不正确' } });
       }
-      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(body.token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
       return json(res, 200, { ok: true });
     }
-    if (route === 'GET /' || route === 'GET /app.js' || route === 'GET /style.css' || route === 'GET /composer-logic.js') {
+    if ((route === 'GET /' && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
+      res.writeHead(302, { Location: url.pathname === '/' ? '/login' : '/', 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+    if (req.method === 'GET' && (STATIC_FILES.has(url.pathname) || url.pathname.startsWith('/login/'))) {
       return serveStatic(res, url.pathname);
     }
 
@@ -133,6 +161,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE';
     if (mutating && !d.auth.originAllowed(req, String(req.headers.host ?? ''))) {
       return json(res, 403, { error: { code: 'bad_origin', message: 'Origin 校验失败' } });
+    }
+    if (route === 'GET /api/v1/auth/session') {
+      return json(res, 200, { authenticated: true });
     }
 
     if (route === 'GET /api/v1/conversations') {
@@ -1106,15 +1137,18 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
 }
 
 function serveStatic(res: ServerResponse, pathname: string): void {
-  const file = pathname === '/' ? path.join(WEB_DIR, 'index.html') : path.join(WEB_DIR, path.basename(pathname));
+  const asset = STATIC_FILES.get(pathname);
+  if (!asset) {
+    res.setHeader('Cache-Control', 'no-store');
+    return json(res, 404, { error: { code: 'not_found', message: '静态资源不存在' } });
+  }
   try {
-    const content = fs.readFileSync(file);
-    const type = file.endsWith('.html') ? 'text/html; charset=utf-8' : file.endsWith('.css') ? 'text/css; charset=utf-8' : file.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'no-cache' });
+    const content = fs.readFileSync(path.join(WEB_DIR, asset.file));
+    res.writeHead(200, { 'Content-Type': asset.type, 'Cache-Control': asset.cache, 'X-Content-Type-Options': 'nosniff' });
     res.end(content);
   } catch {
-    res.writeHead(404, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ error: { code: 'not_found', message: '静态资源不存在' } }));
+    res.setHeader('Cache-Control', 'no-store');
+    json(res, 404, { error: { code: 'not_found', message: '静态资源不存在' } });
   }
 }
 
