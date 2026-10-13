@@ -1,5 +1,7 @@
 # 聊天界面接入 · 2026-10-12
 
+> 历史原生改写方案，已被 b9ae2ad 的原 React 组件接入替代。当前入口与验证见 REACT_ORIGINAL_INTEGRATION_20261013.md。
+
 将用户提供的 Figma Make 聊天页面融入 estómago 现有原生 HTML/JS 前端，不引入第二套 React 应用。生产界面不带演示消息、虚构模型、固定 token 或缓存命中率。
 
 ## 本批行为
