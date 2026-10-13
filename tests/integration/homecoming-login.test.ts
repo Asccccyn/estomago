@@ -70,6 +70,8 @@ test('未登录根入口进入独立 /login，允许清单内所有动效资源�
     ['/login/assets/promise-handwriting.woff2', 'font/woff2'],
     ['/app.js', 'text/javascript; charset=utf-8'],
     ['/style.css', 'text/css; charset=utf-8'],
+    ['/chat-app.js', 'text/javascript; charset=utf-8'],
+    ['/chat-app.css', 'text/css; charset=utf-8'],
     ['/composer-logic.js', 'text/javascript; charset=utf-8'],
   ];
   for (const [file, type] of files) {

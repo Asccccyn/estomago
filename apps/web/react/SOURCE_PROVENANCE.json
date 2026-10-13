@@ -1,0 +1,41 @@
+{
+  "baseline": "User supplied React source, original download before assistant edits",
+  "originalAppSha256": "86de2735ceb12391549b35b5d7a23381b19dd3a3cd22bc98fe2aa17aec2b4434",
+  "originalCssSha256": "32b7b804be6ab658750495395c783b3e02b242725d05ec1d795b46b7816dd2c0",
+  "originalComponents": [
+    "DotSpinner",
+    "IconBtn",
+    "Thinking",
+    "EffortSlider",
+    "VoiceBar",
+    "Sheet",
+    "Media",
+    "App"
+  ],
+  "unchangedComponents": [
+    "DotSpinner",
+    "IconBtn"
+  ],
+  "cssEqualsOriginalAfterRemovingMobileRules": true,
+  "originalDistinctStaticClasses": 93,
+  "retainedOriginalStaticClasses": 89,
+  "authorizedStyleChanges": [
+    "flex h-[100dvh] w-full overflow-hidden pt-[max(env(safe-area-inset-top),50px)] pb-[max(env(safe-area-inset-bottom),8px)] flex-col bg-[#faf9f5]",
+    "relative flex h-11 flex-1 items-center gap-1 rounded-full border border-black/10 bg-white pl-2 pr-1.5 shadow-sm",
+    "min-w-0 flex-1 bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]",
+    "flex h-8 w-8 items-center justify-center rounded-full bg-[#c96442] text-white transition disabled:bg-[#e6c2b4]"
+  ],
+  "dataOnlyChanges": [
+    "Remove initial messages, demo workbench/activity and fixed context values",
+    "Replace fake replies and speech fallback with authenticated host APIs",
+    "Use actual media audio in original VoiceBar",
+    "Use server models, efforts, reasoning, context and records"
+  ],
+  "integrationOnlyStates": [
+    "Attachment upload/retry",
+    "History confirmation",
+    "Route decisions",
+    "Connection/error feedback"
+  ],
+  "productionEntry": "apps/web/dist/index.html -> chat-app.js (built from apps/web/react/src/main.tsx)"
+}

@@ -76,9 +76,11 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 // Only explicitly shipped public files are reachable. Never resolve a request path
 // directly beneath WEB_DIR (login assets must not expose source or state files).
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
-  ['/', { file: 'index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
-  ['/app.js', { file: 'app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
-  ['/style.css', { file: 'style.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
+  ['/', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
+  ['/chat-app.css', { file: '../dist/chat-app.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
+  ['/app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
+  ['/style.css', { file: '../dist/chat-app.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
   ['/composer-logic.js', { file: 'composer-logic.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
   ['/login', { file: 'login/index.html', type: 'text/html; charset=utf-8', cache: 'no-store' }],
   ...['player.css', 'login.css'].map((file): [string, { file: string; type: string; cache: string }] =>

@@ -106,7 +106,10 @@ test('R16：PUT 编辑 → message.edited 事件 + 编辑修订真实归档出�
   assert.ok(acked, '编辑修订真实同步出站（反例：远端 0 请求、只有重启才恢复）');
 });
 
-test('R18：费用日累计按上海自然日（昨日午后不算今天）+ usageDay 披露', async () => {
+test('R18：费用日累计按上海自然日（昨日午后不算今天）+ usageDay 披露', async (t) => {
+  // 固定上海10:00：昨日13:00仍在滚动24h内，但不属于今天。
+  // 避免真实午夜附近 now-30min 也落入昨日而导致错误失败。
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-13T02:00:00Z') });
   const db = (host as unknown as { db: import('../../apps/host/src/db/connection.ts').Db }).db;
   const win = db.prepare('SELECT id FROM windows LIMIT 1').get() as { id: string } | undefined;
   const attempt = db.prepare('SELECT id, turn_id FROM attempts LIMIT 1').get() as { id: string; turn_id: string } | undefined;
@@ -117,7 +120,7 @@ test('R18：费用日累计按上海自然日（昨日午后不算今天）+ usa
   };
   // 上海"昨天"13:00（=UTC 前一天 05:00）——滚动 24h 口径会把它算进今天
   const now = Date.now();
-  const yesterdayShanghai1300 = new Date(now - 26 * 60 * 60 * 1000).toISOString();
+  const yesterdayShanghai1300 = '2026-10-12T05:00:00.000Z';
   mk('pr-yd', 'chat', yesterdayShanghai1300);
   mk('pr-td', 'chat', new Date(now - 30 * 60 * 1000).toISOString());
   const res = await fetch(`${base}/api/v1/conversations/primary/context-records`, { headers: authHeaders() });
