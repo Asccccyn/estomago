@@ -361,6 +361,11 @@ function renderMessage(dto, { update = false } = {}) {
     };
     actions.appendChild(editBtn);
   }
+  if (dto.speaker === 'owner' || dto.speaker === 'assistant') {
+    const heart = messageAction('heart', '戳一戳（服务暂未接入）', 'poke-btn');
+    heart.disabled = true;
+    actions.appendChild(heart);
+  }
   bubble.appendChild(actions);
   scrollBottom();
 }
@@ -377,7 +382,9 @@ function ensureReasoningPanel(turnId) {
   const body = document.createElement('div');
   body.className = 'reasoning-body';
   details.appendChild(body);
-  ts.element.prepend(details);
+  const firstAnswer = ts.element.querySelector('.assistant');
+  if (firstAnswer && typeof ts.element.insertBefore === 'function') ts.element.insertBefore(details, firstAnswer);
+  else ts.element.appendChild(details);
   ts.reasoningPanel = details;
   ts.reasoningBody = body;
   return ts;
@@ -896,6 +903,7 @@ function setActionIcon(button, icon, label) {
     copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h4"/>',
     select: '<path d="m3 6 2 2 3-3m-5 11 2 2 3-3M12 6h9M12 12h9M12 18h9"/>',
     edit: '<path d="m16 3 5 5-12 12-6 1 1-6L16 3Z"/><path d="m13 6 5 5"/>',
+    heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1.1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8Z"/>',
   };
   button.type = 'button';
   button.title = label;
@@ -934,8 +942,8 @@ async function loadRuntimeSettings() {
     }
     const modelLabel = $('model-label');
     if (modelLabel) modelLabel.textContent = isOpenRouter
-      ? [model ?? '模型未配置', data.reasoning_effort?.effective ?? data.reasoning_effort?.override].filter(Boolean).join(' · ')
-      : `${driverLabel} · ${model ?? '型号未知'}`;
+      ? ['char', compactModelName(model ?? '模型未配置'), data.reasoning_effort?.effective ?? data.reasoning_effort?.override].filter(Boolean).join(' · ')
+      : `char · ${compactModelName(model ?? '型号未知')}`;
     if (runtimeBar.note) runtimeBar.note.textContent = isOpenRouter
       ? '切模型→下一条消息等你选历史后换窗；切思考→立即生效不换窗'
       : `当前使用${driverLabel}。这里的模型与思考设置仅适用于 OpenRouter。`;
@@ -964,8 +972,54 @@ async function loadRuntimeSettings() {
       runtimeBar.effortSel.value = isOpenRouter ? data.reasoning_effort?.override ?? 'default' : 'default';
       void data.effort_options_verified;
     }
+    renderOriginalModelPicker(data, model, isOpenRouter);
     runtimeBar.loaded = true;
   } catch { /* 面板未就绪时静默（boot 会重试一次） */ }
+}
+
+function compactModelName(value) {
+  return String(value).split('/').pop().replace(/^claude-/, '').replace(/(opus|sonnet|haiku|fable)-(?=\d)/g, '$1');
+}
+function renderOriginalModelPicker(data, currentModel, editable) {
+  const bar = runtimeBar.el;
+  if (!bar) return;
+  for (const child of [...bar.children]) child.hidden = true;
+  let picker = bar.querySelector('.original-model-picker');
+  if (!picker) { picker = document.createElement('div'); picker.className = 'original-model-picker'; bar.appendChild(picker); }
+  picker.hidden = false;
+  picker.replaceChildren();
+  const models = [...new Set([...(editable ? data.model_options ?? [] : []), currentModel].filter(Boolean))];
+  const list = document.createElement('div'); list.className = 'model-choice-list';
+  for (const model of models.length ? models : ['型号未知']) {
+    const button = document.createElement('button'); button.className = 'model-choice';
+    button.type = 'button'; button.title = model; button.disabled = !editable;
+    button.setAttribute('aria-pressed', String(model === currentModel));
+    const name = document.createElement('span'); name.textContent = compactModelName(model);
+    const check = document.createElement('span'); check.className = 'model-check'; check.textContent = model === currentModel ? '✓' : '';
+    button.appendChild(name); button.appendChild(check);
+    button.onclick = () => { runtimeBar.modelInput.value = model; void runtimeBar.modelApply.onclick(); };
+    list.appendChild(button);
+  }
+  picker.appendChild(list);
+  const separator = document.createElement('span'); separator.className = 'model-separator'; picker.appendChild(separator);
+  const levels = editable ? data.effort_options ?? [] : ['default'];
+  const current = data.reasoning_effort?.override ?? data.reasoning_effort?.effective ?? 'default';
+  const control = document.createElement('div'); control.className = 'effort-control';
+  const range = document.createElement('input'); range.type = 'range'; range.className = 'effort-slider';
+  range.min = '0'; range.max = String(Math.max(0, levels.length - 1)); range.step = '1'; range.value = String(Math.max(0, levels.indexOf(current)));
+  range.disabled = !editable || levels.length < 2; range.setAttribute('aria-label', '思考等级');
+  const setEffort = async (level) => { runtimeBar.effortSel.value = level; await runtimeBar.effortSel.onchange(); };
+  range.onchange = () => void setEffort(levels[Number(range.value)]);
+  control.appendChild(range);
+  const labels = document.createElement('div'); labels.className = 'effort-labels';
+  for (const level of [...levels].reverse()) {
+    const button = document.createElement('button'); button.type = 'button'; button.className = 'effort-label';
+    button.disabled = !editable; button.textContent = ({medium:'med',minimal:'min',default:'默认'})[level] ?? level;
+    button.setAttribute('aria-pressed', String(level === current));
+    button.onclick = () => void setEffort(level);
+    labels.appendChild(button);
+  }
+  control.appendChild(labels); picker.appendChild(control);
 }
 
 function ensureRuntimeBar(data) {
@@ -1434,33 +1488,29 @@ async function loadContextSummary() {
 async function loadWorkbench() {
   const body = $('workbench-body');
   if (!body) return;
-  body.textContent = '正在读取任务…';
+  body.textContent = '正在读取作品…';
   try {
-    const [tasksRes, runsRes] = await Promise.all([
-      fetch(`/api/v1/background/tasks?conversation_id=${CONVERSATION}`, { credentials: 'same-origin' }),
-      fetch(`/api/v1/background/runs?conversation_id=${CONVERSATION}`, { credentials: 'same-origin' }),
-    ]);
-    if (tasksRes.status === 401 || runsRes.status === 401) { redirectToLogin(); return; }
-    if (!tasksRes.ok || !runsRes.ok) throw new Error();
-    const [tasksData, runsData] = await Promise.all([tasksRes.json(), runsRes.json()]);
+    const response = await fetch('/api/v1/content/creations?limit=100', { credentials: 'same-origin' });
+    if (response.status === 401) { redirectToLogin(); return; }
+    if (!response.ok) { body.textContent = '作品服务暂不可用。'; return; }
+    const data = await response.json();
     body.replaceChildren();
-    const kindLabels = { reminder: '提醒', autonomous: '自主任务', cache_keepalive: '缓存保温' };
-    for (const [title, entries, isRun] of [['已设任务', tasksData.tasks ?? [], false], ['最近执行', runsData.runs ?? [], true]]) {
-      const section = document.createElement('section');
-      section.className = 'rec-section';
-      const heading = document.createElement('h4'); heading.textContent = title; section.appendChild(heading);
-      if (!entries.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = isRun ? '暂无执行记录。' : '暂无已设任务。'; section.appendChild(empty); }
-      for (const item of entries) {
-        const row = document.createElement('div'); row.className = 'workbench-item';
-        row.textContent = isRun
-          ? `${kindLabels[item.kind] ?? item.kind} · ${item.state}${item.result_code ? ` · ${item.result_code}` : ''}\n${fmtTime(item.created_at)}${item.finished_at ? ` → ${fmtTime(item.finished_at)}` : ''}`
-          : `${kindLabels[item.kind] ?? item.kind} · ${item.enabled ? '已启用' : '已停用'}\n下次：${fmtTime(item.next_due_at)}`;
-        section.appendChild(row);
+    const grid = document.createElement('div'); grid.className = 'creation-grid';
+    for (const item of data.items ?? []) {
+      const card = document.createElement(item.work_asset_id ? 'a' : 'div'); card.className = 'creation-card';
+      if (item.work_asset_id) {
+        card.href = `/api/v1/assets/${encodeURIComponent(item.work_asset_id)}/${item.work_kind === 'html' ? 'preview' : 'content'}`;
+        card.target = '_blank'; card.rel = 'noopener';
       }
-      body.appendChild(section);
+      if (item.icon_asset_id) { const icon = document.createElement('img'); icon.className = 'creation-icon'; icon.alt = ''; icon.src = `/api/v1/assets/${encodeURIComponent(item.icon_asset_id)}/content`; card.appendChild(icon); }
+      const title = document.createElement('p'); title.className = 'creation-title'; title.textContent = item.title || '未命名作品'; card.appendChild(title);
+      const at = document.createElement('p'); at.className = 'creation-time'; at.textContent = fmtTime(item.created_at); card.appendChild(at);
+      grid.appendChild(card);
     }
-    const refresh = document.createElement('button'); refresh.className = 'ghost'; refresh.textContent = '刷新'; refresh.onclick = () => void loadWorkbench(); body.appendChild(refresh);
-  } catch { body.textContent = '任务暂不可用，请重新打开重试。'; }
+    if (!data.items?.length) { const empty = document.createElement('p'); empty.className = 'muted'; empty.textContent = '还没有作品。'; body.appendChild(empty); }
+    else body.appendChild(grid);
+    if (data.has_more) { const note = document.createElement('p'); note.className = 'muted'; note.textContent = '仅显示最近 100 件作品。'; body.appendChild(note); }
+  } catch { body.textContent = '作品暂不可用，请重新打开重试。'; }
 }
 
 if ($('model-toggle')) $('model-toggle').onclick = () => { if (togglePopover('model-panel', 'model-toggle')) void loadRuntimeSettings(); };
@@ -1468,13 +1518,19 @@ if ($('model-close')) $('model-close').onclick = () => closePopover('model-panel
 if ($('more-btn')) $('more-btn').onclick = () => togglePopover('more-menu', 'more-btn');
 if ($('context-btn')) $('context-btn').onclick = () => { if (togglePopover('context-panel', 'context-btn')) void loadContextSummary(); };
 if ($('context-close')) $('context-close').onclick = () => closePopover('context-panel', 'context-btn');
-if ($('history-select-btn')) $('history-select-btn').onclick = () => { closePopover('more-menu', 'more-btn'); toggleSelection(); };
+if ($('history-select-btn')) $('history-select-btn').onclick = () => { closePopover('attach-menu', 'attach-btn'); toggleSelection(); };
 if ($('workbench-btn')) $('workbench-btn').onclick = () => { closePopover('more-menu', 'more-btn'); const panel = $('workbench-panel'); if (panel) panel.hidden = false; void loadWorkbench(); };
 if ($('workbench-close')) $('workbench-close').onclick = () => { const panel = $('workbench-panel'); if (panel) panel.hidden = true; };
 for (const id of ['records-btn', 'alerts-btn']) $(id)?.addEventListener('click', () => closePopover('more-menu', 'more-btn'));
 if (typeof document.addEventListener === 'function') document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   for (const [panel, button] of [['model-panel', 'model-toggle'], ['more-menu', 'more-btn'], ['attach-menu', 'attach-btn'], ['context-panel', 'context-btn']]) closePopover(panel, button);
+});
+if (typeof document.addEventListener === 'function') document.addEventListener('pointerdown', (event) => {
+  for (const [id, button] of [['model-panel','model-toggle'],['more-menu','more-btn'],['attach-menu','attach-btn']]) {
+    const panel = $(id); const trigger = $(button);
+    if (panel && !panel.hidden && !panel.contains(event.target) && !trigger?.contains(event.target)) closePopover(id, button);
+  }
 });
 
 const voiceInput = { recorder: null, stream: null, timer: null, started: 0, cancelled: false, starting: false, generation: 0 };
