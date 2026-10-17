@@ -225,6 +225,13 @@ export type Config = {
     enabled: boolean; // 代码完整交付后本地联调可开；服务未运行时如实显示状态
     port: number; // 同机工程初值；bind_host 固定 loopback（policy-constants）
   };
+  wishstar: {
+    enabled: boolean; // 许愿星（superposition）接入：开窗临近纪念日提醒 + char工具面
+    base_url: string; // 同机 loopback
+    readonly_token_env: string; // 只读服务凭据（仅 /special-dates/upcoming）
+    jiaming_token_env: string; // char身份凭据（HTTP Bearer，服务端按 token 反推 actor）
+    upcoming_days: number; // 临近提醒窗口天数（含当天；她裁定：快到了才提醒）
+  };
   system_alerts: {
     usage_settlement_grace_ms: number; // 已结束且应有 usage 的请求宽限
     summary_refresh_debounce_ms: number; // SSE 触发的合并刷新
@@ -443,6 +450,13 @@ export const CONFIG_DEFAULTS: Config = {
     reminders: { enabled: true, delivery_grace_ms: 300000, default_local_time: '09:00' },
   },
   content: { enabled: false, port: 18788 },
+  wishstar: {
+    enabled: false,
+    base_url: 'http://127.0.0.1:8321',
+    readonly_token_env: 'WISHSTAR_READONLY_TOKEN',
+    jiaming_token_env: 'WISHSTAR_JIAMING_TOKEN',
+    upcoming_days: 3,
+  },
   system_alerts: { usage_settlement_grace_ms: 60000, summary_refresh_debounce_ms: 1000 },
   token_estimates: { debounce_ms: 250, max_body_bytes: 524288 },
   media: {
@@ -560,6 +574,11 @@ const SHAPE: SectionSpec = { section: {
     } },
   } },
   content: { section: { enabled: 'boolean', port: 'number' } },
+  wishstar: { section: {
+    enabled: 'boolean', base_url: 'string',
+    readonly_token_env: 'string', jiaming_token_env: 'string',
+    upcoming_days: 'number',
+  } },
   system_alerts: { section: { usage_settlement_grace_ms: 'number', summary_refresh_debounce_ms: 'number' } },
   token_estimates: { section: { debounce_ms: 'number', max_body_bytes: 'number' } },
   media: { section: {

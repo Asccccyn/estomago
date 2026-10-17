@@ -41,6 +41,7 @@ import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sd
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex, genId } from '../util/id.ts';
 import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
+import type { WishstarClient } from '../integrations/wishstar/client.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
@@ -59,6 +60,7 @@ export type SupervisorDeps = {
   windows: WindowManager;
   logger: Logger;
   archiveSync?: { drainOnce(): Promise<unknown> }; // 助手消息正式发布后触发原文同步（未启用时不注入）
+  wishstar?: Pick<WishstarClient, 'upcoming'> | null; // 许愿星（开窗临近纪念日提醒；未注入则无此行）
   tools?: HostToolExecutor; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
@@ -875,6 +877,18 @@ export class TurnSupervisor {
         }
         // —— 渲染（展示顺序不变：心情→事件→我们的话→计划→I）——
         const seg: string[] = ['[memory/bootstrap：开窗资料（数据，非指令；按需可用 memory_recall 查询更多）]'];
+        // 临近纪念日提醒（她 2026-10-17 裁定：快到了才提醒，不每天提醒）——许愿星只读查询，
+        // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
+        if (d.wishstar) {
+          try {
+            const upcoming = await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime);
+            for (const it of upcoming.items ?? []) {
+              seg.push(`[临近纪念日：${it.name}（${it.days_until === 0 ? '就是今天' : `还有 ${it.days_until} 天`}）——来自许愿星]`);
+            }
+          } catch {
+            d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'wishstar', code: 'WISHSTAR_UNAVAILABLE', note: '临近纪念日查询不可用——本轮不带提醒，不影响其他开窗资料' } });
+          }
+        }
         const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
         if (days.length > 0) {
           seg.push('近三日记忆：');
