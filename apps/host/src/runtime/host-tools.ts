@@ -747,9 +747,6 @@ function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolC
  *  emoji 等增补平面字符占 2 个 UTF-16 单位但只算 1 个码点，fragment 之前出现过一个就会错位。 */
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
 
-/** 引用核对只看最近 N 条已见消息（资源有界；更早原话的引用会如实 QUOTE_MATCH_FAILED，不扩大扫描） */
-const QUOTE_CANDIDATE_LIMIT = 60;
-
 /** WP4：conversation_read 的可见消息行（owner 真实消息/已发布 assistant） */
 type ReadRow = { id: string; sequence: number; speaker: 'owner' | 'assistant'; revision: number; content: string; content_hash: string; occurred_at: string };
 
@@ -1044,7 +1041,10 @@ export class HostToolExecutor {
       }
     }
     candidates.sort((a, b) => a.sequence - b.sequence);
-    if (candidates.length > QUOTE_CANDIDATE_LIMIT) candidates.splice(0, candidates.length - QUOTE_CANDIDATE_LIMIT); // 资源有界：只看最近 N 条可见
+    // 核对范围由本次请求的 seenMessages 限定，不能再按原消息序号截成最近 60 条。
+    // 旧逻辑已读出了全部候选却丢弃较早的已见原话；conversation_read 重新读到它们后
+    // 序号也不会变，因此合法引用反复失败，诱发重复回读与付费续请求。
+    // 保留完整已见集合；房间、修订和片段范围仍由上面的来源门及下面的逐字匹配校验。
     const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费 UTF-16 区间
     const matched: MatchedQuote[] = [];
     for (let qi = 0; qi < quotes.length; qi++) {
