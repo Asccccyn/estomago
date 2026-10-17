@@ -1,8 +1,8 @@
 :root { color-scheme: light; }
 * { box-sizing: border-box; }
-html, body { width: 100%; height: 100%; margin: 0; background: #fff; }
+html, body { width: 100%; height: 100%; margin: 0; background: #f8f4ed; }
 body { overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
 button, input { font: inherit; -webkit-tap-highlight-color: transparent; }
-.stage { position: fixed; inset: 0; height: 100%; height: 100dvh; overflow: hidden; background: #fff; }
+.stage { position: fixed; inset: 0; height: 100%; height: 100dvh; overflow: hidden; background: #f8f4ed; }
 #scene { display: block; width: 100%; height: 100%; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

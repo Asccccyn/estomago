@@ -1,0 +1,50 @@
+{
+  "width": 1254,
+  "height": 1254,
+  "pivot": [
+    676,
+    640
+  ],
+  "bodyAngleDeg": 54,
+  "assets": {
+    "body": "assets/body.png",
+    "leftForewing": "assets/left-forewing.png",
+    "leftHindwing": "assets/left-hindwing.png",
+    "rightForewing": "assets/right-forewing.png",
+    "rightHindwing": "assets/right-hindwing.png",
+    "leftTail": "assets/left-tail.png",
+    "rightTail": "assets/right-tail.png",
+    "particles": "assets/particles.png"
+  },
+  "particleGroups": [
+    "assets/particles-01.png",
+    "assets/particles-02.png",
+    "assets/particles-03.png",
+    "assets/particles-04.png"
+  ],
+  "tails": {
+    "left": {
+      "anchor": [
+        801,
+        1040
+      ],
+      "tip": [
+        1041,
+        1156
+      ]
+    },
+    "right": {
+      "anchor": [
+        1047,
+        911
+      ],
+      "tip": [
+        1194,
+        1046
+      ]
+    }
+  },
+  "source": "source/selected-image-1.png",
+  "background": "#f8f4ed",
+  "version": "2.0.0"
+}

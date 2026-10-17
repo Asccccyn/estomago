@@ -5,7 +5,7 @@ import { Readable } from 'node:stream';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import type { SdkNormalizedEvent } from '../../packages/contracts/src/sdk-events.ts';
 import { OpenRouterRunner, openRouterSelection, orSessionId, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { buildOrPayload } from '../../apps/host/src/runtime/or-payload.ts';
+import { assertAppendOnly, buildOrPayload, withoutCacheMarkers } from '../../apps/host/src/runtime/or-payload.ts';
 import type { OrRunRequest, RunnerRunResult } from '../../apps/host/src/runtime/runner.ts';
 
 const enc = new TextEncoder();
@@ -104,6 +104,115 @@ test('工具调用流：matched tool_use 块、parsedArguments 不在事件层�
   assert.equal(tool.tool_id, 'call-9');
   assert.equal(tool.tool_name, 'hold');
   assert.equal(tool.text, '{"k":1}');
+});
+
+test('Claude 经 Bedrock/Vertex/Anthropic 派发：稳定前缀和尾点均保留 1h 缓存', async () => {
+  for (const provider of ['amazon-bedrock', 'google-vertex', 'anthropic']) {
+    const { transport, calls } = fakeTransport([{ body: okText }]);
+    const runner = new OpenRouterRunner({ providerOnly: [provider], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
+    const request = req();
+    request.envelope.model = 'anthropic/claude-opus-4.6';
+    request.envelope.messages = [
+      { role: 'system', content: [{ type: 'text', text: '稳定的身份与工具使用说明' }] },
+      { role: 'user', content: [{ type: 'text', text: '你好' }] },
+    ];
+    request.envelope.boundaries = [{ messageIndex: 0, contentIndex: 0 }];
+    const before = structuredClone(request.envelope);
+    const result = await runner.run(request);
+    assert.equal(result.outcome, 'completed', provider);
+    assert.equal(calls.length, 1, provider);
+    const payload = calls[0]!.payload;
+    const messages = payload.messages as Array<{ content: Array<Record<string, unknown>> }>;
+    if (provider === 'amazon-bedrock') {
+      assert.equal(payload.cache_control, undefined, 'Bedrock 不再依赖顶层自动点');
+      assert.deepEqual(messages[1]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, 'Bedrock 当前输入显式尾点');
+    } else {
+      assert.deepEqual(payload.cache_control, { type: 'ephemeral', ttl: '1h' }, `${provider}: 自动尾点`);
+    }
+    assert.deepEqual(messages[0]!.content[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, `${provider}: 稳定前缀断点`);
+    assert.deepEqual(payload.provider, { only: [provider], allow_fallbacks: false, require_parameters: true }, '缓存修复不改供应商路由');
+    assert.deepEqual(request.envelope, before, '只改发送副本，不改原始上下文');
+  }
+});
+
+test('Bedrock 工具续轮当次覆盖结果；下轮尾点前移仍保持完整历史与最多四个断点', async () => {
+  const { transport, calls } = fakeTransport([{ body: okText }]);
+  const runner = new OpenRouterRunner({ providerOnly: ['amazon-bedrock'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
+  const first = req();
+  first.envelope.messages = [
+    { role: 'system', content: [{ type: 'text', text: '固定身份' }] },
+    { role: 'system', content: [{ type: 'text', text: '启动资料' }] },
+    { role: 'user', content: [{ type: 'text', text: '上次输入' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '上次回复' }] },
+    { role: 'user', content: [{ type: 'text', text: '本次输入' }] },
+  ];
+  first.envelope.boundaries = [0, 1, 2].map((messageIndex) => ({ messageIndex, contentIndex: 0 }));
+  const toolResult = JSON.stringify({ records: ['完整工具结果，不重新编码'] });
+  const second = req({ envelope: { ...first.envelope, messages: [...first.envelope.messages,
+    { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'memory_recall', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'call-1', content: toolResult },
+  ] } });
+  const third = req({ envelope: { ...second.envelope, messages: [...second.envelope.messages,
+    { role: 'assistant', content: [{ type: 'text', text: '工具后的回复' }] },
+    { role: 'user', content: [{ type: 'text', text: '下一轮输入' }] },
+  ] } });
+  const requests = [first, second, third];
+  const originals = requests.map((request) => structuredClone(request.envelope));
+  for (let i = 0; i < requests.length; i++) {
+    requests[i]!.previousPayload = i === 0 ? null : calls[i - 1]!.payload;
+    assert.equal((await runner.run(requests[i]!)).outcome, 'completed', `第 ${i + 1} 次请求通过 append-only 并派发`);
+    assert.deepEqual(requests[i]!.envelope, originals[i], '发送标记不回写轨迹');
+    const payload = calls[i]!.payload;
+    assert.equal(payload.cache_control, undefined);
+    const messages = payload.messages as Array<Record<string, unknown> & { content: unknown }>;
+    const markerCount = messages.reduce((count, message) => count + (message.cache_control ? 1 : 0)
+      + (Array.isArray(message.content) ? message.content.filter((block) => block.cache_control).length : 0), 0);
+    assert.equal(markerCount, 4, 'A/B/G + 当次尾点，未累积旧尾点');
+    assert.deepEqual((withoutCacheMarkers(payload).messages), originals[i]!.messages, '完整历史正文与工具协议保持相同');
+  }
+  const toolMessages = calls[1]!.payload.messages as Array<Record<string, unknown>>;
+  assert.equal(toolMessages[6]!.content, toolResult);
+  assert.deepEqual(toolMessages[6]!.cache_control, { type: 'ephemeral', ttl: '1h' }, '工具结果在当次续轮明确入缓存');
+  const nextMessages = calls[2]!.payload.messages as Array<Record<string, unknown>>;
+  assert.equal(nextMessages[6]!.cache_control, undefined, '旧工具尾点清除');
+  assert.deepEqual((nextMessages[8]!.content as Array<Record<string, unknown>>)[0]!.cache_control, { type: 'ephemeral', ttl: '1h' }, '尾点推进到最新用户输入');
+});
+
+test('Bedrock string user 的尾点推进不会改写历史表示；与已有边界同位置时去重', () => {
+  const input = { model: MODEL, sessionId: 'stable-string-user', providerOnly: ['amazon-bedrock'], messages: [{ role: 'user', content: '第一句' }], boundaries: [{ messageIndex: 0, contentIndex: 0 }] };
+  const first = buildOrPayload(input);
+  const next = buildOrPayload({ ...input, messages: [...input.messages, { role: 'assistant', content: '回复' }, { role: 'user', content: '第二句' }] });
+  assert.equal(assertAppendOnly(first, next), true);
+  assert.deepEqual(input.messages, [{ role: 'user', content: '第一句' }], '原始轨迹不变');
+  assert.equal(JSON.stringify(first).match(/"cache_control"/g)?.length, 1, '保护点与尾点同位置不重复占槽');
+});
+
+test('Bedrock 图片尾块也被覆盖，断点不提前停在图片前的文字', () => {
+  for (const media of [
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'test-image-not-real' } },
+    { type: 'image_url', image_url: { url: 'https://example.invalid/test.png' } },
+    { type: 'document', source: { type: 'text', media_type: 'text/plain', data: '测试文档' } },
+  ]) {
+    const messages = [{ role: 'user', content: [{ type: 'text', text: '查看附件' }, media] }];
+    const payload = buildOrPayload({ model: MODEL, sessionId: 'media-tail', providerOnly: ['amazon-bedrock'], messages });
+    const parts = (payload.messages as Array<{ content: Array<Record<string, unknown>> }>)[0]!.content;
+    assert.equal(parts[0]!.cache_control, undefined);
+    assert.deepEqual(parts[1]!.cache_control, { type: 'ephemeral', ttl: '1h' });
+    assert.deepEqual(withoutCacheMarkers(payload).messages, messages, '媒体内容和顺序不变');
+  }
+});
+
+test('非 Claude 模型经 Bedrock 派发：不因共享供应商而加入 Claude 缓存参数', async () => {
+  const { transport, calls } = fakeTransport([{ body: okText }]);
+  const runner = new OpenRouterRunner({ providerOnly: ['amazon-bedrock'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
+  const request = req();
+  request.envelope.model = 'deepseek/deepseek-chat';
+  request.envelope.boundaries = [{ messageIndex: 0, contentIndex: 0 }];
+  const result = await runner.run(request);
+  assert.equal(result.outcome, 'completed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.payload.cache_control, undefined);
+  assert.equal(JSON.stringify(calls[0]!.payload.messages).includes('cache_control'), false);
 });
 
 test('401 不重试：单次调用、稳定错误码', async () => {

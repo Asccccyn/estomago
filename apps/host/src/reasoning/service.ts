@@ -30,6 +30,7 @@ type BlockRow = {
   revision: number;
   completeness: string;
   updated_at: string;
+  created_at: string;
 };
 
 export class ReasoningService {
@@ -362,5 +363,6 @@ function rowToDto(r: BlockRow): ReasoningBlockDto {
     id: r.id, turn_id: r.turn_id, attempt_id: r.attempt_id, sdk_message_id: r.sdk_message_id,
     block_index: r.block_index, origin: r.origin, visibility: r.visibility as ReasoningVisibility,
     state: r.state as ReasoningState, revision: r.revision, text, completeness: r.completeness, updated_at: r.updated_at,
+    created_at: r.created_at,
   };
 }

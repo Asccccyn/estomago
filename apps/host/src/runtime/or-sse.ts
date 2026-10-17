@@ -57,6 +57,9 @@ export type AggregatedToolCall = {
   parsedArguments: Record<string, unknown>;
 };
 
+// 可读展示投影与原样协议继续态分开；签名/密文绝不进入 text。
+export type OrReasoningBlock = { index: number; type: 'thinking' | 'redacted_thinking'; text: string };
+
 export type OrStreamFinish = {
   id: string | null;
   status: 'completed' | 'incomplete';
@@ -66,6 +69,7 @@ export type OrStreamFinish = {
   usage: NormalizedOrUsage;
   usageRawFrame: OrUsageFrame | null; // 原始记账帧（仅计数/费用字段；供持久化对账）
   reasoningFrames: unknown[]; // opaque：只按接收顺序保留，不解释、不回发
+  reasoningBlocks: OrReasoningBlock[]; // 仅上游实际返回的可读文本或明确删隐标记
   reasoningContent: string | null; // D01：DS 官方 thinking 增量拼接（仅同轮工具续传回传；无=null）
   terminalEvents: number;
 };
@@ -81,6 +85,7 @@ export class OrStreamAccumulator {
   private rawUsage: OrUsageFrame | null = null;
   private tools = new Map<number, ToolAcc>();
   private reasoningFrames: unknown[] = [];
+  private reasoningBlocks = new Map<string, OrReasoningBlock>();
   private dsReasoning = ''; // D01（审计 3655d60）：DS thinking 的 reasoning_content 增量——同轮工具续传的协议继续态（opaque，不进 UI）
   private normalizeUsageFn: (u: OrUsageFrame | null) => NormalizedOrUsage;
   private framer = new SseFramer((data) => this.accept(data));
@@ -99,6 +104,40 @@ export class OrStreamAccumulator {
     return { id: this.id, text: this.text };
   }
 
+  reasoningSnapshot(): OrReasoningBlock[] {
+    return Array.from(this.reasoningBlocks.values(), (block) => ({ ...block }));
+  }
+
+  private appendReasoning(key: string, type: OrReasoningBlock['type'], text: string): void {
+    const block = this.reasoningBlocks.get(key) ?? { index: this.reasoningBlocks.size, type, text: '' };
+    block.text += text;
+    this.reasoningBlocks.set(key, block);
+  }
+
+  private acceptReasoning(delta: { reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown[] }): void {
+    let hasReadableDetails = false;
+    for (const [position, value] of (Array.isArray(delta.reasoning_details) ? delta.reasoning_details : []).entries()) {
+      if (!value || typeof value !== 'object') continue;
+      const detail = value as Record<string, unknown>;
+      const identity = Number.isSafeInteger(detail.index) ? `index:${detail.index}`
+        : typeof detail.id === 'string' ? `id:${detail.id}` : `position:${position}`;
+      const key = `${detail.type}:${identity}`;
+      const text = detail.type === 'reasoning.text' ? detail.text : detail.type === 'reasoning.summary' ? detail.summary : null;
+      if (typeof text === 'string' && text.length > 0) {
+        hasReadableDetails = true;
+        this.appendReasoning(key, 'thinking', text);
+      } else if (detail.type === 'reasoning.encrypted') {
+        this.appendReasoning(key, 'redacted_thinking', '');
+      }
+    }
+    // OpenRouter 可能同帧同时返回 reasoning 与 reasoning_details；它们是同一份
+    // 可读内容的两种表示，优先结构化字段，不能把别名再追加一遍。
+    const plain = typeof delta.reasoning === 'string' && delta.reasoning.length > 0 ? delta.reasoning : delta.reasoning_content;
+    if (!hasReadableDetails && typeof plain === 'string' && plain.length > 0) {
+      this.appendReasoning('plain', 'thinking', plain);
+    }
+  }
+
   /** 审计 F20：无终态/DONE 断流时，已抵达的记账帧仍可读（不因 finish() 抛出而丢失事实） */
   usageObserved(): OrUsageFrame | null {
     return this.rawUsage ? structuredClone(this.rawUsage) : null;
@@ -115,7 +154,7 @@ export class OrStreamAccumulator {
       error?: unknown;
       id?: unknown;
       usage?: OrUsageFrame;
-      choices?: Array<{ index?: number; delta?: { content?: unknown; reasoning_content?: unknown; reasoning_details?: unknown[]; tool_calls?: Array<{ index?: unknown; id?: unknown; type?: unknown; function?: { name?: unknown; arguments?: unknown } }> }; finish_reason?: unknown }>;
+      choices?: Array<{ index?: number; delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown[]; tool_calls?: Array<{ index?: unknown; id?: unknown; type?: unknown; function?: { name?: unknown; arguments?: unknown } }> }; finish_reason?: unknown }>;
     };
     try {
       x = JSON.parse(data) as typeof x;
@@ -131,7 +170,7 @@ export class OrStreamAccumulator {
     for (const ch of x.choices ?? []) {
       requireThat(ch.index === 0 || ch.index === undefined, 'UNSUPPORTED_MULTIPLE_CHOICES');
       const d = ch.delta ?? {};
-      const substantive = Boolean(d.content) || Boolean(d.tool_calls?.length) || Boolean(d.reasoning_details?.length);
+      const substantive = Boolean(d.content) || Boolean(d.tool_calls?.length) || Boolean(d.reasoning_details?.length) || Boolean(d.reasoning) || Boolean(d.reasoning_content);
       requireThat(!this.terminal || !substantive, 'CONTENT_AFTER_TERMINAL');
       if (d.content) {
         requireThat(typeof d.content === 'string', 'CONTENT_TYPE_INVALID');
@@ -139,6 +178,7 @@ export class OrStreamAccumulator {
       }
       if (typeof d.reasoning_content === 'string' && d.reasoning_content.length > 0) this.dsReasoning += d.reasoning_content; // D01：DS thinking 增量（官方协议继续态）
       if (d.reasoning_details?.length) this.reasoningFrames.push(structuredClone(d.reasoning_details));
+      this.acceptReasoning(d);
       for (const t of d.tool_calls ?? []) {
         requireThat(Number.isSafeInteger(t.index) && (t.index as number) >= 0, 'TOOL_INDEX_INVALID');
         const idx = t.index as number;
@@ -196,6 +236,7 @@ export class OrStreamAccumulator {
       usage: this.normalizeUsageFn(this.rawUsage),
       usageRawFrame: this.rawUsage ? structuredClone(this.rawUsage) : null,
       reasoningFrames: this.reasoningFrames,
+      reasoningBlocks: this.reasoningSnapshot(),
       reasoningContent: this.dsReasoning.length > 0 ? this.dsReasoning : null,
       terminalEvents: this.terminalEvents,
     };

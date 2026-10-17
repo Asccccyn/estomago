@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#f8f4ed">
+  <title>主页设计工作稿</title>
+  <link rel="stylesheet" href="app.css?v=cord-reveal-4">
+</head>
+<body>
+<main class="home">
+  <svg class="drawn-red-cord drawn-red-back" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="500" height="861" viewBox="0 0 500 861"><defs><g id="cords-back"><path class="thread-line" pathLength="1" stroke-linecap="butt" style="--reveal-delay:0.35s;--reveal-duration:3.4s" d="M700 -24 C690 35 680 83 658 112 M536 441 C524 468 503 493 490 516 C466 559 448 645 477 695 C499 716 526 728 552 737 C599 755 650 778 695 804 C686 833 676 854 650 872 C613 904 529 922 481 940"/><path class="thread-line" pathLength="1" stroke-linecap="butt" style="--reveal-delay:1.3s;--reveal-duration:2.4s" d="M20 337 C38 407 77 474 126 514 C167 550 260 651 258 735 C257 780 243 825 219 860 C192 907 165 927 121 949 C90 964 53 979 20 1007"/><path class="thread-line" pathLength="1" stroke-linecap="butt" style="--reveal-delay:4.7s;--reveal-duration:3.3s" d="M814 1037 C815 1054 810 1070 805 1087 M822 1255 C826 1289 830 1321 819 1346 C803 1386 734 1430 684 1474 C655 1499 639 1528 654 1550 C670 1575 722 1587 769 1592 C827 1598 887 1581 930 1560 C962 1544 971 1529 955 1510 C933 1483 886 1461 847 1460 C811 1459 784 1471 776 1495 C771 1510 771 1534 784 1541 C801 1550 844 1548 870 1543 C896 1538 921 1526 912 1513 C903 1499 866 1498 843 1503 C824 1507 819 1519 835 1527 C858 1540 909 1543 949 1546 C974 1548 1001 1554 1030 1556"/></g></defs><g transform="matrix(.531915 0 0 .531915 -27.12766 0)" fill="none" stroke-linecap="round" stroke-linejoin="round"><use href="#cords-back" stroke="#642c38" stroke-width="5.2"/><use href="#cords-back" stroke="#b34c59" stroke-width="3.5"/></g></svg>
+  <svg class="drawn-red-cord drawn-red-front" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="500" height="861" viewBox="0 0 500 861"><defs><g id="cords-front"><path class="thread-line" pathLength="1" stroke-linecap="butt" style="--reveal-delay:0s;--reveal-duration:3.0s" d="M154 -8 C147 30 203 67 249 109 C311 165 369 206 428 257 C490 311 553 354 622 392 C696 435 731 464 803 493 C875 528 929 554 987 564 C1027 575 1060 582 1108 590"/><path class="thread-line" pathLength="1" stroke-linecap="butt" style="--reveal-delay:3.55s;--reveal-duration:1.3s" id="butterfly-cord-loop" d="M481 940 C462 947 434 961 437 974 C444 993 484 1006 512 1012 C560 1020 611 1003 655 992 C699 979 734 963 765 972 C791 980 808 1008 814 1037"/></g></defs><g transform="matrix(.531915 0 0 .531915 -27.12766 0)" fill="none" stroke-linecap="round" stroke-linejoin="round"><use href="#cords-front" stroke="#642c38" stroke-width="5.2"/><use href="#cords-front" stroke="#b34c59" stroke-width="3.5"/></g></svg>
+  <img class="island-cord" src="home-v2-original/assets/layers/island-cord.svg?v=cord-reveal-4" alt="" aria-hidden="true">
+  <header class="page-header"><button id="settings-toggle" class="settings-toggle" type="button" aria-expanded="false" aria-controls="settings">预览设置 <span aria-hidden="true">＋</span></button></header>
+  <section id="settings" class="settings" hidden aria-label="预览设置">
+    <div class="setting-row"><label><input id="show-clock" type="checkbox" checked>显示代码时钟</label><label><input id="pause-motion" type="checkbox">暂停动效</label></div>
+    <div class="setting-row"><label class="upload-label">替换时钟图片<input id="clock-upload" type="file" accept="image/*"></label></div>
+  </section>
+
+  <div class="scene" id="scene">
+
+    <section class="clock-module" aria-label="时钟">
+      <button class="clock-touch" id="clock-touch" type="button" aria-label="时钟" aria-expanded="false">
+        <span class="gray-shadow" aria-hidden="true"></span>
+        <img class="shadow-quote" src="assets/fonts/shadow-quote.svg?v=cord-reveal-4" alt="Sentir mariposas en el estómago" lang="es">
+        <span class="clock-picture"><img id="clock-art" src="home-v2-original/assets/illustrations/clock-placeholder.svg?v=cord-reveal-4" alt="时间组件占位图"><span class="clock-face" id="clock-face"><span class="clock-column"><span id="clock-year"></span><span id="clock-month-day"></span></span><span class="clock-column clock-right"><span id="clock-time"></span><span id="clock-weekday" lang="en"></span></span></span></span>
+      </button>
+    </section>
+
+    <section class="portrait-module" aria-label="头像">
+      <div class="portrait-picture"><div id="portrait-placeholder" class="portrait-placeholder" aria-hidden="true"></div></div>
+      <div class="portrait-actions"><button class="glass-button" type="button" data-action="call" aria-label="通话"><img src="home-v2-original/assets/layers/phone.svg?v=cord-reveal-4" alt=""></button><button class="glass-button" type="button" data-action="chat" aria-label="聊天"><img src="home-v2-original/assets/layers/chat.svg?v=cord-reveal-4" alt=""></button></div>
+    </section>
+
+    <section class="album-module" aria-label="我们的相册">
+      <div class="album-stack" id="album-stack">
+        <button type="button" class="album-card" data-album-id="daily" data-layer="front" aria-label="日常照片，单击换层，双击打开"><img src="home-v2-original/assets/illustrations/album-daily.png" alt="日常照片示意插画"></button>
+        <button type="button" class="album-card" data-album-id="chat" data-layer="middle" aria-label="聊天记录，单击换层，双击打开"><img src="home-v2-original/assets/illustrations/album-chat.png" alt="聊天记录示意插画"></button>
+        <button type="button" class="album-card" data-album-id="stickers" data-layer="back" aria-label="表情包，单击换层，双击打开"><img src="home-v2-original/assets/illustrations/album-stickers.png" alt="表情包示意插画"></button>
+      </div>
+    </section>
+
+    <div class="main-butterfly" aria-hidden="true"><canvas id="latest-butterfly-canvas" class="latest-butterfly-canvas" role="img" aria-label="分层透明蝴蝶，独立振翅并带有浮动光点">
+          <img src="latest-butterfly/source/selected-image-1.png" alt="最新版蝴蝶原画">
+        </canvas></div>
+
+    <div class="mirror-module" aria-hidden="true">
+      <div class="mirror-surface"><img class="mirror-surface-art" src="home-v2-original/assets/layers/mirror-surface.svg?v=cord-reveal-4" alt=""><canvas id="butterfly-reflection" class="butterfly-reflection" aria-hidden="true"></canvas></div>
+      <img class="mirror-frame" src="home-v2-original/assets/illustrations/mirror-frame.png" alt="">
+    </div>
+  <section id="latest-asset-workbench" class="latest-workbench" aria-label="石砖导航">
+    <div class="workbench-grid">
+      
+      <section class="latest-component stone-component" data-component-id="approved-stone-and-bottles-20261016" aria-label="最新版竖向石砖及许愿瓶">
+        <div class="latest-stone-canvas" id="latest-stone-canvas">
+          <img class="latest-stone-original" src="latest-stone-wish/00_确认版原图_保持不变.png" alt="最后确认的竖向石砖、黑色晕染与双许愿瓶透明原画">
+          <div class="latest-stone-stars" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1536" width="1024" height="1536" preserveAspectRatio="xMidYMid meet" aria-hidden="true" style="overflow:visible" class="wish-overlay"><style>
+.wish-twinkle {transform-box:fill-box; transform-origin:center; opacity:.04; animation: twinkle var(--d) ease-in-out infinite; animation-delay:var(--offset);}
+@keyframes twinkle {0%,100%{opacity:.04; transform:scale(.88)} 18%{opacity:.12;transform:scale(.92)} 41%{opacity:var(--peak);transform:scale(1.06)} 53%{opacity:.24;transform:scale(1)} 74%{opacity:.07;transform:scale(.9)}}
+@media (prefers-reduced-motion: reduce) { .wish-twinkle {animation:none;opacity:.15;transform:none;} }
+</style><defs>
+     <radialGradient id="warm"><stop offset="0" stop-color="#fffef3" stop-opacity=".95"/><stop offset=".27" stop-color="#fff3bd" stop-opacity=".5"/><stop offset="1" stop-color="#ffe5a0" stop-opacity="0"/></radialGradient>
+     <radialGradient id="white"><stop offset="0" stop-color="#fffefa" stop-opacity=".95"/><stop offset=".26" stop-color="#fff8e4" stop-opacity=".42"/><stop offset="1" stop-color="#fff9e5" stop-opacity="0"/></radialGradient>
+    </defs><g transform="translate(629 1216)" data-star="round_gold_1">
+            <g class="wish-twinkle" style="--d:3.3s;--offset:-0.263s;--peak:0.630">
+              <circle r="17.7" fill="url(#warm)"/>
+              <path d="M0 -7.5 Q1.8 -1.6 7.2 0 Q1.6 2.0 0 7.5 Q-1.5 1.8 -7.2 0 Q-1.8 -1.6 0 -7.5Z" fill="#fff9dd" opacity=".65"/>
+              <circle r="2.0" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(693 1197)" data-star="round_cream_1">
+            <g class="wish-twinkle" style="--d:4.6s;--offset:-1.611s;--peak:0.570">
+              <circle r="15.3" fill="url(#white)"/>
+              <path d="M0 -6.5 Q1.6 -1.4 6.2 0 Q1.4 1.7 0 6.5 Q-1.3 1.6 -6.2 0 Q-1.6 -1.4 0 -6.5Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(603 1290)" data-star="round_cream_2">
+            <g class="wish-twinkle" style="--d:5.1s;--offset:-1.055s;--peak:0.480">
+              <circle r="11.8" fill="url(#white)"/>
+              <path d="M0 -5.0 Q1.2 -1.1 4.8 0 Q1.1 1.3 0 5.0 Q-1.0 1.2 -4.8 0 Q-1.2 -1.1 0 -5.0Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(721 1279)" data-star="round_gold_2">
+            <g class="wish-twinkle" style="--d:3.9s;--offset:-2.297s;--peak:0.780">
+              <circle r="18.9" fill="url(#warm)"/>
+              <path d="M0 -8.0 Q1.9 -1.8 7.7 0 Q1.8 2.1 0 8.0 Q-1.6 1.9 -7.7 0 Q-1.9 -1.8 0 -8.0Z" fill="#fff9dd" opacity=".65"/>
+              <circle r="2.1" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(653 1291)" data-star="round_cream_3">
+            <g class="wish-twinkle" style="--d:4.0s;--offset:-2.674s;--peak:0.490">
+              <circle r="11.8" fill="url(#white)"/>
+              <path d="M0 -5.0 Q1.2 -1.1 4.8 0 Q1.1 1.3 0 5.0 Q-1.0 1.2 -4.8 0 Q-1.2 -1.1 0 -5.0Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(819 1092)" data-star="tall_gold_1">
+            <g class="wish-twinkle" style="--d:4.4s;--offset:-0.700s;--peak:0.740">
+              <circle r="22.4" fill="url(#warm)"/>
+              <path d="M0 -9.5 Q2.3 -2.1 9.1 0 Q2.1 2.5 0 9.5 Q-1.9 2.3 -9.1 0 Q-2.3 -2.1 0 -9.5Z" fill="#fff9dd" opacity=".65"/>
+              <circle r="2.5" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(864 1112)" data-star="tall_cream_1">
+            <g class="wish-twinkle" style="--d:3.7s;--offset:-1.590s;--peak:0.530">
+              <circle r="15.3" fill="url(#white)"/>
+              <path d="M0 -6.5 Q1.6 -1.4 6.2 0 Q1.4 1.7 0 6.5 Q-1.3 1.6 -6.2 0 Q-1.6 -1.4 0 -6.5Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(806 1135)" data-star="tall_gold_2">
+            <g class="wish-twinkle" style="--d:5.4s;--offset:-0.344s;--peak:0.400">
+              <circle r="11.8" fill="url(#warm)"/>
+              <path d="M0 -5.0 Q1.2 -1.1 4.8 0 Q1.1 1.3 0 5.0 Q-1.0 1.2 -4.8 0 Q-1.2 -1.1 0 -5.0Z" fill="#fff9dd" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(833 1179)" data-star="tall_cream_2">
+            <g class="wish-twinkle" style="--d:4.0s;--offset:-2.610s;--peak:0.580">
+              <circle r="15.3" fill="url(#white)"/>
+              <path d="M0 -6.5 Q1.6 -1.4 6.2 0 Q1.4 1.7 0 6.5 Q-1.3 1.6 -6.2 0 Q-1.6 -1.4 0 -6.5Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.7" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(872 1185)" data-star="tall_cream_3">
+            <g class="wish-twinkle" style="--d:4.9s;--offset:-2.496s;--peak:0.570">
+              <circle r="16.5" fill="url(#white)"/>
+              <path d="M0 -7.0 Q1.7 -1.5 6.7 0 Q1.5 1.8 0 7.0 Q-1.4 1.7 -6.7 0 Q-1.7 -1.5 0 -7.0Z" fill="#fffcf3" opacity=".65"/>
+              <circle r="1.8" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g><g transform="translate(867 1251)" data-star="tall_gold_3">
+            <g class="wish-twinkle" style="--d:3.5s;--offset:-2.841s;--peak:0.800">
+              <circle r="21.2" fill="url(#warm)"/>
+              <path d="M0 -9.0 Q2.2 -2.0 8.6 0 Q2.0 2.3 0 9.0 Q-1.8 2.2 -8.6 0 Q-2.2 -2.0 0 -9.0Z" fill="#fff9dd" opacity=".65"/>
+              <circle r="2.3" fill="#fffef9" opacity=".84"/>
+            </g>
+          </g></svg></div>
+          <!-- These eight hotspots are independent HTML buttons, not baked into the PNG. -->
+          <button class="stone-hotspot" style="--x:9.0%;--y:10.7%;--w:43.0%;--h:10.6%" type="button" data-action="calendar" aria-label="日历"><span>日历</span></button>
+<button class="stone-hotspot" style="--x:15.0%;--y:22.3%;--w:43.6%;--h:10.6%" type="button" data-action="study" aria-label="书房"><span>书房</span></button>
+<button class="stone-hotspot" style="--x:9.0%;--y:32.6%;--w:39.0%;--h:10.6%" type="button" data-action="radio" aria-label="电台"><span>电台</span></button>
+<button class="stone-hotspot" style="--x:18.0%;--y:43.3%;--w:40.5%;--h:10.6%" type="button" data-action="cinema" aria-label="影院"><span>影院</span></button>
+<button class="stone-hotspot" style="--x:10.0%;--y:53.6%;--w:39.0%;--h:10.6%" type="button" data-action="living" aria-label="客厅"><span>客厅</span></button>
+<button class="stone-hotspot" style="--x:16.0%;--y:64.5%;--w:37.0%;--h:10.6%" type="button" data-action="games" aria-label="游戏室"><span>游戏室</span></button>
+<button class="stone-hotspot" style="--x:9.0%;--y:75.2%;--w:35.0%;--h:9.6%" type="button" data-action="admin" aria-label="后台"><span>后台</span></button>
+<button class="stone-hotspot" style="--x:18.0%;--y:85.5%;--w:75.0%;--h:10.8%" type="button" data-action="wishes" aria-label="许愿星"></button>
+        </div>
+      </section>
+    </div>
+  </section>
+  </div>
+
+</main>
+
+<dialog id="album-dialog" aria-labelledby="album-title"><div class="dialog-heading"><h2 id="album-title"></h2><button type="button" class="dialog-close" id="album-close" aria-label="关闭相册">×</button></div><div class="dialog-photo"><img id="album-large" src="home-v2-original/assets/illustrations/album-daily.png" alt="相册当前图片"></div><div class="dialog-actions"><label class="upload-label">放入一张图片<input id="album-upload" type="file" accept="image/*"></label><button class="text-button" type="button" id="album-next">下一类 →</button></div></dialog>
+<dialog id="admin-dialog" aria-labelledby="admin-title"><div class="dialog-heading"><h2 id="admin-title">后台</h2><button class="dialog-close" type="button" id="admin-close" aria-label="关闭后台菜单">×</button></div><div class="admin-menu"><button type="button" data-admin-action="settings">主页设置</button><button type="button" data-admin-action="mcp">MCP 连接 <span aria-hidden="true">↗</span></button></div></dialog>
+<p class="toast" id="toast" role="status" aria-live="polite" hidden></p>
+<script src="home-navigation.js?v=1"></script>
+<script src="app.js?v=cord-reveal-4"></script>
+<script src="latest-butterfly/rig.js?v=cord-reveal-4"></script>
+<script src="latest-butterfly/renderer.js?v=cord-reveal-4"></script>
+<script src="latest-interactions.js?v=cord-reveal-4"></script>
+</body>
+</html>

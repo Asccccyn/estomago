@@ -151,3 +151,76 @@ test('分页与过滤：default 20 / max 100 / lifecycle / unread_only / opaque 
   // 超过 max_limit 拒绝（不静默截断成"完整结果"）
   assert.throws(() => alerts.list({ actorId: 'qiaosheng', limit: 101 }));
 });
+
+test('准备态Bootstrap缺口绑定真实窗口：保持次数/故障事实，同事务发布新版本且可按窗口恢复', () => {
+  const { db, events, alerts } = makeAlerts();
+  try {
+    const summary = { title: '心情文字未载全', detail: '已保留同快照核验过的 I 和计划。',
+      window_id: 'pending:primary', reason: 'BOOTSTRAP_PAGE_TRANSPORT', count: 1, retryable: true };
+    const observed = alerts.observe({ code: 'BOOTSTRAP_INCOMPLETE', scopeKind: 'integration', scopeId: 'mariposa',
+      dedupeKey: 'bootstrap:pending:primary', observationId: 'prepare-failure-1', safeSummary: summary });
+    const before = alerts.list({ actorId: 'qiaosheng' }).items[0]!;
+    const subscriber = events.subscribe('primary');
+    try {
+      alerts.bindPreparedBootstrap('primary', 'window-real');
+      const after = alerts.list({ actorId: 'qiaosheng' }).items[0]!;
+      assert.equal(after.alert_id, observed.alertId);
+      assert.equal(after.lifecycle, 'open');
+      assert.equal(after.resolved_at, null);
+      assert.equal(after.occurrence_count, before.occurrence_count);
+      assert.equal(after.first_occurred_at, before.first_occurred_at);
+      assert.equal(after.last_occurred_at, before.last_occurred_at);
+      assert.equal(after.revision, before.revision + 1);
+      assert.ok(after.last_event_sequence > before.last_event_sequence);
+      assert.deepEqual(after.safe_summary, { ...summary, window_id: 'window-real' });
+      const stored = db.prepare('SELECT dedupe_key FROM system_alerts WHERE id = ?').get(observed.alertId) as { dedupe_key: string };
+      assert.equal(stored.dedupe_key, 'bootstrap:window-real');
+      assert.equal(subscriber.queue.length, 1);
+      assert.equal(subscriber.queue[0]!.sequence, after.last_event_sequence);
+      const payload = JSON.parse(subscriber.queue[0]!.payload);
+      assert.equal(payload.occurrence_count, 1);
+      assert.equal(payload.revision, after.revision);
+      assert.equal(payload.lifecycle, 'open');
+      assert.doesNotMatch(subscriber.queue[0]!.payload, /心情文字|计划|pending/);
+      alerts.bindPreparedBootstrap('primary', 'window-real');
+      assert.equal(events.maxSequence(), after.last_event_sequence, '重复绑定不再发事件');
+      assert.equal(alerts.resolve('bootstrap:pending:primary', { summary: { action_taken: 'test' } }).resolved, false);
+      assert.equal(alerts.resolve('bootstrap:window-real', { summary: { action_taken: 'snapshot_verified_complete' } }).resolved, true);
+      assert.equal(alerts.summary('qiaosheng').open_count, 0);
+    } finally { events.unsubscribe(subscriber); }
+  } finally { db.close(); }
+});
+
+test('准备态来源不存在或已恢复时绑定无副作用，不复活历史', () => {
+  const { db, events, alerts } = makeAlerts();
+  try {
+    alerts.bindPreparedBootstrap('missing', 'window-new');
+    assert.equal(alerts.list({ actorId: 'qiaosheng' }).items.length, 0);
+    assert.equal(events.maxSequence(), 0);
+    alerts.observe({ code: 'BOOTSTRAP_INCOMPLETE', scopeKind: 'integration', scopeId: 'mariposa',
+      dedupeKey: 'bootstrap:pending:primary', observationId: null });
+    alerts.resolve('bootstrap:pending:primary', { summary: { action_taken: 'snapshot_verified_complete' } });
+    const before = db.prepare('SELECT * FROM system_alerts').all();
+    const sequence = events.maxSequence();
+    alerts.bindPreparedBootstrap('primary', 'window-new');
+    assert.deepEqual(db.prepare('SELECT * FROM system_alerts').all(), before);
+    assert.equal(events.maxSequence(), sequence);
+  } finally { db.close(); }
+});
+
+test('真实窗口已有任何告警历史时不合并准备态缺口，不增加次数或覆盖目标', () => {
+  const { db, events, alerts } = makeAlerts();
+  try {
+    for (const key of ['bootstrap:pending:primary', 'bootstrap:window-existing']) {
+      alerts.observe({ code: 'BOOTSTRAP_INCOMPLETE', scopeKind: 'integration', scopeId: 'mariposa',
+        dedupeKey: key, observationId: null, safeSummary: { reason: 'SYNTHETIC_GAP', window_id: key } });
+    }
+    alerts.resolve('bootstrap:window-existing', { summary: { action_taken: 'snapshot_verified_complete' } });
+    const before = db.prepare('SELECT * FROM system_alerts ORDER BY id').all();
+    const sequence = events.maxSequence();
+    alerts.bindPreparedBootstrap('primary', 'window-existing');
+    assert.deepEqual(db.prepare('SELECT * FROM system_alerts ORDER BY id').all(), before);
+    assert.equal(events.maxSequence(), sequence);
+    assert.equal(alerts.summary('qiaosheng').open_count, 1);
+  } finally { db.close(); }
+});

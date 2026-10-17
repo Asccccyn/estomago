@@ -226,7 +226,7 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp3-int-');
   // 软线调小：第二条消息即触发换窗（走容量路径；warning_tokens 已退役不再配置）
-  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 2200 } } as never);
+  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } } as never);
   // H13 正例：真全新空房 → 首条消息自动建窗（不要求选集）
   // 历史在其后种行（模拟更早已归档的存量原文进入本房间）
   const s1 = await say(ctx, '今天聊点新的', 'm1', T0);
@@ -273,6 +273,9 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   await ctx.supervisor.waitIdle();
   // H04：原 input_message_id 恢复、只发一次、消息不重复
   const turn2 = ctx.db.prepare('SELECT state, input_message_id FROM turns WHERE id = ?').get(s2.turnId) as { state: string; input_message_id: string };
+  console.error('DBG-A:', JSON.stringify(ctx.db.prepare("SELECT id, state, blocked_reason FROM attempts WHERE turn_id = ?").all(s2.turnId)));
+  console.error('DBG-B:', JSON.stringify(ctx.db.prepare("SELECT selection_id, source_window_id, status, source_cutoff_sequence FROM context_selections ORDER BY created_at").all()));
+  console.error('DBG-W:', JSON.stringify(ctx.db.prepare("SELECT id, status, context_fingerprint IS NOT NULL as fp, blocked_reason FROM windows ORDER BY created_at").all()));
   assert.equal(turn2.state, 'completed', '待回答输入在新窗完成');
   assert.equal(turn2.input_message_id, s2.message.id, '原输入消息身份不变');
   const dupCount = (ctx.db.prepare('SELECT COUNT(*) n FROM messages WHERE conversation_id = ?').get('c1') as { n: number }).n;

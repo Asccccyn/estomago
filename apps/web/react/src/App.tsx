@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
+import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
@@ -135,7 +137,7 @@ function VoiceBar({ dur, text, ai, src }: { dur?: number; text: string; ai?: boo
   )
 }
 
-function Sheet({ kind, onClose, workbench, activity, note, alerts, markRead }: { kind: 'bench' | 'log'; onClose: () => void; workbench: WorkItem[]; activity: ActivityItem[]; note: string; alerts: Array<Record<string, any>>; markRead: () => void }) {
+function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | 'log'; onClose: () => void; workbench: WorkItem[]; activity: ActivityItem[]; note: string }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/25" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="sheet-in max-h-[75dvh] w-full overflow-y-auto rounded-t-3xl bg-[#faf9f5] px-5 pt-3 pb-[max(env(safe-area-inset-bottom),24px)] no-bar">
@@ -159,8 +161,6 @@ function Sheet({ kind, onClose, workbench, activity, note, alerts, markRead }: {
           </div>
         ) : (
           <div className="pl-1">
-            {alerts.map((alert) => <p key={alert.alert_id} className="mb-3 text-[13px] text-[#8a8780]">{alert.safe_summary?.title || alert.code}</p>)}
-            {alerts.length > 0 && <button className="mb-3 text-[13px] text-[#c96442]" onClick={markRead}>标为已读</button>}
             {activity.map((a, i) => (
               <div key={a.id} className="relative flex gap-3 pb-5">
                 {i < activity.length - 1 && <span className="absolute left-[4.5px] top-3 bottom-0 w-px bg-[#dcd8cc]" />}
@@ -195,7 +195,7 @@ export default function App() {
   const model = state.model
   const effort = state.effort
   const MODELS = state.models
-  const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e === 'default' ? '默认' : e)
+  const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e === 'default' ? '模型默认' : e)
   const setModel = (i: number) => { if (i !== model && window.confirm('切换模型后，下一次发送前可选择携带的历史。确认切换？')) void client.setModel(i) }
   const setEffort = (i: number) => { void client.setEffort(i) }
   const [menu, setMenu] = useState(false)
@@ -203,6 +203,7 @@ export default function App() {
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
   const [sheet, setSheet] = useState<null | 'bench' | 'log'>(null)
+  const [alertsOpen, setAlertsOpen] = useState(false)
   const input = state.draft
   const setInput = client.setDraft
   const fileRef = useRef<HTMLInputElement>(null)
@@ -217,8 +218,9 @@ export default function App() {
   const selectMessage = (id: string) => client.select(id)
   const editMessage = (id: string) => { const next = window.prompt('编辑消息', client.originalText(id)); if (next !== null) void client.editMessage(id, next) }
   useEffect(() => {
-    if (sheet) { void client.loadPanel(sheet); if (sheet === 'log') void client.loadAlerts() }
+    if (sheet) void client.loadPanel(sheet)
   }, [sheet, client])
+  useEffect(() => {client.setAlertsOpen(alertsOpen);return ()=>client.setAlertsOpen(false)}, [alertsOpen, client])
   useEffect(() => {
     if (ctxOpen) void client.loadContext()
   }, [ctxOpen, client])
@@ -233,9 +235,17 @@ export default function App() {
       {/* Header */}
       <header className="relative z-20 shrink-0 border-b border-black/5 pb-2">
         <div className="flex items-center justify-between pl-5 pr-3">
-          <h1 contentEditable suppressContentEditableWarning spellCheck={false}
-            className="text-[17px] font-medium tracking-tight outline-none focus:bg-black/5">宇宙发明小机</h1>
+          <div className="flex min-w-0 items-center gap-1">
+            <IconBtn title="返回主页" onClick={() => {
+              if ((input.length > 0 || state.attachments.length > 0 || rec) && !window.confirm('还有未发送的内容，确定返回主页？')) return
+              window.location.assign('/')
+            }}><ChevronLeft size={20} /></IconBtn>
+            <h1 contentEditable suppressContentEditableWarning spellCheck={false}
+              className="text-[17px] font-medium tracking-tight outline-none focus:bg-black/5">宇宙发明小机</h1>
+          </div>
           <div className="flex">
+            <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
+              onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
             <IconBtn title="电话" onClick={() => client.notify('实时语音通话暂未接入')}><Phone size={18} /></IconBtn>
             <div className="relative">
               <IconBtn title="更多" onClick={() => setMore(!more)}><MoreHorizontal size={18} /></IconBtn>
@@ -271,6 +281,11 @@ export default function App() {
                       <Check size={14} className={i === model ? 'text-[#c96442]' : 'invisible'} />
                     </button>
                   ))}
+                  {['opus5.5', 'fable5.1'].filter(name => !MODELS.includes(name)).map(name => (
+                    <button key={name} disabled title="路由尚未接通" className="flex h-9 w-full items-center gap-2 rounded-xl pl-2.5 pr-2 text-[14px] opacity-40 cursor-not-allowed">
+                      <span className="flex-1 text-left">{name}</span><span className="text-[11px]">未接通</span>
+                    </button>
+                  ))}
                 </div>
                 <span className="mx-1 h-20 w-px bg-black/5" />
                 <EffortSlider value={effort} onChange={setEffort} levels={EFFORTS} />
@@ -297,7 +312,7 @@ export default function App() {
           </div>
         ) : (
           <div key={m.id} className="mb-8 w-[75%] pl-[2em]">
-            <Thinking m={m} onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />
+            {(m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m} onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
             {!m.pending && (
               <>
                 {m.kind ? <Media m={m} ai /> : (
@@ -379,6 +394,7 @@ export default function App() {
               </div>
             ) : <textarea ref={composerRef} rows={1} value={input} onChange={(e) => setInput(e.target.value)} title={state.draftEstimate ? `正文预计 ${state.draftEstimate.message_text_tokens ?? '未知'} token（粗估）` : undefined}
               onCompositionStart={() => client.setComposing(true)} onCompositionEnd={() => client.setComposing(false)}
+              onKeyDown={(e) => { if (shouldSendOnKeydown(e)) { e.preventDefault(); send(); } }}
               placeholder="回复…" className="min-w-0 flex-1 resize-none bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]" />}
             <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
               className="group flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full text-white">
@@ -389,7 +405,10 @@ export default function App() {
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { setPlus(false); onPick(e.target.files?.[0]); e.target.value = '' }} />
         <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = '' }} />
       </footer>
-      {sheet && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} alerts={state.alerts} markRead={() => void client.markAlertsRead()} />}
+      {sheet && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
+      {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
+        error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
+        onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}
     </div>
   )
 }

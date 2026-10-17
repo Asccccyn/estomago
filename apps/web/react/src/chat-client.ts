@@ -1,4 +1,5 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
+import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
 export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string }
@@ -13,7 +14,8 @@ export type Snapshot = {
   context: { used: number | null; limit: number | null; lastActual: number | null; cacheRead: number | null; soft: number | null };
   workbench: WorkItem[]; activity: ActivityItem[]; panelNote: string;
   notice: string; ready: boolean; hasEarlier: boolean; selected: Set<string>; selectionMode: boolean; draftEstimate: Json | null;
-  route: Json | null; alerts: Json[]; unreadAlerts: number; usage: Record<string, Json>;
+  route: Json | null; alerts: SystemAlert[]; unreadAlerts: number; openAlerts: number;
+  alertsError: string; alertsHasMore: boolean; usage: Record<string, Json>;
 }
 const number = (x: unknown): number | null => typeof x === 'number' && Number.isFinite(x) ? x : null
 const time = (x: string) => new Date(x).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
@@ -32,6 +34,7 @@ export class EstomagoClient {
   private listeners = new Set<() => void>()
   private raw = new Map<string, Json>()
   private blocks = new Map<string, Json[]>()
+  private toolSteps = new Map<string, Step[]>()
   private running = new Set<string>()
   private refreshes = new Map<string, { dirty: boolean; busy: boolean; attempt?: string }>()
   private source: EventSource | null = null
@@ -47,12 +50,18 @@ export class EstomagoClient {
   private selectionKey: string | null = null
   private routeEdit: string | null = null
   private panelRequest = 0
+  private alertsOpen = false
+  private alertsRefresh: Promise<void> | null = null
+  private alertsDirty = false
+  private alertsListRequested = false
+  private alertsCursor: string | null = null
   snapshot: Snapshot = {
     messages: [], draft: '', composing: false, sending: false, attachments: [],
     models: ['未配置'], modelIds: [], model: 0, efforts: ['未知'], effort: 0, canConfigure: false,
     context: {used:null,limit:null,lastActual:null,cacheRead:null,soft:null},
     workbench: [], activity: [], panelNote: '', notice: '', ready: false, hasEarlier: false,
-    selected: new Set(), selectionMode: false, draftEstimate:null, route: null, alerts: [], unreadAlerts: 0, usage: {},
+    selected: new Set(), selectionMode: false, draftEstimate:null, route: null,
+    alerts: [], unreadAlerts: 0, openAlerts: 0, alertsError: '', alertsHasMore: false, usage: {},
   }
   constructor(deps: Dependencies = {}) {
     this.transport = deps.fetch ?? globalThis.fetch.bind(globalThis)
@@ -102,6 +111,8 @@ export class EstomagoClient {
     this.source?.close()
     const source=this.sourceFactory('/api/v1/events?conversation_id=primary&cursor='+this.cursor)
     this.source=source
+    // 全局告警可能在断线期间产生；每次 SSE 建立/重连都重查持久快照。
+    source.onopen=()=>{if(this.source===source&&this.started)void this.loadAlerts(this.alertsOpen)}
     source.onmessage=event=>{
       if(this.source!==source||!this.started)return
       try {this.handleEvent(JSON.parse(event.data))}catch{/* Invalid events do not become messages. */}
@@ -126,15 +137,24 @@ export class EstomagoClient {
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
         kind:a.presentation==='voice'?'voice':'image',src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+'/content',text:a.derived_text??'',
       }))
-      const steps:Step[]=(this.blocks.get(m.turn_id)??[]).map(b=>({kind:'think' as const,text:b.text||({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[b.visibility]||''})).filter(b=>b.text)
+      const blocks=this.blocks.get(m.turn_id)??[]
+      const thinkMs=blocks.length?Math.max(0,new Date(blocks[blocks.length-1]!.updated_at).getTime()-new Date(blocks[0]!.created_at??blocks[0]!.updated_at).getTime()):0
+      const steps:Step[]=[
+        ...blocks.map(b=>({kind:'think' as const,text:b.text||({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[b.visibility]||''})).filter(b=>b.text),
+        ...(this.toolSteps.get(m.turn_id)??[]),
+      ]
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
         time:time(m.revision.occurred_at),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
-        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media})
+        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,
+        thinkSecs:thinkMs>0?Math.max(1,Math.round(thinkMs/1000)):undefined})
     }
     for(const id of this.running){
       const last=messages.filter(m=>m.turnId===id&&m.role==='ai'&&!m.system).at(-1)
       if(last){last.streaming=true;continue}
-      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,steps:(this.blocks.get(id)??[]).filter(b=>b.text).map(b=>({kind:'think',text:b.text}))})
+      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,steps:[
+        ...(this.blocks.get(id)??[]).filter(b=>b.text).map(b=>({kind:'think' as const,text:b.text})),
+        ...(this.toolSteps.get(id)??[]),
+      ]})
     }
     this.patch({messages})
   }
@@ -150,10 +170,14 @@ export class EstomagoClient {
     }
     if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.render();this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
     if(id&&data.kind?.startsWith('reasoning.'))this.refreshReasoning(id,data.attempt_id)
+    if(id&&data.kind==='turn.tool'){
+      const label=String(data.label??data.tool??'')
+      if(label){const arr=this.toolSteps.get(id)??[];arr.push({kind:'tool',text:label+(data.ok===false?'（失败）':'')});this.toolSteps.set(id,arr);this.render()}
+    }
     if(id&&data.kind==='usage.updated')void this.loadUsage(id)
     if(data.kind==='route.pending')this.patch({route:data})
     if(data.kind==='route.resolved'){this.patch({route:null});if(data.message){this.absorb(data.message);this.render()}}
-    if(data.kind==='system.alert.changed')void this.loadAlerts(false)
+    if(data.kind==='system.alert.changed')void this.loadAlerts(this.alertsOpen)
     if(data.kind==='context.warning')void this.loadContext()
     if(data.kind==='window.rotated'){void this.loadRuntime();void this.loadContext()}
   }
@@ -313,8 +337,37 @@ export class EstomagoClient {
     }
     try{await this.request('/route-decisions/'+encodeURIComponent(route.decision_id),this.json('POST',{choice:'cancel'}));this.patch({route:null})}catch(e){this.notify((e as Error).message)}
   }
-  loadAlerts = async (list=true) => {
-    try{const summary=await this.request('/system-alerts/summary');this.patch({unreadAlerts:summary.unread_anomaly_count??0});if(list){const data=await this.request('/system-alerts?lifecycle=all&limit=50');this.patch({alerts:data.items??[]})}}catch{}
+  setAlertsOpen = (open:boolean) => {this.alertsOpen=open;if(open)void this.loadAlerts()}
+  loadAlerts = (list=true):Promise<void> => {
+    // 同时只保留一次请求；SSE burst 合并为一次后续重查，旧响应不覆盖新快照。
+    this.alertsDirty=true;this.alertsListRequested ||= list
+    if(this.alertsRefresh)return this.alertsRefresh
+    this.alertsRefresh=(async()=>{
+      do{
+        this.alertsDirty=false
+        const includeList=this.alertsListRequested;this.alertsListRequested=false
+        try{
+          const summary=await this.request('/system-alerts/summary')
+          this.patch({unreadAlerts:summary.unread_anomaly_count??0,openAlerts:summary.open_count??0,alertsError:''})
+          if(includeList){
+            const data=await this.request('/system-alerts?lifecycle=all&limit=50')
+            this.alertsCursor=data.next_cursor??null
+            this.patch({alerts:data.items??[],alertsHasMore:Boolean(data.has_more)})
+          }
+        }catch{this.patch({alertsError:'系统异常状态暂时无法读取，请重试'})}
+      }while(this.alertsDirty&&!this.redirecting)
+    })().finally(()=>{this.alertsRefresh=null})
+    return this.alertsRefresh
+  }
+  loadMoreAlerts = async () => {
+    const cursor=this.alertsCursor;if(!cursor)return
+    try{
+      const data=await this.request('/system-alerts?lifecycle=all&limit=50&cursor='+encodeURIComponent(cursor))
+      if(this.alertsCursor!==cursor)return // 新快照已替换列表，旧续页不得混入。
+      const known=new Set(this.snapshot.alerts.map(a=>a.alert_id))
+      this.alertsCursor=data.next_cursor??null
+      this.patch({alerts:[...this.snapshot.alerts,...(data.items??[]).filter((a:Json)=>!known.has(a.alert_id))],alertsHasMore:Boolean(data.has_more),alertsError:''})
+    }catch{this.patch({alertsError:'更早的系统异常暂时无法读取，请重试'})}
   }
   markAlertsRead = async () => {
     try{await this.request('/system-alerts/read',this.json('POST',{items:this.snapshot.alerts.map(a=>({alert_id:a.alert_id,seen_event_sequence:a.last_event_sequence}))}));await this.loadAlerts()}catch(e){this.notify((e as Error).message)}

@@ -23,6 +23,7 @@ export type ReasoningBlockDto = {
   text: string; // 可读投影；redacted/omitted 为空串
   completeness: string;
   updated_at: string;
+  created_at: string;
 };
 
 // SSE 事件信封（05 §6 草案的严格版：kind 与 payload 一一对应）

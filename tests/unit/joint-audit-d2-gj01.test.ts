@@ -44,7 +44,6 @@ function bootPack(): Record<string, unknown> {
     snapshot_id: 'snap_t1', state_hash: 'h1', profile: 'estomago',
     memory_days: { items: [{ memory_id: '00001', memory_date: '2026-10-06', original_title: '天台看月亮', mood_tags: ['开心'] }], count: 1 },
     plans: { items: [{ plan_id: 'p1', title: '周末采购' }], count: 1 },
-    anniversaries: { items: [], count: 0 },
     i: { content: '（I 当前的话：合成）', note: '' },
   };
 }
@@ -95,14 +94,14 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
   const sysText = sysOf(first);
   assert.ok(sysText.includes('天台看月亮'), '首信封 system 含三日条目标题');
   assert.ok(sysText.includes('周末采购'), '含未完成计划');
-  assert.ok(!sysText.includes('mood_text'), 'estomago 口径：不带心情自由文字（标签可带）');
+  assert.ok(!sysText.includes('mood_text'), '渲染为正文，不泄露协议字段名');
   assert.ok(sysText.includes('开心'), '心情标签在场');
   const second = log[1]!.full as Array<{ role: string; content: unknown }>;
   assert.equal(sysOf(second), sysOf(first), '同窗第二轮 system 块不变（B 已冻结进轨迹正本）');
   ctx.db.close();
 });
 
-test('D2：Mariposa 不可达→无 B 降级不阻塞；消息照常收口', async () => {
+test('D2：Mariposa 不可达→明确资料未取得，不将失败伪装为无记忆；消息照常收口', async () => {
   const log: Array<Record<string, unknown>> = [];
   let gen = 0;
   const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, 'ok')) }; };
@@ -116,8 +115,9 @@ test('D2：Mariposa 不可达→无 B 降级不阻塞；消息照常收口', asy
   await ctx.supervisor.waitIdle();
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed', '降级不阻塞消息');
-  const sysText = JSON.stringify((log[0]!.full as Array<{ content: unknown }>)[0]);
-  assert.ok(!sysText.includes('bootstrap'), '无 B 注入');
+  const sysText = JSON.stringify((log[0]!.full as Array<{ role: string; content: unknown }>).filter(m => m.role === 'system'));
+  assert.match(sysText, /Mariposa开窗资料未取得/);
+  assert.match(sysText, /不表示记忆不存在/);
   ctx.db.close();
 });
 

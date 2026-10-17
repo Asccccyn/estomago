@@ -12,6 +12,17 @@ export type MariposaCallResult =
 
 export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal) => Promise<MariposaCallResult>;
 
+export type BootstrapSection = 'memory_days' | 'plans' | 'plan_content' | 'i' | 'memory_item';
+/** Text offsets are Unicode code points, not JavaScript UTF-16 indices. */
+export type MoodTextCursor = { memory_id: string; field: 'mood_text'; offset: number };
+export type BootstrapPageMetadata = {
+  snapshot_id: string;
+  section: BootstrapSection;
+  content_role: 'bootstrap_memory_package';
+  instruction_authority: 'none';
+  next_cursor: Record<string, unknown> | null;
+};
+
 // F-J-14（联合审计 2026-10-06）：移除手工维护的错误码清单（MARIPOSA_ERROR_CODES/
 // isKnownErrorCode）——该副本含 3 个 mariposa 不存在的码（EPISODE_ALREADY_CLOSED/
 // REVIEW_STALE/REVIEW_NOT_ACTIVE）、缺 ≥8 个真实码，且全仓零调用；重试语义已按
@@ -236,16 +247,19 @@ export class MariposaClient {
     return { ok: true, result: r.result, receipt: parsed };
   }
 
-  /** D2（2026-10-06）：开窗资料（estomago profile——服务端默认不带心情
-   *  自由文字，字段矩阵见 mariposa _memory_slim；分页 bootstrap.next 按
-   *  snapshot 游标续取，宿主当前只消费首页摘要）。 */
+  /** estomago 开窗包：心情文字及其他现行段可携带续页游标。
+   *  同一装配只续取原 snapshot，不将内容当成指令。 */
   async bootstrapGet(signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('bootstrap.get', { profile: 'estomago' }, signal);
   }
 
-  /** WP-04（CX-12/C-021a）：开窗分节续取（宿主内部装载长 I/plans 至
-   *  完整——不新增模型工具，§5.1"长内容用领域分页读取至完整"）。 */
-  async bootstrapNext(snapshotId: string, cursor: Record<string, unknown>, section: string, signal?: AbortSignal): Promise<MariposaCallResult> {
+  /** Revalidate a loaded snapshot and current permission without fetching content. */
+  async bootstrapValidate(snapshotId: string, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('bootstrap.get', { profile:'estomago', loaded_snapshot_id:snapshotId }, signal);
+  }
+
+  /** 原样透传服务端游标；宿主消费方负责有界续取与完整性校验。 */
+  async bootstrapNext(snapshotId: string, cursor: Record<string, unknown>, section: BootstrapSection, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('bootstrap.next', { snapshot_id: snapshotId, cursor, section }, signal);
   }
 
@@ -274,7 +288,7 @@ export class MariposaClient {
 
   /** R02（复审 2026-10-07）：同会话续查（refine）——回到原 session 收窄/
    *  换角度，不是另起 start。request_ref 用服务端给的 continue 引用。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[] }): Promise<MariposaCallResult> {
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string } }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
       query_plan: {
@@ -285,6 +299,7 @@ export class MariposaClient {
         // 静默缺省会把找话续查变成查事件；类型层强制非可选
         channels: args.channels,
         request_ref: args.continueRef,
+        ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
       },
     });
   }
@@ -448,7 +463,7 @@ export class MariposaClient {
 
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[] }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string } }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.start', {
       query_plan: {
         original_request: args.query,
@@ -460,6 +475,9 @@ export class MariposaClient {
         // 透传（['words']=专项找我们的话）；缺省=['event'] 保持旧行为
         channels: args.channels && args.channels.length > 0 ? args.channels : ['event'],
         ...(args.lexicalTerms && args.lexicalTerms.length > 0 ? { lexical_terms: args.lexicalTerms } : {}),
+        // 2026-10-17（她报障修复）：明确日期段直取桶池（memory_date 收窄）——
+        // 语义近邻对"日期主导"查询不可靠（9.25-9.27 曾 0 命中而桶实际存在）
+        ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
       },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
       request_ref: args.requestRef,

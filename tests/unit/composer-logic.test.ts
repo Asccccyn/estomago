@@ -9,7 +9,15 @@ import {
   normalizeNewlines,
 } from '../../apps/web/src/composer-logic.js';
 
-test('v0.2.1 硬规则：任何按键（含组合键）都不触发发送', () => {
+test('2026-10-17 她裁定：Claude 官端口径——裸 Enter 发送，组合键/IME 不发送', () => {
+  const ev = (over = {}) => ({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, keyCode: 13, nativeEvent: { isComposing: false }, ...over });
+  assert.equal(shouldSendOnKeydown(ev()), true, '裸 Enter=发送一段');
+  assert.equal(shouldSendOnKeydown(ev({ shiftKey: true })), false, 'Shift+Enter=换行');
+  assert.equal(shouldSendOnKeydown(ev({ metaKey: true })), false);
+  assert.equal(shouldSendOnKeydown(ev({ ctrlKey: true })), false);
+  assert.equal(shouldSendOnKeydown(ev({ keyCode: 229 })), false, 'IME 合成期 Enter 不发送');
+  assert.equal(shouldSendOnKeydown(ev({ nativeEvent: { isComposing: true } })), false);
+  assert.equal(shouldSendOnKeydown(ev({ key: 'a' })), false);
   assert.equal(shouldSendOnKeydown(), false);
 });
 

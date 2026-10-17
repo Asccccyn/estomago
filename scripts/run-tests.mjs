@@ -29,7 +29,7 @@ const groups = process.argv.includes('--integration')
     ? ['unit']
     : ['unit', 'contract', 'integration'];
 
-const files = groups.flatMap((g) => {
+const discovered = groups.flatMap((g) => {
   const dir = path.join(REPO, 'tests', g);
   return fs
     .readdirSync(dir)
@@ -37,6 +37,19 @@ const files = groups.flatMap((g) => {
     .sort()
     .map((f) => path.join(dir, f));
 });
+// A targeted run must select an already discovered file; typos cannot fall back
+// to the whole suite or execute arbitrary paths outside the selected groups.
+const selectors = process.argv.slice(2).filter((arg) => arg.startsWith('--file='));
+if (process.argv.slice(2).includes('--file') || selectors.some((arg) => !arg.slice(7))) {
+  console.error('[test] --file requires --file=tests/<group>/<name>.test.ts');
+  process.exit(2);
+}
+const selected = new Set(selectors.map((arg) => path.resolve(REPO, arg.slice(7))));
+if ([...selected].some((file) => !discovered.includes(file))) {
+  console.error('[test] --file must name a discovered test in the selected groups');
+  process.exit(2);
+}
+const files = selected.size ? discovered.filter((file) => selected.has(file)) : discovered;
 
 console.log(`[test] ${files.length} 个测试文件，串行执行：\n  ${files.map((f) => path.basename(path.dirname(f)) + '/' + path.basename(f)).join('\n  ')}`);
 

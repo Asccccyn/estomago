@@ -57,7 +57,7 @@ async function turnState(turnId: string): Promise<{ state: string; pending: unkn
   return { state: data.turn.state, pending: data.pending_route_decision, attempts: data.attempts };
 }
 
-test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对 → 分句气泡 → 用量', async () => {
+test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对 → 一轮合成一条消息 → 用量', async () => {
   delete process.env.ESTOMAGO_MOCK_SCENARIO; // 默认 consistent
   const { turn_id } = await submit('你好\n这是第二行', 'int-consistent-1');
   await pollUntil(async () => (await turnState(turn_id)).state === 'completed');
@@ -71,8 +71,7 @@ test('mock 全链路：多行输入一条消息 → 思考增量+完整块核对
   const bubbles = msgs.messages.filter((m) => m.speaker === 'assistant');
   assert.deepEqual(
     bubbles.map((b) => b.revision.content),
-    ['这是第一段合成回复。\n', // v0.3：段保留尾换行
-     `这是第二段合成回复，包含第二行\n换行仍在同一条消息里。`],
+    ['这是第一段合成回复。\n\n这是第二段合成回复，包含第二行\n换行仍在同一条消息里。'], // 2026-10-17 她裁定：一轮合成一条消息（段以空行连接）
   );
 
   // 思考：完整块核对后 = THINKING_FULL，签名绝不出现

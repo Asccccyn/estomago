@@ -20,7 +20,7 @@ import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 export type HostToolSpec = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
 
 // mariposa 现行 hold 契约常量（正本=mariposa input_schemas；此处只做形状门，域校验仍以服务端为准）
-export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'plan', 'sex', 'anniversary', 'reloplay'] as const;
+export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'plan', 'sex', 'anniversary', 'reloplay', 'diary'] as const;
 export const HOLD_CREATION_MODES = ['contemporaneous', 'retrospective'] as const;
 export const HOLD_DATE_CONFIDENCE = ['exact', 'inferred', 'unknown'] as const;
 export const HOLD_TITLE_MAX = 30;
@@ -104,6 +104,8 @@ export function buildHostTools(): HostToolSpec[] {
           refine_continue_ref: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的续查引用（与 refine_session_id 成对）' },
           deep_search: { type: 'boolean', description: '原文深搜（Round2）：找话/召回证据不足、上一轮提示"原话证据不足可深搜"时用——对已授权来源原文做第二轮深查。必须带 refine_session_id 与 deep_reason；服务端核验首轮完成与理由真实性，不可用时如实返回' },
           deep_reason: { type: 'string', enum: ['EVIDENCE_INSUFFICIENT', 'VERBATIM_REQUIRED_NOT_MET', 'SOURCE_DISAMBIGUATION_NEEDED', 'NO_DELIVERABLE_CANDIDATE', 'EXPLICIT_REJECT_AFTER_DELIVERY'], description: '深搜理由（服务端闭集核验）：EVIDENCE_INSUFFICIENT=证据不足（最常用）；VERBATIM_REQUIRED_NOT_MET=需要逐字原话未满足；SOURCE_DISAMBIGUATION_NEEDED=来源需要消歧；NO_DELIVERABLE_CANDIDATE=无可交付候选；EXPLICIT_REJECT_AFTER_DELIVERY=交付后被明确否定' },
+          date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '查询涉及明确日期/日期段时必填（与 date_to 成对）：按记忆桶的事件日期直接收窄候选，比语义匹配可靠得多。如查"9月25到27日"填 2026-09-25 / 2026-09-27' },
+          date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '日期段结束（含当天）；与 date_from 成对；单日查询 from=to=该日' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -491,6 +493,22 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'identity_milestone_write',
+      description: '更新你的身份正文《长期记忆里程碑》（她 2026-10-17 授权你自己维护）。text 是完整新版正文（全量替换，不是增量追加）；旧版本自动留档、她可回滚。当前窗口继续用旧版（你在本窗上下文里说过改动，天然记得），下一扇新窗自动带新版。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', minLength: 1, maxLength: 65536, description: '里程碑完整新版正文' },
+          change_reason: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明这次更新了什么（进审计记录，她可见）' },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一版' },
+        },
+        required: ['text', 'change_reason', 'idempotency_key'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'context_review_complete',
       description: '完成当前活跃的换窗前记忆检查。decision=no_new_hold（本次没有新增 hold 且无未决写操作）或 holds_completed（本次已有核实的成功 hold）。',
       parameters: {
@@ -603,7 +621,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null }) {
+  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null }) {
     this.db = deps.db;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
@@ -612,11 +630,25 @@ export class HostToolExecutor {
     this.media = deps.media ?? null;
     this.messages = deps.messages ?? null;
     this.contentClient = deps.contentClient ?? null;
+    this.identity = deps.identity ?? null;
+    this.events = deps.events ?? null;
   }
 
   private media: import('../media/assets.ts').MediaService | null;
   private messages: import('../messages/service.ts').MessageService | null;
   private contentClient: import('../integrations/content/client.ts').ContentClient | null;
+  private identity: import('../identity/service.ts').IdentityService | null;
+  private events: import('../events/service.ts').EventService | null;
+  /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
+  private static readonly SILENT_TOOLS = new Set(['context_review_complete', 'background_complete']);
+  private static readonly TOOL_LABELS: Record<string, string> = {
+    memory_hold: '写记忆', memory_recall: '查记忆', memory_recall_next: '翻查记忆', conversation_read: '读聊天原文',
+    memory_i_read: '读 I', memory_i_write: '写 I', memory_open: '打开记忆桶', memory_correct: '订正记忆', deletion_review: '处理删除评审',
+    episode_list: '查事件', episode_get: '看事件', episode_apply: '更新事件', plans_read: '读计划', plans_write: '写计划',
+    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', background_complete: '结束自主活动',
+    content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
+    identity_milestone_write: '更新长期记忆里程碑',
+  };
 
   /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
    *  能力面由 Mariposa 白名单圈定）。 */
@@ -709,6 +741,26 @@ export class HostToolExecutor {
     }
   }
 
+  /** 她授权 2026-10-17：char自维护长期记忆里程碑。写新版+manifest I 槽原子更新+审计；
+   *  幂等键查 audit_events（同键重试只写一版）；I 槽不参与指纹——当前窗继续旧冻结副本，
+   *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。 */
+  private identityMilestoneWrite(args: { text: string; change_reason: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
+    if (!this.identity) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '身份服务未装配' } };
+    const idemKey = `milestone:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
+    const prior = this.db.prepare("SELECT scope, result FROM audit_events WHERE who = 'jiaming' AND what = 'identity_milestone_write' AND detail_ref = ? ORDER BY created_at DESC LIMIT 1").get(idemKey) as { scope: string | null; result: string } | undefined;
+    if (prior) return { ok: true, output: { saved: true, version: prior.scope ?? null, duplicate: true } };
+    let written: { file: string; version: string; hash: string; byteSize: number };
+    try {
+      written = this.identity.updateMilestone(args.text);
+    } catch (err) {
+      return { ok: false, output: { error_code: 'MILESTONE_WRITE_FAILED', detail: String((err as Error).message).slice(0, 200) } };
+    }
+    this.db.prepare('INSERT INTO audit_events(id, who, what, scope, result, detail_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+      `aud_${sha256Hex(idemKey + written.version).slice(0, 24)}`, 'jiaming', 'identity_milestone_write', written.version, `ok:${written.byteSize}B:${args.change_reason.slice(0, 200)}`, idemKey, new Date().toISOString(),
+    );
+    return { ok: true, output: { saved: true, version: written.version, file: written.file, byte_size: written.byteSize, effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版' } };
+  }
+
   /** EXEC_V1 §03.6.3：正式发布附件消息（复用 MessageService/发布链/归档 outbox；幂等=派生 client_message_id）。 */
   private async chatSendAttachment(args: { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.messages || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '消息/媒体服务未装配' } };
@@ -728,7 +780,19 @@ export class HostToolExecutor {
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    const result = await this.executeInner(name, rawArgs, ctx);
+    // 工具调用过程可见（她 2026-10-17）：SSE turn.tool → 前端"正在做什么"步骤流
+    if (!HostToolExecutor.SILENT_TOOLS.has(name) && ctx.turnId) {
+      this.events?.publish('turn.tool', {
+        conversationId: ctx.roomId, turnId: ctx.turnId, scope: 'private',
+        payload: { tool: name, label: HostToolExecutor.TOOL_LABELS[name] ?? name, ok: Boolean(result.ok) },
+      });
+    }
+    return result;
+  }
+
+  private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -756,6 +820,7 @@ export class HostToolExecutor {
     if (name === 'chat_send_text') return this.chatSendText(checked.value as { text: string; idempotency_key: string }, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
+    if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
     return this.reviewComplete(checked.value, ctx);
   }
 
@@ -982,6 +1047,13 @@ export class HostToolExecutor {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '续查必须明确 channel（event=继续查事件 / words=继续找我们的话）——省略会被解释为查事件，丢失找话目标', request_ref: refineRef } };
     }
     const channel = channelArg ?? 'event';
+    // 2026-10-17（她报障修复）：明确日期段→桶池 memory_date 硬收窄（成对校验，防半区间误用）
+    const dateFrom = typeof args.date_from === 'string' ? args.date_from : '';
+    const dateTo = typeof args.date_to === 'string' ? args.date_to : '';
+    if ((dateFrom || dateTo) && !(dateFrom && dateTo)) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'date_from 与 date_to 必须成对提供（单日查询两填同一天）' } };
+    }
+    const eventDate = dateFrom && dateTo ? { from: dateFrom, to: dateTo } : undefined;
     // 找话第二批：Round2 原文深搜——独立入口（不能经 channels:['raw']
     // 绕过；M 的 S13 门服务端核验 reason 闭集与首轮完成回执）
     if (args.deep_search === true) {
@@ -1008,13 +1080,14 @@ export class HostToolExecutor {
     let r: Awaited<ReturnType<MariposaClient['recallStart']>> | Awaited<ReturnType<MariposaClient['recallRefine']>>;
     try {
       if (refineSession && refineRef) {
-        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel] });
+        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}) });
       } else {
         r = await this.mariposa.recallStart({
           requestRef, query: String(args.query ?? ''),
           conversationScope: ctx.roomId,
           channels: [channel],
           ...(lexical && lexical.length > 0 ? { lexicalTerms: lexical } : {}),
+          ...(eventDate ? { eventDate } : {}),
         });
       }
     } catch {

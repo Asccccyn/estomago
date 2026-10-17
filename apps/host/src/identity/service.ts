@@ -17,10 +17,11 @@ export function contextFingerprint(config: {
   deepseek?: { model: string | null; max_output_tokens: number };
 }, manifest: IdentityManifestFile | null): string {
   const parts = [
-    manifest?.identity_version ?? null,
-    manifest?.approved_source_hash ?? null,
-    manifest?.i_version ?? null,
-    manifest?.i_hash ?? null,
+    // 2026-10-17 她裁定：正文槽（identity_version/approved_source_hash，即长期记忆里程碑）
+    // 与 I 槽（i_version/i_hash）均不参与指纹——两者都是char可自维护的演进材料，
+    // 演进同 §7.1 桶/I 中途修改口径：当前窗继续旧冻结副本、下一新窗自动带新版，
+    // 不触发 CONTEXT_STALE。运行边界变化防护仍由规则槽+驱动/模型/配置项承担
+    //（换模型/换规则/换驱动仍强制换窗）。
     manifest?.runtime_rules_version ?? null,
     manifest?.rules_hash ?? null,
     config.runtime.sdk_version,
@@ -309,6 +310,42 @@ export class IdentityService {
     // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）
     const iText = read(manifest.i_snapshot_ref);
     return { identityText, rulesText, iText, iStatus: iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved' };
+  }
+
+  /** 她授权 2026-10-17（落位裁定：里程碑=身份正文槽）：char自维护长期记忆里程碑。
+   *  新版写新文件（v(n+1) 追加，旧版留档不删=可回滚），manifest 正文槽原子更新；
+   *  正文槽不参与 contextFingerprint——当前窗继续旧冻结副本，下一新窗自动带新版（她裁定，
+   *  同 §7.1 桶/I 中途修改口径）。只允许 longterm-milestones-v<N>.md 文件名；失败即抛错不落半状态。 */
+  updateMilestone(newText: string): { file: string; version: string; hash: string; byteSize: number } {
+    const { manifest } = this.loadManifest();
+    if (!manifest) throw new Error('MANIFEST_MISSING: 里程碑更新需要已批准的 manifest');
+    const currentRef = manifest.approved_source_ref;
+    const m = /^longterm-milestones-v(\d+)\.md$/.exec(currentRef ?? '');
+    if (!m) throw new Error(`IDENTITY_SLOT_NOT_MILESTONE: 身份正文槽当前引用不是里程碑文件（${currentRef ?? 'null'}）`);
+    const nextN = Number(m[1]) + 1;
+    const file = `longterm-milestones-v${nextN}.md`;
+    const filePath = path.join(this.paths.identityDir, file);
+    fs.writeFileSync(filePath, newText, { mode: 0o600 });
+    const bytes = fs.readFileSync(filePath);
+    const hash = sha256Hex(bytes);
+    const manifestPath = this.manifestPath();
+    const updated = { ...manifest, approved_source_ref: file, identity_version: `longterm-milestones-v${nextN}`, approved_source_hash: hash };
+    fs.writeFileSync(manifestPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    return { file, version: `longterm-milestones-v${nextN}`, hash, byteSize: bytes.byteLength };
+  }
+
+  /** 里程碑回滚（她手工操作面）：把身份正文槽指回某个留档旧版。只校验文件与 hash 自洽。 */
+  rollbackMilestone(version: string): { file: string; hash: string } {
+    if (!/^longterm-milestones-v\d+$/.test(version)) throw new Error('VERSION_INVALID');
+    const file = `${version}.md`;
+    const filePath = path.join(this.paths.identityDir, file);
+    if (!fs.existsSync(filePath)) throw new Error(`ROLLBACK_TARGET_MISSING: ${file}`);
+    const hash = sha256Hex(fs.readFileSync(filePath));
+    const { manifest } = this.loadManifest();
+    if (!manifest) throw new Error('MANIFEST_MISSING');
+    const updated = { ...manifest, approved_source_ref: file, identity_version: version, approved_source_hash: hash };
+    fs.writeFileSync(this.manifestPath(), JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    return { file, hash };
   }
 
   // Bootstrap Receipt（05 §3 四层证据）；返回真实主键（AUD-22：window.receipt_id 引用它）

@@ -128,6 +128,19 @@ export class ArchiveSyncService {
       frozenByCid.set(b.cid, list);
     }
     for (const [cid, batches] of frozenByCid) {
+      // 恢复后的批成员仍保留原入队时间；按冻结内容的来源位置决定批次顺序，
+      // 否则修复过的依赖链会再次被旧 created_at 倒排。请求内容本身保持原样。
+      const firstPosition = (payload: string): [number, number] => {
+        const messages = (JSON.parse(payload) as IngestRequest).messages;
+        return messages.reduce<[number, number]>((first, m) =>
+          m.conversation_sequence < first[0] || (m.conversation_sequence === first[0] && m.revision < first[1])
+            ? [m.conversation_sequence, m.revision] : first, [Infinity, Infinity]);
+      };
+      batches.sort((a, b) => {
+        const pa = firstPosition(a.payload);
+        const pb = firstPosition(b.payload);
+        return pa[0] - pb[0] || pa[1] - pb[1];
+      });
       for (const b of batches) {
         if (blockedStreams.has(cid)) break;
         const rows = this.db.prepare("SELECT * FROM outbox WHERE batch_id = ? AND state IN ('sent','unknown_outcome','pending') ORDER BY created_at, id").all(b.op) as OutboxRow[];
@@ -163,6 +176,7 @@ export class ArchiveSyncService {
     ).all() as OutboxRow[];
     if (fresh.length === 0) return;
     const byConversation = new Map<string, OutboxRow[]>();
+    const sourceSequence = new Map<string, number>();
     for (const row of fresh) {
       const messageId = this.messageIdOf(row);
       if (!messageId) {
@@ -170,7 +184,7 @@ export class ArchiveSyncService {
         summary.dead++;
         continue;
       }
-      const msg = this.db.prepare('SELECT conversation_id FROM messages WHERE id = ?').get(messageId) as { conversation_id: string } | undefined;
+      const msg = this.db.prepare('SELECT conversation_id, sequence FROM messages WHERE id = ?').get(messageId) as { conversation_id: string; sequence: number } | undefined;
       if (!msg) {
         this.markDeadQuietly(row, 'LOCAL_MESSAGE_MISSING');
         summary.dead++;
@@ -178,10 +192,16 @@ export class ArchiveSyncService {
       }
       const list = byConversation.get(msg.conversation_id) ?? [];
       list.push(row);
+      sourceSequence.set(row.id, msg.sequence);
       byConversation.set(msg.conversation_id, list);
     }
     for (const [conversationId, streamRows] of byConversation) {
       if (blockedStreams.has(conversationId)) continue; // 审计 F23：恢复阶段未决的流不再发新批
+      // outbox 入队时间不是来源顺序：流式助手发布/编辑可晚于下一条用户消息，
+      // 同毫秒的随机 ID 也不能排序。先依消息序号、再依修订号，避免冻结跨批依赖环。
+      streamRows.sort((a, b) => sourceSequence.get(a.id)! - sourceSequence.get(b.id)!
+        || Number(a.operation_key.split(':').pop()) - Number(b.operation_key.split(':').pop())
+        || a.id.localeCompare(b.id));
       let stopped = false;
       let i = 0;
       let lastOutcome: 'acked' | 'retry_later' | 'dead' = 'acked';
@@ -191,6 +211,11 @@ export class ArchiveSyncService {
         for (const row of built.deadRows) {
           this.markDeadQuietly(row, 'OVERSIZED_MESSAGE');
           summary.dead++;
+        }
+        if (built.blocked) {
+          stopped = true;
+          summary.stopped_streams++;
+          summary.retry_later += streamRows.length - i;
         }
           if (built.request === null) continue;
           // F09：发送前冻结——payload/成员键/op 落 ingest_batches，行绑批次（同一事务）
@@ -212,11 +237,12 @@ export class ArchiveSyncService {
   }
 
   // 按 JSON 字节数（F16）累积一个批次：≤50 条且规范化消息对象 UTF-8 合计 ≤1MiB
-  private buildBatch(conversationId: string, rows: OutboxRow[], startIdx: number): { request: IngestRequest | null; rows: OutboxRow[]; consumed: number; deadRows: OutboxRow[] } {
+  private buildBatch(conversationId: string, rows: OutboxRow[], startIdx: number): { request: IngestRequest | null; rows: OutboxRow[]; consumed: number; deadRows: OutboxRow[]; blocked: boolean } {
     const batchRows: OutboxRow[] = [];
     const messages: IngestMessage[] = [];
     const keys: Array<{ messageId: string; revision: number }> = [];
     const deadRows: OutboxRow[] = [];
+    let blocked = false;
     let bytes = 0;
     let i = startIdx;
     for (; i < rows.length; i++) {
@@ -241,16 +267,24 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_CHAIN_MISSING');
         continue;
       }
-      // D20（审计 3655d60）：前驱修订取"可达"版本——优先前驱当前修订**仅当**它已同步（有收据）或
-      // 在本批更早位置（同批可完成）；否则回退到前驱最新已同步修订（无收据则 revision 1=首批必带）。
-      // 否则 >50 条积压+前驱被编辑时，首批引用只在后批才有的修订 → SOURCE_NOT_READY 永久闭锁。
+      // 依赖必须有正式收据，或是本批更早位置的精确修订；消息出现过不代表
+      // current_revision 已入批。无证据时停在依赖处，不猜 revision 1、不冻结无效请求。
+      const revisionReady = (id: string, revision: number): boolean => !!this.receiptRowOf(id, revision)
+        || messages.some((m) => m.origin_message_id === id && m.revision === revision);
       let predRevForPayload: number | undefined;
       if (pred) {
-        const earlierInBatch = batchRows.some((r) => this.messageIdOf(r) === pred.id);
-        const predCurrentSynced = !!this.receiptRowOf(pred.id, pred.current_revision);
-        predRevForPayload = earlierInBatch || predCurrentSynced
-          ? pred.current_revision
-          : this.latestSyncedRevision(pred.id) ?? 1;
+        const available = Math.max(this.latestSyncedRevision(pred.id) ?? 0,
+          ...messages.filter((m) => m.origin_message_id === pred.id).map((m) => m.revision));
+        if (available > 0) predRevForPayload = available;
+      }
+      if ((pred && predRevForPayload === undefined)
+        || (rev.supersedes_revision !== null && !revisionReady(msg.id, rev.supersedes_revision))) {
+        this.markChunk([row], 'pending', 'LOCAL_DEPENDENCY_NOT_READY');
+        blocked = true;
+        break;
+      }
+      if (this.attachmentCount(msg.id, rev.revision) > 0) {
+        this.logger.info?.('archive_sync_media_note', { message_id: msg.id, revision: rev.revision, note: 'media_archive_blocked_contract_unverified' });
       }
       const message: IngestMessage = {
         origin_message_id: msg.id,
@@ -270,7 +304,9 @@ export class ArchiveSyncService {
         // EXEC_V1 §03.10.1（M2 分列）：Mariposa 附件 schema 未核——含附件消息的文字归档照常，
         // 媒体归档状态如实 blocked（ASSET_ARCHIVE_CONTRACT_UNVERIFIED），不把 assets:[] 冒充
         // "连附件已全部归档"。合同核实落地（M4）前每批只聚合披露一次。
-        ...(this.attachmentCount(msg.id, rev.revision) > 0 ? { assets_note: 'media_archive_blocked_contract_unverified' } : {}),
+        // M2 附件披露：assets_note 不进消息载荷（mariposa source.ingest schema
+        // additionalProperties=false 会整批拒——2026-10-17 她报障实测）；披露走日志
+        ...(false ? { assets_note: 'media_archive_blocked_contract_unverified' } : {}),
         occurred_at: rev.occurred_at,
         received_at: rev.received_at,
         published_at: msg.published_at,
@@ -302,7 +338,7 @@ export class ArchiveSyncService {
       messages.push(message);
       keys.push({ messageId: msg.id, revision: rev.revision });
     }
-    if (messages.length === 0) return { request: null, rows: [], consumed: i - startIdx, deadRows };
+    if (messages.length === 0) return { request: null, rows: [], consumed: i - startIdx, deadRows, blocked };
     const request: IngestRequest = {
       operation_id: ingestOperationId(conversationId, keys),
       stream_id: this.streamId,
@@ -310,7 +346,7 @@ export class ArchiveSyncService {
       origin_conversation_id: conversationId,
       messages,
     };
-    return { request, rows: batchRows, consumed: i - startIdx, deadRows };
+    return { request, rows: batchRows, consumed: i - startIdx, deadRows, blocked };
   }
 
   // 发送一个（冻结的）payload。F09 恢复路径与新批共用：绝不重建内容。
@@ -441,7 +477,7 @@ export class ArchiveSyncService {
     return this.db.prepare('SELECT 1 FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ?').get(messageId, revision);
   }
 
-  /** D20：该消息最新已同步的修订号（无任何收据→null，调用方回退 revision 1） */
+  /** 该消息最新已同步的修订号；无任何收据→null，不猜测远端版本。 */
   private latestSyncedRevision(messageId: string): number | null {
     const row = this.db.prepare('SELECT MAX(revision) AS m FROM source_sync_receipts WHERE origin_message_id = ?').get(messageId) as { m: number | null };
     return row?.m ?? null;

@@ -48,8 +48,7 @@ function bootPack(): Record<string, unknown> {
     snapshot_id: 'snap_t1', state_hash: 'h1', profile: 'estomago',
     memory_days: { items: [{ memory_id: '00001', memory_date: '2026-10-07', original_title: '天台看月亮', mood_tags: ['开心'] }], count: 1 },
     plans: { items: [{ plan_id: 'p1', title: LONG_TAIL, detail: 'x'.repeat(260) }], count: 1, total: 3, next_cursor: { plans_offset: 1 } },
-    anniversaries: { items: [], count: 0 },
-    i: { content: I_FULL, truncated: true, total_chars: 2500, next_cursor: { i_offset: 2000 } },
+    i: { content: I_FULL.slice(0, 2000), truncated: true, total_chars: 2500, next_cursor: { i_offset: 2000 } },
   };
 }
 
@@ -108,7 +107,8 @@ test('R11+③：B 不静默截断+元数据披露；B 为独立 system 块；新
   let bootCalls = 0;
   let gen = 0;
   const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, `回${gen}`)) }; };
-  const mariposa: MariposaTransport = async (cap) => {
+  const mariposa: MariposaTransport = async (cap, args) => {
+    if (cap === 'bootstrap.get' && args.loaded_snapshot_id) return { ok: true, result: { unchanged: true, snapshot_id: args.loaded_snapshot_id, profile: 'estomago' } };
     if (cap === 'bootstrap.get') { bootCalls++; return { ok: true, result: bootPack() }; }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
@@ -123,7 +123,7 @@ test('R11+③：B 不静默截断+元数据披露；B 为独立 system 块；新
   assert.ok(bText.includes('XYZEND'), '计划正文完整（不被 200 字符砍）');
   assert.ok(bText.includes('x'.repeat(260)), '计划长字段完整');
   assert.ok(bText.includes('还有更多未载入'), '续页元数据如实披露');
-  assert.ok(bText.includes(I_FULL.slice(-30)), 'I 全文渲染（不被 2000 砍）');
+  assert.ok(bText.includes(I_FULL.slice(0, 2000)), '已取得 I 前缀不再额外截断；缺失另有明确标记');
   assert.ok(bText.includes('超窗未全载'), 'I 截断标记披露');
   assert.ok(!JSON.stringify(systems[0]).includes('XYZEND'), 'B 不并入 A 段（A=身份/规则，不含资料）');
   // ③：第二个会话的新窗各自取最新开窗包（不复用旧窗冻结包）
