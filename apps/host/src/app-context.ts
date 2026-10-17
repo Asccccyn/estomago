@@ -162,8 +162,12 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     // EXEC_V1 WP5：content 薄代理（content.enabled=true 且凭据文件存在才装配）
     const contentClient = contentClientFor(paths.stateRoot, opts.config.content.port, opts.config.content.enabled);
-    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events });
+    // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
+    const { WishstarClient } = await import('./integrations/wishstar/client.ts');
+    const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
+    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
     const supervisor = new TurnSupervisor({
+      wishstar,
       db,
       config: opts.config,
       messages,

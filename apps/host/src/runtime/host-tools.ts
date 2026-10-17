@@ -509,6 +509,158 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'wishstar_write_star',
+      description: '往许愿星（你们的许愿星系统）写一颗星。visible=写进"我们的瓶子"（两人可见）；hidden=先藏进自己的私人瓶子（打开前只有你看得见）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          content: { type: 'string', minLength: 1, maxLength: 5000, description: '星星内容（想许的愿/想记的话）' },
+          visibility: { type: 'string', enum: ['visible', 'hidden'], description: 'visible=我们的瓶子；hidden=自己的私人瓶' },
+          mood_type: { type: 'string', maxLength: 20, description: '可选：星星的心情境况' },
+          mood_text: { type: 'string', maxLength: 200, description: '可选：写星时的一句话心情' },
+          note: { type: 'string', maxLength: 500, description: '可选：附注' },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一颗' },
+        },
+        required: ['content', 'visibility', 'idempotency_key'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_hidden_stars',
+      description: '看自己私人瓶子里的星（只有你可见的那些）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_special_dates',
+      description: '查看你们的纪念日和自定义特殊日期（含 id——发起拆星仪式要用 special_date_id 绑定具体日期）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_start_session',
+      description: '邀请宿主用户开启一轮共同拆星（纪念日仪式）。必须带 special_date_id；纪念日只能在当天发起，双方额度按当天 0 点冻结；确认前不打开任何星。',
+      parameters: {
+        type: 'object',
+        properties: {
+          special_date_id: { type: 'string', minLength: 1, maxLength: 64, description: '绑定的特殊日期 id（wishstar_special_dates 查）' },
+        },
+        required: ['special_date_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_confirm_session',
+      description: '确认参与拆星仪式（对方发起后你这边确认；双方确认后才能开始拆星）。',
+      parameters: {
+        type: 'object',
+        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
+        required: ['session_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_take_star',
+      description: '在拆星仪式中拆开下一颗星（双方轮流）。',
+      parameters: {
+        type: 'object',
+        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
+        required: ['session_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_finish_session',
+      description: '完成本轮拆星仪式。',
+      parameters: {
+        type: 'object',
+        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
+        required: ['session_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_request_star',
+      description: '请求宿主用户打开一颗她藏起来的星（她回应前你看不到内容）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_respond_request',
+      description: '回应对方的开星请求：give=打开（可指定给哪一颗，缺省服务端选）；not_now=这次先不给。',
+      parameters: {
+        type: 'object',
+        properties: {
+          request_id: { type: 'string', minLength: 1, maxLength: 64 },
+          decision: { type: 'string', enum: ['give', 'not_now'] },
+          star_id: { type: 'string', maxLength: 64, description: '可选：give 时指定给哪一颗' },
+        },
+        required: ['request_id', 'decision'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_offer_star',
+      description: '把自己的一颗星递给宿主用户（可捎一句话）。',
+      parameters: {
+        type: 'object',
+        properties: {
+          star_id: { type: 'string', minLength: 1, maxLength: 64 },
+          message: { type: 'string', maxLength: 300, description: '可选：递星时捎的一句话' },
+        },
+        required: ['star_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_list_offers',
+      description: '看收到的星（她递给你的、待收下的）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_accept_offer',
+      description: '收下她递来的一颗星。',
+      parameters: {
+        type: 'object',
+        properties: { offer_id: { type: 'string', minLength: 1, maxLength: 64 } },
+        required: ['offer_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'wishstar_notifications',
+      description: '看许愿星的通知（谁写了星/递了星/发起仪式等动态）。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'context_review_complete',
       description: '完成当前活跃的换窗前记忆检查。decision=no_new_hold（本次没有新增 hold 且无未决写操作）或 holds_completed（本次已有核实的成功 hold）。',
       parameters: {
@@ -621,7 +773,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null }) {
+  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
     this.db = deps.db;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
@@ -632,6 +784,7 @@ export class HostToolExecutor {
     this.contentClient = deps.contentClient ?? null;
     this.identity = deps.identity ?? null;
     this.events = deps.events ?? null;
+    this.wishstar = deps.wishstar ?? null;
   }
 
   private media: import('../media/assets.ts').MediaService | null;
@@ -639,6 +792,7 @@ export class HostToolExecutor {
   private contentClient: import('../integrations/content/client.ts').ContentClient | null;
   private identity: import('../identity/service.ts').IdentityService | null;
   private events: import('../events/service.ts').EventService | null;
+  private wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
   private static readonly SILENT_TOOLS = new Set(['context_review_complete', 'background_complete']);
   private static readonly TOOL_LABELS: Record<string, string> = {
@@ -648,6 +802,13 @@ export class HostToolExecutor {
     media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', background_complete: '结束自主活动',
     content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
     identity_milestone_write: '更新长期记忆里程碑',
+    wishstar_write_star: '往许愿星写了一颗星', wishstar_hidden_stars: '看自己的私人瓶子',
+    wishstar_special_dates: '查特殊日期', wishstar_start_session: '发起拆星仪式',
+    wishstar_confirm_session: '确认拆星仪式', wishstar_finish_session: '完成拆星',
+    wishstar_take_star: '拆开一颗星', wishstar_request_star: '请求开对方的星',
+    wishstar_respond_request: '回应开星请求', wishstar_offer_star: '递一颗星',
+    wishstar_list_offers: '看收到的星', wishstar_accept_offer: '收下递来的星',
+    wishstar_notifications: '看许愿星通知',
   };
 
   /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
@@ -741,6 +902,39 @@ export class HostToolExecutor {
     }
   }
 
+  /** 她批准 2026-10-17：char接入许愿星（superposition）全能力面。
+   *  HTTP 转发（Bearer=jiaming 身份，操作归他名下）；幂等键由 turn+request 派生（模型不能自编）；
+   *  写操作回执瘦身（不回显正文）；错误如实上抛状态码。 */
+  private async wishstarTool(name: string, args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.wishstar) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '许愿星未接入（能力缺口，如实拒绝）' } };
+    const idem = typeof args.idempotency_key === 'string' ? args.idempotency_key : '';
+    const opKey = `ws:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${idem || 'ro'}`;
+    const calls: Record<string, { method: 'GET' | 'POST'; path: string; body?: Record<string, unknown>; write: boolean }> = {
+      wishstar_write_star: { method: 'POST', path: '/api/stars', body: { content: args.content, visibility: args.visibility, ...(args.mood_type ? { mood_type: args.mood_type } : {}), ...(args.mood_text ? { mood_text: args.mood_text } : {}), ...(args.note ? { note: args.note } : {}) }, write: true },
+      wishstar_hidden_stars: { method: 'GET', path: '/api/stars/hidden/mine', write: false },
+      wishstar_special_dates: { method: 'GET', path: '/api/special-dates', write: false },
+      wishstar_start_session: { method: 'POST', path: '/api/sessions', body: { special_date_id: args.special_date_id }, write: true },
+      wishstar_confirm_session: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/confirm`, write: true },
+      wishstar_take_star: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/take-next`, write: true },
+      wishstar_finish_session: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/finish`, write: true },
+      wishstar_request_star: { method: 'POST', path: '/api/requests', write: true },
+      wishstar_respond_request: { method: 'POST', path: `/api/requests/${encodeURIComponent(String(args.request_id))}/respond`, body: { decision: args.decision, ...(args.star_id ? { star_id: args.star_id } : {}) }, write: true },
+      wishstar_offer_star: { method: 'POST', path: '/api/offers', body: { star_id: args.star_id, ...(args.message ? { message: args.message } : {}) }, write: true },
+      wishstar_list_offers: { method: 'GET', path: '/api/offers', write: false },
+      wishstar_accept_offer: { method: 'POST', path: `/api/offers/${encodeURIComponent(String(args.offer_id))}/accept`, write: true },
+      wishstar_notifications: { method: 'GET', path: '/api/notifications', write: false },
+    };
+    const call = calls[name];
+    if (!call) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    const r = await this.wishstar.forward(call.method, call.path, call.body, call.write ? opKey : undefined);
+    if (r.status === 0 || r.status === 503) return { ok: false, output: { error_code: 'WISHSTAR_UNAVAILABLE', detail: String((r.body as { detail?: string }).detail ?? '许愿星服务不可用') } };
+    if (r.status >= 400) return { ok: false, output: { error_code: `WISHSTAR_${r.status}`, detail: JSON.stringify(r.body).slice(0, 300) } };
+    const out = call.write
+      ? Object.fromEntries(Object.entries(r.body).filter(([k]) => ['id', 'star_id', 'session_id', 'status', 'state', 'request_id', 'offer_id'].includes(k)))
+      : r.body;
+    return { ok: true, output: out };
+  }
+
   /** 她授权 2026-10-17：char自维护长期记忆里程碑。写新版+manifest I 槽原子更新+审计；
    *  幂等键查 audit_events（同键重试只写一版）；I 槽不参与指纹——当前窗继续旧冻结副本，
    *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。 */
@@ -792,7 +986,7 @@ export class HostToolExecutor {
   }
 
   private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write') return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -821,6 +1015,7 @@ export class HostToolExecutor {
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
+    if (name.startsWith('wishstar_')) return await this.wishstarTool(name, checked.value as Record<string, unknown>, ctx);
     return this.reviewComplete(checked.value, ctx);
   }
 
