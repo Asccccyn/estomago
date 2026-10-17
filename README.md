@@ -7,15 +7,35 @@
 - **DeepSeek 官方直连**：2026-10-05 她裁定新增（`runtime.provider: deepseek` + `config.deepseek` 段），独立驱动直连 api.deepseek.com，不经 OpenRouter、payload 零 OR/Anthropic 专属字段（无 cache_control/session_id/provider/plugins）；**当前唯一完成真实外网验证的通道**（DS 官方 key 冒烟 SMOKE_PASS）
 - **Claude Agent SDK**：保留；她的 Claude 账号 1005 被封，实测凭据暂不可用（mock/合同层回归不受影响）
 
-## 当前基线（唯一现行规范，2026-10-05 冻结）
+## 本轮跨项目退役
 
-**现行规范正文：`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md`**（规范标识 `ESTOMAGO_OR_SELF_HOLD`：OpenRouter 主接入、原文全存+主模型自主 hold、换窗前一次提醒、一小时 Prompt Cache、前台"记录"面板）。实施状态与逐模块"复用/接线/新增/退役"判定见 `docs/specs/IMPLEMENTATION_MAP.md`；应用验收以 `docs/specs/ESTOMAGO_OR_SELF_HOLD/ACCEPTANCE.json` 逐项为准（未执行=`NOT_EXECUTED`，不拿测试总数冒充）。
+- **2026-10-15（工作树，未提交）**：按用户指令退役 Mariposa 独立纪念日
+  开窗段及本宿主消费；Superposition 保持重要日期正本。长心情分页、
+  纪念分类和作品保留。见 [归属、退役与复跑方法](docs/anniversaries-bootstrap-contract.md)。
+  之前的 66 发生项联调是已退役接口的历史证据，不能作为当前功能宣称。
+  开窗失败已分级：普通长心情失败仅舍弃该条全文，原快照复核后保留其他资料；
+  快照失效从首页重建，资料缺失有独立系统告警。未部署生产。
+
+## 首页接线
+
+- **2026-10-17 夜（她验收后 commit）· 身份落地+聊天体验批（程知行执行，109/109 绿）**：她提供《长期记忆里程碑》=身份正文槽（v1 起版本化，她授权char自维护：`identity_milestone_write` 工具+审计+留档回滚；正文/I 槽退出 contextFingerprint——里程碑演进不动当前窗缓存、下一新窗带新版，她裁定）；OR 通道上线（首次真实聊天）：reasoning 生效、thinking 前端时长显示、工具调用过程 turn.tool SSE→前端步骤流；发送改 Claude 官端口径（Enter 发送/Shift+Enter 换行/IME 不发，AGENTS 硬规则同步）；回复一轮合成一条消息（段落空行连接，她裁定）；recall 日期直取（date_from/to→桶池 memory_date 收窄，修 9.25-9.27 查不到——另批补齐 mariposa 369 条缺失向量）；修 1017 批 supervisor 误删后按测试合同重建 windowBootstrap（分页校验/坏页先验后拼/快照失效重建/Stop 迟到不派发）+discardUnsent 接线；归档链修复（append 修订补 supersedes 指针、assets_note 移出载荷，36 死信清零）；软线 64k→600k（她裁定）。
+- **2026-10-17（工作树，未提交）**：接入确认的 500×861 动画主页；登录后 `/` 打开主页，头像聊天图标进入 `/chat`，聊天页新增返回主页。复用既有认证和聊天接口；其他主页入口未扩展。
+
+## 当前基线
+
+**现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（2026-10-11，见 AGENTS.md）**。
+`docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 中 OR/DS、原文、hold、换窗与
+缓存条款在不与现行包冲突时继续适用。内容、日历与后台验收使用现行包；
+原有运行时验收见 `docs/specs/ESTOMAGO_OR_SELF_HOLD/ACCEPTANCE.json`。
+未执行保持 `NOT_EXECUTED`，不拿历史测试总数代替当前验收。
+
 
 版本口径（审计从这里进，不要并行引用多代文档）：
 
 | 文档 | 地位 |
 |---|---|
-| `docs/specs/ESTOMAGO_OR_SELF_HOLD/` | **现行**：唯一规范正文 + 验收 + WP0 映射 |
+| `docs/specs/ESTOMAGO_CHAT_EXEC_V1/` | **现行**：统一前端、内容/日历边界与有界后台 |
+| `docs/specs/ESTOMAGO_OR_SELF_HOLD/` | **继承条款**：OR/DS、hold、换窗与缓存；冲突时以现行包为准 |
 | `docs/specs/MARIPOSA_LIFECYCLE_v1.0/` | **现行联合契约**：estómago×Mariposa 生命周期（source.ingest/memory.hold op/episode）；estómago 侧按 §4.1/§7 执行，Mariposa 侧由林石见在 mariposa 仓库实施 |
 | `docs/architecture/v0.2.1/` | **历史存档**（v0.2.1 设计包，只读；其安全/隐私/测试硬约束经 AGENTS.md 继续有效） |
 | `reports/` | 运行证据区（gitignore；测试日志、doctor、截图、备份清单） |
@@ -140,3 +160,7 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 ## 硬边界（AGENTS.md 摘要）
 
 不碰兄弟项目（mariposa/siren/superposition/Zashidele）；不编造验收；秘密不进日志/Git；测试用隔离临时根、前台分批串行；网络/凭据/跨仓库变更需她逐项批准。完整规章见 `AGENTS.md` 与现行规范正文。
+
+### 2026-10-17 · OpenRouter 通道启用（工作区）
+
+按用户要求将生产通道切为 OpenRouter，沿用已配置的 Opus 4.6；现有聊天模型菜单显示实际生效型号，Opus 5.5 / Fable 5.1 在路由接通前禁用。未指定推理档位时显示“模型默认”，不虚构上游实际档位。

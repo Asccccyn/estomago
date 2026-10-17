@@ -47,7 +47,10 @@ async function main(): Promise<void> {
     console.warn(`[estomago] retired_config_keys: ${config.retiredKeys.join(', ')}（已剥离，不进运行时；请从配置文件移除）`);
   }
   console.log(`[estomago] 认证 token 文件: ${host.auth.tokenFilePath()}（内容不出现在日志；首次登录在页面粘贴一次）`);
-  const gate = host.identity.evaluateGate(host.db);
+  // 审计 F29 同口径：横幅按当前真实驱动判别——OR/DS 不被 SDK 前提误报阻断
+  const rk = host.runnerSelection.status === 'ok' ? host.runnerSelection.runner.kind : null;
+  const gateDriver = rk === 'openrouter' || rk === 'deepseek' ? rk : 'claude-agent-sdk';
+  const gate = host.identity.evaluateGate(host.db, { driver: gateDriver });
   if (gate.state !== 'READY') {
     console.log(`[estomago] IDENTITY_BLOCKED（模型通道暂停；消息仍保存、时间线仍可看）：`);
     for (const r of gate.reasons.slice(0, 8)) console.log(`  - ${r}`);

@@ -243,6 +243,24 @@ export class MessageService {
     return this.getMessage(messageId)!;
   }
 
+  /** 2026-10-17 她裁定（Claude 官端说话方式）：一轮回复合成一条消息——
+   *  后续段落以新修订追加到既有 assistant 消息（内容增长，不改写已发布文本；
+   *  修订链+归档 outbox 同 publishAssistantMessage 口径）。返回更新后的 dto。 */
+  appendAssistantPublication(messageId: string, additionalContent: string): MessageDto | null {
+    const nowIso = new Date().toISOString();
+    const row = this.db.prepare('SELECT id, conversation_id, current_revision FROM messages WHERE id = ? AND speaker = \'assistant\'').get(messageId) as { id: string; conversation_id: string; current_revision: number } | undefined;
+    if (!row) return null;
+    const cur = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(messageId, row.current_revision) as { content: string } | undefined;
+    const base = (cur?.content ?? '').replace(/\n+$/, '');
+    const merged = base + '\n\n' + additionalContent.replace(/^\n+/, '');
+    tx(this.db, () => {
+      this.insertRevision({ messageId, revision: row.current_revision + 1, kind: 'text', content: merged, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish', fingerprint: messageFingerprint(merged, []), supersedes: row.current_revision });
+      this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(row.current_revision + 1, messageId);
+      this.insertOutbox(`archive:${messageId}:${row.current_revision + 1}`, { message_id: messageId }, nowIso);
+    });
+    return this.getMessage(messageId);
+  }
+
   /** EXEC_V1 §04.13：预写提醒投递（speaker=system，宿主消息；幂等键防重复投递；归档 outbox 同链）。 */
   publishSystemNotice(opts: { conversationId: string; content: string; clientMessageId: string }): MessageDto {
     const nowIso = new Date().toISOString();

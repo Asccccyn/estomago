@@ -162,7 +162,7 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     // EXEC_V1 WP5：content 薄代理（content.enabled=true 且凭据文件存在才装配）
     const contentClient = contentClientFor(paths.stateRoot, opts.config.content.port, opts.config.content.enabled);
-    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient });
+    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events });
     const supervisor = new TurnSupervisor({
       db,
       config: opts.config,

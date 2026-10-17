@@ -265,15 +265,16 @@ test('D02：身份变化后手动换窗——旧窗 CONTEXT_STALE、失效轨迹
   ctx.supervisor.enqueue(sub.turnId);
   await ctx.supervisor.waitIdle();
   const win1 = ctx.windows.activeWindow('c1')!;
-  // 模拟批准身份材料升级：改批准正文内容 + manifest hash（指纹参与项变化；不动 expected_* 钉住的版本号）
+  // 模拟批准运行规则材料升级：改规则内容 + manifest hash（指纹参与项变化；不动 expected_* 钉住的版本号）。
+  // 2026-10-17 她落位裁定后：正文槽=长期记忆里程碑（char自维护），已不参与指纹
+  //（里程碑演进不触发换窗）；身份失效路径改由规则槽触发——规则/模型/驱动仍强制受控换窗。
   const fs = await import('node:fs');
   const paths2 = buildPaths(root);
-  const idFile = path.join(paths2.identityDir, 'approved-identity.md');
-  fs.writeFileSync(idFile, '（测试）升级后的批准身份正文——内容变了');
+  const idFile = path.join(paths2.identityDir, 'runtime-rules.md');
+  fs.writeFileSync(idFile, '（测试）升级后的运行规则——内容变了');
   const mf = path.join(paths2.configDir, 'identity-manifest.json');
   const manifest = JSON.parse(fs.readFileSync(mf, 'utf8'));
-  manifest.approved_source_hash = sha256Hex(fs.readFileSync(idFile, 'utf8'));
-  manifest.system_prompt_hash = manifest.approved_source_hash;
+  manifest.rules_hash = sha256Hex(fs.readFileSync(idFile, 'utf8'));
   fs.writeFileSync(mf, JSON.stringify(manifest));
   const sentBefore = sent.length;
   const r = await ctx.supervisor.manualRotate('c1');

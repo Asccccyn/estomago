@@ -6,6 +6,7 @@
 //  - 错误日志只记稳定错误码（AUD-28）。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import fs from 'node:fs';
+import { HOME_STATIC_FILES } from './home-assets.ts';
 import path from 'node:path';
 import type { Config } from '../config/schema.ts';
 import type { EstomagoPaths } from '../config/paths.ts';
@@ -76,7 +77,9 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 // Only explicitly shipped public files are reachable. Never resolve a request path
 // directly beneath WEB_DIR (login assets must not expose source or state files).
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
-  ['/', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ...HOME_STATIC_FILES,
   ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
   ['/chat-app.css', { file: '../dist/chat-app.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
   ['/app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
@@ -149,8 +152,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
       return json(res, 200, { ok: true });
     }
-    if ((route === 'GET /' && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
-      res.writeHead(302, { Location: url.pathname === '/' ? '/login' : '/', 'Cache-Control': 'no-store' });
+    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname.startsWith('/home/'));
+    if ((protectedPage && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
+      res.writeHead(302, { Location: url.pathname === '/login' ? '/' : '/login', 'Cache-Control': 'no-store' });
       res.end();
       return;
     }

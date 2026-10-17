@@ -33,6 +33,9 @@ export const ALERT_CODES: Readonly<Record<string, { severity: AlertSeverity; ali
   BACKGROUND_DUPLICATE: { severity: 'critical' },
   BACKGROUND_OVERRUN: { severity: 'warning' },
   RAW_ARCHIVE_FAILED: { severity: 'warning' },
+  // 局部开窗资料缺失：保留同快照已验证段；整包不可用时调用方可升级 critical。
+  // 只报安全原因码/窗口ID，不携带 I、计划、心情正文或上游错误原文。
+  BOOTSTRAP_INCOMPLETE: { severity: 'warning' },
   ASSET_ARCHIVE_CONTRACT_UNVERIFIED: { severity: 'warning' },
   MEDIA_OR_TOOL_FAILED: { severity: 'warning' },
   CLOCK_OR_RECOVERY_UNCERTAIN: { severity: 'warning' },
@@ -168,6 +171,32 @@ export class SystemAlertService {
     // ④提交后分发（沿现有 SSE）
     this.events.dispatchRow(result.row);
     return { alertId: result.alertId, counted: true, duplicateObservation: false };
+  }
+
+  /** 准备完成后把尚未恢复的缺口绑定到真实窗口；重定位不是新异常或恢复。 */
+  bindPreparedBootstrap(conversationId: string, windowId: string): void {
+    const pendingKey = `bootstrap:pending:${conversationId}`;
+    const windowKey = `bootstrap:${windowId}`;
+    const row = tx(this.db, () => {
+      const existing = this.db.prepare(
+        "SELECT * FROM system_alerts WHERE dedupe_key = ? AND code = 'BOOTSTRAP_INCOMPLETE' AND lifecycle = 'open'",
+      ).get(pendingKey) as AlertRow | undefined;
+      // 目标已有自己的历史时不合并或覆盖；由原记录继续如实保留缺口。
+      if (!existing || this.db.prepare('SELECT id FROM system_alerts WHERE dedupe_key = ?').get(windowKey)) return null;
+      const revision = existing.revision + 1;
+      const summary = JSON.stringify({ ...JSON.parse(existing.safe_summary_json), window_id: windowId });
+      this.db.prepare(
+        'UPDATE system_alerts SET dedupe_key = ?, safe_summary_json = ?, revision = ?, updated_at = ? WHERE id = ?',
+      ).run(windowKey, summary, revision, new Date().toISOString(), existing.id);
+      const event = this.events.persistInTx('system.alert.changed', {
+        conversationId: null, entityRef: existing.id, entityRevision: revision,
+        payload: { alert_id: existing.id, code: existing.code, severity: existing.severity,
+          lifecycle: 'open', revision, occurrence_count: existing.occurrence_count },
+      });
+      this.db.prepare('UPDATE system_alerts SET last_event_sequence = ? WHERE id = ?').run(event.sequence, existing.id);
+      return event;
+    });
+    if (row) this.events.dispatchRow(row);
   }
 
   /** 恢复=真实故障条件解除（内部接口）。必须给 resolution 证据描述；无证据不 resolve（§4：不能计时器自动 resolve）。 */

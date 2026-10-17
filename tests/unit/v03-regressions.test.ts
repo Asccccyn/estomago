@@ -45,11 +45,13 @@ test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT
   const win1 = windows.activeWindow('c1')!;
   assert.ok(win1.sdk_session_id, '首轮绑定 session');
 
-  // 模拟"批准材料升级"：manifest 版本字段变化（F04 后伪 hash 已无法保持 READY——那是被消灭的逃逸口）。
-  // 期望不锁版本（expected_*=null）→ gate 仍 READY，但指纹参与字段已变
+  // 模拟"批准材料升级"：规则槽版本变化（F04 后伪 hash 已无法保持 READY——那是被消灭的逃逸口）。
+  // 期望不锁版本（expected_*=null）→ gate 仍 READY，但指纹参与字段已变。
+  // 2026-10-17 她裁定后：I 槽（i_version/i_hash）不再参与指纹（里程碑自维护演进≠人格偷换），
+  // 故本测试改用规则槽触发；I 槽演进不 stale 的断言见 milestone-self-maintain.test.ts
   const mf = path.join(root, 'config/identity-manifest.json');
   const m = JSON.parse(fs.readFileSync(mf, 'utf8'));
-  m.i_version = 'test-i-2';
+  m.runtime_rules_version = 'test-rules-2';
   fs.writeFileSync(mf, JSON.stringify(m));
   const config2 = buildConfig({ ...readyRuntimePatch(), identity: { expected_identity_version: null, expected_i_version: null, expected_rules_version: null } });
   const identity2 = new IdentityService(config2, paths); // gate 必须按新期望评估（旧服务锁着 test-i-1 会先阻断）

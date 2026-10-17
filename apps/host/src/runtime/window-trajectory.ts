@@ -30,6 +30,24 @@ export class WindowTrajectoryService {
     };
   }
 
+  /** Retry preparation only before any dispatch. Failure/unknown outcome is not
+   * proof of non-delivery; either transport-start or sent evidence freezes B.
+   * The predicate and deletion share the write transaction; audit requests stay. */
+  discardUnsent(windowId: string): boolean {
+    return tx(this.db, () => {
+      const deleted = this.db.prepare(
+        `DELETE FROM window_trajectories
+         WHERE window_id = ? AND last_boundary_json IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM provider_requests
+             WHERE window_id = ?
+               AND (dispatch_started_at IS NOT NULL OR sent_at IS NOT NULL)
+           )`,
+      ).run(windowId, windowId);
+      return Number(deleted.changes) === 1;
+    });
+  }
+
   /** 初始化（幂等）：system+I+近期原话固定为初始段；manifest=初始段对应的真实消息清单 */
   init(windowId: string, messages: OrMessage[], manifest: ManifestEntry[]): void {
     if (this.forWindow(windowId) !== null) return;

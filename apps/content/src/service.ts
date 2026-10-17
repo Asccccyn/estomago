@@ -150,6 +150,7 @@ export class ContentServer {
   constructor(opts: ContentServerOptions) {
     this.db = openDb(opts.stateRoot);
     fs.mkdirSync(opts.stateRoot, { recursive: true });
+    this.port = opts.port;
     const tokenFile = path.join(opts.stateRoot, 'service.token');
     if (opts.token) { this.token = opts.token; fs.writeFileSync(tokenFile, opts.token); }
     else if (fs.existsSync(tokenFile)) this.token = fs.readFileSync(tokenFile, 'utf8').trim();

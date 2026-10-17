@@ -49,11 +49,18 @@
 | BACKGROUND_DUPLICATE | 同一任务时隙出现两个有效owner或真实重复派发 | critical；停止受影响路径，追踪已发费用；唯一约束正常挡住第二个领取不报警 |
 | BACKGROUND_OVERRUN | 超过单轮时间/步骤/输出上限 | warning；fence后停止续步，迟到usage仍记账 |
 | RAW_ARCHIVE_FAILED | 原文同步失败/冲突/长时间积压 | warning；本地原文仍可读，不丢弃重建 |
+| BOOTSTRAP_INCOMPLETE | 开窗资料未完整验证或载入 | warning；局部失败保留同快照已验证段。I 故障或整包不可用升级 critical；说明缺失段，不包含正文。告警本身不调用模型、不触发重试；装配重取仍受既有截止时间和次数上限 |
 | ASSET_ARCHIVE_CONTRACT_UNVERIFIED | 附件资产合同未核实却需要归档 | warning；文字/附件同步分列，不伪报完整成功 |
 | MEDIA_OR_TOOL_FAILED | 已接入能力真实失败，影响消息或有潜在额外消耗 | warning；按operation聚合 |
 | CLOCK_OR_RECOVERY_UNCERTAIN | 时钟/崩溃恢复不能安全判断预算与任务领取 | warning；暂停新背景活动，普通页面保持可用 |
 
 模块可以添加具体code，但必须登记、测试，并说明计费/重试行为；不得通过任意字符串把所有日志都变成红点。
+
+`BOOTSTRAP_INCOMPLETE` 按 `bootstrap:<window_id>` 聚合，scope 为 Mariposa
+integration；每次真实装配终态只观察一次，不逐页刷计数。已读只消除未读
+红点，不能代替恢复；同窗有完整验证结果才 resolve。其它窗口的既有缺口
+不因新窗成功自动抹除。前端以独立“系统异常”入口展示待处理/已恢复状态和
+安全摘要，SSE 建立及重连时重查持久快照，不依赖聊天里的 context.warning。
 
 正常关闭后旧闭包恢复、随后被准入门拦住，是 `AUTONOMOUS_DISABLED` 正常终止；正常达到次数门是保护性停止。二者不得仅因“曾尝试进入门”就触发critical。预算达到可聚合成一次可读提醒，不能每次调度轮询重复增加次数。`BACKGROUND_BUDGET_EXHAUSTED` 映射到 `BACKGROUND_BUDGET_REACHED`；外部动作的 `BACKGROUND_OUTCOME_UNKNOWN` 映射到 `TOOL_OUTCOME_UNKNOWN`；模型用量缺失按结算宽限触发 `USAGE_MISSING`。`BACKGROUND_CLOCK_REGRESSION` 映射到 `CLOCK_OR_RECOVERY_UNCERTAIN`；上游强制压缩策略冲突映射到 `CONTEXT_COMPACTION_UNEXPECTED` 的 policy_conflict 原因，页面明确“发现策略冲突”而非伪称已经发生压缩。尚未发送、仅缺少缓存证据的保温状态不算一次维护失败。
 

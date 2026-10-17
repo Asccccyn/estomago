@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="42" height="84" viewBox="0 0 42 84" fill="none">
+  <defs><linearGradient id="cord" x1="10" y1="0" x2="34" y2="76" gradientUnits="userSpaceOnUse"><stop stop-color="#ac4b55"/><stop offset=".5" stop-color="#9e3545"/><stop offset="1" stop-color="#be6167"/></linearGradient></defs>
+  <path d="M10-5C10 15 8 38 10 56C11 69 15 76 22 76C30 76 34 68 34 56L32-5" stroke="#47343b" stroke-opacity=".12" stroke-width="4.2" transform="translate(1 1)"/>
+  <path d="M9-5C9 15 7 38 9 56C10 69 14 75 21 75C29 75 33 67 33 55L31-5" stroke="#613742" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M9-5C9 15 7 38 9 56C10 69 14 75 21 75C29 75 33 67 33 55L31-5" stroke="url(#cord)" stroke-width="2.3" stroke-linecap="round"/>
+  <path d="M8.3 2L9.7 5M8.2 12L9.6 15M8 22L9.4 25M7.8 32L9.2 35M7.9 42L9.3 45M8.5 52L10 55M10.7 62L12.5 64M16 72L18.5 73M25 72L27 70M30.8 62L32 59M31.8 51L33.1 48M31.5 41L32.8 38M31.2 31L32.5 28M30.8 21L32.1 18M30.5 11L31.8 8M30.2 1L31.5-2" stroke="#e4a09c" stroke-opacity=".62" stroke-width=".65" stroke-linecap="round"/>
+</svg>

@@ -236,9 +236,13 @@ export class OpenRouterRunner implements AgentRunner {
     const headerGenId = response.headers.get('x-generation-id');
     let messageStartSent = false;
     let sdkMessageId: string | null = null;
-    let textBlockOpen = false;
+    let textBlockIndex: number | null = null;
+    let nextBlockIndex = 0;
+    const reasoningBlockIndexes = new Map<number, number>();
     let sawAnyFrame = false;
     const emit = (ev: SdkNormalizedEvent): void => {
+      // 回调可能在同一网络块的 thinking_delta 后取消；该块剩余内容也必须过 fence。
+      if (req.abortController.signal.aborted && ev.kind !== 'usage') return;
       markPublished();
       req.onEvent(ev);
     };
@@ -261,6 +265,7 @@ export class OpenRouterRunner implements AgentRunner {
         sawAnyFrame = true; // 已进入流（即使尚无正文）——保守视为已发布，不再自动重试
         markPublished();
         const before = acc.snapshot();
+        const beforeReasoning = acc.reasoningSnapshot();
         acc.feed(chunk); // 审计 F20：先吸收（含已抵达的计量帧），停止不丢已收到的事实
         const after = acc.snapshot();
         if (req.abortController.signal.aborted) {
@@ -268,13 +273,26 @@ export class OpenRouterRunner implements AgentRunner {
           continue; // 不再发布内容/工具；usage 由 fence 单独放行（下方收口补记）
         }
         if (after.id !== before.id) ensureMessageStart(after.id);
+        for (const block of acc.reasoningSnapshot()) {
+          const mid = ensureMessageStart(after.id);
+          let blockIndex = reasoningBlockIndexes.get(block.index);
+          if (blockIndex === undefined) {
+            blockIndex = nextBlockIndex++;
+            reasoningBlockIndexes.set(block.index, blockIndex);
+            emit({ kind: 'content_block_start', sdk_message_id: mid, block_index: blockIndex, block_type: block.type, channel: 'main' });
+          }
+          const previousLength = beforeReasoning.find((previous) => previous.index === block.index)?.text.length ?? 0;
+          if (block.type === 'thinking' && block.text.length > previousLength) {
+            emit({ kind: 'thinking_delta', sdk_message_id: mid, block_index: blockIndex, text: block.text.slice(previousLength), channel: 'main' });
+          }
+        }
         if (after.text.length > before.text.length) {
           const mid = ensureMessageStart(after.id);
-          if (!textBlockOpen) {
-            textBlockOpen = true;
-            emit({ kind: 'content_block_start', sdk_message_id: mid, block_index: 0, block_type: 'text', channel: 'main' });
+          if (textBlockIndex === null) {
+            textBlockIndex = nextBlockIndex++;
+            emit({ kind: 'content_block_start', sdk_message_id: mid, block_index: textBlockIndex, block_type: 'text', channel: 'main' });
           }
-          emit({ kind: 'text_delta', sdk_message_id: mid, block_index: 0, text: after.text.slice(before.text.length), channel: 'main' });
+          emit({ kind: 'text_delta', sdk_message_id: mid, block_index: textBlockIndex, text: after.text.slice(before.text.length), channel: 'main' });
         }
       }
     } catch (err) {
@@ -286,7 +304,7 @@ export class OpenRouterRunner implements AgentRunner {
       this.salvageMetering(req, acc); // D04（审计 3655d60）：断流/网络错误也先记已到计量帧，再收口错误
       return { kind: 'result', result: this.errorResult(err, attempt) };
     }
-    if (abortedMidStream) {
+    if (abortedMidStream || req.abortController.signal.aborted) {
       // 停止收口：流若完整则 finish；缺 DONE/终态时不再整帧丢弃——已到的记账帧照样补记（F20）
       this.salvageMetering(req, acc);
       return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, acc.snapshot().id ?? headerGenId) };
@@ -310,13 +328,28 @@ export class OpenRouterRunner implements AgentRunner {
         completeness: finish.usage.completeness === 'complete' ? 'complete' : 'partial',
       });
     }
-    if (textBlockOpen) emit({ kind: 'content_block_stop', sdk_message_id: mid, block_index: 0, channel: 'main' });
+    if (req.abortController.signal.aborted) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, finish.id ?? headerGenId) };
     const matched: MatchedCompleteBlock[] = [];
-    if (finish.text.length > 0) matched.push({ block_index: 0, block_type: 'text', text: finish.text, tool_id: null, tool_name: null });
+    // length/content_filter 的流式思考尚未完成。保留 streaming，让 supervisor 的
+    // 失败收口标 failed；不能先标 complete 再由只处理 streaming 的收口漏过。
+    if (finish.status === 'completed') {
+      for (const block of finish.reasoningBlocks) {
+        const blockIndex = reasoningBlockIndexes.get(block.index)!;
+        emit({ kind: 'content_block_stop', sdk_message_id: mid, block_index: blockIndex, channel: 'main' });
+        matched.push({ block_index: blockIndex, block_type: block.type, text: block.type === 'thinking' ? block.text : null, tool_id: null, tool_name: null });
+      }
+    }
+    if (textBlockIndex !== null) {
+      emit({ kind: 'content_block_stop', sdk_message_id: mid, block_index: textBlockIndex, channel: 'main' });
+      matched.push({ block_index: textBlockIndex, block_type: 'text', text: finish.text, tool_id: null, tool_name: null });
+    }
+    nextBlockIndex = Math.max(nextBlockIndex, 1); // 保留无正文时既有工具块从 1 起的索引。
     for (let i = 0; i < finish.toolCalls.length; i++) {
       const c = finish.toolCalls[i]!;
-      matched.push({ block_index: i + 1, block_type: 'tool_use', text: c.arguments, tool_id: c.id, tool_name: c.name });
+      matched.push({ block_index: nextBlockIndex++, block_type: 'tool_use', text: c.arguments, tool_id: c.id, tool_name: c.name });
     }
+    matched.sort((a, b) => a.block_index - b.block_index);
+    if (req.abortController.signal.aborted) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, finish.id ?? headerGenId) };
     emit({ kind: 'complete_message', sdk_message_id: mid, session_id: null, channel: 'main', matched, unmatched: [], packet_uuid: null });
 
     if (finish.status !== 'completed') {
@@ -326,6 +359,7 @@ export class OpenRouterRunner implements AgentRunner {
       return { kind: 'result', result: this.final('no_final_result', code, null, code, attempt, finish.id ?? headerGenId) };
     }
     emit({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: null, request_id: finish.id ?? headerGenId });
+    if (req.abortController.signal.aborted) return { kind: 'result', result: this.final('interrupted', null, null, null, attempt, finish.id ?? headerGenId) };
     // §10：opaque reasoning 片段随终态透出——协议继续态保真（宿主续请求原样携带，不解释不重构）
     return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id ?? headerGenId, finish.reasoningFrames) };
   }

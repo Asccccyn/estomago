@@ -256,7 +256,7 @@
     const state=stateAt(time,width,height,unit);
     if(state.camera===0) scene.render(ctx,sheet,width,height,Math.min(time,scene.duration));
     else {
-      ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#fff';ctx.fillRect(0,0,width,height);
+      ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#f8f4ed';ctx.fillRect(0,0,width,height);
       if(state.camera<height)ctx.drawImage(finalCanvas(sheet,width,height),0,-state.camera);
       ctx.restore();
     }

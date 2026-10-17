@@ -142,7 +142,7 @@ test('T1：明确空选换窗后新窗 payload 不含旧原文；同窗失败回
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t1-');
   const transport = dsTransport(seen);
-  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 2200 } });
+  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   // 先建窗（空房首条自动建窗）
   const s1 = await say(ctx, '旧窗的第一句话', 'm1', T0);
   assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(s1.attemptId) as { state: string }).state, 'completed');
@@ -196,7 +196,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
       throw new Error('wp7-trajectory-write-boom');
     }
   }
-  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 2200 } });
+  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
@@ -223,7 +223,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
 test('T2b：正常换窗成功返回时初始轨迹已存在（无需下一轮懒初始化）', async () => {
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t2b-');
-  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 2200 } });
+  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '旧窗原话', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
@@ -335,15 +335,15 @@ test('T5：confirmed 再确认——同键幂等重放；异键结构化冲突�
 });
 
 
-test('RRA-016/WP07-T2 拆分：bootstrap 503=无 B 降级不阻塞换窗（D2 语义，区别于轨迹写失败回滚）', async () => {
+test('RRA-016/WP07-T2 拆分：bootstrap 503=明确未取得资料且不阻塞换窗（D2 语义，区别于轨迹写失败回滚）', async () => {
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t2c-');
-  // bootstrap 持续 503（传输故障→windowBootstrap catch 归 null 降级）
+  // bootstrap 持续 503（传输故障→windowBootstrap 返回资料未取得标记）
   const slow503: MariposaTransport = async (cap) => {
     if (cap === 'bootstrap.get') return { ok: false, code: 'HTTP_503', httpStatus: 503 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 2200 } });
+  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
@@ -375,12 +375,13 @@ test('RRA-006（回访 run-035424）：分节正文续取被消费或如实披�
       event_text_truncated: true, event_text_total_chars: full.length,
       event_text_next: { memory_id: 'mem_rra006', field: 'event_text', offset: 2000 },
     }] },
-    plans: { items: [] }, anniversaries: { items: [] },
+    plans: { items: [] },
   };
   // 场景一：续取失败（如 schema 拒绝/传输错）→ E 必须调过 bootstrap.next
   // 且向模型披露 event_text_next（不静默截断）
   let nextCalls = 0;
-  const failing: MariposaTransport = async (cap) => {
+  const failing: MariposaTransport = async (cap, args) => {
+    if (cap === 'bootstrap.get' && args.loaded_snapshot_id) return { ok: true, result: { unchanged: true, snapshot_id: args.loaded_snapshot_id, profile: 'estomago' } };
     if (cap === 'bootstrap.get') return { ok: true, result: packet };
     if (cap === 'bootstrap.next') { nextCalls++; return { ok: false, code: 'SCHEMA_VIOLATION', httpStatus: 422 }; }
     return { ok: false, code: 'X', httpStatus: 404 };
@@ -401,7 +402,7 @@ test('RRA-006（回访 run-035424）：分节正文续取被消费或如实披�
         nextCalls++;
         const chunk = full.slice(offset, Math.min(full.length, offset + 2000));
         offset += 2000;
-        return { ok: true, result: { section: 'memory_item', memory_id: 'mem_rra006', field: 'event_text', content: chunk, offset: offset - 2000, total_chars: full.length, next_cursor: offset < full.length ? { memory_id: 'mem_rra006', field: 'event_text', offset } : null } };
+        return { ok: true, result: { snapshot_id: packet.snapshot_id, content_role: 'bootstrap_memory_package', instruction_authority: 'none', section: 'memory_item', memory_id: 'mem_rra006', field: 'event_text', content: chunk, offset: offset - 2000, total_chars: full.length, next_cursor: offset < full.length ? { memory_id: 'mem_rra006', field: 'event_text', offset } : null } };
       }
       return { ok: false, code: 'X', httpStatus: 404 };
     };

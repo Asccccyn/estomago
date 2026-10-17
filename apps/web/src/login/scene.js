@@ -44,6 +44,8 @@
     ctx.save();
     ctx.translate(translateX + c.dx, translateY + c.dy);
     if (clip) { ctx.beginPath(); ctx.rect(clip[0], clip[1], clip[2], clip[3]); ctx.clip(); }
+    // Blend the original cel's white paper into the page without resampling the asset.
+    ctx.globalCompositeOperation = 'multiply';
     ctx.drawImage(sheet, c.x, c.y, c.w, c.h, 0, 0, 485, 385);
     ctx.restore();
   }
@@ -56,7 +58,7 @@
     const f = framing(width, height);
     ctx.save();
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = '#f8f4ed'; ctx.fillRect(0, 0, width, height);
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.translate(f.x, f.y); ctx.scale(f.scale, f.scale);
     // A shared, restrained settling movement; no skeletal morphing or finger stretching.

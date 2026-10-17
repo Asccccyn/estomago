@@ -1,6 +1,7 @@
-// composer 纯逻辑（浏览器与测试共用）—— v0.2.1 输入硬规则的单一事实源：
-//  1. Enter 只换行（textarea 默认行为），发送只由独立发送键触发；无任何组合键发送捷径
-//  2. IME 合成期间（composing=true）不发送（候选确认不能变成发送/多插一行）
+// composer 纯逻辑（浏览器与测试共用）——输入规则的单一事实源：
+//  2026-10-17 她裁定（替代 v0.2.1 旧规则）：Claude 官端发送口径——
+//  1. Enter 发送一段（一条消息）；Shift+Enter 换行；一次一段，可分段连发多条
+//  2. IME 合成期间（composing=true / keyCode 229）不发送（候选确认不能变成发送）
 //  3. 仅空白且无附件 → 不可发送；判定不修改正文（不 trim 重写）
 //  4. 一次点击生成一个 client_message_id；重试复用同一 ID（服务端幂等兜底）
 //  5. 多行正文是一条消息；换行属于正文结构，绝不拆分
@@ -32,9 +33,14 @@ export function newClientMessageId(cryptoObj = globalThis.crypto) {
   return cryptoObj.randomUUID();
 }
 
-// 任何按键都不触发发送（含 Cmd/Ctrl/Shift+Enter）——首版无快捷键
-export function shouldSendOnKeydown() {
-  return false;
+// Claude 官端口径（她 2026-10-17 裁定）：裸 Enter=发送；Shift/Cmd/Ctrl/Alt+Enter=不发送
+// （Shift+Enter 走 textarea 默认换行）；IME 合成期（isComposing / keyCode 229）不发送
+export function shouldSendOnKeydown(event) {
+  if (!event || event.key !== "Enter") return false;
+  if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
+  if (event.nativeEvent && event.nativeEvent.isComposing) return false;
+  if (event.keyCode === 229) return false;
+  return true;
 }
 
 // §19（AUD-17）：DraftRevisionGuard —— 普通发送与 route edit 共用同一规则：
