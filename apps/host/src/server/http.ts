@@ -79,6 +79,7 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
   ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/wishstar', { file: 'wishstar/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ...HOME_STATIC_FILES,
   ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
   ['/chat-app.css', { file: '../dist/chat-app.css', type: 'text/css; charset=utf-8', cache: 'no-cache' }],
