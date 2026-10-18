@@ -1024,9 +1024,11 @@ export class TurnSupervisor {
       selected = [];
     }
     // EXEC_V1 §03.6：历史与尾部统一走投影器（内部 asset_image 引用——轨迹/证据不含 Base64）
+    // 2026-10-18 她的裁定：多选只带文本——选集历史投影 textOnly（图片以占位文本带入，
+    // 不产视觉块、不触发视觉门）；尾部当前输入与追赶投影不受影响（当前轮的图照常进模型）
     let envHasImage = false;
     for (const m of selected) {
-      const proj = this.revisionBlocks(m.id, m.revision, m.content);
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true });
       envHasImage = envHasImage || proj.hasImage;
       messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }

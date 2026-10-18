@@ -15,9 +15,13 @@ export const PROJECTION_VERSION = 'v1' as const;
 
 export type RevisionAttachment = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
 
-/** 消息修订 → 内部投影块。语音带转写→标注来源的文本块；图片/表情→asset_image 引用块。 */
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+/** 消息修订 → 内部投影块。语音带转写→标注来源的文本块；图片/表情→asset_image 引用块。
+ *  textOnly（2026-10-18 她的裁定：多选只带文本）——人工选集装配专用：图片/表情不产出
+ *  视觉引用块，以如实占位文本替代（模型知道此处有图、图未携带，不静默消失）；
+ *  语音转写本就是文本，照常携带。 */
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const isCurrentInput = opts.isCurrentInput === true;
+  const textOnly = opts.textOnly === true;
   const blocks: ProjectedBlock[] = [];
   if (content.length > 0) blocks.push({ type: 'text', text: content });
   let hasImage = false;
@@ -33,6 +37,11 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
         // 历史语音无转写：如实占位（模型知道存在语音消息），不静默消失也不空输入阻断
         blocks.push({ type: 'text', text: '[语音消息：本条无转写，原音频已保留]' });
       }
+      continue;
+    }
+    if (textOnly) {
+      blocks.push({ type: 'text', text: '[图片消息：按多选裁定不带入本窗，图片未随文本携带]' });
+      if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
       continue;
     }
     // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）
