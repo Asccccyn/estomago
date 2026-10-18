@@ -1,0 +1,4224 @@
+[
+ {
+  "id": "prq_mvcmlapuagprvv",
+  "at": "2026-10-17T16:43:21.860Z",
+  "attempt": "att_mvcmlao02d9f02d564bfdffc",
+  "turn": "turn_mvcmlao072520e787139ff6b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 3,
+  "msgs_hash": "17421f787d59",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 22345,
+   "read": 0,
+   "write": 0,
+   "output": 126,
+   "cost": 0.114875
+  }
+ },
+ {
+  "id": "prq_mvcmlnpmll2nsi",
+  "at": "2026-10-17T16:43:38.701Z",
+  "attempt": "att_mvcmlnpcd1db1d553ac6c8d8",
+  "turn": "turn_mvcmlnpc9196f56921d92781",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 5,
+  "msgs_hash": "9db8f579defa",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 2,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 22630,
+   "read": 0,
+   "write": 0,
+   "output": 76,
+   "cost": 0.11505
+  }
+ },
+ {
+  "id": "prq_mvcmmbmk7pwgzv",
+  "at": "2026-10-17T16:44:09.695Z",
+  "attempt": "att_mvcmmbm85b8b2c46a13b2ca0",
+  "turn": "turn_mvcmmbm87484d1260e8ab0ff",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 7,
+  "msgs_hash": "55c206d0b384",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 4,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 22933,
+   "read": 0,
+   "write": 0,
+   "output": 165,
+   "cost": 0.11879
+  }
+ },
+ {
+  "id": "prq_mvcmquhh1hfun6",
+  "at": "2026-10-17T16:47:40.760Z",
+  "attempt": "att_mvcmquh795ebaf398e7369a4",
+  "turn": "turn_mvcmquh7abe40eacd9f249b9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 9,
+  "msgs_hash": "947dc5443769",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 6,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 23303,
+   "read": 0,
+   "write": 0,
+   "output": 112,
+   "cost": 0.119315
+  }
+ },
+ {
+  "id": "prq_mvcmqyh2rb2we8",
+  "at": "2026-10-17T16:47:45.928Z",
+  "attempt": "att_mvcmquh795ebaf398e7369a4",
+  "turn": "turn_mvcmquh7abe40eacd9f249b9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 11,
+  "msgs_hash": "bf2629232e61",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 6,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 23810,
+   "read": 0,
+   "write": 0,
+   "output": 190,
+   "cost": 0.1238
+  }
+ },
+ {
+  "id": "prq_mvcmr1bv0865wg",
+  "at": "2026-10-17T16:47:49.628Z",
+  "attempt": "att_mvcmquh795ebaf398e7369a4",
+  "turn": "turn_mvcmquh7abe40eacd9f249b9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 13,
+  "msgs_hash": "51f39d4cdfd0",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 6,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 24056,
+   "read": 0,
+   "write": 0,
+   "output": 95,
+   "cost": 0.122655
+  }
+ },
+ {
+  "id": "prq_mvcmr41356by5b",
+  "at": "2026-10-17T16:47:53.128Z",
+  "attempt": "att_mvcmquh795ebaf398e7369a4",
+  "turn": "turn_mvcmquh7abe40eacd9f249b9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 15,
+  "msgs_hash": "d5ea135d78ab",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 6,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 24555,
+   "read": 0,
+   "write": 0,
+   "output": 137,
+   "cost": 0.1262
+  }
+ },
+ {
+  "id": "prq_mvcmy10guvrub5",
+  "at": "2026-10-17T16:53:15.810Z",
+  "attempt": "att_mvcmy10a280f7256c68c60a9",
+  "turn": "turn_mvcmy10a90d753b911c71e6d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 17,
+  "msgs_hash": "9e986918da78",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 8,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 24948,
+   "read": 0,
+   "write": 0,
+   "output": 172,
+   "cost": 0.12904
+  }
+ },
+ {
+  "id": "prq_mvcmy659qc8wbz",
+  "at": "2026-10-17T16:53:22.464Z",
+  "attempt": "att_mvcmy10a280f7256c68c60a9",
+  "turn": "turn_mvcmy10a90d753b911c71e6d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 20,
+  "msgs_hash": "f5d385612d5c",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 8,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 29014,
+   "read": 0,
+   "write": 0,
+   "output": 205,
+   "cost": 0.150195
+  }
+ },
+ {
+  "id": "prq_mvcmzsa69fn9hy",
+  "at": "2026-10-17T16:54:37.809Z",
+  "attempt": "att_mvcmzs9s3ff612166b06250e",
+  "turn": "turn_mvcmzs9s22d5c096651d95ec",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "a5ef85aa2108",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 22,
+  "msgs_hash": "a559491e3a63",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 16,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 29466,
+   "read": 0,
+   "write": 0,
+   "output": 13,
+   "cost": 0.147655
+  }
+ },
+ {
+  "id": "prq_mvcnxg6fzh04pb",
+  "at": "2026-10-17T17:20:48.426Z",
+  "attempt": "att_mvcnxg5d63b7c7917b544e75",
+  "turn": "turn_mvcnxg5dd754ec09697544fd",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 24,
+  "msgs_hash": "a43aec3ca15e",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 21,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 30210,
+   "read": 0,
+   "write": 29903,
+   "output": 112,
+   "cost": 0.303365
+  }
+ },
+ {
+  "id": "prq_mvcnxjtp7nm2o4",
+  "at": "2026-10-17T17:20:53.156Z",
+  "attempt": "att_mvcnxg5d63b7c7917b544e75",
+  "turn": "turn_mvcnxg5dd754ec09697544fd",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 26,
+  "msgs_hash": "4918ece0410c",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 21,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 32532,
+   "read": 29903,
+   "write": 0,
+   "output": 438,
+   "cost": 0.0390465
+  }
+ },
+ {
+  "id": "prq_mvcny8e0abhyxl",
+  "at": "2026-10-17T17:21:24.987Z",
+  "attempt": "att_mvcny8dr8ab78b974b3c98c9",
+  "turn": "turn_mvcny8dra5fb47dd15b55bc7",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 28,
+  "msgs_hash": "83b5abb1569d",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 23,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 33263,
+   "read": 29903,
+   "write": 304,
+   "output": 123,
+   "cost": 0.0363465
+  }
+ },
+ {
+  "id": "prq_mvcnz84k8lfmcy",
+  "at": "2026-10-17T17:22:11.303Z",
+  "attempt": "att_mvcnz8441a6c9351f097e3e6",
+  "turn": "turn_mvcnz8443e4f94378e72a85b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 30,
+  "msgs_hash": "d16c113d9d43",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 27,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 33583,
+   "read": 30207,
+   "write": 3053,
+   "output": 7,
+   "cost": 0.0474235
+  }
+ },
+ {
+  "id": "prq_mvcnzoqhfizyxb",
+  "at": "2026-10-17T17:22:32.828Z",
+  "attempt": "att_mvcnzoq4e41e4cd9bc9e9a72",
+  "turn": "turn_mvcnzoq416a3bbcca3b3291a",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 32,
+  "msgs_hash": "9500e2cc80c9",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 29,
+    "contentIndex": 0
+   }
+  ],
+  "usage": null
+ },
+ {
+  "id": "prq_mvcnzx50hulu5g",
+  "at": "2026-10-17T17:22:43.716Z",
+  "attempt": "att_mvcnzoq4e41e4cd9bc9e9a72",
+  "turn": "turn_mvcnzoq416a3bbcca3b3291a",
+  "purpose": "chat",
+  "attempt_no": 1,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 32,
+  "msgs_hash": "9500e2cc80c9",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 29,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 33894,
+   "read": 33260,
+   "write": 320,
+   "output": 547,
+   "cost": 0.035075
+  }
+ },
+ {
+  "id": "prq_mvco3vf7j3sp3m",
+  "at": "2026-10-17T17:25:48.118Z",
+  "attempt": "att_mvco3vdz068f904a2ec4de2e",
+  "turn": "turn_mvco3vdzb7792911ad934c99",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 34,
+  "msgs_hash": "52195c9a24d5",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 31,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 34515,
+   "read": 33580,
+   "write": 311,
+   "output": 16,
+   "cost": 0.02342
+  }
+ },
+ {
+  "id": "prq_mvco459zs7z3do",
+  "at": "2026-10-17T17:26:00.892Z",
+  "attempt": "att_mvco459ic19d5e5ab05aad51",
+  "turn": "turn_mvco459i2dae93fbe24814a4",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 36,
+  "msgs_hash": "3a7801c8fac7",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 33,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 34826,
+   "read": 33891,
+   "write": 621,
+   "output": 141,
+   "cost": 0.0282505
+  }
+ },
+ {
+  "id": "prq_mvco63lxxri4a9",
+  "at": "2026-10-17T17:27:32.042Z",
+  "attempt": "att_mvco63lac54bee9604d1d02d",
+  "turn": "turn_mvco63laafe12096b6d4d61d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 38,
+  "msgs_hash": "60be4dfff4ed",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 35,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 35172,
+   "read": 34512,
+   "write": 311,
+   "output": 370,
+   "cost": 0.031361
+  }
+ },
+ {
+  "id": "prq_mvco6lskrwtpdp",
+  "at": "2026-10-17T17:27:55.608Z",
+  "attempt": "att_mvco6ls33fb75e3335cbff77",
+  "turn": "turn_mvco6ls3e63d0d0ab9562470",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 40,
+  "msgs_hash": "3d5b2e03f1ae",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 37,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 35647,
+   "read": 34823,
+   "write": 346,
+   "output": 261,
+   "cost": 0.0297865
+  }
+ },
+ {
+  "id": "prq_mvco8n0jfywxfb",
+  "at": "2026-10-17T17:29:30.502Z",
+  "attempt": "att_mvco8n060d423eb51b7032b8",
+  "turn": "turn_mvco8n06c4355ec5bfd836ba",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 42,
+  "msgs_hash": "521f5f25f9cc",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 39,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 36150,
+   "read": 35169,
+   "write": 475,
+   "output": 527,
+   "cost": 0.0380395
+  }
+ },
+ {
+  "id": "prq_mvcoanbrd1n79y",
+  "at": "2026-10-17T17:31:04.221Z",
+  "attempt": "att_mvcoanba28d24f4cba06baba",
+  "turn": "turn_mvcoanba69823418d240fb04",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 44,
+  "msgs_hash": "bde410dab836",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 41,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 36796,
+   "read": 35644,
+   "write": 503,
+   "output": 249,
+   "cost": 0.032322
+  }
+ },
+ {
+  "id": "prq_mvcof3p6mh265z",
+  "at": "2026-10-17T17:34:32.072Z",
+  "attempt": "att_mvcof2zh7b0a661f16db9c5e",
+  "turn": "turn_mvcof2zh0ac3facdb104e4fb",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 46,
+  "msgs_hash": "10515e9177c4",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 43,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 37354,
+   "read": 36147,
+   "write": 646,
+   "output": 477,
+   "cost": 0.0392635
+  }
+ },
+ {
+  "id": "prq_mvcogtvws0n4kb",
+  "at": "2026-10-17T17:35:52.684Z",
+  "attempt": "att_mvcogtv74ce62dbbdae8f6ea",
+  "turn": "turn_mvcogtv76ffc96e1d482afe4",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 48,
+  "msgs_hash": "a2e599f4feff",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 45,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 37930,
+   "read": 36793,
+   "write": 558,
+   "output": 334,
+   "cost": 0.0352215
+  }
+ },
+ {
+  "id": "prq_mvcomadm0u1t9k",
+  "at": "2026-10-17T17:40:07.335Z",
+  "attempt": "att_mvcom8stea8b200317cc0d99",
+  "turn": "turn_mvcom8stde6ec7465541d5c2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 50,
+  "msgs_hash": "821b685852ce",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 47,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 38507,
+   "read": 37351,
+   "write": 1153,
+   "output": 480,
+   "cost": 0.0422205
+  }
+ },
+ {
+  "id": "prq_mvcoqnntljl00a",
+  "at": "2026-10-17T17:43:31.172Z",
+  "attempt": "att_mvcoqmlo1defca33328dff55",
+  "turn": "turn_mvcoqmloa260b6d7684c2760",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 52,
+  "msgs_hash": "35bf9311b557",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 49,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 39095,
+   "read": 38504,
+   "write": 588,
+   "output": 68,
+   "cost": 0.026847
+  }
+ },
+ {
+  "id": "prq_mvcotgvbkuoh24",
+  "at": "2026-10-17T17:45:42.337Z",
+  "attempt": "att_mvcotgcd00e1c507d46da693",
+  "turn": "turn_mvcotgcd912d425be1c62c09",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 54,
+  "msgs_hash": "6b3760471144",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 51,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 39468,
+   "read": 39092,
+   "write": 373,
+   "output": 369,
+   "cost": 0.032516
+  }
+ },
+ {
+  "id": "prq_mvcovp4ohu10zt",
+  "at": "2026-10-17T17:47:26.355Z",
+  "attempt": "att_mvcovnws53c40dad853fb27b",
+  "turn": "turn_mvcovnwsf4ae843bc1b0ed33",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 56,
+  "msgs_hash": "7ab632ba19c3",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 53,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 39917,
+   "read": 39465,
+   "write": 449,
+   "output": 330,
+   "cost": 0.0324875
+  }
+ },
+ {
+  "id": "prq_mvcoysc70qzuq2",
+  "at": "2026-10-17T17:49:50.484Z",
+  "attempt": "att_mvcoyrrj508b47590a482451",
+  "turn": "turn_mvcoyrrj549e974f0187d504",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 58,
+  "msgs_hash": "2697459e51b6",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 55,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 40471,
+   "read": 39914,
+   "write": 554,
+   "output": 245,
+   "cost": 0.031637
+  }
+ },
+ {
+  "id": "prq_mvcpkopuds0e3a",
+  "at": "2026-10-17T18:06:52.232Z",
+  "attempt": "att_mvcpknz9f47b5a9911778daf",
+  "turn": "turn_mvcpknz9557fe191e086002f",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 60,
+  "msgs_hash": "ae9d77389dac",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 57,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 41420,
+   "read": 40468,
+   "write": 949,
+   "output": 575,
+   "cost": 0.044114
+  }
+ },
+ {
+  "id": "prq_mvcply77c9f49y",
+  "at": "2026-10-17T18:07:51.166Z",
+  "attempt": "att_mvcply6jc852034ce1ba4db2",
+  "turn": "turn_mvcply6j5343d01f8f82fed1",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 62,
+  "msgs_hash": "48513031e765",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 59,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 42065,
+   "read": 41417,
+   "write": 645,
+   "output": 105,
+   "cost": 0.0297985
+  }
+ },
+ {
+  "id": "prq_mvcpn91rkporbl",
+  "at": "2026-10-17T18:08:51.882Z",
+  "attempt": "att_mvcpn90v894371a109f77de2",
+  "turn": "turn_mvcpn90v0c676bd123a15ad9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 64,
+  "msgs_hash": "2963a8403d08",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 61,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 42435,
+   "read": 42062,
+   "write": 370,
+   "output": 207,
+   "cost": 0.029921
+  }
+ },
+ {
+  "id": "prq_mvcpqnypd6rybb",
+  "at": "2026-10-17T18:11:31.181Z",
+  "attempt": "att_mvcpqnxx97b5984a6bf6d04d",
+  "turn": "turn_mvcpqnxx632db82456a3698d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 66,
+  "msgs_hash": "000e5a214e4a",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 63,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 42852,
+   "read": 42432,
+   "write": 417,
+   "output": 424,
+   "cost": 0.036001
+  }
+ },
+ {
+  "id": "prq_mvcps035trl6sl",
+  "at": "2026-10-17T18:12:33.552Z",
+  "attempt": "att_mvcprzawd506389149d2f4e7",
+  "turn": "turn_mvcprzawcdd5c2dd3ac36a0b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 68,
+  "msgs_hash": "3ddc5379e690",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 65,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 43385,
+   "read": 42849,
+   "write": 533,
+   "output": 399,
+   "cost": 0.0367445
+  }
+ },
+ {
+  "id": "prq_mvcpt40r9rvpww",
+  "at": "2026-10-17T18:13:25.301Z",
+  "attempt": "att_mvcpt401410ee627f0e84b3f",
+  "turn": "turn_mvcpt4014fa1e666ea539aba",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 70,
+  "msgs_hash": "a0760bab1ee6",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 67,
+    "contentIndex": 0
+   }
+  ],
+  "usage": null
+ },
+ {
+  "id": "prq_mvcptcfqj3nn6j",
+  "at": "2026-10-17T18:13:36.182Z",
+  "attempt": "att_mvcpt401410ee627f0e84b3f",
+  "turn": "turn_mvcpt4014fa1e666ea539aba",
+  "purpose": "chat",
+  "attempt_no": 1,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 70,
+  "msgs_hash": "a0760bab1ee6",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 67,
+    "contentIndex": 0
+   }
+  ],
+  "usage": null
+ },
+ {
+  "id": "prq_mvcptl6r4z1nhq",
+  "at": "2026-10-17T18:13:47.523Z",
+  "attempt": "att_mvcpt401410ee627f0e84b3f",
+  "turn": "turn_mvcpt4014fa1e666ea539aba",
+  "purpose": "chat",
+  "attempt_no": 2,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 70,
+  "msgs_hash": "a0760bab1ee6",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 67,
+    "contentIndex": 0
+   }
+  ],
+  "usage": null
+ },
+ {
+  "id": "prq_mvcpxte4qp7i8u",
+  "at": "2026-10-17T18:17:04.807Z",
+  "attempt": "att_mvcpxtdee05a8ac94a00d9c8",
+  "turn": "turn_mvcpxtdec0da73d6052e63c5",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 71,
+  "msgs_hash": "84cf363bd184",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 67,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 43930,
+   "read": 43382,
+   "write": 545,
+   "output": 122,
+   "cost": 0.030206
+  }
+ },
+ {
+  "id": "prq_mvcq1eb1n7yesb",
+  "at": "2026-10-17T18:19:51.882Z",
+  "attempt": "att_mvcq1dx37355a85e27241414",
+  "turn": "turn_mvcq1dx3abeddca1212d41d6",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 73,
+  "msgs_hash": "6168af089c4e",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 70,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 44321,
+   "read": 43927,
+   "write": 391,
+   "output": 538,
+   "cost": 0.0393385
+  }
+ },
+ {
+  "id": "prq_mvcq2pdqc2g3i5",
+  "at": "2026-10-17T18:20:52.889Z",
+  "attempt": "att_mvcq2pd235285b3b47c5d4a0",
+  "turn": "turn_mvcq2pd2cccfe62210ea2245",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 75,
+  "msgs_hash": "8d6f53d4b779",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 72,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 44905,
+   "read": 44318,
+   "write": 584,
+   "output": 378,
+   "cost": 0.037464
+  }
+ },
+ {
+  "id": "prq_mvcq45oouq97h8",
+  "at": "2026-10-17T18:22:00.677Z",
+  "attempt": "att_mvcq45o5fc875370c0c0ce8b",
+  "turn": "turn_mvcq45o5863e02a7627cc2ad",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 77,
+  "msgs_hash": "1faf14104d1f",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 74,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 45465,
+   "read": 44902,
+   "write": 560,
+   "output": 179,
+   "cost": 0.032541
+  }
+ },
+ {
+  "id": "prq_mvcq7s2qshtk4j",
+  "at": "2026-10-17T18:24:49.663Z",
+  "attempt": "att_mvcq7s1u59998c0e6a98c4eb",
+  "turn": "turn_mvcq7s1u24b7aa7322a705dc",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 79,
+  "msgs_hash": "d98854c956f1",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 76,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 45842,
+   "read": 45462,
+   "write": 377,
+   "output": 381,
+   "cost": 0.036041
+  }
+ },
+ {
+  "id": "prq_mvcqbi8kzl68b8",
+  "at": "2026-10-17T18:27:43.545Z",
+  "attempt": "att_mvcqbh683f0453aedf33e1a8",
+  "turn": "turn_mvcqbh68a9739d3608c29f1d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 81,
+  "msgs_hash": "c6ea76715137",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 78,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 46499,
+   "read": 45839,
+   "write": 657,
+   "output": 498,
+   "cost": 0.0419545
+  }
+ },
+ {
+  "id": "prq_mvcqhv1oap6mqb",
+  "at": "2026-10-17T18:32:40.065Z",
+  "attempt": "att_mvcqhv0w08760d1e6004cfec",
+  "turn": "turn_mvcqhv0wc7f4d4c4632c7683",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 83,
+  "msgs_hash": "09a4302c0f61",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 80,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 47133,
+   "read": 46496,
+   "write": 634,
+   "output": 197,
+   "cost": 0.034528
+  }
+ },
+ {
+  "id": "prq_mvcqix8v6ombuf",
+  "at": "2026-10-17T18:33:29.581Z",
+  "attempt": "att_mvcqiw05b25a254b2e0477d5",
+  "turn": "turn_mvcqiw05d1b70fbbd03b25d7",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 85,
+  "msgs_hash": "d7b5d8627aac",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 82,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 47526,
+   "read": 47130,
+   "write": 393,
+   "output": 187,
+   "cost": 0.032185
+  }
+ },
+ {
+  "id": "prq_mvcqlwvij0e8dm",
+  "at": "2026-10-17T18:35:49.060Z",
+  "attempt": "att_mvcqlwuqfd8abc963c67ccca",
+  "turn": "turn_mvcqlwuqb3600c41bb81da46",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 87,
+  "msgs_hash": "adf81fe412e2",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 84,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 47886,
+   "read": 47523,
+   "write": 360,
+   "output": 158,
+   "cost": 0.0313265
+  }
+ },
+ {
+  "id": "prq_mvcqmij8heh33m",
+  "at": "2026-10-17T18:36:17.136Z",
+  "attempt": "att_mvcqmiiie274b5658e00fa01",
+  "turn": "turn_mvcqmiii49c5ff41fc15674e",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 89,
+  "msgs_hash": "687abdf1761f",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 86,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 48259,
+   "read": 47883,
+   "write": 373,
+   "output": 74,
+   "cost": 0.0295365
+  }
+ },
+ {
+  "id": "prq_mvcqokvya1k3g2",
+  "at": "2026-10-17T18:37:53.501Z",
+  "attempt": "att_mvcqokv21c3a69ab82be3480",
+  "turn": "turn_mvcqokv2ae3bedd2fc2d34ce",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 91,
+  "msgs_hash": "5f6ca59477a0",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 88,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 48659,
+   "read": 48256,
+   "write": 400,
+   "output": 134,
+   "cost": 0.031493
+  }
+ },
+ {
+  "id": "prq_mvcqqufcr0spd2",
+  "at": "2026-10-17T18:39:39.167Z",
+  "attempt": "att_mvcqqt6ndd0875db6daaead5",
+  "turn": "turn_mvcqqt6n98331a2b6f882d55",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 93,
+  "msgs_hash": "7f8e2104b034",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 90,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 49065,
+   "read": 48656,
+   "write": 406,
+   "output": 264,
+   "cost": 0.035003
+  }
+ },
+ {
+  "id": "prq_mvcqrs4wx4z3hn",
+  "at": "2026-10-17T18:40:22.850Z",
+  "attempt": "att_mvcqrs4a846e031297bb871a",
+  "turn": "turn_mvcqrs4a01d6eb4fa978f099",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 95,
+  "msgs_hash": "09e161d1dad1",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 92,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 49485,
+   "read": 49062,
+   "write": 420,
+   "output": 236,
+   "cost": 0.034646
+  }
+ },
+ {
+  "id": "prq_mvcr0x0wdx0gg5",
+  "at": "2026-10-17T18:47:29.097Z",
+  "attempt": "att_mvcr0wfcc44443c3cddbd22c",
+  "turn": "turn_mvcr0wfc0d3ae001cfc4289e",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 97,
+  "msgs_hash": "e9d4b627c189",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 94,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 50034,
+   "read": 49482,
+   "write": 549,
+   "output": 148,
+   "cost": 0.033946
+  }
+ },
+ {
+  "id": "prq_mvcr1sou0i4u3c",
+  "at": "2026-10-17T18:48:10.135Z",
+  "attempt": "att_mvcr1so0e783e0c2bec70017",
+  "turn": "turn_mvcr1so0a079690499b68571",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 99,
+  "msgs_hash": "20fda31272f5",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 96,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 50380,
+   "read": 50031,
+   "write": 346,
+   "output": 41,
+   "cost": 0.0295155
+  }
+ },
+ {
+  "id": "prq_mvcr5k2onwrorp",
+  "at": "2026-10-17T18:51:05.594Z",
+  "attempt": "att_mvcr5k1tfac85aec9af712f1",
+  "turn": "turn_mvcr5k1t5b5a8716d852a8c5",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 101,
+  "msgs_hash": "e015daf8a3a8",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 98,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 50746,
+   "read": 50377,
+   "write": 366,
+   "output": 193,
+   "cost": 0.0336885
+  }
+ },
+ {
+  "id": "prq_mvcr82b9z1hn7v",
+  "at": "2026-10-17T18:53:02.549Z",
+  "attempt": "att_mvcr816f71436c4e7d1e06cd",
+  "turn": "turn_mvcr816f7cd8436bc97ed8c4",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 103,
+  "msgs_hash": "e5741b41b97d",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 100,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 51144,
+   "read": 50743,
+   "write": 398,
+   "output": 38,
+   "cost": 0.0303165
+  }
+ },
+ {
+  "id": "prq_mvcr8svjst1jst",
+  "at": "2026-10-17T18:53:36.971Z",
+  "attempt": "att_mvcr8suq12dd493716590248",
+  "turn": "turn_mvcr8suq87316a2ca06b8ab9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 105,
+  "msgs_hash": "bc24f5dd89b9",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 102,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 51486,
+   "read": 51141,
+   "write": 342,
+   "output": 101,
+   "cost": 0.0315305
+  }
+ },
+ {
+  "id": "prq_mvcr97okxstu87",
+  "at": "2026-10-17T18:53:56.157Z",
+  "attempt": "att_mvcr97ns7bd171be9bf32119",
+  "turn": "turn_mvcr97ns2b1402180abf51f4",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 107,
+  "msgs_hash": "b47d5609aebb",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 104,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 51868,
+   "read": 51483,
+   "write": 382,
+   "output": 22,
+   "cost": 0.0301265
+  }
+ },
+ {
+  "id": "prq_mvcr9igg4738of",
+  "at": "2026-10-17T18:54:10.121Z",
+  "attempt": "att_mvcr9ifk44476e41f4a87c26",
+  "turn": "turn_mvcr9ifk04eef914fcef55d6",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 109,
+  "msgs_hash": "703851f0f614",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 106,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 52178,
+   "read": 51865,
+   "write": 310,
+   "output": 43,
+   "cost": 0.0301225
+  }
+ },
+ {
+  "id": "prq_mvcrd1kl73kwd4",
+  "at": "2026-10-17T18:56:54.870Z",
+  "attempt": "att_mvcrd1jwfdb2ac6461e51a5e",
+  "turn": "turn_mvcrd1jwbb33c763ce5d6fc3",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 111,
+  "msgs_hash": "afc6c33040be",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 108,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 52515,
+   "read": 52175,
+   "write": 337,
+   "output": 72,
+   "cost": 0.0312725
+  }
+ },
+ {
+  "id": "prq_mvcro8suwbewyc",
+  "at": "2026-10-17T19:05:37.456Z",
+  "attempt": "att_mvcro7jrd2c7edfa52ea84f0",
+  "turn": "turn_mvcro7jrbadb67ba39ff386d",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 113,
+  "msgs_hash": "72d02a9bcaed",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 110,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 52888,
+   "read": 52512,
+   "write": 373,
+   "output": 67,
+   "cost": 0.031676
+  }
+ },
+ {
+  "id": "prq_mvcrp8wifxa845",
+  "at": "2026-10-17T19:06:24.234Z",
+  "attempt": "att_mvcrp8vmfe2fc68b050daab7",
+  "turn": "turn_mvcrp8vm41161432f506cdf0",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 115,
+  "msgs_hash": "40deffcc8b6a",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 112,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 53246,
+   "read": 52885,
+   "write": 358,
+   "output": 58,
+   "cost": 0.0314875
+  }
+ },
+ {
+  "id": "prq_mvcrqrshlfs8jr",
+  "at": "2026-10-17T19:07:35.370Z",
+  "attempt": "att_mvcrqrrj3f17fadc074dc899",
+  "turn": "turn_mvcrqrrjaec970cfa0540f77",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 117,
+  "msgs_hash": "5a37f079afb5",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 114,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 53628,
+   "read": 53243,
+   "write": 382,
+   "output": 82,
+   "cost": 0.0325065
+  }
+ },
+ {
+  "id": "prq_mvcrr9wrxvj0u7",
+  "at": "2026-10-17T19:07:58.854Z",
+  "attempt": "att_mvcrr9vv0e353ccd3d53ec9e",
+  "turn": "turn_mvcrr9vv68ffcc321a4d1771",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 119,
+  "msgs_hash": "2babadcc52f7",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 116,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 53956,
+   "read": 53625,
+   "write": 328,
+   "output": 84,
+   "cost": 0.0322075
+  }
+ },
+ {
+  "id": "prq_mvcrwg7xqoc3im",
+  "at": "2026-10-17T19:12:00.321Z",
+  "attempt": "att_mvcrwfez34ad809e8b40c74f",
+  "turn": "turn_mvcrwfez6ee44fe05f12ff67",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 121,
+  "msgs_hash": "dd642c7f4633",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 118,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 54342,
+   "read": 53953,
+   "write": 386,
+   "output": 99,
+   "cost": 0.0333265
+  }
+ },
+ {
+  "id": "prq_mvcrwk32oupr11",
+  "at": "2026-10-17T19:12:05.326Z",
+  "attempt": "att_mvcrwfez34ad809e8b40c74f",
+  "turn": "turn_mvcrwfez6ee44fe05f12ff67",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 123,
+  "msgs_hash": "1958fb73061b",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 118,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 54469,
+   "read": 54339,
+   "write": 129,
+   "output": 72,
+   "cost": 0.0302645
+  }
+ },
+ {
+  "id": "prq_mvcrwmfg6i32zw",
+  "at": "2026-10-17T19:12:08.364Z",
+  "attempt": "att_mvcrwfez34ad809e8b40c74f",
+  "turn": "turn_mvcrwfez6ee44fe05f12ff67",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 125,
+  "msgs_hash": "ad9aed7d7116",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 118,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 54569,
+   "read": 54468,
+   "write": 100,
+   "output": 38,
+   "cost": 0.029189
+  }
+ },
+ {
+  "id": "prq_mvcryk8avqmgaz",
+  "at": "2026-10-17T19:13:38.819Z",
+  "attempt": "att_mvcryk7ea3a8976d4e2424ac",
+  "turn": "turn_mvcryk7e196c1e84fccdc0be",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 127,
+  "msgs_hash": "ec3a5aabecf3",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 120,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 54915,
+   "read": 54568,
+   "write": 344,
+   "output": 134,
+   "cost": 0.034089
+  }
+ },
+ {
+  "id": "prq_mvcs3s97vkypyx",
+  "at": "2026-10-17T19:17:42.510Z",
+  "attempt": "att_mvcs3rp3dde29f2ff5ad7b81",
+  "turn": "turn_mvcs3rp382d65130739b5cdc",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 129,
+  "msgs_hash": "b5ed390ffeaa",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 126,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 55292,
+   "read": 54912,
+   "write": 377,
+   "output": 57,
+   "cost": 0.032666
+  }
+ },
+ {
+  "id": "prq_mvcs3uyq3gdntu",
+  "at": "2026-10-17T19:17:46.016Z",
+  "attempt": "att_mvcs3rp3dde29f2ff5ad7b81",
+  "turn": "turn_mvcs3rp382d65130739b5cdc",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 131,
+  "msgs_hash": "f7161a719c66",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 126,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 55372,
+   "read": 55289,
+   "write": 82,
+   "output": 108,
+   "cost": 0.0311695
+  }
+ },
+ {
+  "id": "prq_mvcs53rios4ob3",
+  "at": "2026-10-17T19:18:44.072Z",
+  "attempt": "att_mvcs53qoa1c1ff0cdb6370db",
+  "turn": "turn_mvcs53qo1876f458843307a1",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 133,
+  "msgs_hash": "ee77843ed554",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 128,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 55767,
+   "read": 55371,
+   "write": 393,
+   "output": 6,
+   "cost": 0.0317805
+  }
+ },
+ {
+  "id": "prq_mvcs5shwvovj3w",
+  "at": "2026-10-17T19:19:16.125Z",
+  "attempt": "att_mvcs5sgy4184c3ed28b77e95",
+  "turn": "turn_mvcs5sgy9ec572e74c62c8d0",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 135,
+  "msgs_hash": "b6587ca1c64c",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 132,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 56058,
+   "read": 55764,
+   "write": 291,
+   "output": 15,
+   "cost": 0.031182
+  }
+ },
+ {
+  "id": "prq_mvcs6xok7qzroy",
+  "at": "2026-10-17T19:20:09.500Z",
+  "attempt": "att_mvcs6xnkc67a6dff73432fdd",
+  "turn": "turn_mvcs6xnkdaadbefaaf4c171a",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 137,
+  "msgs_hash": "890486fa9375",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 134,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 56392,
+   "read": 56055,
+   "write": 334,
+   "output": 114,
+   "cost": 0.0342325
+  }
+ },
+ {
+  "id": "prq_mvcs810dmuuo9z",
+  "at": "2026-10-17T19:21:00.472Z",
+  "attempt": "att_mvcs80zh036a1101560a2373",
+  "turn": "turn_mvcs80zhd2f636ac719aa7b5",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 139,
+  "msgs_hash": "328cdc3f5714",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 136,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 56797,
+   "read": 56389,
+   "write": 405,
+   "output": 62,
+   "cost": 0.0338095
+  }
+ },
+ {
+  "id": "prq_mvcs9f37kwkkut",
+  "at": "2026-10-17T19:22:05.371Z",
+  "attempt": "att_mvcs9f275d306c2c2d5ddccb",
+  "turn": "turn_mvcs9f279c89b87f9634fac1",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 141,
+  "msgs_hash": "62820c981a62",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 138,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 57119,
+   "read": 56794,
+   "write": 322,
+   "output": 27,
+   "cost": 0.032307
+  }
+ },
+ {
+  "id": "prq_mvcsasv1t18v25",
+  "at": "2026-10-17T19:23:09.884Z",
+  "attempt": "att_mvcsarr40f5608a396f244a1",
+  "turn": "turn_mvcsarr46c88d377f3e0f7c6",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 143,
+  "msgs_hash": "e7dcbd968224",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 140,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 57442,
+   "read": 57116,
+   "write": 323,
+   "output": 187,
+   "cost": 0.036478
+  }
+ },
+ {
+  "id": "prq_mvcsc6zc6bupjw",
+  "at": "2026-10-17T19:24:14.832Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 145,
+  "msgs_hash": "c27d44ebd147",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 57832,
+   "read": 57439,
+   "write": 390,
+   "output": 782,
+   "cost": 0.0521845
+  }
+ },
+ {
+  "id": "prq_mvcscmp3m98e2z",
+  "at": "2026-10-17T19:24:35.206Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 147,
+  "msgs_hash": "a70a0d23f676",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 59172,
+   "read": 57829,
+   "write": 1342,
+   "output": 765,
+   "cost": 0.0614645
+  }
+ },
+ {
+  "id": "prq_mvcscui9ldqwe8",
+  "at": "2026-10-17T19:24:45.328Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 149,
+  "msgs_hash": "1e77429d3750",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 60505,
+   "read": 59171,
+   "write": 1333,
+   "output": 74,
+   "cost": 0.0447705
+  }
+ },
+ {
+  "id": "prq_mvcscxo0r8u4h1",
+  "at": "2026-10-17T19:24:49.420Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 151,
+  "msgs_hash": "e4b9c3258296",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 61840,
+   "read": 60504,
+   "write": 1335,
+   "output": 74,
+   "cost": 0.045457
+  }
+ },
+ {
+  "id": "prq_mvcsd09ok775xn",
+  "at": "2026-10-17T19:24:52.794Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 153,
+  "msgs_hash": "3a32a30cf9e2",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 64982,
+   "read": 61839,
+   "write": 3142,
+   "output": 74,
+   "cost": 0.0641945
+  }
+ },
+ {
+  "id": "prq_mvcsd2f5wr01wr",
+  "at": "2026-10-17T19:24:55.585Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 155,
+  "msgs_hash": "5d5be251938b",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 69421,
+   "read": 64981,
+   "write": 4439,
+   "output": 74,
+   "cost": 0.0787355
+  }
+ },
+ {
+  "id": "prq_mvcsd50fo1nbpa",
+  "at": "2026-10-17T19:24:58.942Z",
+  "attempt": "att_mvcsc6yc39c1aff7059e172b",
+  "turn": "turn_mvcsc6yce7cbf32ab8b812b2",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 157,
+  "msgs_hash": "81a9b64ccba4",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": null
+ },
+ {
+  "id": "prq_mvcsqcb9iyqvt3",
+  "at": "2026-10-17T19:35:14.941Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 146,
+  "msgs_hash": "fd8c7dfeb2d4",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 57868,
+   "read": 57439,
+   "write": 426,
+   "output": 892,
+   "cost": 0.0552945
+  }
+ },
+ {
+  "id": "prq_mvcsqvbhikdkh2",
+  "at": "2026-10-17T19:35:39.562Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 148,
+  "msgs_hash": "9608c4056d02",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 59454,
+   "read": 57865,
+   "write": 1588,
+   "output": 72,
+   "cost": 0.0466175
+  }
+ },
+ {
+  "id": "prq_mvcsqy1r5m912b",
+  "at": "2026-10-17T19:35:43.095Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 150,
+  "msgs_hash": "f6181416436d",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 66059,
+   "read": 59453,
+   "write": 6605,
+   "output": 86,
+   "cost": 0.0979315
+  }
+ },
+ {
+  "id": "prq_mvcsr1k0pzzosb",
+  "at": "2026-10-17T19:35:47.646Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 152,
+  "msgs_hash": "80a6536b9f9a",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 72236,
+   "read": 66058,
+   "write": 6177,
+   "output": 89,
+   "cost": 0.097029
+  }
+ },
+ {
+  "id": "prq_mvcsr451jbl1df",
+  "at": "2026-10-17T19:35:50.993Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 154,
+  "msgs_hash": "9d775d9cfa56",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 78533,
+   "read": 72235,
+   "write": 6297,
+   "output": 89,
+   "cost": 0.1013175
+  }
+ },
+ {
+  "id": "prq_mvcsr6qin13x1n",
+  "at": "2026-10-17T19:35:54.355Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 156,
+  "msgs_hash": "5a5cafa738a5",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 84993,
+   "read": 78532,
+   "write": 6460,
+   "output": 89,
+   "cost": 0.106096
+  }
+ },
+ {
+  "id": "prq_mvcsra0cmr54h0",
+  "at": "2026-10-17T19:35:58.602Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 158,
+  "msgs_hash": "6d4df67441ae",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 86212,
+   "read": 84992,
+   "write": 1219,
+   "output": 703,
+   "cost": 0.072266
+  }
+ },
+ {
+  "id": "prq_mvcsrnk9w9tjui",
+  "at": "2026-10-17T19:36:16.165Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 160,
+  "msgs_hash": "b2f193b0fe7a",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 87256,
+   "read": 86211,
+   "write": 1044,
+   "output": 643,
+   "cost": 0.0696255
+  }
+ },
+ {
+  "id": "prq_mvcsruoqlnkiai",
+  "at": "2026-10-17T19:36:25.401Z",
+  "attempt": "att_mvcse2qtab3c8920875d25f4",
+  "turn": "turn_mvcse2qt20f2029d6b83e44b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 162,
+  "msgs_hash": "43699c88a159",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 88207,
+   "read": 87255,
+   "write": 951,
+   "output": 1063,
+   "cost": 0.0797175
+  }
+ },
+ {
+  "id": "prq_mvcss7biuxglia",
+  "at": "2026-10-17T19:36:41.763Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 147,
+  "msgs_hash": "d4dd6af74ec9",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 57869,
+   "read": 57439,
+   "write": 427,
+   "output": 808,
+   "cost": 0.0532045
+  }
+ },
+ {
+  "id": "prq_mvcssnbk6a8wsr",
+  "at": "2026-10-17T19:37:02.511Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 149,
+  "msgs_hash": "12a15695ff51",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 59180,
+   "read": 57866,
+   "write": 1313,
+   "output": 72,
+   "cost": 0.043868
+  }
+ },
+ {
+  "id": "prq_mvcsspx721zzyo",
+  "at": "2026-10-17T19:37:05.883Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 151,
+  "msgs_hash": "5cfb037d8c52",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 65785,
+   "read": 59179,
+   "write": 6605,
+   "output": 86,
+   "cost": 0.0977945
+  }
+ },
+ {
+  "id": "prq_mvcsstecacvyy0",
+  "at": "2026-10-17T19:37:10.389Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 153,
+  "msgs_hash": "00fe815dc6b4",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 71962,
+   "read": 65784,
+   "write": 6177,
+   "output": 89,
+   "cost": 0.096892
+  }
+ },
+ {
+  "id": "prq_mvcssw85ktq39b",
+  "at": "2026-10-17T19:37:14.052Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 155,
+  "msgs_hash": "4424fb374814",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 78259,
+   "read": 71961,
+   "write": 6297,
+   "output": 89,
+   "cost": 0.1011805
+  }
+ },
+ {
+  "id": "prq_mvcssyozhfxlzt",
+  "at": "2026-10-17T19:37:17.249Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 157,
+  "msgs_hash": "30eb46d0a6f4",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 84719,
+   "read": 78258,
+   "write": 6460,
+   "output": 678,
+   "cost": 0.120684
+  }
+ },
+ {
+  "id": "prq_mvcstdbdoyg5cv",
+  "at": "2026-10-17T19:37:36.202Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 159,
+  "msgs_hash": "8349d4a5b7aa",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 85913,
+   "read": 84718,
+   "write": 1194,
+   "output": 423,
+   "cost": 0.064879
+  }
+ },
+ {
+  "id": "prq_mvcstl9w2xrwl1",
+  "at": "2026-10-17T19:37:46.516Z",
+  "attempt": "att_mvcsebeva662f0ce2d4cb10f",
+  "turn": "turn_mvcsebevbeedccf2c5317486",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 161,
+  "msgs_hash": "de1046deae05",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 142,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 87591,
+   "read": 85912,
+   "write": 1678,
+   "output": 125,
+   "cost": 0.062866
+  }
+ },
+ {
+  "id": "prq_mvcstqq0eyxsqt",
+  "at": "2026-10-17T19:37:53.568Z",
+  "attempt": "att_mvcsevcg31ed9f2d586db16f",
+  "turn": "turn_mvcsevcg2ff0ca45122bf80b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 163,
+  "msgs_hash": "bf7e8625d8e3",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 146,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 87975,
+   "read": 87590,
+   "write": 382,
+   "output": 103,
+   "cost": 0.050205
+  }
+ },
+ {
+  "id": "prq_mvcstvtnanr6dx",
+  "at": "2026-10-17T19:38:00.179Z",
+  "attempt": "att_mvcss4hdf7a19e005b1f3157",
+  "turn": "turn_mvcss4hd3b3cf21006118d86",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 165,
+  "msgs_hash": "f0a39dbe5876",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 162,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 88329,
+   "read": 87972,
+   "write": 354,
+   "output": 53,
+   "cost": 0.048866
+  }
+ },
+ {
+  "id": "prq_mvcswmelidchu5",
+  "at": "2026-10-17T19:40:07.934Z",
+  "attempt": "att_mvcswmdqa30c089f0e8add7a",
+  "turn": "turn_mvcswmdq2f45ebf7d4c437a0",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 167,
+  "msgs_hash": "51b4ccd2268b",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 164,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 88679,
+   "read": 88326,
+   "write": 350,
+   "output": 129,
+   "cost": 0.050903
+  }
+ },
+ {
+  "id": "prq_mvcsyvlm4wy1mp",
+  "at": "2026-10-17T19:41:53.174Z",
+  "attempt": "att_mvcsyunea6ce75782ddf073d",
+  "turn": "turn_mvcsyune5dd4a2506e7442b5",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 169,
+  "msgs_hash": "0901cc8d864d",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 166,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 89091,
+   "read": 88676,
+   "write": 412,
+   "output": 27,
+   "cost": 0.049148
+  }
+ },
+ {
+  "id": "prq_mvct6xdwjrccfb",
+  "at": "2026-10-17T19:48:08.751Z",
+  "attempt": "att_mvct6wwl75c1b6dde369f01e",
+  "turn": "turn_mvct6wwl75c6bdffb1049313",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 171,
+  "msgs_hash": "9db880f42138",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 168,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 89418,
+   "read": 89088,
+   "write": 327,
+   "output": 73,
+   "cost": 0.049654
+  }
+ },
+ {
+  "id": "prq_mvct75suzi1stq",
+  "at": "2026-10-17T19:48:19.630Z",
+  "attempt": "att_mvct75s2e2b277ee83cf846f",
+  "turn": "turn_mvct75s237c976e681f031b9",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 173,
+  "msgs_hash": "4ed27f0e97da",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 170,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 89746,
+   "read": 89415,
+   "write": 328,
+   "output": 16,
+   "cost": 0.0484025
+  }
+ },
+ {
+  "id": "prq_mvctz946kv39g9",
+  "at": "2026-10-17T20:10:10.306Z",
+  "attempt": "att_mvctz88pb59cd2ccd7cbfec3",
+  "turn": "turn_mvctz88pcd7626fd19df8fc3",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 175,
+  "msgs_hash": "534cbb17220d",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 172,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 90052,
+   "read": 89743,
+   "write": 306,
+   "output": 78,
+   "cost": 0.0498965
+  }
+ },
+ {
+  "id": "prq_mvctzmc6dzs7nu",
+  "at": "2026-10-17T20:10:27.440Z",
+  "attempt": "att_mvctzmb232211aedc7556756",
+  "turn": "turn_mvctzmb2ff27ae53447bf1e4",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 177,
+  "msgs_hash": "754d5d8f2cbd",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 174,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 90370,
+   "read": 90049,
+   "write": 318,
+   "output": 53,
+   "cost": 0.0495445
+  }
+ },
+ {
+  "id": "prq_mvcu0gefcdlbgz",
+  "at": "2026-10-17T20:11:06.401Z",
+  "attempt": "att_mvcu0gdd7ecd58e347750000",
+  "turn": "turn_mvcu0gdde78c5bb3a6aa6a46",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 179,
+  "msgs_hash": "e7614b1b6357",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 176,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 90726,
+   "read": 90367,
+   "write": 356,
+   "output": 47,
+   "cost": 0.0499335
+  }
+ },
+ {
+  "id": "prq_mvcu2akks4mudx",
+  "at": "2026-10-17T20:12:32.151Z",
+  "attempt": "att_mvcu2ajl384b9d61d8645e34",
+  "turn": "turn_mvcu2ajldf22dfbfc77992af",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 181,
+  "msgs_hash": "8194ad9cbde7",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 178,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 91088,
+   "read": 90723,
+   "write": 362,
+   "output": 105,
+   "cost": 0.0516215
+  }
+ },
+ {
+  "id": "prq_mvcu327wbp8ywk",
+  "at": "2026-10-17T20:13:07.981Z",
+  "attempt": "att_mvcu326v465988bc6b74fdef",
+  "turn": "turn_mvcu326v6f8a221f523b6ecf",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 24,
+  "tools_hash": "4796223595b6",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 183,
+  "msgs_hash": "f48daf532c18",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 180,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 91482,
+   "read": 91085,
+   "write": 394,
+   "output": 44,
+   "cost": 0.0505975
+  }
+ },
+ {
+  "id": "prq_mvcu9niemgh3h8",
+  "at": "2026-10-17T20:18:15.527Z",
+  "attempt": "att_mvcu9myt64b1345fb8b494c3",
+  "turn": "turn_mvcu9myt2f0fd4d6fd65d189",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 37,
+  "tools_hash": "cd906d50634f",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 185,
+  "msgs_hash": "adea5e1bd390",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 182,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 94964,
+   "read": 0,
+   "write": 94961,
+   "output": 150,
+   "cost": 0.953375
+  }
+ },
+ {
+  "id": "prq_mvcudh1ki66x1v",
+  "at": "2026-10-17T20:21:13.753Z",
+  "attempt": "att_mvcudh0g9b3988608dfe5274",
+  "turn": "turn_mvcudh0gdc37bc414949ac2b",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 37,
+  "tools_hash": "cd906d50634f",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 187,
+  "msgs_hash": "1ac1d3885346",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 184,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 95357,
+   "read": 94961,
+   "write": 393,
+   "output": 39,
+   "cost": 0.0524005
+  }
+ },
+ {
+  "id": "prq_mvcueyzpy0a5jz",
+  "at": "2026-10-17T20:22:23.682Z",
+  "attempt": "att_mvcueyyf94efb02290382a59",
+  "turn": "turn_mvcueyyfe9e36b4fd8b0ae63",
+  "purpose": "chat",
+  "attempt_no": 0,
+  "model": "anthropic/claude-opus-4.6",
+  "session": "es-e0861",
+  "tools_n": 37,
+  "tools_hash": "cd906d50634f",
+  "sys_a_hash": "ed25c947ed67",
+  "boot_hash": "9e224d10d3de",
+  "sys_count": 2,
+  "msgs_n": 189,
+  "msgs_hash": "af767f2a7489",
+  "boundaries": [
+   {
+    "messageIndex": 0,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 1,
+    "contentIndex": 0
+   },
+   {
+    "messageIndex": 186,
+    "contentIndex": 0
+   }
+  ],
+  "usage": {
+   "input": 95709,
+   "read": 95354,
+   "write": 352,
+   "output": 48,
+   "cost": 0.052412
+  }
+ }
+]

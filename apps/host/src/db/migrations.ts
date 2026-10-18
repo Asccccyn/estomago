@@ -910,6 +910,15 @@ CREATE TABLE IF NOT EXISTS voice_transcripts(
 `,
 });
 
+// 只添加新迁移，不更改已落盘迁移的 code_hash。
+MIGRATIONS.push({
+  version: 28,
+  name: 'provider-request-context-fingerprint',
+  sql: `
+ALTER TABLE provider_requests ADD COLUMN context_fingerprint_json TEXT;
+`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
