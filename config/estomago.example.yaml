@@ -94,6 +94,7 @@ openrouter:
   retry_max_attempts_after_initial: 2
   reasoning: null                 # 未批准的推理覆盖保持 null；不照搬 SDK effort 字符串
   estimate_chars_per_token: 2.5   # §11.1 输入粗估系数（拉丁文本≈2.5；有真实 usage 校准兜底）
+  vision_supported_models: []     # 2026-10-18：人工确认支持图片输入的型号（如 anthropic/claude-opus-4.6）；声明命中=媒体门直接放行，跳过运行时目录核实（目录查询失败曾连续阻断发图）
 
 # DeepSeek 官方直连驱动（2026-10-05 裁定：DS 官方 key 不经 OpenRouter；runtime.provider: deepseek 时启用）。
 # 身份映射隔离：session 派生/上下文指纹/凭据与 openrouter 段完全独立，切换驱动强制换窗。

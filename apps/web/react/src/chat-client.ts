@@ -36,6 +36,7 @@ export class EstomagoClient {
   private blocks = new Map<string, Json[]>()
   private toolSteps = new Map<string, Step[]>()
   private running = new Set<string>()
+  private turnFailures = new Map<string, ActivityItem>()
   private refreshes = new Map<string, { dirty: boolean; busy: boolean; attempt?: string }>()
   private source: EventSource | null = null
   private started = false
@@ -165,7 +166,20 @@ export class EstomagoClient {
     if(id&&data.kind==='turn.started'){this.running.add(id);this.render()}
     if(id&&data.kind==='turn.status'){
       if(data.state==='running')this.running.add(id)
-      else {this.running.delete(id);if(data.state==='blocked'||data.state==='failed')this.notify('本轮暂未完成，可在活动日志查看状态')}
+      else {
+        this.running.delete(id)
+        if(data.state==='blocked'||data.state==='failed'){
+          const reason=typeof data.reason==='string'?data.reason:''
+          this.notify(reason.split(':')[0]==='MODEL_VISION_UNAVAILABLE'
+            ?'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。'
+            :'本轮暂未完成，可在活动日志查看状态')
+          // The context event endpoint omits turn.status; retain failures from live
+          // events and SSE replay so opening the activity panel does not hide them.
+          const failure:ActivityItem={id:'turn-status:'+id+':'+(data.sequence??data.attempt_id??data.state),at:typeof data.occurred_at==='string'?time(data.occurred_at):'',t:'本轮未完成',d:[data.state,reason].filter(Boolean).join(' · ')}
+          this.turnFailures.set(failure.id,failure)
+          this.patch({activity:[failure,...this.snapshot.activity.filter(item=>item.id!==failure.id)]})
+        }
+      }
       this.render()
     }
     if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.render();this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
@@ -309,7 +323,8 @@ export class EstomagoClient {
         const labels:Json={'archive.sync':'原文同步','context.warning':'上下文提示','review.sent':'换窗检查','review.failed':'检查未完成','window.rotated':'已换窗'}
         const events=(data.events??[]).slice().reverse().map((e:Json)=>({id:e.eventId,at:time(e.occurredAt),t:labels[e.kind]??e.kind,d:typeof e.payload?.state==='string'?e.payload.state:''}))
         const usage=Object.entries(this.snapshot.usage).map(([id,value])=>({id:'usage:'+id,at:'',t:'整轮实际用量',d:`输入 ${value.totals?.input_tokens ?? '未知'} · 输出 ${value.totals?.output_tokens ?? '未知'}`}))
-        this.patch({activity:[...events,...usage],panelNote:events.length||usage.length?'':'暂无活动记录'})
+        const failures=[...this.turnFailures.values()].reverse()
+        this.patch({activity:[...failures,...events,...usage],panelNote:failures.length||events.length||usage.length?'':'暂无活动记录'})
       }
     }catch(e){if(request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
   }

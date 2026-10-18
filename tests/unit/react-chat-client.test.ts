@@ -78,3 +78,32 @@ test('非OR模型不借用OR配置；容量未知不产生虚假百分比',async
   const h=await setup(url=>url.endsWith('/runtime-settings')?Response.json({driver:'deepseek',or_model:{effective:'not-the-real-model'}}):url.endsWith('/context-records')?Response.json({driver:'deepseek',exactModel:'deepseek-chat',context:{estimatedInput:20,hardCapacity:null}}):undefined)
   try{assert.deepEqual(h.client.snapshot.models,['deepseek-chat']);assert.equal(h.client.snapshot.canConfigure,false);await h.client.loadContext();assert.equal(h.client.snapshot.context.limit,null)}finally{h.client.stop()}
 })
+
+test('图片能力预检失败明确消息已保存、模型未发送，不自动重发',async()=>{
+  const h=await setup()
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','保留的消息')})
+    h.client.handleEvent({kind:'turn.started',sequence:2,turn_id:'turn-fixture'})
+    const requestsBefore=h.calls.length
+    h.client.handleEvent({kind:'turn.status',sequence:3,turn_id:'turn-fixture',state:'failed',reason:'MODEL_VISION_UNAVAILABLE'})
+    assert.equal(h.client.snapshot.notice,'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。')
+    assert.equal(h.client.snapshot.messages.length,1)
+    assert.equal(h.client.snapshot.messages[0].text,'保留的消息')
+    assert.equal(h.calls.length,requestsBefore)
+  }finally{h.client.stop()}
+})
+test('失败状态经SSE回放保留原因，打开活动日志不丢失也不重复',async()=>{
+  const h=await setup(url=>url.includes('/context-records/events?')?Response.json({events:[]}):undefined)
+  try{
+    const failure={kind:'turn.status',sequence:10,turn_id:'turn-fixture',state:'failed',reason:'MODEL_VISION_UNAVAILABLE:unknown'}
+    h.client.handleEvent(failure);h.client.handleEvent(failure)
+    await h.client.loadPanel('log')
+    assert.equal(h.client.snapshot.activity.length,1)
+    assert.equal(h.client.snapshot.activity[0].d,'failed · MODEL_VISION_UNAVAILABLE:unknown')
+    assert.equal(h.client.snapshot.panelNote,'')
+    h.client.handleEvent({kind:'turn.status',sequence:11,turn_id:'other-turn',state:'blocked',reason:'IDENTITY_NOT_READY'})
+    await h.client.loadPanel('log')
+    assert.equal(h.client.snapshot.activity.length,2)
+    assert.equal(h.client.snapshot.activity[0].d,'blocked · IDENTITY_NOT_READY')
+  }finally{h.client.stop()}
+})

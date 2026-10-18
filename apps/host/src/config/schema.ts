@@ -32,6 +32,9 @@ export type OpenRouterConfig = {
   reasoning: Record<string, unknown> | null; // 未批准推理覆盖=null（§10：不照搬 SDK effort）
   estimate_chars_per_token: number; // §11.1 粗估系数（拉丁文本≈2.5；中文场景偏低，靠真实 usage 校准兜底）
   model_options: string[]; // 2026-10-08：聊天窗换模型下拉的可选项（空=自由输入；档位正本=OR reasoning.effort）
+  vision_supported_models: string[]; // 2026-10-18：人工确认支持图片输入的型号（声明=已核实，媒体门直接放行、零目录查询）；
+  // 未声明的型号仍走运行时目录核实（§6.1 未核实=阻断不猜——10-17 生产曾因目录查询在发消息关键路径上
+  // 失败（进程内证据又随重启清零）连续阻断发图，静态声明是人工确认的权威来源，优先于网络发现）
 };
 
 // DeepSeek 官方直连配置段（2026-10-05 她裁定：DS 官方 key 不经 OpenRouter）。
@@ -319,6 +322,7 @@ export const CONFIG_DEFAULTS: Config = {
     reasoning: null,
     estimate_chars_per_token: 2.5,
     model_options: [],
+    vision_supported_models: [],
   },
   // DS 官方直连默认：model=null（未配置即阻断）；key 只经环境变量名引用；
   // 无缓存/路由参数（DS 自动上下文缓存）；中文对话为主 → 粗估系数 1.5（§11.1 估计带精度，usage 校准兜底）。
@@ -500,6 +504,7 @@ const SHAPE: SectionSpec = { section: {
     reasoning: 'json?',
     estimate_chars_per_token: 'number',
     model_options: 'string[]',
+    vision_supported_models: 'string[]',
   } },
   reminders: { section: { enabled: 'boolean' } },
   deepseek: { section: {
