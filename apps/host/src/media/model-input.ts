@@ -104,38 +104,90 @@ function simpleSha(s: string): string {
 }
 
 // —— 视觉能力门（§6.1：使用经确认支持图片的确切型号；未核实=阻断，不静默丢图）——
-type VisionCacheEntry = { supported: boolean | null; fetchedAt: number };
+type VisionCacheEntry = { supported: boolean | null; verifiedAt: number; verifiedMonotonicAt: number };
 const visionCache = new Map<string, VisionCacheEntry>();
-const VISION_TTL_MS = 300_000;
+const DEFAULT_VISION_BASE_URL = 'https://openrouter.ai/api/v1';
+const VISION_TTL_MS = 24 * 60 * 60 * 1000;
+const VISION_LAST_GOOD_MAX_AGE_MS = 48 * 60 * 60 * 1000;
 
-/** 测试注入点（离线套件不打网络）。supported=null=未核实。 */
-export function setVisionSupportForTests(model: string, supported: boolean | null): void {
-  visionCache.set(model, { supported, fetchedAt: Date.now() });
+function visionApiRoot(baseUrl: string): string {
+  return baseUrl.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+}
+function visionCacheKey(baseUrl: string, model: string): string {
+  return JSON.stringify([visionApiRoot(baseUrl), model]);
+}
+
+/** 测试注入点（离线套件不打网络）。supported=null=未核实；默认源与 OR 配置一致。 */
+export function setVisionSupportForTests(model: string, supported: boolean | null, baseUrl = DEFAULT_VISION_BASE_URL): void {
+  recordVisionEvidence(visionCacheKey(baseUrl, model), supported);
 }
 export function clearVisionSupportCache(): void {
   visionCache.clear();
 }
 
-export function visionSupportCached(model: string): boolean | null {
-  const hit = visionCache.get(model);
-  if (!hit || Date.now() - hit.fetchedAt > VISION_TTL_MS) return null;
-  return hit.supported;
+function recordVisionEvidence(key: string, supported: boolean | null): void {
+  visionCache.set(key, { supported, verifiedAt: Date.now(), verifiedMonotonicAt: performance.now() });
 }
 
-/** 从 OR /models 元数据核实 input_modalities（architecture.input_modalities 含 'image'）。 */
+/** 两种时钟取保守年龄；观测到硬过期或时钟异常即删除，回拨不能复活旧证据。 */
+function currentVisionEvidence(key: string): { entry: VisionCacheEntry; age: number } | null {
+  const entry = visionCache.get(key);
+  if (!entry) return null;
+  const wallAge = Date.now() - entry.verifiedAt;
+  const monotonicAge = performance.now() - entry.verifiedMonotonicAt;
+  const age = Math.max(wallAge, monotonicAge);
+  if (wallAge < 0 || monotonicAge < 0 || !Number.isFinite(age) || age > VISION_LAST_GOOD_MAX_AGE_MS) {
+    visionCache.delete(key);
+    return null;
+  }
+  return { entry, age };
+}
+
+export function visionSupportCached(model: string, baseUrl = DEFAULT_VISION_BASE_URL): boolean | null {
+  const hit = currentVisionEvidence(visionCacheKey(baseUrl, model));
+  return hit && hit.age <= VISION_TTL_MS ? hit.entry.supported : null;
+}
+
+/** 临时刷新失败只能沿用同源、同型号的已核实支持证据；失败不延长证据期限。 */
+function recentVerifiedVision(key: string): boolean | null {
+  return currentVisionEvidence(key)?.entry.supported === true ? true : null;
+}
+
+/** 从 OR /models 元数据核实 input_modalities；已核实能力缓存 24 小时；临时不可达最多沿用 48 小时内的成功证据（与 prompt 缓存 TTL 无关）。 */
 export async function refreshVisionSupport(baseUrl: string, model: string): Promise<boolean | null> {
+  const key = visionCacheKey(baseUrl, model);
+  let res: Response;
   try {
-    const root = baseUrl.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
-    const res = await fetch(`${root}/api/v1/models`, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) return null;
-    const data = await res.json() as { data?: Array<{ id?: string; architecture?: { input_modalities?: string[] } }> };
-    const row = (data.data ?? []).find((m) => m.id === model);
-    const mods = row?.architecture?.input_modalities;
-    const supported = Array.isArray(mods) ? mods.includes('image') : null;
-    visionCache.set(model, { supported, fetchedAt: Date.now() });
-    return supported;
+    res = await fetch(`${visionApiRoot(baseUrl)}/api/v1/models`, { signal: AbortSignal.timeout(4000) });
   } catch {
-    return null; // 不可达=未核实（阻断，不猜）
+    // fetch 拒绝=网络/超时；不能因一次目录查询失败把已核实的图片历史整窗阻断。
+    return recentVerifiedVision(key);
+  }
+  if (!res.ok) {
+    if (res.status === 429 || (res.status >= 500 && res.status < 600)) return recentVerifiedVision(key);
+    visionCache.delete(key);
+    return null;
+  }
+  try {
+    const data = await res.json() as { data?: Array<{ id?: string; architecture?: { input_modalities?: unknown } }> } | null;
+    const row = Array.isArray(data?.data) ? data.data.find((m) => m?.id === model) : undefined;
+    const mods = row?.architecture?.input_modalities;
+    const validModalities = Array.isArray(mods) && mods.length > 0 && mods.every((m) => typeof m === 'string' && m.length > 0);
+    if (!validModalities) {
+      // 目录明确缺型号或形状无效=未核实；不能借旧 true 掩盖这次结果。
+      visionCache.delete(key);
+      return null;
+    }
+    const supported = (mods as string[]).includes('image');
+    recordVisionEvidence(key, supported);
+    return supported;
+  } catch (error) {
+    // 响应头已到后读取 body 仍可能断网/超时；与已读完整但 JSON 非法区分。
+    if (error instanceof TypeError || (error instanceof Error && ['AbortError', 'TimeoutError'].includes(error.name))) {
+      return recentVerifiedVision(key);
+    }
+    visionCache.delete(key);
+    return null;
   }
 }
 

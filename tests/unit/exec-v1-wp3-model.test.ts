@@ -42,9 +42,9 @@ const okBody = (text: string) => sse({ id: `gen-${text.length}`, choices: [{ del
 beforeEach(() => { clearVisionSupportCache(); });
 afterEach(() => { clearVisionSupportCache(); });
 
-function compose(root: string, transport: OrTransport) {
+function compose(root: string, transport: OrTransport, openrouterExtra: Record<string, unknown> = {}) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL, ...openrouterExtra } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -102,7 +102,8 @@ test('MEDIA-05：图片真实进入驱动 payload（base64 物化）；DB 三处
   assert.ok(!traj.messages_json.includes(b64), '轨迹不含 Base64（asset 引用形态）');
 });
 
-test('MEDIA-05b：型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息保存、零模型请求、不换模型）；核实后放行', async () => {
+test('MEDIA-05b：型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息保存、零模型请求、不换模型）', async (testContext) => {
+  const metadataFetch = testContext.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
   let transportCalls = 0;
   const transport: OrTransport = async () => { transportCalls++; return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) }; };
   const root = tempRoot('wp3-m2-gate-');
@@ -114,13 +115,33 @@ test('MEDIA-05b：型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息保�
   const turn = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(t.turnId) as { state: string };
   const attempt = ctx.db.prepare('SELECT blocked_reason, state FROM attempts WHERE turn_id = ?').get(t.turnId) as { blocked_reason: string | null; state: string };
   assert.equal(turn.state, 'failed');
-  assert.ok(String(attempt.blocked_reason ?? '').includes('MODEL_VISION_UNAVAILABLE') || true);
+  assert.equal(attempt.state, 'failed');
+  assert.match(attempt.blocked_reason ?? '', /^MODEL_VISION_UNAVAILABLE:/);
+  assert.equal(metadataFetch.mock.callCount(), 1, '只调用离线元数据响应');
+  assert.equal((ctx.db.prepare('SELECT count(*) AS n FROM provider_requests').get() as { n: number }).n, 0);
   assert.equal(transportCalls, 0, '未核实=零模型请求（不静默丢图继续答）');
   const saved = ctx.messages.getMessage(t.message.id);
   assert.ok(saved, '消息与附件照常保存');
   assert.equal(saved.revision.attachments.length, 1);
   // 未发生静默模型切换：模型字段不变
   assert.equal((ctx.db.prepare("SELECT model FROM usage_observations LIMIT 1").all() as unknown[]).length, 0);
+});
+
+test('MEDIA-05c：config 声明 vision_supported_models 命中→直接放行（零目录查询、模型请求正常发出）', async (testContext) => {
+  const metadataFetch = testContext.mock.method(globalThis, 'fetch', async () => { throw new Error('declared model must not hit the catalog'); });
+  const payloads: Array<Record<string, unknown>> = [];
+  const transport: OrTransport = async (p) => { payloads.push(structuredClone(p)); return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('看到图了'))]) }; };
+  const root = tempRoot('wp3-m2-decl-');
+  const ctx = compose(root, transport, { vision_supported_models: [MODEL] });
+  const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-decl', createdBy: 'qiaosheng', origin: 'upload' });
+  const t = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '看这张图', clientMessageId: 'm2-decl', attachments: [{ asset_id: img.id, presentation: 'image' }] });
+  ctx.supervisor.enqueue(t.turnId);
+  await ctx.supervisor.waitIdle();
+  const turn = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(t.turnId) as { state: string };
+  assert.equal(turn.state, 'completed');
+  assert.equal(metadataFetch.mock.callCount(), 0, '声明命中=零目录查询（发消息关键路径不打网络）');
+  assert.equal(payloads.length, 1, '模型请求正常发出（未被视觉门拦截）');
+  assert.ok(JSON.stringify(payloads[0]).includes('image'), '图片块真实进入 payload');
 });
 
 test('MEDIA-06：第二轮（同窗轨迹）payload 仍含同图——物化确定性使 append-only 断言通过；轨迹恢复同源', async () => {
@@ -142,6 +163,32 @@ test('MEDIA-06：第二轮（同窗轨迹）payload 仍含同图——物化确�
   const flat = JSON.stringify(wire2.messages);
   assert.ok(flat.includes('"type":"image"'), '历史图随轨迹进入第二轮请求');
   assert.ok(flat.includes(PNG.toString('base64').slice(0, 40)), '同一图片同一物化字节（确定性投影）');
+});
+
+test('MEDIA-06c：视觉能力过24小时后目录临时失败，历史图片+纯文字续轮仍正常回复', async (testContext) => {
+  let now = Date.now();
+  testContext.mock.method(Date, 'now', () => now);
+  setVisionSupportForTests(MODEL, true);
+  const metadataFetch = testContext.mock.method(globalThis, 'fetch', async (): Promise<Response> => { throw new TypeError('offline metadata'); });
+  const payloads: Array<Record<string, unknown>> = [];
+  const transport: OrTransport = async (p) => { payloads.push(structuredClone(p)); return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody(`回${payloads.length}`))]) }; };
+  const ctx = compose(tempRoot('wp3-m2-vision-stale-'), transport);
+  try {
+    const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-vision-stale', createdBy: 'qiaosheng', origin: 'upload' });
+    const first = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第一张', clientMessageId: 'stale1', attachments: [{ asset_id: img.id, presentation: 'image' }] });
+    ctx.supervisor.enqueue(first.turnId);
+    await ctx.supervisor.waitIdle();
+    assert.equal(metadataFetch.mock.callCount(), 0, '已核实能力在24小时内不查目录');
+    now += 25 * 60 * 60 * 1000;
+    const second = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第二条文字', clientMessageId: 'stale2' });
+    ctx.supervisor.enqueue(second.turnId);
+    await ctx.supervisor.waitIdle();
+    assert.equal(metadataFetch.mock.callCount(), 1);
+    assert.equal((ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(second.turnId) as { state: string }).state, 'completed');
+    assert.equal(payloads.length, 2, '目录失败仍派发一次正常续轮，无额外模型请求');
+    assert.ok(JSON.stringify(payloads[1]!.messages).includes('"type":"image"'), '历史图片原样保留');
+    assert.equal((ctx.db.prepare("SELECT count(*) AS n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(second.turnId) as { n: number }).n, 1, '续轮助手回复已入库');
+  } finally { ctx.db.close(); }
 });
 
 test('MEDIA-08/门：语音无转写→不空输入唤起模型（MEDIA_TRANSCRIPTION_FAILED、零请求）；历史语音无转写=如实占位', async () => {

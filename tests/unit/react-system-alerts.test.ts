@@ -77,3 +77,20 @@ test('突发告警合并重查；晚到旧summary不丢失新红点及打开抽�
   assert.equal(client.snapshot.unreadAlerts, 1);
   assert.equal(client.snapshot.alerts[0]!.alert_id, 'new-alert');
 });
+
+test('图片能力失败提示可访问且不展示不存在的回合重试按钮', () => {
+  const controlsSource = fs.readFileSync(new URL('../../apps/web/react/src/IntegrationControls.tsx', import.meta.url), 'utf8');
+  const controlsCompiled = ts.transpileModule(controlsSource, { compilerOptions: {
+    jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+  } }).outputText;
+  const controls: Record<string, any> = {};
+  new Function('require', 'exports', controlsCompiled)(requireWeb, controls);
+  const notice = '暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。';
+  const html = render(controls.IntegrationControls, { client: { notify() {} }, state: {
+    notice, ready: true, selectionMode: false, route: null,
+  } });
+  assert.match(html, /role="status"/);
+  assert.ok(html.includes(notice));
+  assert.match(html, /aria-label="关闭提示"/);
+  assert.doesNotMatch(html, />重试<\/button>/);
+});
