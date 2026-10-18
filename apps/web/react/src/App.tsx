@@ -3,6 +3,7 @@ import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
+import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
@@ -266,10 +267,14 @@ export default function App() {
           </div>
         </div>
         <div className="relative flex justify-center">
+          {state.selectionMode ? (
+            <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 只带文本，图片不带入新窗</span>
+          ) : (
           <button onClick={() => setMenu(!menu)} className="relative rounded-lg px-2 py-1 text-[13px] text-[#5e5d59] hover:bg-black/5">
             char · {MODELS[model]} · {EFFORTS[effort]}
             <ChevronDown size={13} className="absolute -right-3 top-1/2 -translate-y-1/2" />
           </button>
+          )}
           {menu && (
             <>
               <div className="fixed inset-0" onClick={() => setMenu(false)} />
@@ -300,6 +305,17 @@ export default function App() {
         <div ref={contentRef} className="flow-root">
         {state.hasEarlier && <button className="mx-auto mb-4 block text-[12px] text-[#8a8780]" onClick={() => void client.loadEarlier()}>加载更早</button>}
         {msgs.map((m) => m.system ? <p key={m.id} role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
+          state.selectionMode ? (
+            <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
+              aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
+              className="mb-8 flex w-full items-start gap-2.5 pr-[2em] text-left">
+              <SelectionCheck checked={state.selected.has(m.id)} />
+              <span className="ml-auto flex w-[75%] flex-col items-end">
+                {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.6] tracking-[0.01em] text-[#1f1e1d]">{m.text}</p>}
+                <span className="mt-1 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
+              </span>
+            </button>
+          ) : (
           <div key={m.id} className="mb-8 ml-auto flex w-[75%] flex-col items-end pr-[2em]">
             {m.kind ? <Media m={m} /> : <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.6] tracking-[0.01em] text-[#1f1e1d]">{m.text}</p>}
             <div className="mt-1 -mr-1.5 flex items-center">
@@ -310,6 +326,21 @@ export default function App() {
               <span className="ml-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
             </div>
           </div>
+          )
+        ) : state.selectionMode && !m.pending ? (
+            <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
+              aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
+              className="mb-8 flex w-full items-start gap-2.5 text-left">
+              <SelectionCheck checked={state.selected.has(m.id)} />
+              <span className="w-[75%] pl-[2em]">
+                {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : (
+                <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
+                  {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
+                </div>
+                )}
+                <span className="mt-1 block text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
+              </span>
+            </button>
         ) : (
           <div key={m.id} className="mb-8 w-[75%] pl-[2em]">
             {(m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m} onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
@@ -337,6 +368,12 @@ export default function App() {
       <IntegrationControls client={client} state={state} />
       {/* Composer */}
       <footer className="relative shrink-0 px-3 pt-2">
+        {state.selectionMode ? (
+        <SelectionBar count={state.selected.size}
+          onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条文本历史换窗？`)) void client.confirmSelection() }}
+          onEmpty={() => { if (confirm('确认不携带历史换窗？')) void client.confirmSelection(true) }}
+          onCancel={client.cancelSelection} />
+        ) : (<>
         {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => <div key={a.id} className="flex items-center gap-1">
           <button onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
           <button aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
@@ -404,6 +441,7 @@ export default function App() {
         </div>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { setPlus(false); onPick(e.target.files?.[0]); e.target.value = '' }} />
         <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = '' }} />
+        </>)}
       </footer>
       {sheet && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}

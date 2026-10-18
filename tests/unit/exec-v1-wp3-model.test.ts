@@ -260,3 +260,22 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；容�
   assert.equal(est1, Math.ceil(100 / 2.5) + 1600);
   assert.equal(est2, Math.ceil(100 / 2.5) + 3200);
 });
+
+test('MEDIA-07（她 2026-10-18 裁定：多选只带文本）——textOnly 投影：图片占位不产视觉块、caption/语音转写保留、非 textOnly 行为不变', () => {
+  const attachments = [
+    { asset_id: 'a-img', presentation: 'image', caption: '海边的落日', derived_text: null, derived_source: null },
+    { asset_id: 'a-voice', presentation: 'voice', caption: null, derived_text: '今天很开心', derived_source: 'siren:transcribe' },
+  ];
+  // textOnly：图片→占位文本（无 asset_image、hasImage=false、不触发视觉门）；caption 与语音转写照常
+  const t = projectRevisionBlocks('正文一句', attachments, { textOnly: true });
+  assert.equal(t.hasImage, false, 'textOnly 不得产视觉块');
+  assert.ok(t.blocks.every((b) => b.type === 'text'), 'textOnly 全部为文本块');
+  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[图片消息')), '图片有如实占位');
+  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[附件说明] 海边的落日')), 'caption 随文本保留');
+  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('今天很开心')), '语音转写照常携带');
+  assert.ok(!t.blocks.some((b) => b.type === 'asset_image'), '无视觉引用块');
+  // 非 textOnly（默认）：原行为不变——图片仍是视觉块
+  const d = projectRevisionBlocks('正文一句', attachments);
+  assert.equal(d.hasImage, true);
+  assert.ok(d.blocks.some((b) => b.type === 'asset_image' && b.asset_id === 'a-img'));
+});

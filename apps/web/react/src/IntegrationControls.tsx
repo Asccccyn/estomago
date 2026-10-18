@@ -1,12 +1,7 @@
 import type { EstomagoClient, Snapshot } from './chat-client'
 export function IntegrationControls({client,state}: {client:EstomagoClient;state:Snapshot}) {
   return <>
-    {state.selectionMode && <div className="flex flex-wrap items-center gap-2 px-3 py-2 text-[12px] text-[#8a8780]">
-      <span>已选 {state.selected.size} 条历史</span>
-      <button onClick={()=>{if(confirm('确认携带所选历史换窗？'))void client.confirmSelection()}}>确认</button>
-      <button onClick={()=>{if(confirm('确认不携带历史换窗？'))void client.confirmSelection(true)}}>不带历史</button>
-      <button onClick={client.cancelSelection}>取消</button>
-    </div>}
+    {/* selectionMode 界面（已选计数/确认/取消）2026-10-18 起移至 App 多选模式：header 计数 + 底部 SelectionBar（微信式，见 SelectionControls.tsx） */}
     {state.notice && <div role="status" className="flex items-center justify-between gap-2 px-3 py-1 text-[12px] text-[#8a8780]">
       <span>{state.notice}</span><button aria-label="关闭提示" onClick={()=>client.notify('')}>×</button>
       {!state.ready&&<button onClick={()=>void client.start()}>重试</button>}
