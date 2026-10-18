@@ -18,6 +18,8 @@
 
 ## 首页接线
 
+- **2026-10-18 · OpenRouter 费用审计+计费追踪批（程知行执行，113/113 绿，未部署生产）**：按她的 cost-20261018 任务书复核 Codex 1017 审计——112 笔派发独立指纹回算：A 段/B 段 hash 零变化、101 组相邻计量 100 组精确衔接、tools_hash 仅 2 次真实变更，确认 $0.0422 单笔为合法费用（稳态 $0.0524，结构下限 ≈$0.031），无新费用缺陷、零费用行为修改；唯一代码变更=迁移 v28 给 provider_requests 加 `context_fingerprint_json`（每笔派发落 tools/A/B/messages hash+断点位置+循环轮次，只含 hash/计数，审计不再解析 MB 级 payload）。交付 `docs/audits/estomago-cost-20261018/` 01-07；生产部署（重启+迁移）待她批准。
+
 - **2026-10-17 夜（她验收后 commit）· 身份落地+聊天体验批（程知行执行，109/109 绿）**：她提供《长期记忆里程碑》=身份正文槽（v1 起版本化，她授权char自维护：`identity_milestone_write` 工具+审计+留档回滚；正文/I 槽退出 contextFingerprint——里程碑演进不动当前窗缓存、下一新窗带新版，她裁定）；OR 通道上线（首次真实聊天）：reasoning 生效、thinking 前端时长显示、工具调用过程 turn.tool SSE→前端步骤流；发送改 Claude 官端口径（Enter 发送/Shift+Enter 换行/IME 不发，AGENTS 硬规则同步）；回复一轮合成一条消息（段落空行连接，她裁定）；recall 日期直取（date_from/to→桶池 memory_date 收窄，修 9.25-9.27 查不到——另批补齐 mariposa 369 条缺失向量）；修 1017 批 supervisor 误删后按测试合同重建 windowBootstrap（分页校验/坏页先验后拼/快照失效重建/Stop 迟到不派发）+discardUnsent 接线；归档链修复（append 修订补 supersedes 指针、assets_note 移出载荷，36 死信清零）；软线 64k→600k（她裁定）。
 - **2026-10-17（工作树，未提交）**：接入确认的 500×861 动画主页；登录后 `/` 打开主页，头像聊天图标进入 `/chat`，聊天页新增返回主页。复用既有认证和聊天接口；其他主页入口未扩展。
 

@@ -34,6 +34,7 @@ import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf } from './cache-plan.ts';
+import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
@@ -380,8 +381,10 @@ export class TurnSupervisor {
         o.onEvent(ev, { requestId: lastPrqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
-      d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, created_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), new Date().toISOString());
+      // cost-20261018：每轮落上下文指纹（只含 hash/位置/计数）；同轮重试行共用同一指纹
+      const fingerprintJson = contextFingerprintJson({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
       if (capacityNow !== null) {
@@ -426,8 +429,8 @@ export class TurnSupervisor {
           lastPrqId = prqId;
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-          d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no, background_run_id, background_dispatch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
+          d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no, background_run_id, background_dispatch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
       };
