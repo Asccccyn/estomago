@@ -356,6 +356,51 @@ export class SurfacingService {
     return { deliveryId: frozen.id, text: frozen.payload_text, items: parsed.items, memoryRefs: parsed.refs, payloadHash: frozen.payload_hash, jobId: frozen.job_id };
   }
 
+  /**
+   * R02（审计 J01）最终准入：冻结（augmentFor 内 check→freeze）到最终装配之间
+   * 没有上界——轨迹装配/派发排队/重试经 reuseFrozen 复用冻结包零校验，而 M 侧
+   * 回执带时效。同一 surface.check 门（幂等本地 fence，不消费 receipt）在装配
+   * 边界再核一次；失败只丢浮现块（作业收回留痕），主消息照常发出、绝不重发。
+   * 已上线（dispatch_started）的冻结包按 docs/04 原样复用，不在此处改包。
+   */
+  async finalAdmit(aug: AugmentResult, input: {
+    conversationId: string; windowId: string; messageId: string; revision: number;
+  }): Promise<AugmentResult | null> {
+    if (!this.cfg.enabled || this.stopped) return null;
+    const job = this.repo.jobById(aug.jobId);
+    if (!job) return null;
+    if (job.state === 'dispatch_started') return aug;
+    if (job.state !== 'reserved'
+      || job.target_message_id !== input.messageId
+      || job.target_revision !== input.revision) {
+      return this.repo.dropAtFinalAdmission(job.id);
+    }
+    try {
+      const ck = await this.bounded(signal => this.client.surfaceCheck({
+        validation_receipt: job.receipt_id ?? '',
+        conversation_scope: input.conversationId,
+        target_message_id: input.messageId,
+        target_revision: input.revision,
+        window_id: input.windowId,
+      }, signal), this.cfg.delivery_deadline_ms, job.id);
+      if (ck.ok) {
+        const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[] };
+        if (ckd.valid === true) {
+          // 接受面收缩（权限/版本撤销）：冻结块任一条掉出 accepted 即整块丢弃
+          const accepted = new Set(ckd.accepted_detail_refs ?? []);
+          if (aug.items.every(it => accepted.has(it.detail_ref))) {
+            // 装配间隙同窗重复覆盖防护：任一事件已被实际覆盖即整块丢弃
+            const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, aug.items);
+            if (aug.items.every(it => !covered.has(it.event_id))) return aug;
+          }
+        }
+      }
+    } catch {
+      // 超时/取消/坏回执：按丢处理，不阻塞主消息
+    }
+    return this.repo.dropAtFinalAdmission(job.id);
+  }
+
   markDispatched(attemptId: string): void {
     const frozen = this.repo.frozenForAttempt(attemptId);
     if (frozen) this.repo.markDispatchStarted(frozen.job_id, frozen.id);

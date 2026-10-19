@@ -219,3 +219,47 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
   await new Promise((r) => setTimeout(r, 20));
   ctx.db.close();
 });
+
+// R02（审计 J01）：最终准入——冻结后回执在装配边界过期/被撤销时，同一 check 门
+// 拦下浮现块；主消息照常派发（普通 B 不丢），wire 上无回忆块、覆盖零落账。
+test('JA-S16: stale receipt at final admission drops only the surfacing block — the turn still dispatches', async () => {
+  const root = tempRoot('sf-final-admit-');
+  const log: Array<Record<string, unknown>> = [];
+  let gen = 0;
+  const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, `回${gen}`)) }; };
+  let checkCalls = 0;
+  const mariposa: MariposaTransport = async (cap) => {
+    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
+    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_fa' } };
+    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_fa', items: [ITEM] } };
+    if (cap === 'memory.surfacing.check') { checkCalls++; return { ok: true, result: { valid: checkCalls === 1, accepted_detail_refs: [ITEM.detail_ref] } }; }
+    return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
+  };
+  const ctx = compose(root, transport, mariposa, log);
+  try {
+    const u1 = await (async () => {
+      const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成事件', clientMessageId: 'fa-a', occurredAt: T0 });
+      ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
+      return sub;
+    })();
+    await waitUntil(() => ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.state === 'prepared');
+    const u2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '具体是什么', clientMessageId: 'fa-b', occurredAt: T0 });
+    await waitUntil(() => ctx.svc.repo.nextPreparedForTarget('c1', u2.message.id)?.state === 'target_bound');
+    ctx.supervisor.enqueue(u2.turnId);
+    await ctx.supervisor.waitIdle();
+    // 主消息已成功派发并收到回复（B 不丢）
+    assert.equal(log.length, 2, 'both turns dispatched');
+    assert.equal(gen, 2);
+    const msgs2 = log[1]!.full as Array<{ role: string; content: unknown }>;
+    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('[回忆浮现]'))).length, 0, 'wire has no surfacing block');
+    const tail2 = msgs2[msgs2.length - 1]!;
+    assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('具体是什么')), 'real user input is intact');
+    // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）
+    assert.equal(checkCalls, 2, 'the same gate checked at freeze and at final assembly');
+    const job = ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;
+    assert.equal(job.state, 'cancelled');
+    assert.equal(job.reason_code, 'FINAL_ADMISSION_DROPPED');
+    assert.equal((ctx.db.prepare("SELECT count(*) n FROM surfacing_deliveries WHERE state='dropped'").get() as { n: number }).n, 1);
+    assert.equal((ctx.db.prepare('SELECT count(*) n FROM surfacing_coverage').get() as { n: number }).n, 0, 'no coverage is claimed for a dropped block');
+  } finally { await ctx.svc.stop(); ctx.db.close(); }
+});

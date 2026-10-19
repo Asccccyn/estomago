@@ -198,6 +198,17 @@ export class SurfacingRepository {
     this.transition(jobId, ['reserved', 'ready'], 'dispatch_started');
   }
 
+  /**
+   * R02（审计 J01）最终准入丢弃：预留位收回（reason_code=FINAL_ADMISSION_DROPPED
+   * 留痕）+ 冻结包标记 dropped（不再被 frozenForAttempt 复用/标记派发）。
+   * 作业已不在 reserved（编辑撤销/停止等）时 transition 落空，但冻结包同样收回。
+   */
+  dropAtFinalAdmission(jobId: string): null {
+    this.transition(jobId, ['reserved'], 'cancelled', { reason_code: 'FINAL_ADMISSION_DROPPED' });
+    this.db.prepare(`UPDATE surfacing_deliveries SET state='dropped' WHERE job_id=? AND state='frozen'`).run(jobId);
+    return null;
+  }
+
   markRetained(jobId: string, deliveryId: string, items: SurfaceItem[]): void {
     const now = new Date().toISOString();
     const job = this.jobById(jobId);
