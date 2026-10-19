@@ -1,3 +1,47 @@
+/* Reveal complete physical cords, including the lengths hidden behind artwork.
+   Use painted SVG paths and real lengths: no animated defs/use shadow trees. */
+(() => {
+ 'use strict';
+ const paths=Array.from(document.querySelectorAll('.drawn-red-cord .thread-line'));
+ if(!paths.length)return;
+ const media=window.matchMedia('(prefers-reduced-motion: reduce)');
+ let frame=0,finished=false;
+ function finish(){
+   finished=true;
+   cancelAnimationFrame(frame);
+   paths.forEach(path=>{path.style.removeProperty('stroke-dasharray');path.style.removeProperty('stroke-dashoffset');});
+   media.removeEventListener?.('change',motionChanged);
+   document.removeEventListener('visibilitychange',visibilityChanged);
+   window.removeEventListener('pagehide',finish);
+ }
+ function motionChanged(){if(media.matches)finish();}
+ function visibilityChanged(){if(document.hidden)finish();}
+ try{
+   if(media.matches||document.hidden)return;
+   const lengths=paths.map(path=>path.getTotalLength());
+   if(lengths.some(length=>!Number.isFinite(length)||length<=0))return;
+   const longest=Math.max(...lengths),speed=longest/4000;
+   const start=performance.now();
+   paths.forEach((path,i)=>{
+     path.style.strokeDasharray=`${lengths[i]} ${lengths[i]}`;
+     path.style.strokeDashoffset=String(lengths[i]);
+   });
+   function draw(now){
+     if(finished)return;
+     try{
+       const distance=Math.max(0,now-start)*speed;
+       if(distance>=longest){finish();return;}
+       paths.forEach((path,i)=>{path.style.strokeDashoffset=String(Math.max(0,lengths[i]-distance));});
+       frame=requestAnimationFrame(draw);
+     }catch{finish();}
+   }
+   media.addEventListener?.('change',motionChanged);
+   document.addEventListener('visibilitychange',visibilityChanged);
+   window.addEventListener('pagehide',finish);
+   frame=requestAnimationFrame(draw);
+ }catch{finish();}
+})();
+
 /* One animation source drives both the butterfly and its masked reflection. */
 (() => {
  'use strict';
@@ -11,15 +55,17 @@
  let reflectionSize={width:0,height:0,dpr:1};
  let reflectionSource=canvas;
  let reflectionTime=0;
- const cordLoop=document.getElementById('butterfly-cord-loop');
- const cordLayers=document.querySelectorAll('.drawn-red-cord');
+ const loop='C437 960 424 984 462 1002 C518 1033 615 1002 690 980 C750 960 784 966 802 1008 C807 1020 810 1031 812 1042';
+ const cordPaths=Array.from(document.querySelectorAll('[data-cord="main"] .thread-line')).map(path=>({path,parts:path.getAttribute('d').split(loop)})).filter(({parts})=>parts.length===2);
  let lastCordTime=-100;
  function updateCords(time,fold,flutter,still){
+   // Keep the measured path stable during the initial four-second reveal.
+   if(cordPaths.some(({path})=>path.style.strokeDasharray))return;
    if(Math.abs(time-lastCordTime)<32&&!still)return;
    lastCordTime=time;
    const lift=still?0:-8*fold*flutter;
-   if(cordLoop)cordLoop.setAttribute('d',`M481 940 C462 947 434 ${961+lift*.5} 437 ${974+lift} C444 ${993+lift} 484 ${1006+lift} 512 ${1012+lift} C560 ${1020+lift} 611 ${1003+lift*.7} 655 ${992+lift*.5} C699 ${979+lift*.3} 734 963 765 972 C791 980 808 1008 814 1037`);
-   cordLayers.forEach(layer=>layer.style.setProperty('--cord-offset',String(still?0:-(time/1000*12)%202)));
+   const lifted=`C437 ${960+lift*.4} 424 ${984+lift*.7} 462 ${1002+lift} C518 ${1033+lift} 615 ${1002+lift*.7} 690 ${980+lift*.4} C750 ${960+lift*.2} 784 966 802 1008 C807 1020 810 1031 812 1042`;
+   cordPaths.forEach(({path,parts})=>path.setAttribute('d',parts[0]+lifted+parts[1]));
  }
 
  const media=window.matchMedia('(prefers-reduced-motion: reduce)');
