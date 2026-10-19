@@ -385,7 +385,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // 不再存在绕过评审直转 WindowManager 的旁路；SDK 驱动保持 v0.2.2 行为
       // WP3（H07）：无已确认选集 → 409 context_selection_required（awaiting
       // 已持久化；输入已保存，确认后自动继续——rotate 不再是绕过选集的旁路）
-      const result = await d.supervisor.manualRotate(win.conversation_id);
+      const result = await d.supervisor.manualRotate(win.conversation_id, windowId);
       if (!result.ok && result.reason.startsWith('CONTEXT_SELECTION_REQUIRED')) {
         const awaiting = d.selections?.awaitingFor(win.conversation_id) ?? null;
         return json(res, 409, { error: { code: 'context_selection_required', message: result.reason, selection_id: awaiting?.selection_id ?? null } });

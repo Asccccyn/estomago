@@ -59,3 +59,16 @@ export function tailBoundaryOf(messages: OrMessage[]): PrevBoundary | null {
   }
   return null;
 }
+
+/** A/B are the fixed prefix. Later host memory messages are not bootstrap. */
+export function fixedSystemCount(messages: OrMessage[]): number {
+  let count = 0;
+  for (const message of messages.slice(0, 2)) {
+    if (message.role !== 'system') break;
+    const firstText = typeof message.content === 'string' ? message.content
+      : Array.isArray(message.content) ? (message.content[0] as { text?: string })?.text ?? '' : '';
+    if (firstText.startsWith('[回忆浮现]\n')) break;
+    count++;
+  }
+  return count;
+}

@@ -35,7 +35,6 @@ export type SurfaceItem = {
   event_id: string;
   memory_id: string;
   memory_version: string;
-  domain_versions: Record<string, string>;
   memory_date: string | null;
   date_confidence: string | null;
   event_text: string;
@@ -66,7 +65,7 @@ export function renderAugmentation(items: SurfaceItem[], refs: Map<string, strin
 
 /** 短 handle：内存安全的不透明引用（完整 UUID/版本/hash/分数不进模型文本）。 */
 export function memoryRefFor(detailRef: string): string {
-  return 'sf_' + createHash('sha256').update(detailRef).digest('hex').slice(0, 8);
+  return 'sf_' + createHash('sha256').update(detailRef).digest('hex').slice(0, 16);
 }
 
 export function estimateTokens(text: string): number {
@@ -75,16 +74,9 @@ export function estimateTokens(text: string): number {
   return Math.ceil(Buffer.byteLength(text, 'utf8') / 3);
 }
 
-export const SURFACE_ERROR_CODES = [
-  'SURFACE_DISABLED', 'SURFACE_JUDGE_OFF', 'SURFACE_PROFILE_UNSUPPORTED',
-  'SURFACE_OUTBOUND_NOT_GRANTED', 'SURFACE_BUDGET_UNCONFIGURED',
-  'SURFACE_BUDGET_EXHAUSTED', 'SURFACE_IDEMPOTENCY_CONFLICT',
-  'SURFACE_PREPARE_NOT_READY', 'SURFACE_TARGET_MISMATCH',
-  'SURFACE_TARGET_CHANGED', 'SURFACE_TARGET_MISSED',
-  'SURFACE_NOT_RELEVANT_NOW', 'SURFACE_UNCERTAIN',
-  'SURFACE_EVENT_AMBIGUOUS', 'SURFACE_VERSION_STALE',
-  'SURFACE_ALREADY_COVERED', 'SURFACE_BODY_TOO_LARGE', 'SURFACE_TIMEOUT',
-  'SURFACE_POLICY_CHANGED', 'SURFACE_SCOPE_DENIED', 'SURFACE_UNKNOWN_OUTCOME',
-  'DETAIL_REF_NOT_SEEN', 'DETAIL_NOT_FOUND', 'DETAIL_SNAPSHOT_STALE',
-  'DETAIL_SNAPSHOT_UNSTABLE', 'DETAIL_PARTIAL_UNAVAILABLE',
-] as const;
+
+/** The current OpenRouter/Opus route has no verified append-only host-data
+ * transport. SDK has no host-tool bridge. Never silently switch providers. */
+export function supportsSurfacingTransport(provider: string): boolean {
+  return provider === 'deepseek';
+}

@@ -1,3 +1,4 @@
+import { supportsSurfacingTransport } from './memory-surfacing/contracts.ts';
 // 组合根：把配置、DB 与各服务装配成一个可启动/可停止的 Host。
 // 测试用 createHost({ stateRoot: 临时目录, config: buildConfig({...}) }) 直接构建。
 import http from 'node:http';
@@ -115,14 +116,18 @@ export class Host {
     // （surfacing_credential_ref，不回退聊天/归档凭据；docs/06）；enabled=false
     // 时服务仍装配（表结构就绪）但零作业/零网络/零凭据读取。
     const surfaceCfg = opts.config.memory_surfacing;
+    if (surfaceCfg.enabled && !supportsSurfacingTransport(opts.config.runtime.provider)) {
+      logger.warn('surface_transport_unsupported', { provider: opts.config.runtime.provider, code: 'SURFACE_PROFILE_UNSUPPORTED' });
+    }
+    const surfaceMariposaClient = new MariposaClient({
+      baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+      credentialEnv: surfaceCfg.surfacing_credential_ref,
+    });
     const surfacing = new SurfacingService(
       db,
-      new MariposaClient({
-        baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
-        credentialEnv: surfaceCfg.surfacing_credential_ref,
-      }),
+      surfaceMariposaClient,
       {
-        enabled: surfaceCfg.enabled,
+        enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
         policy_revision: 1,
         prompt_prepare_revision: 'surface_prepare_v1',
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
@@ -188,7 +193,7 @@ export class Host {
     // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
     const { WishstarClient } = await import('./integrations/wishstar/client.ts');
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
     const supervisor = new TurnSupervisor({
       wishstar,
       db,

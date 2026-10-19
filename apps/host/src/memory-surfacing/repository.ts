@@ -1,7 +1,7 @@
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
-import type { Db } from '../db/connection.ts';
+import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { EventHypothesis, SurfaceItem, SurfacingJobState } from './contracts.ts';
 
@@ -79,9 +79,9 @@ export class SurfacingRepository {
   cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
     const r = this.db.prepare(
       `UPDATE surfacing_jobs SET state='cancelled', updated_at=?
-       WHERE conversation_id=? AND source_message_id=? AND source_revision=? AND state NOT IN
+       WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
          ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
-    ).run(new Date().toISOString(), conversationId, messageId, supersededRevision);
+    ).run(new Date().toISOString(), conversationId, messageId, supersededRevision, messageId, supersededRevision);
     return Number(r.changes);
   }
 
@@ -89,12 +89,12 @@ export class SurfacingRepository {
   bindTarget(o: { conversationId: string; jobId: string; targetMessageId: string; targetRevision: number }): boolean {
     const r = this.db.prepare(
       `UPDATE surfacing_jobs SET state='target_bound', target_message_id=?, target_revision=?, updated_at=?
-       WHERE id=? AND state IN ('prepared','empty','rejected','blocked','unknown_cost')`,
-    ).run(o.targetMessageId, o.targetRevision, new Date().toISOString(), o.jobId);
+       WHERE id=? AND conversation_id=? AND state='prepared' AND target_message_id IS NULL`,
+    ).run(o.targetMessageId, o.targetRevision, new Date().toISOString(), o.jobId, o.conversationId);
     return Number(r.changes) === 1;
   }
 
-  /** CAS 状态迁移（state+generation+source_revision+target_revision 边校验）。 */
+  /** 单调状态 CAS；源/目标修订失效由消息事务取消，发送前再次核状态。 */
   transition(jobId: string, from: SurfacingJobState[], to: SurfacingJobState, patch: Partial<Record<string, unknown>> = {}): boolean {
     const marks = from.map(() => '?').join(',');
     const sets = ['state=?', 'updated_at=?'];
@@ -142,13 +142,13 @@ export class SurfacingRepository {
 
   pendingJobs(limit = 20): JobRow[] {
     return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','target_bound','validating') ORDER BY created_at ASC LIMIT ?`,
+      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state='pending' ORDER BY created_at ASC LIMIT ?`,
     ).all(limit) as JobRow[];
   }
 
   recoverableJobs(): JobRow[] {
     return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('preparing','validating','reserved','dispatch_started') ORDER BY created_at ASC LIMIT 50`,
+      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('preparing','validating','reserved','dispatch_started') ORDER BY created_at ASC`,
     ).all() as JobRow[];
   }
 
@@ -157,7 +157,7 @@ export class SurfacingRepository {
     // 不向后漂移（docs/01 §4）。
     this.db.prepare(
       `UPDATE surfacing_jobs SET state='missed_target', updated_at=?
-       WHERE conversation_id=? AND state IN ('prepared','target_bound','validating')
+       WHERE conversation_id=? AND state IN ('pending','preparing','prepared')
          AND target_message_id IS NULL AND source_sequence < ?`,
     ).run(new Date().toISOString(), conversationId, latestUserSequence - 0);
   }
@@ -167,7 +167,9 @@ export class SurfacingRepository {
   freezeDelivery(o: {
     jobId: string; attemptId: string; windowId: string; text: string;
     items: SurfaceItem[]; memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
-  }): string {
+  }): string | null {
+    return tx(this.db, () => {
+    if (!this.transition(o.jobId, ['ready'], 'reserved')) return null;
     const id = genId('sfd');
     const payloadHash = sha256Hex(o.text);
     const now = new Date().toISOString();
@@ -176,33 +178,39 @@ export class SurfacingRepository {
          payload_hash, selected_refs_json, retained, created_at)
        VALUES (?,?,?,?, 'frozen', ?, ?, ?, 0, ?)`,
     ).run(id, o.jobId, o.attemptId, o.windowId, o.text, payloadHash, JSON.stringify({ items: o.items, refs: o.memoryRefs }), now);
-    this.transition(o.jobId, ['ready', 'reserved'], 'reserved');
     return id;
+    });
   }
 
-  frozenForAttempt(attemptId: string): { id: string; payload_text: string; payload_hash: string; selected_refs_json: string } | null {
+  frozenForAttempt(attemptId: string): { id: string; job_id: string; payload_text: string; payload_hash: string; selected_refs_json: string } | null {
     // 尝试级冻结包跨 frozen/dispatched/retained 复用（transport retry 原
     // 样重用同一冻结包，不重渲染——docs/04 冻结与重试）
     const row = this.db.prepare(
-      `SELECT id, payload_text, payload_hash, selected_refs_json FROM surfacing_deliveries WHERE attempt_id=? AND state IN ('frozen','dispatch_started','retained') ORDER BY created_at DESC LIMIT 1`,
-    ).get(attemptId) as { id: string; payload_text: string; payload_hash: string; selected_refs_json: string } | undefined;
+      `SELECT id, job_id, payload_text, payload_hash, selected_refs_json FROM surfacing_deliveries WHERE attempt_id=? AND state IN ('frozen','dispatch_started','retained') ORDER BY created_at DESC LIMIT 1`,
+    ).get(attemptId) as { id: string; job_id: string; payload_text: string; payload_hash: string; selected_refs_json: string } | undefined;
     return row ?? null;
   }
 
   markDispatchStarted(jobId: string, deliveryId: string): void {
+    const job = this.jobById(jobId);
+    if (!job || !['reserved', 'dispatch_started'].includes(job.state)) throw new Error('SURFACE_TARGET_CHANGED');
     this.db.prepare(`UPDATE surfacing_deliveries SET state='dispatch_started', dispatched_at=? WHERE id=?`).run(new Date().toISOString(), deliveryId);
     this.transition(jobId, ['reserved', 'ready'], 'dispatch_started');
   }
 
   markRetained(jobId: string, deliveryId: string, items: SurfaceItem[]): void {
     const now = new Date().toISOString();
+    const job = this.jobById(jobId);
+    if (!job || !['dispatch_started', 'retained'].includes(job.state)) return;
     this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=? WHERE id=?`).run(now, deliveryId);
     this.transition(jobId, ['dispatch_started'], 'retained');
     for (const it of items) {
       this.db.prepare(
         `INSERT INTO surfacing_coverage(conversation_id, window_id, memory_id, memory_version, body_hash, occurrence_key, detail_ref, confirmed_at)
          VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(conversation_id, window_id, memory_id, body_hash) DO NOTHING`,
+         ON CONFLICT(conversation_id, window_id, memory_id, body_hash) DO UPDATE SET
+           memory_version=excluded.memory_version, occurrence_key=excluded.occurrence_key,
+           detail_ref=excluded.detail_ref, confirmed_at=excluded.confirmed_at`,
       ).run(
         this.jobById(jobId)?.conversation_id ?? '', this.db.prepare('SELECT window_id FROM surfacing_deliveries WHERE id=?').get(deliveryId)?.window_id ?? '',
         it.memory_id, it.memory_version, it.body_hash, it.event_id, it.detail_ref, now);
@@ -212,31 +220,50 @@ export class SurfacingRepository {
   /** 覆盖去重（当前窗口上下文为准，非永久 seen）。 */
   coveredInWindow(conversationId: string, windowId: string, items: SurfaceItem[]): Set<string> {
     const covered = new Set<string>();
+    const trajectory = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
+    if (!trajectory) return covered;
+    const messages = JSON.parse(trajectory.messages_json) as Array<{ content: unknown }>;
+    const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
+      : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
+    const deliveries = this.db.prepare(`SELECT d.payload_text, d.selected_refs_json FROM surfacing_deliveries d
+      JOIN surfacing_jobs j ON j.id=d.job_id WHERE j.conversation_id=? AND d.window_id=? AND d.retained=1`)
+      .all(conversationId, windowId) as Array<{ payload_text: string; selected_refs_json: string }>;
+    const visible = deliveries.filter(d => texts.some(t => t.includes(d.payload_text)))
+      .flatMap(d => (JSON.parse(d.selected_refs_json) as { items: SurfaceItem[] }).items);
     for (const it of items) {
       const row = this.db.prepare(
-        `SELECT 1 FROM surfacing_coverage WHERE conversation_id=? AND window_id=? AND memory_id=? AND body_hash=?`,
-      ).get(conversationId, windowId, it.memory_id, it.body_hash);
-      if (row) covered.add(it.event_id);
+        `SELECT 1 FROM surfacing_coverage WHERE conversation_id=? AND window_id=? AND memory_id=? AND memory_version=? AND body_hash=?`,
+      ).get(conversationId, windowId, it.memory_id, it.memory_version, it.body_hash);
+      if (row && visible.some(v => v.memory_id === it.memory_id && v.memory_version === it.memory_version && v.body_hash === it.body_hash)) covered.add(it.event_id);
     }
     return covered;
   }
 
-  dropCoverageForWindow(windowId: string): void {
-    // 换窗：coverage 是投影清单——旧窗覆盖不拦新窗（docs/04 去重节）。
-    this.db.prepare(`DELETE FROM surfacing_coverage WHERE window_id=?`).run(windowId);
-  }
-
-  refToDetail(memoryRef: string): { detail_ref: string } | null {
-    const row = this.db.prepare(
-      `SELECT selected_refs_json FROM surfacing_deliveries WHERE retained=1 AND selected_refs_json LIKE ?`,
-    ).get(`%"ref":"${memoryRef}"%`) as { selected_refs_json: string } | undefined;
-    if (!row) return null;
-    try {
+  refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string } | null {
+    // Only the exact confirmed provider request establishes visibility, including
+    // the first tool loop before the successful trajectory is retained.
+    const request = this.db.prepare(`SELECT p.payload_wire_json, p.payload_json FROM provider_requests p
+      JOIN turns t ON t.id=p.turn_id
+      WHERE p.id=? AND p.window_id=? AND t.conversation_id=?
+        AND p.sent_at IS NOT NULL ORDER BY p.created_at DESC LIMIT 1`)
+      .get(scope.requestId, scope.windowId, scope.roomId) as { payload_wire_json: string | null; payload_json: string } | undefined;
+    if (!request) return null;
+    let messages: Array<{ content?: unknown }>;
+    try { messages = JSON.parse(request.payload_wire_json ?? request.payload_json).messages; }
+    catch { return null; }
+    if (!Array.isArray(messages)) return null;
+    const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
+      : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
+    const rows = this.db.prepare(`SELECT d.selected_refs_json, d.payload_text FROM surfacing_deliveries d
+      JOIN surfacing_jobs j ON j.id=d.job_id
+      WHERE j.conversation_id=? AND d.window_id=? AND d.state IN ('dispatch_started','retained')`)
+      .all(scope.roomId, scope.windowId) as Array<{ selected_refs_json: string; payload_text: string }>;
+    for (const row of rows) {
+      if (!texts.some(t => t.includes(row.payload_text))) continue;
       const parsed = JSON.parse(row.selected_refs_json) as { refs: Array<{ ref: string; detail_ref: string }> };
-      const hit = parsed.refs?.find((r) => r.ref === memoryRef);
-      return hit ? { detail_ref: hit.detail_ref } : null;
-    } catch {
-      return null;
+      const hit = parsed.refs.find(r => r.ref === memoryRef);
+      if (hit) return { detail_ref: hit.detail_ref };
     }
+    return null;
   }
 }

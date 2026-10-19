@@ -3,45 +3,36 @@
 // 一刀切（R09）；thinking/工具输出/旧浮现包不可作为查询原话（R46）。
 import type { EventHypothesis } from './contracts.ts';
 
-const DATE_RE = [
-  /\d{4}[-/.]\d{1,2}[-/.]\d{1,2}/g,
-  /\d{1,2}[-/.]\d{1,2}/g,
-  /\d{4}年\d{1,2}月\d{1,2}[日号]?/g,
-  /\d{1,2}月\d{1,2}[日号]/g,
-];
-
-/** 有界分句：按中文句读切分并保留日期短语共享线索；上限 24 条假设
- *  （超限整次拒绝由服务层处理）。整句始终作为兜底假设（短句同样
- *  可语义检索）。 */
+/** Hypotheses are spans, never event verdicts. The Judge must confirm identity
+ * and grouping; punctuation alone cannot authorize a memory. */
 export function extractHypotheses(text: string, maxHypotheses = 24): EventHypothesis[] {
-  const t = text ?? '';
-  if (t.trim().length === 0) return [];
+  const points = [...(text ?? '')];
+  if (points.join('').trim().length === 0) return [];
   const out: EventHypothesis[] = [];
-  let n = 0;
-  const push = (startCp: number, endCp: number, inherited: EventHypothesis['inherited_date_span']) => {
-    if (endCp <= startCp) return;
-    out.push({ hypothesis_id: `h${++n}`, start_cp: startCp, end_cp: endCp, inherited_date_span: inherited });
-  };
-  // 码点切分（JS string 索引即 UTF-16 码元；中文 BMP 内与码点一致，
-  // 增补面字符成对代理——边界按句读字符切不会落在代理对中间）
-  const sentenceRe = /[。！？!?\n；;]/g;
   let start = 0;
-  let m: RegExpExecArray | null;
-  const spans: Array<[number, number]> = [];
-  while ((m = sentenceRe.exec(t)) !== null) {
-    spans.push([start, m.index + 1]);
-    start = m.index + 1;
+  let inherited: EventHypothesis['inherited_date_span'] = null;
+  const push = (end: number) => {
+    const clause = points.slice(start, end).join('');
+    if (clause.trim()) {
+      const date = /(?:\d{4}[-/.年])?\d{1,2}[-/.月]\d{1,2}[日号]?/.exec(clause);
+      const explicit = date ? { start_cp: start + [...clause.slice(0, date.index)].length,
+        end_cp: start + [...clause.slice(0, date.index + date[0].length)].length } : null;
+      out.push({ hypothesis_id: `h${out.length + 1}`, start_cp: start, end_cp: end,
+        inherited_date_span: explicit ? null : inherited });
+      if (explicit) inherited = explicit;
+    }
+    start = end;
+  };
+  for (let i = 0; i < points.length; i++) {
+    if (/[，,。！？!?\n；;]/.test(points[i])) {
+      push(i + 1);
+      // Preserve the overflow signal. The server rejects the entire request;
+      // silently truncating would misrepresent event coverage.
+      if (out.length > maxHypotheses) return out;
+    }
   }
-  if (start < t.length) spans.push([start, t.length]);
-  for (const [s, e] of spans) {
-    if (t.slice(s, e).trim().length === 0) continue;
-    // 共享日期线索：句内含日期短语 → 继承跨度记 null（judge 配对确认；
-    // 程序不自行补年份/主语，docs/03）
-    push(s, e, null);
-    if (out.length >= maxHypotheses) break;
-  }
-  if (out.length === 0) push(0, t.length, null);
-  return out.slice(0, maxHypotheses);
+  if (start < points.length) push(points.length);
+  return out;
 }
 
 /** 源语境：该用户消息 + 必要近邻真实原话（不读 thinking/工具历史，

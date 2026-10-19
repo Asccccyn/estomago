@@ -864,15 +864,17 @@ export class HostToolExecutor {
   private db: Db;
   private tz: string | null;
   private mariposa: MariposaClient | null;
+  private surfaceDetailClient: MariposaClient | null;
   private reviews: RotationReviewService;
   private checkpoint: HoldCheckpointService;
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
+    this.surfaceDetailClient = deps.surfaceDetailClient ?? null;
     this.reviews = deps.reviews;
     this.checkpoint = deps.checkpoint;
     this.archiveSync = deps.archiveSync ?? null;
@@ -1121,10 +1123,10 @@ export class HostToolExecutor {
    *  detail_ref 解析+M detail 快照读取。绝不 recall；不建 view_receipt；
    *  结构化错误码原样作为工具结果返回（错误不吞）。 */
   private async memoryReadFull(args: { memory_ref?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    const client = this.mariposaClient();
-    if (!client) return { ok: false, output: { error_code: 'MARIPOSA_NOT_CONFIGURED', error: 'Mariposa 客户端未装配' } };
+    const client = this.surfaceDetailClient;
+    if (!client) return { ok: false, output: { error_code: 'SURFACE_CLIENT_NOT_CONFIGURED', error: '独立浮现只读客户端未装配' } };
     const repo = new SurfacingRepository(this.db);
-    const r = await executeMemoryReadFull(repo, client, { memory_ref: args.memory_ref, cursor: args.cursor });
+    const r = await executeMemoryReadFull(repo, client, { memory_ref: args.memory_ref, cursor: args.cursor }, ctx);
     if (!r.ok) return { ok: false, output: { error_code: r.code, error: r.message } };
     return { ok: true, output: r.data };
   }

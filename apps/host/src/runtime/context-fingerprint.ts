@@ -1,3 +1,4 @@
+import { fixedSystemCount } from './cache-plan.ts';
 // 上下文指纹（docs/audits/estomago-cost-20261018 第二阶段）：每次模型派发把
 // 可缓存结构以 hash 留证在 provider_requests.context_fingerprint_json。
 //  - 只落 hash/位置/计数，构造上不可能携带正文或 token（AGENTS §4）。
@@ -42,7 +43,7 @@ export function contextFingerprintOf(input: {
     tools_n: Array.isArray(tools) ? tools.length : 0,
     tools_hash: hashOf(tools ?? null),
     system_a_hash: messages[0]?.role === 'system' ? hashOf(messages[0]) : null,
-    boot_hash: sysCount >= 2 ? hashOf(messages[1]!) : null,
+    boot_hash: fixedSystemCount(messages) >= 2 ? hashOf(messages[1]!) : null,
     sys_count: sysCount,
     msgs_n: messages.length,
     msgs_hash: hashOf(messages),

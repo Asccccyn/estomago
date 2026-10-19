@@ -1,7 +1,7 @@
 // SurfacingService：E 侧编排（docs/02/04）。
 // - MessageService 接受事务内只登记作业（SQL 零网络），提交后唤醒 worker；
 // - worker：prepare（Uₙ 后台准备，绝不进 Uₙ 当前请求）→ 目标绑定 →
-//   validate（有界复核）→ supervisor 装配期 check（纯本地）→ 冻结注入块；
+//   validate（有界复核）→ supervisor 装配期通过 HTTP 调 M 本地 check → 冻结注入块；
 // - 每房间串行、全局并发上限；崩溃恢复有界；无后台补扫历史。
 // - 后台零主模型 key / 零主模型 runner：专用 MariposaClient（surfacing
 //   credential_ref，不回退聊天凭据）。
@@ -45,6 +45,21 @@ export class SurfacingService {
   private roomRunning = new Set<string>();
   private stopped = false;
   private inflightValidate = new Map<string, Promise<void>>();
+  private active = new Set<Promise<void>>();
+  private controllers = new Map<string, AbortController>();
+
+  private async bounded<T>(call: (signal: AbortSignal) => Promise<T>, ms: number, jobId: string): Promise<T> {
+    if (ms <= 0 || this.stopped) throw new Error('SURFACE_TIMEOUT');
+    const controller = new AbortController();
+    this.controllers.set(jobId, controller);
+    let timer: ReturnType<typeof setTimeout>;
+    try {
+      return await Promise.race([call(controller.signal), new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('SURFACE_CANCELLED')), { once: true });
+        timer = setTimeout(() => { reject(new Error('SURFACE_TIMEOUT')); controller.abort(); }, Math.max(1, ms));
+      })]);
+    } finally { clearTimeout(timer!); this.controllers.delete(jobId); }
+  }
 
   private db: Db;
   private client: MariposaClient;
@@ -134,6 +149,16 @@ export class SurfacingService {
   onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void {
     if (!this.cfg.enabled) return;
     this.repo.cancelJobsForRevision(o.conversationId, o.messageId, o.supersededRevision);
+    for (const [id, controller] of this.controllers) {
+      if (this.repo.jobById(id)?.state === 'cancelled') controller.abort();
+    }
+  }
+
+  cancelForTurn(turnId: string): void {
+    const row = this.db.prepare(`SELECT m.id, m.conversation_id, m.current_revision FROM turns t
+      JOIN messages m ON m.id=t.input_message_id WHERE t.id=?`).get(turnId) as
+      { id: string; conversation_id: string; current_revision: number } | undefined;
+    if (row) this.onUserMessageEdited({ conversationId: row.conversation_id, messageId: row.id, supersededRevision: row.current_revision });
   }
 
   afterCommit(): void {
@@ -160,24 +185,25 @@ export class SurfacingService {
       if (this.roomRunning.has(job.conversation_id)) continue;
       this.roomRunning.add(job.conversation_id);
       this.running++;
-      void this.runJob(job).finally(() => {
+      const work = this.runJob(job).finally(() => {
+        this.active.delete(work);
         this.running--;
         this.roomRunning.delete(job.conversation_id);
         this.scheduleWake();
       });
+      this.active.add(work);
     }
   }
 
   private async runJob(job: JobRow): Promise<void> {
     try {
       if (job.state === 'pending') await this.preparePhase(job);
-      else if (job.state === 'target_bound') await this.validatePhase(job);
-      else if (job.state === 'validating') await this.validatePhase(job);
+
     } catch (err) {
       // prepare/validate 失败：本轮正常聊天不受影响，源作业记原因；
       // unknown 结果不自动无限重试（docs/08）
-      const code = err instanceof Error ? err.message.slice(0, 60) : 'unknown';
-      this.repo.transition(job.id, ['preparing', 'validating'], 'blocked', { reason_code: code });
+      const code = err instanceof Error && ['SURFACE_TIMEOUT', 'SURFACE_CANCELLED'].includes(err.message) ? err.message : 'SURFACE_UNKNOWN_OUTCOME';
+      this.repo.transition(job.id, ['preparing', 'validating'], code === 'SURFACE_CANCELLED' ? 'cancelled' : 'blocked', { reason_code: code });
       this.log?.warn('surface_job_failed', { job: job.id, code });
     }
   }
@@ -186,7 +212,7 @@ export class SurfacingService {
     if (!this.repo.transition(job.id, ['pending'], 'preparing')) return;
     const src = this.sourceInputOf(job);
     const opId = `est-surface:${job.id}`;
-    const r = await this.client.surfacePrepare({
+    const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
       conversation_scope: job.conversation_id,
       source_input: {
@@ -195,12 +221,12 @@ export class SurfacingService {
       },
       recent_dialogue: this.recentDialogue(job.conversation_id, src.sequence),
       event_hypotheses: JSON.parse(job.hypotheses_json ?? '[]'),
-    });
+    }, signal), 10000, job.id);
     if (!r.ok) {
       this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: r.code, m_operation_id: opId });
       return;
     }
-    const data = r.result as { status?: string; surface_run_id?: string; candidate_snapshot_ref?: string | null; reason_code?: string | null };
+    const data = r.result as { status?: string; candidate_snapshot_ref?: string | null; reason_code?: string | null };
     const state = data.status === 'prepared' ? 'prepared'
       : data.status === 'empty' ? 'empty'
         : data.status === 'rejected' ? 'rejected'
@@ -212,8 +238,10 @@ export class SurfacingService {
     });
   }
 
-  private async validatePhase(job: JobRow): Promise<void> {
-    if (job.state === 'target_bound' && !this.repo.transition(job.id, ['target_bound'], 'validating')) return;
+  private async validatePhase(job: JobRow, windowId: string): Promise<void> {
+    const existing = this.inflightValidate.get(job.id);
+    if (existing) return existing;
+    if (!this.repo.transition(job.id, ['target_bound'], 'validating')) return;
     const src = this.sourceInputOf(job);
     const target = this.targetInputOf(job);
     if (!target) {
@@ -222,7 +250,7 @@ export class SurfacingService {
     }
     const deadlineAt = new Date(Date.now() + this.cfg.delivery_deadline_ms).toISOString();
     const p = (async () => {
-      const r = await this.client.surfaceValidate({
+      const r = await this.bounded(signal => this.client.surfaceValidate({
         operation_id: `est-surface-v:${job.id}:${target.messageId}:${target.revision}`,
         conversation_scope: job.conversation_id,
         candidate_snapshot_ref: job.m_snapshot_ref ?? '',
@@ -232,9 +260,9 @@ export class SurfacingService {
           text: target.text, body_hash: target.bodyHash, occurred_at: target.occurredAt,
         },
         recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence),
-        window_id: 'pending-check',
+        window_id: windowId,
         deadline_at: deadlineAt,
-      });
+      }, signal), this.cfg.delivery_deadline_ms, job.id);
       if (!r.ok) {
         this.repo.transition(job.id, ['validating'], 'blocked', { reason_code: r.code });
         return;
@@ -253,35 +281,39 @@ export class SurfacingService {
       });
     })();
     this.inflightValidate.set(job.id, p);
-    try { await p; } finally { this.inflightValidate.delete(job.id); }
+    try { await p; }
+    catch (err) {
+      const code = err instanceof Error && err.message === 'SURFACE_TIMEOUT' ? 'SURFACE_TIMEOUT' : 'SURFACE_UNKNOWN_OUTCOME';
+      this.repo.transition(job.id, ['validating'], code === 'SURFACE_TIMEOUT' ? 'timed_out' : 'blocked', { reason_code: code });
+    } finally { this.inflightValidate.delete(job.id); }
   }
 
   // —— supervisor 薄接点（装配期；本钩子不阻塞超过剩余 deadline）——
 
   async augmentFor(input: AugmentInput): Promise<AugmentResult | null> {
-    if (!this.cfg.enabled) return null;
+    if (!this.cfg.enabled || this.stopped) return null;
     const job = this.repo.nextPreparedForTarget(input.conversationId, input.message.id);
     if (!job) return null;
     if (job.target_revision !== input.message.revision) return null; // 目标并发改版：旧 receipt 作废
     const deadline = Date.now() + this.cfg.delivery_deadline_ms;
-    if (job.state === 'validating') {
-      // 有界等待最终复核完成（不包含新检索；超时本轮零注入）
+    // The window only exists at assembly time. A placeholder would make the
+    // real Mariposa receipt invalid (a permissive fake hid this previously).
+    if (job.state === 'target_bound') await this.validatePhase(job, input.windowId);
+    else if (job.state === 'validating') {
       const inflight = this.inflightValidate.get(job.id);
-      if (inflight) {
-        await Promise.race([inflight, new Promise((r) => setTimeout(r, Math.max(0, deadline - Date.now())))]);
-      }
+      if (inflight) await inflight.catch(() => undefined);
     }
     const fresh = this.repo.jobById(job.id);
     if (!fresh || fresh.state !== 'ready' || !fresh.items_json) return null;
     const itemsAll = JSON.parse(fresh.items_json) as SurfaceItem[];
-    // check：as-of 本地校验（纯本地无网络；回执绑目标消息/修订/窗口）
-    const ck = await this.client.surfaceCheck({
+    // check：经 HTTP 调 Mariposa 的本地校验；回执绑目标消息/修订/窗口。
+    const ck = await this.bounded(signal => this.client.surfaceCheck({
       validation_receipt: fresh.receipt_id ?? '',
       conversation_scope: input.conversationId,
       target_message_id: input.message.id,
       target_revision: input.message.revision,
       window_id: input.windowId,
-    });
+    }, signal), deadline - Date.now(), job.id);
     if (!ck.ok) return null;
     const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[] };
     if (ckd.valid !== true) return null;
@@ -290,22 +322,21 @@ export class SurfacingService {
     // 放不下的整条跳过，不截断/不摘要/不换次优——R33/R34）
     const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, itemsAll);
     const items: SurfaceItem[] = [];
-    let usedTokens = 0;
     const refs = new Map<string, string>();
     const refList: FrozenAugmentation['memoryRefs'] = [];
     for (const it of itemsAll) {
       if (!accepted.has(it.detail_ref)) continue;
       if (covered.has(it.event_id)) continue;
       const ref = memoryRefFor(it.detail_ref);
-      const candidate = renderAugmentation([...items, it], new Map([[it.event_id, ref]]));
+      const candidateRefs = new Map(refs).set(it.event_id, ref);
+      const candidate = renderAugmentation([...items, it], candidateRefs);
       const tokens = estimateTokens(candidate);
       const bytes = Buffer.byteLength(candidate, 'utf8');
-      if (usedTokens + tokens > this.cfg.max_added_tokens_per_turn
-        || bytes > this.cfg.max_packet_bytes) break;
+      if (tokens > this.cfg.max_added_tokens_per_turn
+        || bytes > this.cfg.max_packet_bytes) continue;
       items.push(it);
       refs.set(it.event_id, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
-      usedTokens += tokens;
     }
     if (items.length === 0) return null;
     const text = renderAugmentation(items, refs);
@@ -313,7 +344,7 @@ export class SurfacingService {
       jobId: job.id, attemptId: input.attemptId, windowId: input.windowId,
       text, items, memoryRefs: refList,
     });
-    this.repo.markDispatchStarted(job.id, deliveryId);
+    if (!deliveryId) return null;
     return { deliveryId, text, items, memoryRefs: refList, payloadHash: this.repo.frozenForAttempt(input.attemptId)?.payload_hash ?? '', jobId: job.id };
   }
 
@@ -322,7 +353,12 @@ export class SurfacingService {
     const frozen = this.repo.frozenForAttempt(attemptId);
     if (!frozen) return null;
     const parsed = JSON.parse(frozen.selected_refs_json) as { items: SurfaceItem[]; refs: FrozenAugmentation['memoryRefs'] };
-    return { deliveryId: frozen.id, text: frozen.payload_text, items: parsed.items, memoryRefs: parsed.refs, payloadHash: frozen.payload_hash, jobId: '' };
+    return { deliveryId: frozen.id, text: frozen.payload_text, items: parsed.items, memoryRefs: parsed.refs, payloadHash: frozen.payload_hash, jobId: frozen.job_id };
+  }
+
+  markDispatched(attemptId: string): void {
+    const frozen = this.repo.frozenForAttempt(attemptId);
+    if (frozen) this.repo.markDispatchStarted(frozen.job_id, frozen.id);
   }
 
   /** 成功轨迹 retain：写入真实 manifest 后调（不假标 coverage）。 */
@@ -345,6 +381,8 @@ export class SurfacingService {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    for (const controller of this.controllers.values()) controller.abort();
+    await Promise.allSettled([...this.active, ...this.inflightValidate.values()]);
   }
 
   // —— 源/目标投影 ——

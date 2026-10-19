@@ -1,3 +1,4 @@
+import { supportsSurfacingTransport } from '../memory-surfacing/contracts.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -33,7 +34,7 @@ import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, type OrMessage } from './or-payload.ts';
-import { planBoundaries, tailBoundaryOf } from './cache-plan.ts';
+import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
@@ -77,6 +78,8 @@ export type SupervisorDeps = {
   surfacing?: {
     augmentFor(input: import('../memory-surfacing/service.ts').AugmentInput): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
     reuseFrozen(attemptId: string): import('../memory-surfacing/service.ts').AugmentResult | null;
+    cancelForTurn?(turnId: string): void;
+    markDispatched?(attemptId: string): void;
     markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
   };
 };
@@ -151,6 +154,7 @@ export class TurnSupervisor {
   stop(turnId: string): { stopped: boolean; generation: number | null } {
     const run = this.active.get(turnId);
     if (!run) return { stopped: false, generation: null };
+    this.d.surfacing?.cancelForTurn?.(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
     return { stopped: true, generation: run.generation };
@@ -252,7 +256,7 @@ export class TurnSupervisor {
       ...traj.messages.slice(1), // 轨迹正本（system 段重建同源；历史按窗口冻结正本）
       { role: 'user', content: [{ type: 'text', text: tailNote }] } as unknown as OrMessage,
     ];
-    const { boundaries } = planBoundaries({ messages: baseMessages, systemMessageCount: baseMessages.filter((m) => m.role === 'system').length, prevBoundary: traj.lastBoundary });
+    const { boundaries } = planBoundaries({ messages: baseMessages, systemMessageCount: fixedSystemCount(baseMessages), prevBoundary: traj.lastBoundary });
     const envelope: OrRequestEnvelope = {
       model: dv.model,
       sessionId: dv.sessionId(opts.conversationId),
@@ -421,6 +425,7 @@ export class TurnSupervisor {
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
+        if (o.attemptId) d.surfacing?.markDispatched?.(o.attemptId);
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
           if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
@@ -539,7 +544,7 @@ export class TurnSupervisor {
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
-          requestId: result.requestId ?? lastPrqId,
+          requestId: lastPrqId, // internal request ledger identity; provider generation is separate
         });
         // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
         // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
@@ -1278,7 +1283,7 @@ export class TurnSupervisor {
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
-    const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: reviewMessages.filter((m) => m.role === 'system').length, prevBoundary: traj?.lastBoundary ?? null });
+    const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: fixedSystemCount(reviewMessages), prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
     if (reviewGDropped) {
       d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
@@ -1545,10 +1550,15 @@ export class TurnSupervisor {
     });
   }
 
-  async manualRotate(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
+  async manualRotate(conversationId: string, expectedWindowId?: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
     // 审计 F05：手动换窗占用房间串行链——与 turn/自动评审/另一个手动调用互斥，
     // 评审等待期间新 chat 排队而非并发发送
-    return this.runSerialized(conversationId, () => this.manualRotateInner(conversationId));
+    return this.runSerialized(conversationId, async () => {
+      if (expectedWindowId && this.d.windows.activeWindow(conversationId)?.id !== expectedWindowId) {
+        return { ok: false as const, reason: 'WINDOW_STALE:目标窗口已不再活动' };
+      }
+      return this.manualRotateInner(conversationId);
+    });
   }
 
   private async manualRotateInner(conversationId: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
@@ -1888,7 +1898,7 @@ export class TurnSupervisor {
     // 消息的 target 作业能命中）；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
     let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
-    if (d.surfacing && inputMessage && inputMessage.speaker === 'owner') {
+    if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
         surfacingAugment = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
           conversationId: turn.conversation_id, windowId: window.id, turnId,
@@ -1912,10 +1922,8 @@ export class TurnSupervisor {
     const prompt = assembledContext.segments
       .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
       .join('\n\n');
-    // SDK 面适配（docs/04）：回忆独立块置于本轮 user_input 之前（字符串
-    // 序列化，分段 manifest 由 surfacing_deliveries 保留）；信封面在
-    // tailProjection 用独立 host-origin text block。
-    const sdkPrompt = surfacingAugment ? `${surfacingAugment.text}\n\n${prompt}` : prompt;
+    // SDK has no host tool bridge; automatic surfacing remains unsupported.
+    const sdkPrompt = prompt;
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
@@ -1953,24 +1961,20 @@ export class TurnSupervisor {
       : null;
     const orBaseMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, ...catchupMessages]
-      : (fallbackBuild ? fallbackBuild.envelope.messages : []);
+      : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true });
-    // docs/04：OR/DS 路径在本轮 user message 的 content 数组中以独立
-    // host-origin text block 放到真实 user_input block 之前——内部
-    // segments 来源=memory_surfacing（surfacing_deliveries 持分段
-    // manifest）；不改 messages/outbox/原文 seq 标注。
-    if (surfacingAugment) {
-      tailProjection.blocks.unshift({ type: 'text', text: surfacingAugment.text });
-    }
-    const orMessages: OrMessage[] = orTraj
-      ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: tailProjection.blocks } as unknown as OrMessage]
-      : orBaseMessages;
+    // Host memory is a separate data message. It is never attributed to the
+    // real user or represented as a model tool call. Only the new tail grows.
+    const hostMemory: OrMessage[] = surfacingAugment
+      ? [{ role: 'system', content: [{ type: 'text', text: surfacingAugment.text }] }] : [];
+    const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory,
+      { role: 'user', content: tailProjection.blocks } as OrMessage];
     const orEnvelope: OrRequestEnvelope | null = dv
       ? (() => {
           // R11：systemMessageCount 按实际（B 独立数据块时=2，cache-plan
           // 的独立 B 点分支由此生效；此前硬编码 1，B 点显式边界从未成立）
-          const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: orMessages.filter((m) => m.role === 'system').length, prevBoundary: orTraj?.lastBoundary ?? null });
+          const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: fixedSystemCount(orBaseMessages), prevBoundary: orTraj?.lastBoundary ?? null });
           if (gDropped) {
             d.events.publish('context.warning', { conversationId: turn.conversation_id, entityRef: window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
           }

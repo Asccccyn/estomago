@@ -136,16 +136,22 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
         data?: Record<string, unknown>;
         error?: { code?: string };
       };
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('RESPONSE_SHAPE_INVALID');
       if (body.ok === false) {
         return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
       }
-      return { ok: true, result: (body.data ?? {}) as Record<string, unknown> };
+      if (body.ok !== true || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
+        // A 2xx with no verifiable receipt has unknown outcome. The existing
+        // transport-unknown recovery retains the operation ID for writes.
+        throw new Error('RESPONSE_SHAPE_INVALID');
+      }
+      return { ok: true, result: body.data };
     }
     const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
     // D22（审计 3655d60）：5xx 不论响应体是否带结构化错误码，都按传输层状态分类为 HTTP_5xx——
     // 调用方（hold/archive）将 5xx 归"结果不明 unknown"并有界核实，不当确定失败。
     if (res.status >= 500) return { ok: false, code: `HTTP_${res.status}`, httpStatus: res.status };
-    return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+    return { ok: false, code: typeof body?.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
   };
 }
 
@@ -511,20 +517,20 @@ export class MariposaClient {
   // 专用 surfacing binding（surfacing_credential_ref）只放行这四个能力；
   // 不回退聊天凭据，不借归档凭据。
 
-  async surfacePrepare(payload: Record<string, unknown>): Promise<MariposaCallResult> {
-    return this.transport('memory.surfacing.prepare', payload);
+  async surfacePrepare(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.prepare', payload, signal);
   }
 
-  async surfaceValidate(payload: Record<string, unknown>): Promise<MariposaCallResult> {
-    return this.transport('memory.surfacing.validate', payload);
+  async surfaceValidate(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.validate', payload, signal);
   }
 
-  async surfaceCheck(payload: Record<string, unknown>): Promise<MariposaCallResult> {
-    return this.transport('memory.surfacing.check', payload);
+  async surfaceCheck(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.check', payload, signal);
   }
 
-  async surfaceDetailRead(payload: Record<string, unknown>): Promise<MariposaCallResult> {
-    return this.transport('memory.detail.read', payload);
+  async surfaceDetailRead(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.detail.read', payload, signal);
   }
 
   /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。

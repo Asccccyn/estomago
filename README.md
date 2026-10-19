@@ -208,3 +208,5 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 ### 2026-10-19 · JSON 瘦身（模型面三件，**待部署**）
 
 她裁定：给模型的 JSON 要最精简；时间戳不带毫秒。①time_context 17→7 字段（内部全量计算保留，`modelTimeContextJson` 为唯一出站投影点，now 秒级）；②conversation_read 条目只留 seq/rev/speaker/at(本地分钟)/text——message_id/content_hash/sync_state 不出站，锚点与分片游标全改**序号寻址**（around_seq，与 [seq N]/勾选式同一坐标）；③recall 候选卡去冗余（mariposa 投递层：单 ref、单版本字段、无 rrf_score/_matched——判断器内部量不出站）。实测口径：旧窗 261KB 负载预计 -28% 左右；换窗后首次全价读直接受益。
+
+- 2026-10-19 联合审计：`2a20fa1` 清理无头协议层/运行时环，`0268567` 修前端生命周期；本批修自动浮现真实window、原子交付/可见性/版本/编辑停止、独立详情凭据与HTTP未知回执。OR/SDK浮现阻断，未部署；最终离线测试与剩余发布门见独立联合审计交付包。
