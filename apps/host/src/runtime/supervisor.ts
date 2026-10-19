@@ -78,6 +78,9 @@ export type SupervisorDeps = {
   surfacing?: {
     augmentFor(input: import('../memory-surfacing/service.ts').AugmentInput): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
     reuseFrozen(attemptId: string): import('../memory-surfacing/service.ts').AugmentResult | null;
+    finalAdmit?(r: import('../memory-surfacing/service.ts').AugmentResult, input: {
+      conversationId: string; windowId: string; messageId: string; revision: number;
+    }): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
     cancelForTurn?(turnId: string): void;
     markDispatched?(attemptId: string): void;
     markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
@@ -1900,11 +1903,20 @@ export class TurnSupervisor {
     let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
     if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
-        surfacingAugment = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
+        const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
           conversationId: turn.conversation_id, windowId: window.id, turnId,
           attemptId: attempt.id,
           message: { id: inputMessage.id, revision: effective.revision, sequence: inputMessage.sequence, content: effective.content, hash: effective.hash },
         });
+        // R02（审计 J01）：最终准入——冻结后到最终装配之间无上界（轨迹装配/
+        // 派发排队/重试复用），M 侧回执带时效；同一 check 门在此再核一次，
+        // 失败只丢浮现块（作业收回留痕），主消息照常发出、绝不重发。
+        surfacingAugment = candidate && d.surfacing.finalAdmit
+          ? await d.surfacing.finalAdmit(candidate, {
+              conversationId: turn.conversation_id, windowId: window.id,
+              messageId: inputMessage.id, revision: effective.revision,
+            })
+          : candidate;
       } catch {
         surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
       }

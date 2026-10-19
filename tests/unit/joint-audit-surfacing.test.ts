@@ -13,15 +13,23 @@ const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1'
   event_text: '合成事件一', body_hash: 'hash1', detail_ref: 'sdr_fixture1' };
 const items = [item, { ...item, event_id: 'e2', memory_id: 'm2', detail_ref: 'sdr_fixture2', event_text: '合成事件二', body_hash: 'hash2' },
   { ...item, event_id: 'e3', memory_id: 'm3', detail_ref: 'sdr_fixture3', event_text: '合成事件三', body_hash: 'hash3' }];
-function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selected?: SurfaceItem[] } = {}) {
+function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }> } = {}) {
   const { db } = makeDb();
   const calls: string[] = [];
   const selected = opts.selected ?? [item];
+  // R02：.check 逐次应答队列（空=默认 valid 全接受）——模拟装配边界复核时
+  // 回执已过期/接受面收缩/权限撤销
+  const checkQueue = [...(opts.checks ?? [])];
   const transport: MariposaTransport = async (cap) => {
     calls.push(cap);
     if (cap.endsWith('.prepare')) { await opts.prepare?.(); return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_fixture' } }; }
     if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_fixture', items: selected } };
-    if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: selected.map(x => x.detail_ref) } };
+    if (cap.endsWith('.check')) {
+      const q = checkQueue.shift();
+      return { ok: true, result: q
+        ? { valid: q.valid !== false, accepted_detail_refs: q.accepted ?? selected.map(x => x.detail_ref) }
+        : { valid: true, accepted_detail_refs: selected.map(x => x.detail_ref) } };
+    }
     if (cap === 'memory.detail.read') return { ok: true, result: { memory_id: 'm1', sections: [] } };
     throw new Error('UNEXPECTED_CAPABILITY');
   };
@@ -140,5 +148,85 @@ test('JA-S10: source route edit invalidates frozen delivery before transport adm
     assert.throws(() => f.svc.markDispatched('a2'), /SURFACE_TARGET_CHANGED/);
     f.svc.markRetained(result);
     assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_coverage').get()?.n, 0);
+  } finally { await f.close(); }
+});
+
+// —— R02（审计 J01）：最终准入——同一 check 门在最终装配边界复核 ——
+
+test('JA-S11: happy path — finalAdmit passes through and the same gate is checked exactly twice', async () => {
+  const f = fixture();
+  try {
+    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const admitted = await f.svc.finalAdmit(result, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
+    });
+    assert.ok(admitted, 'fresh receipt passes the final gate');
+    assert.equal(admitted!.deliveryId, result.deliveryId, 'the frozen package passes through unchanged');
+    assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 2, 'augmentFor once + finalAdmit once: single gate, same contract');
+    assert.equal(f.job(a.message.id).state, 'reserved', 'pass leaves the reservation intact for dispatch');
+  } finally { await f.close(); }
+});
+
+test('JA-S12: receipt stale at the assembly boundary — only the surfacing block is dropped, the main-message path survives', async () => {
+  const f = fixture({ checks: [{ valid: true }, { valid: false }] });
+  try {
+    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const admitted = await f.svc.finalAdmit(result, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
+    });
+    assert.equal(admitted, null, 'an expired receipt drops the surfacing block');
+    const job = f.job(a.message.id);
+    assert.equal(job.state, 'cancelled');
+    assert.equal(job.reason_code, 'FINAL_ADMISSION_DROPPED');
+    assert.equal(f.db.prepare("SELECT state FROM surfacing_deliveries WHERE id=?").get(result.deliveryId)?.state, 'dropped');
+    assert.equal(f.svc.reuseFrozen('a2'), null, 'a dropped package is never reused');
+    f.svc.markDispatched('a2'); // 不抛：主消息派发路径不受丢弃影响
+    f.svc.markRetained(result); // 不落覆盖账
+    assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_coverage').get()?.n, 0);
+  } finally { await f.close(); }
+});
+
+test('JA-S13: the accepted face shrinks at the boundary — the whole block is dropped, not partially injected', async () => {
+  const f = fixture({ checks: [{ valid: true }, { valid: true, accepted: [] }] });
+  try {
+    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const admitted = await f.svc.finalAdmit(result, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
+    });
+    assert.equal(admitted, null, 'a shrunken accepted set drops the whole block — no partial injection');
+    assert.equal(f.job(a.message.id).reason_code, 'FINAL_ADMISSION_DROPPED');
+  } finally { await f.close(); }
+});
+
+test('JA-S14: target edited between freeze and assembly — final admission drops without a second chance', async () => {
+  const f = fixture();
+  try {
+    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    f.svc.repo.cancelJobsForRevision('c1', b.message.id, 1);
+    const admitted = await f.svc.finalAdmit(result, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
+    });
+    assert.equal(admitted, null);
+    assert.equal(f.db.prepare("SELECT state FROM surfacing_deliveries WHERE id=?").get(result.deliveryId)?.state, 'dropped');
+    assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 1, 'local state collapse needs no extra paid-side call');
+  } finally { await f.close(); }
+});
+
+test('JA-S15: a package already on the wire is reused verbatim — final admission does not rewrite mid-attempt', async () => {
+  const f = fixture();
+  try {
+    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    f.svc.markDispatched('a2'); // 首发已过门（onBeforeDispatch）
+    const admitted = await f.svc.finalAdmit(result, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
+    });
+    assert.ok(admitted, 'an already-dispatched frozen package is reused as-is (docs/04)');
+    assert.equal(admitted!.deliveryId, result.deliveryId);
+    assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 1, 'no re-check rewrites a package already on the wire');
   } finally { await f.close(); }
 });
