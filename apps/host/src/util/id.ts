@@ -10,7 +10,3 @@ export function genId(prefix: string): string {
 export function sha256Hex(text: string | Uint8Array): string {
   return createHash('sha256').update(text).digest('hex');
 }
-
-export function newDedupeKey(): string {
-  return randomBytes(16).toString('hex');
-}

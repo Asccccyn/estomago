@@ -42,7 +42,7 @@ import { genId } from '../util/id.ts';
 import type { SubmitMessageRequest, MessagePageDto } from '../../../../packages/contracts/src/api.ts';
 import { estimateTokens, snapshotFor, ESTIMATOR_REVISION, type AttachmentEstimateMeta } from '../usage/estimator.ts';
 import { sha256Hex } from '../util/id.ts';
-import { PRIMARY_CONVERSATION } from '../app-context.ts';
+import { PRIMARY_CONVERSATION } from '../messages/constants.ts';
 
 export type RequestDeps = {
   config: Config;
