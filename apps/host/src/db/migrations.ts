@@ -919,6 +919,81 @@ ALTER TABLE provider_requests ADD COLUMN context_fingerprint_json TEXT;
 `,
 });
 
+// v29（EST_MARIPOSA_AUTO_SURFACING_V1，2026-10-19）：自动浮现运行面四表。
+// 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
+// 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
+MIGRATIONS.push({
+  version: 29,
+  name: 'memory-surfacing-runtime-tables',
+  sql: `
+CREATE TABLE surfacing_jobs(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  source_message_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL,
+  source_sequence INTEGER NOT NULL,
+  source_body_hash TEXT,
+  target_message_id TEXT,
+  target_revision INTEGER,
+  state TEXT NOT NULL,
+  generation INTEGER NOT NULL DEFAULT 0,
+  m_operation_id TEXT,
+  m_snapshot_ref TEXT,
+  policy_revision INTEGER,
+  prompt_revision TEXT,
+  hypotheses_json TEXT,
+  receipt_id TEXT,
+  items_json TEXT,
+  reason_code TEXT,
+  deadline_ms INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT,
+  UNIQUE(conversation_id, source_message_id, source_revision, policy_revision, prompt_revision)
+);
+CREATE INDEX idx_surfacing_jobs_state ON surfacing_jobs(state);
+CREATE INDEX idx_surfacing_jobs_target ON surfacing_jobs(conversation_id, target_message_id);
+CREATE TABLE surfacing_candidates(
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES surfacing_jobs(id),
+  event_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  memory_version TEXT,
+  body_hash TEXT,
+  event_group_json TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_surfacing_candidates_job ON surfacing_candidates(job_id);
+CREATE TABLE surfacing_deliveries(
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  window_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  payload_text TEXT NOT NULL,
+  payload_hash TEXT NOT NULL,
+  selected_refs_json TEXT NOT NULL,
+  retained INTEGER NOT NULL DEFAULT 0,
+  dispatched_at TEXT,
+  retained_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(attempt_id, payload_hash)
+);
+CREATE INDEX idx_surfacing_deliveries_attempt ON surfacing_deliveries(attempt_id);
+CREATE TABLE surfacing_coverage(
+  conversation_id TEXT NOT NULL,
+  window_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  memory_version TEXT,
+  body_hash TEXT NOT NULL,
+  occurrence_key TEXT,
+  detail_ref TEXT,
+  confirmed_at TEXT NOT NULL,
+  PRIMARY KEY(conversation_id, window_id, memory_id, body_hash)
+);
+`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

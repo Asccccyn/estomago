@@ -75,13 +75,13 @@ test('脱敏：指纹 JSON 不含正文标记词（AGENTS §4——只落 hash/�
   assert.ok(!json.includes('memory_hold'), '工具名不走明文（tools 只有 hash 与计数）');
 });
 
-test('迁移 v28：provider_requests.context_fingerprint_json 列存在（fresh 库）', () => {
+test('迁移链尾（v29 surface 运行表）+ v28 context_fingerprint_json 列存在（fresh 库）', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'estomago-fp-'));
   try {
     const db = openDatabase(path.join(home, 'chat.sqlite3'));
     const applied = migrate(db, (sql) => String(sql.length));
-    assert.equal(applied.applied.at(-1), 28);
-    assert.equal(SUPPORTED_SCHEMA_VERSION, 28);
+    assert.equal(applied.applied.at(-1), 29);
+    assert.equal(SUPPORTED_SCHEMA_VERSION, 29);
     const cols = (db.prepare('PRAGMA table_info(provider_requests)').all() as Array<{ name: string }>).map((c) => c.name);
     assert.ok(cols.includes('context_fingerprint_json'), `列缺失：${cols.join(',')}`);
     db.close();

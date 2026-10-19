@@ -35,6 +35,7 @@ import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
+import { SurfacingService } from './memory-surfacing/service.ts';
 
 export const PRIMARY_CONVERSATION = 'primary';
 
@@ -65,6 +66,7 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
   port = 0;
@@ -94,6 +96,7 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
   }
@@ -109,7 +112,28 @@ export class Host {
     if (applied.applied.length > 0) logger.info('db_migrated', { versions: applied.applied.join(','), schema_version: schemaVersion(db) });
 
     const events = new EventService(db);
-    const messages = new MessageService(db);
+    // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1）：专用受限 service binding
+    // （surfacing_credential_ref，不回退聊天/归档凭据；docs/06）；enabled=false
+    // 时服务仍装配（表结构就绪）但零作业/零网络/零凭据读取。
+    const surfaceCfg = opts.config.memory_surfacing;
+    const surfacing = new SurfacingService(
+      db,
+      new MariposaClient({
+        baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+        credentialEnv: surfaceCfg.surfacing_credential_ref,
+      }),
+      {
+        enabled: surfaceCfg.enabled,
+        policy_revision: 1,
+        prompt_prepare_revision: 'surface_prepare_v1',
+        delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
+        max_added_tokens_per_turn: surfaceCfg.max_added_tokens_per_turn,
+        max_packet_bytes: surfaceCfg.max_packet_bytes,
+        worker_concurrency: surfaceCfg.worker_concurrency,
+      },
+      logger,
+    );
+    const messages = new MessageService(db, surfacing.enabled ? surfacing : null);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
@@ -189,6 +213,7 @@ export class Host {
       settings,
       alerts,
       media,
+      surfacing: surfacing.enabled ? surfacing : undefined,
     });
 
     // EXEC_V1 WP4：后台设置+调度器（宿主内单实例；自主/保温模型执行器=接线批，交付期 readiness=false）
@@ -257,6 +282,7 @@ export class Host {
       bgExecutorReady,
       contentClient,
       voice,
+      surfacing,
     };
     const server = http.createServer((req, res) => {
       handleRequest(req, res, { ...deps, config: opts.config }).catch((err) => {
@@ -291,11 +317,14 @@ export class Host {
     });
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
+    // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
+    await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
   async stop(): Promise<void> {
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
+    await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
     await new Promise<void>((resolve) => {

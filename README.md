@@ -57,6 +57,14 @@
 | WP5 前台"记录"与设置接线 | **完成（离线）**：records 两个只读端点（快照+白名单事件分页）+ 聊天顶栏"记录"面板（桌面侧栏/窄屏底部，零新依赖，打开不触发生成）；设置页 UI 待真实凭据联调批 |
 | WP6 真实验收 / 发布候选 | **DS 通道已实测**：官方 key 直连冒烟 SMOKE_PASS（三步：基线聊天/工具往返/append-only 续传；自动缓存命中被正确观测；四道熔断，全程几厘钱）。OR 实测仍待预算授权；SDK 实测凭据不可用；estómago↔真 Mariposa 端到端待联调（见下） |
 
+## 2026-10-19 · EST_MARIPOSA_AUTO_SURFACING_V1（自动记忆浮现后端，**未部署**）
+
+- 施工包：~/Projects/glm1019-auto-surfacing/（林石见制包，GLM_START_HERE 入口）；本仓批报告 `docs/reports/EST_MARIPOSA_AUTO_SURFACING_V1/`（五报+验收执行记录）。
+- 落地：`apps/host/src/memory-surfacing/`（contracts/repository/trigger/service/detail-tool）+ 迁移 v29 四运行表 + config `memory_surfacing` 段（**enabled=false 默认关**）+ MessageService 接受/编辑挂点 + supervisor 薄接点（OR/DS 尾部独立 host-origin 块于 user_input 前/SDK 字符串适配/尝试级冻结+retain→coverage）+ memory_read_full 工具进窗冻结工具集。
+- 测试：typecheck 0 + 全量 unit **100/100 文件绿**（新增 surfacing-core 6 / surfacing-seam 1：源轮不注入、U2 注入、U3 缓存前缀不重加）；配套 mariposa 仓同批（候选生成提取+四 capability+detail）。
+- 红线遵守：默认关闭零网络零凭据；judge 费用独立台账；错误闭集不进主模型文本；SDK 工具桥未接=如实 blocked（见报告 UNRESOLVED）。
+- **归属交叉披露**：supervisor.ts/host-tools.ts 的 surfacing 接缝 hunk 误随她在途批 d53114e（序号标记瘦身）先行入库（本批工作树并行所致，ba41c18 同型）——代码正确且当前树全量 100/100 复验；不重写他人提交，特此留痕。
+
 ## 当前生产状态（2026-10-19）
 
 生产通道：**OpenRouter Opus 4.6**（2026-10-17 切换）；聊天/记忆/归档/召回全链在跑。
