@@ -3,8 +3,7 @@
 // persistInTx + dispatchRow，保证"投影与回放事件同事务提交"（AUD-14）。
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
-import { genId, newDedupeKey } from '../util/id.ts';
-import type { EventEnvelope } from '../../../../packages/contracts/src/envelope.ts';
+import { genId } from '../util/id.ts';
 
 export type StreamEventRow = {
   sequence: number;
@@ -40,10 +39,6 @@ export class EventService {
     this.db = db;
     this.streamId = genId('stream');
   }
-
-  // D7（她批 2026-10-06"剩下的都做了"）：recordEnvelope+events 表已退役
-  // （全仓零调用、零读者——联合审计 Q1 实证死链）；迁移 v15 DROP 表。
-  
 
   // —— 在调用方已有事务内持久（不自己开 tx；AUD-14 原子性的关键）——
   persistInTx(kind: string, opts: {

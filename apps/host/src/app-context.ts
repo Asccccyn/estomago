@@ -11,6 +11,7 @@ import { Logger } from './observability/logging.ts';
 import { stableErrorCode } from './observability/errors.ts';
 import { EventService } from './events/service.ts';
 import { MessageService } from './messages/service.ts';
+import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
 import { CapabilityMatrix } from './runtime/capabilities.ts';
 import { selectRunner, type RunnerSelection } from './runtime/runner.ts';
@@ -36,8 +37,6 @@ import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
-
-export const PRIMARY_CONVERSATION = 'primary';
 
 export type HostOptions = {
   stateRoot: string;

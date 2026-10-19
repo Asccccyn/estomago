@@ -86,6 +86,8 @@ LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 e
 
 ## 2026-10-05 深夜批次（在上述 WP 状态之后；按时间序，多路并行）
 
+- **2026-10-19 联合审计架构清理（独立审计分支，未部署）**：默认会话常量归消息领域以消除 Host/HTTP 运行时循环；删除无调用方的 MCP 客户端/静态集成表、退役事件信封及草案 ReasoningEnvelope，真实事件正本与历史迁移保留。通用 MCP/SDK 宿主工具桥继续 **BLOCKED**；[当前入口与历史能力勘误](docs/current-architecture-20261019.md)。
+
 - **6e48036（2026-10-17，引用误拒修复）**：移除已见原话候选的 60 条截断，避免较早合法引用被反复拒绝并诱发重复回读；房间、精确修订、已读片段及逐字/防重叠校验保留。新增 7 项回归，合入后相关 5 文件 42/42 通过；不改变窗口容量、模型及缓存策略。
 
 - **b9ae2ad（2026-10-13，原 React 源码正式接入）**：直接构建并运行用户提供的 React 组件，移除前两批原生页面改写；原 CSS 除手机适配规则外逐字一致，93组固定样式保留89组，其余4组仅手机输入与指定发送圆圈。真实接口独立在数据层；源码及核对表见 `apps/web/react/`，发布入口为 `apps/web/dist/`。前端重建使用 `npm --prefix apps/web/react ci` 后 `npm run build:web`。回归与范围见 `docs/reports/REACT_ORIGINAL_INTEGRATION_20261013.md`。
