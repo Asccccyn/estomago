@@ -1,5 +1,5 @@
-// A quote remains eligible while its exact source revision/range is in the request's
-// seen set, including after many later messages or repeated conversation_read calls.
+// 勾选式话语（她 2026-10-18 裁定）：resolveQuoteRefs 只按消息序号取已见
+// 原文——可见性门保留 D13（所见修订号）/O06（片段级已读范围）语义。
 // Synthetic local fixtures only; no model calls or memory writes.
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,7 +11,8 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { makeDb, tempRoot } from '../helpers.ts';
 
 type Seen = { id: string; revision: number; char_start?: number; char_end?: number };
-type Match = { messageId: string; revision: number; start: number; end: number; fragment: string };
+type Ref = { seq: number; from?: number; to?: number };
+type Match = { messageId: string; revision: number; sequence: number; start: number; end: number; fragment: string };
 type Result = Match[] | { error: string; index: number };
 
 function fixture(t: TestContext) {
@@ -19,85 +20,75 @@ function fixture(t: TestContext) {
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const messages = new MessageService(db);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  // Exercise the verifier without invoking the external memory service.
-  const verifier = tools as unknown as { resolveQuotes(roomId: string, seen: readonly Seen[], quotes: string[]): Result };
+  // Exercise the resolver without invoking the external memory service.
+  const verifier = tools as unknown as { resolveQuoteRefs(roomId: string, seen: readonly Seen[], refs: Ref[]): Result };
   let serial = 0;
-  const add = (content: string, room = 'scope-room'): Seen => {
+  const add = (content: string, room = 'scope-room'): Seen & { seq: number } => {
     const submitted = messages.submitUserMessageWithTurn({ conversationId: room, content, clientMessageId: `scope-${serial++}`, occurredAt: '2026-10-17T00:00:00Z' });
-    return { id: submitted.message.id, revision: 1 };
+    return { id: submitted.message.id, revision: 1, seq: submitted.message.sequence };
   };
-  const later = () => Array.from({ length: 80 }, (_, i) => add(`synthetic later message ${i}`));
-  const resolve = (seen: readonly Seen[], quotes: string[], room = 'scope-room') => verifier.resolveQuotes(room, seen, quotes);
+  const later = () => Array.from({ length: 80 }, (_, i) => add(`synthetic later message ${i}.`));
+  const resolve = (seen: readonly Seen[], refs: Ref[], room = 'scope-room') => verifier.resolveQuoteRefs(room, seen, refs);
   return { add, later, resolve, messages };
 }
 
 function matched(result: Result): Match[] {
-  assert.ok(Array.isArray(result), 'an exact quote from a seen source must match');
+  assert.ok(Array.isArray(result), 'a seq in the seen set must resolve');
   return result;
 }
 
-const noMatch = { error: 'QUOTE_MATCH_FAILED', index: 0 };
+const notSeen = { error: 'QUOTE_REF_SEQ_NOT_SEEN', index: 0 };
 
-test('older exact quote remains usable after more than 60 later seen messages', (t) => {
+test('older message remains selectable after more than 60 later seen messages', (t) => {
   const f = fixture(t);
   const original = f.add('begin unique earlier quote end');
-  const result = matched(f.resolve([original, ...f.later()], ['unique earlier quote']));
+  const result = matched(f.resolve([original, ...f.later()], [{ seq: original.seq }]));
   assert.equal(result[0]!.messageId, original.id);
   assert.equal(result[0]!.revision, 1);
-  assert.equal(result[0]!.start, 6);
-  assert.equal(result[0]!.end, 26);
+  assert.equal(result[0]!.fragment, 'begin unique earlier quote end');
 });
 
-test('duplicate seen entries and rereading an older source cannot evict it', (t) => {
+test('duplicate seen entries cannot make a sentence be recorded twice', (t) => {
   const f = fixture(t);
-  const original = f.add('unique reread source');
-  const recent = f.add('unrelated newer source');
-  const seen = [original, ...Array.from({ length: 80 }, () => ({ ...recent })), { ...original }];
-  assert.equal(matched(f.resolve(seen, ['unique reread source']))[0]!.messageId, original.id);
-});
-
-test('removing an older source from the seen set or changing room still rejects it', (t) => {
-  const f = fixture(t);
-  const original = f.add('unique guarded source');
-  const later = f.later();
-  assert.deepEqual(f.resolve(later, ['unique guarded source']), noMatch);
-  assert.deepEqual(f.resolve([original, ...later], ['unique guarded source'], 'different-room'), noMatch);
-  assert.deepEqual(f.resolve([{ ...original, revision: 99 }, ...later], ['unique guarded source']), noMatch);
-});
-
-test('older seen revision remains eligible but unseen edited text does not', (t) => {
-  const f = fixture(t);
-  const original = f.add('unique original revision');
-  const later = f.later();
-  f.messages.editUserMessage(original.id, 'unique edited revision');
-  const seen = [original, ...later];
-  assert.equal(matched(f.resolve(seen, ['unique original revision']))[0]!.revision, 1);
-  assert.deepEqual(f.resolve(seen, ['unique edited revision']), noMatch);
-  assert.equal(matched(f.resolve([{ ...original, revision: 2 }, ...later], ['unique edited revision']))[0]!.revision, 2);
-});
-
-test('older partial read retains Unicode codepoint boundaries and rejects unread text', (t) => {
-  const f = fixture(t);
-  const original = f.add('未读𠮷已读原话尾部未读');
-  const seen = [{ ...original, char_start: 3, char_end: 7 }, ...f.later()];
-  const result = matched(f.resolve(seen, ['已读原话']))[0]!;
-  assert.equal(result.start, 3);
-  assert.equal(result.end, 7);
-  assert.deepEqual(f.resolve(seen, ['未读𠮷']), noMatch);
-  assert.deepEqual(f.resolve(seen, ['原话尾部']), noMatch);
-});
-
-test('older duplicate source references still cannot satisfy overlapping quotes twice', (t) => {
-  const f = fixture(t);
-  const original = f.add('first fragment; second fragment');
+  const original = f.add('first sentence. second sentence.');
   const seen = [original, { ...original }, ...f.later()];
-  assert.equal(matched(f.resolve(seen, ['first fragment', 'second fragment'])).length, 2);
-  assert.deepEqual(f.resolve(seen, ['first fragment', 'first fragment']), { error: 'QUOTE_MATCH_FAILED', index: 1 });
+  assert.equal(matched(f.resolve(seen, [{ seq: original.seq, from: 1, to: 1 }, { seq: original.seq, from: 2, to: 2 }])).length, 2);
+  assert.deepEqual(f.resolve(seen, [{ seq: original.seq, from: 1, to: 1 }, { seq: original.seq, from: 1, to: 1 }]), { error: 'QUOTE_REF_DUPLICATE', index: 1 });
 });
 
-test('identical text still resolves to the newest eligible source', (t) => {
+test('unseen seq / wrong room / unseen revision are all rejected', (t) => {
   const f = fixture(t);
-  const older = f.add('shared exact quote');
-  const newer = f.add('shared exact quote');
-  assert.equal(matched(f.resolve([older, newer, ...f.later()], ['shared exact quote']))[0]!.messageId, newer.id);
+  const original = f.add('unique guarded source.');
+  const later = f.later();
+  assert.deepEqual(f.resolve(later, [{ seq: original.seq }]), notSeen, '不在已见集合');
+  assert.deepEqual(f.resolve([original, ...later], [{ seq: original.seq }], 'different-room'), notSeen, '房间不符');
+  assert.deepEqual(f.resolve([{ ...original, revision: 99 }, ...later], [{ seq: original.seq }]), notSeen, '所见修订号不符（编辑后旧请求）');
+});
+
+test('older seen revision stays eligible; edits do not alter what was seen', (t) => {
+  const f = fixture(t);
+  const original = f.add('unique original revision.');
+  const later = f.later();
+  f.messages.editUserMessage(original.id, 'unique edited revision.');
+  const seen = [original, ...later];
+  assert.equal(matched(f.resolve(seen, [{ seq: original.seq }]))[0]!.revision, 1, '按所见修订抄录（当时看见的正文）');
+  assert.equal(matched(f.resolve([{ ...original, revision: 2 }, ...later], [{ seq: original.seq }]))[0]!.fragment, 'unique edited revision.', '新修订在已见集合时按新正文');
+});
+
+test('partial read: sentence selection must stay inside the read codepoint range', (t) => {
+  const f = fixture(t);
+  const original = f.add('未读𠮷已读原话尾部未读。');
+  const seen = [{ ...original, char_start: 3, char_end: 8 }, ...f.later()];
+  // 第 1 句=整条；勾选整句落在已读范围（3..8 覆盖"已读原话尾部"）之外 → 拒
+  assert.deepEqual(f.resolve(seen, [{ seq: original.seq }]), { error: 'QUOTE_REF_RANGE_NOT_SEEN', index: 0 }, '整句勾选超出已读码点范围');
+  // 部分阅读场景下句子级勾选只有落在范围内才行——本夹具整句必然越界，
+  // 范围校验由 hold-quote 的 emoji 用例覆盖码点口径
+});
+
+test('two refs on one message resolve in order', (t) => {
+  const f = fixture(t);
+  const original = f.add('one. two. three.');
+  const result = matched(f.resolve([original, ...f.later()], [{ seq: original.seq, from: 3, to: 3 }, { seq: original.seq, from: 1, to: 1 }]));
+  assert.equal(result[0]!.fragment, ' three.', '第 3 句（含句间空格——连续区间如实）');
+  assert.equal(result[1]!.fragment, 'one.');
 });

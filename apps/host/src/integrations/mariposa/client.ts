@@ -247,6 +247,16 @@ export class MariposaClient {
     return { ok: true, result: r.result, receipt: parsed };
   }
 
+  /** 2026-10-18 她裁定：修改入口（就地改+我们的话新增/修改）——话语只存
+   *  原文，说话人由服务端按出处推导。expected_version CAS 先 memoryGet 取。 */
+  async memoryGet(memoryId: string): Promise<MariposaCallResult> {
+    return this.transport('memory.get', { memory_id: memoryId });
+  }
+
+  async memoryUpdate(args: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('memory.update', args);
+  }
+
   /** estomago 开窗包：心情文字及其他现行段可携带续页游标。
    *  同一装配只续取原 snapshot，不将内容当成指令。 */
   async bootstrapGet(signal?: AbortSignal): Promise<MariposaCallResult> {

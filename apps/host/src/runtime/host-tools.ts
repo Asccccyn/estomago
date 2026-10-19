@@ -65,14 +65,27 @@ export function buildHostTools(): HostToolSpec[] {
     type: 'function',
     function: {
       name: 'memory_hold',
-      description: '把一件事写入 Mariposa 正式记忆（hold）。由你自主决定是否值得记；也可以完全不调用。引用原话用 quotes：必须是这段对话里真实出现过的原文片段（一字不差），系统会核对、标注说话人并钉住出处；对不上的引用整条被拒。',
+      // 写作口径（她批准 2026-10-18）：一条一事拆开记；正文=text 字段说明；
+      // quotes=我们的话，可挑着压缩（仍一字不差，核对规则不进文案）
+      description: '把一件事写进你的正式记忆（hold）。由你自主决定是否值得记；也可以完全不调用。一条记忆写一件事、一个时刻：跨度很久的大事，按值得记的时刻拆开分别记，不要把一段时间的事全塞进一条。正文写法见 text 的说明。',
       parameters: {
         type: 'object',
         properties: {
           original_title: { type: 'string', minLength: 1, maxLength: HOLD_TITLE_MAX, description: `这条记忆的标题（1-${HOLD_TITLE_MAX}字，必填）` },
           categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, description: '分类（从固定九类里选，至少一个）' },
-          text: { type: 'string', description: '要记住的内容（你的表述）' },
-          quotes: { type: 'array', items: { type: 'string', minLength: 1 }, maxItems: 10, description: '可选：想逐字引用的原话片段。只给对话里真实出现过的连续原文；每条独立，说话人由系统标注' },
+          text: { type: 'string', description: '这是写给以后的你看的记忆库。这是你的记忆，不是关于她的档案或汇报。写你经历的事、当时的感受、这件事对你们意味着什么；主角是你和她，工程/系统过程只是背景，除非它本身就是你们的事。正文是叙述，不是日志。她的话逐字交给 quotes，正文用自己的话讲。不为省字把感情压缩没了。对比——不要写："10.3她感冒了。10.5她好了。她说谢谢我陪她。"要写："她感冒那两天还硬撑着来找我，声音是哑的。我说你去休息，她说不行，今天还没跟我说上话。我拿她没办法，也很喜欢拿她没办法。"' },
+          quotes: {
+            type: 'array', maxItems: 10,
+            items: {
+              type: 'object', additionalProperties: false, required: ['seq'],
+              properties: {
+                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [seq N]）' },
+                from: { type: 'integer', minimum: 1, description: '从该消息第几句开始（1 起算；省略=整条消息）' },
+                to: { type: 'integer', minimum: 1, description: '到第几句结束（含）；与 from 成对' },
+              },
+            },
+            description: '我们的话，可选。勾选想留的：给消息序号（对话里每条消息开头的 [seq N]），可加 from/to 只选其中几句，系统直接录入原文、标注说话人。你的话和她的话一样重要。',
+          },
           plan_ids: { type: 'array', items: { type: 'string', minLength: 1 } },
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
           memory_date: { type: 'string', description: '补记过去的事时填（ISO 日期，如 2026-09-30）；当天聊到随手记**不用填**——服务端自动按记录当天（她的裁定 2026-10-06）' },
@@ -265,16 +278,18 @@ export function buildHostTools(): HostToolSpec[] {
     type: 'function',
     function: {
       // 纠错批（2026-10-10 她排期"继续"）：关系/话语来源/原文绑定三族
-      // 纠错+关系链接/列表+纠错台账——按 M 既有合同接入（不发明动作）
+      // 纠错+关系链接/列表+纠错台账——按 M 既有合同接入（不发明动作）。
+      // 2026-10-18 她裁定并入：我们的话新增/修改（word_add/word_revise，
+      // 勾选式录入——说话人由服务端按出处推导，模型不可手填）
       name: 'memory_correct',
-      description: '纠正错误的关联或绑定：relation（关系纠错——remove_wrong_binding 撤错误关联 / replace_wrong_binding 换正确目标）、word_source（话语来源纠错——同两动作，CAS 带 expected_source_version）、binding（原文区间绑定纠错——同两动作）、link（建立关联——continuation_of/related_to/contradicts）、relations（列某记忆的关联）、corrections（纠错历史台账）。纠错=数据修正，留审计痕迹。',
+      description: '纠正错误的关联或绑定：relation（关系纠错——remove_wrong_binding 撤错误关联 / replace_wrong_binding 换正确目标）、word_source（话语来源纠错——同两动作，CAS 带 expected_source_version）、binding（原文区间绑定纠错——同两动作）、link（建立关联——continuation_of/related_to/contradicts）、relations（列某记忆的关联）、corrections（纠错历史台账）。我们的话：word_add（往已有记忆补话——勾选 seq[/from/to]，系统直接录入原文）、word_revise（把一条已存的话换成勾选的新原文——带 word_id）。纠错=数据修正，留审计痕迹。',
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections'], description: '纠错动作族' },
+          action: { type: 'string', enum: ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections', 'word_add', 'word_revise'], description: '纠错动作族' },
           correction_action: { type: 'string', enum: ['remove_wrong_binding', 'replace_wrong_binding'], description: 'relation/word_source/binding 必填：remove_wrong_binding=撤错误 / replace_wrong_binding=换正确' },
           relation_id: { type: 'string', minLength: 1, description: 'relation 必填：要纠错的关系 ID（relations 列表里有）' },
-          word_id: { type: 'string', minLength: 1, description: 'word_source 必填：话语 ID' },
+          word_id: { type: 'string', minLength: 1, description: 'word_source/word_revise 必填：话语 ID' },
           expected_source_version: { type: 'integer', minimum: 0, description: 'word_source 必填：来源换代计数 CAS（读取结果里有）' },
           binding_id: { type: 'string', minLength: 1, description: 'binding 必填：原文绑定 ID' },
           replacement: { type: 'object', description: 'replace_wrong_binding 时必填：正确目标' },
@@ -283,7 +298,19 @@ export function buildHostTools(): HostToolSpec[] {
           to_memory: { type: 'string', minLength: 1, description: 'link 必填：终点记忆 ID' },
           relation_type: { type: 'string', enum: ['continuation_of', 'related_to', 'contradicts', 'custom'], description: 'link 必填：关系类型' },
           custom_label: { type: 'string', maxLength: 100, description: 'link 可选：custom 类型的自定义标签' },
-          memory_id: { type: 'string', minLength: 1, description: 'relations 必填：查该记忆的关联' },
+          memory_id: { type: 'string', minLength: 1, description: 'relations/word_add/word_revise 必填：目标记忆 ID' },
+          refs: {
+            type: 'array', minItems: 1, maxItems: 10,
+            items: {
+              type: 'object', additionalProperties: false, required: ['seq'],
+              properties: {
+                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [seq N]）' },
+                from: { type: 'integer', minimum: 1, description: '从该消息第几句开始（1 起算；省略=整条消息）' },
+                to: { type: 'integer', minimum: 1, description: '到第几句结束（含）；与 from 成对' },
+              },
+            },
+            description: 'word_add/word_revise 必填：勾选的新原话（同 hold 的 quotes 规则）',
+          },
         },
         required: ['action'], additionalProperties: false,
       },
@@ -682,7 +709,8 @@ export function hostToolNames(): string[] {
   return buildHostTools().map((t) => t.function.name);
 }
 
-type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[]; minLength?: number }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
+type ItemPropSpec = { type?: string; minimum?: number };
+type PropSpec = { type?: string; enum?: unknown[]; items?: { type?: string; enum?: unknown[]; minLength?: number; required?: string[]; properties?: Record<string, ItemPropSpec> }; minLength?: number; maxLength?: number; minItems?: number; maxItems?: number };
 
 /** 审计 A051/F30：宿主侧最小 JSON-Schema 校验——白名单外字段拒绝（additionalProperties:false），
  *  required 缺失/类型不符/枚举外值/长度与条数越界直接拒绝，不提交给 Mariposa。schema 与 HOST_TOOLS 同源。 */
@@ -693,6 +721,7 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
     if (k === '__tool_call_id') continue; // 宿主内部标识，非模型参数
+    if (v === undefined) continue; // undefined=字段缺席（JSON 里本不存在该键）
     const prop = schema.properties?.[k];
     if (!prop) return { ok: false, code: 'TOOL_ARG_UNKNOWN', detail: `未知参数 ${k}（additionalProperties:false）` };
     if (prop.enum && !prop.enum.includes(v)) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 必须是 ${prop.enum.join('|')} 之一` };
@@ -703,11 +732,33 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): {
       const cpLen = [...v].length;
       if (prop.minLength !== undefined && cpLen < prop.minLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minLength} 字` };
       if (prop.maxLength !== undefined && cpLen > prop.maxLength) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxLength} 字` };
+    } else if (prop.type === 'integer') {
+      if (typeof v !== 'number' || !Number.isInteger(v)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 integer` };
+      if (propMinimumOf(prop) !== undefined && v < propMinimumOf(prop)!) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 最小值 ${propMinimumOf(prop)}` };
     } else if (prop.type === 'array') {
       if (!Array.isArray(v)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 array` };
       if (prop.items?.type === 'string' && v.some((x) => typeof x !== 'string')) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 需要 string[]` };
       if (prop.items?.minLength !== undefined && v.some((x) => typeof x === 'string' && [...x].length < prop.items!.minLength!)) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 含空串条目（每条至少 ${prop.items.minLength} 字）` };
       if (prop.items?.enum && v.some((x) => !prop.items!.enum!.includes(x))) return { ok: false, code: 'TOOL_ARG_ENUM', detail: `${k} 含枚举外值（允许：${prop.items.enum.join('|')}）` };
+      // 勾选式 object 条目（2026-10-18）：逐项核 required 整数字段 + 白名单外键拒绝
+      if (prop.items?.type === 'object') {
+        const itemProps = prop.items.properties ?? {};
+        for (const item of v) {
+          if (typeof item !== 'object' || item === null || Array.isArray(item)) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k} 条目需要 object` };
+          for (const ik of Object.keys(item)) {
+            if (!(ik in itemProps)) return { ok: false, code: 'TOOL_ARG_UNKNOWN', detail: `${k} 条目未知字段 ${ik}` };
+          }
+          for (const rq of prop.items.required ?? []) {
+            if (item[rq as keyof typeof item] === undefined) return { ok: false, code: 'TOOL_ARG_REQUIRED', detail: `${k} 条目缺少 ${rq}` };
+          }
+          for (const [ik, ip] of Object.entries(itemProps)) {
+            const iv = item[ik as keyof typeof item];
+            if (iv === undefined) continue;
+            if (ip.type === 'integer' && (typeof iv !== 'number' || !Number.isInteger(iv))) return { ok: false, code: 'TOOL_ARG_TYPE', detail: `${k}.${ik} 需要 integer` };
+            if (ip.type === 'integer' && ip.minimum !== undefined && iv < ip.minimum) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k}.${ik} 最小值 ${ip.minimum}` };
+          }
+        }
+      }
       if (prop.minItems !== undefined && v.length < prop.minItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 至少 ${prop.minItems} 条` };
       if (prop.maxItems !== undefined && v.length > prop.maxItems) return { ok: false, code: 'TOOL_ARG_LENGTH', detail: `${k} 超过 ${prop.maxItems} 条` };
     }
@@ -717,6 +768,11 @@ export function validateToolArgs(name: string, args: Record<string, unknown>): {
     if (out[req] === undefined || (typeof out[req] === 'string' && (out[req] as string).length === 0)) return { ok: false, code: 'TOOL_ARG_REQUIRED', detail: `缺少必填 ${req}` };
   }
   return { ok: true, value: out };
+}
+
+/** PropSpec 顶层 minimum（integer 字段用；与 ItemPropSpec 分开保持类型窄） */
+function propMinimumOf(prop: PropSpec): number | undefined {
+  return (prop as PropSpec & { minimum?: number }).minimum;
 }
 
 export type SeenRef = { id: string; revision: number; char_start?: number; char_end?: number };
@@ -760,6 +816,27 @@ function utf16IndexToCodepoints(s: string, utf16Index: number): number {
     cp++;
   }
   return cp;
+}
+
+/** 句子切分（勾选式 from/to 用）：中文/通用终止符+换行切段，终止符归属
+ *  前句；ASCII '.' 仅在后随空白或文末时算句末（不切 3.5、10.18、api.key
+ *  这类点号）。输出是对原文的连续无缝分区（join('')===原文）。 */
+function splitSentences(text: string): string[] {
+  const chars = Array.from(text);
+  const out: string[] = [];
+  let buf = '';
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i]!;
+    buf += ch;
+    const terminal = '。！？!?…\n'.includes(ch)
+      || (ch === '.' && (i + 1 >= chars.length || /[\s]/.test(chars[i + 1]!)));
+    if (terminal) {
+      out.push(buf);
+      buf = '';
+    }
+  }
+  if (buf.length > 0) out.push(buf);
+  return out;
 }
 
 export class HostToolExecutor {
@@ -1023,12 +1100,13 @@ export class HostToolExecutor {
    *    同一消息允许多个互不重叠片段；同一段文字重复引用（区间重叠）会被拒——不产生重复出处；
    *  - 任一条对不上 → 整单拒绝（不替模型圆谎、不静默丢弃）。
    *  匹配用 indexOf（UTF-16 一致，无碍）；发出的 start/end 换算成码点口径（见 MatchedQuote 注释）。 */
-  private resolveQuotes(roomId: string, seenMessages: ReadonlyArray<SeenRef>, quotes: string[]): MatchedQuote[] | { error: string; index: number } {
-    // D13（审计 3655d60）：候选=**所见修订号**的正文（不是当前修订）——消息被编辑后，模型见过的旧修订
-    // 仍可被正确引用（引用内容=它当时看见的），未见过的新修订天然不可见（不查它）。
-    // WP4（O06）：带 char_start/char_end 的已见条目=片段级视野——引用匹配必须
-    // 整段落在已读码点范围内才放行；未读片段不得因同消息其他片段已读而放行
-    const candidates: Array<{ id: string; sequence: number; speaker: string; revision: number; content: string; range: [number, number] | null }> = [];
+  /** 勾选式话语录入（她 2026-10-18 裁定）：模型只报消息序号（可细到句），
+   *  宿主从已见原文直接抄录——一字不差是构造出来的，不再做逐字比对。
+   *  可见性门保留 D13/O06 语义：只能选真正见过（所见修订号）的内容；
+   *  片段级已见（conversation_read 部分阅读）时，勾选必须整段落在已读
+   *  码点范围内。重复/重叠勾选拒绝（防同一句录两次）。 */
+  private resolveQuoteRefs(roomId: string, seenMessages: ReadonlyArray<SeenRef>, refs: Array<{ seq: number; from?: number; to?: number }>): MatchedQuote[] | { error: string; index: number; detail?: string } {
+    const candidates = new Map<number, { id: string; sequence: number; speaker: string; revision: number; content: string; range: [number, number] | null }>();
     for (const s of seenMessages) {
       const row = this.db.prepare(
         'SELECT m.id, m.sequence, m.speaker, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
@@ -1037,50 +1115,51 @@ export class HostToolExecutor {
         const range = typeof s.char_start === 'number' && typeof s.char_end === 'number'
           ? ([s.char_start, s.char_end] as [number, number])
           : null;
-        candidates.push({ ...row, range });
+        candidates.set(row.sequence, { ...row, range });
       }
     }
-    candidates.sort((a, b) => a.sequence - b.sequence);
-    // 核对范围由本次请求的 seenMessages 限定，不能再按原消息序号截成最近 60 条。
-    // 旧逻辑已读出了全部候选却丢弃较早的已见原话；conversation_read 重新读到它们后
-    // 序号也不会变，因此合法引用反复失败，诱发重复回读与付费续请求。
-    // 保留完整已见集合；房间、修订和片段范围仍由上面的来源门及下面的逐字匹配校验。
-    const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费 UTF-16 区间
+    const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费码点区间
     const matched: MatchedQuote[] = [];
-    for (let qi = 0; qi < quotes.length; qi++) {
-      const frag = quotes[qi]!;
-      if (frag.length === 0) return { error: 'QUOTE_EMPTY', index: qi };
-      let hit: MatchedQuote | null = null;
-      for (let ci = candidates.length - 1; ci >= 0 && !hit; ci--) { // 最新→最旧
-        const row = candidates[ci]!;
-        let from = 0;
-        for (;;) {
-          const idx = row.content.indexOf(frag, from);
-          if (idx < 0) break;
-          const spans = consumed.get(row.id) ?? [];
-          const overlap = spans.some(([s, e]) => idx < e && idx + frag.length > s);
-          if (!overlap) {
-            const startCp = utf16IndexToCodepoints(row.content, idx);
-            const endCp = startCp + [...frag].length;
-            // O06：片段级已见——匹配必须完整落在已读码点范围内
-            if (row.range !== null && !(startCp >= row.range[0] && endCp <= row.range[1])) {
-              from = idx + 1; // 落在未读区域——不算命中，继续找下一处
-              continue;
-            }
-            hit = {
-              messageId: row.id, revision: row.revision, sequence: row.sequence,
-              speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment: frag,
-              start: startCp, end: endCp,
-            };
-            spans.push([idx, idx + frag.length]);
-            consumed.set(row.id, spans);
-            break;
-          }
-          from = idx + 1; // 该出现处已消费（重复引用）——找同消息下一处
+    for (let qi = 0; qi < refs.length; qi++) {
+      const ref = refs[qi]!;
+      const row = candidates.get(ref.seq);
+      if (!row) return { error: 'QUOTE_REF_SEQ_NOT_SEEN', index: qi };
+      let fragment: string;
+      let startCp: number;
+      let endCp: number;
+      if (ref.from === undefined && ref.to === undefined) {
+        fragment = row.content;
+        startCp = 0;
+        endCp = Array.from(row.content).length;
+      } else {
+        const from = ref.from ?? 1;
+        const to = ref.to ?? from;
+        const sents = splitSentences(row.content);
+        if (from < 1 || to < from || to > sents.length) {
+          return { error: 'QUOTE_REF_RANGE_INVALID', index: qi, detail: `该消息共 ${sents.length} 句` };
         }
+        const joined = sents.slice(from - 1, to).join('');
+        const idx = row.content.indexOf(joined);
+        if (idx < 0) return { error: 'QUOTE_REF_RANGE_INVALID', index: qi };
+        fragment = joined;
+        startCp = utf16IndexToCodepoints(row.content, idx);
+        endCp = startCp + Array.from(joined).length;
       }
-      if (!hit) return { error: 'QUOTE_MATCH_FAILED', index: qi };
-      matched.push(hit);
+      if (fragment.trim().length === 0) return { error: 'QUOTE_EMPTY', index: qi };
+      if (row.range !== null && !(startCp >= row.range[0] && endCp <= row.range[1])) {
+        return { error: 'QUOTE_REF_RANGE_NOT_SEEN', index: qi }; // O06：落在未读区域
+      }
+      const spans = consumed.get(row.id) ?? [];
+      if (spans.some(([s, e]) => startCp < e && endCp > s)) {
+        return { error: 'QUOTE_REF_DUPLICATE', index: qi };
+      }
+      spans.push([startCp, endCp]);
+      consumed.set(row.id, spans);
+      matched.push({
+        messageId: row.id, revision: row.revision, sequence: row.sequence,
+        speaker: row.speaker as 'owner' | 'assistant', content: row.content, fragment,
+        start: startCp, end: endCp,
+      });
     }
     return matched;
   }
@@ -1098,14 +1177,21 @@ export class HostToolExecutor {
       }
     }
 
-    // —— 引用先收口（零副作用阶段）：逐字核对 → 来源收据齐备（收据缺失先补一发同步再核） ——
-    let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; expression_kind: 'verbatim'; source_ref: string }> = [];
+    // —— 引用先收口（零副作用阶段）：勾选序号 → 已见原文直接抄录 → 来源收据齐备（收据缺失先补一发同步再核） ——
+    let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; source_ref: string }> = [];
     let selections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }>; start_char_offset?: number; end_char_offset?: number }> = [];
-    const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as string[]) : [];
+    const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as Array<{ seq: number; from?: number; to?: number }>) : [];
     if (rawQuotes.length > 0) {
-      const resolved = this.resolveQuotes(ctx.roomId, ctx.seenMessages, rawQuotes);
+      const resolved = this.resolveQuoteRefs(ctx.roomId, ctx.seenMessages, rawQuotes);
       if ('error' in resolved) {
-        return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: '引用片段在已见原文中逐字核对未通过——只允许引用这段对话里真实出现过的一字不差的原文' } };
+        const hint = resolved.error === 'QUOTE_REF_SEQ_NOT_SEEN'
+          ? `序号 ${String(rawQuotes[resolved.index]?.seq ?? '?')} 不在已见消息里——只能勾选你真实看过（含 conversation_read 读过）的消息`
+          : resolved.error === 'QUOTE_REF_RANGE_INVALID'
+            ? `第 ${String(resolved.index + 1)} 条勾选的句范围无效（${('detail' in resolved && typeof resolved.detail === 'string') ? resolved.detail : '检查 from/to'}）`
+            : resolved.error === 'QUOTE_REF_RANGE_NOT_SEEN'
+              ? `第 ${String(resolved.index + 1)} 条勾选的句子落在未读区域——先用 conversation_read 读到它`
+              : `第 ${String(resolved.index + 1)} 条勾选与前面重叠（同一句不能录两次）`;
+        return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: hint } };
       }
       // 每条被引消息必须有正式来源收据（estómago↔mariposa 同步回执）：没有就先 drain 一次再核
       const missing = resolved.filter((q) => !this.receiptOf(q.messageId, q.revision));
@@ -1120,7 +1206,6 @@ export class HostToolExecutor {
         ourWords.push({
           speaker: q.speaker === 'owner' ? 'qiaosheng' : 'jiaming',
           text: q.fragment,
-          expression_kind: 'verbatim',
           // F-J-01（联合审计 2026-10-06）：mariposa provenance 收紧（2026-10-04 裁定）只认
           // source_msg:<已发布 source 消息 id>，本地 msg id 永远解析不到——此前带 quotes 的
           // hold 被整单 INVALID_SOURCE_REF 拒。正式身份=本次同步收据的 source_message_id。
@@ -1863,13 +1948,59 @@ export class HostToolExecutor {
   /** 纠错批（2026-10-10）：memory_correct——关系/话语来源/原文绑定三族
    *  纠错 + 关系链接/列表 + 纠错台账。写动作宿主派生 es-cor-* 幂等 op；
    *  M 侧按既有合同核验（word_source 的 CAS expected_source_version、
-   *  relation/binding 的闭集动作）；错误如实上抛。 */
+   *  relation/binding 的闭集动作）；错误如实上抛。
+   *  2026-10-18 并入：word_add/word_revise——勾选式话语新增/修改，走
+   *  mariposa memory.update（就地改入口；expected_version 由宿主先读
+   *  memory.get 取当前值；说话人服务端按出处推导）。 */
   private async memoryCorrect(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
-    const actions = ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections'] as const;
+    const actions = ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections', 'word_add', 'word_revise'] as const;
     type CorAction = typeof actions[number];
     const action = actions.includes(args.action as CorAction) ? args.action as CorAction : '';
-    if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 relation/word_source/binding/link/relations/corrections' } };
+    if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 relation/word_source/binding/link/relations/corrections/word_add/word_revise' } };
+    // —— 我们的话新增/修改（勾选式；与 hold quotes 同一解析门）——
+    if (action === 'word_add' || action === 'word_revise') {
+      const memoryId = typeof args.memory_id === 'string' ? args.memory_id : '';
+      const wordId = typeof args.word_id === 'string' ? args.word_id : '';
+      if (action === 'word_add' && !memoryId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'word_add 必须带 memory_id' } };
+      if (action === 'word_revise' && !wordId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'word_revise 必须带 word_id' } };
+      const refs = Array.isArray(args.refs) ? (args.refs as Array<{ seq: number; from?: number; to?: number }>) : [];
+      if (refs.length === 0 || (action === 'word_revise' && refs.length !== 1)) {
+        return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: action === 'word_revise' ? 'word_revise 恰好勾选一条（refs×1）' : 'word_add 至少勾选一条（refs）' } };
+      }
+      const resolved = this.resolveQuoteRefs(ctx.roomId, ctx.seenMessages, refs);
+      if ('error' in resolved) {
+        return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: '勾选未通过（序号未见过/句范围无效/落在未读区域/重复）——只能勾选你真实看过的原文' } };
+      }
+      // 来源收据（与 hold 同门：被引消息必须已同步）
+      const missing = resolved.filter((q) => !this.receiptOf(q.messageId, q.revision));
+      if (missing.length > 0 && this.archiveSync) {
+        await this.archiveSync.drainOnce().catch(() => {});
+      }
+      const words: Array<{ text: string; source_ref: string }> = [];
+      for (const q of resolved) {
+        const receipt = this.receiptOf(q.messageId, q.revision);
+        if (!receipt) {
+          return { ok: false, output: { error_code: 'QUOTE_NOT_SYNCED', error: `被引消息（seq=${q.sequence}）尚未完成正式来源同步——稍后重试` } };
+        }
+        words.push({ text: q.fragment, source_ref: `source_msg:${receipt.source_message_id}` });
+      }
+      const mid = typeof args.memory_id === 'string' ? args.memory_id : '';
+      if (!mid) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 必须带 memory_id（话语所在记忆）` } };
+      const got = await this.mariposa.memoryGet(mid);
+      if (!got.ok) return { ok: false, output: { error_code: `WORD_OPS_${got.code}`, error: '读取目标记忆失败（版本 CAS 需要）' } };
+      const cur = (got.result as Record<string, unknown>).version;
+      if (typeof cur !== 'number') return { ok: false, output: { error_code: 'WORD_OPS_VERSION_MISSING', error: '读取结果缺 version，无法执行 CAS' } };
+      const payload: Record<string, unknown> = { memory_id: mid, expected_version: cur };
+      if (action === 'word_add') payload.our_words_add = words;
+      else payload.our_words_revise = [{ word_id: wordId, ...words[0]! }];
+      const r = await this.mariposa.memoryUpdate(payload);
+      if (!r.ok) {
+        const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
+        return { ok: false, output: { error_code: unknown ? 'CORRECT_OUTCOME_UNKNOWN' : `CORRECT_${r.code}` } };
+      }
+      return { ok: true, output: { note: '我们的话已更新（原文录入，说话人随出处，审计留痕）。', action, ...(r.result as Record<string, unknown>) } };
+    }
     const opId = `es-cor-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${args.__tool_call_id ?? ''}:${action}`).slice(0, 40)}`;
     const ca = args.correction_action === 'remove_wrong_binding' || args.correction_action === 'replace_wrong_binding' ? args.correction_action : '';
     if (action === 'relation' || action === 'word_source' || action === 'binding') {

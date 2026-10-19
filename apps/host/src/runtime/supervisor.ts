@@ -312,16 +312,20 @@ export class TurnSupervisor {
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
    *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [seq N]（勾选式
+   *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
+   *  存库/前端内容不带。 */
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+    const withSeq = (t: string): string => (opts.seq !== undefined ? `[seq ${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
         const proj = this.d.media.projectForRevision(messageId, revision);
         const text = opts.isCurrentInput && fallbackText !== proj.content ? fallbackText : proj.content;
-        const r = projectRevisionBlocks(text, proj.attachments, opts);
+        const r = projectRevisionBlocks(withSeq(text), proj.attachments, opts);
         return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript };
       } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
     }
-    return { blocks: [{ type: 'text', text: fallbackText }], hasImage: false, hasVoiceWithoutTranscript: false };
+    return { blocks: [{ type: 'text', text: withSeq(fallbackText) }], hasImage: false, hasVoiceWithoutTranscript: false };
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
@@ -607,8 +611,10 @@ export class TurnSupervisor {
       for (let i = cursor; i < dbRows.length; i++) {
         const row = dbRows[i]!;
         if (row.speaker !== speaker || row.content.length === 0) continue;
-        // D11：锚定匹配（杜绝子串误配）——基底段=裸正文等值；回合追加段=装配投影，以 [user_input] 头收尾
+        // D11：锚定匹配（杜绝子串误配）——基底段=裸正文等值；回合追加段=装配投影，以 [user_input] 头收尾；
+        // 2026-10-18 序号前缀形态：[seq N]\n+正文（模型面渲染带序号后新增的锚定）
         const anchored = text === row.content
+          || text === `[seq ${row.sequence}]\n${row.content}`
           || (speaker === 'owner' && text.endsWith(`[user_input]\n${row.content}`));
         if (anchored) {
           matched = row;
@@ -1028,11 +1034,16 @@ export class TurnSupervisor {
     // 不产视觉块、不触发视觉门）；尾部当前输入与追赶投影不受影响（当前轮的图照常进模型）
     let envHasImage = false;
     for (const m of selected) {
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence });
       envHasImage = envHasImage || proj.hasImage;
       messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true });
+    // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
+    // 保温空尾）不带序号
+    const tailSeq = o.tailMessage?.id
+      ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
+      : undefined;
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1877,7 +1888,7 @@ export class TurnSupervisor {
     // F-J-39：追赶投影与评审路径同源（catchupEntries 单一实现）
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
     // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content).blocks }) as unknown as OrMessage);
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence }).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史

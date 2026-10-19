@@ -150,7 +150,7 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
   const out = await tools.execute('memory_hold', {
     __tool_call_id: 'call-j54',
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
-    quotes: ['引用一句真实原话'],
+    quotes: [{ seq: 1 }],
   }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54' });
   return { out, reviews };
 }

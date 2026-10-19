@@ -144,7 +144,7 @@ test('A051：宿主参数门——新 hold 契约的未知字段/类型错/枚�
   assert.ok(!tooMany.ok && tooMany.code === 'TOOL_ARG_LENGTH', '心情大类超过 3 个拒收');
   const okMood = validateToolArgs('memory_hold', { ...base, mood_tags: ['吃醋'], mood_note: '开心想抱抱' });
   assert.ok(okMood.ok, '词表内大类+随笔通过');
-  const good = validateToolArgs('memory_hold', { ...base, quotes: ['原话片段'], creation_mode: 'contemporaneous' });
+  const good = validateToolArgs('memory_hold', { ...base, quotes: [{ seq: 1 }], creation_mode: 'contemporaneous' });
   assert.ok(good.ok && good.value.text === 'x');
   const notListed = validateToolArgs('nonexistent', {});
   assert.ok(!notListed.ok && notListed.code === 'TOOL_NOT_IN_ALLOWLIST');
