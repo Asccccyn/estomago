@@ -26,7 +26,7 @@ function makeDb(root: string) {
 
 const ITEM: SurfaceItem = {
   event_id: 'ev_1', memory_id: '00001', memory_version: '1',
-  domain_versions: { memory: '1' }, memory_date: '2026-07-09',
+ memory_date: '2026-07-09',
   date_confidence: 'exact', event_text: '7月9日我们把记忆库建成了',
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_abc',
 };
@@ -82,12 +82,12 @@ test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 
   repo.markDispatchStarted(j1!, deliveryId);
   repo.markRetained(j1!, deliveryId, [ITEM]);
   const covered = repo.coveredInWindow('c1', 'w1', [ITEM]);
-  assert.ok(covered.has('ev_1'));
+  assert.equal(covered.size, 0, 'retention bookkeeping without the actual trajectory is not model visibility');
   // 换窗不拦截（coverage 是窗口投影，非永久 seen）
   assert.equal(repo.coveredInWindow('c1', 'w2', [ITEM]).size, 0);
   // ref→detail 解析
-  assert.equal(repo.refToDetail('sf_x')!.detail_ref, ITEM.detail_ref);
-  assert.equal(repo.refToDetail('sf_unknown'), null);
+  assert.equal(repo.refToDetail('sf_x', { roomId: 'c1', windowId: 'w1', requestId: 'unsent' }), null, 'without confirmed provider payload retention is not visibility');
+  assert.equal(repo.refToDetail('sf_unknown', { roomId: 'c1', windowId: 'w1', requestId: 'unsent' }), null);
   db.close();
 });
 
@@ -146,13 +146,14 @@ test('AC002/AC003/AC004：U1 后台准备不进当轮；U2 到达绑定+复核�
   const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '7.9那天怎么样', clientMessageId: 'u2', occurredAt: T0 });
   await waitUntil(() => {
     const j = svc.repo.nextPreparedForTarget('c1', u2.message.id);
-    return j !== null && j.state === 'ready';
+    return j !== null && j.state === 'target_bound';
   });
   const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't2', attemptId: 'a2', message: { id: u2.message.id, revision: 1, sequence: 2, content: '7.9那天怎么样', hash: 'h2' } });
   assert.ok(aug, 'U2 轮拿到冻结注入块');
   assert.ok(aug.text.startsWith('[回忆浮现]'));
   assert.ok(aug.text.includes('时间：2026-07-09'));
   // 成功 retain → 覆盖登记；下一轮同事件不重复追加（AC028）
+  svc.markDispatched('a2');
   svc.markRetained(aug);
   const again = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't3', attemptId: 'a3', message: { id: u2.message.id, revision: 1, sequence: 2, content: '7.9那天怎么样', hash: 'h2' } });
   assert.equal(again, null, '同窗已覆盖不重复注入');
@@ -199,7 +200,7 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   svc.repo.transition(jobId, ['pending'], 'preparing');
   svc.repo.transition(jobId, ['preparing'], 'prepared');
   const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '继续', clientMessageId: 'b2', occurredAt: T0 });
-  await waitUntil(() => svc.repo.nextPreparedForTarget('c1', u2.message.id)?.state === 'ready');
+  await waitUntil(() => svc.repo.nextPreparedForTarget('c1', u2.message.id)?.state === 'target_bound');
   const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't', attemptId: 'a', message: { id: u2.message.id, revision: 1, sequence: 2, content: '继续', hash: 'h' } });
   assert.equal(aug, null, '超大事件零注入，不截断');
   await svc.stop();

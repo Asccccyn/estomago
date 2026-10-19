@@ -5,32 +5,16 @@
 import type { SurfacingRepository } from './repository.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 
-export const MEMORY_READ_FULL_SPEC = {
-  type: 'function',
-  function: {
-    name: 'memory_read_full',
-    description: '按已收到的记忆引用直接读取该桶当前完整内容与关联关系；不是搜索。未完时原样传 cursor 继续同一详情快照。读取不会自动写记忆、确认明确打开或续期。',
-    parameters: {
-      type: 'object',
-      properties: {
-        memory_ref: { type: 'string', minLength: 1 },
-        cursor: { type: 'string', minLength: 1 },
-      },
-      required: ['memory_ref'],
-      additionalProperties: false,
-    },
-  },
-} as const;
-
 export async function executeMemoryReadFull(
   repo: SurfacingRepository,
   client: MariposaClient,
   args: { memory_ref?: unknown; cursor?: unknown },
+  scope: { roomId: string; windowId: string; requestId: string },
 ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; code: string; message: string }> {
   const ref = typeof args.memory_ref === 'string' ? args.memory_ref : '';
   if (!ref) return { ok: false, code: 'INVALID_ARGUMENT', message: 'memory_ref 必填' };
   const cursor = typeof args.cursor === 'string' && args.cursor.length > 0 ? args.cursor : undefined;
-  const mapped = repo.refToDetail(ref);
+  const mapped = repo.refToDetail(ref, scope);
   if (!mapped) {
     // 引用未实际进入本房间模型输入 → 拒绝（不猜测、不搜索）
     return { ok: false, code: 'DETAIL_REF_NOT_SEEN', message: '该记忆引用不在已交付范围内' };

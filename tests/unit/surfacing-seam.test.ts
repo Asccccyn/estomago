@@ -45,7 +45,7 @@ function bootPack(): Record<string, unknown> {
 
 const ITEM = {
   event_id: 'ev_1', memory_id: '00001', memory_version: '1',
-  domain_versions: { memory: '1' }, memory_date: '2026-07-09',
+ memory_date: '2026-07-09',
   date_confidence: 'exact', event_text: '7月9日我们把记忆库建成了',
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_seam1',
 };
@@ -68,7 +68,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages, tools: payload.tools?.map((t: { function: { name: string } }) => t.function.name) ?? [] });
@@ -95,6 +95,50 @@ async function waitUntil(cond: () => boolean, ms = 3000): Promise<void> {
 
 type Block = { type: string; text?: string };
 const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : typeof c === 'string' ? [{ type: 'text', text: c }] : []);
+
+test('JA-S08: full-read is usable in the first surfaced tool loop, scoped to the real sent payload', async () => {
+  const root = tempRoot('sf-full-wire-');
+  const log: Array<Record<string, unknown>> = [];
+  let generation = 0;
+  let detailCalls = 0;
+  let checkedWindow = '';
+  const transport: OrTransport = async (payload) => {
+    generation++;
+    if (generation === 2) {
+      const wire = JSON.stringify(payload.messages);
+      const ref = wire.match(/记忆引用 (sf_[a-f0-9]+)/)?.[1];
+      assert.ok(ref, 'reference is actually in the provider request');
+      const body = sse({ id: 'g2', choices: [{ delta: { tool_calls: [{ index: 0, id: 'full1', type: 'function', function: { name: 'memory_read_full', arguments: JSON.stringify({ memory_ref: ref }) } }] } }] })
+        + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE;
+      return { status: 200, headers: new Map(), body: frameStream(body) };
+    }
+    return { status: 200, headers: new Map(), body: frameStream(textBody(`g${generation}`, '合成回复')) };
+  };
+  const mariposa: MariposaTransport = async (cap, payload) => {
+    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
+    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
+    if (cap === 'memory.surfacing.validate') { checkedWindow = String(payload.window_id); return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } }; }
+    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: payload.window_id === checkedWindow && checkedWindow !== 'pending-check', accepted_detail_refs: [ITEM.detail_ref] } };
+    if (cap === 'memory.detail.read') { detailCalls++; return { ok: true, result: { sections: [{ name: 'event', data: '合成完整正文' }], has_more: false } }; }
+    throw new Error('unexpected capability: ' + cap);
+  };
+  const ctx = compose(root, transport, mariposa, log);
+  try {
+    const a = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成事件', clientMessageId: 'full-a', occurredAt: T0 });
+    ctx.supervisor.enqueue(a.turnId); await ctx.supervisor.waitIdle();
+    const staleRotate = await ctx.supervisor.manualRotate('c1', 'obsolete-window');
+    assert.equal(staleRotate.ok, false);
+    assert.ok(!staleRotate.ok && staleRotate.reason.startsWith('WINDOW_STALE'));
+    assert.equal(generation, 1, 'stale-window operation must not dispatch a review model request');
+    await waitUntil(() => ctx.svc.repo.jobByLogicalKey('c1', a.message.id, 1, 1, 'surface_prepare_v1')?.state === 'prepared');
+    const b = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '具体是什么', clientMessageId: 'full-b', occurredAt: T0 });
+    ctx.supervisor.enqueue(b.turnId); await ctx.supervisor.waitIdle();
+    assert.equal(detailCalls, 1);
+    assert.equal(generation, 3);
+    assert.ok(JSON.stringify(log[2].full).includes('合成完整正文'));
+    assert.ok(checkedWindow && checkedWindow !== 'pending-check');
+  } finally { await ctx.svc.stop(); ctx.db.close(); }
+});
 
 test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 不删移旧包不重加；retain 落账', async () => {
   const root = tempRoot('sfseam-');
@@ -131,7 +175,7 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
 
   // U2：目标轮——先等 validate ready，再跑回合
   const u2sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '7.9那天怎么样', clientMessageId: 'b', occurredAt: T0 });
-  await waitUntil(() => ctx.svc.repo.nextPreparedForTarget('c1', u2sub.message.id)?.state === 'ready');
+  await waitUntil(() => ctx.svc.repo.nextPreparedForTarget('c1', u2sub.message.id)?.state === 'target_bound');
   ctx.supervisor.enqueue(u2sub.turnId);
   await ctx.supervisor.waitIdle();
   const msgs2 = log[1]!.full as Array<{ role: string; content: unknown }>;
@@ -139,12 +183,14 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
   const blocks2 = toBlocks(tail2.content);
   // docs/04：content 数组独立块；provider 只能接受字符串时确定性序列化
   // 两个有来源边界的段（分段 manifest 在 surfacing_deliveries）。
-  const tail2Text = toBlocks(tail2.content).map((b) => b.text ?? '').join('\n');
-  const noticeAt = tail2Text.indexOf(NOTICE);
-  const inputAt = tail2Text.indexOf('7.9那天怎么样');
-  assert.ok(noticeAt >= 0 && inputAt > noticeAt, '回忆段在真实 user_input 之前');
-  assert.equal(tail2Text.indexOf('[回忆浮现]'), tail2Text.lastIndexOf('[回忆浮现]'), '浮现块只出现一次');
-  assert.ok(tail2Text.includes('时间：2026-07-09'), '真实事件日期');
+  const memoryMessage = msgs2[msgs2.length - 2]!;
+  assert.equal(memoryMessage.role, 'system', 'host data is not a user message');
+  const memoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
+  const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
+  assert.ok(memoryText.includes(NOTICE));
+  assert.ok(memoryText.includes('时间：2026-07-09'));
+  assert.ok(tail2Text.includes('7.9那天怎么样'));
+  assert.ok(!tail2Text.includes('[回忆浮现]'), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_deliveries WHERE retained=1').get() as { n: number }).n, 1);
@@ -160,6 +206,9 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
   assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('[回忆浮现]')).length, 0, 'U3 不重复追加');
   // 覆盖表登记一次
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
+  const activeWindow = ctx.windows.activeWindow('c1')!.id;
+  assert.ok(ctx.svc.repo.coveredInWindow('c1', activeWindow, [ITEM]).has(ITEM.event_id), 'actual retained trajectory establishes visibility');
+  assert.equal(ctx.svc.repo.coveredInWindow('c1', 'new-window', [ITEM]).size, 0, 'a new window has no inherited visibility claim');
 
   // 工具集：memory_read_full 进入冻结工具集（docs/06 E：不等首次出现才加）
   const tools1 = (log[0]!.tools as string[]);

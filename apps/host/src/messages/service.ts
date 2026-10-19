@@ -219,8 +219,8 @@ export class MessageService {
   // 供路由事务内直接修订（同一外部 tx；AUD-06/07）
   editMessageInTx(messageId: string, newContent: string, opts: { source?: string; tokenEstimateJson?: string | null; notifySurfacing?: boolean; allowBlankWithAttachments?: boolean } = {}): { revision: number; contentHash: string } {
     const row = this.db
-      .prepare('SELECT current_revision, kind FROM messages WHERE id = ?')
-      .get(messageId) as { current_revision: number; kind: string } | undefined;
+      .prepare('SELECT current_revision, kind, conversation_id FROM messages WHERE id = ?')
+      .get(messageId) as { current_revision: number; kind: string; conversation_id: string } | undefined;
     if (!row) throw new Error('message not found');
     const content = normalizeNewlines(newContent);
     if (isBlankContent(content) && !(opts.allowBlankWithAttachments && this.db.prepare('SELECT 1 FROM message_attachments WHERE message_id=? AND revision=? LIMIT 1').get(messageId, row.current_revision))) throw new BlankMessageError('编辑后正文仅空白，拒绝');
