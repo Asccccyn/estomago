@@ -507,12 +507,31 @@ export class MariposaClient {
     });
   }
 
+  // ===== 自动记忆浮现（EST_MARIPOSA_AUTO_SURFACING_V1，2026-10-19）=====
+  // 专用 surfacing binding（surfacing_credential_ref）只放行这四个能力；
+  // 不回退聊天凭据，不借归档凭据。
+
+  async surfacePrepare(payload: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.prepare', payload);
+  }
+
+  async surfaceValidate(payload: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.validate', payload);
+  }
+
+  async surfaceCheck(payload: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('memory.surfacing.check', payload);
+  }
+
+  async surfaceDetailRead(payload: Record<string, unknown>): Promise<MariposaCallResult> {
+    return this.transport('memory.detail.read', payload);
+  }
+
   /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。
    *  形状：{categories: string[], version?, rules?, frozen_ruling?}。
    *  需要绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
   async moodVocab(): Promise<MariposaCallResult & { categories?: string[]; version?: string }> {
-    const r = await this.transport('memory.mood.vocab', {});
-    if (!r.ok) return r;
+    const r = await this.transport('memory.mood.vocab', {});    if (!r.ok) return r;
     const s = r.result as { categories?: unknown; version?: unknown };
     return {
       ok: true, result: r.result,

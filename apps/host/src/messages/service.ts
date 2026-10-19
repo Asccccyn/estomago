@@ -14,10 +14,21 @@ export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: s
 
 export class BlankMessageError extends Error {}
 
+export type SurfacingMessageHooks = {
+  /** 接受事务内登记（只 SQL 零网络）；幂等（逻辑作业唯一键防重）。 */
+  onUserMessageAccepted(o: { conversationId: string; messageId: string; revision: number; sequence: number; content: string; contentHash: string; occurredAt: string | null }): void;
+  /** 编辑事务内：撤销旧修订作业（未错过目标轮的可建新作业——上层判断）。 */
+  onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void;
+  /** 事务提交后唤醒独立 worker（不进 MessageService 事务）。 */
+  afterCommit(): void;
+};
+
 export class MessageService {
   private db: Db;
-  constructor(db: Db) {
+  private surfacing: SurfacingMessageHooks | null;
+  constructor(db: Db, surfacing: SurfacingMessageHooks | null = null) {
     this.db = db;
+    this.surfacing = surfacing;
   }
 
   ensureConversation(conversationId: string, title: string | null = null): void {
@@ -70,7 +81,7 @@ export class MessageService {
       occurredAt = v.iso; // 有效值保持原字符串（不重新序列化——避免精度/格式变化影响排序）
     }
 
-    return tx(this.db, () => {
+    const result = tx(this.db, () => {
       const dup = this.db
         .prepare('SELECT id, current_revision FROM messages WHERE conversation_id = ? AND client_message_id = ?')
         .get(opts.conversationId, opts.clientMessageId) as { id: string; current_revision: number } | undefined;
@@ -109,7 +120,14 @@ export class MessageService {
           repaired = true;
         }
         const attemptRow = this.db.prepare('SELECT id FROM attempts WHERE turn_id = ? ORDER BY attempt_no LIMIT 1').get(turn.id) as { id: string };
-        return { message: this.getMessage(dup.id)!, duplicate: true, turnId: turn.id, attemptId: attemptRow.id, repaired };
+        const dupDto = this.getMessage(dup.id)!;
+        // 幂等重放：作业缺失则补（同逻辑作业唯一键，不增加作业）
+        this.surfacing?.onUserMessageAccepted({
+          conversationId: opts.conversationId, messageId: dup.id, revision: dup.current_revision,
+          sequence: dupDto.sequence, content: dupDto.revision.content, contentHash: dupDto.revision.content_hash,
+          occurredAt: dupDto.revision.occurred_at,
+        });
+        return { message: dupDto, duplicate: true, turnId: turn.id, attemptId: attemptRow.id, repaired };
       }
 
       const messageId = genId('msg');
@@ -144,8 +162,18 @@ export class MessageService {
         .run(turnId, opts.conversationId, messageId, nowIso);
       this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')").run(attemptId, turnId);
       this.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, messageId);
-      return { message: this.getMessage(messageId)!, duplicate: false, turnId, attemptId, repaired: false };
+      // 自动浮现（2026-10-19）：接受事务内登记作业（SQL only；docs/02 数据入口）
+      const msgDto = this.getMessage(messageId)!;
+      this.surfacing?.onUserMessageAccepted({
+        conversationId: opts.conversationId, messageId, revision: 1,
+        sequence: seqRow.next, content, contentHash: msgDto.revision.content_hash,
+        occurredAt,
+      });
+      return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };
     });
+    // 事务提交后唤醒（worker 网络面绝不进本事务）
+    this.surfacing?.afterCommit();
+    return result;
   }
 
   // 用户编辑：新 revision + supersedes + 归档 outbox 同事务（AUD-15/07）
@@ -181,7 +209,10 @@ export class MessageService {
       }
       this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
       this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
+      // 自动浮现：编辑撤销旧修订作业（docs/02 数据入口）
+      this.surfacing?.onUserMessageEdited({ conversationId: msg.conversation_id, messageId, supersededRevision: msg.current_revision });
     });
+    this.surfacing?.afterCommit();
     return this.getMessage(messageId)!;
   }
 

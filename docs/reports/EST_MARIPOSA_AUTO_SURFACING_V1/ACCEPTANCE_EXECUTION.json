@@ -1,0 +1,1015 @@
+{
+ "spec_id": "EST_MARIPOSA_AUTO_SURFACING_V1",
+ "executed_at": "2026-10-19",
+ "summary": {
+  "total": 72,
+  "pass": 64,
+  "not_executed": 8
+ },
+ "acceptance": [
+  {
+   "id": "AC001",
+   "requirement_ids": [
+    "R01"
+   ],
+   "assertion": "后端独立模块且本次不做前台",
+   "work_package": "WP1/WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts + apps/host/src/memory-surfacing/*",
+    "后端独立模块；无前台改动"
+   ]
+  },
+  {
+   "id": "AC002",
+   "requirement_ids": [
+    "R02"
+   ],
+   "assertion": "源用户同轮绝不注入、不追加主模型请求",
+   "work_package": "WP4/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「AC002…源轮」",
+    "U1 augmentFor=null"
+   ]
+  },
+  {
+   "id": "AC003",
+   "requirement_ids": [
+    "R03"
+   ],
+   "assertion": "只绑定下一真实用户输入而非下一sequence或工具轮",
+   "work_package": "WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「U2 到达绑定」",
+    "绑定下一真实用户输入"
+   ]
+  },
+  {
+   "id": "AC004",
+   "requirement_ids": [
+    "R04"
+   ],
+   "assertion": "下一消息有独立当前相关性复核",
+   "work_package": "WP2/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_capability.py test_full_loop_with_winner",
+    "M 侧 delivery 复核 ready"
+   ]
+  },
+  {
+   "id": "AC005",
+   "requirement_ids": [
+    "R05"
+   ],
+   "assertion": "换题、模糊或否定旧事时不注入",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_selection_judge.py test_delivery_relevance_gate",
+    "换题 relevant_now=False→rejected"
+   ]
+  },
+  {
+   "id": "AC006",
+   "requirement_ids": [
+    "R06"
+   ],
+   "assertion": "ready检查及有界2000ms复核失败不阻断正常聊天",
+   "work_package": "WP4/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts（validate 超时路径）+ mari test_surface_capability test_validate_deadline_passed_times_out",
+    "失败不阻断正常聊天（零注入路径）"
+   ]
+  },
+  {
+   "id": "AC007",
+   "requirement_ids": [
+    "R07"
+   ],
+   "assertion": "单事件最多一个严格确认最高桶",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_selection_judge.py test_one_winner_per_event_no_runnerup",
+    "一事件一赢家"
+   ]
+  },
+  {
+   "id": "AC008",
+   "requirement_ids": [
+    "R08"
+   ],
+   "assertion": "同日期多事、同句多事支持多桶且不设业务总数3",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_capability.py test_full_loop（单事件）+ choose_winners 多组支持",
+    "无业务总数 3 限制（选择器逐事件）"
+   ]
+  },
+  {
+   "id": "AC009",
+   "requirement_ids": [
+    "R09"
+   ],
+   "assertion": "短语/隐性语义可检索，不使用长度或回忆词表唯一门",
+   "work_package": "WP2/WP4",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "真实语义检索效果属人工标注语义评测（paid judge）——未批准，NOT_EXECUTED；代码面短句/隐性入口已接语义通道（AC068）"
+  },
+  {
+   "id": "AC010",
+   "requirement_ids": [
+    "R10"
+   ],
+   "assertion": "后台零主模型key访问、零主模型runner调用",
+   "work_package": "WP3/WP4",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "生产零主模型 key 访问为运行时观察项——未部署未观察"
+  },
+  {
+   "id": "AC011",
+   "requirement_ids": [
+    "R11"
+   ],
+   "assertion": "复用既有judge供应商但新增严格profile，不新增触发LLM",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_judge（profile=typesafe 有限问句；codex→SURFACE_PROFILE_UNSUPPORTED）",
+    "复用 provider 无新触发 LLM"
+   ]
+  },
+  {
+   "id": "AC012",
+   "requirement_ids": [
+    "R12"
+   ],
+   "assertion": "主动recall及judge-off旧语义完全不变",
+   "work_package": "WP2/WP7",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari 全量回归 1240+（recall 全家绿）",
+    "主动 recall 语义不变"
+   ]
+  },
+  {
+   "id": "AC013",
+   "requirement_ids": [
+    "R13"
+   ],
+   "assertion": "复用主动交付截断前的候选生成",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari retrieval/candidate_service.py 提取 + test_v17_recall_commit_at_end/test_judge_policy_switch/test_recall_session 等价绿",
+    "复用截断前候选生成"
+   ]
+  },
+  {
+   "id": "AC014",
+   "requirement_ids": [
+    "R14"
+   ],
+   "assertion": "自动路径及详情不hold/open-confirm/keep/续期",
+   "work_package": "WP3/WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py test_no_view_receipt_and_no_explicit_open",
+    "不 hold/open-confirm/keep"
+   ]
+  },
+  {
+   "id": "AC015",
+   "requirement_ids": [
+    "R15"
+   ],
+   "assertion": "初次只送日期、完整事件text和技术短ref",
+   "work_package": "WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「AC015 渲染块」",
+    "只含日期+正文+短 ref"
+   ]
+  },
+  {
+   "id": "AC016",
+   "requirement_ids": [
+    "R16"
+   ],
+   "assertion": "用户说明原句UTF-8字节完全不变",
+   "work_package": "WP1/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「AC016 notice」",
+    "60 字节 sha256 锁定"
+   ]
+  },
+  {
+   "id": "AC017",
+   "requirement_ids": [
+    "R17"
+   ],
+   "assertion": "记忆与真实用户输入来源分离且不进原文归档",
+   "work_package": "WP4/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-seam.test.ts（尾部块分离；messages/outbox 无 surfacing 行）",
+    "来源分离不进原文归档"
+   ]
+  },
+  {
+   "id": "AC018",
+   "requirement_ids": [
+    "R18"
+   ],
+   "assertion": "按已交付ref直读全桶，绝不重新recall",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py 全套 + tests/integration/test_surface_http.py",
+    "ref 直读绝不 recall"
+   ]
+  },
+  {
+   "id": "AC019",
+   "requirement_ids": [
+    "R19"
+   ],
+   "assertion": "详情包含完整五域relation正反边",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py（relations 段经 routing.list_relations 五域）",
+    "五域正反边"
+   ]
+  },
+  {
+   "id": "AC020",
+   "requirement_ids": [
+    "R20"
+   ],
+   "assertion": "关系不递归扩张成邻居全文",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari memory/detail.py _relations 只取边与端点定位",
+    "不递归邻居全文"
+   ]
+  },
+  {
+   "id": "AC021",
+   "requirement_ids": [
+    "R21"
+   ],
+   "assertion": "详情读取完整绑定原文范围而非只有ID",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py test_full_snapshot…（绑定区间消息全文）",
+    "原文范围全文"
+   ]
+  },
+  {
+   "id": "AC022",
+   "requirement_ids": [
+    "R22"
+   ],
+   "assertion": "全量详情稳定分页、Unicode无丢重",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py test_pagination_reassembles_text_lossless（含 𝄞/🌃）",
+    "码点无丢重"
+   ]
+  },
+  {
+   "id": "AC023",
+   "requirement_ids": [
+    "R23"
+   ],
+   "assertion": "跨栏目版本向量一致，不能只用正文version",
+   "work_package": "WP2/WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari surfacing/candidates.domain_version_vector + validate stale 路径 test_validate_memory_revised…",
+    "跨域向量一致"
+   ]
+  },
+  {
+   "id": "AC024",
+   "requirement_ids": [
+    "R24"
+   ],
+   "assertion": "房间/身份/授权/已见ref每次校验",
+   "work_package": "WP3/WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/integration/test_surface_http.py（鉴权/worker 403）+ test_surface_capability binding allowlist",
+    "每面校验"
+   ]
+  },
+  {
+   "id": "AC025",
+   "requirement_ids": [
+    "R25"
+   ],
+   "assertion": "相同消息重发与HTTP重试幂等",
+   "work_package": "WP3/WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_capability.py test_prepare_idempotent… + est surfacing-core（逻辑作业唯一键）",
+    "重发/重试幂等"
+   ]
+  },
+  {
+   "id": "AC026",
+   "requirement_ids": [
+    "R26"
+   ],
+   "assertion": "未知付费结果不盲重试或换operation_id",
+   "work_package": "WP2/WP3",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari surfacing/store.mark_unknown + test_surface_store test_unknown_preserved_not_erased",
+    "unknown 不盲重试"
+   ]
+  },
+  {
+   "id": "AC027",
+   "requirement_ids": [
+    "R27"
+   ],
+   "assertion": "旧wire前缀和工具集保持不变",
+   "work_package": "WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-seam.test.ts（旧块原位+工具集冻结跨轮一致）",
+    "旧 wire 前缀不变"
+   ]
+  },
+  {
+   "id": "AC028",
+   "requirement_ids": [
+    "R28"
+   ],
+   "assertion": "覆盖依据实际上下文而非永久seen",
+   "work_package": "WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「同窗已覆盖不重复注入」+ seam U3",
+    "覆盖依据窗口上下文"
+   ]
+  },
+  {
+   "id": "AC029",
+   "requirement_ids": [
+    "R29"
+   ],
+   "assertion": "换窗不搬运旧自动包、不错误跨窗去重",
+   "work_package": "WP4/WP5",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "换窗跨窗场景需要窗口系统集成测试（受控换窗+新窗绑定）——本批离线覆盖投影层，跨窗集成 NOT_EXECUTED"
+  },
+  {
+   "id": "AC030",
+   "requirement_ids": [
+    "R30"
+   ],
+   "assertion": "源/目标消息修订、码点跨度和hash准确",
+   "work_package": "WP2/WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_capability test_target_changed_invalidates_check + est service（target_revision 门）",
+    "修订撤销"
+   ]
+  },
+  {
+   "id": "AC031",
+   "requirement_ids": [
+    "R31"
+   ],
+   "assertion": "停止/编辑/迟到/并发不会串入错误回合",
+   "work_package": "WP4/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「AC031 编辑撤销」",
+    "编辑/停止不串轮"
+   ]
+  },
+  {
+   "id": "AC032",
+   "requirement_ids": [
+    "R32"
+   ],
+   "assertion": "COUNT、judge费用、主模型阅读费用分账",
+   "work_package": "WP3/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari surface_judge_ledger 台账 + test_surface_judge 请求计数断言",
+    "judge 费用分账"
+   ]
+  },
+  {
+   "id": "AC033",
+   "requirement_ids": [
+    "R33"
+   ],
+   "assertion": "长单事件与多事件仍遵守token和字节上限",
+   "work_package": "WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est tests/unit/surfacing-core.test.ts「R33 超大事件零注入」",
+    "长事件遵守上限"
+   ]
+  },
+  {
+   "id": "AC034",
+   "requirement_ids": [
+    "R34"
+   ],
+   "assertion": "赢家已覆盖/超预算/失效后不选第二名补位",
+   "work_package": "WP2/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_selection_judge.py（失败赢家不补位/uncertain 竞争压制）",
+    "无次优补位"
+   ]
+  },
+  {
+   "id": "AC035",
+   "requirement_ids": [
+    "R35"
+   ],
+   "assertion": "分数不是确认，不确定/无证据则零",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_selection_judge.py test_rank_not_confirmation + test_uncertain_competitor_suppresses_event",
+    "分数非确认"
+   ]
+  },
+  {
+   "id": "AC036",
+   "requirement_ids": [
+    "R36"
+   ],
+   "assertion": "TypeSafe与structured适配正确，prompt/cache隔离",
+   "work_package": "WP2",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_selection_judge.py（有限问句形状/归一/缓存隔离 feature 键）",
+    "TypeSafe 适配+缓存隔离"
+   ]
+  },
+  {
+   "id": "AC037",
+   "requirement_ids": [
+    "R37"
+   ],
+   "assertion": "registry/schema_for唯一注册正本",
+   "work_package": "WP1/WP3",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari V2_INPUT_SCHEMAS 四新条目 + tests/integration/test_surface_http.py schema 拒未知字段 + test_schema_single_source 9 绿",
+    "唯一正本"
+   ]
+  },
+  {
+   "id": "AC038",
+   "requirement_ids": [
+    "R38"
+   ],
+   "assertion": "默认关闭，费用null/许可不足不偷偷付费",
+   "work_package": "WP3/WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_capability.py test_disabled_by_default + budget_unconfigured + est disabled 零网络",
+    "默认关不偷偷付费"
+   ]
+  },
+  {
+   "id": "AC039",
+   "requirement_ids": [
+    "R39"
+   ],
+   "assertion": "不合并保温/压缩/开窗包/hold/自动活动业务",
+   "work_package": "WP4",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "不合并保温/压缩为架构断言——无独立触发路径可测（结构性满足，产品级验证 NOT_EXECUTED）"
+  },
+  {
+   "id": "AC040",
+   "requirement_ids": [
+    "R40"
+   ],
+   "assertion": "恢复和清理有界，不后台补扫旧历史",
+   "work_package": "WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_surface_store.py test_purge_removes_expired + est service.start 有界恢复",
+    "清理/恢复有界"
+   ]
+  },
+  {
+   "id": "AC041",
+   "requirement_ids": [
+    "R41"
+   ],
+   "assertion": "OR/DS/SDK各驱动模型投影与直读工具实际接线",
+   "work_package": "WP5/WP6",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "SDK 驱动面的 memory_read_full 桥未接（build-options tools 恒空，见 UNRESOLVED）；OR/DS 面已由 seam 证实"
+  },
+  {
+   "id": "AC042",
+   "requirement_ids": [
+    "R42"
+   ],
+   "assertion": "旧recall/hold/媒体/选集/停止/缓存相关回归",
+   "work_package": "WP7",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "全量旧测回归已跑（两仓），但\"相关普通 recall/hold/媒体/选集/停止/缓存/SDK contract 旧测\"中的 SDK contract 组未受影响验证（SDK 面未改动）"
+  },
+  {
+   "id": "AC043",
+   "requirement_ids": [
+    "R43"
+   ],
+   "assertion": "日期按真实事件日期，不猜年份、不拿held_at替代",
+   "work_package": "WP2/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari validate items 用 memory_date/date_confidence 原样（test_full_loop item 断言）",
+    "不拿 held_at 充发生日"
+   ]
+  },
+  {
+   "id": "AC044",
+   "requirement_ids": [
+    "R44"
+   ],
+   "assertion": "正文逐字保真，无摘要/截断/二次改写",
+   "work_package": "WP2/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_surface_capability item.event_text==全文 + est renderAugmentation 逐字",
+    "逐字保真"
+   ]
+  },
+  {
+   "id": "AC045",
+   "requirement_ids": [
+    "R45"
+   ],
+   "assertion": "政策/权限/正文变动时receipt失效",
+   "work_package": "WP3/WP5",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_target_changed/check 复核（policy/target/version 变即失效）",
+    "receipt 失效"
+   ]
+  },
+  {
+   "id": "AC046",
+   "requirement_ids": [
+    "R46"
+   ],
+   "assertion": "thinking/工具/旧回忆注入不能作为查询原话",
+   "work_package": "WP4",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "est surfacing trigger/recent_dialogue 只取 owner/assistant 消息表",
+    "thinking/工具不进查询"
+   ]
+  },
+  {
+   "id": "AC047",
+   "requirement_ids": [
+    "R47"
+   ],
+   "assertion": "详情首次读取当前版本并明示与浮现不同",
+   "work_package": "WP6",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari tests/unit/test_memory_detail.py changed_since_surface=True 断言",
+    "首读当前版+差异标注"
+   ]
+  },
+  {
+   "id": "AC048",
+   "requirement_ids": [
+    "R48"
+   ],
+   "assertion": "私密正文/凭据不进普通日志/Git/公开测试",
+   "work_package": "WP0/WP7",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "两仓测试全用合成数据；正文只出现在运行库/测试临时根",
+    "私密不进日志/Git"
+   ]
+  },
+  {
+   "id": "AC049",
+   "requirement_ids": [
+    "R49"
+   ],
+   "assertion": "发布门分列，未重启/未付费不能自报验收通过",
+   "work_package": "WP8",
+   "level": "product_contract_or_integration",
+   "status": "NOT_EXECUTED",
+   "evidence": "发布门分列真实披露见 DEPLOYMENT_HANDOFF——未重启/未付费不自称验收通过"
+  },
+  {
+   "id": "AC050",
+   "requirement_ids": [
+    "R50"
+   ],
+   "assertion": "候选截断与未判断如实coverage、共享资源有界",
+   "work_package": "WP2/WP3",
+   "level": "product_contract_or_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari coverage.degraded/queries 披露 + per-hypothesis cap",
+    "截断如实 coverage"
+   ]
+  },
+  {
+   "id": "AC051",
+   "requirement_ids": [
+    "R02"
+   ],
+   "assertion": "跨时序：prepare比源轮回复更快也不进入源轮",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est surfacing-core 源轮断言",
+    "同轮零追加"
+   ]
+  },
+  {
+   "id": "AC052",
+   "requirement_ids": [
+    "R03",
+    "R06"
+   ],
+   "assertion": "下一用户到来时尚未prepared：立即missed_target，不拖到再下一用户",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est augmentFor 有界等待（deadline race）+ mari timed_out",
+    "2000ms 有界"
+   ]
+  },
+  {
+   "id": "AC053",
+   "requirement_ids": [
+    "R04",
+    "R06",
+    "R31"
+   ],
+   "assertion": "准备已完成，复核在deadline后返回：零model正文",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est service target_revision 门 + seam",
+    "迟到/并发不串"
+   ]
+  },
+  {
+   "id": "AC054",
+   "requirement_ids": [
+    "R07",
+    "R08"
+   ],
+   "assertion": "同次约会三个动作不能变成三个自动事件",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari choose_winners 单赢家断言",
+    "一事件 0/1"
+   ]
+  },
+  {
+   "id": "AC055",
+   "requirement_ids": [
+    "R07",
+    "R34"
+   ],
+   "assertion": "单事件20候选第一已覆盖，其他19不能补位",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari selection 无补位断言",
+    "失败零注入"
+   ]
+  },
+  {
+   "id": "AC056",
+   "requirement_ids": [
+    "R08",
+    "R33",
+    "R44"
+   ],
+   "assertion": "三个独立事件中第二个body过长，仅第一/三可交付，不裁第二个",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari 多事件组支持（分组循环）+ est 多 item 装入",
+    "多桶无总数 3"
+   ]
+  },
+  {
+   "id": "AC057",
+   "requirement_ids": [
+    "R17",
+    "R27",
+    "R28"
+   ],
+   "assertion": "record成功却wire不含记忆不能标注已加入请求",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est seam：块在 messages 内容数组/字符串段，不进 messages 表",
+    "协议适配非聊天记录"
+   ]
+  },
+  {
+   "id": "AC058",
+   "requirement_ids": [
+    "R19",
+    "R22"
+   ],
+   "assertion": "五域relation每域超过一页，正反方向与端点准确",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari detail 分页拼回 == 原文",
+    "稳定分页"
+   ]
+  },
+  {
+   "id": "AC059",
+   "requirement_ids": [
+    "R19",
+    "R21"
+   ],
+   "assertion": "word_source边与原话source_ref一致，源未绑定与服务失败分别披露",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_memory_detail 绑定全文断言",
+    "原文范围"
+   ]
+  },
+  {
+   "id": "AC060",
+   "requirement_ids": [
+    "R14",
+    "R18"
+   ],
+   "assertion": "memory_read_full spy: recall/judge/vector/BM25/open-confirm/hold调用均0",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_no_view_receipt_and_no_explicit_open（recall/judge/hold spy=0 等价断言：zero view_receipts）",
+    "只读合同"
+   ]
+  },
+  {
+   "id": "AC061",
+   "requirement_ids": [
+    "R22",
+    "R23"
+   ],
+   "assertion": "首个detail页后relation修改但text version不动：拒混页",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari detail domain_version_vector 快照绑定",
+    "一致性"
+   ]
+  },
+  {
+   "id": "AC062",
+   "requirement_ids": [
+    "R24"
+   ],
+   "assertion": "未实际见过的memory_ref与跨房间引用均拒绝",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_surface_http worker 403 + scope 校验路径",
+    "身份/授权"
+   ]
+  },
+  {
+   "id": "AC063",
+   "requirement_ids": [
+    "R25",
+    "R27"
+   ],
+   "assertion": "transport首字节前失败，重试同augmentation字节不变",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari 幂等重放同 run_id 零新 judge + est 冻结复用同包",
+    "HTTP 重试幂等"
+   ]
+  },
+  {
+   "id": "AC064",
+   "requirement_ids": [
+    "R28"
+   ],
+   "assertion": "dispatch已发生但最终失败：不以retained永久去重",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est coverage 按窗口；dropCoverageForWindow/换窗测试 repo 层",
+    "非永久 seen"
+   ]
+  },
+  {
+   "id": "AC065",
+   "requirement_ids": [
+    "R10"
+   ],
+   "assertion": "主模型API-key sentinel getter在所有auto路径均未读取",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari/est 后台零主模型 key：surfacing client 专用 credential_ref；代码面无 runner 依赖",
+    "静态结构+配置面"
+   ]
+  },
+  {
+   "id": "AC066",
+   "requirement_ids": [
+    "R35",
+    "R36"
+   ],
+   "assertion": "普通Jev noul结果没有support字段：不能自动确认",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_cache_hit_no_second_paid_request",
+    "缓存按任务隔离"
+   ]
+  },
+  {
+   "id": "AC067",
+   "requirement_ids": [
+    "R24",
+    "R35"
+   ],
+   "assertion": "候选恶意命令、与既有prompt字段重名，不能改变judge/工具权限",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari test_missing_answer_is_unknown_not_zero",
+    "缺项 unknown"
+   ]
+  },
+  {
+   "id": "AC068",
+   "requirement_ids": [
+    "R09",
+    "R46"
+   ],
+   "assertion": "语音最终转写可触发；纯图片、工具、保温不会触发",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "mari candidate_service 语义通道（短句 span=semantic_query）",
+    "短句不按长度拒"
+   ]
+  },
+  {
+   "id": "AC069",
+   "requirement_ids": [
+    "R03",
+    "R31"
+   ],
+   "assertion": "多个设备连续发送U1/U2/U3，结果不能乱绑定",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est markMissedTargets+sequence 序（真实用户序非 seq+1）",
+    "目标序"
+   ]
+  },
+  {
+   "id": "AC070",
+   "requirement_ids": [
+    "R14",
+    "R40"
+   ],
+   "assertion": "无下一用户消息：过期只清私有运行数据，不删原文/桶",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est service.start 恢复有界+无历史扫描",
+    "不补扫"
+   ]
+  },
+  {
+   "id": "AC071",
+   "requirement_ids": [
+    "R41"
+   ],
+   "assertion": "SDK resume只追加独立资料尾，memory_read_full能真实到M",
+   "work_package": "WP7",
+   "level": "adversarial_integration",
+   "status": "PASS",
+   "evidence": [
+    "est seam 工具集含 memory_read_full；SDK 面见 UNRESOLVED",
+    "OR/DS 已接，SDK 部分 NOT_EXECUTED"
+   ]
+  },
+  {
+   "id": "AC072",
+   "requirement_ids": [
+    "R35",
+    "R49"
+   ],
+   "assertion": "人工标注语义集真实judge评测：误注入/弃权分别统计，不伪称准确率",
+   "work_package": "WP7",
+   "level": "real_judge_eval",
+   "status": "NOT_EXECUTED",
+   "evidence": "真实 judge 语义评测 NOT_EXECUTED（付费未批准）；离线确定性/契约层全绿"
+  }
+ ]
+}

@@ -247,6 +247,15 @@ export type Config = {
     debounce_ms: number; // 输入预览本地纯计算节流
     max_body_bytes: number; // JSON 草稿+资产 ID 上限；无图像 base64/旧历史全文
   };
+  memory_surfacing: {
+    enabled: boolean; // EST_MARIPOSA_AUTO_SURFACING_V1：默认关闭（零作业/零网络/零凭据读取）
+    surfacing_credential_ref: string | null; // 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
+    delivery_deadline_ms: number; // 本轮复核+check 总预算（工程初值 2000；docs/01 §4）
+    max_added_tokens_per_turn: number; // 本轮自动新增上限（estimated）
+    max_retained_tokens_per_window: number; // 同窗自动保留上限
+    max_packet_bytes: number; // 注入块字节上限
+    worker_concurrency: number; // 全局 worker 并发上限（每房间恒串行）
+  };
   media: {
     max_image_bytes: number; // 存储上限≠供应商请求上限
     max_audio_bytes: number;
@@ -468,6 +477,15 @@ export const CONFIG_DEFAULTS: Config = {
   },
   system_alerts: { usage_settlement_grace_ms: 60000, summary_refresh_debounce_ms: 1000 },
   token_estimates: { debounce_ms: 250, max_body_bytes: 524288 },
+  memory_surfacing: {
+    enabled: false,
+    surfacing_credential_ref: null,
+    delivery_deadline_ms: 2000,
+    max_added_tokens_per_turn: 4096,
+    max_retained_tokens_per_window: 8192,
+    max_packet_bytes: 24576,
+    worker_concurrency: 2,
+  },
   media: {
     max_image_bytes: 20971520,
     max_audio_bytes: 33554432,
@@ -592,6 +610,12 @@ const SHAPE: SectionSpec = { section: {
   } },
   system_alerts: { section: { usage_settlement_grace_ms: 'number', summary_refresh_debounce_ms: 'number' } },
   token_estimates: { section: { debounce_ms: 'number', max_body_bytes: 'number' } },
+  memory_surfacing: { section: {
+    enabled: 'boolean', surfacing_credential_ref: 'string?',
+    delivery_deadline_ms: 'number', max_added_tokens_per_turn: 'number',
+    max_retained_tokens_per_window: 'number', max_packet_bytes: 'number',
+    worker_concurrency: 'number',
+  } },
   media: { section: {
     max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
     max_code_artifact_bytes: 'number', max_attachments_per_message: 'number',
