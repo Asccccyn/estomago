@@ -1,4 +1,4 @@
-@import url("./home-v2-original/preview/home.css?v=mirror-fix-4");
+@import url("./home-v2-original/preview/home.css?v=cord-deep-red-20261019");
 /* Current homepage and second-version stone workbench. */
 .latest-workbench{margin:38px auto 40px;max-width:1170px;padding:18px 26px 28px;color:#36445b}
 .workbench-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:32px;align-items:start;justify-items:center}
@@ -26,9 +26,6 @@
 /* Compact phone composition: all artwork shares a single viewport. */
 @media(max-width:899px){
   .home{--top-safe:max(env(safe-area-inset-top,0px),28px);padding-top:var(--top-safe);min-height:100svh}
-  .page-header{height:24px;padding:0 5%;justify-content:flex-end}
-  .settings-toggle{font-size:10px;min-height:24px}
-  .settings:not([hidden]){position:absolute;z-index:60;top:calc(var(--top-safe) + 24px);left:3%;right:3%;margin:0;padding:14px;background:#f8f4ed;box-shadow:0 6px 20px #111d3620}
   .scene{width:100%;max-width:620px;height:calc(100svh - var(--top-safe) - 24px - env(safe-area-inset-bottom,0px));aspect-ratio:auto;container-type:size}
   .clock-module{left:8%;top:1.5%;width:84%;height:auto;aspect-ratio:3/1}
   .clock-touch{height:100%}
@@ -47,9 +44,9 @@
 }
 @media(min-width:900px){.scene>.latest-workbench{position:absolute;right:1%;top:60%;width:23%;margin:0;padding:0}}
 
-/* Original full-size animated shadow. */
-.gray-shadow{position:absolute;left:10%;right:-6%;top:calc(25% - 2px);bottom:calc(-19% + 2px);border-radius:25px;background:#aeb2b5;opacity:.17;pointer-events:none;transition:opacity .6s,transform .65s}
-.clock-module:is(:hover,:focus-within,.revealed) .gray-shadow{opacity:.43;transform:translate(calc(7px + var(--pointer-x,0px)),calc(7px + var(--pointer-y,0px)))}
+/* Opaque equivalents of the original gray over ivory: cords stay behind the shadow. */
+.gray-shadow{position:absolute;left:10%;right:-6%;top:calc(25% - 2px);bottom:calc(-19% + 2px);border-radius:25px;background:#ebe9e3;opacity:1;pointer-events:none;transition:background-color .6s,transform .65s}
+.clock-module:is(:hover,:focus-within,.revealed) .gray-shadow{background:#d8d8d5;transform:translate(calc(7px + var(--pointer-x,0px)),calc(7px + var(--pointer-y,0px)))}
 body.motion-paused .gray-shadow{transition:none;transform:none!important}
 @media(prefers-reduced-motion:reduce){.gray-shadow{transition:none;transform:none!important}}
 
@@ -152,7 +149,6 @@ body.motion-paused .shadow-quote{transition:none;transform:none!important}
    Geometry follows width; only the bottom navigation follows viewport height. */
 @media(max-width:899px){
   .home{--art-unit:calc(100vw / 584)}
-  .page-header{height:calc(24 * var(--art-unit))}
   .scene{height:calc(100svh - var(--top-safe) - 24 * var(--art-unit) - env(safe-area-inset-bottom,0px))}
   .clock-module{top:calc(14.7 * var(--art-unit))}
   .clock-picture{border-radius:calc(23.36 * var(--art-unit))}
@@ -199,23 +195,32 @@ body.motion-paused .shadow-quote{transition:none;transform:none!important}
 .butterfly-reflection{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;filter:blur(.35px) saturate(.78)}
 
 /* Glass and reflection use the same full-frame coordinates as the PNG border. */
-.mirror-surface{-webkit-mask-position:0 0;mask-position:0 0;mask-mode:alpha}
+.mirror-surface{-webkit-mask-position:0 0;mask-position:0 0;mask-mode:alpha;background:var(--ivory)}
 
 /* Requested vertical adjustment only. */
 .portrait-module,.mirror-module{translate:0 5px}
 .album-module{translate:-10px 20px}
 @media(max-width:899px){.album-module{translate:calc(-10 * var(--art-unit)) calc(15 * var(--art-unit) + 5px)}}
 
-/* Red cords traced from the user's sketch, separated at the occlusions. */
+/* Continuous cords sit below the artwork; only the top diagonal crosses in front. */
 .drawn-red-cord{position:absolute;inset:0;width:100%;height:100%;max-width:none;pointer-events:none;object-fit:fill}
 .drawn-red-back{z-index:1}
 .home>.scene{z-index:3}
 .drawn-red-front{z-index:35}
 
-.cord-glint{stroke-dashoffset:var(--cord-offset,0)}
+/* Only the glyphs cover the cord; the rest of the clock remains transparent here.
+   Opaque equivalents retain the original white-on-blue tones without red bleed. */
+.clock-face-foreground{inset:auto;z-index:36;pointer-events:none}
+.clock-face-foreground #clock-year{color:#f8f9fb}
+.clock-face-foreground #clock-month-day{color:#e7edf2}
 
-/* A thread entering along its route, once; the finished line remains visible. */
-.thread-line{stroke-dasharray:1 2;stroke-dashoffset:1;opacity:0;animation:thread-unroll calc(var(--reveal-duration) * .5) linear calc(var(--reveal-delay) * .5) forwards}
-@keyframes thread-unroll{from{opacity:1;stroke-dashoffset:1}to{opacity:1;stroke-dashoffset:0}}
-.motion-paused .thread-line{animation-play-state:paused}
-@media(prefers-reduced-motion:reduce){.thread-line{animation:none;stroke-dashoffset:0;opacity:1}}
+/* Painted paths remain visible if motion is unavailable or interrupted. */
+.thread-line{stroke-dasharray:none;stroke-dashoffset:0}
+
+/* The fixed scene iframe has no document scrollbar or platform-specific gutter. */
+html{scrollbar-gutter:auto;overflow:hidden}
+
+/* Keep the approved composition after removing all preview controls. */
+.top-space{height:24px}
+@media(max-width:899px){.top-space{height:calc(24 * var(--art-unit))}}
+@media(min-width:900px){.top-space{height:64px}}

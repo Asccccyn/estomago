@@ -1,1 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="500" height="861" viewBox="0 0 500 861"><defs><g id="cords"><path d="M154 -8 C147 30 203 67 249 109 C311 165 369 206 428 257 C490 311 553 354 622 392 C696 435 731 464 803 493 C875 528 929 554 987 564 C1027 575 1060 582 1108 590"/><path d="M481 940 C462 947 434 961 437 974 C444 993 484 1006 512 1012 C560 1020 611 1003 655 992 C699 979 734 963 765 972 C791 980 808 1008 814 1037"/></g></defs><g transform="matrix(.531915 0 0 .531915 -27.12766 0)" fill="none" stroke-linecap="round" stroke-linejoin="round"><use href="#cords" stroke="#642c38" stroke-width="5.2"/><use href="#cords" stroke="#b34c59" stroke-width="3.5"/></g></svg>
+<svg class="drawn-red-cord drawn-red-front" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="500" height="861" viewBox="0 0 500 861">
+  <defs><linearGradient id="cord-front-tone" gradientUnits="userSpaceOnUse" x1="160" y1="0" x2="820" y2="1620">
+    <stop stop-color="#8e202b"/><stop offset=".3" stop-color="#a72d36"/>
+    <stop offset=".58" stop-color="#95212c"/><stop offset=".82" stop-color="#b43a3e"/>
+    <stop offset="1" stop-color="#94242f"/>
+  </linearGradient></defs>
+  <g transform="matrix(.531915 0 0 .531915 -27.12766 0)" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <g data-cord="diagonal">
+      <path class="thread-line" stroke="#671a24" stroke-width="5.4" d="M150 -24 C143 37 220 96 297 158 C391 234 473 305 568 362 C662 419 757 463 856 507 C947 547 1013 566 1110 584"/>
+      <path class="thread-line" stroke="url(#cord-front-tone)" stroke-width="3.8" d="M150 -24 C143 37 220 96 297 158 C391 234 473 305 568 362 C662 419 757 463 856 507 C947 547 1013 566 1110 584"/>
+    </g>
+  </g>
+</svg>
