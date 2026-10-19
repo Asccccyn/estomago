@@ -214,7 +214,12 @@ export default function App() {
   const { scrollRef, contentRef, followLatest } = useChatScroll(msgs)
   const used = state.context.used
   const limit = state.context.limit
-  const pct = used != null && limit ? Math.min(1, used / limit) : 0
+  // 手动换窗参考线（她 2026-10-19 裁定）：容量圈按 uiReference（默认 128k）画，
+  // 超出仅标红提示、不阻断；参考线缺省时退回容量口径。600k 软线=自动换窗兜底。
+  const reference = state.context.reference
+  const circleBase = reference ?? limit
+  const pct = used != null && circleBase ? Math.min(1, used / circleBase) : 0
+  const overRef = used != null && reference != null && used > reference
   const send = () => { followLatest(); void client.send() }
   const selectMessage = (id: string) => client.select(id)
   const editMessage = (id: string) => { const next = window.prompt('编辑消息', client.originalText(id)); if (next !== null) void client.editMessage(id, next) }
@@ -308,7 +313,7 @@ export default function App() {
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
-              className="mb-8 flex w-full items-start gap-2.5 pr-[2em] text-left">
+              className="mb-8 flex w-full items-start gap-3 pl-5 pr-[2em] text-left">
               <SelectionCheck checked={state.selected.has(m.id)} />
               <span className="ml-auto flex w-[75%] flex-col items-end">
                 {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.6] tracking-[0.01em] text-[#1f1e1d]">{m.text}</p>}
@@ -330,9 +335,9 @@ export default function App() {
         ) : state.selectionMode && !m.pending ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
-              className="mb-8 flex w-full items-start gap-2.5 text-left">
+              className="mb-8 flex w-full items-start gap-3 pl-5 text-left">
               <SelectionCheck checked={state.selected.has(m.id)} />
-              <span className="w-[75%] pl-[2em]">
+              <span className="min-w-0 w-[75%]">
                 {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : (
                 <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
                   {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
@@ -402,8 +407,9 @@ export default function App() {
             <button onClick={() => setCtxOpen(!ctxOpen)} aria-label="上下文用量" className="p-1">
               <svg width="20" height="20" viewBox="0 0 20 20" className="-rotate-90">
                 <circle cx="10" cy="10" r="7.5" fill="none" stroke="#e6e2d8" strokeWidth="2.5" />
-                <circle cx="10" cy="10" r="7.5" fill="none" stroke="#3d3929" strokeWidth="2.5" strokeLinecap="round"
-                  strokeDasharray={2 * Math.PI * 7.5} strokeDashoffset={2 * Math.PI * 7.5 * (1 - pct)} />
+                <circle cx="10" cy="10" r="7.5" fill="none" stroke={overRef ? '#d94a3a' : '#3d3929'} strokeWidth="2.5" strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 7.5}
+                  style={{ strokeDashoffset: 2 * Math.PI * 7.5 * (1 - pct), transition: 'stroke-dashoffset 500ms ease, stroke 300ms ease' }} />
               </svg>
             </button>
             {ctxOpen && (
@@ -411,9 +417,12 @@ export default function App() {
                 <div className="fixed inset-0 z-10" onClick={() => setCtxOpen(false)} />
                 <div className="absolute bottom-14 left-0 z-20 w-56 rounded-xl border border-black/10 bg-white p-3 text-[12.5px] shadow-xl">
                   <p className="mb-2 font-medium">上下文窗口</p>
-                  {[['已用', `${used?.toLocaleString() ?? '未知'} tokens`], ['上限', `${limit?.toLocaleString() ?? '未知'} tokens`], ['占比', used != null && limit ? `${(pct * 100).toFixed(1)}%` : '未知'],
+                  {[['已用', `${used?.toLocaleString() ?? '未知'} tokens`],
+                    ['手换参考线', reference != null ? `${reference.toLocaleString()} tokens（超出标红，不阻断）` : '未知'],
+                    ['自动换窗上限', state.context.soft != null ? `${state.context.soft.toLocaleString()} tokens` : '未知'],
+                    ['占比（参考线）', used != null && circleBase ? `${(pct * 100).toFixed(1)}%${overRef ? '（已超出）' : ''}` : '未知'],
                     ['缓存读取', state.context.cacheRead == null ? '未知' : `${state.context.cacheRead} tokens`], ['模型', MODELS[model]], ['思考等级', EFFORTS[effort]]].map(([k, v]) => (
-                    <div key={k} className="flex justify-between py-0.5"><span className="text-[#8a8780]">{k}</span><span className="tabular-nums">{v}</span></div>
+                    <div key={k} className="flex justify-between py-0.5"><span className="text-[#8a8780]">{k}</span><span className={`tabular-nums ${k === '占比（参考线）' && overRef ? 'text-[#d94a3a]' : ''}`}>{v}</span></div>
                   ))}
                 </div>
               </>

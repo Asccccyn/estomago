@@ -39,15 +39,15 @@ function seed(c: { db: ReturnType<typeof openDatabase> }, id: string, text: stri
   c.db.prepare("INSERT INTO message_revisions(message_id,revision,kind,content,content_hash,occurred_at,received_at,source) VALUES (?,1,'text',?,?,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','audit')").run(id, text, sha256Hex(text));
 }
 
-type Page = { entries: Array<{ sequence: number; message_id: string }>; next_cursor?: Record<string, unknown> | null; has_more?: string | null; older_cursor?: Record<string, unknown> | null; newer_cursor?: Record<string, unknown> | null };
+type Page = { entries: Array<{ seq: number }>; next_cursor?: Record<string, unknown> | null; has_more?: string | null; older_cursor?: Record<string, unknown> | null; newer_cursor?: Record<string, unknown> | null };
 async function allPages(c: ReturnType<typeof makeExecutor>, first: Record<string, unknown>, max = 60) {
-  const rows: Array<{ sequence: number; message_id: string }> = [];
+  const rows: Array<{ seq: number }> = [];
   const pages: Page[] = [];
   let args = first;
   for (let i = 0; i < max; i++) {
     const r = await c.executor.execute('conversation_read', args, CTX);
     assert.equal(r.ok, true, JSON.stringify(r.output).slice(0, 200));
-    rows.push(...(r.output.entries as Array<{ sequence: number; message_id: string }>));
+    rows.push(...(r.output.entries as Array<{ seq: number }>));
     pages.push(r.output as Page);
     if (!(r.output as Page).next_cursor) return { rows, pages };
     args = { cursor: (r.output as Page).next_cursor, limit: first.limit };
@@ -63,12 +63,12 @@ test('RRA014 对照：原全库 10 长条范围模式仍全可达（按消息聚
     const r = await allPages(c, { from_sequence: 1, to_sequence: 10, limit: 20 });
     // 长行可分多片交付（同消息多 entry，片序=交付序）——按消息聚合
     const pieces = new Map<string, string[]>();
-    for (const e of r.rows as unknown as Array<{ message_id: string; text: string }>) {
-      pieces.set(e.message_id, [...(pieces.get(e.message_id) ?? []), e.text]);
+    for (const e of r.rows as unknown as Array<{ seq: number; text: string }>) {
+      pieces.set(e.seq, [...(pieces.get(e.seq) ?? []), e.text]);
     }
     assert.equal(pieces.size, 10, '十条全可达');
     for (const [mid, chunks] of pieces) {
-      assert.equal(chunks.join(''), bodies[mid], `${mid} 分片按序拼回逐字一致`);
+      assert.equal(chunks.join(''), bodies[`m${mid}`], `m${mid} 分片按序拼回逐字一致`);
     }
   } finally { c.db.close(); }
 });
@@ -78,7 +78,7 @@ test('RRA014 RED→FIX：older 续页保方向与原上界（不翻向无界 new
   try {
     for (let i = 1; i <= 20; i++) seed(c, `m${i}`, `row${i}:` + '中'.repeat(2990), i);
     const r = await allPages(c, { cursor: { older_than: 11 }, limit: 3 });
-    const seqs = [...new Set(r.rows.map((e) => e.sequence))].sort((a, b) => a - b);
+    const seqs = [...new Set(r.rows.map((e) => e.seq))].sort((a, b) => a - b);
     assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 'older_than=11 恰好交付 1..10——不漏 1..7、不越界到 11+');
   } finally { c.db.close(); }
 });
@@ -88,7 +88,7 @@ test('RRA014 RED→FIX：range 续页携带 to_sequence（3..7 不得读到 8+�
   try {
     for (let i = 1; i <= 12; i++) seed(c, `m${i}`, `short${i}`, i);
     const r = await allPages(c, { from_sequence: 3, to_sequence: 7, limit: 2 });
-    assert.deepEqual(r.rows.map((e) => e.sequence), [3, 4, 5, 6, 7], '范围恰好 3..7');
+    assert.deepEqual(r.rows.map((e) => e.seq), [3, 4, 5, 6, 7], '范围恰好 3..7');
   } finally { c.db.close(); }
 });
 
@@ -96,7 +96,7 @@ test('RRA014 RED→FIX：预算受限锚点页——锚点可达（不再被前�
   const c = makeExecutor(tempRoot('rra14-anchor-'));
   try {
     for (let i = 1; i <= 11; i++) seed(c, `m${i}`, `row${i}:` + '中'.repeat(2990), i);
-    const r = await c.executor.execute('conversation_read', { around_message_id: 'm6', before: 5, after: 5 }, CTX);
+    const r = await c.executor.execute('conversation_read', { around_seq: 6, before: 5, after: 5 }, CTX);
     assert.equal(r.ok, true);
     const out = r.output as Page;
     const all = [...out.entries];
@@ -106,8 +106,8 @@ test('RRA014 RED→FIX：预算受限锚点页——锚点可达（不再被前�
       const tail = await allPages(c, { cursor: cur });
       all.push(...tail.rows);
     }
-    assert.ok(all.some((e) => e.message_id === 'm6'), '请求的锚点必须可达（首页或续页路径）');
-    const seqs = [...new Set(all.map((e) => e.sequence))].sort((a, b) => a - b);
+    assert.ok(all.some((e) => e.seq === 6), '请求的锚点必须可达（首页或续页路径）');
+    const seqs = [...new Set(all.map((e) => e.seq))].sort((a, b) => a - b);
     assert.deepEqual(seqs, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], '前后邻全可达');
   } finally { c.db.close(); }
 });
@@ -211,8 +211,8 @@ test('RRA014-2 对照：两条 2995 中文整行分页各自整条交付（顺�
     bodies.forEach((v, i) => seed(c, `m${i + 1}`, v, i + 1));
     const r = await c.executor.execute('conversation_read', { from_sequence: 1, to_sequence: 2 }, CTX);
     const r2 = await c.executor.execute('conversation_read', { cursor: r.output.next_cursor }, CTX);
-    assert.deepEqual(r.output.entries.map((x: { sequence: number }) => x.sequence), [1]);
-    assert.deepEqual(r2.output.entries.map((x: { sequence: number }) => x.sequence), [2]);
+    assert.deepEqual(r.output.entries.map((x: { seq: number }) => x.seq), [1]);
+    assert.deepEqual(r2.output.entries.map((x: { seq: number }) => x.seq), [2]);
     assert.equal(r.output.entries[0].text, bodies[0]);
     assert.equal(r2.output.entries[0].text, bodies[1]);
     assert.equal(r.output.entries[0].fragment, undefined);

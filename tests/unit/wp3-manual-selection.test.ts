@@ -241,7 +241,7 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
     revisions: (ctx.db.prepare('SELECT COUNT(*) n FROM message_revisions').get() as { n: number }).n,
     outbox: (ctx.db.prepare('SELECT COUNT(*) n FROM outbox').get() as { n: number }).n,
   };
-  const longInput = `第二段很长的输入，用于越过软线触发换窗。${'内容填充。'.repeat(400)}`;
+  const longInput = `第二段很长的输入，用于越过软线触发换窗。${'内容填充。'.repeat(480)}`; // 2026-10-19 时间块瘦身后单轮开销变小——微调填充保证越旧窗软线且新窗预算仍装得下（触发语义不变）
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();

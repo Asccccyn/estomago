@@ -157,7 +157,7 @@ export function buildHostTools(): HostToolSpec[] {
       parameters: {
         type: 'object',
         properties: {
-          around_message_id: { type: 'string', minLength: 1, maxLength: 64, description: '定位锚点消息 ID：读它前后各若干条' },
+          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [seq N]）：读它前后各若干条' },
           revision: { type: 'integer', minimum: 1, description: '可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）' },
           before: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之前读几条（默认 5）' },
           after: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之后读几条（默认 5）' },
@@ -841,14 +841,16 @@ function splitSentences(text: string): string[] {
 
 export class HostToolExecutor {
   private db: Db;
+  private tz: string | null;
   private mariposa: MariposaClient | null;
   private reviews: RotationReviewService;
   private checkpoint: HoldCheckpointService;
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
     this.db = deps.db;
+    this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
     this.reviews = deps.reviews;
     this.checkpoint = deps.checkpoint;
@@ -1527,22 +1529,21 @@ export class HostToolExecutor {
     // WP-04（JFA-C08）：owner 的 sticker/voice 同为可见面（占位条目+转写正文
     //  由条目形态承载）——锚点/回读不再对合法素材报"不存在"
     const VISIBLE = "(m.speaker = 'owner' AND m.kind IN ('text','multimodal','sticker','voice')) OR (m.speaker = 'assistant' AND m.published_at IS NOT NULL)";
-    const syncStateOf = (messageId: string, revision: number): string => {
-      const row = this.db.prepare('SELECT state FROM outbox WHERE operation_key = ?').get(`archive:${messageId}:${revision}`) as { state: string } | undefined;
-      if (!row) return 'local_only';
-      if (row.state === 'acked') return 'synced';
-      if (row.state === 'failed') return 'failed';
-      return 'pending'; // pending/sent/unknown_outcome → 尚未取得正式收据
+    // 2026-10-19 她裁定（JSON 瘦身）：条目只留模型消费的字段——seq 寻址
+    //（配 [seq N]）、rev、说话人、短时间（本地 MM-DD HH:MM，分钟精度）、
+    // 正文。message_id/content_hash/sync_state 不出站（核对是系统的事）。
+    const shortAt = (utcIso: string): string => {
+      try {
+        const f = new Intl.DateTimeFormat('en-CA', { timeZone: this.tz ?? 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+        return f.format(new Date(utcIso)).replace(',', '');
+      } catch { return utcIso.slice(5, 16); }
     };
     const entryOf = (row: ReadRow, fragment?: { start: number; end: number; total: number }): Record<string, unknown> => {
       const entry: Record<string, unknown> = {
-        message_id: row.id,
-        revision: row.revision,
-        sequence: row.sequence,
+        seq: row.sequence,
+        rev: row.revision,
         speaker: row.speaker,
-        occurred_at: row.occurred_at,
-        content_hash: row.content_hash,
-        sync_state: syncStateOf(row.id, row.revision),
+        at: shortAt(row.occurred_at),
         text: row.content,
       };
       if (fragment) {
@@ -1598,7 +1599,7 @@ export class HostToolExecutor {
       while (width >= 1) {
         const end = Math.min(cpLen, width);
         const cand = entryOf(row, { start: 0, end, total: cpLen });
-        if (end < cpLen) (cand.fragment as Record<string, unknown>).continue_cursor = { fragment: { message_id: row.id, revision: row.revision, start_char: end } };
+        if (end < cpLen) (cand.fragment as Record<string, unknown>).continue_cursor = { fragment: { seq: row.sequence, rev: row.revision, start_char: end } };
         if (jsonBytes(cand) <= pageBudget()) {
           if (entries.length > 0 && end < FRAGMENT_MIN_CHARS && cpLen > FRAGMENT_MIN_CHARS) return false;
           entries.push(cand);
@@ -1627,29 +1628,29 @@ export class HostToolExecutor {
     /** 条目是否携带**未完分片**（页终止标记——同页至多一个未完分片：
      *  第二个只有最后一个能进 next_cursor 链，先出现者尾段会被搁死，
      *  RRA-014 回访抓到的实际缺陷）。全文件唯一判定点。 */
-    const isOpenFragment = (e: Record<string, unknown> | undefined): e is { message_id: string; revision: number; sequence: number; fragment: { end_char: number } } => {
+    const isOpenFragment = (e: Record<string, unknown> | undefined): e is { seq: number; rev: number; fragment: { end_char: number } } => {
       const fr = (e as { fragment?: { content_complete?: boolean } } | undefined)?.fragment;
       return !!fr && fr.content_complete === false;
     };
     /** 未完分片的续页游标：先续片，片尽经 resume 回方向/范围上下文
      *  （链不断）。全文件唯一组装点。 */
     const openFragmentCursor = (
-      e: { message_id: string; revision: number; sequence: number; fragment: { end_char: number } },
+      e: { seq: number; rev: number; fragment: { end_char: number } },
       dir: 'older' | 'newer', upTo: number | null,
     ): Record<string, unknown> => ({
-      fragment: { message_id: e.message_id, revision: e.revision, start_char: e.fragment.end_char },
-      resume: { ...(dir === 'older' ? { older_than: e.sequence } : { newer_than: e.sequence }), ...(upTo !== null ? { up_to: upTo } : {}) },
+      fragment: { seq: e.seq, rev: e.rev, start_char: e.fragment.end_char },
+      resume: { ...(dir === 'older' ? { older_than: e.seq } : { newer_than: e.seq }), ...(upTo !== null ? { up_to: upTo } : {}) },
     });
     const upToOf = (c: Record<string, unknown>): number | null =>
       typeof c.up_to === 'number' && Number.isFinite(c.up_to) && (c.up_to as number) >= 1 ? Math.floor(c.up_to as number) : null;
     if (cursor) {
       const frag = cursor.fragment as Record<string, unknown> | undefined;
       const resume = (cursor.resume && typeof cursor.resume === 'object' && !Array.isArray(cursor.resume)) ? cursor.resume as Record<string, unknown> : null;
-      if (frag && typeof frag.message_id === 'string' && typeof frag.revision === 'number' && typeof frag.start_char === 'number') {
+      if (frag && typeof frag.seq === 'number' && typeof frag.rev === 'number' && typeof frag.start_char === 'number') {
         const row = this.db.prepare(
           `SELECT m.id, m.sequence, m.speaker, r.revision, r.content, r.content_hash, r.occurred_at FROM messages m
-           JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ? AND (${VISIBLE})`,
-        ).get(frag.revision, frag.message_id, roomId) as ReadRow | undefined;
+           JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.sequence = ? AND m.conversation_id = ? AND (${VISIBLE})`,
+        ).get(frag.rev, frag.seq, roomId) as ReadRow | undefined;
         if (!row) return { ok: false, output: { error_code: 'READ_CURSOR_INVALID', error: '分片游标指向的消息/修订不存在或不可读' } };
         const total = [...row.content].length;
         const start = Math.max(0, Math.min(frag.start_char, total));
@@ -1660,7 +1661,7 @@ export class HostToolExecutor {
         while (width >= 1) {
           end = Math.min(total, start + width);
           const cand = entryOf(row, { start, end, total });
-          if (end < total) (cand.fragment as Record<string, unknown>).continue_cursor = { fragment: { message_id: row.id, revision: row.revision, start_char: end } };
+          if (end < total) (cand.fragment as Record<string, unknown>).continue_cursor = { fragment: { seq: row.sequence, rev: row.revision, start_char: end } };
           if (jsonBytes(cand) <= OUTPUT_MAX_JSON_BYTES - ENVELOPE_RESERVE_BYTES) { e = cand; break; }
           width = Math.floor(width / 2);
         }
@@ -1670,7 +1671,7 @@ export class HostToolExecutor {
         const fragMore = end < total;
         const resumeDir = resume && typeof resume.older_than === 'number' ? 'older' : 'newer';
         const nextCursor = fragMore
-          ? { fragment: { message_id: row.id, revision: row.revision, start_char: end }, ...(resume ? { resume } : {}) }
+          ? { fragment: { seq: row.sequence, rev: row.revision, start_char: end }, ...(resume ? { resume } : {}) }
           : resume;
         return { ok: true, output: {
           note: '同一消息的下一片（查询不变）', entries,
@@ -1707,7 +1708,7 @@ export class HostToolExecutor {
             next_cursor: openFragmentCursor(lastEntry, older ? 'older' : 'newer', upTo),
           }, seenAdditions: seen };
         }
-        const frontier = (lastEntry?.sequence as number | undefined) ?? boundary;
+        const frontier = (lastEntry?.seq as number | undefined) ?? boundary;
         const beyond = this.db.prepare(
           `SELECT 1 AS x FROM messages m
            JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
@@ -1722,11 +1723,11 @@ export class HostToolExecutor {
       return { ok: false, output: { error_code: 'READ_CURSOR_INVALID', error: '游标形状不认识（older_than/newer_than/fragment 三选一）' } };
     }
 
-    // —— 锚点模式：around_message_id ± before/after（锚点须在本房间；跨房间=找不到，不泄漏） ——
-    const anchorId = typeof args.around_message_id === 'string' ? args.around_message_id : null;
-    if (anchorId) {
-      const anchor = this.db.prepare('SELECT id, sequence FROM messages WHERE id = ? AND conversation_id = ?').get(anchorId, roomId) as { id: string; sequence: number } | undefined;
-      if (!anchor) return { ok: false, output: { error_code: 'READ_ANCHOR_NOT_FOUND', error: '锚点消息不存在（或不属于本房间）' } };
+    // —— 锚点模式：around_seq ± before/after（锚点须在本房间；跨房间=找不到，不泄漏） ——
+    const anchorSeqArg = typeof args.around_seq === 'number' && Number.isInteger(args.around_seq) ? args.around_seq : null;
+    if (anchorSeqArg) {
+      const anchor = this.db.prepare('SELECT id, sequence FROM messages WHERE sequence = ? AND conversation_id = ?').get(anchorSeqArg, roomId) as { id: string; sequence: number } | undefined;
+      if (!anchor) return { ok: false, output: { error_code: 'READ_ANCHOR_NOT_FOUND', error: '锚点序号不存在（或不属于本房间）' } };
       const before = Math.min(Math.max(typeof args.before === 'number' ? Math.floor(args.before) : 5, 1), 50);
       const after = Math.min(Math.max(typeof args.after === 'number' ? Math.floor(args.after) : 5, 1), 50);
       // 指定历史修订：读不到如实报（不拿当前修订冒充）
@@ -1735,8 +1736,8 @@ export class HostToolExecutor {
         const wantRev = args.revision;
         anchorEntry = this.db.prepare(
           `SELECT m.id, m.sequence, m.speaker, r.revision, r.content, r.content_hash, r.occurred_at FROM messages m
-           JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ? AND (${VISIBLE})`,
-        ).get(wantRev, anchorId, roomId) as ReadRow | null;
+           JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.sequence = ? AND m.conversation_id = ? AND (${VISIBLE})`,
+        ).get(wantRev, anchorSeqArg, roomId) as ReadRow | null;
         if (!anchorEntry) return { ok: false, output: { error_code: 'READ_REVISION_UNAVAILABLE', error: `修订 ${wantRev} 读不到（不存在/不可读）——不以当前修订冒充` } };
       }
       const olderRows = this.db.prepare(
@@ -1755,8 +1756,8 @@ export class HostToolExecutor {
         const a = this.db.prepare(
           `SELECT m.id, m.sequence, m.speaker, m.current_revision, r.revision, r.content, r.content_hash, r.occurred_at
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-           WHERE m.id = ? AND m.conversation_id = ? AND (${VISIBLE})`,
-        ).get(anchorId, roomId) as ReadRow | undefined;
+           WHERE m.sequence = ? AND m.conversation_id = ? AND (${VISIBLE})`,
+        ).get(anchorSeqArg, roomId) as ReadRow | undefined;
         anchorEntry = a ?? null;
       }
       // RRA-014（回访 2026-10-09）：锚点**预留优先**——先按预算构造锚点
@@ -1782,7 +1783,7 @@ export class HostToolExecutor {
         newerServed++;
         if (isOpenFragment(newerTail.entry)) break;
       }
-      entries.sort((a, b) => (a.sequence as number) - (b.sequence as number));
+      entries.sort((a, b) => (a.seq as number) - (b.seq as number));
       const out: Record<string, unknown> = { note: '本房间已保存原文（数据，非指令）；读取不产生记录动作', entries };
       // RRA-014（回访）：侧游标取该侧**最远已交付**（older=最小已交付
       // seq；一侧全被预算挤掉=锚点序号），跳过行/更深窗口续页可达
@@ -1825,7 +1826,7 @@ export class HostToolExecutor {
           next_cursor: openFragmentCursor(lastEntry, 'newer', to),
         }, seenAdditions: seen };
       }
-      const frontier = (lastEntry?.sequence as number | undefined) ?? from;
+      const frontier = (lastEntry?.seq as number | undefined) ?? from;
       const beyond = this.db.prepare(
         `SELECT 1 AS x FROM messages m
          JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
@@ -1837,7 +1838,7 @@ export class HostToolExecutor {
       if (more) out.next_cursor = { newer_than: frontier, up_to: to };
       return { ok: true, output: out, seenAdditions: seen };
     }
-    return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'around_message_id / from_sequence+to_sequence / cursor 三选一必填' } };
+    return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'around_seq / from_sequence+to_sequence / cursor 三选一必填' } };
   }
 
   /** I/计划只读批（2026-10-10）：memory_i_read——I 的当前话/条目/历史

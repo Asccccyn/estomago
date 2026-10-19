@@ -117,6 +117,10 @@ export type Config = {
   };
   windows: {
     soft_limit_tokens: number; // 输入工作集软线（§4.1 初值 64000；有效软线=min(此值, C-O-T-R-S)）
+    // 换窗策略分层（她 2026-10-19 裁定）：soft_limit=自动换窗的最高上限兜底；
+    // 手动换窗随时可换、任意用量（/rotate 无大小门槛）；ui_reference_tokens=
+    // 前台容量圈的视觉参考线——非硬规定，超出仅标红提示不阻断。
+    ui_reference_tokens: number;
     tool_input_reserve_tokens: number; // T（§4.2 初值 8k）
     review_reserve_tokens: number; // R：换窗提醒及必要 hold 往返预留（8k）
     safety_reserve_tokens: number; // S（4k）
@@ -357,6 +361,7 @@ export const CONFIG_DEFAULTS: Config = {
   // 这些是配置初值，不是上游极限或最优成本结论；C=null 必须由实际端点能力补齐。
   windows: {
     soft_limit_tokens: 64000,
+    ui_reference_tokens: 128000, // 前台容量圈参考线（她 2026-10-19：128k 起，可调；超出标红不阻断）
     tool_input_reserve_tokens: 8000,
     review_reserve_tokens: 8000,
     safety_reserve_tokens: 4000,
@@ -520,6 +525,7 @@ const SHAPE: SectionSpec = { section: {
   } },
   windows: { section: {
     soft_limit_tokens: 'number',
+    ui_reference_tokens: 'number',
     tool_input_reserve_tokens: 'number', review_reserve_tokens: 'number',
     safety_reserve_tokens: 'number',
     model_context_capacity: 'number?', threshold_status: 'string?', normal_rotation_uses_new_session: 'boolean',

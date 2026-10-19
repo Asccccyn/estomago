@@ -158,7 +158,7 @@ test('T1：明确空选换窗后新窗 payload 不含旧原文；同窗失败回
   assert.ok(catchupSeen, '同窗失败回合的已发输入经追赶进入后续请求（对照不回归）');
   const win1 = ctx.windows.activeWindow('c1')!;
   // 容量触发换窗：长输入越软线 → awaiting → 明确空选确认 → 新窗恢复
-  const longInput = `很长的新输入，用于越过软线触发换窗。${'内容填充。'.repeat(400)}`;
+  const longInput = `很长的新输入，用于越过软线触发换窗。${'内容填充。'.repeat(480) /* 2026-10-19 时间块瘦身——微调越线填充 */}`;
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();
@@ -199,7 +199,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
   const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(480) /* 2026-10-19 时间块瘦身——微调越线填充 */}`;
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();
@@ -226,7 +226,7 @@ test('T2b：正常换窗成功返回时初始轨迹已存在（无需下一轮�
   const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '旧窗原话', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(480) /* 2026-10-19 时间块瘦身——微调越线填充 */}`;
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();
@@ -346,7 +346,7 @@ test('RRA-016/WP07-T2 拆分：bootstrap 503=明确未取得资料且不阻塞�
   const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(400)}`;
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(480) /* 2026-10-19 时间块瘦身——微调越线填充 */}`;
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 'm2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();

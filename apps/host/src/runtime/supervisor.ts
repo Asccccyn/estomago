@@ -22,7 +22,7 @@ import type { UsageCollector } from '../usage/collector.ts';
 import type { RoutingService } from '../routing/service.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import type { Logger } from '../observability/logging.ts';
-import { buildTimeContext } from '../time/context.ts';
+import { buildTimeContext, modelTimeContextJson } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
 import { assembleContext } from '../context/assembler.ts';
 import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
@@ -1071,7 +1071,11 @@ export class TurnSupervisor {
     attemptId: string;
     turnId: string | null; // 自动换窗=当前 turn（评审请求可被 stop(turnId) 中断）；手动换窗=null（stopAll 兜底）
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
-    force?: boolean; // 手动换窗（F05：同一管线，不经评审直转的旁路已封）
+    force?: boolean; // 手动换窗：跳过容量计划（任意用量可换）
+    // 她裁定 2026-10-19：手动换窗不触发换窗前记忆检查（她自己提醒）——
+    // 记 skipped 凭证如实定位后直接换窗；F05 同管线评审降级为仅自动路径。
+    // 选集门/评审互斥/unknown 写恢复/未决阻断保留（数据完整性，非检查）。
+    skipReview?: boolean;
   }): Promise<{ rotated: boolean; blocked: string | null }> {
     const d = this.d;
     const dv = this.drv();
@@ -1205,6 +1209,16 @@ export class TurnSupervisor {
       d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, [], {
         reason: 'reminders_disabled',
         note: '她裁定开关：关=不发评审提醒',
+      });
+      return await this.doRotate(o, reason, null, selectionId);
+    }
+
+    // 她裁定 2026-10-19：手动换窗不发检查请求（她自己提醒）——同样记
+    // skipped 凭证如实定位（不伪造 reviewed/held 覆盖），直接换窗。
+    if (o.skipReview) {
+      d.reviews.markSkippedEmpty(o.window.id, o.conversationId, o.window.revision, [], {
+        reason: 'manual_no_review',
+        note: '她裁定 2026-10-19：手动换窗不触发记忆检查，她自己提醒',
       });
       return await this.doRotate(o, reason, null, selectionId);
     }
@@ -1616,6 +1630,7 @@ export class TurnSupervisor {
       conversationId, window, gate, currentInputSequence: nextSeq, attemptId: 'manual-rotate', turnId: null,
       materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       force: true,
+      skipReview: true,
     });
     if (r.blocked) return { ok: false, reason: r.blocked };
     const active = d.windows.activeWindow(conversationId);
@@ -1862,7 +1877,7 @@ export class TurnSupervisor {
       {
         conversationId: turn.conversation_id, windowId: window?.id ?? null, turnId,
         inputMessageId: inputMessage?.id ?? null,
-        timeContextJson: JSON.stringify(timeCtx),
+        timeContextJson: modelTimeContextJson(timeCtx),
         userInput: { revision: effective.revision, content: effective.content },
       },
       {},

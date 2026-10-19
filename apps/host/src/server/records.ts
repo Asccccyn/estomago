@@ -12,7 +12,7 @@ export type RecordSnapshot = {
   epochId: string | null;
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
-  context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string };
+  context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string; uiReference: number };
   cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' }; cacheEvidenceState: 'dispatch_started_at' | 'legacy_observed_at' | 'no_evidence'; nextKeepwarmEstimateAt: string | null };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
   bookmark: { seenSequence: number | null; memoryId: string | null; updatedAt: string | null } | null; // F22：成功书签位置
@@ -122,7 +122,7 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
-    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality },
+    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
       requestedTtl: driver === 'deepseek' ? 'auto' : '1h',
