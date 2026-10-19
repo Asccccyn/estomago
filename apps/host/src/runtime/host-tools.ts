@@ -14,6 +14,8 @@
 import { sha256Hex } from '../util/id.ts';
 import type { Db } from '../db/connection.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
+import { SurfacingRepository } from '../memory-surfacing/repository.ts';
+import { executeMemoryReadFull } from '../memory-surfacing/detail-tool.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 
@@ -79,12 +81,12 @@ export function buildHostTools(): HostToolSpec[] {
             items: {
               type: 'object', additionalProperties: false, required: ['seq'],
               properties: {
-                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [seq N]）' },
+                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [N]）' },
                 from: { type: 'integer', minimum: 1, description: '从该消息第几句开始（1 起算；省略=整条消息）' },
                 to: { type: 'integer', minimum: 1, description: '到第几句结束（含）；与 from 成对' },
               },
             },
-            description: '我们的话，可选。勾选想留的：给消息序号（对话里每条消息开头的 [seq N]），可加 from/to 只选其中几句，系统直接录入原文、标注说话人。你的话和她的话一样重要。',
+            description: '我们的话，可选。勾选想留的：给消息序号（对话里每条消息开头的 [N]），可加 from/to 只选其中几句，系统直接录入原文、标注说话人。你的话和她的话一样重要。',
           },
           plan_ids: { type: 'array', items: { type: 'string', minLength: 1 } },
           creation_mode: { type: 'string', enum: [...HOLD_CREATION_MODES], description: 'contemporaneous=当下聊到随手记；retrospective=补记过去的事（须配 memory_date）' },
@@ -148,6 +150,25 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      // EST_MARIPOSA_AUTO_SURFACING_V1（2026-10-19）：按已交付引用直读原桶
+      // 全量详情（docs/05）。工具契约从新 epoch 初始即进冻结工具集——
+      // 不等首次浮现出现后才动态加（docs/06 E）。
+      name: 'memory_read_full',
+      description: '按已收到的记忆引用直接读取该桶当前完整内容与关联关系；不是搜索。未完时原样传 cursor 继续同一详情快照。读取不会自动写记忆、确认明确打开或续期。',
+      parameters: {
+        type: 'object',
+        properties: {
+          memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '回忆浮现块里的 [记忆引用 sf_xxxx] 短引用' },
+          cursor: { type: 'string', minLength: 1, maxLength: 128, description: '上一页返回的 next_cursor（首页省略）' },
+        },
+        required: ['memory_ref'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       // WP4（MANUAL_HANDOFF_JUDGE_SWITCH_V1 §7.2，2026-10-08）：主模型只读
       // 原文回读——已知消息/范围的直接展开，不经判断器；房间由宿主派生
       //（模型不能自填别的房间）；不含 UI 思考/草稿/system/tool；只读无副作用
@@ -157,7 +178,7 @@ export function buildHostTools(): HostToolSpec[] {
       parameters: {
         type: 'object',
         properties: {
-          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [seq N]）：读它前后各若干条' },
+          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [N]）：读它前后各若干条' },
           revision: { type: 'integer', minimum: 1, description: '可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）' },
           before: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之前读几条（默认 5）' },
           after: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之后读几条（默认 5）' },
@@ -304,7 +325,7 @@ export function buildHostTools(): HostToolSpec[] {
             items: {
               type: 'object', additionalProperties: false, required: ['seq'],
               properties: {
-                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [seq N]）' },
+                seq: { type: 'integer', minimum: 1, description: '消息序号（每条消息开头的 [N]）' },
                 from: { type: 'integer', minimum: 1, description: '从该消息第几句开始（1 起算；省略=整条消息）' },
                 to: { type: 'integer', minimum: 1, description: '到第几句结束（含）；与 from 成对' },
               },
@@ -1062,7 +1083,7 @@ export class HostToolExecutor {
   }
 
   private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs);
@@ -1091,8 +1112,21 @@ export class HostToolExecutor {
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
+    if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string }, ctx);
     if (name.startsWith('wishstar_')) return await this.wishstarTool(name, checked.value as Record<string, unknown>, ctx);
     return this.reviewComplete(checked.value, ctx);
+  }
+
+  /** EST_MARIPOSA_AUTO_SURFACING_V1（docs/05）：已见 ref 门+E 侧 ref→
+   *  detail_ref 解析+M detail 快照读取。绝不 recall；不建 view_receipt；
+   *  结构化错误码原样作为工具结果返回（错误不吞）。 */
+  private async memoryReadFull(args: { memory_ref?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    const client = this.mariposaClient();
+    if (!client) return { ok: false, output: { error_code: 'MARIPOSA_NOT_CONFIGURED', error: 'Mariposa 客户端未装配' } };
+    const repo = new SurfacingRepository(this.db);
+    const r = await executeMemoryReadFull(repo, client, { memory_ref: args.memory_ref, cursor: args.cursor });
+    if (!r.ok) return { ok: false, output: { error_code: r.code, error: r.message } };
+    return { ok: true, output: r.data };
   }
 
   /** 模型指认的引用核对（她的裁定 2026-10-05 + 审计 D13/D16）：
@@ -1530,7 +1564,7 @@ export class HostToolExecutor {
     //  由条目形态承载）——锚点/回读不再对合法素材报"不存在"
     const VISIBLE = "(m.speaker = 'owner' AND m.kind IN ('text','multimodal','sticker','voice')) OR (m.speaker = 'assistant' AND m.published_at IS NOT NULL)";
     // 2026-10-19 她裁定（JSON 瘦身）：条目只留模型消费的字段——seq 寻址
-    //（配 [seq N]）、rev、说话人、短时间（本地 MM-DD HH:MM，分钟精度）、
+    //（配 [N]）、rev、说话人、短时间（本地 MM-DD HH:MM，分钟精度）、
     // 正文。message_id/content_hash/sync_state 不出站（核对是系统的事）。
     const shortAt = (utcIso: string): string => {
       try {
