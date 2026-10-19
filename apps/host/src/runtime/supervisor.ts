@@ -72,6 +72,13 @@ export type SupervisorDeps = {
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
   media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
+  // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
+  // 未注入=零变化；supervisor 只持薄接口，策略全在 memory-surfacing/service.ts。
+  surfacing?: {
+    augmentFor(input: import('../memory-surfacing/service.ts').AugmentInput): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
+    reuseFrozen(attemptId: string): import('../memory-surfacing/service.ts').AugmentResult | null;
+    markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
+  };
 };
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
@@ -312,11 +319,11 @@ export class TurnSupervisor {
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
    *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
-  /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [seq N]（勾选式
+  /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
   private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
-    const withSeq = (t: string): string => (opts.seq !== undefined ? `[seq ${opts.seq}]\n${t}` : t);
+    const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
         const proj = this.d.media.projectForRevision(messageId, revision);
@@ -612,8 +619,10 @@ export class TurnSupervisor {
         const row = dbRows[i]!;
         if (row.speaker !== speaker || row.content.length === 0) continue;
         // D11：锚定匹配（杜绝子串误配）——基底段=裸正文等值；回合追加段=装配投影，以 [user_input] 头收尾；
-        // 2026-10-18 序号前缀形态：[seq N]\n+正文（模型面渲染带序号后新增的锚定）
+        // 序号前缀形态锚定：旧窗轨迹 [seq N]\n（2026-10-18 批）与新渲染
+        // [N]\n（2026-10-19 瘦身裁定）并存——换窗前的存量轨迹按旧形态回放
         const anchored = text === row.content
+          || text === `[${row.sequence}]\n${row.content}`
           || text === `[seq ${row.sequence}]\n${row.content}`
           || (speaker === 'owner' && text.endsWith(`[user_input]\n${row.content}`));
         if (anchored) {
@@ -1867,11 +1876,28 @@ export class TurnSupervisor {
         const row = d.db
           .prepare('SELECT revision, content, content_hash FROM message_revisions WHERE message_id = ? AND revision = ?')
           .get(inputMessage.id, attempt.input_revision) as { revision: number; content: string; content_hash: string } | undefined;
-        if (row) return { ...row, sequence: inputMessage.sequence };
+        if (row) return { revision: row.revision, content: row.content, hash: row.content_hash, sequence: inputMessage.sequence };
       }
       return { content: inputMessage.revision.content, revision: inputMessage.current_revision, hash: inputMessage.revision.content_hash, sequence: inputMessage.sequence };
     })();
 
+    // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · docs/04）：目标内容修订
+    // 确定之后、最终 payload 冻结之前——有界 validate/check（服务内控
+    // 2000ms 总预算）+ 尝试级冻结注入块。源轮绝不注入（只有绑定到本
+    // 消息的 target 作业能命中）；工具续轮不重跑本路径（runTurn 每
+    // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
+    let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
+    if (d.surfacing && inputMessage && inputMessage.speaker === 'owner') {
+      try {
+        surfacingAugment = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
+          conversationId: turn.conversation_id, windowId: window.id, turnId,
+          attemptId: attempt.id,
+          message: { id: inputMessage.id, revision: effective.revision, sequence: inputMessage.sequence, content: effective.content, hash: effective.hash },
+        });
+      } catch {
+        surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
+      }
+    }
     // §3：经 ContextAssembler 构造（allowlist builder；reasoning 无通道）
     const assembledContext = assembleContext(
       {
@@ -1885,6 +1911,10 @@ export class TurnSupervisor {
     const prompt = assembledContext.segments
       .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
       .join('\n\n');
+    // SDK 面适配（docs/04）：回忆独立块置于本轮 user_input 之前（字符串
+    // 序列化，分段 manifest 由 surfacing_deliveries 保留）；信封面在
+    // tailProjection 用独立 host-origin text block。
+    const sdkPrompt = surfacingAugment ? `${surfacingAugment.text}\n\n${prompt}` : prompt;
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
@@ -1925,6 +1955,13 @@ export class TurnSupervisor {
       : (fallbackBuild ? fallbackBuild.envelope.messages : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true });
+    // docs/04：OR/DS 路径在本轮 user message 的 content 数组中以独立
+    // host-origin text block 放到真实 user_input block 之前——内部
+    // segments 来源=memory_surfacing（surfacing_deliveries 持分段
+    // manifest）；不改 messages/outbox/原文 seq 标注。
+    if (surfacingAugment) {
+      tailProjection.blocks.unshift({ type: 'text', text: surfacingAugment.text });
+    }
     const orMessages: OrMessage[] = orTraj
       ? [...orTraj.messages, ...catchupMessages, { role: 'user', content: tailProjection.blocks } as unknown as OrMessage]
       : orBaseMessages;
@@ -1991,7 +2028,10 @@ export class TurnSupervisor {
     // 首段创建、后续段落以新修订追加（内容增长）；不再逐段独立成气泡
     let turnAssistantMessageId: string | null = null;
     const publishSegments = (segs: string[]): void => {
-      for (const seg of segs) {
+      // 2026-10-19 她报障：模型把消息序号标记学舌进回复开头（前端可见）。
+      // 发表层剥除段首标记（[N]/[seq N] 形态）——提示词已禁写，这里是保险层
+      const stripped = segs.map((s) => s.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, ''));
+      for (const seg of stripped) {
         if (runToken.token.cancelled) return;
         let msg: ReturnType<import('../messages/service.ts').MessageService['getMessage']> | null;
         if (turnAssistantMessageId === null) {
@@ -2223,7 +2263,7 @@ export class TurnSupervisor {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
         result = await Promise.race([
-          runner.run({ prompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent }),
+          runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent }),
           new Promise<never>((_, reject) => {
             const arm = (): void => {
               setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();
@@ -2316,6 +2356,9 @@ export class TurnSupervisor {
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
       d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen]);
+      // 自动浮现：成功轨迹落正本后 retain（真实 manifest 确认，不是入库 ready
+      // 就算送达——docs/04 retained 语义）；失败回合不假标 coverage。
+      if (surfacingAugment) d.surfacing?.markRetained(surfacingAugment);
     }
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {
