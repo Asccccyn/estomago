@@ -57,6 +57,11 @@
 | WP5 前台"记录"与设置接线 | **完成（离线）**：records 两个只读端点（快照+白名单事件分页）+ 聊天顶栏"记录"面板（桌面侧栏/窄屏底部，零新依赖，打开不触发生成）；设置页 UI 待真实凭据联调批 |
 | WP6 真实验收 / 发布候选 | **DS 通道已实测**：官方 key 直连冒烟 SMOKE_PASS（三步：基线聊天/工具往返/append-only 续传；自动缓存命中被正确观测；四道熔断，全程几厘钱）。OR 实测仍待预算授权；SDK 实测凭据不可用；estómago↔真 Mariposa 端到端待联调（见下） |
 
+## 2026-10-19 · 手动换窗记忆检查提醒恢复（她午后裁定，**已 commit 未部署**）
+
+- 撤销同日晨批的"手动换窗不发记忆检查"旁路（skipReview/manual_no_review 整链删除）：手动换窗与选集确认换窗**重新走 §8.1 换窗前记忆检查**——带 review_id+焦点范围指针的 hold 提醒照发、模型完成 hold/complete 后才换窗（F05 原管线恢复；resumeAfterSelectionConfirm 注释"旧窗 hold 提醒照常执行"重新为真）。
+- 验证全离线（fake transport，零真实 API）：F05 原版测试自 e8bed72 恢复（评审挂起中并发 chat 排队/唯一评审/manual_no_review 断言回归评审断言）+ 全量 unit 100/100。
+
 ## 2026-10-19 · EST_MARIPOSA_AUTO_SURFACING_V1（自动记忆浮现后端，**未部署**）
 
 - 施工包：~/Projects/glm1019-auto-surfacing/（林石见制包，GLM_START_HERE 入口）；本仓批报告 `docs/reports/EST_MARIPOSA_AUTO_SURFACING_V1/`（五报+验收执行记录）。

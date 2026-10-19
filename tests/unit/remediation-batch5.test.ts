@@ -94,38 +94,60 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
   return sub;
 }
 
-test('F05：手动换窗占用房间串行链——并发 chat 排队完成；她裁定 2026-10-19：手动换不发检查（零评审）', async () => {
+test('F05：手动换窗占用房间串行链——评审进行中并发 chat 排队等待，不并发发送', async () => {
   const log: Array<Record<string, unknown>> = [];
+  let releaseReview = () => {};
+  const gate = new Promise<void>((r) => { releaseReview = r; });
   let heldFirstChat = false;
+  const t = orT((payload, hasTool) => {
+    const messages = payload.messages as Array<{ role: string }>;
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user') as unknown as { content: Array<{ text?: string }> };
+    const t2 = Array.isArray(lastUser?.content) ? (lastUser.content[0]?.text ?? '') : '';
+    if (t2.includes('宿主运行事件')) {
+      return new Promise<string>((resolve) => { gate.then(() => resolve('')); }) as never as string; // 由 respond 返回值外层包装
+    }
+    void hasTool;
+    return '';
+  }, log);
+  // 上面的 respond 不适合异步——换成显式 transport
   const t2: OrTransport = async (payload) => {
     log.push(structuredClone(payload));
+    const messages = payload.messages as Array<{ role: string; content: unknown }>;
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+    const textOf = (m: { content: unknown }): string => (typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map((b) => (b as { text?: string }).text ?? '').join('\n') : '');
+    const txt = lastUser ? textOf(lastUser) : '';
+    if (txt.includes('宿主运行事件')) {
+      await gate; // 评审请求挂起（模拟审计：manual review 等待中）
+      const reviewId = txt.match(/review_id: (\S+)/)?.[1] ?? '';
+      return { status: 200, headers: new Map<string, string>(), body: frameStream(toolBody('gr', 'rc', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' })) };
+    }
     if (!heldFirstChat) { heldFirstChat = true; return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody('g1', '第一答')) }; }
     return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody('g2', '第二答')) };
   };
+  void t;
   const root = tempRoot('r5a-');
   const ctx = compose(root, t2);
   await say(ctx, '第一句', 'f1', T0);
-  // 手动换窗（2026-10-19 她裁定：不触发记忆检查）+ 同时提交新 chat：
-  // 换窗占房间串行链，chat 排队到换窗完成后才发送
+  // 手动换窗（评审挂起中）+ 同时提交新 chat：chat 必须等评审+换窗完成后才发送
   const manualPromise = ctx.supervisor.manualRotate('c1');
-  const sub2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '换窗中的新消息', clientMessageId: 'f2', occurredAt: at(1) });
+  await new Promise((r) => setTimeout(r, 150)); // 评审已发出并挂起
+  const sub2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '评审中的新消息', clientMessageId: 'f2', occurredAt: at(1) });
   ctx.supervisor.enqueue(sub2.turnId);
-  await manualPromise;
-  await ctx.supervisor.waitIdle();
-  const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub2.attemptId) as { state: string };
-  assert.equal(att.state, 'completed', '排队消息在换窗完成后正常执行');
-  // 零真实评审；唯一记录=skipped 凭证（basis 注明她的裁定，不伪造 reviewed/held）
-  const realReviews = (ctx.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE status NOT IN ('skipped_empty')").get() as { n: number }).n;
-  assert.equal(realReviews, 0, '手动换窗零评审请求（她裁定 2026-10-19：不发记忆检查，她自己提醒）');
-  const skipped = ctx.db.prepare("SELECT basis_json FROM rotation_reviews WHERE status = 'skipped_empty'").get() as { basis_json: string } | undefined;
-  assert.ok(skipped && skipped.basis_json.includes('manual_no_review'), 'skipped 凭证如实定位（manual_no_review）');
-  const reviewSends = log.filter((p) => {
+  await new Promise((r) => setTimeout(r, 150));
+  const duringReviewSends = log.filter((p) => {
     const ms = p.messages as Array<{ role: string; content: unknown }>;
     const lu = [...ms].reverse().find((m) => m.role === 'user');
     const txt = typeof lu?.content === 'object' ? JSON.stringify(lu?.content) : '';
-    return txt.includes('宿主运行事件');
+    return !txt.includes('宿主运行事件');
   }).length;
-  assert.equal(reviewSends, 0, '没有任何检查请求发出');
+  assert.equal(duringReviewSends, 1, '评审挂起期间不发送新 chat（原来会并发送出）');
+  releaseReview();
+  await manualPromise;
+  await ctx.supervisor.waitIdle();
+  const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub2.attemptId) as { state: string };
+  assert.equal(att.state, 'completed', '排队消息在评审/换窗完成后正常执行');
+  const reviewCount = (ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get() as { n: number }).n;
+  assert.equal(reviewCount, 1, '并发 manual+chat 只产生一个评审（原来会产生两个）');
   ctx.db.close();
 });
 
