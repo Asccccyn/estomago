@@ -182,15 +182,15 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('m2',1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(zh2, sha256Hex(zh2));
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  const out = await tools.execute('conversation_read', { __tool_call_id: 'c1', around_message_id: 'm1', before: 1, after: 1 }, CTX);
+  const out = await tools.execute('conversation_read', { __tool_call_id: 'c1', around_seq: 1, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true);
   const blob = Buffer.byteLength(JSON.stringify((out.output as Record<string, unknown>).entries ?? []), 'utf8');
   assert.ok(blob <= 16000 + 2400, `整页出站按真字节有界（实际 ${blob}B）`);
   // 二次回访（字节单口径）：5000 字≈15.2KB 能整装空页 → 首页整条交付
   // m1；9000 字≈27KB 超整页 → 顺延后在续页分片（真字节口径生效）
   const entries = (out.output as { entries: Array<Record<string, unknown>>; newer_cursor?: Record<string, unknown> }).entries;
-  const m1e = entries.find((e) => e.message_id === 'm1') as { fragment?: unknown; text?: string } | undefined;
-  assert.ok(m1e, '锚点 m1 在首页（预留优先）');
+  const m1e = entries.find((e) => e.seq === 1) as { fragment?: unknown; text?: string } | undefined;
+  assert.ok(m1e, '锚点 m1（seq 1）在首页（预留优先）');
   assert.equal(m1e.fragment, undefined, '5000 字整条交付（≤整页预算）');
   const fragPage = await tools.execute('conversation_read', { __tool_call_id: 'c2', cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
   assert.equal(fragPage.ok, true);
@@ -325,8 +325,8 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
       __tool_call_id: `c${pages}`,
       ...(cursor ? { cursor } : { from_sequence: 1, to_sequence: 10 }) } as never, CTX);
     assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
-    for (const e of (out.output as { entries: Array<{ message_id?: string }> }).entries) {
-      if (e.message_id) seenIds.add(e.message_id);
+    for (const e of (out.output as { entries: Array<{ seq?: number }> }).entries) {
+      if (e.seq) seenIds.add(e.seq);
     }
     const o = out.output as { has_more?: boolean; next_cursor?: Record<string, unknown> | null };
     cursor = o.has_more ? o.next_cursor! : null;
@@ -354,13 +354,13 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
     const out = await tools.execute('conversation_read', {
       __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
     assert.equal(out.ok, true);
-    for (const e of (out.output as { entries: Array<{ message_id?: string; text?: string; fragment?: { start_char?: number; end_char?: number } }> }).entries) {
-      if (!e.message_id) continue;
+    for (const e of (out.output as { entries: Array<{ seq?: number; text?: string; fragment?: { start_char?: number; end_char?: number } }> }).entries) {
+      if (!e.seq) continue;
       const fr = e.fragment;
       if (fr && typeof fr.start_char === 'number' && typeof fr.end_char === 'number') {
-        addRange(e.message_id, fr.start_char, fr.end_char, e.text ?? '');
+        addRange(`m${e.seq}`, fr.start_char, fr.end_char, e.text ?? '');
       } else {
-        addRange(e.message_id, 0, [...(e.text ?? '')].length, e.text ?? '');
+        addRange(`m${e.seq}`, 0, [...(e.text ?? '')].length, e.text ?? '');
       }
     }
     const o = out.output as { has_more?: unknown; next_cursor?: Record<string, unknown> | null };

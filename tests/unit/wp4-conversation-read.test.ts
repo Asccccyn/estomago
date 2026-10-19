@@ -75,12 +75,12 @@ test('O01：锚点前后回读同房间未选段；跨房间锚点拒（房间�
   seedMsg(db, 'c1', 'm3', 3, 'owner', '第三条');
   seedMsg(db, 'c1', 'm4', 4, 'owner', '第四条');
   seedMsg(db, 'other-room', 'x1', 1, 'owner', '别的房间的消息');
-  const out = await executor.execute('conversation_read', { around_message_id: 'm2', before: 1, after: 1 }, CTX);
+  const out = await executor.execute('conversation_read', { around_seq: 2, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
-  const entries = out.output.entries as Array<{ message_id: string; text: string }>;
-  assert.deepEqual(entries.map((e) => e.message_id), ['m1', 'm2', 'm3'], '锚点前后各一条，未选段也可读（选择不是读取权限全集）');
+  const entries = out.output.entries as Array<{ seq: number; text: string }>;
+  assert.deepEqual(entries.map((e) => e.seq), [1, 2, 3], '锚点前后各一条，未选段也可读（选择不是读取权限全集）');
   // 跨房间锚点：本房间找不到（不泄漏存在性）
-  const cross = await executor.execute('conversation_read', { around_message_id: 'x1' }, CTX);
+  const cross = await executor.execute('conversation_read', { around_seq: 999 }, CTX);
   assert.equal(cross.ok, false);
   assert.equal(cross.output.error_code, 'READ_ANCHOR_NOT_FOUND');
   db.close();
@@ -107,7 +107,7 @@ test('O03：长中文分片——码点拼回逐字一致、hash 对齐、进度
   const { executor, db } = makeExecutor(root);
   const long = `开头段。${'很长的中文正文内容。'.repeat(600)}结尾段。`;
   seedMsg(db, 'c1', 'big1', 1, 'owner', long);
-  const first = await executor.execute('conversation_read', { around_message_id: 'big1' }, CTX);
+  const first = await executor.execute('conversation_read', { around_seq: 1 }, CTX);
   assert.equal(first.ok, true);
   const e0 = (first.output.entries as Array<Record<string, unknown>>)[0]!;
   assert.ok(e0.fragment, '长文必须分片');
@@ -149,13 +149,13 @@ test('O04：sync_state 如实映射；指定修订读不到如实拒（不冒充
   db.prepare("INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at) VALUES ('o3','archive:s3:1','mariposa.archive','{}','failed','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')").run();
   const out = await executor.execute('conversation_read', { from_sequence: 1, to_sequence: 3 }, CTX);
   assert.equal(out.ok, true);
-  const entries = out.output.entries as Array<{ message_id: string; sync_state: string }>;
-  const byId = new Map(entries.map((e) => [e.message_id, e.sync_state]));
-  assert.equal(byId.get('s1'), 'pending', 'sent/unknown → pending（本地可读，不伪造收据）');
-  assert.equal(byId.get('s2'), 'synced');
-  assert.equal(byId.get('s3'), 'failed');
+  const entries = out.output.entries as Array<{ seq: number; text: string; sync_state?: unknown }>;
+  // 2026-10-19 她裁定（JSON 瘦身）：sync_state 不再出站（核对是系统的事）；
+  // 归档状态不影响可读——三条正文都如实可读
+  assert.deepEqual(entries.map((e) => e.seq), [1, 2, 3]);
+  assert.ok(entries.every((e) => !('sync_state' in e)), '条目不再携带 sync_state');
   // 指定不存在的修订 → 如实拒，不拿当前修订冒充
-  const bad = await executor.execute('conversation_read', { around_message_id: 's1', revision: 9 }, CTX);
+  const bad = await executor.execute('conversation_read', { around_seq: 1, revision: 9 }, CTX);
   assert.equal(bad.ok, false);
   assert.equal(bad.output.error_code, 'READ_REVISION_UNAVAILABLE');
   db.close();
@@ -174,7 +174,7 @@ test('O07：多次回读零副作用——消息/修订/outbox/书签计数不�
   });
   const before = counts();
   for (let i = 0; i < 3; i++) {
-    const out = await executor.execute('conversation_read', { around_message_id: 'm1' }, CTX);
+    const out = await executor.execute('conversation_read', { around_seq: 1 }, CTX);
     assert.equal(out.ok, true);
   }
   assert.deepEqual(counts(), before, '回读不发布/不归档/不推书签/不开记忆桶');
@@ -182,7 +182,7 @@ test('O07：多次回读零副作用——消息/修订/outbox/书签计数不�
 });
 
 test('O08：schema 无 include_cot——思考不可请求（additionalProperties:false）', () => {
-  const bad = validateToolArgs('conversation_read', { around_message_id: 'm1', include_cot: true });
+  const bad = validateToolArgs('conversation_read', { around_seq: 1, include_cot: true });
   assert.ok(!bad.ok, 'include_cot 被参数门拒绝');
 });
 
@@ -278,7 +278,7 @@ test('O05：回读片段进入下一请求→入已见清单；未发出（下�
     const msgs = payload.messages as Array<{ role: string }>;
     genA++;
     if (msgs.some((m) => m.role === 'tool')) return { status: 200, headers: new Map(), body: frameStream(textBody(`a${genA}`, '好的，我看过了')) };
-    return { status: 200, headers: new Map(), body: frameStream(toolBody(`a${genA}`, 'call-read-a', 'conversation_read', { around_message_id: 'hist1', before: 1, after: 1 })) };
+    return { status: 200, headers: new Map(), body: frameStream(toolBody(`a${genA}`, 'call-read-a', 'conversation_read', { around_seq: 2, before: 1, after: 1 })) };
   });
   // 存量历史（不经 turn，直接种行）+ 一条会话消息
   const hist = '很久以前的一段原文内容';
@@ -301,7 +301,7 @@ test('O05：回读片段进入下一请求→入已见清单；未发出（下�
     const msgs = payload.messages as Array<{ role: string }>;
     genB++;
     if (msgs.some((m) => m.role === 'tool')) throw new Error('模拟第二轮传输失败');
-    return { status: 200, headers: new Map(), body: frameStream(toolBody(`b${genB}`, 'call-read-b', 'conversation_read', { around_message_id: 'hist2' })) };
+    return { status: 200, headers: new Map(), body: frameStream(toolBody(`b${genB}`, 'call-read-b', 'conversation_read', { around_seq: 2 })) };
   });
   const hist2 = '另一段历史原文';
   ctxB.db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES ('hist2','c1',2,'owner','text',1,?,'2026-01-01T00:00:00Z')").run('2026-01-01T00:00:00Z');
@@ -328,7 +328,7 @@ test('O06（集成）：回读片段进入请求后，同回合 hold 可引用�
     const toolResults = msgs.filter((m) => m.role === 'tool');
     if (toolResults.length === 0) {
       // 第 1 轮：先回读
-      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-read', 'conversation_read', { around_message_id: 'hist3' })) };
+      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-read', 'conversation_read', { around_seq: 2 })) };
     }
     if (toolResults.length === 1) {
       // 第 2 轮：回读结果已在请求里——hold 引用已读片段

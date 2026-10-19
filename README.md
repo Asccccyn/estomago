@@ -57,9 +57,14 @@
 | WP5 前台"记录"与设置接线 | **完成（离线）**：records 两个只读端点（快照+白名单事件分页）+ 聊天顶栏"记录"面板（桌面侧栏/窄屏底部，零新依赖，打开不触发生成）；设置页 UI 待真实凭据联调批 |
 | WP6 真实验收 / 发布候选 | **DS 通道已实测**：官方 key 直连冒烟 SMOKE_PASS（三步：基线聊天/工具往返/append-only 续传；自动缓存命中被正确观测；四道熔断，全程几厘钱）。OR 实测仍待预算授权；SDK 实测凭据不可用；estómago↔真 Mariposa 端到端待联调（见下） |
 
-## 当前生产状态（2026-10-07 晨）
+## 当前生产状态（2026-10-19）
 
-生产四链全通：**记(hold)→存(归档 epl-3, 14 条 acked)→忆(bootstrap B 点)→查(recall+judge typesafe_jev FOUND+正文交付)**+episode 事件跟踪（生产探针通过）。LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 env，不落 plist）。聊天模型待她配置（IDENTITY_BLOCKED 如实降级：消息仍保存、时间线仍可看、归档照常）。
+生产通道：**OpenRouter Opus 4.6**（2026-10-17 切换）；聊天/记忆/归档/召回全链在跑。
+记忆写入为**勾选式**（2026-10-18 起：quotes 只报消息序号+句范围，宿主从已见原文直录；对话每条带 [seq N]）。
+测试基线：**114/114 全绿**（2026-10-19）。
+已部署提交（时间序）：c9b22e4（发图阻断修复）→ 07d9707（多选改造）→ **e8bed72（勾选式话语+写记忆文风提示词，已 push）**。
+**待部署**：换窗策略分层批（见文末）——已实现+测试绿，未 commit/未重启。
+LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 env，不落 plist）。
 
 ## 2026-10-05 深夜批次（在上述 WP 状态之后；按时间序，多路并行）
 
@@ -170,3 +175,16 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 ### 2026-10-17 · OpenRouter 通道启用（工作区）
 
 按用户要求将生产通道切为 OpenRouter，沿用已配置的 Opus 4.6；现有聊天模型菜单显示实际生效型号，Opus 5.5 / Fable 5.1 在路由接通前禁用。未指定推理档位时显示“模型默认”，不虚构上游实际档位。
+
+### 2026-10-18 · 写记忆文风批 + 我们的话勾选式（e8bed72，已部署）
+
+两批同夜：①写记忆提示词三段她逐句定稿（一条一事/他的叙述/写给以后的你看——治 00451/00452 式通讯稿腔）；②quotes 改勾选式（seq+句范围，宿主从已见原文直录，删逐字比对与"对不上被拒"；话不再进两次上下文），transcript [seq N] 前缀（选集/追赶/尾部），memory_correct 扩 word_add/word_revise（走 mariposa memory.update）。配套 mariposa 侧同日批（见 mariposa 仓 8c8f131：删 paraphrase 全链+迁移 39+修改不留档）。114/114 绿。
+
+### 2026-10-19 · 换窗策略分层 + 容量圈参考线（**待部署**）
+
+她裁定：soft_limit（600k）降格为**自动换窗最高上限兜底**；手动换窗为一等公民（任意用量随时换，**不触发换窗前记忆检查**——同日补充裁定：她自己提醒；skipped 凭证如实定位，选集门/unknown 写恢复/未决阻断保留）；新增 `windows.ui_reference_tokens`（128000，可调）作为前台容量圈**视觉参考线**——非硬规定，超出仅标红不阻断。前端：选集确认即换窗（无阻断输入时确认后主动 /rotate）；容量圈按参考线画进度+过渡动画，超标整圈标红，面板行同步（已用/手换参考线/自动上限/占比/缓存读取）。
+
+
+### 2026-10-19 · JSON 瘦身（模型面三件，**待部署**）
+
+她裁定：给模型的 JSON 要最精简；时间戳不带毫秒。①time_context 17→7 字段（内部全量计算保留，`modelTimeContextJson` 为唯一出站投影点，now 秒级）；②conversation_read 条目只留 seq/rev/speaker/at(本地分钟)/text——message_id/content_hash/sync_state 不出站，锚点与分片游标全改**序号寻址**（around_seq，与 [seq N]/勾选式同一坐标）；③recall 候选卡去冗余（mariposa 投递层：单 ref、单版本字段、无 rrf_score/_matched——判断器内部量不出站）。实测口径：旧窗 261KB 负载预计 -28% 左右；换窗后首次全价读直接受益。

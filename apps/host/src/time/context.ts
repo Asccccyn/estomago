@@ -23,6 +23,22 @@ export type TimeContext = {
   crossed_business_date: boolean;
 };
 
+/** 模型面投影（她 2026-10-19 裁定·JSON 瘦身）：只发他真正用的字段
+ *（当地日期/星期/时段/当前时刻[秒级]/距她上一条/距我上一条/是否跨天）。
+ * 恒定值（timezone/conversation_id）、三胞胎时间戳与绝对时刻类字段
+ * 不出站——间隔值已含信息。内部计算保持全量（本函数唯一出站点）。 */
+export function modelTimeContextJson(tc: TimeContext): string {
+  return JSON.stringify({
+    now_at_utc: tc.now_at_utc.replace(/\.\d{3}Z$/, 'Z'),
+    local_date: tc.local_date,
+    weekday: tc.weekday,
+    daypart: tc.daypart,
+    elapsed_since_last_user_message: tc.elapsed_since_last_user_message,
+    elapsed_since_last_assistant_message: tc.elapsed_since_last_assistant_message,
+    crossed_business_date: tc.crossed_business_date,
+  });
+}
+
 export function buildTimeContext(
   db: Db,
   opts: { conversationId: string; config: Config; eventOccurredAt?: string | null; currentInputSequence?: number | null; windowStartedAt?: string | null },

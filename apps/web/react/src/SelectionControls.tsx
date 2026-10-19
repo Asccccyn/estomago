@@ -7,8 +7,8 @@ import { Check } from 'lucide-react'
 /** 左缘勾选圆圈（微信式：空心圈 → 选中实心主题色对勾） */
 export function SelectionCheck({ checked }: { checked: boolean }) {
   return (
-    <span aria-hidden className={`mt-0.5 flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-full border transition ${checked ? 'border-[#c96442] bg-[#c96442] text-white' : 'border-black/15 bg-transparent text-transparent'}`}>
-      <Check size={13} strokeWidth={3} />
+    <span aria-hidden className={`mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition ${checked ? 'border-[#c96442] bg-[#c96442] text-white' : 'border-black/15 bg-transparent text-transparent'}`}>
+      <Check size={10} strokeWidth={2.5} />
     </span>
   )
 }

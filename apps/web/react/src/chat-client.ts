@@ -11,7 +11,7 @@ type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => Event
 export type Snapshot = {
   messages: ChatMessage[]; draft: string; composing: boolean; sending: boolean; attachments: Attachment[];
   models: string[]; modelIds: string[]; model: number; efforts: string[]; effort: number; canConfigure: boolean;
-  context: { used: number | null; limit: number | null; lastActual: number | null; cacheRead: number | null; soft: number | null };
+  context: { used: number | null; limit: number | null; lastActual: number | null; cacheRead: number | null; soft: number | null; reference: number | null };
   workbench: WorkItem[]; activity: ActivityItem[]; panelNote: string;
   notice: string; ready: boolean; hasEarlier: boolean; selected: Set<string>; selectionMode: boolean; draftEstimate: Json | null;
   route: Json | null; alerts: SystemAlert[]; unreadAlerts: number; openAlerts: number;
@@ -59,7 +59,7 @@ export class EstomagoClient {
   snapshot: Snapshot = {
     messages: [], draft: '', composing: false, sending: false, attachments: [],
     models: ['未配置'], modelIds: [], model: 0, efforts: ['未知'], effort: 0, canConfigure: false,
-    context: {used:null,limit:null,lastActual:null,cacheRead:null,soft:null},
+    context: {used:null,limit:null,lastActual:null,cacheRead:null,soft:null,reference:null},
     workbench: [], activity: [], panelNote: '', notice: '', ready: false, hasEarlier: false,
     selected: new Set(), selectionMode: false, draftEstimate:null, route: null,
     alerts: [], unreadAlerts: 0, openAlerts: 0, alertsError: '', alertsHasMore: false, usage: {},
@@ -307,7 +307,7 @@ export class EstomagoClient {
     try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.notify((e as Error).message)}
   }
   loadContext = async () => {
-    try{const c=await this.request('/conversations/primary/context-records');this.patch({context:{used:number(c.context?.estimatedInput),limit:number(c.context?.hardCapacity),lastActual:number(c.context?.lastActualInput),soft:number(c.context?.effectiveSoft),cacheRead:number(c.cache?.lastRead)}})}catch{}
+    try{const c=await this.request('/conversations/primary/context-records');this.patch({context:{used:number(c.context?.estimatedInput),limit:number(c.context?.hardCapacity),lastActual:number(c.context?.lastActualInput),soft:number(c.context?.effectiveSoft),cacheRead:number(c.cache?.lastRead),reference:number(c.context?.uiReference)||null}})}catch{}
   }
   loadPanel = async (kind:'bench'|'log') => {
     const request=++this.panelRequest
@@ -331,6 +331,18 @@ export class EstomagoClient {
   beginSelection = () => {this.selectionKey??=operationId();this.patch({selectionMode:true})}
   select = (id:string) => {const selected=new Set(this.snapshot.selected);selected.has(id)?selected.delete(id):selected.add(id);this.selectionKey??=operationId();this.patch({selected,selectionMode:true})}
   cancelSelection = () => {this.selectionKey=null;this.patch({selected:new Set(),selectionMode:false})}
+  /** 手动换窗策略（她 2026-10-19 裁定）：选集确认即换窗——确认返回 rotated=false
+   *  （无被阻断输入、窗口还开着）时主动调 /rotate 立即换，不等 600k 软线兜底。 */
+  rotateNow = async () => {
+    try {
+      const runtime=await this.request('/conversations/primary/runtime')
+      const id=runtime.active_window?.id
+      if(!id){this.notify('当前没有活动窗口');return}
+      const res=await this.request('/windows/'+encodeURIComponent(id)+'/rotate',this.json('POST',{}))
+      this.notify(res?.window?.id?'已换窗':'换窗结果未知，请看活动记录')
+      void this.loadContext()
+    }catch(e){this.notify('换窗未执行：'+(e as Error).message)}
+  }
   confirmSelection = async (empty=false) => {
     try {
       const runtime=await this.request('/conversations/primary/runtime')
@@ -340,8 +352,11 @@ export class EstomagoClient {
       const items=empty?[]:[...this.snapshot.selected].map(id=>this.raw.get(id)).filter(Boolean).map(m=>({message_id:m!.id,revision:m!.revision.revision,content_hash:m!.revision.content_hash}))
       if(!items.length&&!empty){this.notify('请选择历史，或明确选择不带历史');return}
       if(!empty)await this.request('/windows/'+encodeURIComponent(id)+'/context-selection/preview',this.json('POST',{conversation_id:'primary',items}))
-      await this.request('/windows/'+encodeURIComponent(id)+'/context-selection/confirm',this.json('POST',{conversation_id:'primary',items,explicit_empty:empty,idempotency_key:this.selectionKey??=operationId()}))
-      this.cancelSelection();this.notify('历史选择已保存');void this.loadContext()
+      const confirmed=await this.request('/windows/'+encodeURIComponent(id)+'/context-selection/confirm',this.json('POST',{conversation_id:'primary',items,explicit_empty:empty,idempotency_key:this.selectionKey??=operationId()}))
+      this.cancelSelection()
+      // 有被阻断输入时确认已直接换窗续聊（rotated=true）；否则立即手动换
+      if(confirmed?.rotated){this.notify('已换窗');void this.loadContext()}
+      else{this.notify('选集已确认，正在换窗…');await this.rotateNow()}
     }catch(e){this.notify((e as Error).message)}
   }
   resolveRoute = async (choice:'cancel'|'edit') => {

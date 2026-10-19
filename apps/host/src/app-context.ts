@@ -165,7 +165,7 @@ export class Host {
     // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
     const { WishstarClient } = await import('./integrations/wishstar/client.ts');
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
-    const tools = new HostToolExecutor({ db, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
     const supervisor = new TurnSupervisor({
       wishstar,
       db,
