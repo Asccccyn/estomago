@@ -53,17 +53,21 @@
  const reflection=document.getElementById('butterfly-reflection');
  const reflectionCtx=reflection?.getContext('2d',{alpha:true});
  let reflectionSize={width:0,height:0,dpr:1};
+ let reflectionPixelRatio=Math.min(window.devicePixelRatio||1,2);
  let reflectionSource=canvas;
  let reflectionTime=0;
  const loop='C437 960 424 984 462 1002 C518 1033 615 1002 690 980 C750 960 784 966 802 1008 C807 1020 810 1031 812 1042';
  const cordPaths=Array.from(document.querySelectorAll('[data-cord="main"] .thread-line')).map(path=>({path,parts:path.getAttribute('d').split(loop)})).filter(({parts})=>parts.length===2);
  let lastCordTime=-100;
+ let lastCordLift=null;
  function updateCords(time,fold,flutter,still){
    // Keep the measured path stable during the initial four-second reveal.
    if(cordPaths.some(({path})=>path.style.strokeDasharray))return;
    if(Math.abs(time-lastCordTime)<32&&!still)return;
    lastCordTime=time;
    const lift=still?0:-8*fold*flutter;
+   if(lift===lastCordLift)return;
+   lastCordLift=lift;
    const lifted=`C437 ${960+lift*.4} 424 ${984+lift*.7} 462 ${1002+lift} C518 ${1033+lift} 615 ${1002+lift*.7} 690 ${980+lift*.4} C750 ${960+lift*.2} 784 966 802 1008 C807 1020 810 1031 812 1042`;
    cordPaths.forEach(({path,parts})=>path.setAttribute('d',parts[0]+lifted+parts[1]));
  }
@@ -87,6 +91,10 @@
    const fit=Math.min(width*.82/sourceWidth,height*.94/sourceHeight);
    reflectionCtx.globalAlpha=.62;
    const x=-sourceWidth*fit*.76,y=-sourceHeight*fit*.78;
+   if(media.matches){
+     reflectionCtx.drawImage(source,x,y,sourceWidth*fit,sourceHeight*fit);
+     reflectionCtx.restore();return;
+   }
    const tailStart=sourceHeight*.70;
    // Keep the upper wings fixed; only the lower tail region receives a soft traveling wave.
    reflectionCtx.drawImage(source,0,0,sourceWidth,tailStart,x,y,sourceWidth*fit,tailStart*fit);
@@ -104,21 +112,27 @@
    }
    reflectionCtx.restore();
  }
- function resizeReflection(){
+ function resizeReflection(redraw=true){
    if(!reflectionCtx)return;
-   const width=reflection.clientWidth,height=reflection.clientHeight,dpr=Math.min(window.devicePixelRatio||1,2);
+   const width=reflection.clientWidth,height=reflection.clientHeight,dpr=reflectionPixelRatio;
+   if(width===reflectionSize.width&&height===reflectionSize.height&&dpr===reflectionSize.dpr)return;
    reflectionSize={width,height,dpr};
    reflection.width=Math.max(1,Math.round(width*dpr));
    reflection.height=Math.max(1,Math.round(height*dpr));
-   drawReflection();
+   if(redraw)drawReflection();
  }
- const reflectionObserver=reflection&&typeof ResizeObserver!=='undefined'?new ResizeObserver(resizeReflection):null;
+ const reflectionObserver=reflection&&typeof ResizeObserver!=='undefined'?new ResizeObserver(()=>resizeReflection()):null;
  reflectionObserver?.observe(reflection);
- if(!reflectionObserver)window.addEventListener('resize',resizeReflection);
+ const reflectionResize=()=>resizeReflection();
+ window.addEventListener('resize',reflectionResize);
  resizeReflection();
  const butterfly = window.mountButterfly(canvas, {
-   speed:1,reducedMotion:'auto',
-   onFrame:({canvas:source,time,fold=0,flutter=0,still=false})=>{reflectionSource=source;reflectionTime=time||0;drawReflection(source);updateCords(time||0,fold,flutter,still);}
+   speed:1,reducedMotion:'auto',maxFps:30,
+   onFrame:({canvas:source,time,fold=0,flutter=0,still=false,pixelRatio})=>{
+     reflectionSource=source;reflectionTime=time||0;
+     if(Number.isFinite(pixelRatio)&&pixelRatio>0&&pixelRatio!==reflectionPixelRatio){reflectionPixelRatio=pixelRatio;resizeReflection(false);}
+     drawReflection(source);updateCords(time||0,fold,flutter,still);
+   }
  });
 
  const sync=()=>{
@@ -140,7 +154,7 @@
  window.addEventListener('beforeunload',()=>{
    observer.disconnect();reflectionObserver?.disconnect();
    media.removeEventListener?.('change',sync);
-   window.removeEventListener('resize',resizeReflection);
+   window.removeEventListener('resize',reflectionResize);
    butterfly.destroy();
  });
 })();

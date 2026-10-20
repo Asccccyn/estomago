@@ -17,14 +17,6 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
     }
   ],
   [
-    "/home/assets/fonts/Singlong.ttf",
-    {
-      "file": "home/assets/fonts/Singlong.ttf",
-      "type": "font/ttf",
-      "cache": "no-cache"
-    }
-  ],
-  [
     "/home/assets/fonts/shadow-quote.svg",
     {
       "file": "home/assets/fonts/shadow-quote.svg",
@@ -65,14 +57,6 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
     }
   ],
   [
-    "/home/home-v2-original/assets/illustrations/clock-art.png",
-    {
-      "file": "home/home-v2-original/assets/illustrations/clock-art.png",
-      "type": "image/png",
-      "cache": "no-cache"
-    }
-  ],
-  [
     "/home/home-v2-original/assets/illustrations/clock-placeholder.svg",
     {
       "file": "home/home-v2-original/assets/illustrations/clock-placeholder.svg",
@@ -89,49 +73,9 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
     }
   ],
   [
-    "/home/home-v2-original/assets/layers/chat.png",
-    {
-      "file": "home/home-v2-original/assets/layers/chat.png",
-      "type": "image/png",
-      "cache": "no-cache"
-    }
-  ],
-  [
     "/home/home-v2-original/assets/layers/chat.svg",
     {
       "file": "home/home-v2-original/assets/layers/chat.svg",
-      "type": "image/svg+xml",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/assets/layers/drawn-red-back.svg",
-    {
-      "file": "home/home-v2-original/assets/layers/drawn-red-back.svg",
-      "type": "image/svg+xml",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/assets/layers/drawn-red-front.svg",
-    {
-      "file": "home/home-v2-original/assets/layers/drawn-red-front.svg",
-      "type": "image/svg+xml",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/assets/layers/gray-shadow.png",
-    {
-      "file": "home/home-v2-original/assets/layers/gray-shadow.png",
-      "type": "image/png",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/assets/layers/gray-shadow.svg",
-    {
-      "file": "home/home-v2-original/assets/layers/gray-shadow.svg",
       "type": "image/svg+xml",
       "cache": "no-cache"
     }
@@ -145,26 +89,10 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
     }
   ],
   [
-    "/home/home-v2-original/assets/layers/mirror-mask.png",
-    {
-      "file": "home/home-v2-original/assets/layers/mirror-mask.png",
-      "type": "image/png",
-      "cache": "no-cache"
-    }
-  ],
-  [
     "/home/home-v2-original/assets/layers/mirror-mask.svg",
     {
       "file": "home/home-v2-original/assets/layers/mirror-mask.svg",
       "type": "image/svg+xml",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/assets/layers/mirror-surface.png",
-    {
-      "file": "home/home-v2-original/assets/layers/mirror-surface.png",
-      "type": "image/png",
       "cache": "no-cache"
     }
   ],
@@ -177,26 +105,10 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
     }
   ],
   [
-    "/home/home-v2-original/assets/layers/phone.png",
-    {
-      "file": "home/home-v2-original/assets/layers/phone.png",
-      "type": "image/png",
-      "cache": "no-cache"
-    }
-  ],
-  [
     "/home/home-v2-original/assets/layers/phone.svg",
     {
       "file": "home/home-v2-original/assets/layers/phone.svg",
       "type": "image/svg+xml",
-      "cache": "no-cache"
-    }
-  ],
-  [
-    "/home/home-v2-original/preview/home.css",
-    {
-      "file": "home/home-v2-original/preview/home.css",
-      "type": "text/css; charset=utf-8",
       "cache": "no-cache"
     }
   ],

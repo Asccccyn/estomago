@@ -4,6 +4,7 @@
   const scriptBase = document.currentScript && document.currentScript.src
     ? new URL('.', document.currentScript.src).href : new URL('.', location.href).href;
   const TAU = Math.PI * 2;
+  const PARTICLE_TRAILS = [{age:.24,weight:.10},{age:.12,weight:.18},{age:0,weight:.72}];
   const KEYS = ['leftForewing', 'leftHindwing', 'rightForewing', 'rightHindwing', 'body', 'leftTail', 'rightTail', 'particles'];
   const FILES = {
     leftForewing: 'assets/left-forewing.png', leftHindwing: 'assets/left-hindwing.png',
@@ -16,6 +17,7 @@
   const makeCanvas = (w, h) => { const c = document.createElement('canvas'); c.width = Math.ceil(w); c.height = Math.ceil(h); return c; };
   const loadImage = src => new Promise((resolve, reject) => {
     const image = new Image();
+    image.decoding = 'async';
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error('无法加载蝴蝶素材：' + src));
     image.src = src;
@@ -68,23 +70,40 @@
     const texture=makeCanvas(Math.max(1,hi-lo),Math.max(1,bottom-top)), tc=texture.getContext('2d');
     tc.setTransform(u.x,v.x,u.y,v.y,-anchor.x*u.x-anchor.y*u.y-lo,-anchor.x*v.x-anchor.y*v.y-top);
     tc.drawImage(image,0,0);
-    return {texture,anchor,u,v,length,lo,top};
+    // The texture grid is fixed; only the bend changes during a frame.
+    const columns=Array.from({length:23},(_,i)=>{
+      const x=texture.width*i/22,s=lo+x;
+      return {
+        sourceTop:{x,y:0},sourceBottom:{x,y:texture.height},position:s/length,
+        amplitude:smooth(s/length),
+        top:{x:anchor.x+u.x*s+v.x*top,y:anchor.y+u.y*s+v.y*top},
+        bottom:{x:anchor.x+u.x*s+v.x*(top+texture.height),y:anchor.y+u.y*s+v.y*(top+texture.height)}
+      };
+    });
+    const strips=columns.slice(0,-1).map((column,i)=>{
+      const next=columns[i+1];
+      return [
+        [column.sourceTop,next.sourceTop,next.sourceBottom],
+        [column.sourceTop,next.sourceBottom,column.sourceBottom]
+      ];
+    });
+    return {texture,v,columns,strips};
   }
 
   function drawTail(ctx, tail, time, phase, amplitude) {
     if (!tail) return;
-    const {texture,anchor,u,v,length,lo,top}=tail;
-    const cols=22, w=texture.width, h=texture.height;
-    const map=(x,y)=>{
-      const s=lo+x, t=top+y;
-      const bend=amplitude*smooth(s/length)*Math.sin(time*TAU*.75-s/length*2.1+phase);
-      return {x:anchor.x+u.x*s+v.x*(t+bend),y:anchor.y+u.y*s+v.y*(t+bend)};
-    };
-    for(let i=0;i<cols;i++) {
-      const x0=w*i/cols,x1=w*(i+1)/cols;
-      const s=[{x:x0,y:0},{x:x1,y:0},{x:x1,y:h},{x:x0,y:h}],d=s.map(p=>map(p.x,p.y));
-      triangle(ctx,texture,[s[0],s[1],s[2]],[d[0],d[1],d[2]]);
-      triangle(ctx,texture,[s[0],s[2],s[3]],[d[0],d[2],d[3]]);
+    const {texture,v,columns,strips}=tail;
+    const destination=columns.map(column=>{
+      const bend=amplitude*column.amplitude*Math.sin(time*TAU*.75-column.position*2.1+phase);
+      return {
+        top:{x:column.top.x+v.x*bend,y:column.top.y+v.y*bend},
+        bottom:{x:column.bottom.x+v.x*bend,y:column.bottom.y+v.y*bend}
+      };
+    });
+    for(let i=0;i<strips.length;i++) {
+      const column=destination[i],next=destination[i+1];
+      triangle(ctx,texture,strips[i][0],[column.top,next.top,next.bottom]);
+      triangle(ctx,texture,strips[i][1],[column.top,next.bottom,column.bottom]);
     }
   }
 
@@ -95,18 +114,36 @@
     const media=global.matchMedia('(prefers-reduced-motion: reduce)');
     let reduced=options.reducedMotion==='auto'||options.reducedMotion===undefined ? media.matches : Boolean(options.reducedMotion);
     let ready=false,destroyed=false,playing=options.autoplay!==false,frame=0,speed=clamp(Number(options.speed)||1,.1,3);
-    let elapsed=0,lastNow=0,rig,images={},tails={},particleGroups=[],size={w:1,h:1,dpr:1};
+    let elapsed=0,lastNow=null,lastDrawNow=null,rig,images={},tails={},particleGroups=[],size={w:1,h:1,dpr:1};
+    let pageSuspended=false;
+    const frameInterval=1000/clamp(Number(options.maxFps)||30,1,60);
     let forcedStatic=options.motion===false;
+    function pixelRatio() {
+      let scale=1;
+      // A fixed-size scene can be scaled by its same-origin iframe host.
+      // Its canvas bounds alone do not include that outer transform.
+      try{
+        let owner=global;
+        while(owner.frameElement){
+          const element=owner.frameElement;
+          if(element.offsetWidth)scale*=element.getBoundingClientRect().width/element.offsetWidth;
+          owner=owner.parent;
+        }
+      }catch{ /* Cross-origin hosts keep the ordinary canvas density. */ }
+      return Math.min(global.devicePixelRatio||1,options.maxDpr||2)*clamp(scale,.01,1);
+    }
     function resize() {
+      if(destroyed)return;
       const bounds=canvas.getBoundingClientRect();
-      size={w:bounds.width||canvas.width||640,h:bounds.height||canvas.height||640,dpr:Math.min(global.devicePixelRatio||1,options.maxDpr||2)};
+      size={w:bounds.width||canvas.width||640,h:bounds.height||canvas.height||640,dpr:pixelRatio()};
       const w=Math.max(1,Math.round(size.w*size.dpr)),h=Math.max(1,Math.round(size.h*size.dpr));
       if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;}
       if(ready)draw(elapsed);
     }
     const observer=typeof ResizeObserver!=='undefined'?new ResizeObserver(resize):null;
     observer?.observe(canvas);
-    if(!observer)global.addEventListener('resize',resize);
+    // The host also dispatches resize when it rescales its fixed-size iframe.
+    global.addEventListener('resize',resize);
     const isStill=()=>forcedStatic||reduced;
     function draw(ms) {
       if(!ready||destroyed)return;
@@ -149,7 +186,7 @@
               };
             }
             // Two faint history samples and one main glint: a short, restrained golden trace.
-            for(const trail of [{age:.24,weight:.10},{age:.12,weight:.18},{age:0,weight:.72}]){
+            for(const trail of PARTICLE_TRAILS){
               const state=follow(time-lag-trail.age);
               const scale=1+.035*state.beat;
               ctx.save();
@@ -194,52 +231,89 @@
       }
       wing('right');wing('left');
       if(images.body)ctx.drawImage(images.body,0,0);
-      if(typeof options.onFrame==='function')options.onFrame({time:ms,fold:wave,flutter:flutterEnvelope,still,canvas});
+      if(typeof options.onFrame==='function')options.onFrame({time:ms,fold:wave,flutter:flutterEnvelope,still,canvas,pixelRatio:size.dpr});
+    }
+    const canAnimate=()=>ready&&playing&&!destroyed&&!isStill()&&!document.hidden&&!pageSuspended;
+    function stopFrames(){
+      if(frame)global.cancelAnimationFrame(frame);
+      frame=0;lastNow=null;lastDrawNow=null;
+    }
+    function schedule(){
+      if(!frame&&canAnimate())frame=global.requestAnimationFrame(tick);
     }
     function tick(now) {
-      if(!playing||destroyed)return;
-      if(lastNow)elapsed+=Math.min(now-lastNow,100)*speed;
-      lastNow=now;draw(elapsed);frame=global.requestAnimationFrame(tick);
+      frame=0;
+      if(!canAnimate())return;
+      if(lastNow!==null)elapsed+=Math.min(now-lastNow,100)*speed;
+      lastNow=now;
+      const interval=lastDrawNow===null?frameInterval:now-lastDrawNow;
+      if(interval+.01>=frameInterval){
+        lastDrawNow=lastDrawNow===null?now:lastDrawNow+Math.floor((interval+.01)/frameInterval)*frameInterval;
+        draw(elapsed);
+      }
+      schedule();
     }
-    function play(){if(destroyed||playing)return;playing=true;lastNow=0;if(ready&&!isStill())frame=global.requestAnimationFrame(tick);}
-    function pause(){playing=false;lastNow=0;global.cancelAnimationFrame(frame);}
+    function play(){if(destroyed)return;playing=true;schedule();}
+    function pause(){playing=false;stopFrames();}
+    function refreshMotion(){stopFrames();draw(elapsed);schedule();}
+    function onVisibility(){stopFrames();schedule();}
+    function onPageHide(){pageSuspended=true;stopFrames();}
+    function onPageShow(){pageSuspended=false;resize();schedule();}
     function onReduced(event){
       if(options.reducedMotion!==undefined&&options.reducedMotion!=='auto')return;
-      reduced=event.matches;global.cancelAnimationFrame(frame);lastNow=0;draw(elapsed);
-      if(ready&&playing&&!isStill())frame=global.requestAnimationFrame(tick);
+      reduced=event.matches;refreshMotion();
     }
     media.addEventListener?.('change',onReduced);
+    document.addEventListener('visibilitychange',onVisibility);
+    global.addEventListener('pagehide',onPageHide);
+    global.addEventListener('pageshow',onPageShow);
     const api={
       ready:null,play,pause,loopDurationMs:16000,
       renderAt(ms){pause();elapsed=Math.max(0,Number(ms)||0);draw(elapsed);return api;},
       setSpeed(value){speed=clamp(Number(value)||1,.1,3);return api;},
-      setReducedMotion(value){reduced=Boolean(value);global.cancelAnimationFrame(frame);lastNow=0;draw(elapsed);if(ready&&playing&&!isStill())frame=global.requestAnimationFrame(tick);return api;},
-      setMotion(value){forcedStatic=!value;global.cancelAnimationFrame(frame);lastNow=0;draw(elapsed);if(ready&&playing&&!isStill())frame=global.requestAnimationFrame(tick);return api;},
+      setReducedMotion(value){reduced=Boolean(value);refreshMotion();return api;},
+      setMotion(value){forcedStatic=!value;refreshMotion();return api;},
       resize,
-      get state(){return {ready,playing,speed,time:elapsed,reducedMotion:reduced,motion:!forcedStatic};},
-      destroy(){pause();destroyed=true;observer?.disconnect();global.removeEventListener('resize',resize);media.removeEventListener?.('change',onReduced);ctx.clearRect(0,0,canvas.width,canvas.height);}
+      get state(){return {ready,playing,speed,time:elapsed,reducedMotion:reduced,motion:!forcedStatic,pixelRatio:size.dpr};},
+      destroy(){
+        pause();destroyed=true;observer?.disconnect();global.removeEventListener('resize',resize);
+        media.removeEventListener?.('change',onReduced);document.removeEventListener('visibilitychange',onVisibility);
+        global.removeEventListener('pagehide',onPageHide);global.removeEventListener('pageshow',onPageShow);
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
     };
     api.ready=(async()=>{
       rig=options.rig||global.BUTTERFLY_RIG;
       if(!rig){const response=await fetch(new URL('rig.json',base));if(!response.ok)throw new Error('无法加载蝴蝶关节数据');rig=await response.json();}
       if(!rig.width||!rig.height||!rig.pivot)throw new Error('蝴蝶关节数据缺少画布尺寸或翅根坐标');
       const sources={...FILES,...(rig.assets||{}),...(global.BUTTERFLY_ASSETS||{}),...(options.assets||{})};
-      await Promise.all(KEYS.map(async key=>{
-        if(sources[key]===null)return;
-        const src=sources[key].startsWith('data:')?sources[key]:new URL(sources[key],base).href;
-        try{images[key]=await loadImage(src);}catch(error){if(key!=='particles')throw error;}
-      }));
       const groupSources=options.particleGroups||global.BUTTERFLY_PARTICLE_GROUPS||rig.particleGroups||[];
-      if(options.particles!==false&&groupSources.length){
-        try{particleGroups=await Promise.all(groupSources.map(src=>loadImage(src.startsWith('data:')?src:new URL(src,base).href)));}
-        catch(error){particleGroups=[];options.onWarning?.(error);}
+      const imageRequests=new Map();
+      function requestImage(source){
+        const src=new URL(source,base).href;
+        if(!imageRequests.has(src))imageRequests.set(src,loadImage(src));
+        return imageRequests.get(src);
       }
+      async function loadParticles(){
+        if(options.particles===false)return;
+        if(groupSources.length){
+          try{particleGroups=await Promise.all(groupSources.map(requestImage));return;}
+          catch(error){particleGroups=[];options.onWarning?.(error);}
+        }
+        // The composite duplicates the grouped artwork. Download it only as a fallback.
+        if(sources.particles)try{images.particles=await requestImage(sources.particles);}catch{ /* Optional glints. */ }
+      }
+      await Promise.all([
+        ...KEYS.filter(key=>key!=='particles').map(async key=>{
+          if(sources[key]!==null)images[key]=await requestImage(sources[key]);
+        }),
+        loadParticles()
+      ]);
       if(destroyed)return api;
       tails.left=prepareTail(images.leftTail,rig.tails?.left);tails.right=prepareTail(images.rightTail,rig.tails?.right);
-      ready=true;resize();draw(elapsed);
-      if(ready&&playing&&!isStill())frame=global.requestAnimationFrame(tick);
+      ready=true;resize();schedule();
       options.onReady?.(api);return api;
-    })().catch(error=>{options.onError?.(error);throw error;});
+    })().catch(error=>{api.destroy();options.onError?.(error);throw error;});
     return api;
   }
   global.mountButterfly=mountButterfly;

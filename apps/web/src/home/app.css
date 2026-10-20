@@ -1,226 +1,431 @@
-@import url("./home-v2-original/preview/home.css?v=cord-deep-red-20261019");
-/* Current homepage and second-version stone workbench. */
-.latest-workbench{margin:38px auto 40px;max-width:1170px;padding:18px 26px 28px;color:#36445b}
-.workbench-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:32px;align-items:start;justify-items:center}
-.latest-component{width:100%;display:flex;flex-direction:column;align-items:center;min-width:0}
-.latest-butterfly-canvas{width:min(100%,530px);height:auto;aspect-ratio:1;display:block;object-fit:contain}
-.latest-stone-canvas{position:relative;display:block;width:min(100%,395px);aspect-ratio:2 / 3;isolation:isolate}
-.latest-stone-original,.latest-stone-stars{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;pointer-events:none}
-.latest-stone-original{z-index:1}
-.latest-stone-stars{z-index:2}
-.latest-stone-stars svg{width:100%;height:100%;display:block;overflow:visible}
-.stone-hotspot{position:absolute;z-index:3;left:var(--x);top:var(--y);width:var(--w);height:var(--h);display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;background:transparent;color:#f8f4ed;text-shadow:0 1px 3px #0d1b2cb8;font-size:clamp(10px,1.15vw,16px);letter-spacing:.12em;opacity:.88;cursor:pointer}
-.stone-hotspot:hover{opacity:1;filter:brightness(1.15)}
-.stone-hotspot:focus-visible{outline:2px solid #f5dbc0;outline-offset:-3px}
-.motion-paused .latest-stone-stars .wish-twinkle{animation-play-state:paused!important}
-@media(max-width:700px){.latest-workbench{padding:12px 10px 20px;margin:26px auto}.workbench-grid{grid-template-columns:minmax(0,1fr);gap:22px}.latest-butterfly-canvas{max-width:430px}.latest-stone-canvas{width:min(90%,375px)}.stone-hotspot{font-size:clamp(11px,3.3vw,16px)}}
-@media(prefers-reduced-motion:reduce){.latest-stone-stars .wish-twinkle{animation:none!important}}
-
-.main-butterfly .latest-butterfly-canvas{width:100%;height:100%;max-width:none;object-fit:contain}
-
-/* U-shaped hanging cord to the left of the reserved island area. */
-.home{position:relative}
-.island-cord{position:absolute;top:0;left:calc(50% - 112px);width:34px;height:68px;object-fit:fill;z-index:40;pointer-events:none}
-@supports (height:max(1px,2px)){.island-cord{height:max(68px,calc(env(safe-area-inset-top,0px) + 18px))}}
-
-/* Compact phone composition: all artwork shares a single viewport. */
-@media(max-width:899px){
-  .home{--top-safe:max(env(safe-area-inset-top,0px),28px);padding-top:var(--top-safe);min-height:100svh}
-  .scene{width:100%;max-width:620px;height:calc(100svh - var(--top-safe) - 24px - env(safe-area-inset-bottom,0px));aspect-ratio:auto;container-type:size}
-  .clock-module{left:8%;top:1.5%;width:84%;height:auto;aspect-ratio:3/1}
-  .clock-touch{height:100%}
-  .portrait-module{left:7%;top:23%;width:34%;height:21%}
-  .portrait-placeholder{left:0;top:0;width:100%}
-  .portrait-actions{left:10%;right:10%;top:auto;bottom:0;gap:8px}
-  .glass-button{width:34px;height:34px;min-width:34px}
-  .glass-button img{width:19px;height:19px}
-  .album-module{right:6%;top:23%;width:34%;height:21%}
-  .main-butterfly{left:3%;top:46%;width:52%;height:auto;aspect-ratio:1}
-  .mirror-module{left:3%;top:69%;width:53%;height:23%;transform:rotate(-12deg)}
-  .latest-workbench{position:absolute;right:0;top:44%;width:min(46cqw,36cqh);max-width:none;margin:0;padding:0;z-index:12}
-  .workbench-grid{display:block}
-  .latest-stone-canvas{width:100%;max-width:none}
-  .stone-hotspot{font-size:clamp(9px,2.5vw,12px);letter-spacing:.05em}
-}
-@media(min-width:900px){.scene>.latest-workbench{position:absolute;right:1%;top:60%;width:23%;margin:0;padding:0}}
-
-/* Opaque equivalents of the original gray over ivory: cords stay behind the shadow. */
-.gray-shadow{position:absolute;left:10%;right:-6%;top:calc(25% - 2px);bottom:calc(-19% + 2px);border-radius:25px;background:#ebe9e3;opacity:1;pointer-events:none;transition:background-color .6s,transform .65s}
-.clock-module:is(:hover,:focus-within,.revealed) .gray-shadow{background:#d8d8d5;transform:translate(calc(7px + var(--pointer-x,0px)),calc(7px + var(--pointer-y,0px)))}
-body.motion-paused .gray-shadow{transition:none;transform:none!important}
-@media(prefers-reduced-motion:reduce){.gray-shadow{transition:none;transform:none!important}}
-
-@media(min-width:900px){.gray-shadow{border-radius:34px}}
-
-@font-face{font-family:Singlong;src:url("./assets/fonts/Singlong.ttf") format("truetype");font-weight:400;font-style:normal;font-display:swap}
-.shadow-quote{position:absolute;z-index:3;left:calc(10% - 6px);top:calc(100% - 3px);margin:0;white-space:nowrap;font-family:Singlong,cursive;font-weight:400;font-size:clamp(13px,4.1vw,20px);line-height:1;color:#59616c;pointer-events:none;transition:transform .65s}
-.clock-module:is(:hover,:focus-within,.revealed) .shadow-quote{transform:translate(calc(7px + var(--pointer-x,0px)),calc(7px + var(--pointer-y,0px)))}
-body.motion-paused .shadow-quote{transition:none;transform:none!important}
-@media(prefers-reduced-motion:reduce){.shadow-quote{transition:none;transform:none!important}}
-
-.shadow-quote{display:block;width:78%;height:auto;max-width:none}
-
-/* Keep the lettering fully on the exposed shadow strip. */
-.shadow-quote{left:calc(10% - 6px);top:calc(100% + 2px);width:84%;height:auto}
-
-/* Clock typography: aligned, equally sized overlapping date lines. */
-.clock-face{container-type:inline-size;display:block;padding:0;color:rgba(255,255,255,.76);font-family:"Arial Black","Helvetica Neue",Arial,sans-serif;font-weight:900;font-style:italic;line-height:.94;text-shadow:none;font-variant-numeric:tabular-nums;pointer-events:none}
-.clock-face .clock-column{position:absolute;left:5%;top:7%;display:block}
-#clock-year,#clock-time{display:block;color:rgba(255,255,255,.88)}
-#clock-year,#clock-month-day{font-size:clamp(24px,12cqw,68px);letter-spacing:-.055em;line-height:.95}
-#clock-month-day{position:absolute;left:3px;top:100%;margin-left:0;transform:translateY(-.38em);white-space:nowrap;color:rgba(255,255,255,.60)}
-.clock-face .clock-right{left:auto;top:auto;right:5%;bottom:calc(8% + clamp(10px,3.6cqw,20px) * 1.1 + 3px)}
-#clock-time{font-size:clamp(24px,11.5cqw,65px);letter-spacing:-.065em;line-height:.95}
-#clock-weekday{position:absolute;right:0;top:100%;font-family:"Helvetica Neue",Arial,sans-serif;font-size:clamp(18px,7cqw,40px);font-style:normal;font-weight:800;line-height:1;letter-spacing:0;white-space:nowrap;transform:translateY(-.38em);color:rgba(255,255,255,.66)}
-
-/* A subtle additional lean, keeping the existing overlap offsets. */
-#clock-year,#clock-time{transform:skewX(-5deg);transform-origin:left center}
-#clock-month-day{transform:translateY(-.38em) skewX(-5deg);transform-origin:left center}
-#clock-weekday{transform:translateY(-.38em) skewX(-5deg);transform-origin:right center}
-
-/* Slightly larger portrait placeholder with soft rounded corners. */
-.portrait-placeholder{left:calc(8% + 5px);width:84%;aspect-ratio:1/1;border-radius:18px}
-@media(max-width:899px){.portrait-placeholder{left:2.941176%;width:110%;top:0;border-radius:18px}}
-
-@media(min-width:900px){.portrait-placeholder{left:61.042184%}}
-
-/* Larger translucent icon-only portrait actions. */
-.portrait-actions .glass-button{width:44px;height:44px;min-width:44px;border:0;border-radius:0;background:transparent;backdrop-filter:none;box-shadow:none}
-.portrait-actions .glass-button:hover{background:transparent}
-.portrait-actions .glass-button img{width:32px;height:32px;opacity:.76}
-
-/* Symmetric horizontal insets relative to the actual portrait square. */
-@media(max-width:899px){.portrait-actions{left:calc(13.941176% + 4px);right:calc(-1.941176% + 4px)}}
-@media(min-width:900px){.portrait-actions{left:calc(69.442184% + 4px);right:calc(-36.642184% + 4px)}}
-
-/* Two equal compact cells, centered on the portrait rather than space-between. */
-.portrait-actions{display:grid;grid-template-columns:44px 44px;gap:2px;width:90px;right:auto;justify-content:center;transform:translateX(-50%)}
-@media(max-width:899px){.portrait-actions{left:57.941176%;right:auto}}
-@media(min-width:900px){.portrait-actions{left:103.042184%;right:auto}}
-.portrait-actions .glass-button{justify-self:center}
-
-/* Each action is centered in one half of the visible portrait square. */
-.portrait-actions{display:grid;grid-template-columns:1fr 1fr;gap:0;right:auto;transform:none;justify-content:normal}
-@media(max-width:899px){.portrait-actions{left:2.941176%;width:110%;right:auto}}
-@media(min-width:900px){.portrait-actions{left:61.042184%;width:84%;right:auto}}
-.portrait-actions .glass-button{justify-self:center}
-
-.portrait-actions .glass-button:first-child img{transform:translateX(3px)}
-.portrait-actions .glass-button:last-child img{transform:translateX(-3px)}
-
-/* Equal visible gaps: use painted icon widths rather than SVG canvas widths. */
-.portrait-actions{display:flex;justify-content:space-evenly;gap:0}
-.portrait-actions .glass-button{position:relative;flex:none;padding:0;min-width:0;height:44px}
-.portrait-actions .glass-button:first-child{width:24.35px}
-.portrait-actions .glass-button:last-child{width:30.1px}
-.portrait-actions .glass-button img{position:absolute;top:6px;width:32px;height:32px}
-.portrait-actions .glass-button:first-child img{left:-4.15px;transform:none}
-.portrait-actions .glass-button:last-child img{left:-.7px;transform:none}
-.portrait-actions .glass-button::before{content:"";position:absolute;inset:0 -10px;background:transparent}
-
-/* Keep the full icon canvas when its spacing box uses painted bounds. */
-.portrait-actions .glass-button img{width:32px;height:32px;max-width:none}
-
-/* Move the album stack as a whole; preserve its internal card transforms. */
-.album-module{translate:-10px 15px}
-
-/* User-directed placement: stones left, butterfly center, mirror upper-right. */
-@media(max-width:899px){
-  .latest-workbench{left:0;right:auto;top:44%}
-  .main-butterfly{left:24%;top:34%;z-index:30}
-  .mirror-module{left:auto;right:1%;top:57%}
-}
-@media(min-width:900px){
-  .scene>.latest-workbench{left:3%;right:auto;top:60%}
-  .main-butterfly{left:37.5%;top:39%;z-index:30}
-  .mirror-module{left:auto;right:6%;top:44%}
+/* The host scales this 500 × 861 composition as one canvas on every device. */
+:root {
+  --ivory: #f8f4ed;
+  --blue: #5278a2;
+  --ink: #36445b;
+  --mirror-mask: url("./home-v2-original/assets/layers/mirror-mask.svg");
+  font-synthesis: none;
+  color-scheme: light;
 }
 
-/* Align the stone artwork's visible left edge, accounting for its PNG margin. */
-@media(max-width:899px){.latest-workbench{left:calc(8% - min(4.1328125cqw,3.234375cqh));right:auto}}
-@media(min-width:900px){.scene>.latest-workbench{left:18.933594%;right:auto}}
+* { box-sizing: border-box; }
+html { background: var(--ivory); scrollbar-gutter: auto; overflow: hidden; }
+body {
+  margin: 0;
+  background: var(--ivory);
+  color: var(--ink);
+  font-family: "Noto Serif SC", "Songti SC", "STSong", serif;
+}
+button, input, textarea { font: inherit; }
+button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 5px;
+  border-radius: 7px;
+}
+img { display: block; max-width: 100%; pointer-events: none; }
+[hidden] { display: none !important; }
 
-.scene>.latest-workbench{translate:0 5px}
-
-/* Place the stone artwork near the phone viewport's bottom safe edge. */
-@media(max-width:899px){.scene>.latest-workbench{top:auto;bottom:8px;translate:0 0}}
-
-/* Scale mobile artwork details from the approved wide-window composition.
-   Geometry follows width; only the bottom navigation follows viewport height. */
-@media(max-width:899px){
-  .home{--art-unit:calc(100vw / 584)}
-  .scene{height:calc(100svh - var(--top-safe) - 24 * var(--art-unit) - env(safe-area-inset-bottom,0px))}
-  .clock-module{top:calc(14.7 * var(--art-unit))}
-  .clock-picture{border-radius:calc(23.36 * var(--art-unit))}
-  .clock-touch{border-radius:calc(23.36 * var(--art-unit))}
-  .gray-shadow{top:calc(25% - 2 * var(--art-unit));bottom:calc(-19% + 2 * var(--art-unit));border-radius:calc(25 * var(--art-unit))}
-  .shadow-quote{left:calc(10% - 6 * var(--art-unit));top:calc(100% + 2 * var(--art-unit))}
-  #clock-year,#clock-month-day{font-size:12cqw}
-  #clock-time{font-size:11.5cqw}
-  #clock-month-day{left:calc(3 * var(--art-unit))}
-  #clock-weekday{font-size:7cqw}
-  .clock-face .clock-right{bottom:calc(8% + 3.96cqw + 3 * var(--art-unit))}
-  .portrait-module{top:calc(225.4 * var(--art-unit));height:calc(205.8 * var(--art-unit))}
-  .portrait-placeholder{border-radius:calc(18 * var(--art-unit))}
-  .portrait-actions .glass-button{height:calc(44 * var(--art-unit))}
-  .portrait-actions .glass-button:first-child{width:calc(24.35 * var(--art-unit))}
-  .portrait-actions .glass-button:last-child{width:calc(30.1 * var(--art-unit))}
-  .portrait-actions .glass-button img{width:calc(32 * var(--art-unit));height:calc(32 * var(--art-unit));top:calc(6 * var(--art-unit));max-width:none}
-  .portrait-actions .glass-button:first-child img{left:calc(-4.15 * var(--art-unit))}
-  .portrait-actions .glass-button:last-child img{left:calc(-.7 * var(--art-unit))}
-  .album-module{top:calc(225.4 * var(--art-unit));translate:calc(-10 * var(--art-unit)) calc(15 * var(--art-unit))}
-  .album-card{border-width:calc(4 * var(--art-unit))}
-  .main-butterfly{top:calc(333.2 * var(--art-unit))}
-  .mirror-module{top:calc(558.6 * var(--art-unit));height:auto;aspect-ratio:309.52 / 225.4}
-  .scene>.latest-workbench{width:46cqw;left:calc(8% - 4.1328125cqw);bottom:calc(8 * var(--art-unit))}
-  .stone-hotspot{font-size:calc(12 * var(--art-unit))}
-  .island-cord{left:calc(50% - 112 * var(--art-unit));width:calc(34 * var(--art-unit));height:calc(68 * var(--art-unit))}
+.home {
+  --art-unit: calc(100vw / 584);
+  --top-safe: max(env(safe-area-inset-top, 0px), 28px);
+  position: relative;
+  max-width: 1440px;
+  min-height: 100svh;
+  margin: auto;
+  padding-top: var(--top-safe);
+  overflow: hidden;
+}
+.top-space { height: calc(24 * var(--art-unit)); }
+.scene {
+  position: relative;
+  z-index: 3;
+  width: 100%;
+  max-width: 620px;
+  height: calc(100svh - var(--top-safe) - 24 * var(--art-unit) - env(safe-area-inset-bottom, 0px));
+  margin: auto;
+  container-type: size;
+  isolation: isolate;
 }
 
-/* Restore the approved icon size without moving the row vertically. */
-@media(max-width:899px){
-  .portrait-actions .glass-button:first-child{width:24.35px}
-  .portrait-actions .glass-button:last-child{width:30.1px}
-  .portrait-actions .glass-button img{width:32px;height:32px;max-width:none;top:calc(22 * var(--art-unit) - 16px)}
-  .portrait-actions .glass-button:first-child img{left:-4.15px}
-  .portrait-actions .glass-button:last-child img{left:-.7px}
+/* Continuous back cords are occluded by the artwork. The diagonal is in front. */
+.drawn-red-cord {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  pointer-events: none;
+  object-fit: fill;
+}
+.drawn-red-back { z-index: 1; }
+.drawn-red-front { z-index: 35; }
+.thread-line { stroke-dasharray: none; stroke-dashoffset: 0; }
+.island-cord {
+  position: absolute;
+  z-index: 40;
+  top: 0;
+  left: calc(50% - 112 * var(--art-unit));
+  width: calc(34 * var(--art-unit));
+  height: calc(68 * var(--art-unit));
+  object-fit: fill;
+  pointer-events: none;
 }
 
-/* Slight enlargement, retaining artwork proportions and the stone left alignment. */
-.main-butterfly{scale:1.08;transform-origin:center}
-.scene>.latest-workbench{scale:1.08;transform-origin:8.984375% 100%;translate:0 -5px}
-@media(max-width:899px){.scene>.latest-workbench{translate:0 -10px}}
+.clock-module {
+  position: absolute;
+  z-index: 5;
+  left: 8%;
+  top: calc(14.7 * var(--art-unit));
+  width: 84%;
+  aspect-ratio: 3 / 1;
+}
+.clock-touch {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: 3 / 1;
+  border-radius: calc(23.36 * var(--art-unit));
+  text-align: initial;
+}
+.clock-picture {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: calc(23.36 * var(--art-unit));
+  background: #c3d1df;
+}
+.clock-picture > img { width: 100%; height: 100%; object-fit: cover; }
 
-/* The reflection shares the mirror's existing interior mask. */
-.butterfly-reflection{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;filter:blur(.35px) saturate(.78)}
+/* These opaque colors preserve the original shadow tones while covering cords. */
+.gray-shadow {
+  position: absolute;
+  left: 10%;
+  right: -6%;
+  top: calc(25% - 2 * var(--art-unit));
+  bottom: calc(-19% + 2 * var(--art-unit));
+  border-radius: calc(25 * var(--art-unit));
+  background: #ebe9e3;
+  pointer-events: none;
+  transition: background-color .6s, transform .65s;
+}
+.shadow-quote {
+  position: absolute;
+  z-index: 3;
+  left: calc(10% - 6 * var(--art-unit));
+  top: calc(100% + 2 * var(--art-unit));
+  width: 84%;
+  height: auto;
+  max-width: none;
+  margin: 0;
+  pointer-events: none;
+  transition: transform .65s;
+}
+.clock-module:is(:hover, :focus-within, .revealed) .gray-shadow {
+  background: #d8d8d5;
+}
+.clock-module:is(:hover, :focus-within, .revealed) :is(.gray-shadow, .shadow-quote) {
+  transform: translate(calc(7px + var(--pointer-x, 0px)), calc(7px + var(--pointer-y, 0px)));
+}
 
-/* Glass and reflection use the same full-frame coordinates as the PNG border. */
-.mirror-surface{-webkit-mask-position:0 0;mask-position:0 0;mask-mode:alpha;background:var(--ivory)}
+.clock-face {
+  position: absolute;
+  inset: 0;
+  display: block;
+  padding: 0;
+  container-type: inline-size;
+  color: rgba(255, 255, 255, .76);
+  font-family: "Arial Black", "Helvetica Neue", Arial, sans-serif;
+  font-weight: 900;
+  font-style: italic;
+  line-height: .94;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.clock-face .clock-column { position: absolute; left: 5%; top: 7%; display: block; }
+#clock-year, #clock-time { display: block; color: rgba(255, 255, 255, .88); }
+#clock-year, #clock-month-day { font-size: 12cqw; letter-spacing: -.055em; line-height: .95; }
+#clock-year, #clock-time { transform: skewX(-5deg); transform-origin: left center; }
+#clock-month-day {
+  position: absolute;
+  left: calc(3 * var(--art-unit));
+  top: 100%;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, .60);
+  transform: translateY(-.38em) skewX(-5deg);
+  transform-origin: left center;
+}
+.clock-face .clock-right {
+  left: auto;
+  top: auto;
+  right: 5%;
+  bottom: calc(8% + 3.96cqw + 3 * var(--art-unit));
+}
+#clock-time { font-size: 11.5cqw; letter-spacing: -.065em; line-height: .95; }
+#clock-weekday {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+  font-size: 7cqw;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, .66);
+  transform: translateY(-.38em) skewX(-5deg);
+  transform-origin: right center;
+}
+/* JS positions this text-only layer above the front cord, preserving glyph coverage. */
+.clock-face-foreground { inset: auto; z-index: 36; }
+.clock-face-foreground #clock-year { color: #f8f9fb; }
+.clock-face-foreground #clock-month-day { color: #e7edf2; }
 
-/* Requested vertical adjustment only. */
-.portrait-module,.mirror-module{translate:0 5px}
-.album-module{translate:-10px 20px}
-@media(max-width:899px){.album-module{translate:calc(-10 * var(--art-unit)) calc(15 * var(--art-unit) + 5px)}}
+.portrait-module {
+  position: absolute;
+  z-index: 8;
+  left: 7%;
+  top: calc(225.4 * var(--art-unit));
+  width: 34%;
+  height: calc(205.8 * var(--art-unit));
+  translate: 0 5px;
+}
+.portrait-picture { position: relative; width: 100%; aspect-ratio: 1; }
+.portrait-placeholder {
+  position: absolute;
+  left: 2.941176%;
+  top: 0;
+  width: 110%;
+  aspect-ratio: 1;
+  border-radius: calc(18 * var(--art-unit));
+  background: #dce2e8;
+}
+.portrait-actions {
+  position: absolute;
+  z-index: 3;
+  left: 2.941176%;
+  bottom: 0;
+  width: 110%;
+  display: flex;
+  justify-content: space-evenly;
+}
+/* Painted icon bounds determine the equal visual gaps; hit areas extend beyond them. */
+.portrait-actions .glass-button {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: none;
+  min-width: 0;
+  height: calc(44 * var(--art-unit));
+  border-radius: 0;
+  transition: transform .25s, background .25s;
+}
+.portrait-actions .glass-button:hover { transform: translateY(-3px); }
+.portrait-actions .glass-button:first-child { width: 24.35px; }
+.portrait-actions .glass-button:last-child { width: 30.1px; }
+.portrait-actions .glass-button::before { content: ""; position: absolute; inset: 0 -10px; }
+.portrait-actions .glass-button img {
+  position: absolute;
+  top: calc(22 * var(--art-unit) - 16px);
+  width: 32px;
+  height: 32px;
+  max-width: none;
+  opacity: .76;
+}
+.portrait-actions .glass-button:first-child img { left: -4.15px; }
+.portrait-actions .glass-button:last-child img { left: -.7px; }
 
-/* Continuous cords sit below the artwork; only the top diagonal crosses in front. */
-.drawn-red-cord{position:absolute;inset:0;width:100%;height:100%;max-width:none;pointer-events:none;object-fit:fill}
-.drawn-red-back{z-index:1}
-.home>.scene{z-index:3}
-.drawn-red-front{z-index:35}
+.album-module {
+  position: absolute;
+  z-index: 8;
+  right: 6%;
+  top: calc(225.4 * var(--art-unit));
+  width: 34%;
+  height: 21%;
+  translate: calc(-10 * var(--art-unit)) calc(15 * var(--art-unit) + 5px);
+}
+.album-stack { position: relative; width: 100%; aspect-ratio: 1; perspective: 800px; }
+.album-card {
+  position: absolute;
+  inset: 4%;
+  width: 92%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  background: #fffdf5;
+  border: calc(4 * var(--art-unit)) solid #fffdf5;
+  box-shadow: 0 3px 8px #111d3614;
+  transform-origin: 85% 12%;
+  transition: transform .45s cubic-bezier(.2, .8, .2, 1), box-shadow .45s;
+  touch-action: manipulation;
+}
+.album-card img { width: 100%; height: 100%; object-fit: cover; }
+.album-card[data-layer=front] { z-index: 3; transform: rotate(5deg) translate(-1%, 3%); }
+.album-card[data-layer=middle] { z-index: 2; transform: rotate(-6deg) translate(-5%, -2%); }
+.album-card[data-layer=back] { z-index: 1; transform: rotate(12deg) translate(5%, -5%); }
+.album-card[data-layer=front]:hover { box-shadow: 0 5px 12px #111d3624; }
 
-/* Only the glyphs cover the cord; the rest of the clock remains transparent here.
-   Opaque equivalents retain the original white-on-blue tones without red bleed. */
-.clock-face-foreground{inset:auto;z-index:36;pointer-events:none}
-.clock-face-foreground #clock-year{color:#f8f9fb}
-.clock-face-foreground #clock-month-day{color:#e7edf2}
+.main-butterfly {
+  position: absolute;
+  z-index: 30;
+  left: 24%;
+  top: calc(333.2 * var(--art-unit));
+  width: 52%;
+  aspect-ratio: 1;
+  pointer-events: none;
+  transform: rotate(-7deg);
+  scale: 1.08;
+  transform-origin: center;
+}
+.latest-butterfly-canvas { display: block; width: 100%; height: 100%; max-width: none; object-fit: contain; }
+.mirror-module {
+  position: absolute;
+  z-index: 9;
+  right: 1%;
+  top: calc(558.6 * var(--art-unit));
+  width: 53%;
+  aspect-ratio: 309.52 / 225.4;
+  transform: rotate(-12deg);
+  translate: 0 5px;
+}
+.mirror-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--ivory);
+  -webkit-mask-image: var(--mirror-mask);
+  mask-image: var(--mirror-mask);
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: 0 0;
+  mask-position: 0 0;
+  mask-mode: alpha;
+}
+.mirror-surface-art, .mirror-frame, .butterfly-reflection {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.mirror-surface-art { opacity: .82; }
+.butterfly-reflection { pointer-events: none; filter: blur(.35px) saturate(.78); }
 
-/* Painted paths remain visible if motion is unavailable or interrupted. */
-.thread-line{stroke-dasharray:none;stroke-dashoffset:0}
+.latest-workbench {
+  position: absolute;
+  z-index: 12;
+  left: calc(8% - 4.1328125cqw);
+  bottom: calc(8 * var(--art-unit));
+  width: 46cqw;
+  margin: 0;
+  padding: 0;
+  color: #36445b;
+  scale: 1.08;
+  transform-origin: 8.984375% 100%;
+  translate: 0 -10px;
+}
+.latest-component { width: 100%; display: flex; flex-direction: column; align-items: center; min-width: 0; }
+.latest-stone-canvas { position: relative; display: block; width: 100%; aspect-ratio: 2 / 3; isolation: isolate; }
+.latest-stone-original, .latest-stone-stars {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.latest-stone-original { z-index: 1; }
+.latest-stone-stars { z-index: 2; }
+.latest-stone-stars svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.stone-hotspot {
+  position: absolute;
+  z-index: 3;
+  left: var(--x);
+  top: var(--y);
+  width: var(--w);
+  height: var(--h);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  color: #f8f4ed;
+  text-shadow: 0 1px 3px #0d1b2cb8;
+  font-size: calc(12 * var(--art-unit));
+  letter-spacing: .05em;
+  opacity: .88;
+}
+.stone-hotspot:hover { opacity: 1; filter: brightness(1.15); }
+.stone-hotspot:focus-visible { outline: 2px solid #f5dbc0; outline-offset: -3px; }
 
-/* The fixed scene iframe has no document scrollbar or platform-specific gutter. */
-html{scrollbar-gutter:auto;overflow:hidden}
+/* Album and navigation dialogs remain in the scene document. */
+dialog {
+  padding: 22px;
+  border: 1px solid #c7ced5;
+  border-radius: 18px;
+  background: var(--ivory);
+  color: var(--ink);
+  width: 500px;
+  max-width: min(550px, 90vw);
+  box-shadow: 0 20px 100px #111d3633;
+}
+dialog::backdrop { background: #111d364f; backdrop-filter: blur(5px); }
+.dialog-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.dialog-heading h2 { font-size: 19px; font-weight: 400; letter-spacing: .1em; margin: 0; }
+.dialog-close { width: 44px; height: 44px; font-size: 27px; }
+.dialog-photo { height: min(55vh, 500px); border-radius: 6px; overflow: hidden; background: #e4e7e7; display: grid; place-items: center; }
+.dialog-photo img { width: 100%; height: 100%; object-fit: contain; }
+.dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 16px; }
+.upload-label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 11px 14px;
+  border: 1px solid #b8c1cb;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--ivory);
+}
+.upload-label input { position: absolute; inset: 0; max-width: 100%; opacity: 0; cursor: pointer; }
+.text-button { font-size: 12px; letter-spacing: .08em; min-height: 40px; }
+.admin-menu { display: grid; gap: 10px; }
+.admin-menu button { display: flex; justify-content: space-between; text-align: left; padding: 16px; border: 1px solid #d0d7de; border-radius: 9px; background: #fffdf7; font-size: 14px; }
+.toast {
+  position: fixed;
+  z-index: 100;
+  bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(90vw, 500px);
+  padding: 12px 18px;
+  border: 1px solid #d3d8dc;
+  border-radius: 12px;
+  background: #fffcf7f5;
+  color: var(--ink);
+  box-shadow: 0 5px 30px #111d3612;
+  font-size: 12px;
+  line-height: 1.6;
+}
 
-/* Keep the approved composition after removing all preview controls. */
-.top-space{height:24px}
-@media(max-width:899px){.top-space{height:calc(24 * var(--art-unit))}}
-@media(min-width:900px){.top-space{height:64px}}
+body.motion-paused :is(.gray-shadow, .shadow-quote) { transition: none; transform: none !important; }
+.motion-paused .latest-stone-stars .wish-twinkle { animation-play-state: paused !important; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  .gray-shadow, .shadow-quote { transition: none; transform: none !important; }
+  .latest-stone-stars .wish-twinkle { animation: none !important; }
+}
