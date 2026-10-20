@@ -14,6 +14,7 @@ import type { Db } from '../db/connection.ts';
 import { readSnapshot } from '../db/connection.ts';
 import type { Logger } from '../observability/logging.ts';
 import { stableErrorCode } from '../observability/errors.ts';
+import { conversationSnapshot } from './snapshot.ts';
 import type { EventService, SseSubscriber } from '../events/service.ts';
 import type { MessageService } from '../messages/service.ts';
 import { MessageRetryService, MessageRetryError } from '../messages/retry.ts';
@@ -258,6 +259,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         if (error instanceof MessageRetryError) return json(res, error.status, { error: { code: error.code, message: error.message } });
         throw error;
       }
+    }
+
+    // R06（审计 FE-11）：权威恢复快照——同一读事务边界返回消息页+活动
+    // turn（attempts+generations）+活动窗+事件游标；SSE 史被裁剪/重启后
+    // 的恢复不依赖完整事件保留。GET 严格只读（零模型调用/零派发）。
+    const convSnap = /^GET \/api\/v1\/conversations\/([^/]+)\/snapshot$/.exec(route);
+    if (convSnap) {
+      const conversationId = decodeURIComponent(convSnap[1]!);
+      const limit = Math.min(500, Number(url.searchParams.get('limit') ?? '100') || 100);
+      return json(res, 200, conversationSnapshot(d, conversationId, limit));
     }
 
     // F-J-08（联合审计 2026-10-06）：用户消息编辑修订——服务端能力（editUserMessage：

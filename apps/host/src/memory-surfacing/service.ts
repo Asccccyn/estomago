@@ -65,18 +65,44 @@ export class SurfacingService {
   private client: MariposaClient;
   private cfg: SurfacingConfig;
   private log: import('../observability/logging.ts').Logger | null;
+  private events: import('../events/service.ts').EventService | null;
+  private eventQueue: Array<import('./contracts.ts').SurfaceJobEventPayload> = [];
+  private eventFlushScheduled = false;
 
   constructor(
     db: Db,
     client: MariposaClient,
     cfg: SurfacingConfig,
     log: import('../observability/logging.ts').Logger | null,
+    events: import('../events/service.ts').EventService | null = null,
   ) {
     this.db = db;
     this.client = client;
     this.cfg = cfg;
     this.log = log;
-    this.repo = new SurfacingRepository(db);
+    this.events = events;
+    // R05（审计 J02）：状态提交处收集生命周期事件，微任务批量落 SSE——
+    // 事务内的状态写入不会嵌套开 EventService 事务；事件=投影非正本，
+    // 发布失败只记日志绝不影响浮现状态机。
+    this.repo = new SurfacingRepository(db, (p) => {
+      this.eventQueue.push(p);
+      if (!this.eventFlushScheduled) {
+        this.eventFlushScheduled = true;
+        queueMicrotask(() => {
+          this.eventFlushScheduled = false;
+          const batch = this.eventQueue.splice(0);
+          for (const ev of batch) {
+            try {
+              this.events?.publish('surface.job', {
+                conversationId: ev.conversation_id, scope: 'private', payload: ev,
+              });
+            } catch (err) {
+              this.log?.warn?.('surface_event_publish_failed', { job_id: ev.job_id, to: ev.to, error: String((err as Error).message ?? err).slice(0, 120) });
+            }
+          }
+        });
+      }
+    });
   }
 
   get enabled(): boolean { return this.cfg.enabled; }

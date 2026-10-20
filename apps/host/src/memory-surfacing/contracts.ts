@@ -50,6 +50,27 @@ export type FrozenAugmentation = {
   payloadHash: string;
 };
 
+/**
+ * R05（审计 J02）：后台浮现生命周期事件（稳定 SSE 合同）。
+ * 只含身份/状态/原因码——正文（event_text/payload_text/items/ref 映射）
+ * 绝不进事件（不泄正文红线）；事件是 DB 正本的投影，丢失可由作业表
+ * 重建，不构成数据正本。prepare/reject/budget/timeout/cancel/重复派发
+ * /恢复各自经状态迁移携带身份出现。
+ */
+export type SurfaceJobEventPayload = {
+  job_id: string;
+  conversation_id: string;
+  from: SurfacingJobState;
+  to: SurfacingJobState;
+  reason_code: string | null;
+  source_message_id: string;
+  target_message_id: string | null;
+  window_id: string | null;
+  attempt_id: string | null;
+  delivery_id: string | null;
+  m_operation_id: string | null;
+};
+
 /** 渲染注入块（docs/04 投影示例；正文逐字原样，日期取真实事件日期，
  * 不确定日期原样表达"不确定"）。 */
 export function renderAugmentation(items: SurfaceItem[], refs: Map<string, string>): string {
