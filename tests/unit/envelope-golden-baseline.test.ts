@@ -123,6 +123,7 @@ test('R09-E 字节级基线：确定性三回合+一工具轮的 wire 载荷（�
       fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
       fs.writeFileSync(GOLDEN, JSON.stringify(canon, null, 0));
       if (!golden) return; // 首次建立基线
+      if (process.env.ESTOMAGO_UPDATE_GOLDEN === '1') return; // 显式重建后本次跳过比对
     }
     assert.equal(canon.length, golden!.length, 'wire 笔数变化=装配行为变化');
     for (let i = 0; i < canon.length; i++) {
