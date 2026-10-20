@@ -8,7 +8,10 @@
 import type { Db } from '../db/connection.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
-import { extractHypotheses, buildRecentDialogue } from './trigger.ts';
+import {
+  extractHypotheses, buildRecentDialogue, detectRecallNeed,
+  type RecallGateResult, type RecentRecallState,
+} from './trigger.ts';
 import {
   estimateTokens, memoryRefFor, renderAugmentation,
   type FrozenAugmentation, type SurfaceItem,
@@ -72,24 +75,60 @@ export class SurfacingService {
     if (!this.cfg.enabled) return;
     const hypotheses = extractHypotheses(o.content);
     if (hypotheses.length === 0) return;
-    const jobId = this.repo.registerAcceptedJob({
-      conversationId: o.conversationId, messageId: o.messageId, revision: o.revision,
-      sequence: o.sequence, content: o.content, contentHash: o.contentHash,
-      occurredAt: o.occurredAt, hypotheses,
-      policyRevision: this.cfg.policy_revision, promptRevision: this.cfg.prompt_prepare_revision,
+    // P1 回忆意图门（她 2026-10-20）：只控制"要不要登记检索作业"。普通
+    // 聊天 skip → 零 Mariposa 检索/Dense/JEV；归档 outbox 在 MessageService
+    // 另一条路径，不受影响。第一段纯函数零 I/O，只有省略表达才读近期状态。
+    const gate = this.recallGate(o);
+    let jobId: string | null = null;
+    if (gate.action === 'lookup') {
+      jobId = this.repo.registerAcceptedJob({
+        conversationId: o.conversationId, messageId: o.messageId, revision: o.revision,
+        sequence: o.sequence, content: o.content, contentHash: o.contentHash,
+        occurredAt: o.occurredAt, hypotheses,
+        policyRevision: this.cfg.policy_revision, promptRevision: this.cfg.prompt_prepare_revision,
+      });
+    }
+    this.log?.info('surface_recall_gate', {
+      conversation: o.conversationId, message: o.messageId, revision: o.revision,
+      action: gate.action, reason: gate.reason, registered: jobId !== null,
     });
     // 目标绑定：这是"下一条真实用户输入"——同房最近一条 awaiting 的
     // prepared 作业绑到本消息；更早仍未绑定的按 missed_target 清账。
-    if (jobId) {
-      const awaiting = this.repo.preparedAwaitingTarget(o.conversationId, o.sequence);
-      for (const job of awaiting) {
-        if (job.id === jobId) continue;
-        if (job.state === 'prepared') {
-          this.repo.bindTarget({ conversationId: o.conversationId, jobId: job.id, targetMessageId: o.messageId, targetRevision: o.revision });
-        }
+    // 与本条是否需要检索无关（旧实现对每条非空消息都执行，此处保持）。
+    const awaiting = this.repo.preparedAwaitingTarget(o.conversationId, o.sequence);
+    for (const job of awaiting) {
+      if (job.id === jobId) continue;
+      if (job.state === 'prepared') {
+        this.repo.bindTarget({ conversationId: o.conversationId, jobId: job.id, targetMessageId: o.messageId, targetRevision: o.revision });
       }
-      this.repo.markMissedTargets(o.conversationId, o.sequence);
     }
+    this.repo.markMissedTargets(o.conversationId, o.sequence);
+  }
+
+  /** 两段式门：纯函数先行；仅 needs_context（"后来呢"）才读有界近期状态。 */
+  private recallGate(o: { conversationId: string; sequence: number; content: string; occurredAt: string | null }): RecallGateResult {
+    const now = o.occurredAt ? new Date(o.occurredAt) : new Date();
+    const first = detectRecallNeed(o.content, null, Number.isNaN(now.getTime()) ? new Date() : now);
+    if (first.action !== 'needs_context') return first;
+    return detectRecallNeed(o.content, this.recentRecallState(o.conversationId, o.sequence), now);
+  }
+
+  /** 有界近期状态：最近 ≤2 个已接受 owner 轮里已确定回忆对象（prepared）的作业。
+   *  只取用户自己消息的身份（id/revision/sequence），不读全历史、不存模型猜测；
+   *  之前未命中（empty）、悬置（rejected/blocked）或已换题（作业已被后续消息
+   *  绑走）都不延续。 */
+  private recentRecallState(conversationId: string, beforeSequence: number): RecentRecallState {
+    const rows = this.db.prepare(
+      `SELECT sequence FROM messages WHERE conversation_id=? AND sequence < ? AND speaker='owner'
+       ORDER BY sequence DESC LIMIT 2`,
+    ).all(conversationId, beforeSequence) as Array<{ sequence: number }>;
+    if (rows.length === 0) return { boundLookup: null };
+    const job = this.repo.preparedBetween(conversationId, rows[rows.length - 1].sequence, beforeSequence);
+    return {
+      boundLookup: job
+        ? { sourceMessageId: job.source_message_id, sourceRevision: job.source_revision, sourceSequence: job.source_sequence }
+        : null,
+    };
   }
 
   onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void {

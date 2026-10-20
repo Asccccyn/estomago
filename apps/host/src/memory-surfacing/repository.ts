@@ -128,6 +128,18 @@ export class SurfacingRepository {
     ).all(conversationId, targetSequence) as JobRow[];
   }
 
+  /** P1 省略表达延续依据：[minSourceSequence, beforeSequence) 内最近一条
+   *  已确定回忆对象（prepared，有可用赢家）的作业；empty/rejected/blocked/
+   *  cancelled 或已被后续消息绑走的不算。只读。 */
+  preparedBetween(conversationId: string, minSourceSequence: number, beforeSequence: number): JobRow | null {
+    const row = this.db.prepare(
+      `SELECT ${JOB_COLS} FROM surfacing_jobs
+       WHERE conversation_id=? AND state='prepared' AND source_sequence >= ? AND source_sequence < ?
+       ORDER BY source_sequence DESC LIMIT 1`,
+    ).get(conversationId, minSourceSequence, beforeSequence) as JobRow | undefined;
+    return row ?? null;
+  }
+
   pendingJobs(limit = 20): JobRow[] {
     return this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','target_bound','validating') ORDER BY created_at ASC LIMIT ?`,

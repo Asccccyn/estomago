@@ -133,9 +133,12 @@ function makeService(root: string, enabled = true) {
 test('AC002/AC003/AC004：U1 后台准备不进当轮；U2 到达绑定+复核；注入块产出', async () => {
   const root = tempRoot('sfservice-');
   const { db, svc, messages, log } = makeService(root);
-  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '7.9记忆库做成了', clientMessageId: 'u1', occurredAt: T0 });
+  // P1 门（她 1020）：只有明确回忆才登记作业——U1 改为回忆问句；U2 保持
+  // 普通追问以见证"目标绑定与本条是否检索无关"
+  const U1 = '还记得7.9那天我们把记忆库做成的事吗';
+  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: U1, clientMessageId: 'u1', occurredAt: T0 });
   // 源轮（U1 自己）请求注入：无 target 作业 → null（Uₙ 不进 Uₙ）
-  const same = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't1', attemptId: 'a1', message: { id: u1.message.id, revision: 1, sequence: 1, content: '7.9记忆库做成了', hash: 'h1' } });
+  const same = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't1', attemptId: 'a1', message: { id: u1.message.id, revision: 1, sequence: 1, content: U1, hash: 'h1' } });
   assert.equal(same, null);
   await waitUntil(() => svc.repo.pendingJobs(5).length === 0 && (svc.repo.jobById(svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.id)!.state === 'prepared'));
   // prepare 恰一次（幂等不重跑）
@@ -164,9 +167,9 @@ test('AC002/AC003/AC004：U1 后台准备不进当轮；U2 到达绑定+复核�
 test('AC031：编辑撤销旧修订作业；AC038：enabled=false 零作业零网络', async () => {
   const root = tempRoot('sfedit-');
   const { db, svc, messages, log } = makeService(root);
-  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '8.19我们结婚了', clientMessageId: 'e1', occurredAt: T0 });
+  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得8.19我们结婚那天吗', clientMessageId: 'e1', occurredAt: T0 });
   await waitUntil(() => svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.state === 'prepared');
-  messages.editUserMessage(u1.message.id, '8.19我们结婚了吗');
+  messages.editUserMessage(u1.message.id, '还记得8.19我们结婚那天吗？');
   const job = svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;
   assert.equal(job.state, 'cancelled');
   await svc.stop();
@@ -190,7 +193,7 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2 }, null);
   const messages = new MessageService(db, svc);
   messages.ensureConversation('c1');
-  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '那件大事', clientMessageId: 'b1', occurredAt: T0 });
+  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得那件大事吗', clientMessageId: 'b1', occurredAt: T0 });
   // 手动推进到 ready（绕过 prepare 脚本）：
   const jobId = svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.id;
   svc.repo.transition(jobId, ['pending'], 'preparing');

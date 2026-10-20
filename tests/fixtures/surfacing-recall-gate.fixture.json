@@ -1,0 +1,530 @@
+[
+  {
+    "id": "T001",
+    "category": "daily",
+    "text": "今天好累",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T002",
+    "category": "daily",
+    "text": "晚饭吃什么",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T003",
+    "category": "daily",
+    "text": "嗯",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T004",
+    "category": "daily",
+    "text": "哈哈哈",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T005",
+    "category": "daily",
+    "text": "帮我写个排序函数",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T006",
+    "category": "daily",
+    "text": "外面下雨了",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T007",
+    "category": "explicit_recall",
+    "text": "还记得去年我们去海边的事吗",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T008",
+    "category": "explicit_recall",
+    "text": "你记得上次搬家是谁帮忙的吗",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T009",
+    "category": "explicit_recall",
+    "text": "回想一下我们第一次见面",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T010",
+    "category": "explicit_recall",
+    "text": "帮我查一下去年那次旅行",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T011",
+    "category": "explicit_recall",
+    "text": "去年那件事你还记得吗",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T012",
+    "category": "explicit_recall",
+    "text": "我们上次一起完成的项目叫什么来着",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T013",
+    "category": "implicit_recall",
+    "text": "第一次见面你穿的什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T014",
+    "category": "implicit_recall",
+    "text": "去年那次旅行住在哪儿",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T015",
+    "category": "implicit_recall",
+    "text": "上次搬家是谁帮忙的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T016",
+    "category": "implicit_recall",
+    "text": "我们当时为什么吵架",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T017",
+    "category": "implicit_recall",
+    "text": "那场婚礼是哪一年办的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T018",
+    "category": "implicit_recall",
+    "text": "以前送你的礼物是什么颜色",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T019",
+    "category": "bare_date",
+    "text": "7.9",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T020",
+    "category": "bare_date",
+    "text": "2025年7月9日",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T021",
+    "category": "bare_date",
+    "text": "去年",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T022",
+    "category": "bare_date",
+    "text": "星期三",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T023",
+    "category": "bare_date",
+    "text": "2026-10-20",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T024",
+    "category": "bare_date",
+    "text": "七月九号",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T025",
+    "category": "date_event",
+    "text": "2025年7月9日我们做成了什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T026",
+    "category": "date_event",
+    "text": "去年7月9日那个项目是谁完成的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T027",
+    "category": "date_event",
+    "text": "7月9日婚礼上你说了什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T028",
+    "category": "date_event",
+    "text": "2025-07-09的旅行住在哪",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T029",
+    "category": "date_event",
+    "text": "七月九号那次约会去了哪里",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T030",
+    "category": "date_event",
+    "text": "8.19结婚那天发生了什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T031",
+    "category": "multiple_buckets",
+    "text": "7月9日婚礼和项目完成那两件事分别怎么回事",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T032",
+    "category": "multiple_buckets",
+    "text": "同一天的那两次聚会是谁参加的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T033",
+    "category": "multiple_buckets",
+    "text": "去年生日和搬家那天都发生了什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T034",
+    "category": "multiple_buckets",
+    "text": "上次旅行的出发和返程分别在哪天",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T035",
+    "category": "multiple_buckets",
+    "text": "去年那两次看海分别和谁一起",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T036",
+    "category": "multiple_buckets",
+    "text": "7.9记忆库和纪念日分别有什么记录",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T037",
+    "category": "followup",
+    "text": "后来呢",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T038",
+    "category": "followup",
+    "text": "他当时怎么说",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T039",
+    "category": "followup",
+    "text": "那次呢",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T040",
+    "category": "followup",
+    "text": "为什么",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T041",
+    "category": "followup",
+    "text": "在哪里",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T042",
+    "category": "followup",
+    "text": "还有呢",
+    "recentRecall": true,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T043",
+    "category": "future_write",
+    "text": "记得明天买牛奶",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T044",
+    "category": "future_write",
+    "text": "别忘了下周交报告",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T045",
+    "category": "future_write",
+    "text": "提醒我明年7月9日庆祝",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T046",
+    "category": "future_write",
+    "text": "帮我记下今天买了一盆花",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T047",
+    "category": "future_write",
+    "text": "下次见面记得带伞",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T048",
+    "category": "future_write",
+    "text": "明天婚礼上应该说什么",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T049",
+    "category": "negation_joke",
+    "text": "不用回忆去年那件事了",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T050",
+    "category": "negation_joke",
+    "text": "还记得怎么写冒泡排序吗",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T051",
+    "category": "negation_joke",
+    "text": "你可真是记忆大师哈哈",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T052",
+    "category": "negation_joke",
+    "text": "谁还记得那些破事，算了",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T053",
+    "category": "negation_joke",
+    "text": "忘掉过去，我们说今天",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T054",
+    "category": "negation_joke",
+    "text": "你记得一加一等于几吗",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T055",
+    "category": "mixed",
+    "text": "今天想问去年那次旅行住哪儿",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T056",
+    "category": "mixed",
+    "text": "明天聚会前，先查查上次聚会在哪里",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T057",
+    "category": "mixed",
+    "text": "现在再看去年那件事，你当时怎么说的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T058",
+    "category": "mixed",
+    "text": "今天跟去年生日一样，你去年送了什么",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T059",
+    "category": "mixed",
+    "text": "下周要搬家，上次是找谁帮忙的",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T060",
+    "category": "mixed",
+    "text": "不是明天的安排，我问去年那次婚礼谁来了",
+    "recentRecall": false,
+    "expected": true,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T061",
+    "category": "negative_context",
+    "text": "后来呢",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T062",
+    "category": "negative_context",
+    "text": "那次呢",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T063",
+    "category": "negative_context",
+    "text": "在哪里",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T064",
+    "category": "negative_context",
+    "text": "今天比去年冷",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T065",
+    "category": "negative_context",
+    "text": "明天还记得带去年的外套",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  },
+  {
+    "id": "T066",
+    "category": "negative_context",
+    "text": "上次编的故事继续讲",
+    "recentRecall": false,
+    "expected": false,
+    "label_source": "audit analyst prelabel; NOT independently human reviewed"
+  }
+]
