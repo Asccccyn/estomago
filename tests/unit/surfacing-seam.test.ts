@@ -110,8 +110,9 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const ctx = compose(root, transport, mariposa, log);
+  // P1 门（她 1020）：源消息须是明确回忆才登记作业；U2 目标消息保持普通追问
   const say = async (id: string) => {
-    const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `话${id}`, clientMessageId: id, occurredAt: T0 });
+    const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `还记得去年那件事吗 ${id}`, clientMessageId: id, occurredAt: T0 });
     ctx.supervisor.enqueue(sub.turnId);
     await ctx.supervisor.waitIdle();
     return sub;
