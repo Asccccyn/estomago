@@ -124,7 +124,7 @@ test('JA-S08: full-read is usable in the first surfaced tool loop, scoped to the
   };
   const ctx = compose(root, transport, mariposa, log);
   try {
-    const a = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成事件', clientMessageId: 'full-a', occurredAt: T0 });
+    const a = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '你还记得那次7.9我们把记忆库做成了吗？', clientMessageId: 'full-a', occurredAt: T0 });
     ctx.supervisor.enqueue(a.turnId); await ctx.supervisor.waitIdle();
     const staleRotate = await ctx.supervisor.manualRotate('c1', 'obsolete-window');
     assert.equal(staleRotate.ok, false);
@@ -238,7 +238,7 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
   const ctx = compose(root, transport, mariposa, log);
   try {
     const u1 = await (async () => {
-      const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成事件', clientMessageId: 'fa-a', occurredAt: T0 });
+      const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '你还记得那次7.9我们把记忆库做成了吗？', clientMessageId: 'fa-a', occurredAt: T0 });
       ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
       return sub;
     })();

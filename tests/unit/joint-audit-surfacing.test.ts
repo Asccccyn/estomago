@@ -37,7 +37,7 @@ function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selecte
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
   const messages = new MessageService(db, svc); messages.ensureConversation('c1');
-  const say = (id: string, content = '合成事件') => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
+  const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
   const augment = (sub: ReturnType<typeof say>, attemptId = 'a2') => svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: sub.turnId, attemptId,
     message: { id: sub.message.id, revision: 1, sequence: sub.message.sequence, content: sub.message.content, hash: 'fixture' } });
@@ -142,7 +142,7 @@ test('JA-S10: source route edit invalidates frozen delivery before transport adm
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
     const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
     f.db.exec('BEGIN IMMEDIATE');
-    try { f.messages.editMessageInTx(a.message.id, '合成已修改原话'); f.db.exec('COMMIT'); }
+    try { f.messages.editMessageInTx(a.message.id, '合成已修改原话', { notifySurfacing: true }); f.db.exec('COMMIT'); }
     catch (err) { f.db.exec('ROLLBACK'); throw err; }
     assert.equal(f.job(a.message.id).state, 'cancelled');
     assert.throws(() => f.svc.markDispatched('a2'), /SURFACE_TARGET_CHANGED/);

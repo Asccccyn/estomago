@@ -33,7 +33,7 @@ function fixture(opts: { validate?: () => ValidateResult; validateOk?: boolean }
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 100, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null, events);
   const messages = new MessageService(db, svc); messages.ensureConversation('c1');
-  const say = (id: string, content = '合成事件') => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
+  const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
   const flush = () => new Promise<void>(r => setImmediate(r));
   const surfaceEvents = () => (db.prepare(
@@ -126,7 +126,7 @@ test('R05：编辑撤销→cancelled（SOURCE_OR_TARGET_REVISED）；恢复→ex
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
     f.db.exec('BEGIN IMMEDIATE');
-    try { f.messages.editMessageInTx(a.message.id, '合成已修改'); f.db.exec('COMMIT'); }
+    try { f.messages.editMessageInTx(a.message.id, '合成已修改', { notifySurfacing: true }); f.db.exec('COMMIT'); }
     catch (err) { f.db.exec('ROLLBACK'); throw err; }
     await f.flush();
     const ev = f.surfaceEvents().find(e => e.to === 'cancelled');
