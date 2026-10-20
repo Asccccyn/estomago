@@ -454,7 +454,9 @@ export class TurnSupervisor {
         }
       };
       let roundSeenPromoted = false; // 本轮首个真实响应=工具结果实际进入模型（429 重试后成功同算——修 O05 边角）
+      let roundGenerationId: string | null = null; // R07：本轮工具事件的 provider 生成标识
       const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
+        roundGenerationId = info.generationId ?? roundGenerationId;
         // F17 语义保留：2xx=真实发送确认。行已在准入时建好——这里只确认 sent_at 与 generation。
         const nowIso = new Date().toISOString();
         d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
@@ -548,6 +550,8 @@ export class TurnSupervisor {
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: lastPrqId, // internal request ledger identity; provider generation is separate
+          // R07（审计 FE-12）：工具生命周期统一身份
+          toolCallId: t.tool_id, attemptId: o.attemptId, round, generationId: roundGenerationId,
         });
         // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
         // 随工具结果进入下一请求时转正（O05：取到结果≠已见）

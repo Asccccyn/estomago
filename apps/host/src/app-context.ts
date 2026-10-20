@@ -136,6 +136,7 @@ export class Host {
         worker_concurrency: surfaceCfg.worker_concurrency,
       },
       logger,
+      events,
     );
     const messages = new MessageService(db, surfacing.enabled ? surfacing : null);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）

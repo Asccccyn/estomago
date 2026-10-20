@@ -811,6 +811,13 @@ export type ToolExecContext = {
   seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签位置依据，§3.1）
   seenMessages: ReadonlyArray<SeenRef>; // D13：发起请求**实际装载**的 (消息,修订) 清文——引用核对只认这份视野，不从库高水位推断
   requestId: string; // 发起 hold 的模型请求标识
+  // R07（审计 FE-12）：工具生命周期统一身份——同一 tool_call_id 贯穿
+  // start/result/error 三阶段；round=本轮工具批次序号（模型请求轮）；
+  // generationId=provider 生成标识（首字节前可空，如实空不虚构）。
+  toolCallId?: string | null;
+  attemptId?: string | null;
+  round?: number | null;
+  generationId?: string | null;
 };
 
 export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef> };
@@ -1073,12 +1080,43 @@ export class HostToolExecutor {
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    const result = await this.executeInner(name, rawArgs, ctx);
-    // 工具调用过程可见（她 2026-10-17）：SSE turn.tool → 前端"正在做什么"步骤流
-    if (!HostToolExecutor.SILENT_TOOLS.has(name) && ctx.turnId) {
+    // R07（审计 FE-12）：工具生命周期事件合同——同一身份贯穿
+    // start/result/error 三阶段；执行前后各一次真实回执，0 假成功
+    // （ok/error_code 如实来自执行结果）。身份=tool_call_id+turn+attempt+
+    // request+generation+round；副作用仍只由执行器（executeInner）拥有。
+    const visible = !HostToolExecutor.SILENT_TOOLS.has(name) && ctx.turnId;
+    const identity = () => ({
+      tool: name,
+      label: HostToolExecutor.TOOL_LABELS[name] ?? name,
+      tool_call_id: ctx.toolCallId ?? (typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null),
+      turn_id: ctx.turnId,
+      attempt_id: ctx.attemptId ?? null,
+      request_id: ctx.requestId,
+      generation_id: ctx.generationId ?? null,
+      round: ctx.round ?? null,
+    });
+    if (visible) {
       this.events?.publish('turn.tool', {
         conversationId: ctx.roomId, turnId: ctx.turnId, scope: 'private',
-        payload: { tool: name, label: HostToolExecutor.TOOL_LABELS[name] ?? name, ok: Boolean(result.ok) },
+        payload: { ...identity(), phase: 'start' },
+      });
+    }
+    let result: ToolExecResult;
+    try {
+      result = await this.executeInner(name, rawArgs, ctx);
+    } catch (err) {
+      if (visible) {
+        this.events?.publish('turn.tool', {
+          conversationId: ctx.roomId, turnId: ctx.turnId, scope: 'private',
+          payload: { ...identity(), phase: 'error', error: String((err as Error).message ?? err).slice(0, 160) },
+        });
+      }
+      throw err;
+    }
+    if (visible) {
+      this.events?.publish('turn.tool', {
+        conversationId: ctx.roomId, turnId: ctx.turnId, scope: 'private',
+        payload: { ...identity(), phase: 'result', ok: Boolean(result.ok), error_code: (result.output as { error_code?: string }).error_code ?? null },
       });
     }
     return result;
