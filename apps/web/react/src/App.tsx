@@ -1,14 +1,16 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
+import { InlineMessageEditor } from './InlineMessageEditor'
+import { HistoryBoundary, HistoryDatePicker, HistoryViewingBar } from './ChatHistoryControls'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
-  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, X,
+  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X,
 } from 'lucide-react'
 
 function DotSpinner() {
@@ -22,26 +24,40 @@ function DotSpinner() {
   )
 }
 
-function IconBtn({ children, onClick, title }: { children: React.ReactNode; onClick?: () => void; title?: string }) {
+function IconBtn({ children, onClick, title, disabled }: { children: React.ReactNode; onClick?: () => void; title?: string; disabled?: boolean }) {
   return (
-    <button onClick={onClick} aria-label={title} className="rounded-md p-1.5 text-[#8a8780] transition hover:bg-black/5 hover:text-[#3d3929]">
+    <button onClick={onClick} aria-label={title} disabled={disabled} className="rounded-md p-1.5 text-[#8a8780] transition hover:bg-black/5 hover:text-[#3d3929] disabled:opacity-40">
       {children}
     </button>
   )
 }
 
-function Thinking({ m, onStop }: { m: Msg; onStop?: () => void }) {
+function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpand?: () => Promise<unknown> }) {
   const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const readDetails = () => {
+    if (!onExpand || loading) return
+    setLoading(true); setLoadError(false)
+    void onExpand().catch(() => setLoadError(true)).finally(() => setLoading(false))
+  }
+  const toggle = () => {
+    setOpen(!open)
+    if (!open) readDetails()
+  }
   return (
     <div className="mb-2 -ml-[13px]">
-      <button onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[13px] text-[#8a8780] hover:text-[#3d3929]">
+      <button onClick={toggle} aria-expanded={open} className="flex items-center gap-1.5 text-[13px] text-[#8a8780] hover:text-[#3d3929]">
         {m.pending ? <DotSpinner /> : <Sparkle size={14} />}
-        <span>thinking · {m.pending ? '思考中' : (m.thinkSecs == null ? '—' : `${m.thinkSecs}s`)}</span>
+        <span>{m.pending ? 'thinking · 思考中' : m.thinkSecs == null ? '思考过程' : `thinking · ${m.thinkSecs}s`}</span>
         <ChevronLeft size={14} className={`transition-transform ${open ? '-rotate-90' : ''}`} />
       </button>
-      {open && m.steps && (
+      {open && (
         <div className="mt-2 ml-[6px]">
-          {m.steps.map((s, i) => (
+          {loading && <p role="status" className="mb-2 text-[12px] text-[#8a8780]">正在读取思考过程…</p>}
+          {!loading && loadError && <button type="button" onClick={readDetails} className="mb-2 text-[12px] text-[#a54b35]">思考过程读取失败 · 点击重试</button>}
+          {!loading && !loadError && !m.steps?.length && <p className="mb-2 text-[12px] text-[#8a8780]">暂无可读摘要</p>}
+          {m.steps?.map((s, i) => (
             <div key={i} className="relative flex gap-3 pb-3">
               {i < m.steps!.length - 1 && <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#dcd8cc]" />}
               <span className="mt-[5px] flex h-[11px] w-[11px] shrink-0 items-center justify-center rounded-full border border-[#c9c4b6] bg-[#faf9f5]">
@@ -179,13 +195,13 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
   )
 }
 
-function Media({ m, ai }: { m: Msg; ai?: boolean }) {
-  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
-  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={m.text} ai={ai} src={m.src} />
+function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
+  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
+  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} />
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />
-      {m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
+      {showText && m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
     </div>
   )
 }
@@ -205,13 +221,42 @@ export default function App() {
   const [more, setMore] = useState(false)
   const [sheet, setSheet] = useState<null | 'bench' | 'log'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
+  const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
+  const [historyAction, setHistoryAction] = useState<'earlier' | 'later' | 'date' | 'latest' | null>(null)
   const input = state.draft
   const setInput = client.setDraft
   const fileRef = useRef<HTMLInputElement>(null)
   const camRef = useRef<HTMLInputElement>(null)
   const composerRef = useRef<HTMLTextAreaElement>(null)
   const appRef = useMobileViewport()
-  const { scrollRef, contentRef, followLatest } = useChatScroll(msgs)
+  const loadEarlier = async () => {
+    if (editing || state.selectionMode || state.historyLoading || state.loadingEarlier) return false
+    preserveScroll(); setHistoryAction('earlier')
+    return client.loadEarlier()
+  }
+  const loadLater = async () => {
+    if (editing || state.selectionMode || state.historyLoading || state.loadingLater) return false
+    setHistoryAction('later')
+    return client.loadLater()
+  }
+  const jumpToDate = async (date: string) => {
+    if (editing || state.selectionMode) return false
+    setHistoryAction('date')
+    return client.jumpToDate(date)
+  }
+  const returnToLatest = async () => {
+    if (editing || state.selectionMode) return false
+    setHistoryAction('latest')
+    const loaded = await client.returnToLatest()
+    if (loaded) followLatest()
+    return loaded
+  }
+  const { scrollRef, contentRef, followLatest, preserveScroll, awayFromLatest } = useChatScroll(msgs, {
+    suspended: editing !== null || state.selectionMode,
+    historyMode: state.historyMode, historyVersion: state.historyVersion,
+    historyLoading: state.historyLoading, loadingEarlier: state.loadingEarlier,
+    hasEarlier: state.hasEarlier && !(historyAction === 'earlier' && state.historyError), ready: state.ready, onLoadEarlier: loadEarlier,
+  })
   const used = state.context.used
   const limit = state.context.limit
   // 手动换窗参考线（她 2026-10-19 裁定）：容量圈按 uiReference（默认 128k）画，
@@ -220,9 +265,22 @@ export default function App() {
   const circleBase = reference ?? limit
   const pct = used != null && circleBase ? Math.min(1, used / circleBase) : 0
   const overRef = used != null && reference != null && used > reference
-  const send = () => { followLatest(); void client.send() }
+  const send = async () => {
+    if (!client.canSend) return
+    if ((state.historyMode === 'date' || state.hasLater) && !await returnToLatest()) return
+    followLatest(); void client.send()
+  }
   const selectMessage = (id: string) => client.select(id)
-  const editMessage = (id: string) => { const next = window.prompt('编辑消息', client.originalText(id)); if (next !== null) void client.editMessage(id, next) }
+  const editMessage = (m: Msg) => {
+    if (editing) return
+    setEditing({ id: m.id, text: client.editText(m.id), revision: client.messageRevision(m.id), resend: m.canRetry === true })
+  }
+  const saveEditedMessage = async (m: Msg) => {
+    if (!editing || editing.id !== m.id) return false
+    const saved = await client.editMessage(m.id, editing.text, editing.resend, editing.revision)
+    if (saved) setEditing(null)
+    return saved
+  }
   useEffect(() => {
     if (sheet) void client.loadPanel(sheet)
   }, [sheet, client])
@@ -250,6 +308,8 @@ export default function App() {
               className="text-[17px] font-medium tracking-tight outline-none focus:bg-black/5">宇宙发明小机</h1>
           </div>
           <div className="flex">
+            <HistoryDatePicker date={state.historyDate} timezone={state.historyTimezone} busy={state.historyLoading}
+              disabled={editing !== null || state.selectionMode} onPick={jumpToDate} />
             <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
               onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
             <IconBtn title="电话" onClick={() => client.notify('实时语音通话暂未接入')}><Phone size={18} /></IconBtn>
@@ -305,11 +365,23 @@ export default function App() {
         </div>
       </header>
 
+      {(state.historyMode === 'date' || state.hasLater || state.newMessages || awayFromLatest) && <HistoryViewingBar
+        date={state.historyDate} newMessages={state.newMessages} busy={state.historyLoading}
+        disabled={editing !== null || state.selectionMode} onLatest={() => void returnToLatest()} />}
+      {historyAction === 'latest' && state.historyError && <p role="alert" className="px-4 py-2 text-[12px] text-[#a54b35]">{state.historyError}</p>}
+
       {/* Messages */}
       <main ref={scrollRef} className="no-bar min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-5">
         <div ref={contentRef} className="flow-root">
-        {state.hasEarlier && <button className="mx-auto mb-4 block text-[12px] text-[#8a8780]" onClick={() => void client.loadEarlier()}>加载更早</button>}
-        {msgs.map((m) => m.system ? <p key={m.id} role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
+        {state.historyLoading && <p role="status" className="mb-3 text-center text-[12px] text-[#8a8780]">正在读取聊天记录…</p>}
+        {state.ready && msgs.length > 0 && <HistoryBoundary direction="earlier" loading={state.loadingEarlier} hasMore={state.hasEarlier}
+          error={historyAction === 'earlier' ? state.historyError : undefined} disabled={editing !== null || state.selectionMode || state.historyLoading}
+          onLoad={() => void loadEarlier()} />}
+        {state.historyMode === 'date' && !state.historyLoading && msgs.length === 0 && <p role="status" className="px-5 py-12 text-center text-[14px] text-[#8a8780]">这一天没有聊天记录，可以选择其他日期或回到最新。</p>}
+        {msgs.map((m, index) => <Fragment key={m.id}>
+          {m.dateKey && (index === 0 || msgs[index - 1]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
+          <div data-message-id={m.id} className="flow-root">
+          {m.system ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
@@ -321,15 +393,30 @@ export default function App() {
               </span>
             </button>
           ) : (
-          <div key={m.id} className="mb-8 ml-auto flex w-[75%] flex-col items-end pr-[2em]">
+          <div key={m.id} className={`mb-8 ml-auto flex flex-col items-end ${editing?.id === m.id ? 'w-full px-3 sm:w-[85%] sm:pl-0 sm:pr-[2em]' : 'w-[75%] pr-[2em]'}`}>
+            {editing?.id === m.id ? (
+              <InlineMessageEditor value={editing.text} onChange={(text) => setEditing((draft) => draft?.id === m.id ? { ...draft, text } : draft)}
+                onCancel={() => setEditing(null)} onSave={() => saveEditedMessage(m)} canRetry={editing.resend}
+                pending={m.editPending} unconfirmed={m.editUnconfirmed} hasAttachment={Boolean(m.kind || m.media?.length)}>
+                {m.kind && <Media m={m} showText={false} />}
+              </InlineMessageEditor>
+            ) : <>
             {m.kind ? <Media m={m} /> : <p className="whitespace-pre-wrap break-words text-[15px] leading-[1.6] tracking-[0.01em] text-[#1f1e1d]">{m.text}</p>}
             <div className="mt-1 -mr-1.5 flex items-center">
               <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
               <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
               <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
-              <IconBtn title="编辑" onClick={() => editMessage(m.id)}><Pencil size={15} /></IconBtn>
+              <IconBtn title="编辑" disabled={editing !== null || m.editPending || ['pending', 'running'].includes(m.replyState ?? '')} onClick={() => editMessage(m)}><Pencil size={15} /></IconBtn>
               <span className="ml-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
             </div>
+            </>}
+            {['failed', 'blocked', 'interrupted'].includes(m.replyState ?? '') && <p role="status" className="mt-1 max-w-full text-right text-[12px] leading-relaxed text-[#a54b35]">
+              {m.retryReason || (m.replyState === 'interrupted' ? '本次回复已中断。' : '这条消息尚未完成回复。')}
+            </p>}
+            {editing?.id !== m.id && m.canRetry && <button type="button" disabled={m.editPending} onClick={() => void client.retryMessage(m.id)}
+              className="mt-2 flex items-center gap-1.5 rounded-full border border-[#d4cec0] px-3 py-1.5 text-[12px] text-[#5e5d59] hover:bg-black/5 disabled:opacity-50">
+              <RotateCcw size={13} />{m.editPending ? '正在重试…' : '重试'}
+            </button>}
           </div>
           )
         ) : state.selectionMode && !m.pending ? (
@@ -348,7 +435,9 @@ export default function App() {
             </button>
         ) : (
           <div key={m.id} className="mb-8 w-[75%] pl-[2em]">
-            {(m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m} onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
+            {(m.turnId || m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m}
+              onExpand={m.turnId ? () => client.loadTurnDetails(m.turnId!) : undefined}
+              onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
             {!m.pending && (
               <>
                 {m.kind ? <Media m={m} ai /> : (
@@ -366,7 +455,10 @@ export default function App() {
               </>
             )}
           </div>
-        ))}
+        )}</div></Fragment>)}
+        {(state.hasLater || state.loadingLater || state.historyMode === 'date' && msgs.length > 0 || historyAction === 'later' && state.historyError) && <HistoryBoundary
+          direction="later" loading={state.loadingLater} hasMore={state.hasLater} error={historyAction === 'later' ? state.historyError : undefined}
+          disabled={editing !== null || state.selectionMode || state.historyLoading} onLoad={() => void loadLater()} />}
         </div>
       </main>
 
@@ -438,11 +530,11 @@ export default function App() {
                 </span>
                 <button onClick={() => stopRec(false)} aria-label="取消" className="text-[#a3a099]"><X size={16} /></button>
               </div>
-            ) : <textarea ref={composerRef} rows={1} value={input} onChange={(e) => setInput(e.target.value)} title={state.draftEstimate ? `正文预计 ${state.draftEstimate.message_text_tokens ?? '未知'} token（粗估）` : undefined}
+            ) : <textarea ref={composerRef} rows={1} aria-label="回复消息" value={input} onChange={(e) => setInput(e.target.value)} title={`Enter 换行，⌘/Ctrl+Enter 发送${state.draftEstimate ? ` · 正文预计 ${state.draftEstimate.message_text_tokens ?? '未知'} token（粗估）` : ''}`}
               onCompositionStart={() => client.setComposing(true)} onCompositionEnd={() => client.setComposing(false)}
               onKeyDown={(e) => { if (shouldSendOnKeydown(e)) { e.preventDefault(); send(); } }}
               placeholder="回复…" className="min-w-0 flex-1 resize-none bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]" />}
-            <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
+            <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
               className="group flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full text-white">
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#c96442] transition group-disabled:bg-[#e6c2b4]"><ArrowUp size={17} /></span>
             </button>

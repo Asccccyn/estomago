@@ -5,7 +5,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
-import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind } from '../../../../packages/contracts/src/api.ts';
+import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind, type MessagePageDto } from '../../../../packages/contracts/src/api.ts';
 import { sha256Hex as sha256HexOf } from '../util/id.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
 
@@ -217,19 +217,19 @@ export class MessageService {
   }
 
   // 供路由事务内直接修订（同一外部 tx；AUD-06/07）
-  editMessageInTx(messageId: string, newContent: string): { revision: number; contentHash: string } {
+  editMessageInTx(messageId: string, newContent: string, opts: { source?: string; tokenEstimateJson?: string | null; notifySurfacing?: boolean; allowBlankWithAttachments?: boolean } = {}): { revision: number; contentHash: string } {
     const row = this.db
       .prepare('SELECT current_revision, kind FROM messages WHERE id = ?')
       .get(messageId) as { current_revision: number; kind: string } | undefined;
     if (!row) throw new Error('message not found');
     const content = normalizeNewlines(newContent);
-    if (isBlankContent(content)) throw new BlankMessageError('编辑后正文仅空白，拒绝');
+    if (isBlankContent(content) && !(opts.allowBlankWithAttachments && this.db.prepare('SELECT 1 FROM message_attachments WHERE message_id=? AND revision=? LIMIT 1').get(messageId, row.current_revision))) throw new BlankMessageError('编辑后正文仅空白，拒绝');
     const nowIso = new Date().toISOString();
     const nextRev = row.current_revision + 1;
     // AUD-28 P2：路由编辑复制附件到新修订（与普通编辑一致）
     const oldAtts = this.db.prepare('SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, row.current_revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;
     const fp = messageFingerprint(content, oldAtts.map((a) => ({ asset_id: a.asset_id, presentation: a.presentation as MessageAttachmentInput['presentation'] })));
-    this.insertRevision({ messageId, revision: nextRev, kind: row.kind as MessageKind, content, occurredAt: nowIso, receivedAt: nowIso, source: 'route_edit', supersedes: row.current_revision, fingerprint: fp });
+    this.insertRevision({ messageId, revision: nextRev, kind: row.kind as MessageKind, content, occurredAt: nowIso, receivedAt: nowIso, source: opts.source ?? 'route_edit', supersedes: row.current_revision, fingerprint: fp, tokenEstimateJson: opts.tokenEstimateJson });
     for (let i = 0; i < oldAtts.length; i++) {
       this.db.prepare(
         `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
@@ -238,8 +238,14 @@ export class MessageService {
     }
     this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
     this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
+    if (opts.notifySurfacing) {
+      const msg = this.getMessage(messageId)!;
+      this.surfacing?.onUserMessageEdited({ conversationId: msg.conversation_id, messageId, supersededRevision: row.current_revision });
+    }
     return { revision: nextRev, contentHash: sha256Hex(content) };
   }
+
+  notifyAfterEditCommit(): void { this.surfacing?.afterCommit(); }
 
   // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
   publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[] }): MessageDto {
@@ -393,6 +399,59 @@ export class MessageService {
       )
       .all(opts.conversationId, opts.afterSequence ?? 0, limit) as MessageRow[];
     return rows.map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+  }
+
+  /** Bounded UI history with global sequence cursors. Date lookup anchors at
+   * the first message created that day, then reads the surrounding timeline.
+   * The caller owns a read snapshot when pairing this with an event watermark. */
+  listMessagePage(opts: {
+    conversationId: string;
+    beforeSequence?: number;
+    afterSequence?: number;
+    latest?: boolean;
+    limit?: number;
+    dateRange?: { date: string; startUtc: string; endUtc: string };
+  }): MessagePageDto {
+    const limit = Math.min(1000, Math.max(1, opts.limit ?? 100));
+    const descending = !opts.dateRange && (opts.latest === true || opts.beforeSequence !== undefined);
+    const conditions = ['m.conversation_id = ?'];
+    const parameters: Array<string | number> = [opts.conversationId];
+    const empty: MessagePageDto = {
+      messages: [], has_earlier: false, has_later: false,
+      before_sequence: null, after_sequence: null, has_more: false, timezone: 'Asia/Shanghai',
+      ...(opts.dateRange ? { date: opts.dateRange.date, empty_date: true } : {}),
+    };
+    if (opts.dateRange) {
+      // created_at is immutable; editing occurred_at never moves the date anchor.
+      const anchor = this.db.prepare('SELECT sequence FROM messages WHERE conversation_id=? AND created_at>=? AND created_at<? ORDER BY sequence LIMIT 1')
+        .get(opts.conversationId, opts.dateRange.startUtc, opts.dateRange.endUtc) as { sequence: number } | undefined;
+      if (!anchor) return empty;
+      conditions.push('m.sequence >= ?'); parameters.push(anchor.sequence);
+    } else if (opts.beforeSequence !== undefined) {
+      conditions.push('m.sequence < ?'); parameters.push(opts.beforeSequence);
+    } else if (!opts.latest) {
+      conditions.push('m.sequence > ?'); parameters.push(opts.afterSequence ?? 0);
+    }
+    const rows = this.db.prepare(`
+      SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
+        r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+      FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      WHERE ${conditions.join(' AND ')} ORDER BY m.sequence ${descending ? 'DESC' : 'ASC'} LIMIT ?
+    `).all(...parameters, limit) as MessageRow[];
+    if (!rows.length) return empty;
+    if (descending) rows.reverse();
+    const first = rows[0]!.sequence, last = rows.at(-1)!.sequence;
+    const bounds = this.db.prepare(`
+      SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND sequence<?) AS earlier,
+        EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND sequence>?) AS later
+    `).get(opts.conversationId, first, opts.conversationId, last) as { earlier: number; later: number };
+    return {
+      messages: rows.map(row => rowToDto(row, attachmentsFor(this.db, row.id, row.revision))),
+      has_earlier: Boolean(bounds.earlier), has_later: Boolean(bounds.later),
+      before_sequence: first, after_sequence: last,
+      has_more: Boolean(descending ? bounds.earlier : bounds.later), timezone: 'Asia/Shanghai',
+      ...(opts.dateRange ? { date: opts.dateRange.date, empty_date: false } : {}),
+    };
   }
 
   currentRevisionHash(messageId: string): string | null {

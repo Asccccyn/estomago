@@ -37,6 +37,39 @@ export type MessageDto = {
   published_at: string | null;
   created_at: string;
   revision: MessageRevisionDto; // 当前有效修订
+  reply_status?: MessageReplyStatusDto;
+};
+
+export type MessageReplyStatusDto = {
+  state: string;
+  can_retry: boolean;
+  reason: string | null;
+  turn_id: string | null;
+  attempt_id: string | null;
+};
+
+export type MessagePageDto = {
+  messages: MessageDto[];
+  has_earlier: boolean;
+  has_later: boolean;
+  before_sequence: number | null;
+  after_sequence: number | null;
+  has_more: boolean; // Earlier for latest/before pages; later for after/date pages.
+  timezone: 'Asia/Shanghai'; // Existing calendar's creation-date convention.
+  date?: string;
+  empty_date?: boolean;
+  event_cursor?: number; // Only snapshot=1; never advance an existing SSE cursor from a history page.
+  active_turns?: Array<{ turn_id: string; attempt_id: string | null; state: string }>;
+  pending_route?: {
+    decision_id: string;
+    turn_id: string;
+    attempt_id: string;
+    current_model: null;
+    target_model: string | null;
+    evidence_code: string;
+    already_switched: false;
+    affects_future_sessions: null;
+  } | null;
 };
 
 export type MessageAttachmentInput = {

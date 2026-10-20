@@ -9,16 +9,25 @@ import {
   normalizeNewlines,
 } from '../../apps/web/src/composer-logic.js';
 
-test('2026-10-17 她裁定：Claude 官端口径——裸 Enter 发送，组合键/IME 不发送', () => {
+test('2026-10-19 输入和编辑统一：Enter 换行，Cmd/Ctrl+Enter 提交', () => {
   const ev = (over = {}) => ({ key: 'Enter', shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, keyCode: 13, nativeEvent: { isComposing: false }, ...over });
-  assert.equal(shouldSendOnKeydown(ev()), true, '裸 Enter=发送一段');
+  assert.equal(shouldSendOnKeydown(ev()), false, '裸 Enter=换行');
   assert.equal(shouldSendOnKeydown(ev({ shiftKey: true })), false, 'Shift+Enter=换行');
-  assert.equal(shouldSendOnKeydown(ev({ metaKey: true })), false);
-  assert.equal(shouldSendOnKeydown(ev({ ctrlKey: true })), false);
-  assert.equal(shouldSendOnKeydown(ev({ keyCode: 229 })), false, 'IME 合成期 Enter 不发送');
-  assert.equal(shouldSendOnKeydown(ev({ nativeEvent: { isComposing: true } })), false);
+  assert.equal(shouldSendOnKeydown(ev({ metaKey: true })), true, 'Cmd+Enter=提交');
+  assert.equal(shouldSendOnKeydown(ev({ ctrlKey: true })), true, 'Ctrl+Enter=提交');
+  assert.equal(shouldSendOnKeydown(ev({ metaKey: true, shiftKey: true })), false);
+  assert.equal(shouldSendOnKeydown(ev({ ctrlKey: true, altKey: true })), false);
+  assert.equal(shouldSendOnKeydown(ev({ metaKey: true, repeat: true })), false, '按住快捷键不重复提交');
   assert.equal(shouldSendOnKeydown(ev({ key: 'a' })), false);
   assert.equal(shouldSendOnKeydown(), false);
+});
+
+test('Cmd/Ctrl+Enter 在各种浏览器的 IME 合成事件中均不提交', () => {
+  for (const modifier of [{ metaKey: true }, { ctrlKey: true }]) {
+    for (const composing of [{ isComposing: true }, { keyCode: 229 }, { nativeEvent: { isComposing: true } }, { nativeEvent: { keyCode: 229 } }]) {
+      assert.equal(shouldSendOnKeydown({ key: 'Enter', ...modifier, ...composing }), false);
+    }
+  }
 });
 
 test('IME 合成期间不可发送（候选确认≠发送）', () => {

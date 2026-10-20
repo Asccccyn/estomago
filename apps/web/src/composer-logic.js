@@ -1,6 +1,6 @@
 // composer 纯逻辑（浏览器与测试共用）——输入规则的单一事实源：
-//  2026-10-17 她裁定（替代 v0.2.1 旧规则）：Claude 官端发送口径——
-//  1. Enter 发送一段（一条消息）；Shift+Enter 换行；一次一段，可分段连发多条
+//  2026-10-19 她裁定（替代 10-17 规则）：聊天框和原位编辑框统一——
+//  1. Enter / Shift+Enter 换行；按钮或 Cmd/Ctrl+Enter 发送一条消息
 //  2. IME 合成期间（composing=true / keyCode 229）不发送（候选确认不能变成发送）
 //  3. 仅空白且无附件 → 不可发送；判定不修改正文（不 trim 重写）
 //  4. 一次点击生成一个 client_message_id；重试复用同一 ID（服务端幂等兜底）
@@ -33,13 +33,13 @@ export function newClientMessageId(cryptoObj = globalThis.crypto) {
   return cryptoObj.randomUUID();
 }
 
-// Claude 官端口径（她 2026-10-17 裁定）：裸 Enter=发送；Shift/Cmd/Ctrl/Alt+Enter=不发送
-// （Shift+Enter 走 textarea 默认换行）；IME 合成期（isComposing / keyCode 229）不发送
+// 两种输入框统一：裸 Enter 保留 textarea 默认换行，Cmd/Ctrl+Enter 才提交。
+// Shift/Alt 修饰键、按住不放的重复事件、IME 候选确认均不触发提交。
 export function shouldSendOnKeydown(event) {
   if (!event || event.key !== "Enter") return false;
-  if (event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) return false;
-  if (event.nativeEvent && event.nativeEvent.isComposing) return false;
-  if (event.keyCode === 229) return false;
+  if ((!event.metaKey && !event.ctrlKey) || event.shiftKey || event.altKey || event.repeat) return false;
+  if (event.isComposing || event.nativeEvent?.isComposing) return false;
+  if (event.keyCode === 229 || event.nativeEvent?.keyCode === 229) return false;
   return true;
 }
 

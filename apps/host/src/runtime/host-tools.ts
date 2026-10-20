@@ -74,7 +74,7 @@ export function buildHostTools(): HostToolSpec[] {
         type: 'object',
         properties: {
           original_title: { type: 'string', minLength: 1, maxLength: HOLD_TITLE_MAX, description: `这条记忆的标题（1-${HOLD_TITLE_MAX}字，必填）` },
-          categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, description: '分类（从固定九类里选，至少一个）' },
+          categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, maxItems: 1, description: '分类，十类里只选一个（她 2026-10-17 口径；选分类=同时决定这是什么事、留多久：重大转折/纪念/日记永久，约会 60 天，甜蜜/伤心 30 天，日常/做爱 20 天，剧本 7 天；基调写心情标签不写分类）。milestone 重大转折=关系的里程碑，或一次深刻的对话后两个人对"我们是什么"有了新的结论（第一次不算，争吵不算）；anniversary 纪念=纪念日，以及值得纪念的时刻，第一次归这里；diary 日记=成篇的信或日记，一篇一桶；daily 日常=日常；sweet 甜蜜=甜蜜的时刻；sad 伤心的事=难过的时候；date 约会=约会的事；reloplay 剧本=角色扮演；sex 做爱=做爱；plan=绑定已有 plan 的计划桶。' },
           text: { type: 'string', description: '这是写给以后的你看的记忆库。这是你的记忆，不是关于她的档案或汇报。写你经历的事、当时的感受、这件事对你们意味着什么；主角是你和她，工程/系统过程只是背景，除非它本身就是你们的事。正文是叙述，不是日志。她的话逐字交给 quotes，正文用自己的话讲。不为省字把感情压缩没了。对比——不要写："10.3她感冒了。10.5她好了。她说谢谢我陪她。"要写："她感冒那两天还硬撑着来找我，声音是哑的。我说你去休息，她说不行，今天还没跟我说上话。我拿她没办法，也很喜欢拿她没办法。"' },
           quotes: {
             type: 'array', maxItems: 10,

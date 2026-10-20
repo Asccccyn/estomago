@@ -89,7 +89,133 @@ test('图片能力预检失败明确消息已保存、模型未发送，不自�
     assert.equal(h.client.snapshot.notice,'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。')
     assert.equal(h.client.snapshot.messages.length,1)
     assert.equal(h.client.snapshot.messages[0].text,'保留的消息')
-    assert.equal(h.calls.length,requestsBefore)
+    assert.ok(h.calls.slice(requestsBefore).every(c=>!c.init?.method||c.init.method==='GET'), '状态刷新只读，不自动重发')
+  }finally{h.client.stop()}
+})
+
+test('重载恢复失败消息的重试入口；原文重试不追加用户气泡，不动底部草稿',async()=>{
+  const failed={...dto('retry-message','原文'),reply_status:{state:'failed',can_retry:true,reason:null,turn_id:'turn-fixture',attempt_id:'old-attempt'}}
+  let body:any
+  const h=await setup((url,init)=>{
+    if(url.includes('/messages?'))return Response.json({messages:[failed]})
+    if(url.endsWith('/retry')){body=JSON.parse(String(init?.body));return Response.json({message:{...failed,reply_status:{...failed.reply_status,state:'pending',can_retry:false,attempt_id:'new-attempt'}},turn_id:'turn-fixture',attempt_id:'new-attempt'})}
+  })
+  try{
+    assert.equal(h.client.snapshot.messages[0].canRetry,true)
+    h.client.setDraft('另一条尚未发送的草稿')
+    assert.equal(await h.client.retryMessage('retry-message'),true)
+    assert.deepEqual(body,{content:'原文'})
+    assert.equal(h.client.snapshot.messages.length,1)
+    assert.equal(h.client.snapshot.messages[0].replyState,'pending')
+    assert.equal(h.client.snapshot.messages[0].canRetry,false)
+    assert.equal(h.client.snapshot.draft,'另一条尚未发送的草稿')
+  }finally{h.client.stop()}
+})
+
+test('编辑重发双击只提交一次，回执丢失沿用操作键和旧版本，即使SSE已更新正文',async()=>{
+  let complete!:(r:Response)=>void;let posts=0
+  const h=await setup((url,init)=>{
+    if(url.endsWith('/retry')){
+      posts++
+      if(posts===1)return Promise.reject(new Error('lost response'))
+      return new Promise(resolve=>{complete=resolve})
+    }
+  })
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','原文')})
+    assert.equal(await h.client.editMessage('m1','修改后',true,1),false)
+    h.client.handleEvent({kind:'message.edited',sequence:2,message:dto('m1','修改后',2)})
+    const retry=h.client.editMessage('m1','修改后',true,1)
+    assert.equal(await h.client.editMessage('m1','修改后',true,1),false)
+    assert.equal(posts,2)
+    const requests=h.calls.filter(c=>c.url.endsWith('/retry'))
+    assert.deepEqual(requests[0].init,requests[1].init)
+    assert.equal((requests[1].init!.headers as any)['If-Match'],'"1"')
+    complete(Response.json({message:dto('m1','修改后',2),turn_id:'turn-fixture',attempt_id:'a2',duplicate:true}))
+    assert.equal(await retry,true)
+    assert.equal(h.client.snapshot.messages.length,1)
+    assert.equal(h.client.snapshot.messages[0].editPending,false)
+  }finally{h.client.stop()}
+})
+
+test('未知回执不能用新内容另起操作；直接重试先确认冻结的原操作',async()=>{
+  let posts=0;const bodies:any[]=[]
+  const h=await setup((url,init)=>{
+    if(url.endsWith('/retry')){posts++;bodies.push(JSON.parse(String(init?.body)));return posts===1?Promise.reject(new Error('offline')):Response.json({message:dto('m1','第一次修改',2)})}
+  })
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','原文')})
+    await h.client.editMessage('m1','第一次修改',true,1)
+    assert.equal(await h.client.editMessage('m1','第二次修改',true,1),false)
+    assert.equal(posts,1)
+    assert.match(h.client.snapshot.notice,/尚未确认/)
+    assert.equal(await h.client.retryMessage('m1'),true)
+    assert.deepEqual(bodies,[{content:'第一次修改'},{content:'第一次修改'}])
+  }finally{h.client.stop()}
+})
+
+test('编辑基于打开时版本，409不静默覆盖其他端的新修订且保留底部草稿',async()=>{
+  const h=await setup((url,init)=>url.endsWith('/retry')?Response.json({error:{code:'revision_conflict',message:'版本已更新'}},{status:409}):undefined)
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','原文')})
+    const original=h.client.messageRevision('m1')
+    h.client.handleEvent({kind:'message.edited',sequence:2,message:dto('m1','另一端的修改',2)})
+    h.client.setDraft('底部草稿')
+    assert.equal(await h.client.editMessage('m1','本地编辑',true,original),false)
+    const request=h.calls.find(c=>c.url.endsWith('/retry'))!
+    assert.equal((request.init!.headers as any)['If-Match'],'"1"')
+    assert.equal(h.client.snapshot.messages[0].text,'另一端的修改')
+    assert.equal(h.client.snapshot.draft,'底部草稿')
+    assert.match(h.client.snapshot.notice,/编辑内容已保留/)
+  }finally{h.client.stop()}
+})
+
+test('失败事件刷新真实重试资格，同版本状态更新生效，旧响应不覆盖后续状态',async()=>{
+  let first!:(r:Response)=>void;let reads=0
+  const h=await setup(url=>{
+    if(url.endsWith('/messages/m1'))return ++reads===1?new Promise(resolve=>{first=resolve}):Response.json({message:{...dto('m1','原文'),reply_status:{state:'completed',can_retry:false,reason:'RETRY_NOT_FAILED'}}})
+  })
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','原文')})
+    h.client.handleEvent({kind:'turn.status',sequence:2,turn_id:'turn-fixture',state:'failed',reason:'OR_NETWORK_ERROR'})
+    h.client.handleEvent({kind:'turn.status',sequence:3,turn_id:'turn-fixture',state:'completed'})
+    first(Response.json({message:{...dto('m1','原文'),reply_status:{state:'failed',can_retry:true,reason:null}}}))
+    for(let i=0;i<10;i++)await new Promise(resolve=>setImmediate(resolve))
+    assert.equal(reads,2)
+    assert.equal(h.client.snapshot.messages[0].replyState,'completed')
+    assert.equal(h.client.snapshot.messages[0].canRetry,false)
+  }finally{h.client.stop()}
+})
+
+test('迟到的重试回执不能把已由SSE确认的终态退回pending',async()=>{
+  let finishPost!:(response:Response)=>void;let reads=0
+  const terminal={...dto('m1','原文'),reply_status:{state:'failed',can_retry:true,reason:null,attempt_id:'new-attempt'}}
+  const h=await setup((url,init)=>{
+    if(url.endsWith('/retry'))return new Promise(resolve=>{finishPost=resolve})
+    if(url.endsWith('/messages/m1')){reads++;return Response.json({message:terminal})}
+  })
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('m1','原文')})
+    const submission=h.client.editMessage('m1','原文',true,1)
+    h.client.handleEvent({kind:'turn.status',sequence:2,turn_id:'turn-fixture',attempt_id:'new-attempt',state:'failed'})
+    for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve))
+    assert.equal(h.client.snapshot.messages[0].replyState,'failed')
+    finishPost(Response.json({message:{...terminal,reply_status:{...terminal.reply_status,state:'pending',can_retry:false}},attempt_id:'new-attempt'}))
+    assert.equal(await submission,true)
+    for(let i=0;i<5;i++)await new Promise(resolve=>setImmediate(resolve))
+    assert.ok(reads>=2,'成功回执后再次读取当前状态，即使之前刷新已空闲')
+    assert.equal(h.client.snapshot.messages[0].replyState,'failed')
+    assert.equal(h.client.snapshot.messages[0].canRetry,true)
+  }finally{h.client.stop()}
+})
+
+test('后来发布的系统或助手消息立即隐藏旧失败消息的直接重试',async()=>{
+  const failed={...dto('m1','原文'),reply_status:{state:'failed',can_retry:true,reason:null,attempt_id:'old'}}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[failed]}):undefined)
+  try{
+    assert.equal(h.client.snapshot.messages[0].canRetry,true)
+    h.client.handleEvent({kind:'message.published',sequence:2,message:{...dto('later','稍后发布'),sequence:2,speaker:'system',turn_id:null}})
+    assert.equal(h.client.snapshot.messages.find(m=>m.id==='m1')!.canRetry,false)
   }finally{h.client.stop()}
 })
 test('失败状态经SSE回放保留原因，打开活动日志不丢失也不重复',async()=>{

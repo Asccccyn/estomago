@@ -1081,6 +1081,7 @@ export class TurnSupervisor {
     turnId: string | null; // 自动换窗=当前 turn（评审请求可被 stop(turnId) 中断）；手动换窗=null（stopAll 兜底）
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     force?: boolean; // 手动换窗（F05：同一管线，不经评审直转的旁路已封）
+    preserveWindow?: boolean; // Explicit retry may block on capacity but never rotates/rebuilds history.
   }): Promise<{ rotated: boolean; blocked: string | null }> {
     const d = this.d;
     const dv = this.drv();
@@ -1173,6 +1174,7 @@ export class TurnSupervisor {
       }
       if (plan.action !== 'rotate') return { rotated: false, blocked: null };
     }
+    if (o.preserveWindow) return { rotated: false, blocked: 'RETRY_CONTEXT_CAPACITY:当前上下文需要换窗，本次重试未发送；请先处理上下文容量' };
     const reason: 'capacity' | 'manual' = o.force ? 'manual' : 'capacity';
 
     // WP3（2026-10-08 她裁定，H07 全入口统一）：换窗历史携带只经人工选集。
@@ -1638,7 +1640,7 @@ export class TurnSupervisor {
       | undefined;
     if (!turn) return;
     const attempt = d.db.prepare("SELECT * FROM attempts WHERE turn_id = ? AND state = 'pending' ORDER BY attempt_no DESC LIMIT 1").get(turnId) as
-      | { id: string; attempt_no: number; input_revision: number | null; fresh_session?: number }
+      | { id: string; attempt_no: number; input_revision: number | null; fresh_session?: number; retry_window_id?: string | null }
       | undefined;
     if (!attempt) return;
 
@@ -1694,6 +1696,10 @@ export class TurnSupervisor {
 
     // —— 窗口与 session（AUD-03）——
     let window = d.windows.activeWindow(turn.conversation_id);
+    if (attempt.retry_window_id && (!window || window.id !== attempt.retry_window_id)) {
+      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'RETRY_CONTEXT_CHANGED:原对话窗口已变化，本次重试未发送', 'blocked');
+      return;
+    }
     if (!window) {
       // WP3（H13，她裁定 2026-10-08）：已有历史但无活动窗**不擅自空选**——
       // 锚定 awaiting 等人工确认；只有真正全新的空房间才自动建首窗
@@ -1732,6 +1738,10 @@ export class TurnSupervisor {
     // 换思考深度不换窗，上下文全复用）
     const expectedFingerprint = contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest);
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
+      if (attempt.retry_window_id) {
+        this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'RETRY_CONTEXT_CHANGED:运行配置已变化，本次重试未发送', 'blocked');
+        return;
+      }
       d.windows.markContextStale(window.id, 'CONTEXT_FINGERPRINT_MISMATCH');
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'CONTEXT_ROTATION_REQUIRED: 身份/运行边界已变化，需受控换窗（旧 session 不再续用）', 'blocked');
       // WP-07（CX-10）：切模型（运行边界变化）与手动换窗同一选集状态机——
@@ -1765,8 +1775,13 @@ export class TurnSupervisor {
       return true;
     };
     if (dv && d.trajectory) {
-      if (d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
+      if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
       const trajExists = d.trajectory.forWindow(window.id) !== null;
+      if (attempt.retry_window_id && !trajExists) {
+        this.active.delete(turnId);
+        this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'RETRY_CONTEXT_UNAVAILABLE:原上下文缺失，本次重试未发送', 'blocked');
+        return;
+      }
       if (!trajExists) {
         // WP3：新窗历史装配只经人工选集（forTargetWindow 命中=消费过选集的
         // 新窗，严格按引用装配；空选=不带历史）。无选集命中的窗（真全新
@@ -1794,6 +1809,7 @@ export class TurnSupervisor {
         conversationId: turn.conversation_id, window, gate,
         currentInputSequence: inputMessage.sequence, attemptId: attempt.id, turnId,
         materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+        preserveWindow: Boolean(attempt.retry_window_id),
       });
       if (rotation.blocked) {
         this.active.delete(turnId);
