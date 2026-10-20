@@ -9,8 +9,12 @@
   const clockFace = $('clock-face');
   const clockPicture = clock.querySelector('.clock-picture');
   const home = document.querySelector('.home');
+  let clockFaceBounds='';
   function positionClockFace(){
     const card=clockPicture.getBoundingClientRect(), bounds=home.getBoundingClientRect();
+    const key=[card.left-bounds.left,card.top-bounds.top,card.width,card.height].join(',');
+    if(key===clockFaceBounds)return;
+    clockFaceBounds=key;
     Object.assign(clockFace.style,{left:`${card.left-bounds.left}px`,top:`${card.top-bounds.top}px`,width:`${card.width}px`,height:`${card.height}px`});
   }
   clockFace.classList.add('clock-face-foreground');
@@ -40,8 +44,20 @@
   clock.addEventListener('pointermove',event=>{if(event.pointerType==='touch'||reducedMotion.matches){resetPointer();return;}const b=clock.getBoundingClientRect();const offset=(p,s,w)=>Math.max(-6,Math.min(6,((p-s)/w-.5)*12));clock.style.setProperty('--pointer-x',`${offset(event.clientX,b.left,b.width).toFixed(2)}px`);clock.style.setProperty('--pointer-y',`${offset(event.clientY,b.top,b.height).toFixed(2)}px`);});
   clock.addEventListener('pointerleave',resetPointer);clock.addEventListener('pointercancel',resetPointer);clock.addEventListener('pointerdown',event=>{if(event.pointerType==='touch')resetPointer();});
   $('clock-touch').addEventListener('click',()=>{$('clock-touch').setAttribute('aria-expanded',String(clock.classList.toggle('revealed')));});
-  function updateClock(){const parts=new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',weekday:'long',hourCycle:'h23'}).formatToParts(new Date());const p=type=>parts.find(x=>x.type===type)?.value||'';$('clock-year').textContent=p('year');$('clock-month-day').textContent=`${p('month')}${p('day')}`;$('clock-time').textContent=`${p('hour')}${p('minute')}`;$('clock-weekday').textContent=new Intl.DateTimeFormat('en-US',{weekday:'long'}).format(new Date());}
-  updateClock();setInterval(updateClock,1000);
+  const dateFormat=new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  const weekdayFormat=new Intl.DateTimeFormat('en-US',{weekday:'long'});
+  let clockTimer;
+  function updateClock(){
+    clearTimeout(clockTimer);
+    const now=new Date(),parts=dateFormat.formatToParts(now);
+    const part=type=>parts.find(x=>x.type===type)?.value||'';
+    const values={'clock-year':part('year'),'clock-month-day':part('month')+part('day'),'clock-time':part('hour')+part('minute'),'clock-weekday':weekdayFormat.format(now)};
+    for(const [id,value] of Object.entries(values)){const element=$(id);if(element.textContent!==value)element.textContent=value;}
+    if(!document.hidden)clockTimer=setTimeout(updateClock,60000-now.getTime()%60000+20);
+  }
+  function clockVisibility(){if(document.hidden)clearTimeout(clockTimer);else updateClock();}
+  document.addEventListener('visibilitychange',clockVisibility);
+  updateClock();
 
   function objectUrl(file,key){if(!file||!file.type.startsWith('image/')){toast('请选择图片文件。');return null;}if(file.size>30*1024*1024){toast('请使用小于 30 MB 的图片。');return null;}if(urls.has(key))URL.revokeObjectURL(urls.get(key));const url=URL.createObjectURL(file);urls.set(key,url);return url;}
 
@@ -79,6 +95,5 @@
 
   function updateMotion(){const paused=reducedMotion.matches;document.body.classList.toggle('motion-paused',paused);resetPointer();}
   reducedMotion.addEventListener('change',updateMotion);updateMotion();
-  window.addEventListener('beforeunload',()=>{urls.forEach(url=>URL.revokeObjectURL(url));clockFaceObserver.disconnect();window.removeEventListener('resize',positionClockFace);});
-  window.EstomagoHomePreview={version:'2.0.0',setAlbum:setFront,openAlbum};
+  window.addEventListener('beforeunload',()=>{urls.forEach(url=>URL.revokeObjectURL(url));clockFaceObserver.disconnect();window.removeEventListener('resize',positionClockFace);clearTimeout(clockTimer);document.removeEventListener('visibilitychange',clockVisibility);});
 })();
