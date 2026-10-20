@@ -11,10 +11,12 @@ import path from 'node:path';
 import type { Config } from '../config/schema.ts';
 import type { EstomagoPaths } from '../config/paths.ts';
 import type { Db } from '../db/connection.ts';
+import { readSnapshot } from '../db/connection.ts';
 import type { Logger } from '../observability/logging.ts';
 import { stableErrorCode } from '../observability/errors.ts';
 import type { EventService, SseSubscriber } from '../events/service.ts';
 import type { MessageService } from '../messages/service.ts';
+import { MessageRetryService, MessageRetryError } from '../messages/retry.ts';
 import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from '../runtime/capabilities.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
@@ -29,7 +31,7 @@ import type { MediaService, IngestPurpose } from '../media/assets.ts';
 import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { contentProxyWithAssets } from '../integrations/content/client.ts';
-import { buildCalendarMonth, buildCalendarDayItems, type CalendarSource } from './calendar-routes.ts';
+import { buildCalendarMonth, buildCalendarDayItems, shanghaiDayRange, type CalendarSource } from './calendar-routes.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
 import type { AuthService } from '../auth/tokens.ts';
@@ -37,7 +39,7 @@ import { buildReadyReport } from '../observability/health.ts';
 import { buildTimeContext } from '../time/context.ts';
 import { buildRecordSnapshot, listRecordEvents } from './records.ts';
 import { genId } from '../util/id.ts';
-import type { SubmitMessageRequest } from '../../../../packages/contracts/src/api.ts';
+import type { SubmitMessageRequest, MessagePageDto } from '../../../../packages/contracts/src/api.ts';
 import { estimateTokens, snapshotFor, ESTIMATOR_REVISION, type AttachmentEstimateMeta } from '../usage/estimator.ts';
 import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../app-context.ts';
@@ -183,12 +185,79 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     const convMsgs = /^GET \/api\/v1\/conversations\/([^/]+)\/messages$/.exec(route);
     if (convMsgs) {
       const conversationId = decodeURIComponent(convMsgs[1]!);
-      const after = Number(url.searchParams.get('after') ?? '0') || 0;
-      const limit = Number(url.searchParams.get('limit') ?? '100') || 100;
-      const beforeRaw = url.searchParams.get('before');
-      const before = beforeRaw !== null ? Number(beforeRaw) || 0 : undefined;
-      const latest = new URL(req.url ?? '/', 'http://local').searchParams.get('order') === 'latest';
-      return json(res, 200, { messages: d.messages.listMessages({ conversationId, afterSequence: after, beforeSequence: before, limit, latest }) });
+      const limit = Number(url.searchParams.get('limit') ?? '100');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) return json(res, 400, { error: { code: 'limit_invalid', message: 'limit 必须是 1..1000 的整数' } });
+      const before = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : undefined;
+      const after = url.searchParams.has('after') ? Number(url.searchParams.get('after')) : undefined;
+      if ([before, after].some(n => n !== undefined && (!Number.isSafeInteger(n) || n < 0))) return json(res, 400, { error: { code: 'cursor_invalid', message: 'before / after 必须是非负整数序号' } });
+      const latest = url.searchParams.get('order') === 'latest';
+      const date = url.searchParams.get('date');
+      const range = date === null ? null : shanghaiDayRange(date);
+      if (date !== null && !range) return json(res, 400, { error: { code: 'bad_date', message: 'date 必须是有效的 YYYY-MM-DD 日期（北京时间）' } });
+      if (Number(before !== undefined) + Number(after !== undefined) + Number(date !== null) + Number(latest) > 1) return json(res, 400, { error: { code: 'history_query_conflict', message: 'before、after、date、order=latest 只能选一种定位方式' } });
+      const snapshot = url.searchParams.get('snapshot') === '1';
+      // No await/write occurs inside this transaction: message revisions, retry
+      // state, active turns, route gate and event watermark are one read view.
+      const page = readSnapshot(d.db, (): MessagePageDto => {
+        const result = d.messages.listMessagePage({ conversationId, beforeSequence: before, afterSequence: after, limit, latest, ...(date !== null && range ? { dateRange: { date, ...range } } : {}) });
+        result.messages = new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate(result.messages);
+        if (snapshot) {
+          result.active_turns = d.db.prepare(`
+            SELECT t.id AS turn_id, t.state,
+              (SELECT a.id FROM attempts a WHERE a.turn_id=t.id ORDER BY a.attempt_no DESC LIMIT 1) AS attempt_id
+            FROM turns t WHERE t.conversation_id=? AND t.state IN ('pending','running','route_owner_pending') ORDER BY t.created_at,t.id
+          `).all(conversationId) as NonNullable<MessagePageDto['active_turns']>;
+          const route = d.routing.pendingForConversation(conversationId);
+          result.pending_route = route ? {
+            decision_id: route.id, turn_id: route.turn_id, attempt_id: route.attempt_id,
+            current_model: null, target_model: route.target_model, evidence_code: route.source_evidence,
+            already_switched: false, affects_future_sessions: null,
+          } : null;
+          result.event_cursor = d.events.maxSequence();
+        }
+        return result;
+      });
+      return json(res, 200, page);
+    }
+
+    const getMsg = /^GET \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.exec(route);
+    if (getMsg) {
+      const message = d.messages.getMessage(decodeURIComponent(getMsg[2]!));
+      if (!message || message.conversation_id !== decodeURIComponent(getMsg[1]!)) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
+      return json(res, 200, { message: new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate([message])[0] });
+    }
+
+    const retryMsg = /^POST \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)\/retry$/.exec(route);
+    if (retryMsg) {
+      const conversationId = decodeURIComponent(retryMsg[1]!);
+      const messageId = decodeURIComponent(retryMsg[2]!);
+      const body = await readJson(req, d) as { content?: unknown } | null;
+      if (!body || typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串' } });
+      const operationKey = String(req.headers['idempotency-key'] ?? '');
+      if (!operationKey || operationKey.length > 200) return json(res, 400, { error: { code: 'missing_idempotency', message: '重试必须带有效的 Idempotency-Key' } });
+      const ifMatch = /^(?:"([1-9]\d*)"|([1-9]\d*))$/.exec(String(req.headers['if-match'] ?? ''));
+      const expectedRevision = Number(ifMatch?.[1] ?? ifMatch?.[2]);
+      if (!ifMatch || !Number.isSafeInteger(expectedRevision)) return json(res, 428, { error: { code: 'precondition_required', message: '重试必须带 If-Match: "<revision>"，请刷新后重新编辑' } });
+      try {
+        const ec = estimateContextFor(d);
+        const snapJson = JSON.stringify(snapshotFor({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments: [], outputCapTokens: ec.outputCap }, new Date().toISOString()));
+        const result = new MessageRetryService(d.db, d.messages, d.config.runtime.provider).retry({ conversationId, messageId, content: body.content, expectedRevision, operationKey, tokenEstimateJson: snapJson });
+        // Replaying a lost HTTP response may repair the commit→event/enqueue gap,
+        // but never creates another attempt or re-executes a terminal attempt.
+        const retryAttempt = d.db.prepare('SELECT state FROM attempts WHERE id=?').get(result.attempt_id) as { state: string };
+        for (const kind of ['message.edited', 'turn.started']) {
+          if (kind === 'turn.started' && !['pending', 'running'].includes(retryAttempt.state)) continue;
+          if (!d.db.prepare('SELECT 1 FROM runtime_stream_events WHERE kind=? AND attempt_id=?').get(kind, result.attempt_id)) {
+            d.events.publish(kind, { conversationId, turnId: result.turn_id, attemptId: result.attempt_id, entityRef: messageId, entityRevision: result.message.current_revision, scope: 'private', payload: kind === 'message.edited' ? { message: result.message } : {} });
+          }
+        }
+        if (retryAttempt.state === 'pending') { d.scheduler?.notePendingUserChat(); d.supervisor.enqueue(result.turn_id); }
+        void d.archiveSync?.drainOnce().catch(() => {});
+        return json(res, result.duplicate ? 200 : 202, result);
+      } catch (error) {
+        if (error instanceof MessageRetryError) return json(res, error.status, { error: { code: error.code, message: error.message } });
+        throw error;
+      }
     }
 
     // F-J-08（联合审计 2026-10-06）：用户消息编辑修订——服务端能力（editUserMessage：
@@ -209,7 +278,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         // EXEC_V1 §05.7.2：编辑=新 revision+新发送前快照（旧修订旧快照不动）
         const ec = estimateContextFor(d);
         const snapJson = JSON.stringify(snapshotFor({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments: [], outputCapTokens: ec.outputCap }, new Date().toISOString()));
-        const message = d.messages.editUserMessage(messageId, body.content, snapJson);
+        const message = new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate([d.messages.editUserMessage(messageId, body.content, snapJson)])[0]!;
         // R16（复审 2026-10-07）：编辑有自己的接线——发布修订事件（SSE 可见，
         // 客户端按 ID/修订吸收）并触发现有归档（编辑已在同事务写 outbox；
         // 归档失败不撤销本地编辑，drain 自带重试/死信路径）

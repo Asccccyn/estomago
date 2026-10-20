@@ -33,3 +33,17 @@ export function tx<T>(db: Db, fn: () => T): T {
     throw err;
   }
 }
+
+/** A synchronous read snapshot: multiple SELECTs see one WAL snapshot without
+ * acquiring a writer reservation. Do not await or call a write service inside. */
+export function readSnapshot<T>(db: Db, fn: () => T): T {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    try { db.exec('ROLLBACK'); } catch { /* Preserve the original error. */ }
+    throw error;
+  }
+}

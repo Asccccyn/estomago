@@ -2,7 +2,7 @@ import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; editPending?: boolean; editUnconfirmed?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -14,11 +14,34 @@ export type Snapshot = {
   context: { used: number | null; limit: number | null; lastActual: number | null; cacheRead: number | null; soft: number | null; reference: number | null };
   workbench: WorkItem[]; activity: ActivityItem[]; panelNote: string;
   notice: string; ready: boolean; hasEarlier: boolean; selected: Set<string>; selectionMode: boolean; draftEstimate: Json | null;
+  hasLater: boolean; loadingEarlier: boolean; loadingLater: boolean; historyLoading: boolean; historyError: string;
+  historyMode: 'latest' | 'date'; historyDate: string | null; historyTimezone: string; historyVersion: number; newMessages: boolean;
   route: Json | null; alerts: SystemAlert[]; unreadAlerts: number; openAlerts: number;
   alertsError: string; alertsHasMore: boolean; usage: Record<string, Json>;
 }
 const number = (x: unknown): number | null => typeof x === 'number' && Number.isFinite(x) ? x : null
-const time = (x: string) => new Date(x).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+const time = (x: string,timezone?:string) => new Date(x).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false,...(timezone?{timeZone:timezone}:{}) })
+const HISTORY_PAGE_SIZE = 50
+const historyFormatters = new Map<string,Intl.DateTimeFormat>()
+const historyDay = (x:string,timezone:string):string => {
+  const value=new Date(x);if(!Number.isFinite(value.getTime()))return ''
+  let formatter=historyFormatters.get(timezone)
+  if(!formatter){formatter=new Intl.DateTimeFormat('en-CA',{timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit'});historyFormatters.set(timezone,formatter)}
+  return formatter.format(value)
+}
+const retryReasons: Record<string,string> = {
+  RETRY_NOT_LATEST:'这条之后已有新消息，仅保存修改，不重新生成后续对话。',
+  RETRY_CONVERSATION_BUSY:'当前正在回复，请等本轮结束。',
+  RETRY_ROUTE_PENDING:'请先处理当前待确认的操作。',
+  RETRY_HAS_REPLY:'本轮已有回复内容，不能直接重放整轮。',
+  RETRY_HAS_TOOL_ACTIVITY:'本轮已调用工具，不能直接重复执行。',
+  RETRY_CONTEXT_CHANGED:'聊天窗口已变化，不能在原窗口重试。',
+  RETRY_CONTEXT_UNAVAILABLE:'原窗口状态暂不可核实。',
+  RETRY_INPUT_IN_HISTORY:'这条已进入后续对话历史，仅保存修改。',
+  RETRY_DRIVER_UNSUPPORTED:'当前通道暂不支持原位重试。',
+  RETRY_RESPONSE_STARTED:'服务端已开始处理过本轮，暂不直接重放，以免重复回复或工具操作。',
+}
+type EditOperation = { key:string; content:string; revision:number; resend:boolean }
 const operationId = () => {
   if (globalThis.crypto.randomUUID) return globalThis.crypto.randomUUID()
   const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
@@ -45,6 +68,13 @@ export class EstomagoClient {
   private cursor = 0
   private draftRevision = 0
   private pending: { id: string; draft: string; revision: number; entries: Attachment[]; body: Json } | null = null
+  private edits = new Map<string,EditOperation>()
+  private editBusy = new Set<string>()
+  private replyRefreshes = new Map<string,{dirty:boolean;busy:boolean}>()
+  private historyEpoch = 0
+  private viewSnapshotFloor = 0
+  private historyEvents: Json[] = []
+  private detailsLoaded = new Set<string>()
   private estimateTimer: ReturnType<typeof setTimeout> | undefined
   private estimateGeneration = 0
   private runtime: Json = {}
@@ -62,6 +92,8 @@ export class EstomagoClient {
     context: {used:null,limit:null,lastActual:null,cacheRead:null,soft:null,reference:null},
     workbench: [], activity: [], panelNote: '', notice: '', ready: false, hasEarlier: false,
     selected: new Set(), selectionMode: false, draftEstimate:null, route: null,
+    hasLater:false,loadingEarlier:false,loadingLater:false,historyLoading:false,historyError:'',
+    historyMode:'latest',historyDate:null,historyTimezone:'Asia/Shanghai',historyVersion:0,newMessages:false,
     alerts: [], unreadAlerts: 0, openAlerts: 0, alertsError: '', alertsHasMore: false, usage: {},
   }
   constructor(deps: Dependencies = {}) {
@@ -77,7 +109,7 @@ export class EstomagoClient {
     const response = await this.transport('/api/v1'+url,{credentials:'same-origin',cache:'no-store',...init})
     if (response.status===401) { if(!this.redirecting){this.redirecting=true;this.patch({ready:false});this.stop();this.redirect()} throw new Error('需要重新登录') }
     const data = await response.json().catch(()=>({}))
-    if (!response.ok) { const error = new Error(data.error?.message || '请求未完成，请重试') as Error & {code?:string}; error.code=data.error?.code; throw error }
+    if (!response.ok) { const error = new Error(data.error?.message || '请求未完成，请重试') as Error & {code?:string;status?:number}; error.code=data.error?.code;error.status=response.status; throw error }
     return data
   }
   private json(method: string, body: unknown, headers: Record<string,string> = {}): RequestInit {
@@ -89,31 +121,70 @@ export class EstomagoClient {
     try {
       await this.request('/auth/session')
       if(!this.started||generation!==this.generation)return
-      const data=await this.request('/conversations/primary/messages?limit=500&order=latest')
+      const data=await this.request('/conversations/primary/messages?limit='+HISTORY_PAGE_SIZE+'&order=latest&snapshot=1')
       if(!this.started||generation!==this.generation)return
       if(!Array.isArray(data.messages))throw new Error('聊天记录暂不可用')
-      for(const message of data.messages)this.absorb(message,false)
-      this.patch({ready:true,hasEarlier:data.messages.length>=500})
-      this.render()
+      this.replacePage(data,'latest',null)
+      this.patch({ready:true})
       this.connect()
       await this.loadRuntime()
       if(!this.started||generation!==this.generation)return
-      const ids=[...new Set(data.messages.map((m:Json)=>m.turn_id).filter(Boolean))] as string[]
-      for(const id of ids) {
-        if(!this.started||generation!==this.generation)return
-        this.refreshReasoning(id)
-        void this.loadUsage(id)
-      }
+      for(const id of this.running)this.refreshReasoning(id)
       void this.loadContext();void this.loadAlerts(false)
     } catch(error) { if(this.started&&generation===this.generation){this.started=false;this.notify((error as Error).message)} }
   }
-  stop = () => { this.started=false;this.generation++;this.source?.close();this.source=null;clearTimeout(this.estimateTimer) }
+  stop = () => { this.started=false;this.generation++;this.historyEpoch++;this.source?.close();this.source=null;this.historyEvents=[];clearTimeout(this.estimateTimer) }
+  private replacePage(data:Json,mode:'latest'|'date',date:string|null) {
+    this.raw.clear();this.blocks.clear();this.toolSteps.clear();this.detailsLoaded.clear();this.running.clear()
+    for(const message of data.messages??[])this.absorb(message,false)
+    for(const turn of data.active_turns??[]){if(['pending','running'].includes(turn.state))this.running.add(turn.turn_id)}
+    const floor=number(data.event_cursor)
+    if(floor!==null&&Number.isSafeInteger(floor)&&floor>=0){
+      this.viewSnapshotFloor=floor
+      if(mode==='latest')this.cursor=floor
+    }
+    // Publish page metadata and its message projection together, so scroll
+    // anchoring never observes a new page version with the previous page rows.
+    this.snapshot={...this.snapshot,historyMode:mode,historyDate:date,historyTimezone:data.timezone??'Asia/Shanghai',
+      hasEarlier:data.has_earlier??(data.messages??[]).length>=HISTORY_PAGE_SIZE,hasLater:data.has_later??false,
+      route:data.pending_route??null,usage:{},newMessages:false,historyError:'',historyVersion:this.snapshot.historyVersion+1}
+    this.render()
+  }
+  private historyFetching() {return this.snapshot.historyLoading||this.snapshot.loadingEarlier||this.snapshot.loadingLater}
+  private representedBySnapshot(data:Json) {return typeof data.sequence==='number'&&data.sequence<=this.viewSnapshotFloor&&(['message.persisted','message.published','message.edited','turn.started','turn.status','turn.completed','turn.interrupted','route.pending','route.resolved'].includes(data.kind))}
+  private drainHistoryEvents() {const buffered=this.historyEvents.splice(0);for(const event of buffered){if(!this.representedBySnapshot(event))this.applyEvent(event)}}
+  private async changeHistory(mode:'latest'|'date',date:string|null):Promise<boolean> {
+    if(this.editBusy.size||this.edits.size||this.snapshot.selectionMode){this.notify('请先完成编辑或退出多选，再切换历史');return false}
+    const epoch=++this.historyEpoch,generation=this.generation
+    const reconnect=mode==='latest'
+    // Keep events already consumed from SSE until a successful snapshot covers
+    // them. If this read fails they must still be applied before reconnecting.
+    if(reconnect){this.source?.close();this.source=null}
+    this.patch({historyLoading:true,loadingEarlier:false,loadingLater:false,historyError:''})
+    try{
+      const locator=mode==='latest'?'order=latest':'date='+encodeURIComponent(date!)
+      const data=await this.request('/conversations/primary/messages?limit='+HISTORY_PAGE_SIZE+'&'+locator+'&snapshot=1')
+      if(epoch!==this.historyEpoch||generation!==this.generation||!this.started)return false
+      if(!Array.isArray(data.messages))throw new Error('历史记录暂不可用，请重试')
+      this.replacePage(data,mode,date)
+      for(const id of this.running){if(this.visibleTurn(id))this.refreshReasoning(id)}
+      return true
+    }catch(error){if(epoch===this.historyEpoch&&generation===this.generation)this.patch({historyError:(error as Error).message});return false}
+    finally{
+      if(epoch===this.historyEpoch&&generation===this.generation&&this.started){
+        this.patch({historyLoading:false});this.drainHistoryEvents()
+        if(!this.source)this.connect()
+      }
+    }
+  }
+  jumpToDate = (date:string):Promise<boolean> => this.changeHistory('date',date)
+  returnToLatest = ():Promise<boolean> => this.changeHistory('latest',null)
   private connect() {
     this.source?.close()
     const source=this.sourceFactory('/api/v1/events?conversation_id=primary&cursor='+this.cursor)
     this.source=source
     // 全局告警可能在断线期间产生；每次 SSE 建立/重连都重查持久快照。
-    source.onopen=()=>{if(this.source===source&&this.started)void this.loadAlerts(this.alertsOpen)}
+    source.onopen=()=>{if(this.source===source&&this.started){void this.loadAlerts(this.alertsOpen);this.refreshLatestReply()}}
     source.onmessage=event=>{
       if(this.source!==source||!this.started)return
       try {this.handleEvent(JSON.parse(event.data))}catch{/* Invalid events do not become messages. */}
@@ -125,14 +196,46 @@ export class EstomagoClient {
       void this.request('/auth/session').catch(()=>{}).finally(()=>{checking=false})
     }
   }
-  private absorb(dto: Json, update=true) {
-    if(typeof dto.id!=='string'||!dto.revision||typeof dto.revision.content!=='string')return
+  private absorb(dto: Json, update=true):boolean {
+    if(typeof dto.id!=='string'||!dto.revision||typeof dto.revision.content!=='string')return false
     const old=this.raw.get(dto.id)
-    if(old&&(!update||old.revision.revision>=dto.revision.revision))return
+    if(old&&(old.revision.revision>dto.revision.revision||(!update&&old.revision.revision===dto.revision.revision)))return false
+    if(old&&old.revision.revision===dto.revision.revision){
+      // A delayed POST snapshot must not regress an attempt already completed by SSE.
+      const previous=old.reply_status,next=dto.reply_status
+      const regresses=previous?.attempt_id&&previous.attempt_id===next?.attempt_id
+        &&['completed','failed','blocked','interrupted'].includes(previous.state)&&['pending','running'].includes(next.state)
+      if(next&&!regresses&&JSON.stringify(previous)!==JSON.stringify(next)){this.raw.set(dto.id,{...old,reply_status:next});return true}
+      return false
+    }
     this.raw.set(dto.id,dto)
+    return true
+  }
+  private latestOwner() {return [...this.raw.values()].filter(m=>m.speaker==='owner').sort((a,b)=>b.sequence-a.sequence)[0]}
+  private refreshLatestReply(turnId?:string) {
+    const owner=this.latestOwner()
+    if(owner&&(!turnId||owner.turn_id===turnId))void this.refreshReply(owner.id)
+  }
+  private async refreshReply(id:string):Promise<void> {
+    let entry=this.replyRefreshes.get(id)
+    if(!entry){entry={dirty:false,busy:false};this.replyRefreshes.set(id,entry)}
+    entry.dirty=true
+    if(entry.busy)return
+    entry.busy=true
+    const generation=this.generation,epoch=this.historyEpoch
+    try{
+      do{
+        entry.dirty=false
+        const data=await this.request('/conversations/primary/messages/'+encodeURIComponent(id))
+        if(this.started&&generation===this.generation&&epoch===this.historyEpoch&&!entry.dirty&&data.message&&this.raw.has(id)){if(this.absorb(data.message))this.render()}
+      }while(entry.dirty&&this.started&&generation===this.generation)
+    }catch{/* Unknown retry eligibility stays disabled; never discard message text. */}
+    finally{entry.busy=false}
   }
   private render() {
     const messages: ChatMessage[]=[]
+    const latestOwner=this.latestOwner()?.id
+    const latestSequence=Math.max(0,...[...this.raw.values()].map(m=>m.sequence))
     for(const m of [...this.raw.values()].sort((a,b)=>a.sequence-b.sequence)){
       if(!['owner','assistant','system'].includes(m.speaker))continue
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
@@ -145,11 +248,15 @@ export class EstomagoClient {
         ...(this.toolSteps.get(m.turn_id)??[]),
       ]
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
-        time:time(m.revision.occurred_at),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
+        time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
         steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,
+        replyState:m.reply_status?.state,
+        canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
+        retryReason:retryReasons[m.reply_status?.reason]??undefined,editPending:this.editBusy.has(m.id),editUnconfirmed:this.edits.has(m.id)&&!this.editBusy.has(m.id),
         thinkSecs:thinkMs>0?Math.max(1,Math.round(thinkMs/1000)):undefined})
     }
     for(const id of this.running){
+      if(this.snapshot.historyMode==='date'&&!messages.some(m=>m.turnId===id))continue
       const last=messages.filter(m=>m.turnId===id&&m.role==='ai'&&!m.system).at(-1)
       if(last){last.streaming=true;continue}
       messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,steps:[
@@ -161,10 +268,24 @@ export class EstomagoClient {
   }
   handleEvent(data: Json) {
     if(typeof data.sequence==='number'){if(data.sequence<=this.cursor)return;this.cursor=data.sequence}
+    if(this.historyFetching()){this.historyEvents.push(data);return}
+    if(this.representedBySnapshot(data))return
+    this.applyEvent(data)
+  }
+  private applyEvent(data:Json) {
     const id=data.turn_id as string|undefined
-    if(['message.persisted','message.published','message.edited'].includes(data.kind)&&data.message){this.absorb(data.message);this.render()}
-    if(id&&data.kind==='turn.started'){this.running.add(id);this.render()}
+    if(['message.persisted','message.published','message.edited'].includes(data.kind)&&data.message){
+      const message=data.message
+      const visible=this.raw.has(message.id)
+      const min=Math.min(...[...this.raw.values()].map(m=>m.sequence))
+      const max=Math.max(0,...[...this.raw.values()].map(m=>m.sequence))
+      if(visible||(this.snapshot.historyMode==='latest'&&(!Number.isFinite(min)||message.sequence>=min))){
+        if(this.absorb(message))this.render()
+      }else if(data.kind!=='message.edited'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
+    }
+    if(id&&data.kind==='turn.started'){this.running.add(id);this.markReplyState(id,'running',data.attempt_id);this.render()}
     if(id&&data.kind==='turn.status'){
+      this.markReplyState(id,data.state,data.attempt_id)
       if(data.state==='running')this.running.add(id)
       else {
         this.running.delete(id)
@@ -181,19 +302,27 @@ export class EstomagoClient {
         }
       }
       this.render()
+      this.refreshLatestReply(id)
     }
-    if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.render();this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
-    if(id&&data.kind?.startsWith('reasoning.'))this.refreshReasoning(id,data.attempt_id)
+    if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.markReplyState(id,data.kind==='turn.completed'?'completed':'interrupted',data.attempt_id);this.render();this.refreshLatestReply(id);if(this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
+    if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id)
     if(id&&data.kind==='turn.tool'){
       const label=String(data.label??data.tool??'')
-      if(label){const arr=this.toolSteps.get(id)??[];arr.push({kind:'tool',text:label+(data.ok===false?'（失败）':'')});this.toolSteps.set(id,arr);this.render()}
+      if(label&&this.visibleTurn(id)){const arr=this.toolSteps.get(id)??[];arr.push({kind:'tool',text:label+(data.ok===false?'（失败）':'')});this.toolSteps.set(id,arr);this.render()}
     }
-    if(id&&data.kind==='usage.updated')void this.loadUsage(id)
+    if(id&&data.kind==='usage.updated'&&this.visibleTurn(id))void this.loadUsage(id)
     if(data.kind==='route.pending')this.patch({route:data})
     if(data.kind==='route.resolved'){this.patch({route:null});if(data.message){this.absorb(data.message);this.render()}}
     if(data.kind==='system.alert.changed')void this.loadAlerts(this.alertsOpen)
     if(data.kind==='context.warning')void this.loadContext()
     if(data.kind==='window.rotated'){void this.loadRuntime();void this.loadContext()}
+  }
+  private visibleTurn(id:string) {return [...this.raw.values()].some(message=>message.turn_id===id)}
+  private markReplyState(turnId:string,state:string,attemptId?:string) {
+    for(const [id,m] of this.raw){if(m.speaker==='owner'&&m.turn_id===turnId){
+      this.raw.set(id,{...m,reply_status:{...m.reply_status,state,attempt_id:attemptId??m.reply_status?.attempt_id,can_retry:false}})
+      const refresh=this.replyRefreshes.get(id);if(refresh)refresh.dirty=true
+    }}
   }
   private refreshReasoning(id:string,attempt?:string) {
     let entry=this.refreshes.get(id)
@@ -202,17 +331,39 @@ export class EstomagoClient {
     if(entry.busy)return
     entry.busy=true
     void (async()=>{
-      try {while(entry!.dirty&&this.started){entry!.dirty=false;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));this.blocks.set(id,result.blocks??[]);this.render()}}
+      try {while(entry!.dirty&&this.started){entry!.dirty=false;const epoch=this.historyEpoch;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));if(epoch===this.historyEpoch&&this.visibleTurn(id)&&JSON.stringify(this.blocks.get(id)??[])!==JSON.stringify(result.blocks??[])){this.blocks.set(id,result.blocks??[]);this.render()}}}
       catch {/* A failed projection does not discard saved messages. */}
       finally{entry!.busy=false;if(entry!.dirty&&this.started)this.refreshReasoning(id,entry!.attempt)}
     })()
   }
-  private async loadUsage(id:string) {try{const data=await this.request('/turns/'+encodeURIComponent(id)+'/usage');this.patch({usage:{...this.snapshot.usage,[id]:data}})}catch{}}
-  loadEarlier = async () => {
-    const oldest=Math.min(...[...this.raw.values()].map(m=>m.sequence))
-    if(!Number.isFinite(oldest)||!this.snapshot.hasEarlier)return
-    try{const data=await this.request('/conversations/primary/messages?limit=200&before='+oldest);for(const m of data.messages??[])this.absorb(m,false);this.patch({hasEarlier:(data.messages??[]).length>=200});this.render()}catch(e){this.notify((e as Error).message)}
+  private async loadUsage(id:string) {const epoch=this.historyEpoch;try{const data=await this.request('/turns/'+encodeURIComponent(id)+'/usage');if(epoch===this.historyEpoch&&this.visibleTurn(id))this.patch({usage:{...this.snapshot.usage,[id]:data}})}catch{}}
+  loadTurnDetails = async (id:string):Promise<void> => {
+    if(this.detailsLoaded.has(id)||!this.visibleTurn(id))return
+    const epoch=this.historyEpoch
+    const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning')
+    if(epoch!==this.historyEpoch||!this.visibleTurn(id))return
+    this.blocks.set(id,data.blocks??[]);this.detailsLoaded.add(id);this.render()
+    await this.loadUsage(id)
   }
+  private async extendHistory(direction:'before'|'after'):Promise<boolean> {
+    if(this.historyFetching()||!this.started||(direction==='before'?!this.snapshot.hasEarlier:!this.snapshot.hasLater))return false
+    const values=[...this.raw.values()].map(m=>m.sequence)
+    const boundary=direction==='before'?Math.min(...values):Math.max(...values)
+    if(!Number.isFinite(boundary))return false
+    const epoch=this.historyEpoch,generation=this.generation
+    this.patch({loadingEarlier:direction==='before',loadingLater:direction==='after',historyError:''})
+    try{
+      const data=await this.request('/conversations/primary/messages?limit='+HISTORY_PAGE_SIZE+'&'+direction+'='+boundary)
+      if(epoch!==this.historyEpoch||generation!==this.generation||!this.started)return false
+      if(!Array.isArray(data.messages))throw new Error('历史记录暂不可用，请重试')
+      for(const message of data.messages)this.absorb(message,false)
+      this.patch(direction==='before'?{hasEarlier:data.has_earlier??data.messages.length>=HISTORY_PAGE_SIZE}:{hasLater:data.has_later??data.messages.length>=HISTORY_PAGE_SIZE})
+      this.render();return true
+    }catch(error){if(epoch===this.historyEpoch&&generation===this.generation)this.patch({historyError:(error as Error).message});return false}
+    finally{if(epoch===this.historyEpoch&&generation===this.generation&&this.started){this.patch({loadingEarlier:false,loadingLater:false});this.drainHistoryEvents()}}
+  }
+  loadEarlier = ():Promise<boolean> => this.extendHistory('before')
+  loadLater = ():Promise<boolean> => this.extendHistory('after')
   private scheduleEstimate() {this.estimateGeneration++;this.patch({draftEstimate:null});clearTimeout(this.estimateTimer);this.estimateTimer=setTimeout(()=>void this.estimate(),250)}
   setDraft = (draft:string) => {this.draftRevision++;this.patch({draft});this.scheduleEstimate()}
   setComposing = (composing:boolean) => this.patch({composing})
@@ -228,7 +379,7 @@ export class EstomagoClient {
       this.patch({draftEstimate:data.estimate??null})
     } catch {/* Estimates must not gate sending. */}
   }
-  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.snapshot.attachments.some(a=>a.status==='ready')}))}
+  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&!this.historyFetching()&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.snapshot.attachments.some(a=>a.status==='ready')}))}
   send = async () => {
     if(!this.canSend)return
     const draft=this.snapshot.draft
@@ -253,10 +404,40 @@ export class EstomagoClient {
     }catch(e){this.notify((e as Error).message+'；草稿已保留，可以重试')}
     finally{this.patch({sending:false})}
   }
-  editMessage = async (id:string,content:string) => {
-    const raw=this.raw.get(id);if(!raw||raw.speaker!=='owner')return
-    try{const result=await this.request('/conversations/primary/messages/'+encodeURIComponent(id),this.json('PUT',{content},{'If-Match':'"'+raw.current_revision+'"'}));this.absorb(result.message);this.render()}catch(e){this.notify((e as Error).message)}
+  editMessage = async (id:string,content:string,resend=false,expectedRevision?:number):Promise<boolean> => {
+    const raw=this.raw.get(id);if(!raw||raw.speaker!=='owner'||this.editBusy.has(id)||this.redirecting||!this.snapshot.ready)return false
+    let operation=this.edits.get(id)
+    if(operation&&(operation.content!==content||operation.resend!==resend)){
+      this.notify('上次提交结果尚未确认，请先按原提交内容重试，确认后再修改。');return false
+    }
+    if(!operation){
+      if(!resend&&content===raw.revision.content)return true
+      operation={key:operationId(),content,revision:expectedRevision??raw.current_revision,resend}
+      this.edits.set(id,operation)
+    }
+    this.editBusy.add(id);const refresh=this.replyRefreshes.get(id);if(refresh)refresh.dirty=true
+    this.patch({notice:''});this.render()
+    try{
+      const result=await this.request('/conversations/primary/messages/'+encodeURIComponent(id)+(operation.resend?'/retry':''),
+        this.json(operation.resend?'POST':'PUT',{content:operation.content},{'If-Match':'"'+operation.revision+'"','Idempotency-Key':operation.key}))
+      if(!result.message)throw new Error('提交结果尚未确认，请重试')
+      this.absorb(result.message);this.edits.delete(id)
+      void this.refreshReply(id)
+      this.notify(operation.resend?'已重新发起回复':'修改已保存')
+      return true
+    }catch(error){
+      const e=error as Error&{status?:number;code?:string}
+      if(e.status&&e.status<500){this.edits.delete(id);void this.refreshReply(id)}
+      this.notify(e.message+'；编辑内容已保留')
+      return false
+    }finally{this.editBusy.delete(id);this.render()}
   }
+  retryMessage = async (id:string):Promise<boolean> => {
+    const pending=this.edits.get(id)
+    return this.editMessage(id,pending?.content??this.originalText(id),pending?.resend??true,pending?.revision)
+  }
+  messageRevision = (id:string):number => this.edits.get(id)?.revision??this.raw.get(id)?.current_revision??0
+  editText = (id:string):string => this.edits.get(id)?.content??this.originalText(id)
   originalText = (id:string) => this.raw.get(id)?.revision.content??''
   stopTurn = async (id:string) => {try{await this.request('/turns/'+encodeURIComponent(id)+'/stop',{method:'POST'})}catch(e){this.notify((e as Error).message)}}
   queue = async (file:Blob,name:string,kind:'image'|'voice'='image') => {

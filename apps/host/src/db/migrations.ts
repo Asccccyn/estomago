@@ -994,6 +994,24 @@ CREATE TABLE surfacing_coverage(
 `,
 });
 
+MIGRATIONS.push({
+  version: 30,
+  name: 'message-retry-receipts',
+  sql: `
+ALTER TABLE attempts ADD COLUMN retry_window_id TEXT;
+CREATE TABLE message_retry_receipts(
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  message_id TEXT NOT NULL REFERENCES messages(id),
+  operation_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  attempt_id TEXT NOT NULL REFERENCES attempts(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(conversation_id, message_id, operation_key)
+);
+`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
