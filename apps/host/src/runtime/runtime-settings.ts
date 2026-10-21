@@ -57,9 +57,25 @@ export async function fetchOrModelMeta(baseUrl: string, model: string): Promise<
   }
 }
 
-/** 按模型真实支持计算档位清单（default=回落哨兵；非强制思考才允许 none）。
- *  返回 null=元数据不可用（未验证，调用方回落静态全表并如实标注）。 */
-export function effortsForModel(meta: OrModelReasoningMeta | null): string[] | null {
+// Exact model IDs only; verified against Anthropic's effort documentation:
+// https://platform.claude.com/docs/en/build-with-claude/effort (2026-10-21).
+// default is a configuration reset, not an additional reasoning level.
+const DOCUMENTED_EFFORTS: Record<string, readonly string[]> = {
+  'anthropic/claude-opus-4.6': ['low', 'medium', 'high', 'max'],
+  'anthropic/claude-opus-5.5': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'anthropic/claude-fable-5.1': ['low', 'medium', 'high', 'xhigh', 'max'],
+};
+
+/** Known models use verified native levels, intersected with provider restrictions.
+ * Unknown models require metadata; callers must never invent a full-list fallback. */
+export function effortsForModel(meta: OrModelReasoningMeta | null, model?: string | null): string[] | null {
+  const documented = model ? DOCUMENTED_EFFORTS[model] : undefined;
+  if (documented) {
+    const levels = meta?.supported_efforts
+      ? documented.filter((effort) => meta.supported_efforts!.includes(effort))
+      : documented;
+    return ['default', ...levels];
+  }
   if (!meta) return null; // 元数据不可达=未验证
   // WP-04（C-018）：supported 集是第一真源——mandatory=false 且支持
   // minimal/none 就如实列出（此前一律滤掉，强制思考模型才该滤）；
@@ -72,9 +88,8 @@ export function effortsForModel(meta: OrModelReasoningMeta | null): string[] | n
     ? raw.filter((e) => e !== 'none' && e !== 'minimal')
     : raw;
   if (supported.length === 0) return ['default']; // OR 对无档位选择的模型省略 supported_efforts——没有思考旋钮
-  const order = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  const order = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   const list = order.filter((e) => supported.includes(e));
-  if (!mandatory) list.unshift('none'); // 思考可关（c5c3ad1 她批语义保持）
   return ['default', ...list];
 }
 

@@ -1,5 +1,7 @@
 # estómago
 
+- 2026-10-21（已独立部署，基线 `ee8e398`）：模型推理档位按已核实能力收敛；默认为未选择，取消选择清除覆盖；删除容量提示括号文案，前端资源加内容版本号。生产入口位于 `Documents/Codex/2026-10-21/1-2/release/estomago-effort-20261021`，不包含 JEV 未部署批；部署与回滚记录见该任务目录 `DEPLOYMENT.md`。
+
 > 自建聊天宿主：统一聊天入口 + 模型驱动宿主（OpenRouter 主用 / **DeepSeek 官方直连** / Claude Agent SDK 保留）+ Mariposa 唯一正式记忆。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
 
 三个模型驱动（身份映射互相隔离——session 命名空间与上下文指纹分域，切换强制换窗）：

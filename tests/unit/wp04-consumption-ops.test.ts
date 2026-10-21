@@ -108,7 +108,7 @@ test('backup：meta 含 config+auth.token(600)；轮转保留 keep 份', async (
 
 test('j4：mandatory=false 且 supported 含 minimal → minimal 可选；mandatory=true 才滤', () => {
   const flex = effortsForModel({ supported_efforts: ['minimal', 'low', 'high'], mandatory: false });
-  assert.deepEqual(flex, ['default', 'none', 'minimal', 'low', 'high'], '非强制模型 minimal 如实列出');
+  assert.deepEqual(flex, ['default', 'minimal', 'low', 'high'], '只列 supported 中的档位，不凭 mandatory=false 添加 none');
   const forced = effortsForModel({ supported_efforts: ['max', 'high', 'low'], mandatory: true });
   assert.deepEqual(forced, ['default', 'low', 'high', 'max'], '强制思考模型无 none/minimal');
 });
@@ -235,6 +235,24 @@ async function hostWithSettings(driver = 'mock', orOver: Record<string, unknown>
   const url = `http://127.0.0.1:${host.port}/api/v1/runtime-settings`;
   return { host, url, headers, setModelMetaForTests, clearModelMetaCache };
 }
+
+test('真实 HTTP：Opus 4.6 元数据不可用仍只有四档，拒绝多余档位且零写入', async () => {
+  const c = await hostWithSettings('openrouter', { model: 'anthropic/claude-opus-4.6' });
+  try {
+    c.setModelMetaForTests('anthropic/claude-opus-4.6', null);
+    const view = await (await fetch(c.url, { headers: c.headers })).json();
+    assert.deepEqual(view.effort_options, ['default', 'low', 'medium', 'high', 'max']);
+    for (const effort of ['none', 'minimal', 'xhigh']) {
+      const res = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ reasoning_effort: effort }) });
+      assert.equal(res.status, 422);
+      assert.equal((await res.json()).error.code, 'effort_not_supported');
+      assert.equal((await (await fetch(c.url, { headers: c.headers })).json()).reasoning_effort.override, null);
+    }
+    const valid = await fetch(c.url, { method: 'PUT', headers: c.headers, body: JSON.stringify({ reasoning_effort: 'medium' }) });
+    assert.equal(valid.status, 200);
+    assert.equal((await valid.json()).reasoning_effort.override, 'medium');
+  } finally { await c.host.stop(); c.clearModelMetaCache(); }
+});
 
 test('FU 对照：语法非法 effort 422 且 model 保持', async () => {
   const c = await hostWithSettings();

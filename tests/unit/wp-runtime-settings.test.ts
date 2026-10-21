@@ -64,14 +64,26 @@ test('effortsForModel：强制思考模型（fable-5.1 实测形态）无 none/m
   assert.deepEqual(efforts, ['default', 'low', 'medium', 'high', 'xhigh', 'max'], 'fable/opus-5.5 形态：五档+default，没有 none/minimal');
 });
 
-test('effortsForModel：非强制思考模型允许 none（关思考）', () => {
+test('effortsForModel：非强制思考不代表支持 none', () => {
   const efforts = effortsForModel({ supported_efforts: ['max', 'high', 'medium', 'low'], mandatory: false });
-  assert.deepEqual(efforts, ['default', 'none', 'low', 'medium', 'high', 'max']);
+  assert.deepEqual(efforts, ['default', 'low', 'medium', 'high', 'max']);
+  assert.deepEqual(effortsForModel({ supported_efforts: ['none', 'low'], mandatory: false }), ['default', 'none', 'low']);
 });
 
 test('effortsForModel：元数据不可达=null；无档位选择的模型只剩 default', () => {
-  assert.equal(effortsForModel(null), null, '不可达=未验证（调用方回落全表并如实标注）');
+  assert.equal(effortsForModel(null), null, '不可达=未验证，不得回落全表');
   assert.deepEqual(effortsForModel({}), ['default'], 'OR 对无档位选择的模型省略 supported_efforts——没有思考旋钮');
+});
+
+test('已核实的具体模型：缺少元数据仍只列真实档位，并遵守供应商限制', () => {
+  const opus = ['default', 'low', 'medium', 'high', 'max'];
+  assert.deepEqual(effortsForModel(null, 'anthropic/claude-opus-4.6'), opus);
+  assert.deepEqual(effortsForModel({ supported_efforts: [...REASONING_EFFORTS] }, 'anthropic/claude-opus-4.6'), opus);
+  assert.deepEqual(effortsForModel({ supported_efforts: ['low', 'high'] }, 'anthropic/claude-opus-4.6'), ['default', 'low', 'high']);
+  for (const model of ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1']) {
+    assert.deepEqual(effortsForModel(null, model), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+  }
+  assert.equal(effortsForModel(null, 'anthropic/claude-unknown'), null);
 });
 
 // —— 端到端：换模型走受控换窗；换思考深度不换窗 ——

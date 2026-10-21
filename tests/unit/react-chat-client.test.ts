@@ -2,6 +2,27 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts'
 const dto=(id:string,text:string,revision=1)=>({id,sequence:1,speaker:'owner',turn_id:'turn-fixture',current_revision:revision,revision:{revision,content:text,content_hash:'fixture-hash-'+revision,occurred_at:'2026-10-13T12:00:00Z',attachments:[]}})
+test('推理默认是未选择状态，取消选择清除覆盖值，不添加第五档',async()=>{
+  let effort:string|null=null
+  const h=await setup((url,init)=>{
+    if(!url.endsWith('/runtime-settings'))return
+    if(init?.method==='PUT'){
+      const next=JSON.parse(String(init.body)).reasoning_effort
+      effort=next==='default'?null:next
+    }
+    return Response.json({driver:'openrouter',or_model:{effective:'fixture'},effort_options:['default','low','medium','high','max'],reasoning_effort:{override:effort,effective:effort??'default'}})
+  })
+  try{
+    assert.deepEqual(h.client.snapshot.efforts,['low','medium','high','max'])
+    assert.equal(h.client.snapshot.effort,-1)
+    await h.client.setEffort(1)
+    assert.equal(effort,'medium')
+    assert.equal(h.client.snapshot.effort,1)
+    await h.client.setEffort(-1)
+    assert.equal(effort,null)
+    assert.equal(h.client.snapshot.effort,-1)
+  }finally{h.client.stop()}
+})
 async function setup(handler:(url:string,init?:RequestInit)=>Promise<Response>|Response|undefined=()=>undefined){
   const calls:Array<{url:string;init?:RequestInit}>=[]
   const client=new EstomagoClient({fetch:async(u,init)=>{

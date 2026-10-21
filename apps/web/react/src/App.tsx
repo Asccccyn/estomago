@@ -77,7 +77,7 @@ function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpa
 
 function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v: number) => void; levels: string[] }) {
   const ref = useRef<HTMLDivElement>(null)
-  const H = 108
+  const H = Math.max(108, 22 + (levels.length - 1) * 24)
   const pick = (y: number) => {
     const r = ref.current!.getBoundingClientRect()
     const t = 1 - Math.min(1, Math.max(0, (y - r.top - 11) / (r.height - 22)))
@@ -86,20 +86,20 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
   const pos = (i: number) => 11 + (1 - i / Math.max(1, levels.length - 1)) * (H - 22)
   return (
     <div className="flex items-stretch gap-2">
-      <div ref={ref} role="slider" aria-label="思考等级" aria-valuenow={value} aria-valuemin={0} aria-valuemax={Math.max(0, levels.length - 1)}
+      <div ref={ref} role="slider" aria-label="思考等级" aria-valuenow={value >= 0 ? value : undefined} aria-valuetext={value >= 0 ? levels[value] : '未选择，使用默认设置'} aria-valuemin={0} aria-valuemax={Math.max(0, levels.length - 1)}
         className="relative w-[22px] cursor-pointer touch-none rounded-full bg-[#efece4]" style={{ height: H }}
         onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); pick(e.clientY) }}
         onPointerMove={(e) => e.buttons && pick(e.clientY)}>
         <div className="absolute inset-x-0 bottom-0 rounded-full bg-gradient-to-t from-[#c96442] to-[#e0997c] transition-all duration-200"
-          style={{ height: H - pos(value) + 11 }} />
+          style={{ height: value >= 0 ? H - pos(value) + 11 : 0 }} />
         {levels.map((_, i) => (
           <span key={i} className={`absolute left-1/2 h-[3px] w-[3px] -translate-x-1/2 -translate-y-1/2 rounded-full ${i <= value ? 'bg-white/70' : 'bg-[#cfcabd]'}`} style={{ top: pos(i) }} />
         ))}
-        <span className="absolute left-1/2 h-[18px] w-[18px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,.25)] transition-all duration-200" style={{ top: pos(value) }} />
+        {value >= 0 && <span className="absolute left-1/2 h-[18px] w-[18px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_1px_4px_rgba(0,0,0,.25)] transition-all duration-200" style={{ top: pos(value) }} />}
       </div>
-      <div className="relative w-9 text-[11px]" style={{ height: H }}>
+      <div className="relative w-14 whitespace-nowrap text-[11px]" style={{ height: H }}>
         {levels.map((e, i) => (
-          <button key={e} onClick={() => onChange(i)} className={`absolute left-0 -translate-y-1/2 transition ${i === value ? 'font-medium text-[#c96442]' : 'text-[#a3a099]'}`} style={{ top: pos(i) }}>{e}</button>
+          <button key={e} aria-pressed={i === value} title={i === value ? '再次点击取消选择' : undefined} onClick={() => onChange(i === value ? -1 : i)} className={`absolute left-0 -translate-y-1/2 transition ${i === value ? 'font-medium text-[#c96442]' : 'text-[#a3a099]'}`} style={{ top: pos(i) }}>{e}</button>
         ))}
       </div>
     </div>
@@ -212,7 +212,7 @@ export default function App() {
   const model = state.model
   const effort = state.effort
   const MODELS = state.models
-  const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e === 'default' ? '模型默认' : e)
+  const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e)
   const setModel = (i: number) => { if (i !== model && window.confirm('切换模型后，下一次发送前可选择携带的历史。确认切换？')) void client.setModel(i) }
   const setEffort = (i: number) => { void client.setEffort(i) }
   const [menu, setMenu] = useState(false)
@@ -336,7 +336,7 @@ export default function App() {
             <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 只带文本，图片不带入新窗</span>
           ) : (
           <button onClick={() => setMenu(!menu)} className="relative rounded-lg px-2 py-1 text-[13px] text-[#5e5d59] hover:bg-black/5">
-            char · {MODELS[model]} · {EFFORTS[effort]}
+            char · {MODELS[model]} · {EFFORTS[effort] ?? '默认'}
             <ChevronDown size={13} className="absolute -right-3 top-1/2 -translate-y-1/2" />
           </button>
           )}
@@ -358,7 +358,7 @@ export default function App() {
                   ))}
                 </div>
                 <span className="mx-1 h-20 w-px bg-black/5" />
-                <EffortSlider value={effort} onChange={setEffort} levels={EFFORTS} />
+                {EFFORTS.length > 0 && <EffortSlider value={effort} onChange={setEffort} levels={EFFORTS} />}
               </div>
             </>
           )}
@@ -510,10 +510,10 @@ export default function App() {
                 <div className="absolute bottom-14 left-0 z-20 w-56 rounded-xl border border-black/10 bg-white p-3 text-[12.5px] shadow-xl">
                   <p className="mb-2 font-medium">上下文窗口</p>
                   {[['已用', `${used?.toLocaleString() ?? '未知'} tokens`],
-                    ['手换参考线', reference != null ? `${reference.toLocaleString()} tokens（超出标红，不阻断）` : '未知'],
+                    ['手换参考线', reference != null ? `${reference.toLocaleString()} tokens` : '未知'],
                     ['自动换窗上限', state.context.soft != null ? `${state.context.soft.toLocaleString()} tokens` : '未知'],
                     ['占比（参考线）', used != null && circleBase ? `${(pct * 100).toFixed(1)}%${overRef ? '（已超出）' : ''}` : '未知'],
-                    ['缓存读取', state.context.cacheRead == null ? '未知' : `${state.context.cacheRead} tokens`], ['模型', MODELS[model]], ['思考等级', EFFORTS[effort]]].map(([k, v]) => (
+                    ['缓存读取', state.context.cacheRead == null ? '未知' : `${state.context.cacheRead} tokens`], ['模型', MODELS[model]], ['思考等级', EFFORTS[effort] ?? '默认']].map(([k, v]) => (
                     <div key={k} className="flex justify-between py-0.5"><span className="text-[#8a8780]">{k}</span><span className={`tabular-nums ${k === '占比（参考线）' && overRef ? 'text-[#d94a3a]' : ''}`}>{v}</span></div>
                   ))}
                 </div>

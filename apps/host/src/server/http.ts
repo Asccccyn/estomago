@@ -418,14 +418,14 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       let efforts: string[] | null = null;
       if (d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' && effModel) {
         const meta = await fetchOrModelMeta(cfg.base_url, effModel);
-        efforts = effortsForModel(meta);
+        efforts = effortsForModel(meta, effModel);
       }
       return json(res, 200, {
         driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
         or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
         reasoning_effort: { effective: effEffort, override: d.settings?.reasoningEffort() ?? null, config_default: cfg.reasoning },
         model_options: cfg.model_options ?? [],
-        effort_options: efforts ?? ['default', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        effort_options: efforts ?? ['default'],
         effort_options_verified: efforts !== null,
         note: '切模型=运行边界变化，下一条消息将等待历史选集确认后换窗；切思考深度=立即生效，不换窗（上下文复用）',
       });
@@ -466,7 +466,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // 模型清空回落 A+low、档位清空回落 B+high 均被 200 落库。候选
       // 模型=patch ?? override ?? 配置默认；候选档位=patch ?? override
       // ?? 配置默认 effort（含 model-only 继承）。元数据可及时校验；
-      // 不可达时放行，真请求若被 OR 拒绝会如实失败——不冒称已验证
+      // 具体模型优先使用官方已核实档位；未知模型元数据不可达时拒绝新设置。
       const candidateModel = (nextModel !== undefined ? nextModel : d.settings.orModel())
         ?? d.config.openrouter.model;
       const defEffort = (d.config.openrouter.reasoning as { effort?: unknown } | null | undefined)?.effort;
@@ -476,7 +476,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
         if (driver === 'openrouter') {
           const meta = await fetchOrModelMeta(d.config.openrouter.base_url, candidateModel);
-          const allowed = effortsForModel(meta);
+          const allowed = effortsForModel(meta, candidateModel);
+          if (!allowed) {
+            return json(res, 422, { error: { code: 'effort_unverified', message: '当前模型的思考档位尚未核实，请稍后重试' } });
+          }
           if (allowed && !allowed.includes(candidateEffort)) {
             return json(res, 422, { error: { code: 'effort_not_supported', message: `候选生效模型 ${candidateModel} 不支持思考档位 ${candidateEffort}`, supported: allowed } });
           }

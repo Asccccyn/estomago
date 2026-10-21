@@ -504,9 +504,9 @@ export class EstomagoClient {
       let exact=editable?data.or_model?.effective:null
       if(!editable){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
       const ids=[...new Set<string>([...(editable?data.model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
-      const efforts:string[]=editable?(data.effort_options??['default']):['default']
+      const efforts:string[]=editable?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
       const current=data.reasoning_effort?.override??data.reasoning_effort?.effective??'default'
-      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:Math.max(0,efforts.indexOf(current)),canConfigure:editable})
+      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable})
     }catch(e){this.report(e)}
   }
   setModel = async (index:number) => {
@@ -516,7 +516,7 @@ export class EstomagoClient {
   }
   setEffort = async (index:number) => {
     if(!this.snapshot.canConfigure)return
-    const effort=this.snapshot.efforts[index];if(!effort)return
+    const effort=index===-1?'default':this.snapshot.efforts[index];if(!effort)return
     try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.report(e)}
   }
   loadContext = async () => {
