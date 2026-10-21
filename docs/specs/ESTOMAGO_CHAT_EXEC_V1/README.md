@@ -48,9 +48,7 @@
 | contracts/api-index.json | 拟议端点/模型工具索引，既有与新增明确区分 |
 | contracts/acceptance.json | 场景与预期；初始状态全部 NOT_EXECUTED |
 | fixtures/semantic-cases.json | 可重放语义反例，全部为虚构数据 |
-| tools/verify_package.py | 无第三方依赖的包完整性与覆盖校验 |
-| tools/preflight.py | 只读核对目标仓库 HEAD、文件哈希与脏工作树 |
-| PACKAGE_MANIFEST.json | 文件哈希与基线摘要 |
+| tools/verify_package.py | 无第三方依赖的合同内部一致性与覆盖校验（2026-10-21 她裁定：包文件哈希封条 PACKAGE_MANIFEST.json 与源码基线核对 preflight.py 已删除——封条自签发起即与包内文件集不符且无自动化查验；规范冻结以 git 历史与 AGENTS.md 为准） |
 
 优先级：用户后续明确裁定 > 01 的语义边界 > 对应 03–06 专章 > 07 的批次安排。数字默认值以 policy-defaults.json 为唯一机器正本；正文表格是该版本的可读摘录，不是另一套配置来源。api-index.json 是路由索引，不替代专章的字段和事务语义。
 
@@ -60,7 +58,6 @@
 
 ~~~bash
 python3 tools/verify_package.py .
-python3 tools/preflight.py --repo /实际路径/estomago --package .
 ~~~
 
 这些命令只校验执行包和源码基线，不安装依赖、不启动服务、不调用任何模型。

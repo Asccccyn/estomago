@@ -30,26 +30,9 @@ def main():
     def read_json(name):
         return json.loads((root/name).read_text(encoding='utf-8'))
     try:
-        manifest = read_json('PACKAGE_MANIFEST.json')
-        check(manifest['spec_id']==SPEC, 'manifest spec id mismatch')
-        entries = manifest['files']
-        expected_paths = set()
-        for entry in entries:
-            rel = entry['path']; pure = PurePosixPath(rel)
-            check(not pure.is_absolute() and '..' not in pure.parts, f'unsafe manifest path: {rel}')
-            if pure.is_absolute() or '..' in pure.parts:
-                continue
-            check(rel not in expected_paths, f'duplicate manifest entry: {rel}')
-            expected_paths.add(rel)
-            p = root/rel
-            check(p.is_file() and not p.is_symlink(), f'missing/nonregular artifact: {rel}')
-            if not p.is_file() or p.is_symlink():
-                continue
-            raw=p.read_bytes()
-            check(len(raw)==entry['bytes'], f'length mismatch: {rel}')
-            check(hashlib.sha256(raw).hexdigest()==entry['sha256'], f'hash mismatch: {rel}')
-        actual_paths={p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}
-        check(actual_paths==expected_paths|{'PACKAGE_MANIFEST.json'}, 'unexpected or missing files compared with manifest')
+        # 2026-10-21 她裁定：包文件哈希封条（PACKAGE_MANIFEST.json）与源码基线核对（preflight.py）
+        # 已删除——封条自 1011 签发起即与包内文件集不符且无自动化查验，形同虚设；规范冻结以
+        # git 历史与 AGENTS.md 声明为准。本脚本只保留合同内部一致性与覆盖校验。
         reqs=read_json('contracts/requirements.json')['requirements']
         acceptance=read_json('contracts/acceptance.json')['cases']
         policy=read_json('contracts/policy-defaults.json')
@@ -125,7 +108,7 @@ def main():
         check(dt(f['usage_observed_at']).astimezone(zone).date().isoformat()==f['expected']['observed_local_day'],'observation day fixture inconsistent')
         f=by_id['F-ALERT-REPLAY']
         check(len(set(f['observation_ids']))==f['expected']['occurrence_count'],'dedupe fixture inconsistent')
-        report={'scope':'PACKAGE_INTEGRITY_AND_CONTRACT_COVERAGE_ONLY','implementation_tests':'NOT_RUN','checks':checks,'requirements':len(reqs),'acceptance_cases':len(acceptance),'routes':len(api['routes']),'model_tools':len(api['model_tools']),'fixtures':len(fixtures),'files_in_manifest':len(entries),'status':'FAIL' if errors else 'PASS','errors':errors}
+        report={'scope':'CONTRACT_COVERAGE_ONLY','implementation_tests':'NOT_RUN','checks':checks,'requirements':len(reqs),'acceptance_cases':len(acceptance),'routes':len(api['routes']),'model_tools':len(api['model_tools']),'fixtures':len(fixtures),'status':'FAIL' if errors else 'PASS','errors':errors}
         print(json.dumps(report,ensure_ascii=False,indent=2))
         return 1 if errors else 0
     except (OSError,ValueError,KeyError,TypeError,SyntaxError) as exc:
