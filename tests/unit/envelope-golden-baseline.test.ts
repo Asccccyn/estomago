@@ -48,10 +48,31 @@ const GOLDEN = path.join(import.meta.dirname, '..', 'golden', 'envelope-baseline
 
 /** 挥发字段归一化：随机 id、时间戳、time_context 值——保留键与结构。 */
 export function canonicalize(payload: unknown): string {
+  // 她 1021 P2：time_context 纯文本段体（分钟级时钟=挥发）在 stringify 前
+  // 归一化（单层正则；旧 JSON 形态由下方七键规则处理）
+  const NEW_TC = /\[time_context\]（[^）]*）\n(?!\{)[^\n]{8,}/;
+  const msgs = (payload as { messages?: Array<{ content?: unknown }> }).messages;
+  if (Array.isArray(msgs)) {
+    for (const m of msgs) {
+      const c = m.content;
+      if (typeof c === 'string') m.content = c.replace(NEW_TC, '[time_context]（…）\n<TC>');
+      else if (Array.isArray(c)) {
+        for (const blk of c) {
+          if (blk && typeof blk === 'object' && (blk as { type?: string }).type === 'text'
+              && typeof (blk as { text?: string }).text === 'string') {
+            (blk as { text: string }).text = (blk as { text: string }).text.replace(NEW_TC, '[time_context]（…）\n<TC>');
+          }
+        }
+      }
+    }
+  }
   let s = JSON.stringify(payload);
   s = s.replace(/"(msg|turn|att|win|prq|gen|toolu|call|sfd|sfj|sub|evt|rev)_[A-Za-z0-9_-]+"/g, '"$1_<ID>"');
   s = s.replace(/toolu_[A-Za-z0-9_]+/g, 'toolu_<ID>');
   s = s.replace(/es-(hold|recall|surface|read|open)-[0-9a-f]{8,}/g, 'es-$1-<ID>');
+  // 她 1021 P2：time_context 纯文本段体（分钟级时钟=挥发）整体归一化；
+  // 旧 JSON 形态（{ 开头）由上方七键规则处理
+  s = s.replace(/(（[^）]*）\\n)(?!\{)[0-9A-Za-z :|,-]{8,}(\\n\\n\[user_input\\])/g, '$1<TC>$2');
   s = s.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g, '<TS>');
   s = s.replace(/\\"now_at_utc\\":\\"[^\\]*\\"/g, '\\"now_at_utc\\":\\"<T>\\"');
   s = s.replace(/\\"local_date\\":\\"[^\\]*\\"/g, '\\"local_date\\":\\"<T>\\"');

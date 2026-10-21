@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeDb } from '../helpers.ts';
-import { buildTimeContext } from '../../apps/host/src/time/context.ts';
+import { buildTimeContext, modelTimeContextJson } from '../../apps/host/src/time/context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
@@ -80,3 +80,37 @@ function parseIsoDurationMs(d: string): number {
   const m = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/.exec(d);
   return (Number(m?.[1] ?? 0) * 3600 + Number(m?.[2] ?? 0) * 60 + Number(m?.[3] ?? 0)) * 1000;
 }
+
+// 她 2026-10-21 P2 二阶段：模型面投影=紧凑单行（零 JSON/键名/ISO 时长；英文=最少字节；条件保留）
+test('modelTimeContextJson：紧凑单行+条件保留+三格式字节对比（她口径：用字节少的）', () => {
+  const base = {
+    now_at_utc: '2026-10-21T00:33:00Z', business_timezone: 'Asia/Shanghai',
+    local_date: '2026-10-21', weekday: 'Thu', daypart: 'morning',
+    event_occurred_at: null, processing_at: '2026-10-21T00:33:00Z',
+    previous_user_message_at: null, elapsed_before_current_user_message: null,
+    last_user_message_at: 'x', elapsed_since_last_user_message: 'PT0H0M0S',
+    last_assistant_published_at: 'x', elapsed_since_last_assistant_message: 'PT26H7M51S',
+    conversation_id: 'c1', window_started_at: null, crossed_business_date: true,
+  } as import('../../apps/host/src/time/context.ts').TimeContext;
+  const s = modelTimeContextJson(base);
+  assert.equal(s, '2026-10-21 08:33 Thu morning | her last 0m ago | your last 26h08m ago | new day'); // 00:33Z=上海 08:33
+  for (const forbidden of ['{', '"', 'now_at_utc', 'PT', 'crossed_business_date']) {
+    assert.ok(!s.includes(forbidden), `不应出现 ${forbidden}: ${s}`);
+  }
+  const oldJson = JSON.stringify({
+    now_at_utc: '2026-10-19T12:57:01Z', local_date: '2026-10-19', weekday: 'Mon', daypart: 'evening',
+    elapsed_since_last_user_message: 'PT0H0M0S', elapsed_since_last_assistant_message: 'PT26H7M51S',
+    crossed_business_date: true,
+  });
+  const chineseProse = Buffer.byteLength('现在是 2026-10-21 08:33 周四 早晨；距她上次发言 0 分钟、距你上次发言 26 小时 08 分；已跨天', 'utf8');
+  const bNew = Buffer.byteLength(s, 'utf8');
+  assert.ok(bNew < chineseProse, `英文紧凑(${bNew}) < 中文人话(${chineseProse})`);
+  assert.ok(bNew < Buffer.byteLength(oldJson, 'utf8') * 0.4, `英文紧凑(${bNew}) < 旧JSON×0.4(${Math.floor(Buffer.byteLength(oldJson) * 0.4)})`);
+  // 条件保留：未跨天无 new day；首条无间隔段
+  assert.ok(!modelTimeContextJson({ ...base, crossed_business_date: false }).includes('new day'));
+  const fs = modelTimeContextJson({ ...base, elapsed_since_last_user_message: null, elapsed_since_last_assistant_message: null, crossed_business_date: false });
+  assert.ok(!fs.includes('her last') && !fs.includes('your last') && !fs.includes('new day'), fs);
+  assert.ok(fs.startsWith('2026-10-21 08:33 Thu morning'));
+  // ≥24h 不折算天（字节更少）
+  assert.equal(modelTimeContextJson({ ...base, elapsed_since_last_assistant_message: 'PT49H5M0S' }).includes('49h05m'), true);
+});
