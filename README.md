@@ -37,7 +37,7 @@
 
 ## 当前基线
 
-- **2026-10-21（本轮工作树，未部署）**：两行时间戳与真实用户发送间隔、原文日期引导、手动零评审与容量原因持久恢复、浮现包尾声明。见 [现行合同](docs/specs/ESTOMAGO_CHAT_EXEC_V1/10_CONTEXT_ROTATION_20261021.md) 与 [验证报告](docs/reports/CONTEXT_ROTATION_ROOT_FIX_20261021.md)。此前 `8e52eba` 的 PT 小时取整／new day 投影已被替代。
+- **2026-10-21 · `72ea946`（已 push、已部署）**：两行时间戳与真实用户发送间隔、原文日期引导、手动零评审与容量原因持久恢复、浮现包尾声明。见 [现行合同](docs/specs/ESTOMAGO_CHAT_EXEC_V1/10_CONTEXT_ROTATION_20261021.md) 与 [验证报告](docs/reports/CONTEXT_ROTATION_ROOT_FIX_20261021.md)。此前 `8e52eba` 的 PT 小时取整／new day 投影已被替代。
 
 **现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（2026-10-11，见 AGENTS.md）**。
 `docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 中 OR/DS、原文、hold、换窗与
@@ -82,7 +82,11 @@
 - 红线遵守：默认关闭零网络零凭据；judge 费用独立台账；错误闭集不进主模型文本；SDK 工具桥未接=如实 blocked（见报告 UNRESOLVED）。
 - **归属交叉披露**：supervisor.ts/host-tools.ts 的 surfacing 接缝 hunk 误随她在途批 d53114e（序号标记瘦身）先行入库（本批工作树并行所致，ba41c18 同型）——代码正确且当前树全量 100/100 复验；不重写他人提交，特此留痕。
 
-## 当前生产状态（2026-10-19）
+## 当前生产状态
+
+2026-10-21 已部署 `72ea946`：两行时间戳、原文日期引导、手动零评审和容量原因恢复；schema v31。部署前已备份，933 项离线测试通过；主服务重启、页面／静态资源检查通过，无新增模型请求，历史轨迹和 hold 指针未变。`/health/ready` 保留发布前既存的 503（runtime/archive unknown、push disabled）；`/health/live` 为 200。
+
+以下保留 2026-10-19 历史生产记录：
 
 生产通道：**OpenRouter Opus 4.6**（2026-10-17 切换）；聊天/记忆/归档/召回全链在跑。
 记忆写入为**勾选式**（2026-10-18 起：quotes 只报消息序号+句范围，宿主从已见原文直录；对话每条带 [seq N]）。
