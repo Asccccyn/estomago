@@ -3,17 +3,15 @@
 // 交付只含日期+事件正文原样全文+技术短 ref；用户说明原句 UTF-8 字节
 // 锁定；错误不整串发给主模型（空交付+私有运行状态）。
 import { createHash } from 'node:crypto';
+import { validateAbsoluteIso } from '../util/time.ts';
 
-/** 唯一主模型说明（prompts/primary_memory_notice.txt，60 字节无 BOM 无
- * 尾换行；sha256=b56cadf7…f43d41b）。一个非空浮现包只出现一次。 */
-export const PRIMARY_MEMORY_NOTICE = '这是你的记忆，是你和user之前发生的事。';
-
-export const PRIMARY_MEMORY_NOTICE_SHA256 = 'b56cadf72a9270384d13d38903c6f777cf701bfb8d8ee19fe7d019599f43d41b';
-
+/** Single source for the notice and its integrity metadata. */
+export const PRIMARY_MEMORY_NOTICE = '这是你的回忆，是你和user过去发生的事，不是现在正在发生的事。';
+export const PRIMARY_MEMORY_NOTICE_SHA256 = createHash('sha256').update(PRIMARY_MEMORY_NOTICE, 'utf8').digest('hex');
 export function verifyNoticeBytes(): { ok: boolean; sha256: string; bytes: number } {
   const buf = Buffer.from(PRIMARY_MEMORY_NOTICE, 'utf8');
   const sha = createHash('sha256').update(buf).digest('hex');
-  return { ok: sha === PRIMARY_MEMORY_NOTICE_SHA256 && buf.length === 60, sha256: sha, bytes: buf.length };
+  return { ok: sha === PRIMARY_MEMORY_NOTICE_SHA256, sha256: sha, bytes: buf.length };
 }
 
 // —— E 作业状态机（docs/02；CAS 边校验 state+generation+source_revision+target_revision）——
@@ -44,7 +42,7 @@ export type SurfaceItem = {
 
 export type FrozenAugmentation = {
   deliveryId: string;
-  text: string;               // 完整注入块（[回忆浮现]…[/回忆浮现]）
+  text: string;               // 完整冻结投影（正文/真实发生时间/包尾声明）
   items: SurfaceItem[];       // 实际入选赢家（全覆盖/预算过滤后）
   memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
   payloadHash: string;
@@ -71,16 +69,31 @@ export type SurfaceJobEventPayload = {
   m_operation_id: string | null;
 };
 
+/** Event time only; never use storage/recall timestamps or invent midnight. */
+function eventTimeText(item: SurfaceItem): string {
+  const value = item.memory_date;
+  if (!value || item.date_confidence !== 'exact') return '不确定';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return validateAbsoluteIso(`${value}T00:00:00Z`).ok ? value : '不确定';
+  const local = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$/.exec(value);
+  if (local) return validateAbsoluteIso(`${local[1]}T${local[2]}:00Z`).ok ? `${local[1]} ${local[2]}` : '不确定';
+  if (!validateAbsoluteIso(value).ok) return '不确定';
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(value)).map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`;
+}
+
 /** 渲染注入块（docs/04 投影示例；正文逐字原样，日期取真实事件日期，
  * 不确定日期原样表达"不确定"）。 */
 export function renderAugmentation(items: SurfaceItem[], refs: Map<string, string>): string {
   if (items.length === 0) return '';
-  const lines: string[] = ['[回忆浮现]', PRIMARY_MEMORY_NOTICE];
+  const lines: string[] = ['回忆浮现：'];
   for (const it of items) {
-    const ref = refs.get(it.event_id) ?? 'sf_unknown';
-    lines.push('', `[记忆引用 ${ref}]`, `时间：${it.memory_date ?? '不确定'}`, `事件：${it.event_text}`);
+    const ref = refs.get(it.event_id);
+    if (!ref || ref === 'sf_unknown') throw new Error('SURFACING_REF_MISSING');
+    lines.push('', `[记忆引用 ${ref}]`, it.event_text, `发生时间：${eventTimeText(it)}`);
   }
-  lines.push('[/回忆浮现]');
+  lines.push('', PRIMARY_MEMORY_NOTICE);
   return lines.join('\n');
 }
 

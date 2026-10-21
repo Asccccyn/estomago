@@ -276,7 +276,7 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   console.error('DBG-A:', JSON.stringify(ctx.db.prepare("SELECT id, state, blocked_reason FROM attempts WHERE turn_id = ?").all(s2.turnId)));
   console.error('DBG-B:', JSON.stringify(ctx.db.prepare("SELECT selection_id, source_window_id, status, source_cutoff_sequence FROM context_selections ORDER BY created_at").all()));
   console.error('DBG-W:', JSON.stringify(ctx.db.prepare("SELECT id, status, context_fingerprint IS NOT NULL as fp, blocked_reason FROM windows ORDER BY created_at").all()));
-  assert.equal(turn2.state, 'completed', '待回答输入在新窗完成');
+  assert.equal(turn2.state, 'completed', JSON.stringify(ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id=?').get(s2.attemptId)));
   assert.equal(turn2.input_message_id, s2.message.id, '原输入消息身份不变');
   const dupCount = (ctx.db.prepare('SELECT COUNT(*) n FROM messages WHERE conversation_id = ?').get('c1') as { n: number }).n;
   // = 之前 + 待回答输入 1 条 + 该回合的助手回复 1 条（选择本身零新增）

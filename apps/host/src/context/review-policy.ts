@@ -37,8 +37,8 @@ export const rawKey = (m: { id: string; revision: number }): string => `${m.id}@
 /**
  * 只提醒"发起 hold 的模型请求实际看见过的真实双方原话"之后的部分（§3.1/§3.2）：
  *  - lastHold 只在本 epoch 内生效；floor=书签的 seenSequence。
- *  - 已完成同消息版本提醒的范围（reviewedKeys）不重复；跨窗携带的旧尾段可用
- *    carriedBeforeBookmarkKeys 做"焦点豁免"（不标 reviewed/held，避免每次轮动强制补记早餐）。
+ *  - 已完成同消息版本提醒的范围（reviewedKeys）不重复；跨窗人工选集可用
+ *    carriedBackgroundKeys 做"焦点豁免"（不标 reviewed/held，避免每次轮动强制补记早餐）。
  *  - 工具/控制/检索/协议块不是双方原话（origin!=='dialogue' 或不可见即排除）。
  */
 export function selectReviewRange(input: {
@@ -46,11 +46,11 @@ export function selectReviewRange(input: {
   epochId: string;
   lastHold: { epochId: string; seenSequence: number } | null;
   reviewedKeys?: string[];
-  carriedBeforeBookmarkKeys?: string[];
+  carriedBackgroundKeys?: string[];
 }): ReviewRangeItem[] {
   const { manifest, epochId, lastHold } = input;
   const reviewedKeys = input.reviewedKeys ?? [];
-  const carriedBeforeBookmarkKeys = input.carriedBeforeBookmarkKeys ?? [];
+  const carriedBackgroundKeys = input.carriedBackgroundKeys ?? [];
   requireThat(Array.isArray(manifest), 'MANIFEST_REQUIRED');
   const rows = manifest.filter((m) => m.origin === 'dialogue' && m.visible === true);
   requireThat(rows.every((m) => typeof m.id === 'string' && nonNegInt(m.seq) && nonNegInt(m.revision)), 'MANIFEST_INVALID');
@@ -64,7 +64,7 @@ export function selectReviewRange(input: {
   // ——调用方按 skipped_empty 收口，不叫模型、不伪称全覆盖。清单缺失/损坏/无法重建的
   // 阻塞在调用方（supervisor 的 ROTATION_RANGE_UNKNOWN 路径）与 completeReview
   // （WRITE_UNRESOLVED）维持不变；本函数其余结构守卫（MANIFEST_INVALID/DUPLICATE）不放松。
-  const exempt = new Set([...reviewedKeys, ...carriedBeforeBookmarkKeys]);
+  const exempt = new Set([...reviewedKeys, ...carriedBackgroundKeys]);
   return rows.filter((m) => m.seq > floor && !exempt.has(rawKey(m))).map((m) => ({ id: m.id, revision: m.revision, seq: m.seq }));
 }
 

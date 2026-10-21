@@ -11,7 +11,7 @@ export type AssembleInput = {
   turnId: string;
   inputMessageId: string | null;
   policyVersion?: string | null;
-  timeContextJson: string;                 // 宿主每轮构造的程序事实
+  timeContextText: string;                 // 宿主每轮构造的程序事实
   userInput: { revision: number; content: string }; // 本轮有效输入
 };
 
@@ -33,7 +33,7 @@ export function assembleContext(input: AssembleInput, deps: { loadRecentDialogue
   const push = (source: import('./types.ts').ModelContextSource, text: string, slot: string, ev: string | null) => {
     segments.push({ source, sequence: ++seq, text, budget_slot: slot, evidence_ref: ev });
   };
-  push('time_context', input.timeContextJson, 'time', null);
+  push('time_context', input.timeContextText, 'time', null);
   push('user_input', input.userInput.content, 'input', `message:${input.inputMessageId ?? 'none'}#r${input.userInput.revision}`);
   // 策略依赖来源：明确排除 + NOT_APPROVED（不猜默认值）
   const excluded = ['memory_recall', 'handoff'];

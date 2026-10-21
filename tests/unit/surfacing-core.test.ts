@@ -31,20 +31,20 @@ const ITEM: SurfaceItem = {
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_abc',
 };
 
-test('AC016：冻结 notice 逐字节等于用户原句（60 字节，无 BOM 无尾换行）', () => {
+test('AC016：冻结 notice 逐字节等于用户原句（唯一正本，无 BOM 无尾换行）', () => {
   const v = verifyNoticeBytes();
   assert.ok(v.ok, `sha256=${v.sha256} bytes=${v.bytes}`);
-  assert.equal(Buffer.byteLength(PRIMARY_MEMORY_NOTICE, 'utf8'), 60);
+  assert.equal(PRIMARY_MEMORY_NOTICE, '这是你的回忆，是你和user过去发生的事，不是现在正在发生的事。');
 });
 
 test('AC015：渲染块只含 标题/说明/时间/事件正文/短引用——无 mood/words/分数/UUID', () => {
   const ref = memoryRefFor(ITEM.detail_ref);
   const text = renderAugmentation([ITEM], new Map([['ev_1', ref]]));
-  assert.ok(text.startsWith('[回忆浮现]\n' + PRIMARY_MEMORY_NOTICE));
+  assert.ok(text.startsWith('回忆浮现：\n'));
   assert.ok(text.includes(`[记忆引用 ${ref}]`));
   assert.ok(text.includes('时间：2026-07-09'));
-  assert.ok(text.includes(`事件：${ITEM.event_text}`));
-  assert.ok(text.trimEnd().endsWith('[/回忆浮现]'));
+  assert.ok(text.includes(ITEM.event_text));
+  assert.ok(text.endsWith(PRIMARY_MEMORY_NOTICE));
   for (const forbidden of ['mood', 'our_words', 'rrf', 'judge', '00001', ITEM.detail_ref, ITEM.body_hash]) {
     assert.ok(!text.includes(forbidden), `泄漏 ${forbidden}`);
   }

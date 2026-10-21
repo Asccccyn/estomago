@@ -37,6 +37,8 @@
 
 ## 当前基线
 
+- **2026-10-21（本轮工作树，未部署）**：两行时间戳与真实用户发送间隔、原文日期引导、手动零评审与容量原因持久恢复、浮现包尾声明。见 [现行合同](docs/specs/ESTOMAGO_CHAT_EXEC_V1/10_CONTEXT_ROTATION_20261021.md) 与 [验证报告](docs/reports/CONTEXT_ROTATION_ROOT_FIX_20261021.md)。此前 `8e52eba` 的 PT 小时取整／new day 投影已被替代。
+
 **现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（2026-10-11，见 AGENTS.md）**。
 `docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md` 中 OR/DS、原文、hold、换窗与
 缓存条款在不与现行包冲突时继续适用。内容、日历与后台验收使用现行包；

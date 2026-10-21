@@ -124,6 +124,9 @@ export class WindowManager {
     const prevId = tx(this.db, () => {
       const conv = this.db.prepare('SELECT active_window_id FROM conversations WHERE id = ?').get(o.conversationId) as { active_window_id: string | null };
       const prev = conv?.active_window_id ?? null;
+      if (prev && this.get(prev)?.status === 'ACTIVE') throw new Error('ROTATION_SOURCE_CHANGED');
+      this.assertNoUnresolvedRotation(o.conversationId);
+      if (this.db.prepare("SELECT 1 FROM turns WHERE conversation_id=? AND state='running' LIMIT 1").get(o.conversationId) || this.db.prepare("SELECT 1 FROM route_decisions WHERE conversation_id=? AND state='pending' LIMIT 1").get(o.conversationId)) throw new Error('ROTATION_BUSY');
       this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), id);
       this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(id, o.conversationId);
       if (prev) this.db.prepare("UPDATE windows SET status = 'CLOSED', updated_at = ? WHERE id = ?").run(new Date().toISOString(), prev);
@@ -146,9 +149,10 @@ export class WindowManager {
   // 不依赖可选 HTTP callback；HTTP 与直接服务调用无法绕过
   // WP3（E07）：selectionId 给出时，选集消费（consumed+target_window_id）
   // 与窗口指针切换同一事务——新窗未就绪则选集不被消费，失败整体回滚
-  rotate(o: { conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  rotate(o: { expectedWindowId?: string; conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
+    if (o.expectedWindowId && current.id !== o.expectedWindowId) return { ok: false, reason: 'ROTATION_SUPERSEDED' };
     if (o.gate.state !== 'READY') {
       return { ok: false, reason: `IDENTITY_BLOCKED：${o.gate.reasons.join('; ')}（旧窗保持 ACTIVE）` };
     }
@@ -201,6 +205,7 @@ export class WindowManager {
         if (runningNow > 0) throw new Error('FENCE_ACTIVE: 切换事务内发现生成中 turn（prepare 期间新进入），回滚');
         const pendingRouteNow = (this.db.prepare("SELECT COUNT(*) n FROM route_decisions WHERE conversation_id = ? AND state = 'pending'").get(o.conversationId) as { n: number }).n;
         if (pendingRouteNow > 0) throw new Error('ROUTE_PENDING: 切换事务内发现待决路由票据，回滚');
+        this.assertNoUnresolvedRotation(o.conversationId);
         this.db.prepare("UPDATE windows SET status = 'CLOSED', cutoff_sequence = ?, updated_at = ? WHERE id = ?").run(o.maxSequence, new Date().toISOString(), current.id);
         this.db.prepare("UPDATE windows SET status = 'ACTIVE', updated_at = ? WHERE id = ?").run(new Date().toISOString(), candidateId);
         this.db.prepare('UPDATE conversations SET active_window_id = ? WHERE id = ?').run(candidateId, o.conversationId);
@@ -249,6 +254,11 @@ export class WindowManager {
         .prepare("UPDATE windows SET status = 'CONTEXT_STALE', blocked_reason = ?, updated_at = ? WHERE id = ? AND status = 'ACTIVE'")
         .run(reason, new Date().toISOString(), windowId);
     });
+  }
+
+  private assertNoUnresolvedRotation(conversationId: string): void {
+    if (this.db.prepare("SELECT 1 FROM rotation_reviews WHERE room_id=? AND status='active' LIMIT 1").get(conversationId)) throw new Error('REVIEW_IN_PROGRESS');
+    if (this.db.prepare("SELECT 1 FROM tool_side_effects e JOIN windows w ON w.id=e.window_id WHERE w.conversation_id=? AND e.state IN ('pending','running','unknown','failed_unresolved') LIMIT 1").get(conversationId)) throw new Error('WRITES_UNRESOLVED');
   }
 
   private identityConfig(): BoundaryConfigInput {

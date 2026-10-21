@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeDb } from '../helpers.ts';
-import { buildTimeContext, modelTimeContextJson } from '../../apps/host/src/time/context.ts';
+import { buildTimeContext, modelTimeContextText } from '../../apps/host/src/time/context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
@@ -81,35 +81,37 @@ function parseIsoDurationMs(d: string): number {
   return (Number(m?.[1] ?? 0) * 3600 + Number(m?.[2] ?? 0) * 60 + Number(m?.[3] ?? 0)) * 1000;
 }
 
-// 她 2026-10-21 三轮裁定：日期时间一行 + PT 小时取整时长 + 只留"距她"字段 + new day 条件保留
-test('modelTimeContextJson：单字段 PT 时长+条件保留+字节对比', () => {
+test('T01/T02: short captured time and user send gap, not processing delay', () => {
   const base = {
     now_at_utc: '2026-10-21T00:33:00Z', business_timezone: 'Asia/Shanghai',
-    local_date: '2026-10-21', weekday: 'Thu', daypart: 'morning',
-    event_occurred_at: null, processing_at: '2026-10-21T00:33:00Z',
-    previous_user_message_at: null, elapsed_before_current_user_message: null,
-    last_user_message_at: 'x', elapsed_since_last_user_message: 'PT0H0M0S',
-    last_assistant_published_at: 'x', elapsed_since_last_assistant_message: 'PT26H7M51S',
-    conversation_id: 'c1', window_started_at: null, crossed_business_date: true,
+    local_date: 'wrong', weekday: 'Thu', daypart: 'morning',
+    processing_at: '2026-10-22T00:33:00Z',
+    elapsed_before_current_user_message: 'PT26H7M51S',
+    elapsed_since_last_user_message: 'PT0H0M0S', crossed_business_date: true,
   } as import('../../apps/host/src/time/context.ts').TimeContext;
-  const s = modelTimeContextJson(base);
-  assert.equal(s, '2026-10-21 08:33 Thu morning | her PT0H ago | new day'); // 00:33Z=上海 08:33
-  // char自己的间隔不再出现（她：给他看的，只留她的）
-  assert.ok(!s.includes('your') && !s.includes('26h'), s);
-  // PT 小时取整
-  assert.ok(modelTimeContextJson({ ...base, elapsed_since_last_user_message: 'PT26H7M51S' }).includes('her PT26H ago'));
-  assert.ok(modelTimeContextJson({ ...base, elapsed_since_last_user_message: 'PT30M0S' }).includes('her PT30M ago'));
-  assert.ok(modelTimeContextJson({ ...base, elapsed_since_last_user_message: 'PT49H5M0S' }).includes('her PT49H ago'));
-  // 条件保留
-  assert.ok(!modelTimeContextJson({ ...base, crossed_business_date: false }).includes('new day'));
-  const fs = modelTimeContextJson({ ...base, elapsed_since_last_user_message: null, crossed_business_date: false });
-  assert.equal(fs, '2026-10-21 08:33 Thu morning'); // 首条：只剩日期时间
-  // 字节：新行 < 旧 JSON×0.35
-  const oldJson = JSON.stringify({
-    now_at_utc: '2026-10-19T12:57:01Z', local_date: '2026-10-19', weekday: 'Mon', daypart: 'evening',
-    elapsed_since_last_user_message: 'PT0H0M0S', elapsed_since_last_assistant_message: 'PT26H7M51S',
-    crossed_business_date: true,
-  });
-  assert.ok(Buffer.byteLength(s, 'utf8') < Buffer.byteLength(oldJson, 'utf8') * 0.35,
-    `${Buffer.byteLength(s)} < ${Math.floor(Buffer.byteLength(oldJson) * 0.35)}`);
+  assert.equal(modelTimeContextText(base), 'user_gap: PT26H7M\n2026-10-21 08:33 Wed UTC+8');
+  for (const [interval, suffix] of [
+    ['PT0H0M59S', 'PT0M'], ['PT0H30M59S', 'PT30M'],
+    ['PT26H0M0S', 'PT26H'], ['PT49H59M59S', 'PT49H59M'],
+  ]) assert.equal(modelTimeContextText({ ...base, elapsed_before_current_user_message: interval! }),
+    `user_gap: ${suffix}\n2026-10-21 08:33 Wed UTC+8`);
+  assert.equal(modelTimeContextText({ ...base, elapsed_before_current_user_message: null }), '2026-10-21 08:33 Wed UTC+8');
+  assert.equal(modelTimeContextText({ ...base, now_at_utc: '2026-10-20T16:01:00Z' }),
+    'user_gap: PT26H7M\n2026-10-21 00:01 Wed UTC+8');
+});
+
+test('usergap is current input minus preceding user send despite later queued inputs and assistant replies', () => {
+  const { db } = makeDb();
+  const svc = new MessageService(db);
+  svc.ensureConversation('gap');
+  const first = svc.submitUserMessageWithTurn({ conversationId: 'gap', content: 'one', clientMessageId: 'g1', occurredAt: '2026-10-19T22:26:00Z' });
+  svc.publishAssistantMessage({ conversationId: 'gap', turnId: 't', content: 'reply' });
+  const second = svc.submitUserMessageWithTurn({ conversationId: 'gap', content: 'two', clientMessageId: 'g2', occurredAt: '2026-10-21T00:33:00Z' });
+  svc.submitUserMessageWithTurn({ conversationId: 'gap', content: 'queued', clientMessageId: 'g3', occurredAt: '2026-10-21T01:33:00Z' });
+  svc.editUserMessage(first.message.id, 'edited earlier input');
+  const edited = svc.editUserMessage(second.message.id, 'edited current input');
+  const tc = buildTimeContext(db, { conversationId: 'gap', config: buildConfig({}), eventOccurredAt: edited.revision.occurred_at, currentInputSequence: second.message.sequence });
+  assert.equal(tc.elapsed_before_current_user_message, 'PT26H7M0S');
+  assert.ok(modelTimeContextText(tc).startsWith('user_gap: PT26H7M\n'));
+  db.close();
 });

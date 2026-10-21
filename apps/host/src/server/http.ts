@@ -392,8 +392,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const windowId = decodeURIComponent(rotate[1]!);
       const win = d.windows.get(windowId);
       if (!win) return json(res, 404, { error: { code: 'not_found', message: '窗口不存在' } });
-      // 审计 F05：手动换窗走与自动换窗同一条评审管线（互斥/未决写核验/CAS）——
-      // 不再存在绕过评审直转 WindowManager 的旁路；SDK 驱动保持 v0.2.2 行为
+      // 审计 F05：手动换窗走统一安全切换管线（互斥/未决写核验/CAS），不发起模型评审——
+      // 不再存在绕过安全检查直转 WindowManager 的旁路
       // WP3（H07）：无已确认选集 → 409 context_selection_required（awaiting
       // 已持久化；输入已保存，确认后自动继续——rotate 不再是绕过选集的旁路）
       const result = await d.supervisor.manualRotate(win.conversation_id, windowId);

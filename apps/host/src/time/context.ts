@@ -23,35 +23,25 @@ export type TimeContext = {
   crossed_business_date: boolean;
 };
 
-/** 模型面投影（她 2026-10-21 三轮裁定）：
- * - 日期时间一行（她的原始提议：2026-10-21 08:33 Thu morning）；
- * - 时长用**PT 机器格式按小时取整**（PT26H 比 "26h08m"/"last...ago" 字符少——
- *   她的口径：用字符少的）；
- * - **只保留"距她上次和你说话"一个字段**——char自己的间隔删除
- *   （她：这是给他看的，他知道我的就行，我自己的节奏我自己知道）；
- * - crossed_business_date 条件保留（true 才写 new day）；
- * - 内部 TimeContext 全量计算不动（本函数唯一出站点）。 */
-export function modelTimeContextJson(tc: TimeContext): string {
-  const localHM = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tc.business_timezone, hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(new Date(tc.processing_at));
-  const parts: string[] = [`${tc.local_date} ${localHM} ${tc.weekday} ${tc.daypart}`];
-  if (tc.elapsed_since_last_user_message) {
-    parts.push(`her ${ptHours(tc.elapsed_since_last_user_message)} ago`);
-  }
-  if (tc.crossed_business_date) parts.push('new day');
-  return parts.join(' | ');
-}
-
-/** ISO 8601 时长 → 小时取整的 PT 形式（PT26H7M51S→PT26H；<1h→PT30M；0→PT0H）。 */
-function ptHours(iso: string): string {
-  const m = /^-?P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?$/.exec(iso ?? '');
-  if (!m) return iso;
-  const [, d, h, min, s] = m;
-  const total = (Number(d ?? 0) * 24 + Number(h ?? 0)) * 60 + Number(min ?? 0) + Math.round(Number(s ?? 0) / 60);
-  if (total === 0) return 'PT0H';
-  if (total < 60) return `PT${total}M`;
-  return `PT${Math.round(total / 60)}H`;
+/** Frozen request time plus the interval between consecutive user sends. */
+export function modelTimeContextText(tc: TimeContext): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: tc.business_timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    timeZoneName: 'shortOffset',
+  }).formatToParts(new Date(tc.now_at_utc)).map(p => [p.type, p.value]));
+  const zone = parts.timeZoneName!.replace('GMT', 'UTC');
+  const text = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.weekday} ${zone}`;
+  const interval = tc.elapsed_before_current_user_message;
+  if (interval === null) return text;
+  // Internal isoDuration produces nonnegative hours/minutes/seconds. Truncate
+  // seconds, keep minutes and omit zero units; never round an hour upwards.
+  const match = /^PT(\d+)H(\d+)M(\d+)S$/.exec(interval);
+  if (!match) return text;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const gap = `PT${hours ? `${hours}H` : ''}${minutes || !hours ? `${minutes}M` : ''}`;
+  return `user_gap: ${gap}\n${text}`;
 }
 
 export function buildTimeContext(
@@ -71,22 +61,22 @@ export function buildTimeContext(
   const daypart = hour < 5 ? 'night' : hour < 11 ? 'morning' : hour < 13 ? 'noon' : hour < 18 ? 'afternoon' : hour < 23 ? 'evening' : 'night';
 
   // AUD-21：前驱 = sequence < 当前输入 sequence 的最近一条用户消息（无 sequence 时退化为"最新一条之前的用户消息"）
-  let prevUser: { occurred_at: string } | undefined;
+  let prevUser: { occurred_at: string; occurred_at_repair: string | null } | undefined;
   if (opts.currentInputSequence != null) {
     prevUser = db
       .prepare(
-        `SELECT r.occurred_at FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+        `SELECT r.occurred_at, r.occurred_at_repair FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = 1
          WHERE m.conversation_id = ? AND m.speaker = 'owner' AND m.sequence < ?
          ORDER BY m.sequence DESC LIMIT 1`,
       )
-      .get(opts.conversationId, opts.currentInputSequence) as { occurred_at: string } | undefined;
+      .get(opts.conversationId, opts.currentInputSequence) as { occurred_at: string; occurred_at_repair: string | null } | undefined;
   } else {
     prevUser = db
       .prepare(
-        `SELECT r.occurred_at FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+        `SELECT r.occurred_at, r.occurred_at_repair FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = 1
          WHERE m.conversation_id = ? AND m.speaker = 'owner' ORDER BY m.sequence DESC LIMIT 1 OFFSET 1`,
       )
-      .get(opts.conversationId) as { occurred_at: string } | undefined;
+      .get(opts.conversationId) as { occurred_at: string; occurred_at_repair: string | null } | undefined;
   }
   const lastUser = db
     .prepare(
@@ -106,7 +96,9 @@ export function buildTimeContext(
   // F14：存量无效时间不得让整轮构建抛 RangeError——逐个验证，无效者按"未知"处理（间隔 null、跨日无法判定）
   const validIso = (v: string | null | undefined): string | null => (v != null && validateAbsoluteIso(v).ok ? v : null);
   const eventAtSafe = validIso(eventAt);
-  const previousUserAtSafe = validIso(previousUserAt);
+  const previousUserAtSafe = prevUser?.occurred_at_repair ? null : validIso(previousUserAt);
+  const originalInput = opts.currentInputSequence == null ? null : db.prepare(`SELECT r.occurred_at, r.occurred_at_repair FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=1 WHERE m.conversation_id=? AND m.sequence=? AND m.speaker='owner'`).get(opts.conversationId, opts.currentInputSequence) as { occurred_at: string; occurred_at_repair: string | null } | undefined;
+  const gapEventAtSafe = originalInput ? (originalInput.occurred_at_repair ? null : validIso(originalInput.occurred_at)) : eventAtSafe;
   const lastUserAtSafe = validIso(lastUser?.occurred_at ?? null);
   const lastAssistantAtSafe = validIso(lastAssistant?.published_at ?? null);
   const elapsed = (from: string | null, to: string | null): string | null => {
@@ -131,7 +123,7 @@ export function buildTimeContext(
     event_occurred_at: eventAt,
     processing_at: nowIso,
     previous_user_message_at: previousUserAtSafe,
-    elapsed_before_current_user_message: elapsed(previousUserAtSafe, eventAtSafe),
+    elapsed_before_current_user_message: elapsed(previousUserAtSafe, gapEventAtSafe),
     last_user_message_at: lastUserAtSafe,
     elapsed_since_last_user_message: lastUserAtSafe ? isoDuration(now.getTime() - new Date(lastUserAtSafe).getTime()) : null,
     last_assistant_published_at: lastAssistantAtSafe,

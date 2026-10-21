@@ -1012,6 +1012,16 @@ CREATE TABLE message_retry_receipts(
 `,
 });
 
+// Pending legacy selections deliberately retain an unknown cause.
+MIGRATIONS.push({
+  version: 31,
+  name: 'selection_rotation_cause_and_projection_clock',
+  sql: `
+ALTER TABLE context_selections ADD COLUMN rotation_cause TEXT CHECK(rotation_cause IN ('manual','capacity','identity_change','initial'));
+ALTER TABLE context_selections ADD COLUMN projection_reference_at TEXT;
+`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

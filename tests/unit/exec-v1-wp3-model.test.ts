@@ -251,12 +251,12 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；容�
     assert.fail('语音消息被选集拒绝（应放行）');
   }
   // loadContents：按修订携带附件
-  const loaded = ctx.selections.loadContents([{ message_id: vMsg.message.id, revision: 1, sequence: 1, speaker: 'owner', content_hash: 'x', content_chars: 1 }]);
+  const loaded = ctx.selections.loadContents([{ message_id: vMsg.message.id, revision: 1, sequence: vMsg.message.sequence, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 1 }]);
   assert.equal(loaded.loaded[0]!.attachments.length, 1);
   assert.equal(loaded.loaded[0]!.attachments[0]!.asset_id, voice.id);
   // 容量估算：一张图 +1600（保守工程值），两张图 +3200
-  const est1 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: 'x', content_chars: 100, image_count: 1 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
-  const est2 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: 'x', content_chars: 100, image_count: 2 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
+  const est1 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 100, image_count: 1 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
+  const est2 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 100, image_count: 2 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
   assert.equal(est1, Math.ceil(100 / 2.5) + 1600);
   assert.equal(est2, Math.ceil(100 / 2.5) + 3200);
 });

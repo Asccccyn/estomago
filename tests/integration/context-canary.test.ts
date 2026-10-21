@@ -73,7 +73,7 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
   const handoffHits = scanDir(handoffsDir);
   const receipts = host.db.prepare('SELECT desired, assembled, observed, probe FROM bootstrap_receipts').all();
   const receiptHits = receipts.reduce((n, r) => n + deepScanCanary([r.desired, r.assembled, r.observed, r.probe], CANARY), 0);
-  const assemblerOut = assembleContext({ conversationId: 'primary', windowId: null, turnId: s2.turn_id, inputMessageId: null, timeContextJson: '{}', userInput: { revision: 1, content: 'x' } }, {});
+  const assemblerOut = assembleContext({ conversationId: 'primary', windowId: null, turnId: s2.turn_id, inputMessageId: null, timeContextText: '{}', userInput: { revision: 1, content: 'x' } }, {});
   const timeCtx = host.db.prepare('SELECT time_context_json FROM turns WHERE id = ?').get(s2.turn_id) as { time_context_json: string } | undefined;
 
   const messages = host.db.prepare('SELECT id FROM messages').all();
