@@ -39,6 +39,7 @@ import { buildOrPayload, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
+import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
 import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
@@ -532,8 +533,8 @@ export class TurnSupervisor {
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
       const ordered = [
-        ...captured.filter((t) => t.tool_name !== 'context_review_complete'),
-        ...captured.filter((t) => t.tool_name === 'context_review_complete'),
+        ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) !== 'context_review_complete'),
+        ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) === 'context_review_complete'),
       ];
       for (const t of ordered) {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
@@ -990,7 +991,7 @@ export class TurnSupervisor {
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
-      t = buildHostTools() as unknown as import('./or-payload.ts').OrTool[];
+      t = freezeWindowTools(this.d.db, windowId, buildHostTools(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
       this.frozenToolsByWindow.set(windowId, t);
     }
     return t;
@@ -1073,7 +1074,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: buildHostTools() as unknown as import('./or-payload.ts').OrTool[],
+        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? buildHostTools() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,

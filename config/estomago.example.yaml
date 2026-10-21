@@ -16,6 +16,8 @@ deployment:
   public_enabled: false
   supervisor: launchagent
 runtime:
+  # 新窗口按需读取详细工具定义；既有窗口沿用已发送的冻结工具集。
+  tool_schema_mode: deferred
   provider: claude-agent-sdk
   language: typescript
   node_version: null

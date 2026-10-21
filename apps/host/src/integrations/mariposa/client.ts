@@ -407,8 +407,8 @@ export class MariposaClient {
   /** 明确打开/回忆/留链批（2026-10-10）：M 的 memory.open→view.confirm
    *  →recollections.append（keep_wide 附带留标记）→keeps 链透传。
    *  语义铁律：召回/回读返回正文 ≠ 明确打开——回温与"留"只经本链。 */
-  async memoryOpen(memoryId: string): Promise<MariposaCallResult> {
-    return this.transport('memory.open', { memory_id: memoryId });
+  async memoryOpen(memoryId: string, modelView = false): Promise<MariposaCallResult> {
+    return this.transport('memory.open', { memory_id: memoryId, ...(modelView ? { view: 'model' } : {}) });
   }
   async viewConfirm(memoryId: string, receiptId: string): Promise<MariposaCallResult> {
     return this.transport('memory.view.confirm', { memory_id: memoryId, receipt_id: receiptId });

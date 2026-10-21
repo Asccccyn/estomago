@@ -41,7 +41,7 @@ test('链①：open → memory.open，票据与正文穿透；语义提示"打�
   assert.equal(out.ok, true);
   assert.equal(calls[0], 'memory.open');
   assert.equal(out.output.view_receipt, 'vr_abc');
-  assert.ok(String(out.output.note).includes('confirm'), '提示要走 confirm 才刷新回温');
+  assert.equal(out.output.note,undefined,'重复说明不进入模型结果；确认仍需票据');
   db.close();
 });
 
@@ -100,7 +100,7 @@ test('链⑤：unkeep → memory.keep.revoke（谁留谁撤）；票据失效如
   const uk = await tools.execute('memory_open', { __tool_call_id: 'o9', action: 'unkeep', mark_id: 'mk_1' }, CTX);
   assert.equal(uk.ok, true);
   assert.equal(calls[0], 'memory.keep.revoke');
-  assert.ok(String(uk.output.note).includes('谁留谁撤'));
+  assert.equal(uk.output.note,undefined);assert.equal(uk.output.action,'unkeep');
   const stale = await tools.execute('memory_open', { __tool_call_id: 'o10', action: 'confirm', memory_id: 'm1', receipt_id: 'vr_old' }, CTX);
   assert.equal(stale.ok, false);
   assert.equal(stale.output.error_code, 'OPEN_RECEIPT_INVALID', '票据失效如实上抛不吞');

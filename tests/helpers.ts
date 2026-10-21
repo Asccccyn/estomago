@@ -87,6 +87,7 @@ export function readyRuntimePatch(sdkVersion?: string): Record<string, unknown> 
   return {
     identity: { expected_identity_version: 'test-v1', expected_i_version: 'test-i-1', expected_rules_version: 'test-rules-1' },
     runtime: {
+      tool_schema_mode: 'legacy', // Existing scenario fixtures exercise the legacy wire protocol.
       model: 'fixture-model',
       sdk_version: sdkVersion ?? OBSERVED_SDK,
       runtime_version: 'node-test',

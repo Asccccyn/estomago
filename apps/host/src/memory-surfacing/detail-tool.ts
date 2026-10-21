@@ -8,7 +8,7 @@ import type { MariposaClient } from '../integrations/mariposa/client.ts';
 export async function executeMemoryReadFull(
   repo: SurfacingRepository,
   client: MariposaClient,
-  args: { memory_ref?: unknown; cursor?: unknown },
+  args: { memory_ref?: unknown; cursor?: unknown; view?: 'model' },
   scope: { roomId: string; windowId: string; requestId: string },
 ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; code: string; message: string }> {
   const ref = typeof args.memory_ref === 'string' ? args.memory_ref : '';
@@ -19,7 +19,7 @@ export async function executeMemoryReadFull(
     // 引用未实际进入本房间模型输入 → 拒绝（不猜测、不搜索）
     return { ok: false, code: 'DETAIL_REF_NOT_SEEN', message: '该记忆引用不在已交付范围内' };
   }
-  const r = await client.surfaceDetailRead(cursor ? { detail_ref: mapped.detail_ref, cursor } : { detail_ref: mapped.detail_ref });
+  const r = await client.surfaceDetailRead({ detail_ref: mapped.detail_ref, ...(cursor ? { cursor } : {}), ...(args.view ? { view: args.view } : {}) });
   if (!r.ok) {
     return { ok: false, code: r.code, message: '详情读取失败（结构化错误码原样返回）' };
   }

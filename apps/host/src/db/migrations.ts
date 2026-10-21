@@ -1022,6 +1022,18 @@ ALTER TABLE context_selections ADD COLUMN projection_reference_at TEXT;
 `,
 });
 
+MIGRATIONS.push({
+  version: 32,
+  name: 'persistent_window_tool_protocol',
+  sql: `CREATE TABLE window_toolsets(
+    window_id TEXT PRIMARY KEY REFERENCES windows(id),
+    protocol TEXT NOT NULL CHECK(protocol IN ('legacy','deferred')),
+    wire_tools_json TEXT NOT NULL,
+    catalog_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );`,
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -63,6 +63,7 @@ export type Config = {
     supervisor: string;
   };
   runtime: {
+    tool_schema_mode: 'legacy' | 'deferred';
     provider: string;
     language: string;
     node_version: string | null;
@@ -293,6 +294,7 @@ export const CONFIG_DEFAULTS: Config = {
     supervisor: 'launchagent',
   },
   runtime: {
+    tool_schema_mode: 'deferred',
     provider: 'claude-agent-sdk',
     language: 'typescript',
     node_version: null,
@@ -510,7 +512,7 @@ const SHAPE: SectionSpec = { section: {
     bind: 'string', port: 'number', public_origin: 'string?', public_enabled: 'boolean', supervisor: 'string?',
   } },
   runtime: { section: {
-    provider: 'string', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
+    tool_schema_mode: 'string', provider: 'string', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
     model: 'string?', authentication_profile_ref: 'string?', system_prompt_mode: 'string', setting_sources: 'string[]',
     require_identity_manifest: 'boolean', disable_auto_memory: 'boolean', strict_mcp_config: 'boolean',
     automatic_flag_switch: 'boolean', automatic_availability_fallbacks: 'string[]', max_active_primary_runners: 'number?',
@@ -807,6 +809,8 @@ export function validateConfig(raw: unknown): { config: Config; issues: Validati
   }
   // ESTOMAGO_OR_SELF_HOLD §1.1：provider 枚举（新增 openrouter 驱动；未知值不得静默落到 SDK）
   const provider = (patched as { runtime?: { provider?: unknown } })?.runtime?.provider;
+  const toolMode = (patched as { runtime?: { tool_schema_mode?: unknown } }).runtime?.tool_schema_mode;
+  if (toolMode !== undefined && toolMode !== 'legacy' && toolMode !== 'deferred') issues.push({path:'runtime.tool_schema_mode',message:'必须是 legacy|deferred'});
   if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
     issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
   }
