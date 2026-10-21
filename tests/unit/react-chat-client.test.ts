@@ -254,3 +254,16 @@ test('失败状态经SSE回放保留原因，打开活动日志不丢失也不�
     assert.equal(h.client.snapshot.activity[0].d,'blocked · IDENTITY_NOT_READY')
   }finally{h.client.stop()}
 })
+
+test('回忆展开只发定点GET，保持同轮引用和分页游标，不发送聊天',async()=>{
+ const h=await setup(url=>url.includes('/memories')?Response.json({sections:{memory:{text:'全文'}},next_cursor:null}):undefined)
+ try {
+  h.calls.length=0
+  await h.client.loadSurfacedMemories('turn-a')
+  await h.client.loadSurfacedMemoryDetail('turn-a','sf_one','p1')
+  assert.equal(h.calls.length,2)
+  assert.ok(h.calls[0].url.endsWith('/conversations/primary/turns/turn-a/memories'))
+  assert.ok(h.calls[1].url.endsWith('/conversations/primary/turns/turn-a/memories/sf_one?cursor=p1'))
+  assert.ok(h.calls.every(c=>!c.init?.method||c.init.method==='GET'))
+ } finally {h.client.stop()}
+})

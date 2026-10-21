@@ -40,11 +40,9 @@ test('AC016：冻结 notice 逐字节等于用户原句（唯一正本，无 BOM
 test('AC015：渲染块只含 标题/说明/时间/事件正文/短引用——无 mood/words/分数/UUID', () => {
   const ref = memoryRefFor(ITEM.detail_ref);
   const text = renderAugmentation([ITEM], new Map([['ev_1', ref]]));
-  assert.ok(text.startsWith('回忆浮现：\n'));
-  assert.ok(text.includes(`[记忆引用 ${ref}]`));
-  assert.ok(text.includes('时间：2026-07-09'));
-  assert.ok(text.includes(ITEM.event_text));
-  assert.ok(text.endsWith(PRIMARY_MEMORY_NOTICE));
+  assert.deepEqual(JSON.parse(text), { memories: [{ date: '2026-07-09', text: ITEM.event_text }] });
+  assert.ok(!text.includes(ref));
+  assert.ok(!text.includes(PRIMARY_MEMORY_NOTICE));
   for (const forbidden of ['mood', 'our_words', 'rrf', 'judge', '00001', ITEM.detail_ref, ITEM.body_hash]) {
     assert.ok(!text.includes(forbidden), `泄漏 ${forbidden}`);
   }
@@ -355,4 +353,12 @@ test('E-LC9 开关关闭/重启不复活已失效作业', async () => {
     assert.equal(svc2.repo.jobById(f.jobOf(a.message.id)!.id)!.state, 'cancelled', '重启不复活');
     await svc2.stop();
   } finally { await f.close(); }
+});
+
+
+test('三个独立事件保留三份完整原文，只输出date/text',()=>{
+  const items=[0,1,2].map(n=>({...ITEM,event_id:'event-'+n,event_text:`  事件${n}\n第二行🦋\n` }));
+  const out=JSON.parse(renderAugmentation(items));
+  assert.equal(out.memories.length,3);
+  out.memories.forEach((m:any,n:number)=>{assert.deepEqual(Object.keys(m),['date','text']);assert.equal(m.text,items[n].event_text)});
 });

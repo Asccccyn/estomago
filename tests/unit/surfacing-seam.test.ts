@@ -88,44 +88,37 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
 type Block = { type: string; text?: string };
 const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : typeof c === 'string' ? [{ type: 'text', text: c }] : []);
 
-test('JA-S08: full-read is usable in the first surfaced tool loop, scoped to the real sent payload', async () => {
-  const root = tempRoot('sf-full-wire-');
-  const log: Array<Record<string, unknown>> = [];
-  let generation = 0;
-  let detailCalls = 0;
-  let checkedWindow = '';
-  const transport: OrTransport = async (payload) => {
-    generation++;
-    if (generation === 1) {
-      const wire = JSON.stringify(payload.messages);
-      const ref = wire.match(/记忆引用 (sf_[a-f0-9]+)/)?.[1];
-      assert.ok(ref, 'reference is actually in the provider request');
-      const body = sse({ id: 'g2', choices: [{ delta: { tool_calls: [{ index: 0, id: 'full1', type: 'function', function: { name: 'memory_read_full', arguments: JSON.stringify({ memory_ref: ref }) } }] } }] })
-        + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE;
-      return { status: 200, headers: new Map(), body: frameStream(body) };
-    }
-    return { status: 200, headers: new Map(), body: frameStream(textBody(`g${generation}`, '合成回复')) };
+test('JA-S08: owner can expand the same delivered bucket without exposing refs or retrieving again', async () => {
+  const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
+  const caps: string[] = [];
+  const transport: OrTransport = async payload => {
+    assert.ok(!JSON.stringify(payload.messages).includes('sf_'));
+    return { status: 200, headers: new Map(), body: frameStream(textBody('g1','合成回复')) };
   };
   const mariposa: MariposaTransport = async (cap, payload) => {
+    caps.push(cap);
     if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
     if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
-    if (cap === 'memory.surfacing.validate') { checkedWindow = String(payload.window_id); return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } }; }
-    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: payload.window_id === checkedWindow && checkedWindow !== 'pending-check', accepted_detail_refs: [ITEM.detail_ref] } };
-    if (cap === 'memory.detail.read') { detailCalls++; return { ok: true, result: { sections: [{ name: 'event', data: '合成完整正文' }], has_more: false } }; }
-    throw new Error('unexpected capability: ' + cap);
+    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } };
+    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
+    if (cap === 'memory.detail.read') { assert.equal(payload.detail_ref, ITEM.detail_ref); return { ok: true, result: { sections: {memory:{text:'完整正文'},relations:[{direction:'in'},{direction:'out'}]}, next_cursor: payload.cursor ? null : 'p1' } }; }
+    throw Error('unexpected '+cap);
   };
-  const ctx = compose(root, transport, mariposa, log);
+  const ctx=compose(root,transport,mariposa,log);
   try {
-    const a = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '你还记得那次7.9我们把记忆库做成了吗？', clientMessageId: 'full-a', occurredAt: T0 });
-    ctx.supervisor.enqueue(a.turnId); await ctx.supervisor.waitIdle();
-    const staleRotate = await ctx.supervisor.manualRotate('c1', 'obsolete-window');
-    assert.equal(staleRotate.ok, false);
-    assert.ok(!staleRotate.ok && staleRotate.reason.startsWith('WINDOW_STALE'));
-    assert.equal(detailCalls, 1);
-    assert.equal(generation, 2, 'first turn includes full-read loop; stale rotate dispatches nothing');
-    assert.ok(JSON.stringify(log[1].full).includes('合成完整正文'));
-    assert.ok(checkedWindow && checkedWindow !== 'pending-check');
-  } finally { await ctx.svc.stop(); ctx.db.close(); }
+    const a=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'还记得那次记忆库建成吗？',clientMessageId:'a'});
+    ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
+    const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
+    assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
+    const before=caps.length;
+    assert.equal((await ctx.svc.readMemoryForTurn('other',a.turnId,list[0].memory_ref)).ok,false);
+    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,'sf_forged')).ok,false);
+    assert.equal(caps.length,before);
+    const first=await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);assert.equal(first.ok,true);
+    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'p1')).ok,true);
+    assert.deepEqual(caps.slice(before),['memory.detail.read','memory.detail.read']);
+    assert.equal(log.length,1,'clicking detail never calls the main model');
+  } finally {await ctx.svc.stop();ctx.db.close();}
 });
 
 test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；retain 落账', async () => {
@@ -160,10 +153,11 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   assert.equal(memoryMessage.role, 'system', 'host data is not a user message');
   const memoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
-  assert.ok(memoryText.includes(NOTICE));
-  assert.ok(memoryText.includes('时间：2026-07-09'));
+  assert.deepEqual(JSON.parse(memoryText), { memories: [{ date: '2026-07-09', text: ITEM.event_text }] });
+  assert.ok(!memoryText.includes('sf_'));
+
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
-  assert.ok(!tail2Text.includes('回忆浮现：'), 'real user input is not rewritten with host memory');
+  assert.ok(!tail2Text.includes('{"memories":'), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_deliveries WHERE retained=1').get() as { n: number }).n, 1);
@@ -172,11 +166,11 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   await say('c');
   const msgs3 = log[1]!.full as Array<{ role: string; content: unknown }>;
   // 旧回忆块仍在轨迹原位（未删除/未移动到新尾部）
-  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('回忆浮现：')));
+  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('{"memories":')));
   assert.equal(oldBlocks.length, 1, '旧回忆块仍在轨迹原位且仅一份');
   // 新尾部不再有回忆块（同事件已覆盖）
   const tail3 = msgs3[msgs3.length - 1]!;
-  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('回忆浮现：')).length, 0, 'U3 不重复追加');
+  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('{"memories":')).length, 0, 'U3 不重复追加');
   // 覆盖表登记一次
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
@@ -218,7 +212,7 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
     assert.equal(log.length, 1, 'current turn dispatches despite failed final admission');
     assert.equal(gen, 1);
     const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
-    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('回忆浮现：'))).length, 0, 'wire has no surfacing block');
+    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('{"memories":'))).length, 0, 'wire has no surfacing block');
     const tail2 = msgs2[msgs2.length - 1]!;
     assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('你还记得那次7.9我们把记忆库做成了吗？')), 'real user input is intact');
     // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）

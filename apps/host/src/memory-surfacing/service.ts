@@ -5,6 +5,7 @@
 // - 每房间串行、全局并发上限；崩溃恢复有界；无后台补扫历史。
 // - 后台零主模型 key / 零主模型 runner：专用 MariposaClient（surfacing
 //   credential_ref，不回退聊天凭据）。
+import { executeMemoryReadFull } from './detail-tool.ts';
 import type { Db } from '../db/connection.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
@@ -493,6 +494,18 @@ export class SurfacingService {
   /** 成功轨迹 retain：写入真实 manifest 后调（不假标 coverage）。 */
   markRetained(result: AugmentResult): void {
     this.repo.markRetained(result.jobId || '', result.deliveryId, result.items);
+  }
+
+  visibleMemoriesForTurn(conversationId: string, turnId: string) {
+    return this.repo.visibleForTurn(conversationId, turnId)
+      .map(({ memory_ref, date, text }) => ({ memory_ref, date, text }));
+  }
+
+  async readMemoryForTurn(conversationId: string, turnId: string, ref: string, cursor?: string) {
+    const binding = this.repo.visibleForTurn(conversationId, turnId).find(it => it.memory_ref === ref);
+    if (!binding) return { ok: false as const, code: 'DETAIL_REF_NOT_SEEN', message: '该回忆不属于本轮已交付内容' };
+    return executeMemoryReadFull(this.repo, this.client, { memory_ref: ref, cursor },
+      { roomId: conversationId, windowId: binding.windowId, requestId: binding.requestId });
   }
 
   // —— 生命周期 ——

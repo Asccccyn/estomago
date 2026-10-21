@@ -1,6 +1,7 @@
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
+import { projectSurfacedMemory } from './contracts.ts';
 import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { EventHypothesis, SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
@@ -280,6 +281,35 @@ export class SurfacingRepository {
       if (row && visible.some(v => v.memory_id === it.memory_id && v.memory_version === it.memory_version && v.body_hash === it.body_hash)) covered.add(it.event_id);
     }
     return covered;
+  }
+
+  /** Owner UI projection. Handles stay outside model text and resolve only
+   * through this turn's confirmed, actually sent provider request. */
+  visibleForTurn(conversationId: string, turnId: string): Array<{
+    memory_ref: string; date: string | null; text: string; windowId: string; requestId: string;
+  }> {
+    const rows = this.db.prepare(`SELECT d.selected_refs_json, d.window_id, p.id AS request_id
+      FROM surfacing_deliveries d JOIN attempts a ON a.id=d.attempt_id
+      JOIN turns t ON t.id=a.turn_id JOIN provider_requests p ON p.attempt_id=a.id
+      WHERE t.id=? AND t.conversation_id=? AND p.sent_at IS NOT NULL
+        AND p.window_id=d.window_id AND d.state IN ('dispatch_started','retained')
+      ORDER BY p.created_at DESC`).all(turnId, conversationId) as Array<{
+        selected_refs_json: string; window_id: string; request_id: string;
+      }>;
+    const out: ReturnType<SurfacingRepository['visibleForTurn']> = [];
+    const seen = new Set<string>();
+    for (const row of rows) {
+      let data: { items: import('./contracts.ts').SurfaceItem[]; refs: Array<{ ref: string; event_id: string }> };
+      try { data = JSON.parse(row.selected_refs_json); } catch { continue; }
+      for (const ref of data.refs ?? []) {
+        if (seen.has(ref.ref) || !this.refToDetail(ref.ref, { roomId: conversationId, windowId: row.window_id, requestId: row.request_id })) continue;
+        const item = data.items.find(i => i.event_id === ref.event_id);
+        if (!item) continue;
+        seen.add(ref.ref);
+        out.push({ memory_ref: ref.ref, ...projectSurfacedMemory(item), windowId: row.window_id, requestId: row.request_id });
+      }
+    }
+    return out;
   }
 
   refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string } | null {

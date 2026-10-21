@@ -5,6 +5,7 @@ import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
+import { SurfacedMemories } from './SurfacedMemories'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { HistoryBoundary, HistoryDatePicker, HistoryViewingBar } from './ChatHistoryControls'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
@@ -445,6 +446,7 @@ export default function App() {
                   {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
                 </div>
                 )}
+                {m.turnId && <SurfacedMemories key={m.turnId} turnId={m.turnId} client={client} />}
                 <div className="mt-2 -ml-1.5 flex items-center">
                   <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
                   <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">{m.tokens == null ? '' : `约 ${m.tokens.toLocaleString()}`}</span>

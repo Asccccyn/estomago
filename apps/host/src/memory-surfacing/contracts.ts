@@ -1,11 +1,11 @@
 // 自动记忆浮现 · 合同层（EST_MARIPOSA_AUTO_SURFACING_V1 · 2026-10-19）。
 // P3（2026-10-21）：源/目标同消息同修订，接受起绝对总 deadline；初次
-// 交付只含日期+事件正文原样全文+技术短 ref；用户说明原句 UTF-8 字节
-// 锁定；错误不整串发给主模型（空交付+私有运行状态）。
+// 交付仅含日期与事件正文全文；ref/版本等保留后端，不进入模型正文。
+// 已冻结旧包原样保留；错误不整串发给主模型。
 import { createHash } from 'node:crypto';
 import { validateAbsoluteIso } from '../util/time.ts';
 
-/** Single source for the notice and its integrity metadata. */
+/** Legacy notice: old frozen deliveries stay unchanged; new payloads omit it. */
 export const PRIMARY_MEMORY_NOTICE = '这是你的回忆，是你和宿主用户过去发生的事，不是现在正在发生的事。';
 export const PRIMARY_MEMORY_NOTICE_SHA256 = createHash('sha256').update(PRIMARY_MEMORY_NOTICE, 'utf8').digest('hex');
 export function verifyNoticeBytes(): { ok: boolean; sha256: string; bytes: number } {
@@ -42,7 +42,7 @@ export type SurfaceItem = {
 
 export type FrozenAugmentation = {
   deliveryId: string;
-  text: string;               // 完整冻结投影（正文/真实发生时间/包尾声明）
+  text: string;               // 完整冻结投影（仅日期与事件正文）
   items: SurfaceItem[];       // 实际入选赢家（全覆盖/预算过滤后）
   memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
   payloadHash: string;
@@ -84,17 +84,15 @@ function eventTimeText(item: SurfaceItem): string {
 }
 
 /** 渲染注入块（docs/04 投影示例；正文逐字原样，日期取真实事件日期，
- * 不确定日期原样表达"不确定"）。 */
-export function renderAugmentation(items: SurfaceItem[], refs: Map<string, string>): string {
+ * 不确定日期以 null 表达）。 */
+export function projectSurfacedMemory(item: SurfaceItem): { date: string | null; text: string } {
+  const date = eventTimeText(item);
+  return { date: date === '不确定' ? null : date, text: item.event_text };
+}
+
+export function renderAugmentation(items: SurfaceItem[], _refs?: Map<string, string>): string {
   if (items.length === 0) return '';
-  const lines: string[] = ['回忆浮现：'];
-  for (const it of items) {
-    const ref = refs.get(it.event_id);
-    if (!ref || ref === 'sf_unknown') throw new Error('SURFACING_REF_MISSING');
-    lines.push('', `[记忆引用 ${ref}]`, it.event_text, `发生时间：${eventTimeText(it)}`);
-  }
-  lines.push('', PRIMARY_MEMORY_NOTICE);
-  return lines.join('\n');
+  return JSON.stringify({ memories: items.map(projectSurfacedMemory) });
 }
 
 /** 短 handle：内存安全的不透明引用（完整 UUID/版本/hash/分数不进模型文本）。 */

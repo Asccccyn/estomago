@@ -251,20 +251,11 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
   ctx.db.close();
 });
 
-test('M01-M04/C02: memory body unchanged, one tail notice, no empty pack or false reference', () => {
-  const item = { event_id: 'e', memory_id: 'id', memory_version: '1', memory_date: '2026-07-09', date_confidence: 'exact', event_text: '原文\n{"x":1}', body_hash: 'hash', detail_ref: 'detail' };
-  const second = { ...item, event_id: 'e2', memory_date: null };
-  const refs = new Map([['e', memoryRefFor('detail')], ['e2', memoryRefFor('detail2')]]);
-  const text = renderAugmentation([item, second], refs);
-  assert.ok(text.includes(item.event_text));
-  assert.ok(text.includes('发生时间：2026-07-09'));
-  assert.ok(text.includes('发生时间：不确定'));
-  assert.ok(!text.includes('00:00'));
-  assert.equal(text.split(PRIMARY_MEMORY_NOTICE).length, 2);
-  assert.ok(text.endsWith(PRIMARY_MEMORY_NOTICE));
-  assert.equal(renderAugmentation([], refs), '');
-  assert.throws(() => renderAugmentation([item], new Map()), /REF_MISSING/);
-  assert.equal(fixedSystemCount([{ role: 'system', content: 'rules' }, { role: 'system', content: text }]), 1);
+test('M01-M04/C02: full memory text and dates only; no reference, notice or summary', () => {
+  const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
+  const second = {...item,event_id:'e2',memory_date:null,event_text:'第二个事件'};
+  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{date:'2026-07-09',text:item.event_text},{date:null,text:second.event_text}]});
+  assert.equal(renderAugmentation([]),'');
 });
 
 test('R12/R17: manual bypasses failed review limit but verifies unknown hold using its original operation id', async () => {
@@ -338,8 +329,8 @@ test('R18: missing safety service blocks manual rotation instead of taking a leg
 test('M02: exact event minutes only; untrusted or invalid dates never become occurrence claims', () => {
   const item = { event_id: 'e', memory_id: 'id', memory_version: '1', memory_date: '2026-07-09T01:12:35Z', date_confidence: 'exact', event_text: 'body', body_hash: 'hash', detail_ref: 'detail' };
   const refs = new Map([['e', memoryRefFor('detail')]]);
-  assert.ok(renderAugmentation([item], refs).includes('发生时间：2026-07-09 09:12'));
-  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, date_confidence: 'unknown' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('发生时间：不确定'));
+  assert.ok(renderAugmentation([item], refs).includes('2026-07-09 09:12'));
+  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, date_confidence: 'unknown' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
 });
 
 test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampering still fails', async () => {

@@ -181,6 +181,21 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, { authenticated: true });
     }
 
+    // Owner-authenticated detail view; never a model request or new retrieval.
+    const surfaceView = /^GET \/api\/v1\/conversations\/([^/]+)\/turns\/([^/]+)\/memories(?:\/([^/]+))?$/.exec(route);
+    if (surfaceView) {
+      const conversationId = decodeURIComponent(surfaceView[1]!);
+      const turnId = decodeURIComponent(surfaceView[2]!);
+      if (!d.db.prepare('SELECT 1 FROM turns WHERE id=? AND conversation_id=?').get(turnId, conversationId))
+        return json(res, 404, { error: { code: 'not_found' } });
+      res.setHeader('Cache-Control', 'no-store');
+      if (!surfaceView[3]) return json(res, 200, { items: d.surfacing?.visibleMemoriesForTurn(conversationId, turnId) ?? [] });
+      if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+      const result = await d.surfacing.readMemoryForTurn(conversationId, turnId,
+        decodeURIComponent(surfaceView[3]), url.searchParams.get('cursor') || undefined);
+      return result.ok ? json(res, 200, result.data) : json(res, result.code === 'DETAIL_REF_NOT_SEEN' ? 404 : 422, { error: { code: result.code, message: result.message } });
+    }
+
     if (route === 'GET /api/v1/conversations') {
       const rows = d.db.prepare('SELECT id, scope, title, created_at FROM conversations ORDER BY created_at').all();
       return json(res, 200, { conversations: rows });
