@@ -107,8 +107,9 @@ export class SurfacingRepository {
       `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
          ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
     ).all(conversationId, messageId, supersededRevision, messageId, supersededRevision) as Array<{ id: string; state: SurfacingJobState }>;
+    // 修订失效原因落行（她 1021 执行稿：修订一致性可取证）；交付行不动
     const r = this.db.prepare(
-      `UPDATE surfacing_jobs SET state='cancelled', updated_at=?
+      `UPDATE surfacing_jobs SET state='cancelled', reason_code='SOURCE_OR_TARGET_REVISED', updated_at=?
        WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
          ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
     ).run(new Date().toISOString(), conversationId, messageId, supersededRevision, messageId, supersededRevision);

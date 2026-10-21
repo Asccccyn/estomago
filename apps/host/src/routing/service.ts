@@ -165,7 +165,10 @@ export class RoutingService {
           .run(input.choice, new Date().toISOString(), decisionId);
         if (consumed.changes === 0) throw new Error('consume_conflict');
         if (input.choice === 'edit') {
-          const r = this.messages.editMessageInTx(turn.input_message_id!, input.content);
+          // 修订失效一致性（她 1021 执行稿 A.3）：路由 edit 与 HTTP 编辑/
+          // 编辑重试同合同——新修订创建即失效旧修订的浮现作业（同事务，
+          // 回滚一致）。编辑只失效，不登记新作业、不触发检索。
+          const r = this.messages.editMessageInTx(turn.input_message_id!, input.content, { notifySurfacing: true });
           editRevision = r.revision;
         }
         if (input.choice === 'edit' || input.choice === 'approve') {

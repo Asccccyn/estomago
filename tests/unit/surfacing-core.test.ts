@@ -207,3 +207,172 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   await new Promise((r) => setTimeout(r, 20));
   db.close();
 });
+
+// ===== 她 2026-10-21 执行稿：编辑生命周期修订失效一致性（验收矩阵）=====
+
+import { pollUntil } from '../helpers.ts';
+
+function editFixture() {
+  const root = tempRoot('sfedit-');
+  const db = makeDb(root);
+  let mariposaCalls = 0;
+  const transport: MariposaTransport = async (cap) => {
+    mariposaCalls += 1;
+    if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_e' } };
+    if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_e', items: [ITEM] } };
+    if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
+    throw new Error('UNEXPECTED_CAPABILITY');
+  };
+  const svc = new SurfacingService(db, new MariposaClient({ transport }), {
+    enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+    delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
+  }, null);
+  const messages = new MessageService(db, svc);
+  messages.ensureConversation('c1');
+  const RECALL = '你还记得那次7.9我们把记忆库做成了吗？';
+  const say = (id: string, content = RECALL) =>
+    messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: T0 });
+  const jobOf = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1');
+  const jobs = () => (db.prepare('SELECT id, state FROM surfacing_jobs').all() as Array<{ id: string; state: string }>);
+  const deliveries = () => (db.prepare('SELECT id, job_id, state FROM surfacing_deliveries').all() as Array<{ id: string; job_id: string; state: string }>);
+  const close = async () => { await svc.stop(); await new Promise(r => setTimeout(r, 20)); db.close(); };
+  return { db, svc, messages, say, jobOf, jobs, deliveries, mariposa: () => mariposaCalls, close, RECALL };
+}
+
+test('E-LC1 HTTP 编辑：旧修订作业失效、不登记新作业、零外发', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    const calls0 = f.mariposa();
+    const edited = f.messages.editUserMessage(a.message.id, '改口：换个说法');
+    assert.ok(edited.current_revision >= 2);
+    const j = f.jobOf(a.message.id);
+    assert.equal(j!.state, 'cancelled', '旧修订作业失效');
+    assert.equal(f.jobs().length, 1, '编辑不登记新作业');
+    assert.equal(f.mariposa() - calls0, 0, '普通编辑零 Mariposa 调用');
+  } finally { await f.close(); }
+});
+
+test('E-LC2 路由 edit 合同：notifySurfacing 失效旧修订（同一路径）', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    // routing/service.ts 现走 editMessageInTx(..., { notifySurfacing: true })——同合同直测
+    f.db.exec('BEGIN IMMEDIATE');
+    try { f.messages.editMessageInTx(a.message.id, '路由改写正文', { notifySurfacing: true }); f.db.exec('COMMIT'); }
+    catch (err) { f.db.exec('ROLLBACK'); throw err; }
+    assert.equal(f.jobOf(a.message.id)!.state, 'cancelled');
+  } finally { await f.close(); }
+});
+
+test('E-LC3 编辑重试/连续编辑：无重复作业，旧修订全失效', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    f.messages.editMessageInTx(a.message.id, '第一次改', { notifySurfacing: true });
+    f.messages.editMessageInTx(a.message.id, '第二次改', { notifySurfacing: true });
+    assert.equal(f.jobOf(a.message.id)!.state, 'cancelled');
+    assert.equal(f.jobs().length, 1, '两次编辑零新作业');
+  } finally { await f.close(); }
+});
+
+test('E-LC4 事务回滚一致性：编辑回滚则作业恢复有效', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    f.db.exec('BEGIN IMMEDIATE');
+    f.messages.editMessageInTx(a.message.id, '会失败的编辑', { notifySurfacing: true });
+    f.db.exec('ROLLBACK');
+    assert.equal(f.jobOf(a.message.id)!.state, 'prepared', '回滚后作业与库一致');
+    assert.equal(f.messages.getMessage(a.message.id)!.current_revision, 1, '消息修订一并回滚');
+  } finally { await f.close(); }
+});
+
+test('E-LC5 迟到旧结果不得进入新修订输入（augmentFor 修订守卫）', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    const b = f.say('b', '普通目标消息');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    // 源消息编辑（HTTP）→ 旧修订作业失效
+    f.messages.editUserMessage(a.message.id, '改掉源文本');
+    const out = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
+      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
+    assert.equal(out, null, '已失效旧作业不交付');
+  } finally { await f.close(); }
+});
+
+test('E-LC6 冻结未派发+编辑：最终准入丢弃，主消息路径不阻断', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    const b = f.say('b', '普通目标消息');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
+      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
+    assert.ok(frozen, '冻结成功');
+    // 目标消息编辑 → 修订变化；旧冻结包在最终准入被丢弃
+    f.messages.editUserMessage(b.message.id, '目标消息改写');
+    const admitted = await f.svc.finalAdmit(frozen, {
+      conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 2 });
+    assert.equal(admitted, null, '修订变化→冻结块丢弃');
+    const j = f.jobOf(a.message.id)!;
+    assert.equal(j.state, 'cancelled', '编辑先失效（SOURCE_OR_TARGET_REVISED），最终准入为第二道网');
+    assert.equal(j.reason_code, 'SOURCE_OR_TARGET_REVISED');
+    assert.equal(f.deliveries().find(d => d.id === frozen!.deliveryId)!.state, 'dropped', '未派发冻结包收回');
+    f.svc.markDispatched('a9'); // 不抛：主消息派发路径不受影响
+  } finally { await f.close(); }
+});
+
+test('E-LC7 已派发事实不被事后改写：cancel 只动 jobs 表', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    const b = f.say('b', '普通目标消息');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
+      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
+    f.svc.markDispatched('a9'); // 首发已过门
+    const d0 = f.deliveries().find(d => d.id === frozen!.deliveryId)!;
+    assert.equal(d0.state, 'dispatch_started');
+    // 编辑（同修订失效路径）→ 交付事实/账单不改写
+    f.messages.editUserMessage(b.message.id, '事后编辑');
+    const d1 = f.deliveries().find(d => d.id === frozen!.deliveryId)!;
+    assert.equal(d1.state, 'dispatch_started', '已派发交付行不被静默改写');
+  } finally { await f.close(); }
+});
+
+test('E-LC8 幂等重放：同 client_message_id 重复提交只有一份作业', async () => {
+  const f = editFixture();
+  try {
+    const a1 = f.say('dup');
+    const a2 = f.say('dup');
+    assert.equal(a2.duplicate, true);
+    await pollUntil(() => f.jobOf(a1.message.id)!.state === 'prepared');
+    assert.equal(f.jobs().length, 1);
+  } finally { await f.close(); }
+});
+
+test('E-LC9 开关关闭/重启不复活已失效作业', async () => {
+  const f = editFixture();
+  try {
+    const a = f.say('a');
+    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
+    f.messages.editUserMessage(a.message.id, '关闭前编辑');
+    await f.svc.stop();
+    const svc2 = new SurfacingService(f.db, new MariposaClient({ transport: async () => { throw new Error('不应外发'); } }), {
+      enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+      delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
+    }, null);
+    await svc2.start(); // 崩溃恢复：cancelled 不在恢复集
+    assert.equal(svc2.repo.jobById(f.jobOf(a.message.id)!.id)!.state, 'cancelled', '重启不复活');
+    await svc2.stop();
+  } finally { await f.close(); }
+});
