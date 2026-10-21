@@ -1901,8 +1901,8 @@ export class TurnSupervisor {
 
     // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · docs/04）：目标内容修订
     // 确定之后、最终 payload 冻结之前——有界 validate/check（服务内控
-    // 2000ms 总预算）+ 尝试级冻结注入块。源轮绝不注入（只有绑定到本
-    // 消息的 target 作业能命中）；工具续轮不重跑本路径（runTurn 每
+    // 接受时起绝对总预算）+ 尝试级冻结注入块。source/target 均为本
+    // 消息当前修订；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
     let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
     if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
@@ -1912,15 +1912,7 @@ export class TurnSupervisor {
           attemptId: attempt.id,
           message: { id: inputMessage.id, revision: effective.revision, sequence: inputMessage.sequence, content: effective.content, hash: effective.hash },
         });
-        // R02（审计 J01）：最终准入——冻结后到最终装配之间无上界（轨迹装配/
-        // 派发排队/重试复用），M 侧回执带时效；同一 check 门在此再核一次，
-        // 失败只丢浮现块（作业收回留痕），主消息照常发出、绝不重发。
-        surfacingAugment = candidate && d.surfacing.finalAdmit
-          ? await d.surfacing.finalAdmit(candidate, {
-              conversationId: turn.conversation_id, windowId: window.id,
-              messageId: inputMessage.id, revision: effective.revision,
-            })
-          : candidate;
+        surfacingAugment = candidate;
       } catch {
         surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
       }
@@ -2261,6 +2253,21 @@ export class TurnSupervisor {
         orLastSentMessages = null;
         orToolSeen = [];
       } else {
+      // 最终准入放在异步媒体能力检查之后；失败只删除尚未发送的本轮块。
+      // 已发送历史、工具定义与缓存前缀保持原样。
+      if (surfacingAugment && d.surfacing?.finalAdmit && inputMessage) {
+        try {
+          surfacingAugment = await d.surfacing.finalAdmit(surfacingAugment, {
+            conversationId: turn.conversation_id, windowId: window.id,
+            messageId: inputMessage.id, revision: effective.revision,
+          });
+        } catch { surfacingAugment = null; }
+        if (!surfacingAugment) {
+          orEnvelope.messages = orEnvelope.messages.filter(message => !hostMemory.includes(message));
+          orEnvelope.boundaries = planBoundaries({ messages: orEnvelope.messages,
+            systemMessageCount: fixedSystemCount(orBaseMessages), prevBoundary: orTraj?.lastBoundary ?? null }).boundaries;
+        }
+      }
       // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
       const loop = await this.runOrToolLoop({
         envelope: orEnvelope, purpose: 'chat', activeReviewId: null,

@@ -1,6 +1,6 @@
 // SurfacingService：E 侧编排（docs/02/04）。
 // - MessageService 接受事务内只登记作业（SQL 零网络），提交后唤醒 worker；
-// - worker：prepare（Uₙ 后台准备，绝不进 Uₙ 当前请求）→ 目标绑定 →
+// - worker 与当轮装配共享 prepare → 同轮源/目标绑定 →
 //   validate（有界复核）→ supervisor 装配期通过 HTTP 调 M 本地 check → 冻结注入块；
 // - 每房间串行、全局并发上限；崩溃恢复有界；无后台补扫历史。
 // - 后台零主模型 key / 零主模型 runner：专用 MariposaClient（surfacing
@@ -44,21 +44,27 @@ export class SurfacingService {
   private running = 0;
   private roomRunning = new Set<string>();
   private stopped = false;
+  private inflightPrepare = new Map<string, Promise<void>>();
   private inflightValidate = new Map<string, Promise<void>>();
   private active = new Set<Promise<void>>();
-  private controllers = new Map<string, AbortController>();
+  private controllers = new Map<string, Set<AbortController>>();
 
   private async bounded<T>(call: (signal: AbortSignal) => Promise<T>, ms: number, jobId: string): Promise<T> {
-    if (ms <= 0 || this.stopped) throw new Error('SURFACE_TIMEOUT');
+    if (!Number.isFinite(ms) || ms <= 0 || this.stopped) throw new Error('SURFACE_TIMEOUT');
     const controller = new AbortController();
-    this.controllers.set(jobId, controller);
+    const controllers = this.controllers.get(jobId) ?? new Set<AbortController>();
+    controllers.add(controller);
+    this.controllers.set(jobId, controllers);
     let timer: ReturnType<typeof setTimeout>;
     try {
       return await Promise.race([call(controller.signal), new Promise<never>((_, reject) => {
         controller.signal.addEventListener('abort', () => reject(new Error('SURFACE_CANCELLED')), { once: true });
         timer = setTimeout(() => { reject(new Error('SURFACE_TIMEOUT')); controller.abort(); }, Math.max(1, ms));
       })]);
-    } finally { clearTimeout(timer!); this.controllers.delete(jobId); }
+    } finally {
+      clearTimeout(timer!); controllers.delete(controller);
+      if (controllers.size === 0) this.controllers.delete(jobId);
+    }
   }
 
   private db: Db;
@@ -127,23 +133,13 @@ export class SurfacingService {
         sequence: o.sequence, content: o.content, contentHash: o.contentHash,
         occurredAt: o.occurredAt, hypotheses,
         policyRevision: this.cfg.policy_revision, promptRevision: this.cfg.prompt_prepare_revision,
+        deadlineMs: this.cfg.delivery_deadline_ms,
       });
     }
     this.log?.info('surface_recall_gate', {
       conversation: o.conversationId, message: o.messageId, revision: o.revision,
       action: gate.action, reason: gate.reason, registered: jobId !== null,
     });
-    // 目标绑定：这是"下一条真实用户输入"——同房最近一条 awaiting 的
-    // prepared 作业绑到本消息；更早仍未绑定的按 missed_target 清账。
-    // 与本条是否需要检索无关（旧实现对每条非空消息都执行，此处保持）。
-    const awaiting = this.repo.preparedAwaitingTarget(o.conversationId, o.sequence);
-    for (const job of awaiting) {
-      if (job.id === jobId) continue;
-      if (job.state === 'prepared') {
-        this.repo.bindTarget({ conversationId: o.conversationId, jobId: job.id, targetMessageId: o.messageId, targetRevision: o.revision });
-      }
-    }
-    this.repo.markMissedTargets(o.conversationId, o.sequence);
   }
 
   /** 两段式门：纯函数先行；仅 needs_context（"后来呢"）才读有界近期状态。 */
@@ -154,10 +150,9 @@ export class SurfacingService {
     return detectRecallNeed(o.content, this.recentRecallState(o.conversationId, o.sequence), now);
   }
 
-  /** 有界近期状态：最近 ≤2 个已接受 owner 轮里已确定回忆对象（prepared）的作业。
+  /** 有界近期状态：最近 ≤2 个已接受 owner 轮里已确定回忆对象或已验证交付的同轮作业。
    *  只取用户自己消息的身份（id/revision/sequence），不读全历史、不存模型猜测；
-   *  之前未命中（empty）、悬置（rejected/blocked）或已换题（作业已被后续消息
-   *  绑走）都不延续。 */
+   *  之前未命中（empty）、悬置（rejected/blocked）或修订失效都不延续。 */
   private recentRecallState(conversationId: string, beforeSequence: number): RecentRecallState {
     const rows = this.db.prepare(
       `SELECT sequence FROM messages WHERE conversation_id=? AND sequence < ? AND speaker='owner'
@@ -175,8 +170,8 @@ export class SurfacingService {
   onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void {
     if (!this.cfg.enabled) return;
     this.repo.cancelJobsForRevision(o.conversationId, o.messageId, o.supersededRevision);
-    for (const [id, controller] of this.controllers) {
-      if (this.repo.jobById(id)?.state === 'cancelled') controller.abort();
+    for (const [id, controllers] of this.controllers) {
+      if (this.repo.jobById(id)?.state === 'cancelled') for (const controller of controllers) controller.abort();
     }
   }
 
@@ -209,32 +204,58 @@ export class SurfacingService {
     for (const job of jobs) {
       if (this.running >= this.cfg.worker_concurrency) break;
       if (this.roomRunning.has(job.conversation_id)) continue;
-      this.roomRunning.add(job.conversation_id);
-      this.running++;
-      const work = this.runJob(job).finally(() => {
-        this.active.delete(work);
-        this.running--;
-        this.roomRunning.delete(job.conversation_id);
-        this.scheduleWake();
-      });
+      const work = this.runJob(job).finally(() => this.active.delete(work));
       this.active.add(work);
     }
   }
 
   private async runJob(job: JobRow): Promise<void> {
     try {
-      if (job.state === 'pending') await this.preparePhase(job);
+      if (job.state === 'pending') await this.ensurePrepared(job);
 
     } catch (err) {
       // prepare/validate 失败：本轮正常聊天不受影响，源作业记原因；
       // unknown 结果不自动无限重试（docs/08）
       const code = err instanceof Error && ['SURFACE_TIMEOUT', 'SURFACE_CANCELLED'].includes(err.message) ? err.message : 'SURFACE_UNKNOWN_OUTCOME';
-      this.repo.transition(job.id, ['preparing', 'validating'], code === 'SURFACE_CANCELLED' ? 'cancelled' : 'blocked', { reason_code: code });
+      this.repo.transition(job.id, ['preparing', 'validating'], code === 'SURFACE_CANCELLED' ? 'cancelled' : code === 'SURFACE_TIMEOUT' ? 'timed_out' : 'blocked', { reason_code: code });
       this.log?.warn('surface_job_failed', { job: job.id, code });
     }
   }
 
+  private deadline(job: JobRow): number {
+    const value = job.expires_at ? Date.parse(job.expires_at) : Date.parse(job.created_at) + this.cfg.delivery_deadline_ms;
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  private current(job: JobRow): boolean {
+    return job.source_message_id === job.target_message_id
+      && job.source_revision === job.target_revision && this.targetInputOf(job) !== null;
+  }
+
+  private ensurePrepared(job: JobRow): Promise<void> {
+    const existing = this.inflightPrepare.get(job.id);
+    if (existing) return existing;
+    if (this.running >= this.cfg.worker_concurrency || this.roomRunning.has(job.conversation_id)) {
+      this.repo.transition(job.id, ['pending'], 'blocked', { reason_code: 'SURFACE_CAPACITY_EXHAUSTED' });
+      return Promise.resolve();
+    }
+    this.running++;
+    this.roomRunning.add(job.conversation_id);
+    const work = this.preparePhase(job).finally(() => {
+      this.inflightPrepare.delete(job.id);
+      this.running--;
+      this.roomRunning.delete(job.conversation_id);
+      this.scheduleWake();
+    });
+    this.inflightPrepare.set(job.id, work);
+    return work;
+  }
+
   private async preparePhase(job: JobRow): Promise<void> {
+    if (!this.current(job)) {
+      this.repo.transition(job.id, ['pending'], 'expired', { reason_code: 'SURFACE_BINDING_INVALID' });
+      return;
+    }
     if (!this.repo.transition(job.id, ['pending'], 'preparing')) return;
     const src = this.sourceInputOf(job);
     const opId = `est-surface:${job.id}`;
@@ -247,7 +268,8 @@ export class SurfacingService {
       },
       recent_dialogue: this.recentDialogue(job.conversation_id, src.sequence),
       event_hypotheses: JSON.parse(job.hypotheses_json ?? '[]'),
-    }, signal), 10000, job.id);
+    }, signal), this.deadline(job) - Date.now(), job.id);
+    if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
     if (!r.ok) {
       this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: r.code, m_operation_id: opId });
       return;
@@ -274,7 +296,7 @@ export class SurfacingService {
       this.repo.transition(job.id, ['validating', 'target_bound'], 'missed_target');
       return;
     }
-    const deadlineAt = new Date(Date.now() + this.cfg.delivery_deadline_ms).toISOString();
+    const deadlineAt = new Date(this.deadline(job)).toISOString();
     const p = (async () => {
       const r = await this.bounded(signal => this.client.surfaceValidate({
         operation_id: `est-surface-v:${job.id}:${target.messageId}:${target.revision}`,
@@ -288,7 +310,8 @@ export class SurfacingService {
         recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence),
         window_id: windowId,
         deadline_at: deadlineAt,
-      }, signal), this.cfg.delivery_deadline_ms, job.id);
+      }, signal), this.deadline(job) - Date.now(), job.id);
+      if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
       if (!r.ok) {
         this.repo.transition(job.id, ['validating'], 'blocked', { reason_code: r.code });
         return;
@@ -318,31 +341,56 @@ export class SurfacingService {
 
   async augmentFor(input: AugmentInput): Promise<AugmentResult | null> {
     if (!this.cfg.enabled || this.stopped) return null;
-    const job = this.repo.nextPreparedForTarget(input.conversationId, input.message.id);
-    if (!job) return null;
-    if (job.target_revision !== input.message.revision) return null; // 目标并发改版：旧 receipt 作废
-    const deadline = Date.now() + this.cfg.delivery_deadline_ms;
-    // The window only exists at assembly time. A placeholder would make the
-    // real Mariposa receipt invalid (a permissive fake hid this previously).
-    if (job.state === 'target_bound') await this.validatePhase(job, input.windowId);
-    else if (job.state === 'validating') {
-      const inflight = this.inflightValidate.get(job.id);
-      if (inflight) await inflight.catch(() => undefined);
+    let job = this.repo.nextPreparedForTarget(input.conversationId, input.message.id);
+    if (!job || job.target_revision !== input.message.revision || !this.current(job)) return null;
+    const deadline = this.deadline(job);
+    try {
+      if (job.state === 'pending' || job.state === 'preparing') await this.ensurePrepared(job);
+      job = this.repo.jobById(job.id)!;
+      if (Date.now() >= deadline) throw new Error('SURFACE_TIMEOUT');
+      if (!this.current(job)) return null;
+      if (job.state === 'prepared') {
+        this.repo.bindTarget({ conversationId: input.conversationId, jobId: job.id,
+          targetMessageId: input.message.id, targetRevision: input.message.revision });
+        job = this.repo.jobById(job.id)!;
+      }
+      if (job.state === 'target_bound' || job.state === 'validating') await this.validatePhase(job, input.windowId);
+    } catch (err) {
+      this.repo.transition(job.id, ['pending', 'preparing', 'prepared', 'target_bound', 'validating', 'ready'],
+        err instanceof Error && err.message === 'SURFACE_TIMEOUT' ? 'timed_out' : 'blocked',
+        { reason_code: err instanceof Error && err.message === 'SURFACE_TIMEOUT' ? 'SURFACE_TIMEOUT' : 'SURFACE_UNKNOWN_OUTCOME' });
+      return null;
     }
     const fresh = this.repo.jobById(job.id);
     if (!fresh || fresh.state !== 'ready' || !fresh.items_json) return null;
     const itemsAll = JSON.parse(fresh.items_json) as SurfaceItem[];
     // check：经 HTTP 调 Mariposa 的本地校验；回执绑目标消息/修订/窗口。
-    const ck = await this.bounded(signal => this.client.surfaceCheck({
+    let ck;
+    try { ck = await this.bounded(signal => this.client.surfaceCheck({
       validation_receipt: fresh.receipt_id ?? '',
       conversation_scope: input.conversationId,
       target_message_id: input.message.id,
       target_revision: input.message.revision,
       window_id: input.windowId,
     }, signal), deadline - Date.now(), job.id);
-    if (!ck.ok) return null;
+    } catch {
+      this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_CHECK_FAILED' });
+      return null;
+    }
+    if (Date.now() >= deadline) {
+      this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_TIMEOUT' });
+      return null;
+    }
+    if (!this.current(job) || this.repo.jobById(job.id)?.state !== 'ready') return null;
+    if (!ck.ok) {
+      this.repo.transition(job.id, ['ready'], 'blocked', { reason_code: ck.code });
+      return null;
+    }
     const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[] };
-    if (ckd.valid !== true) return null;
+    if (ckd.valid !== true) {
+      this.repo.transition(job.id, ['ready'], 'rejected', { reason_code: 'SURFACE_CHECK_REJECTED' });
+      return null;
+    }
     const accepted = new Set(ckd.accepted_detail_refs ?? []);
     // 去重（本窗口实际上下文为准）+ 预算（按源事件顺序装入严格赢家；
     // 放不下的整条跳过，不截断/不摘要/不换次优——R33/R34）
@@ -364,7 +412,14 @@ export class SurfacingService {
       refs.set(it.event_id, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
-    if (items.length === 0) return null;
+    if (items.length === 0) {
+      this.repo.transition(job.id, ['ready'], 'empty');
+      return null;
+    }
+    if (Date.now() >= deadline) {
+      this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_TIMEOUT' });
+      return null;
+    }
     const text = renderAugmentation(items, refs);
     const deliveryId = this.repo.freezeDelivery({
       jobId: job.id, attemptId: input.attemptId, windowId: input.windowId,
@@ -396,7 +451,9 @@ export class SurfacingService {
     const job = this.repo.jobById(aug.jobId);
     if (!job) return null;
     if (job.state === 'dispatch_started') return aug;
-    if (job.state !== 'reserved'
+    if (!this.current(job) || Date.now() >= this.deadline(job)
+      || job.conversation_id !== input.conversationId
+      || job.state !== 'reserved'
       || job.target_message_id !== input.messageId
       || job.target_revision !== input.revision) {
       return this.repo.dropAtFinalAdmission(job.id);
@@ -408,8 +465,9 @@ export class SurfacingService {
         target_message_id: input.messageId,
         target_revision: input.revision,
         window_id: input.windowId,
-      }, signal), this.cfg.delivery_deadline_ms, job.id);
-      if (ck.ok) {
+      }, signal), this.deadline(job) - Date.now(), job.id);
+      if (ck.ok && Date.now() < this.deadline(job) && this.current(job)
+        && this.repo.jobById(job.id)?.state === 'reserved') {
         const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[] };
         if (ckd.valid === true) {
           // 接受面收缩（权限/版本撤销）：冻结块任一条掉出 accepted 即整块丢弃
@@ -441,10 +499,10 @@ export class SurfacingService {
 
   async start(): Promise<void> {
     this.stopped = false;
-    // 崩溃恢复：中断态收口（preparing/validating 的付费未知结果按原 op
-    // 重放由 M 侧幂等承担；这里只把超窗作业收成 missed/expired，有界）
+    // 重启时所有未派发作业收口，包含旧跨轮待绑作业；不恢复到新用户轮。
+    // 已派发但未保留的事实单独记录，不重放付费检索。
     for (const job of this.repo.recoverableJobs()) {
-      this.repo.transition(job.id, ['preparing', 'validating', 'reserved', 'dispatch_started'],
+      this.repo.transition(job.id, ['pending', 'preparing', 'prepared', 'target_bound', 'validating', 'ready', 'reserved', 'dispatch_started'],
         job.state === 'dispatch_started' ? 'attempted_not_retained' : 'expired');
     }
     this.scheduleWake();
@@ -452,8 +510,8 @@ export class SurfacingService {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    for (const controller of this.controllers.values()) controller.abort();
-    await Promise.allSettled([...this.active, ...this.inflightValidate.values()]);
+    for (const controllers of this.controllers.values()) for (const controller of controllers) controller.abort();
+    await Promise.allSettled([...this.active, ...this.inflightPrepare.values(), ...this.inflightValidate.values()]);
   }
 
   // —— 源/目标投影 ——
@@ -473,8 +531,8 @@ export class SurfacingService {
     const row = this.db.prepare(
       `SELECT m.id, m.sequence, r.revision, r.content, r.content_hash, r.occurred_at
        FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
-       WHERE m.id=? AND m.current_revision=?`,
-    ).get(job.target_message_id, job.target_revision) as { id: string; sequence: number; revision: number; content: string; content_hash: string; occurred_at: string | null } | undefined;
+       WHERE m.id=? AND m.current_revision=? AND m.conversation_id=? AND m.speaker='owner'`,
+    ).get(job.target_message_id, job.target_revision, job.conversation_id) as { id: string; sequence: number; revision: number; content: string; content_hash: string; occurred_at: string | null } | undefined;
     if (!row) return null;
     return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: row.content, bodyHash: row.content_hash, occurredAt: row.occurred_at };
   }

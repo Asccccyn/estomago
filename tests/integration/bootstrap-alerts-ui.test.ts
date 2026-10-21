@@ -68,6 +68,9 @@ test('Bootstrap异常由真实HTTP/SSE进入独立系统状态；已读/恢复/�
     });
     await client.start();
     await pollUntil(() => Boolean(wire?.opened));
+    // Drain boot/onopen HTTP refresh before observing a new alert, so this
+    // assertion exercises SSE delivery rather than racing the initial read.
+    await client.loadAlerts(false);
     const before = host.db.prepare('SELECT COUNT(*) n FROM provider_requests').get() as { n: number };
     const key = 'bootstrap:synthetic-window';
     host.alerts!.observe({ code: 'BOOTSTRAP_INCOMPLETE', scopeKind: 'integration', scopeId: 'mariposa',
@@ -77,7 +80,8 @@ test('Bootstrap异常由真实HTTP/SSE进入独立系统状态；已读/恢复/�
         retryable: true, action_taken: 'retained_verified_sections',
         mood_text: 'PRIVATE_MOOD_CANARY', i_body: 'PRIVATE_I_CANARY', plan_body: 'PRIVATE_PLAN_CANARY',
       } });
-    await pollUntil(() => client!.snapshot.unreadAlerts === 1);
+    await pollUntil(() => client!.snapshot.unreadAlerts === 1
+      && Boolean(wire?.received.some(event => event.kind === 'system.alert.changed')));
     assert.equal(client.snapshot.openAlerts, 1);
     assert.ok(wire!.received.some(event => event.kind === 'system.alert.changed'));
     client.setAlertsOpen(true);

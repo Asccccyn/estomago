@@ -534,6 +534,7 @@ export default function App() {
               onCompositionStart={() => client.setComposing(true)} onCompositionEnd={() => client.setComposing(false)}
               onKeyDown={(e) => { if (shouldSendOnKeydown(e)) { e.preventDefault(); send(); } }}
               placeholder="回复…" className="min-w-0 flex-1 resize-none bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]" />}
+            {msgs.some(m=>m.pending||m.streaming) && <button aria-label="停止回复" onClick={() => {const running=msgs.filter(m=>m.pending||m.streaming).at(-1);if(running?.turnId)void client.stopTurn(running.turnId)}} className="shrink-0 rounded-lg px-2 py-1 text-[13px] text-[#8a8780]">停止</button>}
             <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
               className="group flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full text-white">
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#c96442] transition group-disabled:bg-[#e6c2b4]"><ArrowUp size={17} /></span>

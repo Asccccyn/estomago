@@ -13,7 +13,7 @@ const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1'
   event_text: '合成事件一', body_hash: 'hash1', detail_ref: 'sdr_fixture1' };
 const items = [item, { ...item, event_id: 'e2', memory_id: 'm2', detail_ref: 'sdr_fixture2', event_text: '合成事件二', body_hash: 'hash2' },
   { ...item, event_id: 'e3', memory_id: 'm3', detail_ref: 'sdr_fixture3', event_text: '合成事件三', body_hash: 'hash3' }];
-function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }> } = {}) {
+function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise<void>; check?: () => Promise<void>; deadlineMs?: number; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }> } = {}) {
   const { db } = makeDb();
   const calls: string[] = [];
   const selected = opts.selected ?? [item];
@@ -23,8 +23,9 @@ function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selecte
   const transport: MariposaTransport = async (cap) => {
     calls.push(cap);
     if (cap.endsWith('.prepare')) { await opts.prepare?.(); return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_fixture' } }; }
-    if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_fixture', items: selected } };
+    if (cap.endsWith('.validate')) { await opts.validate?.(); return { ok: true, result: { status: 'ready', validation_receipt: 'svr_fixture', items: selected } }; }
     if (cap.endsWith('.check')) {
+      await opts.check?.();
       const q = checkQueue.shift();
       return { ok: true, result: q
         ? { valid: q.valid !== false, accepted_detail_refs: q.accepted ?? selected.map(x => x.detail_ref) }
@@ -35,7 +36,7 @@ function fixture(opts: { prepare?: () => Promise<void>; budget?: number; selecte
   };
   const client = new MariposaClient({ transport });
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
+    delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
   const messages = new MessageService(db, svc); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
@@ -49,9 +50,9 @@ test('JA-S01: target_bound is validated within deadline without a scheduler-depe
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b');
+    const b = a;
     const result = await f.augment(b);
-    assert.ok(result, 'the next real message must not lose a prepared candidate before worker wake');
+    assert.ok(result, 'the source message receives its own verified candidate');
   } finally { await f.close(); }
 });
 
@@ -60,9 +61,11 @@ test('JA-S02: a late source result never drifts from B to C', async () => {
   const f = fixture({ prepare: () => gate });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'preparing');
+    const result = await f.augment(a);
+    assert.equal(result, null);
     f.say('b'); resolve();
     await new Promise(r => setTimeout(r, 30));
-    assert.equal(f.job(a.message.id).state, 'missed_target');
+    assert.equal(f.job(a.message.id).state, 'timed_out');
     const c = f.say('c'); await new Promise(r => setTimeout(r, 30));
     assert.notEqual(f.job(a.message.id).target_message_id, c.message.id);
   } finally { resolve(); await f.close(); }
@@ -74,7 +77,7 @@ test('JA-S03: packet budget is counted once and all three independent winners fi
   const f = fixture({ selected: items, budget });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); await pollUntil(() => f.job(a.message.id).state === 'target_bound');
+    const b = a;
     const result = await f.augment(b);
     assert.equal(result?.items.length, 3);
     assert.equal(estimateTokens(result!.text), budget);
@@ -85,7 +88,7 @@ test('JA-S04: concurrent augmentation reserves a job only once', async () => {
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); await pollUntil(() => f.job(a.message.id).state === 'target_bound');
+    const b = a;
     const result = await Promise.all([f.augment(b, 'a2'), f.augment(b, 'a3')]);
     assert.equal(result.filter(Boolean).length, 1);
     assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_deliveries').get()?.n, 1);
@@ -96,7 +99,7 @@ test('JA-S05: memory refs are scoped to the actual room and window', async () =>
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); await pollUntil(() => f.job(a.message.id).state === 'target_bound');
+    const b = a;
     const result = await f.augment(b); assert.ok(result); f.svc.markDispatched('a2'); f.svc.markRetained(result);
     const ref = result.memoryRefs[0].ref;
     const denied = await executeMemoryReadFull(f.svc.repo, f.client, { memory_ref: ref },
@@ -125,7 +128,7 @@ test('JA-S09: same-body new version updates the coverage identity instead of rep
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const first = await f.augment(b); assert.ok(first);
+    const b = a; const first = await f.augment(b); assert.ok(first);
     f.svc.markDispatched('a2'); f.svc.markRetained(first);
     const revised = { ...item, memory_version: '2', detail_ref: 'sdr_revision2' };
     assert.equal(f.svc.repo.coveredInWindow('c1', 'w1', [revised]).size, 0);
@@ -140,7 +143,7 @@ test('JA-S10: source route edit invalidates frozen delivery before transport adm
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     f.db.exec('BEGIN IMMEDIATE');
     try { f.messages.editMessageInTx(a.message.id, '合成已修改原话', { notifySurfacing: true }); f.db.exec('COMMIT'); }
     catch (err) { f.db.exec('ROLLBACK'); throw err; }
@@ -157,7 +160,7 @@ test('JA-S11: happy path — finalAdmit passes through and the same gate is chec
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
     });
@@ -172,7 +175,7 @@ test('JA-S12: receipt stale at the assembly boundary — only the surfacing bloc
   const f = fixture({ checks: [{ valid: true }, { valid: false }] });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
     });
@@ -192,7 +195,7 @@ test('JA-S13: the accepted face shrinks at the boundary — the whole block is d
   const f = fixture({ checks: [{ valid: true }, { valid: true, accepted: [] }] });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
     });
@@ -205,7 +208,7 @@ test('JA-S14: target edited between freeze and assembly — final admission drop
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     f.svc.repo.cancelJobsForRevision('c1', b.message.id, 1);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
@@ -220,7 +223,7 @@ test('JA-S15: a package already on the wire is reused verbatim — final admissi
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); const result = await f.augment(b); assert.ok(result);
+    const b = a; const result = await f.augment(b); assert.ok(result);
     f.svc.markDispatched('a2'); // 首发已过门（onBeforeDispatch）
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
@@ -228,5 +231,95 @@ test('JA-S15: a package already on the wire is reused verbatim — final admissi
     assert.ok(admitted, 'an already-dispatched frozen package is reused as-is (docs/04)');
     assert.equal(admitted!.deliveryId, result.deliveryId);
     assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 1, 'no re-check rewrites a package already on the wire');
+  } finally { await f.close(); }
+});
+
+
+test('P3: prepare and validate spend one absolute acceptance deadline, late results never carry', async () => {
+  let release!: () => void;
+  const late = new Promise<void>(r => { release = r; });
+  const f = fixture({ deadlineMs: 200,
+    prepare: () => new Promise(r => setTimeout(r, 110)), validate: () => late });
+  try {
+    const a = f.say('a');
+    const expires = f.job(a.message.id).expires_at;
+    const result = await f.augment(a);
+    assert.equal(result, null);
+    assert.equal(f.job(a.message.id).state, 'timed_out');
+    assert.equal(f.job(a.message.id).expires_at, expires);
+    assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 0);
+    release(); await new Promise(r => setImmediate(r));
+    assert.equal(f.job(a.message.id).state, 'timed_out');
+    const b = f.say('b');
+    assert.equal(await f.augment(b), null);
+    assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_deliveries').get()?.n, 0);
+  } finally { release(); await f.close(); }
+});
+
+test('P3: final admission does not reset an expired or malformed deadline', async () => {
+  for (const expires of ['2000-01-01T00:00:00Z', 'invalid']) {
+    const f = fixture();
+    try {
+      const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
+      f.db.prepare('UPDATE surfacing_jobs SET expires_at=? WHERE id=?').run(expires, aug.jobId);
+      assert.equal(await f.svc.finalAdmit(aug, { conversationId: 'c1', windowId: 'w1', messageId: a.message.id, revision: 1 }), null);
+      assert.equal(f.calls.filter(c => c.endsWith('.check')).length, 1);
+      assert.equal(f.svc.reuseFrozen('a2'), null);
+    } finally { await f.close(); }
+  }
+});
+
+test('P3: revision revoked while final check is in flight cannot admit a frozen block', async () => {
+  let checkCount = 0; let began!: () => void; let release!: () => void;
+  const checking = new Promise<void>(r => { began = r; });
+  const gate = new Promise<void>(r => { release = r; });
+  const f = fixture({ deadlineMs: 1000, check: async () => { if (++checkCount === 2) { began(); await gate; } } });
+  try {
+    const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
+    const admitting = f.svc.finalAdmit(aug, { conversationId: 'c1', windowId: 'w1', messageId: a.message.id, revision: 1 });
+    await checking;
+    f.messages.editUserMessage(a.message.id, '改写后的有效修订');
+    release();
+    assert.equal(await admitting, null);
+    assert.equal(f.svc.reuseFrozen('a2'), null);
+    assert.equal(f.job(a.message.id).state, 'cancelled');
+  } finally { release(); await f.close(); }
+});
+
+test('P3: retained same-turn recall preserves P1 follow-up intent without reusing its delivery', async () => {
+  const f = fixture();
+  try {
+    const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
+    f.svc.markDispatched('a2'); f.svc.markRetained(aug);
+    const b = f.say('b', '后来呢');
+    const next = f.job(b.message.id); assert.ok(next);
+    assert.notEqual(next.id, aug.jobId);
+    assert.equal(next.source_message_id, b.message.id);
+    assert.equal(next.target_message_id, b.message.id);
+    assert.equal(f.job(a.message.id).state, 'retained');
+  } finally { await f.close(); }
+});
+
+test('P3: concurrent assembly before worker wake calls prepare only once', async () => {
+  const f = fixture({ prepare: () => new Promise(r => setTimeout(r, 10)) });
+  try {
+    const a = f.say('a');
+    const results = await Promise.all([f.augment(a, 'one'), f.augment(a, 'two')]);
+    assert.equal(results.filter(Boolean).length, 1);
+    assert.equal(f.calls.filter(c => c.endsWith('.prepare')).length, 1);
+    assert.equal(f.calls.filter(c => c.endsWith('.validate')).length, 1);
+  } finally { await f.close(); }
+});
+
+
+test('P3: an edited retained source cannot supply follow-up intent from its stale revision', async () => {
+  const f = fixture();
+  try {
+    const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
+    f.svc.markDispatched('a2'); f.svc.markRetained(aug);
+    f.messages.editUserMessage(a.message.id, '切换成普通聊天');
+    const b = f.say('b', '后来呢');
+    assert.equal(f.job(b.message.id), null);
+    assert.equal(f.job(a.message.id).state, 'retained', 'historical delivery remains factual');
   } finally { await f.close(); }
 });

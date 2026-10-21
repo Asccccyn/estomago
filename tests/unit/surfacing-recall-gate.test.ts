@@ -181,7 +181,7 @@ test('接线：省略表达只在近期有已确定回忆对象时延续；无�
   await waitUntil(() => b.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.state === 'prepared');
   const u2 = b.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '后来呢', clientMessageId: 'f2', occurredAt: T0 });
   assert.equal(b.jobsFor(u2.message.id), 1, '"后来呢" 延续为 lookup');
-  assert.equal(b.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.state, 'target_bound', '旧 prepared 作业绑到本条（生命周期不变）');
+  assert.equal(b.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.target_message_id, u1.message.id, '旧作业只绑定自己的源消息，不漂移到本条');
   await b.svc.stop(); b.db.close();
 
   // 前一轮检索未命中（empty）→ "后来呢" 不延续
