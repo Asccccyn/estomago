@@ -1,5 +1,5 @@
-// /health/live 与 /health/ready（01 §17/§18.1）：ready 分项报告 identity、runtime、
-// archive、push、db；Host 活着不代表 SDK 可用。公网不返回敏感配置。
+// Readiness is local admission readiness, not a paid upstream liveness probe.
+// Disabled optional services are reported as disabled and do not fail readiness.
 import type { Config } from '../config/schema.ts';
 import type { CapabilityMatrix } from '../runtime/capabilities.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
@@ -14,40 +14,50 @@ export function buildReadyReport(opts: {
   runnerSelection: RunnerSelection;
   capabilities: CapabilityMatrix;
   db: Db;
+  archiveSync?: { health(): HealthComponent };
 }): ReadyReport {
   const { config, gate, runnerSelection, capabilities, db } = opts;
+  const identity: HealthComponent = gate.state === 'READY'
+    ? { status: 'ok', detail: 'manifest APPROVED 且 hash 匹配' }
+    : { status: 'blocked', detail: gate.reasons.join('; ') };
 
-  const identity: HealthComponent = gate.state === 'READY' ? { status: 'ok', detail: 'manifest APPROVED 且 hash 匹配' } : { status: 'blocked', detail: gate.reasons.join('; ') };
-
-  const runtimeDetail =
-    runnerSelection.status === 'blocked'
-      ? runnerSelection.reasons.join('; ')
-      : `runner=${runnerSelection.runner.kind}; capabilities=${capabilities.overall()}`;
-  const runtime: HealthComponent =
-    runnerSelection.status === 'blocked' || capabilities.overall() !== 'verified'
-      ? { status: runnerSelection.status === 'blocked' ? 'blocked' : 'unknown', detail: runtimeDetail }
-      : { status: 'ok', detail: runtimeDetail };
-
-  const archive: HealthComponent = config.archive.enabled
-    ? { status: 'unknown', detail: 'archive.enabled=true 但 Mariposa 契约未接入（base_url=null）' }
-    : { status: 'disabled', detail: '归档未启用：消息保存在本地聊天库，不假报已归档到记忆库' };
-
-  const push: HealthComponent = config.notifications.remote_enabled
-    ? { status: 'unknown', detail: 'remote_enabled=true 但 provider 未配置/未实测' }
-    : { status: 'disabled', detail: '离线推送未启用；在线投递走 SSE' };
-
-  let dbComp: HealthComponent = { status: 'ok', detail: `schema v${schemaVersion(db)}` };
-  try {
-    db.prepare('SELECT 1').get();
-  } catch (err) {
-    dbComp = { status: 'degraded', detail: (err as Error).message };
+  let runtime: HealthComponent;
+  if (runnerSelection.status === 'blocked') {
+    runtime = { status: 'blocked', detail: runnerSelection.reasons.join('; ') };
+  } else if (runnerSelection.runner.kind === 'openrouter' || runnerSelection.runner.kind === 'deepseek') {
+    // These runners have their own config/key validation at selection time;
+    // SDK settings_sources/thinking probes are not prerequisites for them.
+    const kind = runnerSelection.runner.kind;
+    const keyRef = kind === 'openrouter' ? config.openrouter.api_key_env : config.deepseek.api_key_env;
+    runtime = process.env[keyRef]
+      ? { status: 'ok', detail: `runner=${kind}; 本地请求入口已配置；本查询未探测供应商可用性` }
+      : { status: 'blocked', detail: 'MODEL_CREDENTIAL_UNAVAILABLE' };
+  } else {
+    const capabilityState = capabilities.overall();
+    runtime = { status: capabilityState === 'verified' ? 'ok' : capabilityState,
+      detail: `runner=${runnerSelection.runner.kind}; SDK capabilities=${capabilityState}` };
   }
 
+  let archive: HealthComponent = { status: 'disabled', detail: '归档未启用；原文仍保存在本地' };
+  if (config.archive.enabled) {
+    try {
+      archive = opts.archiveSync?.health() ?? { status: 'blocked', detail: 'ARCHIVE_WORKER_UNAVAILABLE' };
+    } catch {
+      archive = { status: 'degraded', detail: 'ARCHIVE_STATE_UNAVAILABLE' };
+    }
+  }
+  const push: HealthComponent = config.notifications.remote_enabled
+    ? { status: 'unknown', detail: '远程推送已启用，但未取得可用性证据' }
+    : { status: 'disabled', detail: '可选远程推送已关闭；在线投递走 SSE' };
+
+  let dbComp: HealthComponent;
+  try {
+    db.prepare('SELECT 1').get();
+    dbComp = { status: 'ok', detail: `schema v${schemaVersion(db)}` };
+  } catch {
+    dbComp = { status: 'degraded', detail: 'DATABASE_UNAVAILABLE' };
+  }
   const components = { identity, runtime, archive, push, db: dbComp };
-  // runtime 未知也算 degraded：Host 活着 ≠ SDK 可用（18.1），不冒充 ready
-  const status =
-    Object.values(components).some((c) => c.status === 'blocked' || c.status === 'degraded') || runtime.status === 'unknown'
-      ? 'degraded'
-      : 'ready';
+  const status = Object.values(components).every(c => c.status === 'ok' || c.status === 'disabled') ? 'ready' : 'degraded';
   return { status, components };
 }

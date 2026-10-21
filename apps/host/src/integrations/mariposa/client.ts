@@ -199,10 +199,15 @@ export function serverNormalizedBytes(payload: unknown): number {
 
 export class MariposaClient {
   private transport: MariposaTransport;
+  private readonly configured: () => boolean;
 
   constructor(opts: { baseUrl?: string; credentialEnv?: string | null; transport?: MariposaTransport }) {
     this.transport = opts.transport ?? defaultTransport(opts.baseUrl ?? '', opts.credentialEnv ?? null);
+    this.configured = () => Boolean(opts.transport || (opts.baseUrl && opts.credentialEnv && process.env[opts.credentialEnv]));
   }
+
+  /** Configuration evidence only; no network request and no credential disclosure. */
+  isConfigured(): boolean { return this.configured(); }
 
   async sourceIngest(req: IngestRequest): Promise<MariposaCallResult & { ack?: IngestAck }> {
     const r = await this.transport('source.ingest', req as unknown as Record<string, unknown>);
