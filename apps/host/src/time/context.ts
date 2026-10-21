@@ -23,20 +23,38 @@ export type TimeContext = {
   crossed_business_date: boolean;
 };
 
-/** 模型面投影（她 2026-10-19 裁定·JSON 瘦身）：只发他真正用的字段
- *（当地日期/星期/时段/当前时刻[秒级]/距她上一条/距我上一条/是否跨天）。
- * 恒定值（timezone/conversation_id）、三胞胎时间戳与绝对时刻类字段
- * 不出站——间隔值已含信息。内部计算保持全量（本函数唯一出站点）。 */
+/** 模型面投影（她 2026-10-21 裁定·P2 二阶段）：紧凑单行替代 JSON——
+ * 她的口径"机器格式 vs 人话，用字节少的"：实测旧 JSON≈225B、中文人话
+ * ≈120B（CJK 3B/字）、英文紧凑≈75B → 取英文紧凑。零键名/零引号/零
+ * ISO 时长（PT26H7M51S→26h08m）。条件保留：未跨天不写 new day；缺席的
+ * 间隔（首条）整段省略。内部计算保持全量（本函数唯一出站点）；格式只
+ * 影响**新消息**注入，历史轨迹旧字节不动=append-only 前缀不破。 */
 export function modelTimeContextJson(tc: TimeContext): string {
-  return JSON.stringify({
-    now_at_utc: tc.now_at_utc.replace(/\.\d{3}Z$/, 'Z'),
-    local_date: tc.local_date,
-    weekday: tc.weekday,
-    daypart: tc.daypart,
-    elapsed_since_last_user_message: tc.elapsed_since_last_user_message,
-    elapsed_since_last_assistant_message: tc.elapsed_since_last_assistant_message,
-    crossed_business_date: tc.crossed_business_date,
-  });
+  const localHM = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tc.business_timezone, hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(new Date(tc.processing_at));
+  const parts: string[] = [`${tc.local_date} ${localHM} ${tc.weekday} ${tc.daypart}`];
+  if (tc.elapsed_since_last_user_message) {
+    parts.push(`her last ${compactDuration(tc.elapsed_since_last_user_message)} ago`);
+  }
+  if (tc.elapsed_since_last_assistant_message) {
+    parts.push(`your last ${compactDuration(tc.elapsed_since_last_assistant_message)} ago`);
+  }
+  if (tc.crossed_business_date) parts.push('new day');
+  return parts.join(' | ');
+}
+
+/** ISO 8601 时长（PT26H7M51S）→ "26h08m"（秒四舍五入进分；不折算天——
+ * "26h08m" 6B < "1d02h08m" 8B，她的口径用字节少的）。 */
+function compactDuration(iso: string): string {
+  const m = /^-?P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:([\d.]+)S)?$/.exec(iso ?? '');
+  if (!m) return iso;
+  const [, d, h, min, s] = m;
+  const total = (Number(d ?? 0) * 24 + Number(h ?? 0)) * 60 + Number(min ?? 0) + Math.round(Number(s ?? 0) / 60);
+  if (total === 0) return '0m';
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  return hours > 0 ? `${hours}h${String(mins).padStart(2, '0')}m` : `${mins}m`;
 }
 
 export function buildTimeContext(

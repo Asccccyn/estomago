@@ -166,7 +166,7 @@ test('F-J-40：skipped_empty 凭证携带定位依据（basis_json）', async ()
   const H = 60 * 60 * 1000;
   await say(ctx, '第一条', 'b1', T0);
   await say(ctx, '第二条要记事', 'b2', new Date(Date.parse(T0) + H).toISOString());
-  await say(ctx, `第三条长消息容量触发${'内容填充。'.repeat(400)}`, 'b3', new Date(Date.parse(T0) + 8 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低后容量触发
+  await say(ctx, `第三条长消息容量触发${'内容填充。'.repeat(520)}`, 'b3', new Date(Date.parse(T0) + 8 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低后容量触发
   const row = ctx.db.prepare("SELECT basis_json, status FROM rotation_reviews WHERE status='skipped_empty' LIMIT 1").get() as { basis_json: string | null; status: string } | undefined;
   assert.ok(row, '存在 skipped_empty 凭证');
   const basis = row!.basis_json ? JSON.parse(row!.basis_json) as Record<string, unknown> : null;
