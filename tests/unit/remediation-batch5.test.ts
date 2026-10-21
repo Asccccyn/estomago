@@ -233,7 +233,7 @@ test('F25：被拒大输入不污染后续短输入的容量估算', async () =>
   const t = orT(() => '', log);
   const root = tempRoot('r5e-');
   // 容量 40000 → 安全输入 11808；软线 500
-  const ctx = compose(root, t, mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 500, warning_tokens: 400 } });
+  const ctx = compose(root, t, mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 500 } });
   const big = await say(ctx, '巨'.repeat(40000), 'big1', T0); // ≈16k token：旧窗自身不超限→先换窗（D06），新窗装不下→P2 硬门收口
   const attBig = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
   // D06（审计 3655d60）：大输入不再把旧窗直接堵死——先走换窗；新窗最终载荷确实超限时由工具轮 P2 门

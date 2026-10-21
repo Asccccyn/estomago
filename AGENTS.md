@@ -1,6 +1,6 @@
 # AGENTS.md · estómago 仓库工作规章（摘要）
 
-现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（规范标识 `ESTOMAGO_CHAT_EXEC_V1`，2026-10-11 冻结；聊天宿主/统一前端/可选 content 后端/日历聚合/有界后台/系统红点/token 计量）。前代规范 `docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md`（2026-10-05 冻结）中与本包冲突的口径（生活功能全写进聊天核心、无夜间保温能力、朋友圈仅char单人等）已被替代，其余条款（OR/DS 驱动分离、64k 换窗、原文/hold/归档链、usage 口径）继续有效；`docs/architecture/v0.2.1/02_*.md` 为历史规格存档，其中安全/隐私/测试/输入语义硬约束继续有效。本文件只列硬约束，三代规格均适用。
+现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（规范标识 `ESTOMAGO_CHAT_EXEC_V1`，2026-10-11 冻结；聊天宿主/统一前端/可选 content 后端/日历聚合/有界后台/系统红点/token 计量）。前代规范 `docs/specs/ESTOMAGO_OR_SELF_HOLD/01_执行架构.md`（2026-10-05 冻结）中与本包冲突的口径（生活功能全写进聊天核心、无夜间保温能力、朋友圈仅char单人等）已被替代，其余条款（OR/DS 驱动分离、600k 换窗兜底（她 2026-10-17 裁定，128k 仅前台参考）、原文/hold/归档链、usage 口径）继续有效；`docs/architecture/v0.2.1/02_*.md` 为历史规格存档，其中安全/隐私/测试/输入语义硬约束继续有效。本文件只列硬约束，三代规格均适用。
 
 1. **不造假**：能力未核实一律 `unknown`/`blocked`，不写自填 PASS；身份缺失 → `IDENTITY_BLOCKED`，不提供默认人格；mock 只在 `ESTOMAGO_TEST_MODE=1` 下可用，不得冒充实机。
 2. **测试纪律**：测试一律使用独立临时 `ESTOMAGO_HOME`（禁止指向生产 `~/Library/Application Support/estomago`）；前台、分批、串行跑（`npm test`）；不连接真实外部服务、不发送真实消息；每批结束检查无孤儿进程。

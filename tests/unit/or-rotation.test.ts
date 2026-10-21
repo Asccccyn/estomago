@@ -112,7 +112,7 @@ async function say(ctx: ReturnType<typeof compose>, content: string, clientMsgId
   return sub;
 }
 
-test('容量触发（原 6h 静默触发，2026-10-08 晚间裁定改为 64k 唯一基线）：一次提醒 → 零新增放行 → CAS 换窗 → 本轮输入只进新窗一次', async () => {
+test('容量触发（原 6h 静默触发，2026-10-08 晚间裁定改为软线唯一基线；现行 600k 兜底）：一次提醒 → 零新增放行 → CAS 换窗 → 本轮输入只进新窗一次', async () => {
   const log: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];
   const root = tempRoot('orrot1-');
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'no_new_hold', log), mariposaOk);
@@ -194,7 +194,7 @@ test('无已见原话的容量触发：零范围 → skipped_empty 直接换窗�
   const log: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];
   const root = tempRoot('orrot5-');
   // 容量配置：C=40000 → 安全输入≈11808；软线压到 5000（<安全输入）→ 长输入触发 rotate（非 blocked_hard）
-  const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 5000, warning_tokens: 4000 } });
+  const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 5000 } });
   const big = '长话题。'.repeat(4000); // ~20000 字符 → 粗估 ≈8000 token：≥软线 5000、≤安全输入 11808
   const sub = await say(ctx, big, 's1', T0);
   const att = ctx.db.prepare('SELECT state, blocked_reason, window_id FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null; window_id: string };

@@ -4,6 +4,8 @@
 
 - 2026-10-21（工作树，未部署）：JEV 同轮浮现校准、15秒总预算及编辑重发新修订任务；缓存前缀不变。[验证说明](docs/reports/JEV_SURFACING_CALIBRATION_20261021.md)。
 
+- 2026-10-21（工作树，未部署）：换窗参数语义对齐——`soft_limit_tokens` 默认 64k→600k（她 10-17 裁定，与生产 yaml 一致；今日裁定口径：600k=自动换窗最高上限强制换窗、换窗前走既有 hold 提醒；手动换窗随时可换无 hold；128k `ui_reference_tokens` 纯界面零强制）；schema/review-policy/supervisor/policy-constants/example.yaml/AGENTS/EXEC_V1 合同七处"64k 基线"口径同步；测试退役键 `warning_tokens` 传参拔除；生产 yaml 拔 5 个退役键（零行为差异，下次重启读入）；138/138 绿、tsc 0。挂：EXEC_V1 `PACKAGE_MANIFEST` 在 main 上早已失效（4 文件哈希不符，历史遗留）待她裁重签。
+
 > 自建聊天宿主：统一聊天入口 + 模型驱动宿主（OpenRouter 主用 / **DeepSeek 官方直连** / Claude Agent SDK 保留）+ Mariposa 唯一正式记忆。产品显示名 **estómago**；仓库/进程/配置键用 ASCII `estomago`。
 
 三个模型驱动（身份映射互相隔离——session 命名空间与上下文指纹分域，切换强制换窗）：

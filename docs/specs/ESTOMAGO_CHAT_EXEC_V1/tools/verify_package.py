@@ -83,7 +83,7 @@ def main():
         check(all(f'| {cid} |' in matrix for cid in case_ids), 'human acceptance matrix incomplete')
         settings={s['key']:s for s in policy['settings']}
         check(len(settings)==len(policy['settings']), 'duplicate policy keys')
-        required_values={'cache.anthropic.requested_ttl':'1h','background.keepwarm.idle_after_cache_ms':3000000,'background.autonomous.min_interval_ms':3600000,'windows.soft_limit_tokens':64000,'background.autonomous.enabled':False,'background.keepwarm.enabled':False,'background.reminders.enabled':True,'background.autonomous.daily_cost_cap_usd':None,'background.keepwarm.daily_cost_cap_usd':None,'background.keepwarm.max_model_requests_per_run':1,'background.keepwarm.max_tool_calls_per_run':0}
+        required_values={'cache.anthropic.requested_ttl':'1h','background.keepwarm.idle_after_cache_ms':3000000,'background.autonomous.min_interval_ms':3600000,'windows.soft_limit_tokens':600000,'background.autonomous.enabled':False,'background.keepwarm.enabled':False,'background.reminders.enabled':True,'background.autonomous.daily_cost_cap_usd':None,'background.keepwarm.daily_cost_cap_usd':None,'background.keepwarm.max_model_requests_per_run':1,'background.keepwarm.max_tool_calls_per_run':0}
         for key,value in required_values.items():
             check(key in settings and settings[key]['value']==value, f'policy mismatch: {key}')
         route_ids=set()

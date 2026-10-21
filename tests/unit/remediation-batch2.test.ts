@@ -130,7 +130,7 @@ test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不�
   const log: PayloadLog = [];
   const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 29192, soft_limit_tokens: 800, warning_tokens: 700 } } });
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 29192, soft_limit_tokens: 800 } } });
   const sub = await say(ctx, '触发工具', 't1', T0);
   assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };

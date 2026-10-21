@@ -146,12 +146,14 @@ export type RotationPlanResult = {
   safeInput: number;
   action: 'blocked_hard' | 'wait_safe' | 'rotate' | 'continue'; // WP5：'warn' 预警动作已退役（原 warn 区间=continue，不叫模型不变）
   // 2026-10-08 晚间她裁定：'idle' 触发退役——静默只是睡觉（醒来继续原窗，
-  // 缓存冷如实计费），换窗唯一自动基线=64k 软线
+  // 缓存冷如实计费），换窗唯一自动基线=容量软线（2026-10-17 起 600k 兜底）
   reason: 'capacity' | null;
 };
 
 /**
- * 64k 是一次输入的工作集软线（不是累计计费 token）；有效软线=min(soft, C-O-T-R-S)。
+ * 软线是一次输入的工作集上限（不是累计计费 token）；有效软线=min(soft, C-O-T-R-S)。
+ * 现行值=600k 自动换窗兜底上限（她 2026-10-17 裁定 64k→600k，模型容量 1M）；
+ * 手动换窗随时可换不受此线限制（她 2026-10-19）。
  * 2026-10-08 晚间她裁定：6h 静默不再触发换窗（睡觉≠换窗）；换窗唯一自动
  * 基线=软线，静默恢复继续原窗（缓存冷如实计费，不夜间定时调用）。
  */
@@ -171,7 +173,7 @@ export function rotationPlan(input: {
   const toolReserve = input.toolReserve ?? 8000;
   const reviewReserve = input.reviewReserve ?? 8000;
   const safety = input.safety ?? 4000;
-  const soft = input.soft ?? 64000;
+  const soft = input.soft ?? 600000; // 2026-10-21 默认对齐：600k 兜底（她 2026-10-17 裁定）
   const nums = [input.currentInput, nextInput, input.capacity, input.maxOutput, toolReserve, reviewReserve, safety, soft];
   requireThat(nums.every(nonNegInt), 'TOKEN_OR_TIME_INVALID');
   const safeInput = input.capacity - input.maxOutput - toolReserve - reviewReserve - safety;

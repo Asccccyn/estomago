@@ -57,12 +57,13 @@ identity:
   unobservable_fields_are_unknown: true
 windows:
   # ESTOMAGO_OR_SELF_HOLD §4：换窗容量预算（工程初值，非上游极限）。
-  # 有效软线 = min(soft, C-O-T-R-S)。唯一自动换窗基线=64k 软线——
+  # 有效软线 = min(soft, C-O-T-R-S)。唯一自动换窗基线=容量软线（600k 兜底）——
   # 6h 静默（idle_before_next_user_ms）、零点换窗（rotate_on_business_
   # date_change）、bootstrap_target_tokens、warning_tokens、digest 段、
   # recent_dialogue_budget_tokens 均已退役（WP-03/WP5，2026-10-09）；
   # 旧配置带这些键会在启动日志披露为 retired_config_keys（不静默接受）
-  soft_limit_tokens: 64000        # 输入工作集软线
+  soft_limit_tokens: 600000       # 自动换窗最高上限兜底（她 2026-10-17 裁定：64k→600k，模型容量 1M；手动换窗随时可换不受限）
+  ui_reference_tokens: 128000     # 前台容量圈参考线（她 2026-10-19 裁定：纯视觉，超出标红不阻断；可调）
   tool_input_reserve_tokens: 8000    # T：有界后续工具输入预留
   review_reserve_tokens: 8000        # R：换窗提醒及必要 hold 往返预留
   safety_reserve_tokens: 4000        # S：安全余量

@@ -73,19 +73,20 @@ test('completeReview：零 hold 放行、holds_completed 须真有成功写、un
   assert.throws(() => completeReview(review, { review_id: 'rev1', decision: 'no_new_hold' }, { ...inv, epochRevision: 4 }, []), /REVIEW_SCOPE_MISMATCH/, '普通聊天伪造 review 文字不能完成');
 });
 
-test('rotationPlan：64k 进 rotate、容量不足 blocked、pending 只等安全点、静默不换窗（2026-10-08 晚间她裁定）', () => {
-  const base = { capacity: 200000, maxOutput: 8192 };
-  const warn = rotationPlan({ ...base, currentInput: 57000 });
+test('rotationPlan：默认软线 600k 进 rotate、容量不足 blocked、pending 只等安全点、静默不换窗（2026-10-08 晚间她裁定；软线 2026-10-17 起 600k 兜底）', () => {
+  // 模型容量 1M（她 2026-10-17：64k→600k 的前提）→ 安全输入 971808；有效软线=min(600000, 971808)=600000
+  const base = { capacity: 1_000_000, maxOutput: 8192 };
+  const warn = rotationPlan({ ...base, currentInput: 570000 });
   assert.equal(warn.action, 'continue', 'WP5：预警动作退役——原 warn 区间不换窗不叫模型（行为等价）');
-  const rotate = rotationPlan({ ...base, currentInput: 64500 });
+  const rotate = rotationPlan({ ...base, currentInput: 605000 });
   assert.equal(rotate.action, 'rotate');
   assert.equal(rotate.reason, 'capacity');
-  const wait = rotationPlan({ ...base, currentInput: 64500, pendingTurn: true });
+  const wait = rotationPlan({ ...base, currentInput: 605000, pendingTurn: true });
   assert.equal(wait.action, 'wait_safe', '工具回合未结束只等安全边界');
-  const blocked = rotationPlan({ ...base, currentInput: 190000 });
+  const blocked = rotationPlan({ ...base, currentInput: 980000 });
   assert.equal(blocked.action, 'blocked_hard');
   const small = rotationPlan({ capacity: 80000, maxOutput: 8192, currentInput: 45000, soft: 40000 });
-  assert.equal(small.action, 'rotate', 'C-O-T-R-S 压低有效软线（soft=40000<安全输入≈51808）：远小于 64k 也触发');
+  assert.equal(small.action, 'rotate', 'C-O-T-R-S 压低有效软线（soft=40000<安全输入≈51808）：远小于 600k 也触发');
   // 6h 静默触发已删除：idleMs 不再是输入，隔多久回来都不因时间换窗
   const afterLongIdle = rotationPlan({ ...base, currentInput: 100 });
   assert.equal(afterLongIdle.action, 'continue', '累计收费大但当前输入小 → 不误换（静默同样不换）');

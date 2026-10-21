@@ -116,7 +116,7 @@ export type Config = {
     probe_evidence_max_age_days: number | null;
   };
   windows: {
-    soft_limit_tokens: number; // 输入工作集软线（§4.1 初值 64000；有效软线=min(此值, C-O-T-R-S)）
+    soft_limit_tokens: number; // 自动换窗最高上限兜底（她 2026-10-17 裁定 64k→600k，2026-10-21 默认值对齐；有效软线=min(此值, C-O-T-R-S)）
     // 换窗策略分层（她 2026-10-19 裁定）：soft_limit=自动换窗的最高上限兜底；
     // 手动换窗随时可换、任意用量（/rotate 无大小门槛）；ui_reference_tokens=
     // 前台容量圈的视觉参考线——非硬规定，超出仅标红提示不阻断。
@@ -362,15 +362,15 @@ export const CONFIG_DEFAULTS: Config = {
     expected_rules_version: null,
     probe_evidence_max_age_days: 30,
   },
-  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值：64k 软线 / T8k R8k S4k。
+  // ESTOMAGO_OR_SELF_HOLD §4.1/§6.1 工程初值：软线（现行 600k 兜底）/ T8k R8k S4k。
   // WP5（2026-10-08）：56k 预警与 12k 近期原话已退役（spec §4.1 修订）；
   // WP-03（2026-10-09，JFA-005）：6h 静默（idle_before_next_user_ms）、零点
   // 换窗（rotate_on_business_date_change）、bootstrap_target_tokens 三键
-  // 一并退役——唯一自动换窗基线=64k 软线，新窗历史只经人工选集。
+  // 一并退役——唯一自动换窗基线=容量软线（现行 600k 兜底，她 2026-10-17），新窗历史只经人工选集。
   // 这些是配置初值，不是上游极限或最优成本结论；C=null 必须由实际端点能力补齐。
   windows: {
-    soft_limit_tokens: 64000,
-    ui_reference_tokens: 128000, // 前台容量圈参考线（她 2026-10-19：128k 起，可调；超出标红不阻断）
+    soft_limit_tokens: 600000, // 自动换窗最高上限兜底（她 2026-10-17：64k→600k；2026-10-21 默认值对齐生产 yaml）
+    ui_reference_tokens: 128000, // 前台容量圈参考线（她 2026-10-19：128k 起，可调；超出标红不阻断——代码零强制）
     tool_input_reserve_tokens: 8000,
     review_reserve_tokens: 8000,
     safety_reserve_tokens: 4000,
@@ -774,7 +774,7 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
  *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
  *  读取处负责把披露写进日志/启动报告）。
  *  WP-03（2026-10-09，JFA-005）：6h 静默/零点换窗/bootstrap_target_tokens
- *  三键并入退役——唯一自动换窗基线=64k 软线（红线 E-18） */
+ *  三键并入退役——唯一自动换窗基线=容量软线（红线 E-18；现行 600k 兜底） */
 export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {

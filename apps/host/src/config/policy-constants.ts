@@ -4,7 +4,7 @@
 //
 // 映射到既有配置键的表项不在此重复定义（避免同一值两套正本）：
 //   cache.anthropic.requested_ttl      → config.openrouter.cache_ttl（硬规则 '1h'）
-//   windows.soft_limit_tokens          → config.windows.soft_limit_tokens（64000 保留）
+//   windows.soft_limit_tokens          → config.windows.soft_limit_tokens（600000 兜底：她 2026-10-17 裁定，2026-10-21 默认对齐）
 //   runtime.max_active_primary_runners → config.runtime.max_active_primary_runners（1 保留）
 //   calendar.timezone                  → config.time.business_timezone（Asia/Shanghai 保留）
 

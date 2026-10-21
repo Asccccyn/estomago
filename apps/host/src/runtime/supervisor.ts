@@ -1127,8 +1127,8 @@ export class TurnSupervisor {
     // 临界消息在旧窗超软线却不触发提醒/换窗（既有问题，硬门不受影响）
     const nextWithIncoming = workingSet + Math.ceil(currentInputLen / (dv?.charsPerToken ?? 1.5));
 
-        // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=64k 软线）
-    const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=64k 软线
+        // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=容量软线，2026-10-17 起 600k 兜底）
+    const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=容量软线（600k 兜底）
     let plan: ReturnType<typeof rotationPlan> | null = null;
     if (!o.cause) {
       plan = rotationPlan({
@@ -1819,7 +1819,7 @@ export class TurnSupervisor {
         d.trajectory.init(window.id, built0.envelope.messages.slice(0, -1), baseManifest);
       }
     }
-    // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（64k 软线——唯一自动基线，6h 静默已退役）→ 一次提醒 → CAS 换窗；
+    // —— ESTOMAGO_OR_SELF_HOLD §4：换窗触发（容量软线 600k 兜底——唯一自动基线，6h 静默已退役）→ 一次提醒 → CAS 换窗；
     // 评审失败如实阻断本 attempt（不绕过、不伪造完成凭证）。
     if (dv && inputMessage) {
       const rotation = await this.rotateIfNeeded({

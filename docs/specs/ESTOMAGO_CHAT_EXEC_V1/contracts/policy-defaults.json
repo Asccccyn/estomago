@@ -34,10 +34,10 @@
     },
     {
       "key": "windows.soft_limit_tokens",
-      "value": 64000,
+      "value": 600000,
       "classification": "PRESERVED_EXISTING",
       "adjustable": false,
-      "notes": "保留受控窗口软线；实际还受模型容量与输出/工具/评审/安全预留约束。"
+      "notes": "自动换窗最高上限兜底。她 2026-10-17 裁定 64k→600k（模型容量 1M）；2026-10-21 默认值对齐。手动换窗随时可换不受限；128k ui_reference 仅前台参考零强制。"
     },
     {
       "key": "runtime.max_active_primary_runners",

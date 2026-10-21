@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateConfig, buildConfig } from '../../apps/host/src/config/schema.ts';
 
-test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ 6h/零点/bootstrap 退役', () => {
+test('默认值：OR 段 + 换窗预算初值（600k 兜底，她 2026-10-17 裁定；10-21 默认对齐）+ 6h/零点/bootstrap 退役', () => {
   const { config, issues } = validateConfig({});
   assert.equal(issues.length, 0);
   assert.equal(config.runtime.provider, 'claude-agent-sdk', '默认仍 SDK：切 OR 是显式配置动作');
@@ -12,8 +12,8 @@ test('默认值：OR 段 + 换窗预算初值（implementation-target.json）+ 6
   assert.equal(config.openrouter.max_output_tokens, 8192);
   assert.equal(config.openrouter.cache_ttl, '1h');
   assert.deepEqual(config.openrouter.provider_only, ['anthropic']);
-  // §4.1 工程初值（WP-03 JFA-005：6h/零点/bootstrap_target 三键已退役）
-  assert.equal(config.windows.soft_limit_tokens, 64000);
+  // §4.1 工程初值（WP-03 JFA-005：6h/零点/bootstrap_target 三键已退役；软线 2026-10-17 起 600k 兜底）
+  assert.equal(config.windows.soft_limit_tokens, 600000);
   assert.equal(config.windows.tool_input_reserve_tokens, 8000);
   assert.equal(config.windows.review_reserve_tokens, 8000);
   assert.equal(config.windows.safety_reserve_tokens, 4000);
