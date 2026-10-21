@@ -823,6 +823,39 @@ export type ToolExecContext = {
 export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef> };
 
 const rawToolCallIdRef = { current: null as string | null };
+
+/**
+ * P2 模型出口层（她 2026-10-20 批 4-A：JSON 二次瘦身一阶段）——recall 卡
+ * 最小投影，出站与入历史同形（工具结果进轨迹前就是本投影产物，不再驮
+ * 内部字段）。消费者追踪依据（P2_JSON_SLIM_MEASUREMENT.md §三）：E 侧对
+ * 卡片字段零代码消费，以下五字段模型零读零回传→宿主内部化；
+ * matched_by+matched_fields 语义重叠→合并为 matched。保留面按她 1019
+ * 字段表：resource_ref/excerpt/evidence/memory_date/speaker/truncated；
+ * memory_id/word_id/ordinal 本期保留（memory_open 等回传寻址）。
+ */
+const INTERNAL_CARD_FIELDS = new Set(['content_version', 'source_ref',
+  'source_binding_version', 'version_receipt', 'evidence_requirement_met']);
+
+export function projectCandidatesForModel(cands: unknown[]): unknown[] {
+  return cands.map((c) => {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) return c;
+    const card = c as Record<string, unknown>;
+    const outCard: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(card)) {
+      if (INTERNAL_CARD_FIELDS.has(k)) continue;
+      if (k === 'matched_by' || k === 'matched_fields') continue;
+      outCard[k] = v;
+    }
+    const by = card.matched_by;
+    const fields = Array.isArray(card.matched_fields)
+      ? card.matched_fields.join('+')
+      : card.matched_fields;
+    const matched = [by !== undefined ? String(by) : '', fields !== undefined ? String(fields) : '']
+      .filter((x) => x !== '').join(':');
+    if (matched) outCard.matched = matched;
+    return outCard;
+  });
+}
 function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
 
 /** 已匹配的引用（逐字核对通过）：原文消息 + 片段在该消息内的字符区间。
@@ -1481,7 +1514,7 @@ export class HostToolExecutor {
     if (envelopeMissing.length > 0) {
       return { ok: false, output: { error_code: 'RECALL_ENVELOPE_INVALID', request_ref: requestRef, missing_fields: envelopeMissing } };
     }
-    const candidates = data.candidates as unknown[];
+    const candidates = projectCandidatesForModel(data.candidates as unknown[]);
     // WP2（MANUAL_HANDOFF_JUDGE_SWITCH_V1）：去掉旧 slice(0,20)——服务端
     // 已按 24576 字节预算有界出站（开启=0-3 卡有界交付；关闭=分页首页），
     // 宿主不再二次截断候选；页合同字段透传到模型可见层
