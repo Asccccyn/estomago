@@ -22,4 +22,15 @@
 
 新增 health-readiness.test.ts，覆盖 OR/DS 的 SDK 隔离、撤销凭据、SDK unknown/blocked 优先级、身份失败、缺 worker、数据库失败、启用但未核实的 push、归档未知／失败／恢复和真实 HTTP 200/503/脱敏。重复 health 请求断言模型、归档 transport 调用均为零。
 
-`npm run typecheck` 通过；独立临时 ESTOMAGO_HOME 下串行 `npm test` 全量 **138/138 文件、940/940 测试通过，0 失败、0 跳过**。生产部署结果将在发布核验后追加。
+`npm run typecheck` 通过；独立临时 ESTOMAGO_HOME 下串行 `npm test` 全量 **138/138 文件、940/940 测试通过，0 失败、0 跳过**。生产已部署 `386d0ab`，结果如下。
+
+
+## 生产验证
+
+2026-10-21 02:55 PDT：代码 `386d0ab` 已推送并由原 LaunchAgent 正常重启加载；没有修改生产配置、凭据、隧道或兄弟服务。发布前一致性恢复点 `chat-2026-10-21T09-54-54-651Z`，旧备份未清理。
+
+- 发布前 ready=503；发布后 ready=200，正文为 `{"ready":true,"disabled":["push"],"degraded":[]}`。
+- live=200。push 仍然关闭，没有为了就绪偷偷启用功能。
+- schema 保持 v31；原文／修订数、活动窗口、冻结轨迹及 hold 指针哈希均未改变。
+- provider_requests 发布前后均为 296，健康验证没有产生模型请求。
+- 本次修复的是宿主本地准入与状态汇总；不宣称做了实时供应商推理／远端归档探测。
