@@ -42,7 +42,7 @@
     "before": "216fa062dcc1cfc3080625ddf920f61ebf32b96b0af3cdb0f5066cce154aca98",
     "after": "bee577a0863a5da2ede552b7e07619d2e8870be1a46d5513191f45b1d931fdb6"
   },
-  "production_deployed": false,
+  "production_deployed": true,
   "real_model_calls": 0,
   "scope_limitations": [
     "SDK nonempty role-preserving selection blocked; no new SDK message transport implemented",
@@ -57,6 +57,40 @@
     "post_sync_typecheck": "passed",
     "post_sync_test_files": 2,
     "post_sync_tests_passed": 21,
-    "git_committed": false
+    "git_committed": true
+  },
+  "deployment": {
+    "code_commit": "72ea946",
+    "verified_at": "2026-10-21 02:26 PDT",
+    "schema_before": 30,
+    "schema_after": 31,
+    "backup_id": "chat-2026-10-21T09-25-17-277Z",
+    "provider_requests_before": 296,
+    "provider_requests_after": 296,
+    "integrity": "ok",
+    "historical_state_unchanged": true,
+    "health_live": 200,
+    "health_ready_before": 503,
+    "health_ready_after": 503,
+    "existing_degraded_components": {
+      "runtime": "unknown",
+      "archive": "unknown",
+      "push": "disabled"
+    },
+    "ui_smoke": {
+      "/login": {
+        "status": 200,
+        "bytes": 1671
+      },
+      "/chat": {
+        "status": 200,
+        "bytes": 352
+      },
+      "/chat-app.js": {
+        "status": 200,
+        "bytes": 306321,
+        "matches_committed_asset": true
+      }
+    }
   }
 }
