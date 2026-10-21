@@ -68,14 +68,15 @@ test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派�
   const f = fixture();
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); await pollUntil(() => f.job(a.message.id).state === 'target_bound');
+    const b = a;
+    const result = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
+      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
+    assert.ok(result);
     await f.flush();
     const bound = f.surfaceEvents().find(e => e.to === 'target_bound');
     assert.ok(bound, 'target_bound 事件存在');
     assert.equal(bound!.target_message_id, b.message.id);
-    const result = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
-      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
-    assert.ok(result);
+
     f.svc.markDispatched('a2');
     f.svc.markDispatched('a2'); // 重复派发：第二次 CAS 落空=零事件
     await f.flush();
@@ -95,7 +96,7 @@ test('R05：装配期 validate 拒绝→rejected 带原因；预算拒绝→bloc
   const f = fixture({ validate: () => ({ status: 'rejected', reason_code: 'SURFACE_NOT_RELEVANT_NOW' }) });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = f.say('b'); await pollUntil(() => f.job(a.message.id).state === 'target_bound');
+    const b = a;
     const result = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
     assert.equal(result, null);
@@ -109,7 +110,7 @@ test('R05：装配期 validate 拒绝→rejected 带原因；预算拒绝→bloc
   const f2 = fixture({ validateOk: false });
   try {
     const a = f2.say('a'); await pollUntil(() => f2.job(a.message.id).state === 'prepared');
-    const b = f2.say('b'); await pollUntil(() => f2.job(a.message.id).state === 'target_bound');
+    const b = a;
     const result = await f2.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
     assert.equal(result, null);

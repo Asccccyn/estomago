@@ -5,7 +5,7 @@ import path from 'node:path'
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts'
 
 const ok=(data:unknown)=>Response.json(data)
-const session='/api/v1/auth/session', history='/api/v1/conversations/primary/messages?limit=500&order=latest'
+const session='/api/v1/auth/session', history='/api/v1/conversations/primary/messages?limit=50&order=latest&snapshot=1'
 function harness(override:(url:string,init?:RequestInit)=>Promise<Response>|Response|undefined=()=>undefined){
   const requests:Array<{url:string;init?:RequestInit}>=[],sources:any[]=[]
   let redirects=0
@@ -17,7 +17,7 @@ function harness(override:(url:string,init?:RequestInit)=>Promise<Response>|Resp
     if(key.endsWith('/runtime-settings'))return ok({driver:'openrouter',or_model:{effective:'fixture-model'},model_options:['fixture-model'],effort_options:['low','high'],reasoning_effort:{effective:'high'}})
     if(key.endsWith('/context-records'))return ok({driver:'openrouter',exactModel:'fixture-model',context:{estimatedInput:0,hardCapacity:null},cache:{lastRead:null}})
     if(key.endsWith('/system-alerts/summary'))return ok({unread_anomaly_count:0})
-    return ok({})
+    throw new Error('Unexpected test request: '+key)
   },eventSource:(url)=>{const source={url,onmessage:null,onerror:null,closed:false,close(){this.closed=true}};sources.push(source);return source as any},redirect:()=>{redirects++}})
   return {client,requests,sources,get redirects(){return redirects}}
 }

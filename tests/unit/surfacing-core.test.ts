@@ -64,15 +64,9 @@ test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 
   assert.equal(repo.transition(j1!, ['pending'], 'preparing'), true);
   assert.equal(repo.transition(j1!, ['pending'], 'preparing'), false); // 旧状态不可重走
   repo.transition(j1!, ['preparing'], 'prepared');
-  // 目标绑定 + 更早 prepared 作业 missed
-  const j2 = repo.registerAcceptedJob({ conversationId: 'c1', messageId: 'm2', revision: 1, sequence: 7, content: 'y', contentHash: 'h2', occurredAt: null, hypotheses: [{ hypothesis_id: 'h1', start_cp: 0, end_cp: 1, inherited_date_span: null }], policyRevision: 1, promptRevision: 'surface_prepare_v1' });
-  repo.transition(j2!, ['pending'], 'preparing');
-  repo.transition(j2!, ['preparing'], 'prepared');
-  repo.bindTarget({ conversationId: 'c1', jobId: j1!, targetMessageId: 'm2', targetRevision: 1 });
-  // j2 现在成了更早的未绑定 prepared（target NULL）——被 markMissedTargets 清
-  repo.markMissedTargets('c1', 9);
-  assert.equal(repo.jobById(j2!)!.state, 'missed_target');
-  assert.equal(repo.jobById(j1!)!.state, 'target_bound');
+  assert.equal(repo.jobById(j1!)!.target_message_id, 'm1');
+  assert.equal(repo.bindTarget({ conversationId: 'c1', jobId: j1!, targetMessageId: 'm2', targetRevision: 1 }), false, 'cross-turn binding is retired');
+  assert.equal(repo.bindTarget({ conversationId: 'c1', jobId: j1!, targetMessageId: 'm1', targetRevision: 1 }), true);
   // 冻结/复用/retain/覆盖
   repo.transition(j1!, ['target_bound'], 'validating');
   repo.transition(j1!, ['validating'], 'ready', { items_json: JSON.stringify([ITEM]), receipt_id: 'svr_1' });
@@ -130,39 +124,30 @@ function makeService(root: string, enabled = true) {
   return { db, svc, messages, log };
 }
 
-test('AC002/AC003/AC004：U1 后台准备不进当轮；U2 到达绑定+复核；注入块产出', async () => {
-  const root = tempRoot('sfservice-');
-  const { db, svc, messages, log } = makeService(root);
-  // P1 门（她 1020）：只有明确回忆才登记作业——U1 改为回忆问句；U2 保持
-  // 普通追问以见证"目标绑定与本条是否检索无关"
-  const U1 = '还记得7.9那天我们把记忆库做成的事吗';
-  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: U1, clientMessageId: 'u1', occurredAt: T0 });
-  // 源轮（U1 自己）请求注入：无 target 作业 → null（Uₙ 不进 Uₙ）
-  const same = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't1', attemptId: 'a1', message: { id: u1.message.id, revision: 1, sequence: 1, content: U1, hash: 'h1' } });
-  assert.equal(same, null);
-  await waitUntil(() => svc.repo.pendingJobs(5).length === 0 && (svc.repo.jobById(svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.id)!.state === 'prepared'));
-  // prepare 恰一次（幂等不重跑）
-  assert.equal(log.calls.filter((c) => c.cap === 'memory.surfacing.prepare').length, 1);
-  const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '7.9那天怎么样', clientMessageId: 'u2', occurredAt: T0 });
-  await waitUntil(() => {
-    const j = svc.repo.nextPreparedForTarget('c1', u2.message.id);
-    return j !== null && j.state === 'target_bound';
-  });
-  const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't2', attemptId: 'a2', message: { id: u2.message.id, revision: 1, sequence: 2, content: '7.9那天怎么样', hash: 'h2' } });
-  assert.ok(aug, 'U2 轮拿到冻结注入块');
-  assert.ok(aug.text.startsWith('[回忆浮现]'));
-  assert.ok(aug.text.includes('时间：2026-07-09'));
-  // 成功 retain → 覆盖登记；下一轮同事件不重复追加（AC028）
-  svc.markDispatched('a2');
-  svc.markRetained(aug);
-  const again = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't3', attemptId: 'a3', message: { id: u2.message.id, revision: 1, sequence: 2, content: '7.9那天怎么样', hash: 'h2' } });
-  assert.equal(again, null, '同窗已覆盖不重复注入');
-  // 冻结复用：同 attempt 重试取同一冻结包
-  const reused = svc.reuseFrozen('a2');
-  assert.ok(reused && reused.text === aug.text);
-  await svc.stop();
-  await new Promise((r) => setTimeout(r, 20));
-  db.close();
+test('P3：接受即同轮绑定；装配抢占 prepare 与后台单飞；后轮不得借用', async () => {
+  const { db, svc, messages, log } = makeService(tempRoot('sfservice-'));
+  try {
+    const content = '还记得7.9那天我们把记忆库做成的事吗';
+    const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: 'u1', occurredAt: T0 });
+    const input = { conversationId: 'c1', windowId: 'w1', turnId: u1.turnId, attemptId: 'a1',
+      message: { id: u1.message.id, revision: 1, sequence: u1.message.sequence, content, hash: 'h1' } };
+    const aug = await svc.augmentFor(input);
+    assert.ok(aug);
+    const job = svc.repo.jobById(aug.jobId)!;
+    assert.equal(job.source_message_id, job.target_message_id);
+    assert.equal(job.source_revision, job.target_revision);
+    assert.equal(Date.parse(job.expires_at!) - Date.parse(job.created_at), 2000);
+    assert.equal(log.calls.filter(c => c.cap.endsWith('.prepare')).length, 1);
+    const validation = log.calls.find(c => c.cap.endsWith('.validate'))!.payload;
+    assert.equal(validation.deadline_at, job.expires_at);
+    assert.equal((validation.source_input_ref as { message_id: string }).message_id,
+      (validation.target_input as { message_id: string }).message_id);
+    assert.ok(await svc.finalAdmit(aug, { conversationId: 'c1', windowId: 'w1', messageId: u1.message.id, revision: 1 }));
+    svc.markDispatched('a1'); svc.markRetained(aug);
+    assert.equal(svc.reuseFrozen('a1')?.text, aug.text);
+    const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '普通聊天', clientMessageId: 'u2', occurredAt: T0 });
+    assert.equal(await svc.augmentFor({ ...input, attemptId: 'a2', message: { ...input.message, id: u2.message.id } }), null);
+  } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
 });
 
 test('AC031：编辑撤销旧修订作业；AC038：enabled=false 零作业零网络', async () => {
@@ -199,9 +184,7 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   const jobId = svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.id;
   svc.repo.transition(jobId, ['pending'], 'preparing');
   svc.repo.transition(jobId, ['preparing'], 'prepared');
-  const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '继续', clientMessageId: 'b2', occurredAt: T0 });
-  await waitUntil(() => svc.repo.nextPreparedForTarget('c1', u2.message.id)?.state === 'target_bound');
-  const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't', attemptId: 'a', message: { id: u2.message.id, revision: 1, sequence: 2, content: '继续', hash: 'h' } });
+  const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't', attemptId: 'a', message: { id: u1.message.id, revision: 1, sequence: 1, content: u1.message.content, hash: 'h' } });
   assert.equal(aug, null, '超大事件零注入，不截断');
   await svc.stop();
   await new Promise((r) => setTimeout(r, 20));
@@ -297,8 +280,7 @@ test('E-LC5 迟到旧结果不得进入新修订输入（augmentFor 修订守卫
   try {
     const a = f.say('a');
     await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
-    const b = f.say('b', '普通目标消息');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    const b = a;
     // 源消息编辑（HTTP）→ 旧修订作业失效
     f.messages.editUserMessage(a.message.id, '改掉源文本');
     const out = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
@@ -312,8 +294,7 @@ test('E-LC6 冻结未派发+编辑：最终准入丢弃，主消息路径不阻�
   try {
     const a = f.say('a');
     await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
-    const b = f.say('b', '普通目标消息');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    const b = a;
     const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
     assert.ok(frozen, '冻结成功');
@@ -335,8 +316,7 @@ test('E-LC7 已派发事实不被事后改写：cancel 只动 jobs 表', async (
   try {
     const a = f.say('a');
     await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
-    const b = f.say('b', '普通目标消息');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'target_bound');
+    const b = a;
     const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
     f.svc.markDispatched('a9'); // 首发已过门

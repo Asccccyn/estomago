@@ -7,6 +7,8 @@ export type Attachment = { id: string; file: Blob; name: string; kind: 'image' |
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
 type Json = Record<string, any>
+class LifecycleEnded extends Error {}
+const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
 type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => EventSource; redirect?: () => void }
 export type Snapshot = {
   messages: ChatMessage[]; draft: string; composing: boolean; sending: boolean; attachments: Attachment[];
@@ -62,6 +64,11 @@ export class EstomagoClient {
   private turnFailures = new Map<string, ActivityItem>()
   private refreshes = new Map<string, { dirty: boolean; busy: boolean; attempt?: string }>()
   private source: EventSource | null = null
+  private disposed = false
+  private requests = new Set<AbortController>()
+  private turnStates = new Map<string, { attempt?: string; state: string }>()
+  private retiredAttempts = new Set<string>()
+  private selectionBusy = false
   private started = false
   private redirecting = false
   private generation = 0
@@ -103,21 +110,33 @@ export class EstomagoClient {
   }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   getSnapshot = () => this.snapshot
-  private patch(change: Partial<Snapshot>) { this.snapshot = {...this.snapshot,...change}; this.listeners.forEach(fn=>fn()) }
+  private patch(change: Partial<Snapshot>) { if(this.disposed)return; this.snapshot = {...this.snapshot,...change}; this.listeners.forEach(fn=>fn()) }
   notify = (message: string) => this.patch({notice:message})
+  private report(error: unknown, suffix='') { if(!(error instanceof LifecycleEnded))this.notify((error as Error).message+suffix) }
   private async request(url: string, init: RequestInit = {}): Promise<Json> {
-    const response = await this.transport('/api/v1'+url,{credentials:'same-origin',cache:'no-store',...init})
+    if(this.disposed)throw new LifecycleEnded()
+    const generation=this.generation,controller=new AbortController()
+    this.requests.add(controller)
+    try {
+    const response = await this.transport('/api/v1'+url,{credentials:'same-origin',cache:'no-store',...init,signal:controller.signal})
+    if(this.disposed||generation!==this.generation)throw new LifecycleEnded()
     if (response.status===401) { if(!this.redirecting){this.redirecting=true;this.patch({ready:false});this.stop();this.redirect()} throw new Error('需要重新登录') }
-    const data = await response.json().catch(()=>({}))
+    const data = await response.json().catch(()=>{throw new Error('服务器返回格式错误，操作结果尚未确认')})
+    if(this.disposed||generation!==this.generation)throw new LifecycleEnded()
     if (!response.ok) { const error = new Error(data.error?.message || '请求未完成，请重试') as Error & {code?:string;status?:number}; error.code=data.error?.code;error.status=response.status; throw error }
     return data
+    } catch(error) {
+      if(controller.signal.aborted||generation!==this.generation)throw new LifecycleEnded()
+      throw error
+    } finally { this.requests.delete(controller) }
   }
   private json(method: string, body: unknown, headers: Record<string,string> = {}): RequestInit {
     return {method,headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)}
   }
   start = async () => {
     if(this.started||this.redirecting)return
-    this.started=true; const generation=++this.generation
+    this.disposed=false;this.started=true; const generation=++this.generation
+    this.patch({sending:false,historyLoading:false,loadingEarlier:false,loadingLater:false})
     try {
       await this.request('/auth/session')
       if(!this.started||generation!==this.generation)return
@@ -133,7 +152,7 @@ export class EstomagoClient {
       void this.loadContext();void this.loadAlerts(false)
     } catch(error) { if(this.started&&generation===this.generation){this.started=false;this.notify((error as Error).message)} }
   }
-  stop = () => { this.started=false;this.generation++;this.historyEpoch++;this.source?.close();this.source=null;this.historyEvents=[];clearTimeout(this.estimateTimer) }
+  stop = () => { this.patch({ready:false});this.started=false;this.disposed=true;this.generation++;this.estimateGeneration++;this.panelRequest++;for(const request of this.requests)request.abort();this.requests.clear();this.historyEpoch++;this.source?.close();this.source=null;this.historyEvents=[];clearTimeout(this.estimateTimer) }
   private replacePage(data:Json,mode:'latest'|'date',date:string|null) {
     this.raw.clear();this.blocks.clear();this.toolSteps.clear();this.detailsLoaded.clear();this.running.clear()
     for(const message of data.messages??[])this.absorb(message,false)
@@ -267,6 +286,7 @@ export class EstomagoClient {
     this.patch({messages})
   }
   handleEvent(data: Json) {
+    if(this.disposed||(data.conversation_id!=null&&data.conversation_id!=='primary'))return
     if(typeof data.sequence==='number'){if(data.sequence<=this.cursor)return;this.cursor=data.sequence}
     if(this.historyFetching()){this.historyEvents.push(data);return}
     if(this.representedBySnapshot(data))return
@@ -274,6 +294,16 @@ export class EstomagoClient {
   }
   private applyEvent(data:Json) {
     const id=data.turn_id as string|undefined
+    if(id){
+      const current=this.turnStates.get(id),attempt=typeof data.attempt_id==='string'?data.attempt_id:undefined
+      const state=data.kind==='turn.started'?'running':data.kind==='turn.completed'?'completed':data.kind==='turn.interrupted'?'interrupted':data.kind==='turn.status'?data.state:undefined
+      if(current&&attempt&&current.attempt&&attempt!==current.attempt){
+        if(data.kind!=='turn.started'||this.retiredAttempts.has(id+':'+attempt))return
+        this.retiredAttempts.add(id+':'+current.attempt)
+      }
+      if(current&&terminalStates.has(current.state)&&(!attempt||attempt===current.attempt)&&['running','pending'].includes(state))return
+      if(state)this.turnStates.set(id,{attempt:attempt??current?.attempt,state})
+    }
     if(['message.persisted','message.published','message.edited'].includes(data.kind)&&data.message){
       const message=data.message
       const visible=this.raw.has(message.id)
@@ -364,7 +394,7 @@ export class EstomagoClient {
   }
   loadEarlier = ():Promise<boolean> => this.extendHistory('before')
   loadLater = ():Promise<boolean> => this.extendHistory('after')
-  private scheduleEstimate() {this.estimateGeneration++;this.patch({draftEstimate:null});clearTimeout(this.estimateTimer);this.estimateTimer=setTimeout(()=>void this.estimate(),250)}
+  private scheduleEstimate() {if(this.disposed)return;this.estimateGeneration++;this.patch({draftEstimate:null});clearTimeout(this.estimateTimer);this.estimateTimer=setTimeout(()=>void this.estimate(),250)}
   setDraft = (draft:string) => {this.draftRevision++;this.patch({draft});this.scheduleEstimate()}
   setComposing = (composing:boolean) => this.patch({composing})
   private async estimate() {
@@ -385,7 +415,7 @@ export class EstomagoClient {
     const draft=this.snapshot.draft
     if(this.routeEdit){
       const revision=this.draftRevision;this.patch({sending:true})
-      try{const result=await this.request('/route-decisions/'+encodeURIComponent(this.routeEdit),this.json('POST',{choice:'edit',content:draft}));this.absorb(result.message);this.routeEdit=null;if(revision===this.draftRevision)this.setDraft('');this.patch({route:null});this.render()}catch(e){this.notify((e as Error).message)}finally{this.patch({sending:false})}
+      try{const result=await this.request('/route-decisions/'+encodeURIComponent(this.routeEdit),this.json('POST',{choice:'edit',content:draft}));this.absorb(result.message);this.routeEdit=null;if(revision===this.draftRevision)this.setDraft('');this.patch({route:null});this.render()}catch(e){this.report(e)}finally{this.patch({sending:false})}
       return
     }
     if(!this.pending||(draft!==''&&draft!==this.pending.draft)){
@@ -394,15 +424,16 @@ export class EstomagoClient {
       if(entries.length){delete body.kind;body.attachments=entries.map(a=>({asset_id:a.assetId,presentation:a.kind}))}
       this.pending={id,draft,revision:this.draftRevision,entries,body}
     }
-    const pending=this.pending;this.patch({sending:true,notice:''})
+    const pending=this.pending,generation=this.generation;this.patch({sending:true,notice:''})
     try{
       const data=await this.request('/conversations/primary/messages',this.json('POST',pending.body,{'Idempotency-Key':pending.id}))
+      if(typeof data.message?.id!=='string'||typeof data.message?.revision?.content!=='string')throw new Error('消息回执不完整，发送结果尚未确认')
       this.absorb(data.message);this.render()
       if(this.pending===pending)this.pending=null
       if(this.draftRevision===pending.revision&&this.snapshot.draft===pending.draft)this.setDraft('')
       this.patch({attachments:this.snapshot.attachments.filter(a=>!pending.entries.includes(a))})
-    }catch(e){this.notify((e as Error).message+'；草稿已保留，可以重试')}
-    finally{this.patch({sending:false})}
+    }catch(e){this.report(e,'；草稿已保留，可以重试')}
+    finally{if(generation===this.generation)this.patch({sending:false})}
   }
   editMessage = async (id:string,content:string,resend=false,expectedRevision?:number):Promise<boolean> => {
     const raw=this.raw.get(id);if(!raw||raw.speaker!=='owner'||this.editBusy.has(id)||this.redirecting||!this.snapshot.ready)return false
@@ -428,7 +459,7 @@ export class EstomagoClient {
     }catch(error){
       const e=error as Error&{status?:number;code?:string}
       if(e.status&&e.status<500){this.edits.delete(id);void this.refreshReply(id)}
-      this.notify(e.message+'；编辑内容已保留')
+      this.report(e,'；编辑内容已保留')
       return false
     }finally{this.editBusy.delete(id);this.render()}
   }
@@ -439,7 +470,7 @@ export class EstomagoClient {
   messageRevision = (id:string):number => this.edits.get(id)?.revision??this.raw.get(id)?.current_revision??0
   editText = (id:string):string => this.edits.get(id)?.content??this.originalText(id)
   originalText = (id:string) => this.raw.get(id)?.revision.content??''
-  stopTurn = async (id:string) => {try{await this.request('/turns/'+encodeURIComponent(id)+'/stop',{method:'POST'})}catch(e){this.notify((e as Error).message)}}
+  stopTurn = async (id:string) => {try{await this.request('/turns/'+encodeURIComponent(id)+'/stop',{method:'POST'})}catch(e){this.report(e)}}
   queue = async (file:Blob,name:string,kind:'image'|'voice'='image') => {
     if(this.snapshot.attachments.some(a=>a.kind==='voice')||(kind==='voice'&&this.snapshot.attachments.length)){this.notify('请先发送或移除当前附件');return}
     const attachment:Attachment={id:operationId(),file,name,kind,status:'uploading',operationId:operationId()}
@@ -459,12 +490,13 @@ export class EstomagoClient {
       }
       a.status='ready'
     }catch(error){
+      if(error instanceof LifecycleEnded)return
       const e=error as Error&{code?:string};a.error=e.message
       a.status=['voice_transcription_unconfirmed','siren_outcome_unknown'].includes(e.code??'')?'uncertain':'failed'
       if(e.code&&a.status==='failed')a.transcriptionId=undefined
     }finally{a.busy=false;this.patch({attachments:[...this.snapshot.attachments]});this.scheduleEstimate()}
   }
-  voiceAvailable = async () => {try{const result=await this.request('/voice/status');if(!result.available)this.notify('语音服务尚未配置');return result.available===true}catch(e){this.notify((e as Error).message);return false}}
+  voiceAvailable = async () => {try{const result=await this.request('/voice/status');if(!result.available)this.notify('语音服务尚未配置');return result.available===true}catch(e){this.report(e);return false}}
   loadRuntime = async () => {
     try {
       const data=await this.request('/runtime-settings');this.runtime=data
@@ -475,17 +507,17 @@ export class EstomagoClient {
       const efforts:string[]=editable?(data.effort_options??['default']):['default']
       const current=data.reasoning_effort?.override??data.reasoning_effort?.effective??'default'
       this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:Math.max(0,efforts.indexOf(current)),canConfigure:editable})
-    }catch(e){this.notify((e as Error).message)}
+    }catch(e){this.report(e)}
   }
   setModel = async (index:number) => {
     if(!this.snapshot.canConfigure){this.notify('当前通道不支持此处切换模型');return}
     const id=this.snapshot.modelIds[index];if(!id)return
-    try{await this.request('/runtime-settings',this.json('PUT',{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.notify((e as Error).message)}
+    try{await this.request('/runtime-settings',this.json('PUT',{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
   }
   setEffort = async (index:number) => {
     if(!this.snapshot.canConfigure)return
     const effort=this.snapshot.efforts[index];if(!effort)return
-    try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.notify((e as Error).message)}
+    try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.report(e)}
   }
   loadContext = async () => {
     try{const c=await this.request('/conversations/primary/context-records');this.patch({context:{used:number(c.context?.estimatedInput),limit:number(c.context?.hardCapacity),lastActual:number(c.context?.lastActualInput),soft:number(c.context?.effectiveSoft),cacheRead:number(c.cache?.lastRead),reference:number(c.context?.uiReference)||null}})}catch{}
@@ -507,7 +539,7 @@ export class EstomagoClient {
         const failures=[...this.turnFailures.values()].reverse()
         this.patch({activity:[...failures,...events,...usage],panelNote:failures.length||events.length||usage.length?'':'暂无活动记录'})
       }
-    }catch(e){if(request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
+    }catch(e){if(!(e instanceof LifecycleEnded)&&request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
   }
   beginSelection = () => {this.selectionKey??=operationId();this.patch({selectionMode:true})}
   select = (id:string) => {const selected=new Set(this.snapshot.selected);selected.has(id)?selected.delete(id):selected.add(id);this.selectionKey??=operationId();this.patch({selected,selectionMode:true})}
@@ -522,9 +554,11 @@ export class EstomagoClient {
       const res=await this.request('/windows/'+encodeURIComponent(id)+'/rotate',this.json('POST',{}))
       this.notify(res?.window?.id?'已换窗':'换窗结果未知，请看活动记录')
       void this.loadContext()
-    }catch(e){this.notify('换窗未执行：'+(e as Error).message)}
+    }catch(e){if(e instanceof LifecycleEnded)throw e;this.notify('换窗未执行：'+(e as Error).message);throw e}
   }
   confirmSelection = async (empty=false) => {
+    if(this.selectionBusy)return
+    this.selectionBusy=true
     try {
       const runtime=await this.request('/conversations/primary/runtime')
       let id=runtime.active_window?.id
@@ -534,11 +568,12 @@ export class EstomagoClient {
       if(!items.length&&!empty){this.notify('请选择历史，或明确选择不带历史');return}
       if(!empty)await this.request('/windows/'+encodeURIComponent(id)+'/context-selection/preview',this.json('POST',{conversation_id:'primary',items}))
       const confirmed=await this.request('/windows/'+encodeURIComponent(id)+'/context-selection/confirm',this.json('POST',{conversation_id:'primary',items,explicit_empty:empty,idempotency_key:this.selectionKey??=operationId()}))
-      this.cancelSelection()
-      // 有被阻断输入时确认已直接换窗续聊（rotated=true）；否则立即手动换
-      if(confirmed?.rotated){this.notify('已换窗');void this.loadContext()}
+      if(typeof confirmed.selection?.rotated!=='boolean')throw new Error('选集回执不完整，换窗结果尚未确认')
+      // 确认结果的唯一合同是 selection.rotated；已换窗时不得再次操作新窗口。
+      if(confirmed.selection.rotated){this.notify('已换窗');void this.loadContext()}
       else{this.notify('选集已确认，正在换窗…');await this.rotateNow()}
-    }catch(e){this.notify((e as Error).message)}
+      this.cancelSelection()
+    }catch(e){this.report(e)}finally{this.selectionBusy=false}
   }
   resolveRoute = async (choice:'cancel'|'edit') => {
     const route=this.snapshot.route;if(!route)return
@@ -546,7 +581,7 @@ export class EstomagoClient {
       const original=[...this.raw.values()].find(m=>m.turn_id===route.turn_id&&m.speaker==='owner')
       this.routeEdit=route.decision_id;this.setDraft(original?.revision.content??'');this.patch({route:null});this.notify('修改后点发送，将保存为原消息的新修订');return
     }
-    try{await this.request('/route-decisions/'+encodeURIComponent(route.decision_id),this.json('POST',{choice:'cancel'}));this.patch({route:null})}catch(e){this.notify((e as Error).message)}
+    try{await this.request('/route-decisions/'+encodeURIComponent(route.decision_id),this.json('POST',{choice:'cancel'}));this.patch({route:null})}catch(e){this.report(e)}
   }
   setAlertsOpen = (open:boolean) => {this.alertsOpen=open;if(open)void this.loadAlerts()}
   loadAlerts = (list=true):Promise<void> => {
@@ -565,7 +600,7 @@ export class EstomagoClient {
             this.alertsCursor=data.next_cursor??null
             this.patch({alerts:data.items??[],alertsHasMore:Boolean(data.has_more)})
           }
-        }catch{this.patch({alertsError:'系统异常状态暂时无法读取，请重试'})}
+        }catch(error){if(error instanceof LifecycleEnded)return;this.patch({alertsError:'系统异常状态暂时无法读取，请重试'})}
       }while(this.alertsDirty&&!this.redirecting)
     })().finally(()=>{this.alertsRefresh=null})
     return this.alertsRefresh
@@ -578,9 +613,9 @@ export class EstomagoClient {
       const known=new Set(this.snapshot.alerts.map(a=>a.alert_id))
       this.alertsCursor=data.next_cursor??null
       this.patch({alerts:[...this.snapshot.alerts,...(data.items??[]).filter((a:Json)=>!known.has(a.alert_id))],alertsHasMore:Boolean(data.has_more),alertsError:''})
-    }catch{this.patch({alertsError:'更早的系统异常暂时无法读取，请重试'})}
+    }catch(error){if(error instanceof LifecycleEnded)return;this.patch({alertsError:'更早的系统异常暂时无法读取，请重试'})}
   }
   markAlertsRead = async () => {
-    try{await this.request('/system-alerts/read',this.json('POST',{items:this.snapshot.alerts.map(a=>({alert_id:a.alert_id,seen_event_sequence:a.last_event_sequence}))}));await this.loadAlerts()}catch(e){this.notify((e as Error).message)}
+    try{await this.request('/system-alerts/read',this.json('POST',{items:this.snapshot.alerts.map(a=>({alert_id:a.alert_id,seen_event_sequence:a.last_event_sequence}))}));await this.loadAlerts()}catch(e){this.report(e)}
   }
 }

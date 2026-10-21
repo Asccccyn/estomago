@@ -1,5 +1,5 @@
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
-// 核心见证 6（真实缓存）：U2 wire 在旧历史之后追加一次；U3 不删移旧包、
+// 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
 // block 置于真实 user_input block 之前（docs/04）。
 import { test } from 'node:test';
@@ -85,14 +85,6 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   return { db, config, messages, windows, supervisor, svc };
 }
 
-async function waitUntil(cond: () => boolean, ms = 3000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > ms) throw new Error('waitUntil timeout');
-    await new Promise((r) => setTimeout(r, 10));
-  }
-}
-
 type Block = { type: string; text?: string };
 const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : typeof c === 'string' ? [{ type: 'text', text: c }] : []);
 
@@ -104,7 +96,7 @@ test('JA-S08: full-read is usable in the first surfaced tool loop, scoped to the
   let checkedWindow = '';
   const transport: OrTransport = async (payload) => {
     generation++;
-    if (generation === 2) {
+    if (generation === 1) {
       const wire = JSON.stringify(payload.messages);
       const ref = wire.match(/记忆引用 (sf_[a-f0-9]+)/)?.[1];
       assert.ok(ref, 'reference is actually in the provider request');
@@ -129,18 +121,14 @@ test('JA-S08: full-read is usable in the first surfaced tool loop, scoped to the
     const staleRotate = await ctx.supervisor.manualRotate('c1', 'obsolete-window');
     assert.equal(staleRotate.ok, false);
     assert.ok(!staleRotate.ok && staleRotate.reason.startsWith('WINDOW_STALE'));
-    assert.equal(generation, 1, 'stale-window operation must not dispatch a review model request');
-    await waitUntil(() => ctx.svc.repo.jobByLogicalKey('c1', a.message.id, 1, 1, 'surface_prepare_v1')?.state === 'prepared');
-    const b = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '具体是什么', clientMessageId: 'full-b', occurredAt: T0 });
-    ctx.supervisor.enqueue(b.turnId); await ctx.supervisor.waitIdle();
     assert.equal(detailCalls, 1);
-    assert.equal(generation, 3);
-    assert.ok(JSON.stringify(log[2].full).includes('合成完整正文'));
+    assert.equal(generation, 2, 'first turn includes full-read loop; stale rotate dispatches nothing');
+    assert.ok(JSON.stringify(log[1].full).includes('合成完整正文'));
     assert.ok(checkedWindow && checkedWindow !== 'pending-check');
   } finally { await ctx.svc.stop(); ctx.db.close(); }
 });
 
-test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 不删移旧包不重加；retain 落账', async () => {
+test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；retain 落账', async () => {
   const root = tempRoot('sfseam-');
   const log: Array<Record<string, unknown>> = [];
   let gen = 0;
@@ -154,33 +142,18 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const ctx = compose(root, transport, mariposa, log);
-  // P1 门（她 1020）：源消息须是明确回忆才登记作业；U2 目标消息保持普通追问
   const say = async (id: string) => {
     const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `还记得去年那件事吗 ${id}`, clientMessageId: id, occurredAt: T0 });
     ctx.supervisor.enqueue(sub.turnId);
     await ctx.supervisor.waitIdle();
     return sub;
   };
-
-  // U1：源轮——作业后台准备，但当轮绝不注入
   const u1 = await say('a');
-  const msgs1 = log[0]!.full as Array<{ role: string; content: unknown }>;
-  const tail1 = msgs1[msgs1.length - 1]!;
-  const blocks1 = toBlocks(tail1.content);
-  assert.equal(blocks1.filter((b) => typeof b.text === 'string' && b.text.includes('[回忆浮现]')).length, 0, 'U1 源轮零注入');
-  await waitUntil(() => {
-    const j = ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1');
-    return j !== null && j.state === 'prepared';
-  });
-
-  // U2：目标轮——先等 validate ready，再跑回合
-  const u2sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '7.9那天怎么样', clientMessageId: 'b', occurredAt: T0 });
-  await waitUntil(() => ctx.svc.repo.nextPreparedForTarget('c1', u2sub.message.id)?.state === 'target_bound');
-  ctx.supervisor.enqueue(u2sub.turnId);
-  await ctx.supervisor.waitIdle();
-  const msgs2 = log[1]!.full as Array<{ role: string; content: unknown }>;
+  const job = ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;
+  assert.equal(job.source_message_id, job.target_message_id);
+  assert.equal(job.source_revision, job.target_revision);
+  const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
   const tail2 = msgs2[msgs2.length - 1]!;
-  const blocks2 = toBlocks(tail2.content);
   // docs/04：content 数组独立块；provider 只能接受字符串时确定性序列化
   // 两个有来源边界的段（分段 manifest 在 surfacing_deliveries）。
   const memoryMessage = msgs2[msgs2.length - 2]!;
@@ -189,7 +162,7 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
   assert.ok(memoryText.includes(NOTICE));
   assert.ok(memoryText.includes('时间：2026-07-09'));
-  assert.ok(tail2Text.includes('7.9那天怎么样'));
+  assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
   assert.ok(!tail2Text.includes('[回忆浮现]'), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
@@ -197,7 +170,7 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
 
   // U3：同窗下一轮——旧包在原位、不重复追加（append-only + 覆盖去重）
   await say('c');
-  const msgs3 = log[2]!.full as Array<{ role: string; content: unknown }>;
+  const msgs3 = log[1]!.full as Array<{ role: string; content: unknown }>;
   // 旧回忆块仍在轨迹原位（未删除/未移动到新尾部）
   const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('[回忆浮现]')));
   assert.equal(oldBlocks.length, 1, '旧回忆块仍在轨迹原位且仅一份');
@@ -212,7 +185,7 @@ test('核心见证6：U1 无注入；U2 尾部双块（回忆块在前）；U3 �
 
   // 工具集：memory_read_full 进入冻结工具集（docs/06 E：不等首次出现才加）
   const tools1 = (log[0]!.tools as string[]);
-  const tools3 = (log[2]!.tools as string[]);
+  const tools3 = (log[1]!.tools as string[]);
   assert.ok(tools1.includes('memory_read_full'), 'U1 起工具集已含 memory_read_full');
   assert.deepEqual(tools1, tools3, '工具集跨轮冻结不变（缓存前缀）');
   await ctx.svc.stop();
@@ -242,18 +215,12 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
       ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
       return sub;
     })();
-    await waitUntil(() => ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.state === 'prepared');
-    const u2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '具体是什么', clientMessageId: 'fa-b', occurredAt: T0 });
-    await waitUntil(() => ctx.svc.repo.nextPreparedForTarget('c1', u2.message.id)?.state === 'target_bound');
-    ctx.supervisor.enqueue(u2.turnId);
-    await ctx.supervisor.waitIdle();
-    // 主消息已成功派发并收到回复（B 不丢）
-    assert.equal(log.length, 2, 'both turns dispatched');
-    assert.equal(gen, 2);
-    const msgs2 = log[1]!.full as Array<{ role: string; content: unknown }>;
+    assert.equal(log.length, 1, 'current turn dispatches despite failed final admission');
+    assert.equal(gen, 1);
+    const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
     assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('[回忆浮现]'))).length, 0, 'wire has no surfacing block');
     const tail2 = msgs2[msgs2.length - 1]!;
-    assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('具体是什么')), 'real user input is intact');
+    assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('你还记得那次7.9我们把记忆库做成了吗？')), 'real user input is intact');
     // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）
     assert.equal(checkCalls, 2, 'the same gate checked at freeze and at final assembly');
     const job = ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;

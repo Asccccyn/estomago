@@ -71,6 +71,7 @@ export class SurfacingRepository {
     conversationId: string; messageId: string; revision: number; sequence: number;
     content: string; contentHash: string; occurredAt: string | null;
     hypotheses: EventHypothesis[]; policyRevision: number; promptRevision: string;
+    deadlineMs?: number;
   }): string | null {
     if (o.hypotheses.length === 0) return null;
     const id = genId('sfj');
@@ -78,13 +79,14 @@ export class SurfacingRepository {
     this.db.prepare(
       `INSERT INTO surfacing_jobs(id, conversation_id, source_message_id, source_revision,
          source_sequence, state, generation, hypotheses_json, policy_revision, prompt_revision,
-         source_body_hash, deadline_ms, created_at, updated_at)
-       VALUES (?,?,?,?,?, 'pending', 0, ?,?,?,?, NULL, ?, ?)
+         source_body_hash, deadline_ms, created_at, updated_at, target_message_id, target_revision, expires_at)
+       VALUES (?,?,?,?,?, 'pending', 0, ?,?,?,?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(conversation_id, source_message_id, source_revision, policy_revision, prompt_revision)
        DO NOTHING`,
     ).run(id, o.conversationId, o.messageId, o.revision, o.sequence,
       JSON.stringify(o.hypotheses), o.policyRevision, o.promptRevision,
-      o.contentHash, now, now);
+      o.contentHash, o.deadlineMs ?? null, now, now, o.messageId, o.revision,
+      o.deadlineMs == null ? null : new Date(Date.parse(now) + o.deadlineMs).toISOString());
     const row = this.jobByLogicalKey(o.conversationId, o.messageId, o.revision, o.policyRevision, o.promptRevision);
     return row?.id ?? id;
   }
@@ -101,7 +103,7 @@ export class SurfacingRepository {
     return row ?? null;
   }
 
-  /** 消息编辑：撤销旧修订作业（仍未错过下一目标轮的可建新作业——上层判断）。 */
+  /** 消息编辑撤销尚未保留的旧修订作业；已发送交付事实保持原样。 */
   cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
     const affected = this.db.prepare(
       `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
@@ -119,12 +121,12 @@ export class SurfacingRepository {
     return Number(r.changes);
   }
 
-  /** 绑定下一真实用户输入（真实 accepted-user ordinal，不是 seq+1）。 */
+  /** 准备完成后只允许源消息自己的当前修订准入。 */
   bindTarget(o: { conversationId: string; jobId: string; targetMessageId: string; targetRevision: number }): boolean {
     const r = this.db.prepare(
       `UPDATE surfacing_jobs SET state='target_bound', target_message_id=?, target_revision=?, updated_at=?
-       WHERE id=? AND conversation_id=? AND state='prepared' AND target_message_id IS NULL`,
-    ).run(o.targetMessageId, o.targetRevision, new Date().toISOString(), o.jobId, o.conversationId);
+       WHERE id=? AND conversation_id=? AND state='prepared' AND source_message_id=? AND source_revision=? AND target_message_id=? AND target_revision=?`,
+    ).run(o.targetMessageId, o.targetRevision, new Date().toISOString(), o.jobId, o.conversationId, o.targetMessageId, o.targetRevision, o.targetMessageId, o.targetRevision);
     const ok = Number(r.changes) === 1;
     if (ok) this.emitState(o.jobId, 'prepared', 'target_bound');
     return ok;
@@ -154,28 +156,25 @@ export class SurfacingRepository {
   nextPreparedForTarget(conversationId: string, targetMessageId: string): JobRow | null {
     const row = this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs
-       WHERE conversation_id=? AND target_message_id=? AND state IN ('target_bound','validating','ready')
+       WHERE conversation_id=? AND target_message_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready')
+         AND source_message_id=target_message_id AND source_revision=target_revision
        ORDER BY source_sequence DESC LIMIT 1`,
     ).get(conversationId, targetMessageId) as JobRow | undefined;
     return row ?? null;
   }
 
-  /** 同房间：目标到达后可绑定的 prepared 作业（source 在目标之前的最近一条）。 */
-  preparedAwaitingTarget(conversationId: string, targetSequence: number): JobRow[] {
-    return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs
-       WHERE conversation_id=? AND state IN ('prepared') AND source_sequence < ?
-       ORDER BY source_sequence ASC`,
-    ).all(conversationId, targetSequence) as JobRow[];
-  }
-
   /** P1 省略表达延续依据：[minSourceSequence, beforeSequence) 内最近一条
-   *  已确定回忆对象（prepared，有可用赢家）的作业；empty/rejected/blocked/
-   *  cancelled 或已被后续消息绑走的不算。只读。 */
+   *  已确定回忆对象或已验证交付的同轮作业；empty/rejected/blocked/
+   *  cancelled 不算。只读，retained 仅用于意图延续，绝不复用旧交付。 */
   preparedBetween(conversationId: string, minSourceSequence: number, beforeSequence: number): JobRow | null {
     const row = this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs
-       WHERE conversation_id=? AND state='prepared' AND source_sequence >= ? AND source_sequence < ?
+       WHERE conversation_id=? AND state IN ('prepared','ready','reserved','dispatch_started','retained')
+         AND source_message_id=target_message_id AND source_revision=target_revision
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.id=surfacing_jobs.source_message_id
+           AND m.current_revision=surfacing_jobs.source_revision
+           AND m.conversation_id=surfacing_jobs.conversation_id AND m.speaker='owner')
+         AND source_sequence >= ? AND source_sequence < ?
        ORDER BY source_sequence DESC LIMIT 1`,
     ).get(conversationId, minSourceSequence, beforeSequence) as JobRow | undefined;
     return row ?? null;
@@ -189,25 +188,8 @@ export class SurfacingRepository {
 
   recoverableJobs(): JobRow[] {
     return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('preparing','validating','reserved','dispatch_started') ORDER BY created_at ASC`,
+      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started') ORDER BY created_at ASC`,
     ).all() as JobRow[];
-  }
-
-  markMissedTargets(conversationId: string, latestUserSequence: number): void {
-    // 目标已过（更新的真实用户输入已出现且不是本作业目标）→ missed_target，
-    // 不向后漂移（docs/01 §4）。
-    const affected = this.db.prepare(
-      `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND state IN ('pending','preparing','prepared')
-         AND target_message_id IS NULL AND source_sequence < ?`,
-    ).all(conversationId, latestUserSequence - 0) as Array<{ id: string; state: SurfacingJobState }>;
-    this.db.prepare(
-      `UPDATE surfacing_jobs SET state='missed_target', updated_at=?
-       WHERE conversation_id=? AND state IN ('pending','preparing','prepared')
-         AND target_message_id IS NULL AND source_sequence < ?`,
-    ).run(new Date().toISOString(), conversationId, latestUserSequence - 0);
-    for (const row of affected) {
-      this.emitState(row.id, row.state, 'missed_target', { reason_code: 'TARGET_PASSED' });
-    }
   }
 
   // —— 交付（attempt 级冻结；transport retry 复用同一冻结包）——
