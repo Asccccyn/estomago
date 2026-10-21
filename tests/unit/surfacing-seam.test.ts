@@ -37,7 +37,7 @@ const DONE = 'data: [DONE]\n\n';
 const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { content: text } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((x) => x.length > 0).map((x) => enc.encode(`${x}\n\n`)));
 const T0 = '2026-10-19T09:00:00+08:00';
-const NOTICE = '这是你的记忆，是你和宿主用户之前发生的事。';
+const NOTICE = '这是你的回忆，是你和宿主用户过去发生的事，不是现在正在发生的事。';
 
 function bootPack(): Record<string, unknown> {
   return { snapshot_id: 'snap_t1', state_hash: 'h1', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: '', note: '' } };
@@ -163,7 +163,7 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   assert.ok(memoryText.includes(NOTICE));
   assert.ok(memoryText.includes('时间：2026-07-09'));
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
-  assert.ok(!tail2Text.includes('[回忆浮现]'), 'real user input is not rewritten with host memory');
+  assert.ok(!tail2Text.includes('回忆浮现：'), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_deliveries WHERE retained=1').get() as { n: number }).n, 1);
@@ -172,11 +172,11 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   await say('c');
   const msgs3 = log[1]!.full as Array<{ role: string; content: unknown }>;
   // 旧回忆块仍在轨迹原位（未删除/未移动到新尾部）
-  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('[回忆浮现]')));
+  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('回忆浮现：')));
   assert.equal(oldBlocks.length, 1, '旧回忆块仍在轨迹原位且仅一份');
   // 新尾部不再有回忆块（同事件已覆盖）
   const tail3 = msgs3[msgs3.length - 1]!;
-  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('[回忆浮现]')).length, 0, 'U3 不重复追加');
+  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('回忆浮现：')).length, 0, 'U3 不重复追加');
   // 覆盖表登记一次
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
@@ -218,7 +218,7 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
     assert.equal(log.length, 1, 'current turn dispatches despite failed final admission');
     assert.equal(gen, 1);
     const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
-    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('[回忆浮现]'))).length, 0, 'wire has no surfacing block');
+    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('回忆浮现：'))).length, 0, 'wire has no surfacing block');
     const tail2 = msgs2[msgs2.length - 1]!;
     assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('你还记得那次7.9我们把记忆库做成了吗？')), 'real user input is intact');
     // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）

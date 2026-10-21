@@ -67,7 +67,7 @@ export function fixedSystemCount(messages: OrMessage[]): number {
     if (message.role !== 'system') break;
     const firstText = typeof message.content === 'string' ? message.content
       : Array.isArray(message.content) ? (message.content[0] as { text?: string })?.text ?? '' : '';
-    if (firstText.startsWith('[回忆浮现]\n')) break;
+    if (firstText.startsWith('[回忆浮现]\n') || firstText.startsWith('回忆浮现：') || firstText.startsWith('这是你们') || firstText.startsWith('—— 原文片段 ——')) break;
     count++;
   }
   return count;

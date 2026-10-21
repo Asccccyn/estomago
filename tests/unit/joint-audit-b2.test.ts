@@ -137,7 +137,7 @@ test('F-J-09 断言有效性：tools 变化会被 assertAppendOnly 识别（对�
   assert.throws(() => assertAppendOnly(prev, changed), /PREFIX_PROFILE_CHANGED:tools/, 'tools 漂移被抓（previousPayload 用冻结快照后该断言在跨轮间有意义）');
 });
 
-test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——如实阻断，不再按 12k 猜测范围', async () => {
+test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——零评审，不猜测或签发范围凭证', async () => {
   const root = tempRoot('jab2-fj10-');
   let gen = 0;
   const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
@@ -148,8 +148,9 @@ test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——如实阻断
   ctx.db.prepare('DELETE FROM window_trajectories').run();
   void win1;
   const r = await ctx.supervisor.manualRotate('c1');
-  assert.equal(r.ok, false, '无已见记录的窗口不再签发范围凭证');
-  assert.ok(r.ok === false && r.reason.startsWith('ROTATION_RANGE_UNKNOWN'), `如实阻断：${r.reason.slice(0, 60)}`);
+  assert.equal(r.ok, true);
+  assert.equal(gen, 1, '手动换窗未发模型请求');
+  assert.equal(ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get().n, 0);
   ctx.db.close();
 });
 
@@ -201,7 +202,8 @@ test('F-J-38：retrospective + mood_tags 在宿主预拒（不落服务端）', 
   db.close();
 });
 
-test('F-J-31：提醒模板 reason 接受 manual（类型一致）', () => {
-  const text = buildPreRotateReviewMessage({ reviewId: 'rev-x', reason: 'manual', messageRefs: '' });
-  assert.ok(text.includes('reason: manual'), 'manual 原因如实渲染（不再只收 capacity|idle）');
+test('F-J-31：提醒模板仅接受 capacity（手动换窗无评审模板）', () => {
+  const text = buildPreRotateReviewMessage({ reviewId: 'rev-x', reason: 'capacity', messageRefs: '' });
+  assert.ok(text.includes('reason: capacity'));
+  assert.ok(!text.includes('reason: manual'));
 });

@@ -34,7 +34,7 @@ test('零新增完成范围不重复提醒；修订变化使同消息旧凭证�
 
 test('跨窗携带旧尾段：焦点豁免不冒充 reviewed/held', () => {
   const carried = breakfast.map(rawKey); // 新窗携带的旧尾段（书签之前）
-  const range = selectReviewRange({ manifest: [...breakfast, ...xx], epochId: 'w2', lastHold: null, carriedBeforeBookmarkKeys: carried });
+  const range = selectReviewRange({ manifest: [...breakfast, ...xx], epochId: 'w2', lastHold: null, carriedBackgroundKeys: carried });
   assert.deepEqual(range.map((r) => r.id), xx.map((x) => x.id), '旧尾段豁免，不强制补记早餐');
 });
 

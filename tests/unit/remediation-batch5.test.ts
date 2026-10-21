@@ -94,7 +94,7 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
   return sub;
 }
 
-test('F05：手动换窗占用房间串行链——评审进行中并发 chat 排队等待，不并发发送', async () => {
+test('F05：容量换窗评审占用房间串行链，chat 排队等待', async () => {
   const log: Array<Record<string, unknown>> = [];
   let releaseReview = () => {};
   const gate = new Promise<void>((r) => { releaseReview = r; });
@@ -129,7 +129,7 @@ test('F05：手动换窗占用房间串行链——评审进行中并发 chat �
   const ctx = compose(root, t2);
   await say(ctx, '第一句', 'f1', T0);
   // 手动换窗（评审挂起中）+ 同时提交新 chat：chat 必须等评审+换窗完成后才发送
-  const manualPromise = ctx.supervisor.manualRotate('c1');
+  const manualPromise = (ctx.supervisor as any).runSerialized('c1', () => (ctx.supervisor as any).rotateConfirmed('c1', 'capacity'));
   await new Promise((r) => setTimeout(r, 150)); // 评审已发出并挂起
   const sub2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '评审中的新消息', clientMessageId: 'f2', occurredAt: at(1) });
   ctx.supervisor.enqueue(sub2.turnId);
@@ -256,7 +256,7 @@ test('F27：v11 旧行 manifest=NULL 且含真实历史 → 重建成功并正�
   const win1 = ctx.windows.activeWindow('c1')!;
   // 模拟 v11 旧行：清空 manifest（NULL）+ last_boundary 保留
   ctx.db.prepare('UPDATE window_trajectories SET manifest_json = NULL WHERE window_id = ?').run(win1.id);
-  const manual = await ctx.supervisor.manualRotate('c1');
+  const manual = await (ctx.supervisor as any).rotateConfirmed('c1', 'capacity');
   assert.ok(manual.ok, '正文可匹配 → 重建 manifest → 评审/换窗正常');
   const traj = ctx.trajectory.forWindow(win1.id);
   assert.ok(traj?.manifest && traj.manifest.length > 0, '重建后的 manifest 非空且已回填');
@@ -271,7 +271,7 @@ test('F27：v11 旧行 manifest=NULL 且含真实历史 → 重建成功并正�
   // 直接删除消息行（模拟正文无法回查）
   ctx2.db.prepare('DELETE FROM message_revisions').run();
   ctx2.db.prepare('DELETE FROM messages').run();
-  const manual2 = await ctx2.supervisor.manualRotate('c1');
+  const manual2 = await (ctx2.supervisor as any).rotateConfirmed('c1', 'capacity');
   assert.ok(manual2.ok === false && manual2.reason.includes('ROTATION_RANGE_UNKNOWN'), '范围未知 → 如实阻断（不签发空范围凭证）');
   const skipped = ctx2.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE status='skipped_empty'").get() as { n: number };
   assert.equal(skipped.n, 0, '未产生 skipped_empty（F27 修复）');

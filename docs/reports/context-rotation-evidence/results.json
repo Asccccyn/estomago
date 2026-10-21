@@ -1,0 +1,62 @@
+{
+  "baseline_commit": "e73abfe",
+  "test_files": 137,
+  "test_results": {
+    "tests": 933,
+    "pass": 933,
+    "fail": 0,
+    "skipped": 0,
+    "cancelled": 0
+  },
+  "validation": [
+    "npm run typecheck",
+    "npm run typecheck:web",
+    "npm run build:web",
+    "npm test"
+  ],
+  "synthetic_manual_extra_requests": {
+    "baseline": 1,
+    "current_openrouter": 0,
+    "current_deepseek": 0
+  },
+  "synthetic_time_projection": {
+    "baseline": "2026-10-21 08:33 Wed morning | her PT26H ago | new day",
+    "current": "user_gap: PT26H7M\n2026-10-21 08:33 Wed UTC+8",
+    "baseline_utf8_bytes": 54,
+    "current_utf8_bytes": 44,
+    "actual_opus_tokens": null
+  },
+  "synthetic_selection": {
+    "sequences": [
+      1,
+      4
+    ],
+    "date": "2026-10-20",
+    "reference": "2026-10-21T00:33:00Z",
+    "old_guide_utf8_bytes": 132,
+    "new_guide_utf8_bytes": 126,
+    "body_utf8_bytes_before": 26,
+    "body_utf8_bytes_after": 26
+  },
+  "golden_sha256": {
+    "before": "216fa062dcc1cfc3080625ddf920f61ebf32b96b0af3cdb0f5066cce154aca98",
+    "after": "bee577a0863a5da2ede552b7e07619d2e8870be1a46d5513191f45b1d931fdb6"
+  },
+  "production_deployed": false,
+  "real_model_calls": 0,
+  "scope_limitations": [
+    "SDK nonempty role-preserving selection blocked; no new SDK message transport implemented",
+    "Surfacing transport remains DeepSeek-only",
+    "No live provider cache-hit or real-token measurement"
+  ],
+  "source_sync": {
+    "authorized": true,
+    "target": "/Users/owner/Projects/estomago",
+    "files_verified": 32,
+    "hash_mismatches": 0,
+    "post_sync_typecheck": "passed",
+    "post_sync_test_files": 2,
+    "post_sync_tests_passed": 21,
+    "git_committed": false
+  }
+}

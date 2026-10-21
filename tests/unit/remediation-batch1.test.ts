@@ -158,6 +158,7 @@ test('F05：活跃评审期间手动换窗被拒；评审完成后只换一次',
   assert.ok(manual.ok === false && manual.reason.includes('REVIEW_IN_PROGRESS'), '手动换窗在评审期间被拒（无直转旁路）');
   assert.equal(ctx.windows.activeWindow('c1')!.id, win1.id);
   // 落一个并发切换（模拟迟到场景）：把 active 评审窗口换掉后，迟到完成不得再叠一次轮转
+  ctx.db.prepare("UPDATE rotation_reviews SET status='failed' WHERE window_id=?").run(win1.id);
   const gate = ctx.identity.evaluateGate(ctx.db);
   const forced = ctx.windows.rotate({ conversationId: 'c1', gate, maxSequence: 1, assembledOptions: null });
   assert.ok(forced.ok, '前置：窗口已被并发切换');

@@ -7,6 +7,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
+import { validateAbsoluteIso } from '../util/time.ts';
 import { CONSERVATIVE_IMAGE_TOKENS } from '../media/model-input.ts';
 
 export type SelectionItem = {
@@ -19,7 +20,11 @@ export type SelectionItem = {
   image_count?: number; // EXEC_V1 §03.6.1：该修订图片/表情数（容量保守估算用）
 };
 
+export type RotationCause = 'manual' | 'capacity' | 'identity_change' | 'initial';
+
 export type SelectionRow = {
+  rotation_cause: RotationCause | null;
+  projection_reference_at: string | null;
   selection_id: string;
   conversation_id: string;
   source_window_id: string;
@@ -69,7 +74,7 @@ export class ManualSelectionService {
 
   /** 换窗需要选择而无确认方案时：建立/刷新 awaiting（幂等——同源窗已有
    *  活跃 awaiting 则原样返回；confirmed 不被覆盖）。 */
-  ensureAwaiting(o: { conversationId: string; sourceWindowId: string; expectedWindowRevision: number; cutoffSequence: number }): SelectionRow {
+  ensureAwaiting(o: { conversationId: string; sourceWindowId: string; expectedWindowRevision: number; cutoffSequence: number; cause?: RotationCause }): SelectionRow {
     const existing = this.activeForWindow(o.conversationId, o.sourceWindowId);
     if (existing && existing.status === 'confirmed') return existing;
     if (existing && existing.status === 'awaiting') {
@@ -88,7 +93,22 @@ export class ManualSelectionService {
          VALUES (?,?,?,?,?, 'awaiting', NULL, ?, ?)`,
       ).run(id, o.conversationId, o.sourceWindowId, o.expectedWindowRevision, o.cutoffSequence, now, now);
     });
+    if (o.cause) this.recordCause(id, o.cause);
     return this.get(id)!;
+  }
+
+  /** Server-only intent. Explicit manual requests may take over an old pending intent. */
+  recordCause(selectionId: string, cause: RotationCause): void {
+    this.db.prepare("UPDATE context_selections SET rotation_cause=?, updated_at=? WHERE selection_id=? AND status IN ('awaiting','confirmed')")
+      .run(cause, new Date().toISOString(), selectionId);
+  }
+
+  loadForProjection(selection: SelectionRow): ReturnType<ManualSelectionService['loadContents']>['loaded'] {
+    if (!['confirmed', 'consumed'].includes(selection.status) || selection.items === null) throw new Error('CONTEXT_SELECTION_UNCONFIRMED');
+    this.db.prepare('UPDATE context_selections SET projection_reference_at=? WHERE selection_id=? AND projection_reference_at IS NULL')
+      .run(new Date().toISOString(), selection.selection_id);
+    const reference = this.get(selection.selection_id)!.projection_reference_at!;
+    return this.loadContents(selection.items).loaded.map(m => ({ ...m, reference_at: reference }));
   }
 
   get(selectionId: string): SelectionRow | null {
@@ -241,7 +261,7 @@ export class ManualSelectionService {
     // 幂等重放：同键已确认 → 原样返回（H09 重复请求只应用一次）
     if (o.idempotencyKey) {
       const hit = this.db.prepare('SELECT * FROM context_selections WHERE idempotency_key = ?').get(o.idempotencyKey) as RawRow | undefined;
-      if (hit && hit.status === 'confirmed') return { ok: true, selection: toRow(hit) };
+      if (hit && hit.conversation_id === o.conversationId && hit.source_window_id === o.sourceWindowId && ['confirmed','consumed'].includes(hit.status)) return { ok: true, selection: toRow(hit) };
     }
     const window = this.db.prepare('SELECT id FROM windows WHERE id = ?').get(o.sourceWindowId) as { id: string } | undefined;
     if (!window && !o.sourceWindowId.startsWith('csel-src-')) return { ok: false, error: { code: 'CONTEXT_SELECTION_REVISION_CONFLICT', detail: '源窗口不存在' } };
@@ -301,34 +321,55 @@ export class ManualSelectionService {
   /** 换窗切换事务内原子消费（由 WindowManager.rotate 的 switch 事务调用；
    *  CAS：只有仍处 confirmed 的方案可被消费，输家整体回滚）。 */
   consumeInTx(db: Db, selectionId: string, targetWindowId: string): void {
+    const selection = this.get(selectionId);
+    if (!selection || selection.items === null) throw new Error('CONTEXT_SELECTION_UNCONFIRMED');
+    this.loadContents(selection.items);
+    const target = db.prepare('SELECT conversation_id FROM windows WHERE id=?').get(targetWindowId) as { conversation_id: string } | undefined;
+    if (!target || target.conversation_id !== selection.conversation_id) throw new Error('CONTEXT_SELECTION_SCOPE_MISMATCH');
     const c = db.prepare(
       "UPDATE context_selections SET status='consumed', target_window_id=?, updated_at=? WHERE selection_id=? AND status='confirmed'",
     ).run(targetWindowId, new Date().toISOString(), selectionId);
     if (Number(c.changes) !== 1) throw new Error('selection_consume_conflict: 方案已非 confirmed（并发消费/取消）');
   }
 
-  /** 读取已确认/已消费选集的正文（按真实修订，服务端正本）。
-   *  WP-05（B13）：缺修订行不再 silent continue——差异随返回值披露
-   *  （装配方如实标注 manifest 缺席，不冒充完整装载）。 */
-  loadContents(items: SelectionItem[]): { loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }>; missing: Array<{ message_id: string; revision: number }> } {
-    const loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }> = [];
-    const missing: Array<{ message_id: string; revision: number }> = [];
+  /** 按选中修订读取原文；缺失、hash 或来源不符立即拒绝，不交付部分选集。 */
+  loadContents(items: SelectionItem[]): { loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; occurred_at: string | null; reference_at?: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }> } {
+    const loaded: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; occurred_at: string | null; reference_at?: string; attachments: Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> }> = [];
     for (const it of items) {
-      const row = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(it.message_id, it.revision) as { content: string } | undefined;
-      if (!row) {
-        missing.push({ message_id: it.message_id, revision: it.revision });
-        continue;
+      const row = this.db.prepare(`SELECT r.content, r.content_hash, m.speaker, m.sequence, m.published_at,
+        r.occurred_at, r.occurred_at_repair, r.supersedes_revision
+        FROM message_revisions r JOIN messages m ON m.id=r.message_id WHERE r.message_id=? AND r.revision=?`)
+        .get(it.message_id, it.revision) as { content: string; content_hash: string; speaker: string; sequence: number; published_at: string | null; occurred_at: string; occurred_at_repair: string | null; supersedes_revision: number | null } | undefined;
+      if (!row) throw new Error('CONTEXT_SELECTION_REVISION_MISSING');
+      if (row.content_hash !== it.content_hash || sha256Hex(row.content) !== it.content_hash || row.sequence !== it.sequence || row.speaker !== it.speaker || (row.speaker === 'assistant' && !row.published_at)) {
+        throw new Error('CONTEXT_SELECTION_SOURCE_MISMATCH');
       }
+      // Editing writes the edit instant to occurred_at. Walk this selected
+      // revision's ancestry, never the mutable current_revision, for send time.
+      let source = row;
+      const visited = new Set<number>();
+      while (source.supersedes_revision !== null) {
+        const rev = source.supersedes_revision;
+        if (visited.has(rev)) throw new Error('CONTEXT_SELECTION_REVISION_CYCLE');
+        visited.add(rev);
+        const prior = this.db.prepare('SELECT occurred_at, occurred_at_repair, supersedes_revision FROM message_revisions WHERE message_id=? AND revision=?').get(it.message_id, rev) as typeof source | undefined;
+        if (!prior) throw new Error('CONTEXT_SELECTION_REVISION_MISSING');
+        source = prior;
+      }
+      const rawTime = row.speaker === 'assistant' ? row.published_at : source.occurred_at_repair ? null : source.occurred_at;
+      const occurredAt = rawTime && validateAbsoluteIso(rawTime).ok ? rawTime : null;
       // EXEC_V1 §03.6.1：附件按该修订的绑定装载（不以当前附件冒充旧版本）；容量估算含媒体成本
       const attachments = this.db.prepare('SELECT asset_id, presentation, caption, derived_text, derived_source FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(it.message_id, it.revision) as Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }>;
-      loaded.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content, attachments });
+      loaded.push({ message_id: it.message_id, revision: it.revision, sequence: it.sequence, role: it.speaker === 'owner' ? 'user' : 'assistant', content: row.content, occurred_at: occurredAt, attachments });
     }
     loaded.sort((a, b) => a.sequence - b.sequence);
-    return { loaded, missing };
+    return { loaded };
   }
 }
 
 type RawRow = {
+  rotation_cause: RotationCause | null;
+  projection_reference_at: string | null;
   selection_id: string;
   conversation_id: string;
   source_window_id: string;
@@ -345,6 +386,8 @@ type RawRow = {
 
 function toRow(r: RawRow): SelectionRow {
   return {
+    rotation_cause: r.rotation_cause ?? null,
+    projection_reference_at: r.projection_reference_at ?? null,
     selection_id: r.selection_id,
     conversation_id: r.conversation_id,
     source_window_id: r.source_window_id,

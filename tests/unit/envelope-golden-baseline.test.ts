@@ -48,9 +48,10 @@ const GOLDEN = path.join(import.meta.dirname, '..', 'golden', 'envelope-baseline
 
 /** 挥发字段归一化：随机 id、时间戳、time_context 值——保留键与结构。 */
 export function canonicalize(payload: unknown): string {
+  payload = structuredClone(payload);
   // 她 1021 P2：time_context 纯文本段体（分钟级时钟=挥发）在 stringify 前
   // 归一化（单层正则；旧 JSON 形态由下方七键规则处理）
-  const NEW_TC = /\[time_context\]（[^）]*）\n(?!\{)[^\n]{8,}/;
+  const NEW_TC = /\[time_context\]（[^）]*）\n(?:user_gap: PT(?:\d+H)?(?:\d+M)?\n)?\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) UTC(?:[+-]\d+(?::\d+)?)?/g;
   const msgs = (payload as { messages?: Array<{ content?: unknown }> }).messages;
   if (Array.isArray(msgs)) {
     for (const m of msgs) {
@@ -142,7 +143,10 @@ test('R09-E 字节级基线：确定性三回合+一工具轮的 wire 载荷（�
       console.error('TURNS:', JSON.stringify(rows));
     }
     assert.ok(log.length >= 4, `应至少 4 笔 wire（3 回合+1 工具续轮），实得 ${log.length}`);
+    const wireBefore = JSON.stringify(log);
+    assert.match(wireBefore, /\\n\d{4}-\d{2}-\d{2} \d{2}:\d{2} (Mon|Tue|Wed|Thu|Fri|Sat|Sun) UTC\+8/);
     const canon = log.map(canonicalize);
+    assert.equal(JSON.stringify(log), wireBefore, 'canonicalize must not mutate the captured wire');
     const golden = fs.existsSync(GOLDEN) ? (JSON.parse(fs.readFileSync(GOLDEN, 'utf8')) as string[]) : null;
     if (!golden || process.env.ESTOMAGO_UPDATE_GOLDEN === '1') {
       fs.mkdirSync(path.dirname(GOLDEN), { recursive: true });
