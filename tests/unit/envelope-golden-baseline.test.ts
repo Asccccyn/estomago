@@ -116,6 +116,10 @@ test('R09-E 字节级基线：确定性三回合+一工具轮的 wire 载荷（�
       ctx.supervisor.enqueue(sub.turnId);
       await ctx.supervisor.waitIdle();
     }
+    if (log.length < 4) {
+      const rows = ctx.db.prepare("SELECT t.id, t.state ts, a.state as_, a.blocked_reason FROM turns t LEFT JOIN attempts a ON a.turn_id=t.id ORDER BY t.created_at").all();
+      console.error('TURNS:', JSON.stringify(rows));
+    }
     assert.ok(log.length >= 4, `应至少 4 笔 wire（3 回合+1 工具续轮），实得 ${log.length}`);
     const canon = log.map(canonicalize);
     const golden = fs.existsSync(GOLDEN) ? (JSON.parse(fs.readFileSync(GOLDEN, 'utf8')) as string[]) : null;
