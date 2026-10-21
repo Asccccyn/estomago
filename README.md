@@ -1,5 +1,7 @@
 # estómago
 
+- 2026-10-21（已开启并核验）：JEV自动浮现，代码 `c0f31c2`；窗口/轨迹与JEV缓存哈希保持不变，零OR验证请求。[生产入口与回滚](docs/reports/JEV_SURFACING_ACTIVATION_20261021.md)。
+
 - 2026-10-21（已独立部署，基线 `ee8e398`）：模型推理档位按已核实能力收敛；默认为未选择，取消选择清除覆盖；删除容量提示括号文案，前端资源加内容版本号。生产入口位于 `Documents/Codex/2026-10-21/1-2/release/estomago-effort-20261021`，不包含 JEV 未部署批；部署与回滚记录见该任务目录 `DEPLOYMENT.md`。
 
 - 2026-10-21（工作树，未部署）：JEV 同轮浮现校准、15秒总预算及编辑重发新修订任务；缓存前缀不变。[验证说明](docs/reports/JEV_SURFACING_CALIBRATION_20261021.md)。
