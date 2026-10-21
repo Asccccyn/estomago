@@ -92,13 +92,9 @@ export class CapabilityMatrix {
       'thinking_delta_observed',
       'complete_block_mapping_verified',
     ];
-    let sawBlocked = false;
-    for (const k of critical) {
-      const s = this.get(k).state;
-      if (s === 'blocked') sawBlocked = true;
-      else if (s !== 'supported') return 'unknown';
-    }
-    return sawBlocked ? 'blocked' : 'verified';
+    const states = critical.map(k => this.get(k).state);
+    if (states.includes('blocked')) return 'blocked';
+    return states.every(s => s === 'supported') ? 'verified' : 'unknown';
   }
 
   describe(): Record<string, CapabilityRecord> {

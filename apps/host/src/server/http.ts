@@ -72,6 +72,7 @@ export type RequestDeps = {
   surfacing?: import('../memory-surfacing/service.ts').SurfacingService | null; // 自动浮现（默认 disabled）
   auth: AuthService;
   archiveSync?: {
+    health?(): import('../../../../packages/contracts/src/api.ts').HealthComponent;
     drainOnce(): Promise<unknown>; // 原文归档同步（未启用时不注入）
     rawSyncState?(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean };
   };
@@ -127,6 +128,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const report = buildReadyReport({
         config: d.config, gate: d.identity.evaluateGate(d.db, { driver: gateDriver }), // 审计 F29：状态按当前驱动判别——OR/DS 不被 SDK 前提误报阻断
         runnerSelection: d.runnerSelection, capabilities: d.capabilities, db: d.db,
+        archiveSync: d.archiveSync?.health ? { health: () => d.archiveSync!.health!() } : undefined,
       });
       // F-J-49（联合审计 2026-10-06）：ready 未认证可达——原因明细（含绝对路径/目录结构）
       // 不上公共面，只回状态码级摘要；完整诊断走已认证的 doctor
@@ -134,12 +136,13 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // 公共面只回状态码级摘要（component+status），detail（含路径/原因）不上未认证面
       const comps = (report as { components?: Record<string, { status: string; detail?: string }> }).components ?? {};
       const entries = Object.entries(comps);
-      const ready = entries.length > 0 && entries.every(([, c]) => c.status === 'ok');
+      const ready = report.status === 'ready';
       // WP-04（JFA-E07）：ready=false → 503（监控按状态码分辨）；
       // /health/live 保持 200（进程活着）
       return json(res, ready ? 200 : 503, {
         ready,
-        degraded: entries.filter(([, c]) => c.status !== 'ok').map(([k, c]) => ({ component: k, status: c.status })),
+        disabled: entries.filter(([, c]) => c.status === 'disabled').map(([k]) => k),
+        degraded: entries.filter(([, c]) => c.status !== 'ok' && c.status !== 'disabled').map(([k, c]) => ({ component: k, status: c.status })),
       });
     }
     if (url.pathname === '/api/v1/auth/login' || url.pathname === '/api/v1/auth/session') {

@@ -9,6 +9,7 @@
 //   - F15：SOURCE_NOT_READY/429/502/503/504 视为可重试（批次 attempts 有界，超限 dead）；其余领域错误 dead。
 //   - F16：切批按规范化 JSON 的 UTF-8 字节数（含转义与元数据），不只算原始正文。
 //  隐私：错误/事件只记 code/计数/ID；本文件不读任何凭据值。
+import type { HealthComponent } from '../../../../../packages/contracts/src/api.ts';
 import type { Db } from '../../db/connection.ts';
 import { tx } from '../../db/connection.ts';
 import { Buffer } from 'node:buffer';
@@ -91,6 +92,18 @@ export class ArchiveSyncService {
       acked: n("o.state = 'acked'"),
       enabled: this.enabled,
     };
+  }
+
+  /** Read-only local readiness. Historical dead batches with resolved outbox
+   * rows are not current failures; ACK counts never mask unresolved work. */
+  health(): HealthComponent {
+    if (!this.enabled || !this.client.isConfigured()) return { status: 'blocked', detail: 'ARCHIVE_TRANSPORT_NOT_CONFIGURED' };
+    const rows = this.db.prepare(`SELECT state, last_error, COUNT(*) n FROM outbox
+      WHERE target='mariposa.archive' AND state != 'acked' GROUP BY state,last_error`).all() as Array<{ state: string; last_error: string | null; n: number }>;
+    const unresolved = rows.reduce((n,r) => n + (r.state === 'failed' || r.state === 'unknown_outcome' || r.last_error !== null ? r.n : 0), 0);
+    if (unresolved) return { status: 'degraded', detail: `ARCHIVE_UNRESOLVED:${unresolved}` };
+    const pending = rows.reduce((n,r) => n + r.n, 0);
+    return { status: 'ok', detail: `归档处理器已配置；待处理=${pending}；无未决错误；本查询未探测远端` };
   }
 
   async drainOnce(): Promise<DrainSummary> {

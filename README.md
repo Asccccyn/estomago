@@ -37,6 +37,8 @@
 
 ## 当前基线
 
+- **2026-10-21 · ready 根因修复（待本次发布）**：OR/DS 不再错误依赖 SDK 探针，归档读取实际 worker／账本，关闭的可选推送不导致 503；真实失败仍阻断。940 项离线测试通过。见 [根因报告](docs/reports/READY_HEALTH_ROOT_FIX_20261021.md)。
+
 - **2026-10-21 · `72ea946`（已 push、已部署）**：两行时间戳与真实用户发送间隔、原文日期引导、手动零评审与容量原因持久恢复、浮现包尾声明。见 [现行合同](docs/specs/ESTOMAGO_CHAT_EXEC_V1/10_CONTEXT_ROTATION_20261021.md) 与 [验证报告](docs/reports/CONTEXT_ROTATION_ROOT_FIX_20261021.md)。此前 `8e52eba` 的 PT 小时取整／new day 投影已被替代。
 
 **现行规范正文：`docs/specs/ESTOMAGO_CHAT_EXEC_V1/`（2026-10-11，见 AGENTS.md）**。
