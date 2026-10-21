@@ -323,3 +323,19 @@ test('P3: an edited retained source cannot supply follow-up intent from its stal
     assert.equal(f.job(a.message.id).state, 'retained', 'historical delivery remains factual');
   } finally { await f.close(); }
 });
+
+test('校准预算容纳超过旧2秒的准备，仍只允许原消息同轮交付', async () => {
+  for (const deadlineMs of [2000, 15000]) {
+    const realNow = Date.now;
+    const f = fixture({ deadlineMs, prepare: async () => { Date.now = () => realNow() + 2500; } });
+    try {
+      const input = f.say('budget-' + deadlineMs, '还记得我们第一次去海边看日出吗？');
+      const result = await f.augment(input);
+      assert.equal(result !== null, deadlineMs === 15000);
+      const job = f.db.prepare('SELECT source_message_id,target_message_id,source_revision,target_revision FROM surfacing_jobs').get() as any;
+      assert.equal(job.source_message_id, input.message.id);
+      assert.equal(job.target_message_id, input.message.id);
+      assert.equal(job.source_revision, job.target_revision);
+    } finally { Date.now = realNow; await f.close(); }
+  }
+});

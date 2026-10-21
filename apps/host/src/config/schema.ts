@@ -250,7 +250,7 @@ export type Config = {
   memory_surfacing: {
     enabled: boolean; // EST_MARIPOSA_AUTO_SURFACING_V1：默认关闭（零作业/零网络/零凭据读取）
     surfacing_credential_ref: string | null; // 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
-    delivery_deadline_ms: number; // 本轮复核+check 总预算（工程初值 2000；docs/01 §4）
+    delivery_deadline_ms: number; // 本轮复核+check 总预算（同轮总预算 15000；含准备/交付/check）
     max_added_tokens_per_turn: number; // 本轮自动新增上限（estimated）
     max_retained_tokens_per_window: number; // 同窗自动保留上限
     max_packet_bytes: number; // 注入块字节上限
@@ -480,7 +480,7 @@ export const CONFIG_DEFAULTS: Config = {
   memory_surfacing: {
     enabled: false,
     surfacing_credential_ref: null,
-    delivery_deadline_ms: 2000,
+    delivery_deadline_ms: 15000,
     max_added_tokens_per_turn: 4096,
     max_retained_tokens_per_window: 8192,
     max_packet_bytes: 24576,

@@ -3,25 +3,34 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { makeDb } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
+import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
+import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MessageRetryService, MessageRetryError } from '../../apps/host/src/messages/retry.ts';
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, surfaceEnabled?: boolean) {
   const { db, root } = makeDb();
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  const messages = new MessageService(db);
+  let wakes = 0;
+  const surfacing = surfaceEnabled === undefined ? null : new SurfacingService(db,
+    new MariposaClient({ transport: async () => { throw new Error('unit test must not dispatch'); } }),
+    { enabled: surfaceEnabled, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+      delivery_deadline_ms: 15000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
+  // These transaction tests inspect committed jobs without starting a worker.
+  if (surfacing) surfacing.afterCommit = () => { wakes++; };
+  const messages = new MessageService(db, surfacing);
   messages.ensureConversation('c1');
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w1','c1','ACTIVE','2026-10-19T01:00:00Z','2026-10-19T01:00:00Z')").run();
   db.prepare("UPDATE conversations SET active_window_id='w1' WHERE id='c1'").run();
   const trajectory = { messages: [{ role: 'system', content: [{ type: 'text', text: 'frozen-prefix' }] }], boundary: { messageIndex: 0, contentIndex: 0 }, manifest: [] };
   db.prepare("INSERT INTO window_trajectories(window_id,messages_json,last_boundary_json,manifest_json,updated_at) VALUES ('w1',?,?,?,'2026-10-19T01:00:00Z')")
     .run(JSON.stringify(trajectory.messages), JSON.stringify(trajectory.boundary), JSON.stringify(trajectory.manifest));
-  const submitted = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '  original\nmessage  ', clientMessageId: 'm1' });
+  const submitted = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: surfaceEnabled === undefined ? '  original\nmessage  ' : '还记得去年那件事吗？', clientMessageId: 'm1' });
   db.prepare("UPDATE turns SET state='failed', completed_at='2026-10-19T01:01:00Z' WHERE id=?").run(submitted.turnId);
   db.prepare("UPDATE attempts SET state='failed', blocked_reason='OR_NETWORK_ERROR:retry_later', window_id='w1', completed_at='2026-10-19T01:01:00Z' WHERE id=?").run(submitted.attemptId);
   const retry = new MessageRetryService(db, messages, 'openrouter');
   const input = { conversationId: 'c1', messageId: submitted.message.id, content: submitted.message.revision.content, expectedRevision: 1, operationKey: 'retry-1' };
   const counts = () => Object.fromEntries(['messages', 'message_revisions', 'attempts', 'outbox', 'message_retry_receipts'].map(table => [table, (db.prepare(`SELECT COUNT(*) n FROM ${table}`).get() as { n: number }).n]));
-  return { db, messages, retry, submitted, input, counts };
+  return { db, messages, retry, submitted, input, counts, surfacing, wakes: () => wakes };
 }
 
 test('同文字重试复用消息/修订/窗口，只新增 attempt；同键丢回执重放不重复生成', t => {
@@ -128,4 +137,63 @@ test('历史任一请求已收到响应即拒绝；只有 dispatch_started 不�
     assert.equal(status.can_retry, evidence === 'dispatch_only');
     if (evidence !== 'dispatch_only') assert.equal(status.reason, 'RETRY_RESPONSE_STARTED');
   });
+});
+
+
+test('编辑重发新修订原子建同轮浮现，回执重放不重建，不修改缓存轨迹', t => {
+  const f = fixture(t, true);
+  const old = f.db.prepare('SELECT * FROM surfacing_jobs').get() as any;
+  const trajectory = f.db.prepare('SELECT * FROM window_trajectories').get();
+  const wakes = f.wakes();
+  const input = { ...f.input, content: '你还记得我们第一次去海边看日出吗？' };
+  const result = f.retry.retry(input);
+  const jobs = f.db.prepare('SELECT * FROM surfacing_jobs ORDER BY source_revision').all() as any[];
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[0].state, 'cancelled');
+  assert.equal(jobs[1].state, 'pending');
+  assert.equal(jobs[1].source_message_id, result.message.id);
+  assert.equal(jobs[1].target_message_id, result.message.id);
+  assert.equal(jobs[1].source_revision, 2);
+  assert.equal(jobs[1].target_revision, 2);
+  assert.equal(Date.parse(jobs[1].expires_at) - Date.parse(jobs[1].created_at), 15000);
+  assert.equal(f.wakes(), wakes + 1);
+  f.retry.retry(input);
+  assert.equal(f.wakes(), wakes + 1);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM surfacing_jobs').get()!.n, 2);
+  assert.deepEqual(f.db.prepare('SELECT * FROM window_trajectories').get(), trajectory);
+  assert.equal(jobs[0].id, old.id);
+});
+
+test('编辑重发建作业与 attempt 一起回滚，普通编辑不补作业', t => {
+  const f = fixture(t, true);
+  const before = f.db.prepare('SELECT * FROM surfacing_jobs').all();
+  const wakes = f.wakes();
+  f.db.exec("CREATE TRIGGER reject_retry BEFORE INSERT ON attempts WHEN NEW.attempt_no>1 BEGIN SELECT RAISE(ABORT,'fixture failure'); END");
+  assert.throws(() => f.retry.retry({ ...f.input, content: '还记得我们一起做饭那次吗？' }), /fixture failure/);
+  assert.deepEqual(f.db.prepare('SELECT * FROM surfacing_jobs').all(), before);
+  assert.equal(f.wakes(), wakes);
+  f.messages.editUserMessage(f.input.messageId, '还记得我们一起做饭那次吗？');
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM surfacing_jobs').get()!.n, 1);
+  assert.equal(f.db.prepare('SELECT state FROM surfacing_jobs').get()!.state, 'cancelled');
+});
+
+test('编辑重发普通聊天或浮现关闭均不登记新任务', t => {
+  for (const enabled of [true, false]) {
+    const f = fixture(t, enabled);
+    f.retry.retry({ ...f.input, content: enabled ? '晚安，早点睡。' : '还记得我们一起做饭那次吗？' });
+    assert.equal(f.db.prepare("SELECT COUNT(*) n FROM surfacing_jobs WHERE source_revision=2").get()!.n, 0);
+  }
+});
+
+
+test('先仅保存再显式重试，为当前新修订补作业且不产生第三修订', t => {
+  const f = fixture(t, true);
+  const edited = f.messages.editUserMessage(f.input.messageId, '还记得我们第一次去海边那次吗？');
+  const result = f.retry.retry({ ...f.input, content: edited.revision.content, expectedRevision: 2 });
+  assert.equal(result.message.current_revision, 2);
+  const jobs = f.db.prepare('SELECT source_revision,target_revision,state FROM surfacing_jobs ORDER BY source_revision').all() as any[];
+  assert.equal(jobs.length, 2);
+  assert.equal(jobs[1].source_revision, 2);
+  assert.equal(jobs[1].target_revision, 2);
+  assert.equal(jobs[1].state, 'pending');
 });

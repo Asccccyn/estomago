@@ -123,7 +123,12 @@ export class MessageRetryService {
       let revision = current.current_revision;
       if (content !== current.revision.content) {
         // The existing text-edit contract keeps all original attachment bindings.
-        revision = this.messages.editMessageInTx(current.id, content, { source: 'client_edit_retry', tokenEstimateJson: input.tokenEstimateJson, notifySurfacing: true, allowBlankWithAttachments: true }).revision;
+        revision = this.messages.editMessageInTx(current.id, content, { source: 'client_edit_retry', resubmitSurfacing: true, tokenEstimateJson: input.tokenEstimateJson, notifySurfacing: true, allowBlankWithAttachments: true }).revision;
+        edited = true;
+      } else if (revision > 1) {
+        // A prior "save only" edit has no job. Explicit retry may register it,
+        // while the revision's unique key preserves existing work and deadline.
+        this.messages.registerResubmittedRevisionInTx(current.id);
         edited = true;
       }
       const turnId = status.turn_id!;

@@ -217,7 +217,7 @@ export class MessageService {
   }
 
   // 供路由事务内直接修订（同一外部 tx；AUD-06/07）
-  editMessageInTx(messageId: string, newContent: string, opts: { source?: string; tokenEstimateJson?: string | null; notifySurfacing?: boolean; allowBlankWithAttachments?: boolean } = {}): { revision: number; contentHash: string } {
+  editMessageInTx(messageId: string, newContent: string, opts: { source?: string; tokenEstimateJson?: string | null; notifySurfacing?: boolean; resubmitSurfacing?: boolean; allowBlankWithAttachments?: boolean } = {}): { revision: number; contentHash: string } {
     const row = this.db
       .prepare('SELECT current_revision, kind, conversation_id FROM messages WHERE id = ?')
       .get(messageId) as { current_revision: number; kind: string; conversation_id: string } | undefined;
@@ -238,11 +238,26 @@ export class MessageService {
     }
     this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
     this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
-    if (opts.notifySurfacing) {
+    if (opts.notifySurfacing || opts.resubmitSurfacing) {
       const msg = this.getMessage(messageId)!;
       this.surfacing?.onUserMessageEdited({ conversationId: msg.conversation_id, messageId, supersededRevision: row.current_revision });
+      // Only an explicit edit-and-resend registers work for the new revision.
+      // The caller's attempt/receipt transaction owns this SQL-only hook;
+      // ordinary history edits never replay retrieval or rewrite the trajectory.
+      if (opts.resubmitSurfacing) this.registerResubmittedRevisionInTx(messageId);
     }
     return { revision: nextRev, contentHash: sha256Hex(content) };
+  }
+
+  /** Explicit resend only; unique revision key never resets an existing job's deadline. */
+  registerResubmittedRevisionInTx(messageId: string): void {
+    const msg = this.getMessage(messageId);
+    if (!msg || msg.speaker !== 'owner' || msg.current_revision <= 1) return;
+    this.surfacing?.onUserMessageAccepted({
+      conversationId: msg.conversation_id, messageId, revision: msg.current_revision,
+      sequence: msg.sequence, content: msg.revision.content,
+      contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at,
+    });
   }
 
   notifyAfterEditCommit(): void { this.surfacing?.afterCommit(); }
