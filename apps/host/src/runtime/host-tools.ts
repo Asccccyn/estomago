@@ -14,6 +14,7 @@ import { modelResult, modelFailure, candidates as whitelistCandidates } from './
 // 工具执行串行（写操作依赖顺序；review_complete 最后验证，不并发抢先放行）。
 import { buildDeferredTools, DISCOVERY_NAMES, storedToolset, definitionId, definitionWasSeen } from './tool-discovery.ts';
 import { sha256Hex } from '../util/id.ts';
+import { IdentityService as IdentityServiceStatic } from '../identity/service.ts';
 import type { Db } from '../db/connection.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository } from '../memory-surfacing/repository.ts';
@@ -573,15 +574,21 @@ export function buildHostTools(): HostToolSpec[] {
     type: 'function',
     function: {
       name: 'identity_milestone_write',
-      description: '更新你的身份正文《长期记忆里程碑》（她 2026-10-17 授权你自己维护）。text 是完整新版正文（全量替换，不是增量追加）；旧版本自动留档、她可回滚。当前窗口继续用旧版（你在本窗上下文里说过改动，天然记得），下一扇新窗自动带新版。',
+      description: '维护你的身份正文《长期记忆里程碑》（她 2026-10-17 授权你自维护；2026-10-22 起支持条目化）。里程碑按空行分成条目，序号 1 起。operation：read=读当前全文（带条目序号）；write=整版替换（text 为完整新版正文）；add=末尾追加一条；revise=改第 item 条（text 为该条新正文）；remove=删第 item 条（至少保留一条）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改须说明 change_reason。',
       parameters: {
         type: 'object',
         properties: {
-          text: { type: 'string', minLength: 1, maxLength: 65536, description: '里程碑完整新版正文' },
+          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '缺省=write（兼容整版替换）' },
+          text: { type: 'string', minLength: 1, maxLength: 65536, description: 'write=完整新版正文；add/revise=该条目新正文' },
+          item: { type: 'integer', minimum: 1, description: 'revise/remove 的目标条目序号（read 结果里带）' },
           change_reason: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明这次更新了什么（进审计记录，她可见）' },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一版' },
         },
-        required: ['text', 'change_reason', 'idempotency_key'], additionalProperties: false,
+        required: [], additionalProperties: false,
+        anyOf: [
+          { required: ['operation'] },
+          { required: ['text', 'change_reason', 'idempotency_key'] },
+        ],
       },
     },
   },
@@ -1122,22 +1129,46 @@ export class HostToolExecutor {
 
   /** 她授权 2026-10-17：char自维护长期记忆里程碑。写新版+manifest I 槽原子更新+审计；
    *  幂等键查 audit_events（同键重试只写一版）；I 槽不参与指纹——当前窗继续旧冻结副本，
-   *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。 */
-  private identityMilestoneWrite(args: { text: string; change_reason: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
+   *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。
+   *  2026-10-22 她要求：条目化——read（带序号）/add/revise/remove（IdentityService 条目操作）。 */
+  private identityMilestoneWrite(args: { operation?: string; text?: string; item?: number; change_reason?: string; idempotency_key?: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.identity) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '身份服务未装配' } };
+    const op = args.operation === 'read' || args.operation === 'add' || args.operation === 'revise' || args.operation === 'remove' ? args.operation : 'write';
+    if (op === 'read') {
+      try {
+        const r = this.identity.readMilestone();
+        const entries = IdentityServiceStatic.splitMilestoneEntries(r.text);
+        return { ok: true, output: { version: r.version, entries: entries.length, text: entries.map((e: string, i: number) => `[${i + 1}] ${e}`).join('\n\n') } };
+      } catch (err) {
+        return { ok: false, output: { error_code: 'MILESTONE_READ_FAILED', detail: String((err as Error).message).slice(0, 200) } };
+      }
+    }
+    // 写类操作：change_reason/idempotency_key 必填；text 按 op 分（write/add/revise 必带，remove 不带）
+    const needText = op === 'write' || op === 'add' || op === 'revise';
+    if (typeof args.change_reason !== 'string' || args.change_reason.length === 0 || typeof args.idempotency_key !== 'string' || args.idempotency_key.length === 0) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: '写操作必须带 change_reason 与 idempotency_key' } };
+    }
+    if (needText && (typeof args.text !== 'string' || args.text.length === 0)) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: `${op} 必须带 text` } };
+    }
     const idemKey = `milestone:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
     const prior = this.db.prepare("SELECT scope, result FROM audit_events WHERE who = 'jiaming' AND what = 'identity_milestone_write' AND detail_ref = ? ORDER BY created_at DESC LIMIT 1").get(idemKey) as { scope: string | null; result: string } | undefined;
     if (prior) return { ok: true, output: { saved: true, version: prior.scope ?? null, duplicate: true } };
-    let written: { file: string; version: string; hash: string; byteSize: number };
+    let written: { file: string; version: string; hash: string; byteSize: number; entries?: number };
     try {
-      written = this.identity.updateMilestone(args.text);
+      if (op === 'write') {
+        written = this.identity.updateMilestone(args.text!);
+      } else {
+        const r = this.identity.applyMilestoneEntryOp(op, op === 'add' ? null : (typeof args.item === 'number' ? args.item : 0), op === 'remove' ? null : args.text ?? null);
+        written = { file: r.file, version: r.version, hash: r.hash, byteSize: r.byteSize, entries: r.entries };
+      }
     } catch (err) {
       return { ok: false, output: { error_code: 'MILESTONE_WRITE_FAILED', detail: String((err as Error).message).slice(0, 200) } };
     }
     this.db.prepare('INSERT INTO audit_events(id, who, what, scope, result, detail_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-      `aud_${sha256Hex(idemKey + written.version).slice(0, 24)}`, 'jiaming', 'identity_milestone_write', written.version, `ok:${written.byteSize}B:${args.change_reason.slice(0, 200)}`, idemKey, new Date().toISOString(),
+      `aud_${sha256Hex(idemKey + written.version).slice(0, 24)}`, 'jiaming', 'identity_milestone_write', written.version, `ok:${op}:${written.byteSize}B:${args.change_reason.slice(0, 200)}`, idemKey, new Date().toISOString(),
     );
-    return { ok: true, output: { saved: true, version: written.version, file: written.file, byte_size: written.byteSize, effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版' } };
+    return { ok: true, output: { saved: true, operation: op, version: written.version, file: written.file, byte_size: written.byteSize, ...(written.entries !== undefined ? { entries: written.entries } : {}), effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版' } };
   }
 
   /** EXEC_V1 §03.6.3：正式发布附件消息（复用 MessageService/发布链/归档 outbox；幂等=派生 client_message_id）。 */

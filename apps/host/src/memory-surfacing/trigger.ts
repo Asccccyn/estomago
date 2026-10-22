@@ -158,11 +158,16 @@ function baselineRule(t: string): boolean {
   return (history && event && question) || (date && event && question) || (/还记得|回想/.test(t) && history && event);
 }
 
-// —— 强信号：明确历史问句（按分句）——
-const PAST_REF = /去年|前年|以前|上次|第一次|当时|那时候|那阵子|那段|那次|那天|那场|那件|那回|那两/g;
+// —— 强信号：明确历史问句/陈述（按分句）——
+// 2026-10-22 她反馈修正：116 条生产判定全部 no_recall_signal——"明显回忆的话也没有
+// 拿去做判断"。词表与组合放宽（组合结构不变：回忆动作 ∨ 过去指代的组合，仍非名词表）：
+//  1) 回忆动词 ∧ 过去指代即可触发（陈述式回忆"我想起上次的事"不再被疑问标记硬门误杀）；
+//  2) 词表补常用变体（那个/之前/前阵子/前不久/小时候…；说起/提到/聊到/翻到/回顾…）。
+// 守卫原样保留（写入/未来/否定），普通聊天不触发。
+const PAST_REF = /去年|前年|以前|上次|第一次|当时|那时候|那阵子|那段|那次|那天|那场|那件|那回|那两|那个|小时候|前段时间|前阵子|前几天|前不久|之前/g;
 const INTERROGATIVE = /吗|什么|啥|谁|哪|怎么|为什么|几|呢|多少/;
-const RECALL_VERB = /还记得|记得|记不记得|想起|回想|回忆|有没有印象|印象/;
-const PAST_EVENT_PREDICATE = /[了过]\s*(什么|啥|谁|哪|几|多少)|怎么.{0,8}的|发生|经过|来着/;
+const RECALL_VERB = /还记得|记得|记不记得|想起|想起来了|回想|回忆|回忆起|有没有印象|印象|说起|说到|提到|提过|聊起|聊到|聊聊|说说|讲到|讲过|翻到|翻出|回顾|回味/;
+const PAST_EVENT_PREDICATE = /[了过]\s*(什么|啥|谁|哪|几|多少)|怎么.{0,8}的|怎么样了|事情怎么样|怎么了|发生|经过|来着/;
 const FUTURE_LEAD = /^(?:你|我|我们|咱们|请|帮我|麻烦)?\s*(?:明天|后天|下周|下个月|明年|下次|以后|待会|等会|过会)/;
 const CLAUSE_SPLIT = /[。！？!?\n；;，,、]/;
 
@@ -182,13 +187,17 @@ function explicitHistoryQuestion(clause: string, now: Date): { hit: boolean; anc
   const pastDates = extractExplicitDates(c).filter((d) => isPastDate(d, now));
   const pastRef = anchors.length > 0 || pastDates.length > 0;
   if (!pastRef) return { hit: false, anchors: [] };
+  const recallVerb = RECALL_VERB.test(c);
+  // 2026-10-22 放宽：回忆动词 ∧ 过去指代即触发（陈述式也算）——
+  // 疑问标记只在"无回忆动词、靠过去事件谓词"的问句路径上仍然必需。
+  if (recallVerb) return { hit: true, anchors: [...anchors, ...pastDates.map((d) => `${d.year}-${d.month}-${d.day}`)] };
   if (!INTERROGATIVE.test(c)) return { hit: false, anchors };
-  if (!(RECALL_VERB.test(c) || PAST_EVENT_PREDICATE.test(c))) return { hit: false, anchors };
+  if (!PAST_EVENT_PREDICATE.test(c)) return { hit: false, anchors };
   return { hit: true, anchors: [...anchors, ...pastDates.map((d) => `${d.year}-${d.month}-${d.day}`)] };
 }
 
 // —— 省略表达：只能靠近期状态解析 ——
-const FOLLOWUP = /^(?:后来呢|然后呢|那次呢|那天呢|那件事呢|还有呢|为什么|在哪里|在哪|他当时怎么说|你当时怎么说|是什么时候|什么时候的事)[？?。]?$/;
+const FOLLOWUP = /^(?:后来呢|然后呢|后来怎么样|怎么样了|怎么了|那次呢|那天呢|那件事呢|那件事怎么样了|还有呢|为什么|在哪里|在哪|他当时怎么说|你当时怎么说|是什么时候|什么时候的事)[？?。]?$/;
 
 /**
  * 纯函数门。recentState=null 为第一段：普通聊天与明确回忆都在此定夺，只有

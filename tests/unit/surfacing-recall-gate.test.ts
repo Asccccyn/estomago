@@ -194,3 +194,38 @@ test('接线：省略表达只在近期有已确定回忆对象时延续；无�
   assert.equal(c.jobsFor(v2.message.id), 0, '未命中不延续');
   await c.svc.stop(); c.db.close();
 });
+
+// —— 2026-10-22 她反馈放宽（116 条生产判定全 no_recall_signal 的修正）——
+test('宽召回（她 1022 反馈）：陈述式回忆与新词表变体触发 lookup；普通聊天仍不误触', () => {
+  const now = new Date('2026-10-22T04:00:00.000Z');
+  const hit = (t: string): void => {
+    const r = detectRecallNeed(t, null, now);
+    assert.equal(r.action, 'lookup', `应触发：${t}`);
+  };
+  const miss = (t: string): void => {
+    const r = detectRecallNeed(t, null, now);
+    assert.equal(r.action, 'skip', `不应触发：${t}`);
+  };
+  // 陈述式回忆（旧版被疑问标记硬门误杀）
+  hit('我想起上次我们说的事了');
+  hit('忽然想起那个晚上');
+  hit('我又想起那时候的情形');
+  // 新词表变体（那个/之前/前阵子/说起/提到/聊到/翻到）
+  hit('你还记得那个电影吗');
+  hit('他之前提过一个想法');
+  hit('我们之前聊到的那个地方');
+  hit('前几天你说的事情怎么样了');
+  hit('我翻到了以前的照片');
+  hit('跟你聊聊前阵子发生的事');
+  // 新省略式（整句短问）
+  const f = detectRecallNeed('后来怎么样', null, now);
+  assert.equal(f.action, 'needs_context');
+  // 普通聊天仍不触发（防误伤）
+  miss('今天中午吃什么');
+  miss('帮我记下明天下午三点开会');
+  miss('记得吃药');
+  miss('明天我们去公园吧');
+  miss('这个东西怎么用');
+  // 写入守卫原样
+  miss('记下：上次说的那个地方');
+});

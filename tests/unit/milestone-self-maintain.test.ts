@@ -108,3 +108,49 @@ test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async (
   assert.deepEqual(files, ['longterm-milestones-v1.md'], 'schema 拒绝不产生副作用');
   db.close();
 });
+
+// —— 2026-10-22 她要求：条目化——read/add/revise/remove ——
+
+test('条目化（1022）：read 带序号；add 追加；revise 改条；remove 删条；最后一条不可删', async () => {
+  const root = tempRoot('ms-entries-');
+  writeApprovedIdentity(root, { seedProbes: false });
+  seedMilestone(root);
+  const paths = makePaths(root);
+  const db = makeDb(root).db;
+  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) });
+  const ctx = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-m' };
+  // 换成两条目的初始版（经整版 write 建立基线）
+  const w0 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x0', operation: 'write', text: '第一条：我们的开始\n\n第二条：海边的约定', change_reason: '初始化两条', idempotency_key: 'e0' }, ctx);
+  assert.equal(w0.ok, true);
+  // read：带序号
+  const r1 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x1', operation: 'read' }, ctx);
+  assert.equal(r1.ok, true);
+  assert.equal((r1.output as { entries: number }).entries, 2);
+  assert.ok(String((r1.output as { text: string }).text).includes('[1] 第一条：我们的开始'));
+  assert.ok(String((r1.output as { text: string }).text).includes('[2] 第二条：海边的约定'));
+  // add：尾部追加
+  const a = await tools.execute('identity_milestone_write', { __tool_call_id: 'x2', operation: 'add', text: '第三条：新的里程碑', change_reason: '新增一条', idempotency_key: 'e1' }, ctx);
+  assert.equal(a.ok, true);
+  assert.equal((a.output as { entries: number }).entries, 3);
+  // revise：改第 2 条
+  const v = await tools.execute('identity_milestone_write', { __tool_call_id: 'x3', operation: 'revise', item: 2, text: '第二条：海边的约定（修订）', change_reason: '修订第二条', idempotency_key: 'e2' }, ctx);
+  assert.equal(v.ok, true);
+  const r2 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x4', operation: 'read' }, ctx);
+  const text2 = String((r2.output as { text: string }).text);
+  assert.ok(text2.includes('海边的约定（修订）'));
+  assert.ok(!text2.includes('[2] 第二条：海边的约定\n'), '旧正文被替换');
+  // remove：删第 1 条
+  const rm = await tools.execute('identity_milestone_write', { __tool_call_id: 'x5', operation: 'remove', item: 1, change_reason: '删第一条', idempotency_key: 'e3' }, ctx);
+  assert.equal(rm.ok, true);
+  assert.equal((rm.output as { entries: number }).entries, 2);
+  // 越界拒绝
+  const bad = await tools.execute('identity_milestone_write', { __tool_call_id: 'x6', operation: 'revise', item: 9, text: 'x', change_reason: 'r', idempotency_key: 'e4' }, ctx);
+  assert.equal(bad.ok, false);
+  assert.ok(String((bad.output as { detail: string }).detail).includes('ITEM_OUT_OF_RANGE'));
+  // 最后一条不可删（服务层防护——把条目删到只剩 1 后再删）
+  await tools.execute('identity_milestone_write', { __tool_call_id: 'x7', operation: 'remove', item: 1, change_reason: '删到一条', idempotency_key: 'e5' }, ctx);
+  const lastDel = await tools.execute('identity_milestone_write', { __tool_call_id: 'x8', operation: 'remove', item: 1, change_reason: '删最后一条', idempotency_key: 'e6' }, ctx);
+  assert.equal(lastDel.ok, false);
+  assert.ok(String((lastDel.output as { detail: string }).detail).includes('LAST_ENTRY'));
+  db.close();
+});

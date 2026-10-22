@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CalendarDays, ChevronDown, X } from 'lucide-react'
+import { ArrowDown, CalendarDays, X } from 'lucide-react'
 
 type DatePickerProps = {
   date: string | null
@@ -71,9 +71,18 @@ export function HistoryBoundary({ direction, loading, hasMore, error, disabled, 
   </div>
 }
 
-export function HistoryViewingBar({ date, newMessages, busy, disabled, onLatest }: { date: string | null; newMessages?: boolean; busy: boolean; disabled?: boolean; onLatest: () => void }) {
-  return <div className="flex shrink-0 items-center justify-between gap-2 border-b border-black/5 bg-[#f4f1e9] px-4 py-2 text-[12px] text-[#8a8780]">
-    <span>{date ? `正在查看 ${date}` : '正在查看较早的消息'}{newMessages ? ' · 有新消息' : ''}</span>
-    <button type="button" disabled={busy || disabled} onClick={onLatest} className="flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[#5e5d59] hover:bg-black/5 disabled:opacity-40">{busy ? '正在加载…' : '回到最新'}<ChevronDown size={13} /></button>
-  </div>
+/** 2026-10-22 她裁定：删"回到最新"横幅，改微信式圆点——浏览历史/不在底部时
+ *  悬浮于输入区右上方的小圆钮；有新消息时带红点；点击回最新。 */
+export function BackToLatestDot({ visible, newMessages, busy, disabled, onLatest }: {
+  visible: boolean; newMessages?: boolean; busy: boolean; disabled?: boolean; onLatest: () => void
+}) {
+  if (!visible) return null
+  return (
+    <button type="button" aria-label={newMessages ? '有新消息，回到最新' : '回到最新'}
+      disabled={busy || disabled} onClick={onLatest}
+      className="absolute -top-11 right-4 z-30 flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white text-[#5e5d59] shadow-md transition hover:text-[#3d3929] disabled:opacity-60">
+      <ArrowDown size={16} className={busy ? 'animate-bounce' : undefined} />
+      {newMessages && <span aria-hidden className="absolute -right-0.5 -top-0.5 h-2.5 w-2.5 rounded-full border border-white bg-[#fa5151]" />}
+    </button>
+  )
 }

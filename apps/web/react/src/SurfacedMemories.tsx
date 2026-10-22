@@ -28,6 +28,15 @@ export function SurfacedMemories({turnId,client}:{turnId:string;client:EstomagoC
   const [busy,setBusy]=useState(false),[error,setError]=useState('')
   const generation=useRef(0)
   useEffect(()=>()=>{generation.current++},[turnId])
+  // 2026-10-22 她要求：挂载即拉取，有浮现默认展开直接可见（不再藏在一键之后；
+  // 无浮现保持不渲染任何占位——消息流不被空区块打扰）。
+  useEffect(()=>{
+    const gen=++generation.current;setBusy(true);setError('')
+    client.loadSurfacedMemories(turnId)
+      .then(r=>{if(gen!==generation.current)return;setItems(r.items??[]);if((r.items??[]).length>0)setOpen(true)})
+      .catch(()=>{if(gen===generation.current)setError('回忆列表读取失败，请点按重试。')})
+      .finally(()=>{if(gen===generation.current)setBusy(false)})
+  },[turnId,client])
   async function toggle() {
     setOpen(!open)
     if(open||items||busy)return
@@ -46,8 +55,12 @@ export function SurfacedMemories({turnId,client}:{turnId:string;client:EstomagoC
     finally{if(gen===generation.current)setBusy(false)}
   }
   const last=pages.at(-1)
+  // 无浮现（已拉取且空）不渲染；读取中也不占位（不阻塞阅读）
+  if(!busy&&!error&&(items===null||items.length===0))return null
   return <div className="mt-2 text-sm text-[#5e5d59]">
-    <button type="button" aria-expanded={open} onClick={()=>void toggle()} className="underline underline-offset-4">本轮回忆</button>
+    <button type="button" aria-expanded={open} onClick={()=>void toggle()} className="underline underline-offset-4">
+      本轮浮现的记忆{items&&items.length>0?`（${items.length}）`:''}
+    </button>
     {open&&<div className="mt-2 space-y-3 rounded-xl border border-[#d4cec0] p-3">
       {busy&&<p role="status">读取中…</p>}{error&&<p role="alert">{error}</p>}
       {items?.length===0&&<p>本轮没有自动浮现的记忆。</p>}

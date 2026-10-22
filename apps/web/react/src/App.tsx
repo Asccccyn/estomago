@@ -8,7 +8,7 @@ import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionCon
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { SurfacedMemories } from './SurfacedMemories'
 import { InlineMessageEditor } from './InlineMessageEditor'
-import { HistoryBoundary, HistoryDatePicker, HistoryViewingBar } from './ChatHistoryControls'
+import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
@@ -367,9 +367,6 @@ export default function App() {
         </div>
       </header>
 
-      {(state.historyMode === 'date' || state.hasLater || state.newMessages || awayFromLatest) && <HistoryViewingBar
-        date={state.historyDate} newMessages={state.newMessages} busy={state.historyLoading}
-        disabled={editing !== null || state.selectionMode} onLatest={() => void returnToLatest()} />}
       {historyAction === 'latest' && state.historyError && <p role="alert" className="px-4 py-2 text-[12px] text-[#a54b35]">{state.historyError}</p>}
 
       {/* Messages */}
@@ -468,6 +465,9 @@ export default function App() {
       <IntegrationControls client={client} state={state} />
       {/* Composer */}
       <footer className="relative shrink-0 px-3 pt-2">
+        <BackToLatestDot visible={state.historyMode === 'date' || state.hasLater || state.newMessages || awayFromLatest}
+          newMessages={state.newMessages} busy={state.historyLoading}
+          disabled={editing !== null || state.selectionMode} onLatest={() => void returnToLatest()} />
         {state.selectionMode ? (
         <SelectionBar count={state.selected.size}
           onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条文本历史换窗？`)) void client.confirmSelection() }}

@@ -348,6 +348,47 @@ export class IdentityService {
     return { file, hash };
   }
 
+  /** 2026-10-22 她要求：里程碑条目化——char可编辑/增加/删除。条目=空行分隔的块
+   *  （不依赖特定 markdown 结构）；item 序号 1-based 按出现顺序；至少保留一条。 */
+  readMilestone(): { text: string; version: string } {
+    const { manifest } = this.loadManifest();
+    if (!manifest) throw new Error('MANIFEST_MISSING');
+    const currentRef = manifest.approved_source_ref;
+    if (!/^longterm-milestones-v\d+\.md$/.test(currentRef ?? '')) throw new Error('IDENTITY_SLOT_NOT_MILESTONE');
+    const filePath = path.join(this.paths.identityDir, currentRef!);
+    if (!fs.existsSync(filePath)) throw new Error('MILESTONE_FILE_MISSING');
+    return { text: fs.readFileSync(filePath, 'utf8'), version: manifest.identity_version ?? 'unknown' };
+  }
+
+  static splitMilestoneEntries(text: string): string[] {
+    return text.replace(/\r\n/g, '\n').split(/\n{2,}/).map((b) => b.trim()).filter((b) => b.length > 0);
+  }
+
+  /** 条目级操作：add=尾部追加；revise=替换第 item 条；remove=删除第 item 条。
+   *  沿用 updateMilestone 的版本链/manifest 原子更新/旧版留档语义。 */
+  applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null): { file: string; version: string; hash: string; byteSize: number; entries: number } {
+    const current = this.readMilestone();
+    const entries = IdentityService.splitMilestoneEntries(current.text);
+    if (op === 'add') {
+      if (entryText === null || entryText.trim().length === 0) throw new Error('ENTRY_TEXT_REQUIRED');
+      entries.push(entryText.trim());
+    } else {
+      const idx = (item ?? 0) - 1;
+      if (!Number.isInteger(item) || idx < 0 || idx >= entries.length) {
+        throw new Error(`ITEM_OUT_OF_RANGE: 当前共 ${entries.length} 条（1..${entries.length}）`);
+      }
+      if (op === 'revise') {
+        if (entryText === null || entryText.trim().length === 0) throw new Error('ENTRY_TEXT_REQUIRED');
+        entries[idx] = entryText.trim();
+      } else {
+        if (entries.length <= 1) throw new Error('LAST_ENTRY: 至少保留一条里程碑——要清空请和她确认后整版替换');
+        entries.splice(idx, 1);
+      }
+    }
+    const written = this.updateMilestone(entries.join('\n\n') + '\n');
+    return { file: written.file, version: written.version, hash: written.hash, byteSize: written.byteSize, entries: entries.length };
+  }
+
   // Bootstrap Receipt（05 §3 四层证据）；返回真实主键（AUD-22：window.receipt_id 引用它）
   buildAndStoreReceipt(db: Db, opts: {
     windowId: string | null;
