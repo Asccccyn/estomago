@@ -1,5 +1,6 @@
 # estómago
 
+- 2026-10-22（分支 `wake-keepwarm-20261022`，未部署未开启）：char自主预约唤醒 + 心跳保温整链改造——她 1022 施工包 `ESTOMAGO_WAKE_KEEPWARM_GLM_20261022` 落地：聊天/自醒/心跳/换窗共用同一会话串行链；60min 冷却与心跳零工具/单请求/128 输出封锁退役（她 U02/U06 裁定）；预约正本（wake_manage 工具+HTTP 共用幂等/CAS）；真实发布锚点 L+50 分保温计时（维护回执 CAS 技术续温）；纯"1"=维护回执不进聊天/记忆，实质行为共享轨迹；真实费用预占不再恒 0；schema v33；两项开关默认关闭。[实现与验收](docs/reports/WAKE_KEEPWARM_20261022.md)。
 - 2026-10-21（已部署并核验）：模型输出白名单、MCP 默认单份 JSON、按需工具和发生日期修复；固定版本在 Projects 发布目录运行。历史/缓存指纹一致，零 OR 验证请求。[部署、路径故障恢复与回滚](docs/reports/MODEL_OUTPUT_PRODUCTION_20261021.md)。
 
 - 2026-10-21（代码 `bd677ed` 已验证，未部署）：模型结果字段白名单；保留操作引用、并发版本与业务正文，修复发生日期被置信度置空。[输出合同与边界](docs/contracts/model-result-whitelist.md)。
