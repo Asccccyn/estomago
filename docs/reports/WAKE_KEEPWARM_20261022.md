@@ -27,7 +27,7 @@
 | K-01..K-18 | `wake-keepwarm.test.ts`（K-02/03/04/05/06/07/09/10/11/16）+ `exec-v1-wp4-executor.test.ts`（K-01/K-12/K-13） | 已实现（K-08/K-14/K-15/K-17/K-18 见下） |
 | S-01..S-09 | `wake-keepwarm.test.ts`（S-01/S-03）+ `exec-v1-wp4-background.test.ts`（S-05/S-02 面）+ `exec-v1-wp4-executor.test.ts`（S-07 面：终态拒新派发） | 部分实现（S-04/S-06/S-08/S-09 见下） |
 | C-01..C-16 | `exec-v1-wp4-executor.test.ts`（C-01/C-02/C-07/C-12 面） | 部分实现（C-03..C-06/C-08..C-11/C-13..C-16 见下） |
-| B-01..B-10 | `wake-keepwarm.test.ts`（B-03/B-08/B-09）+ `exec-v1-wp4-executor.test.ts`（B-01/B-10）+ `exec-v1-wp4-background.test.ts`（预算门） | 部分实现（B-02/B-04..B-07 见下） |
+| B-01..B-10 | `wake-keepwarm.test.ts`（B-02/B-03/B-08/B-09）+ `exec-v1-wp4-executor.test.ts`（B-01/B-10）+ `exec-v1-wp4-background.test.ts`（预算门） | 已实现（B-04..B-07 实现存在未逐一独立断言，见下） |
 | A-01..A-10 | `wake-keepwarm.test.ts`（A-01）+ `exec-v1-wp4-http.test.ts`（A-02/A-03/A-05 面/A-06） | 部分实现（A-04/A-07..A-10 见下） |
 
 ### 未在本轮单测逐一落地、但由实现结构覆盖或需真机的项（如实标注）
@@ -43,7 +43,7 @@
 - S-09（时钟回拨）：`clockRegressionAction` 保留+测试在旧文件覆盖；恢复水位=lastTickMs 机制原样。
 - C-03..C-06/C-13..C-16：C-04/C-05 由 window_toolsets 冻结机制结构性保证（wake_manage 只进新窗 catalog——`buildHostTools()` 快照）；C-06 轨迹正本复用实现存在；C-13 background_complete 放行心跳 purpose（实现+purpose 断言）；C-15 无身份伪造=owner 正文永远走消息链不走 host 事件（结构性）；C-16 断点规划沿用 planBoundaries。
 - B-02（跨 run 日聚合）：settleDispatch 幂等+dispatch 表 reserved/actual 口径已实现；**跨 run SUM 日占用门在 onBeforeDispatch 尚未接完整 SQL 聚合**（当前预占按 run 累计+cap 检查在 budgetGate；日级全局聚合属收尾项）。
-- B-04..B-07：B-04 重试逐笔记账（onBeforeDispatch 每 attempt 一次 recordDispatch）实现；B-05 unknown 保留（结算 state=unknown+预占不释放）实现；B-06 工具费用归属 keepwarm（dispatch 表随 run 归属）实现；B-07 工具 0 预占+幂等（tool dispatch 记账）实现——均未逐一写独立断言。
+- B-04..B-07：B-04 重试逐笔记账（onBeforeDispatch 每 attempt 一次 recordDispatch，且每次过同一日占用门）实现；B-05 unknown 保留（结算 state=unknown+预占不释放）实现；B-06 工具费用归属 keepwarm（dispatch 表随 run 归属）实现；B-07 工具 0 预占+幂等（tool dispatch 记账）实现——均未逐一写独立断言。B-02 已落地：`recordDispatchStart` 日占用门=当日同 kind 全部 run 的 settled actual+未结算预占+本次上界 ≤ cap（`wake-keepwarm.test.ts` B-02 用例）。C-07 已落地：`exec-v1-wp4-executor.test.ts` C-07 用例——自醒 chat_send_text 发布后下一用户请求恰好含一次主动消息（wire 恰 1 处=模型自己发过的 tool_use 协议原文），消息库恰一条。
 - A-04（前端未知态）：BackgroundControls 加载中显示"不预设开启"；未做浏览器 DOM 实测（见 TEST_EVIDENCE）。
 - A-07/A-08/A-09/A-10：A-09/A-10 由 run-tests 保险丝+fake transport 结构保证；A-07/A-08 属 UI 实测项。
 
@@ -102,7 +102,7 @@ L1（包内 reference Python oracle）29 项通过为包作者记录；本轮未
 - **真实 Opus4.6/AWS 请求（L3）：NOT_RUN_REQUIRES_APPROVAL**——含缓存命中/断点/4 断点上限/1h TTL 实测。
 - **生产部署/重启/开关开启：NOT_DONE_REQUIRES_APPROVAL**（13_ROLLOUT_HANDOFF 步骤待她批）。
 - 生产凭据/身份/聊天读取：NOT_ACCESSED（全程只读本地仓库源码，未触生产 `~/Library/Application Support/estomago`）。
-- 收尾项：B-02 跨 run 日占用聚合 SQL 接入 onBeforeDispatch（当前预占按 run 累计+cap 检查在 budgetGate，日级全局聚合属收尾项）；C-07"下一请求可见"独立断言。前端 BackgroundControls 浏览器 DOM 实测已完成（见 TEST_EVIDENCE）；备注一个显示细节：`datetime-local` 值经 `new Date(v).toISOString()` 按访问者本地时区解析后存 UTC（语义正确）；面板时间显示用访问者本地 `toLocaleString`，生产（上海时区）显示即上海时间，未做固定时区钉扎（如需按业务时区显示再加 timeZone 参数）。
+- 收尾项已全部完成（B-02/C-07/时区钉扎，提交 `bac8dc2`）。前端 BackgroundControls 浏览器 DOM 实测已完成（见 TEST_EVIDENCE）；时间显示已钉 `timeZone: 'Asia/Shanghai'`（08 业务时区口径）。
 - 既有 15 个失败用例（白名单批遗留）不在本批修复范围——见 TEST_EVIDENCE 基线对照。
 - 已知边界（13 必须显式交代）：旧窗无 wake_manage（下次正常换窗生效，UI 有说明）；纯 ACK 回执≠缓存命中；长生成可能令 L+50 晚于缓存估计过期（不提前心跳）；关闭期间错过预约不自动补发（needs_review）；外部动作结果 unknown 不自动重放；心跳中正式发言/工具在 UI 的展示走普通消息通道（后台运行列表另可见）。
-- 分支基线注记：本分支实际自 `35da6fc`（另一路代理的 docs-only 提交，在我建分支前已入 main）分出；历史完整包含并行提交，无需合并；README 索引行无冲突。
+- 分支基线注记：本分支实际自 `35da6fc`（另一路代理的 docs-only 提交，在我建分支前已入 main）分出；施工与收尾期间另一路又在本分支叠入三层记忆批（`9a81173`/`1b550db`，与我有共同文件 host-tools/http/chat-client/dist）——共存态 typecheck+本批全部目标测试复跑通过；它的 README 行记录其已部署生产（与本批无关，本批仍未部署未开启）。
