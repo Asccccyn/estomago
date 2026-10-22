@@ -127,6 +127,10 @@ archive:
   source_scope: null
   semantic_auto_binding_threshold: null
   semantic_auto_binding_enabled: false
+# 媒体 embedding worker（JOINT-VOICE-20261022；未配置=图片语义检索不可用，聊天不受影响）
+# media_embedding:
+#   base_url: http://127.0.0.1:8792
+
 integrations:
   mariposa:
     base_url: null
@@ -135,6 +139,10 @@ integrations:
     credential_ref: null
     archive_credential_ref: null
     contract_version: null
+  # oído 深听（JOINT-VOICE-20261022）：未配置=听觉不可用，无转写语音保持阻断语义
+  oido:
+    # base_url: http://127.0.0.1:8791
+    # credential_ref: ESTOMAGO_OIDO_TOKEN   # 环境变量名（值绝不入配置/日志）
   siren:
     base_url: null
     credential_ref: null
