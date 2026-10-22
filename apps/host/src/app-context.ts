@@ -1,4 +1,4 @@
-import { supportsSurfacingTransport } from './memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport, SURFACE_HOST_NOTICE } from './memory-surfacing/contracts.ts';
 // 组合根：把配置、DB 与各服务装配成一个可启动/可停止的 Host。
 // 测试用 createHost({ stateRoot: 临时目录, config: buildConfig({...}) }) 直接构建。
 import http from 'node:http';
@@ -130,6 +130,7 @@ export class Host {
       surfaceMariposaClient,
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
+        transport_overhead_text: opts.config.runtime.provider === 'openrouter' ? SURFACE_HOST_NOTICE : '',
         policy_revision: 1,
         prompt_prepare_revision: 'surface_prepare_v1',
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,

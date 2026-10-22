@@ -25,6 +25,7 @@ export type SurfacingConfig = {
   delivery_deadline_ms: number;
   max_added_tokens_per_turn: number;
   max_packet_bytes: number;
+  transport_overhead_text?: string;
   worker_concurrency: number;
 };
 
@@ -405,8 +406,9 @@ export class SurfacingService {
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(it.event_id, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs);
-      const tokens = estimateTokens(candidate);
-      const bytes = Buffer.byteLength(candidate, 'utf8');
+      const wireText = (this.cfg.transport_overhead_text ?? '') + candidate;
+      const tokens = estimateTokens(wireText);
+      const bytes = Buffer.byteLength(wireText, 'utf8');
       if (tokens > this.cfg.max_added_tokens_per_turn
         || bytes > this.cfg.max_packet_bytes) continue;
       items.push(it);

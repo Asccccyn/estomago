@@ -1,6 +1,6 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
-import { supportsSurfacingTransport } from '../memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -2107,10 +2107,10 @@ export class TurnSupervisor {
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true });
-    // Host memory is a separate data message. It is never attributed to the
-    // real user or represented as a model tool call. Only the new tail grows.
+    // Host memory is separate from the real input. OR uses explicitly labelled
+    // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
-      ? [{ role: 'system', content: [{ type: 'text', text: surfacingAugment.text }] }] : [];
+      ? [surfaceTransportMessage(this.drv()?.kind ?? '', surfacingAugment.text)] : [];
     const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory,
       { role: 'user', content: tailProjection.blocks } as OrMessage];
     const orEnvelope: OrRequestEnvelope | null = dv
