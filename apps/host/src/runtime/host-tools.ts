@@ -484,8 +484,30 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'wake_manage',
+      description: '给自己预约未来的自主唤醒（一次性；可有多个并存任务）。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
+      parameters: {
+        type: 'object',
+        properties: {
+          operation: { type: 'string', enum: ['schedule', 'list', 'update', 'cancel'] },
+          operation_id: { type: 'string', minLength: 1, maxLength: 128, description: '写操作的幂等键：同键同参数重试返回原回执' },
+          note: { type: 'string', minLength: 1, maxLength: 8000, description: '留给未来自己的话（到期原样递送给自己，不直接发给宿主用户）' },
+          at: { type: 'string', description: '目标时间（RFC3339，必须带 Z 或 ±hh:mm 时区）' },
+          delay_seconds: { type: 'integer', minimum: 1, description: '从现在起的秒数（首次受理时解析为绝对时间）' },
+          task_id: { type: 'string', minLength: 1, maxLength: 64 },
+          expected_revision: { type: 'integer', minimum: 1 },
+          cursor: { type: 'string' },
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+        },
+        required: ['operation'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'background_complete',
-      description: '结束本次自主活动。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。仅自主活动回合可用。',
+      description: '结束本次自主活动/心跳。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。自主活动与心跳回合均可用。',
       parameters: {
         type: 'object',
         properties: {
@@ -884,7 +906,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -898,6 +920,7 @@ export class HostToolExecutor {
     this.identity = deps.identity ?? null;
     this.events = deps.events ?? null;
     this.wishstar = deps.wishstar ?? null;
+    this.taskService = deps.taskService ?? null;
   }
 
   private media: import('../media/assets.ts').MediaService | null;
@@ -906,13 +929,15 @@ export class HostToolExecutor {
   private identity: import('../identity/service.ts').IdentityService | null;
   private events: import('../events/service.ts').EventService | null;
   private wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
+  /** WAKE_KEEPWARM_V1（04）：wake_manage 与 HTTP 管理面共用的预约正本（未注入=工具如实拒绝） */
+  private taskService: import('./background-task-service.ts').BackgroundTaskService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
   private static readonly SILENT_TOOLS = new Set(['context_review_complete', 'background_complete']);
   private static readonly TOOL_LABELS: Record<string, string> = {
     memory_hold: '写记忆', memory_recall: '查记忆', memory_recall_next: '翻查记忆', conversation_read: '读聊天原文',
     memory_i_read: '读 I', memory_i_write: '写 I', memory_open: '打开记忆桶', memory_correct: '订正记忆', deletion_review: '处理删除评审',
     episode_list: '查事件', episode_get: '看事件', episode_apply: '更新事件', plans_read: '读计划', plans_write: '写计划',
-    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', background_complete: '结束自主活动',
+    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
     content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
     identity_milestone_write: '更新长期记忆里程碑',
     wishstar_write_star: '往许愿星写了一颗星', wishstar_hidden_stars: '看自己的私人瓶子',
@@ -983,23 +1008,63 @@ export class HostToolExecutor {
     }
   }
 
-  /** EXEC_V1 §04.6.2：结束自主活动——noop 是成功结果（§6.2），无产出不构成失败。仅自主回合有效。 */
+  /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（2026-10-22）：结束后台回合——noop 是成功结果
+   *  （§6.2），无产出不构成失败。自主唤醒与心跳回合均可用（C-13：心跳经 tool_invoke
+   *  调用结束工具→正确收口，不再多发一轮无用模型请求）。 */
   private backgroundComplete(args: { outcome: 'done' | 'noop' }, ctx: ToolExecContext): ToolExecResult {
-    if (ctx.purpose !== 'proactive_turn') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅自主活动回合可用' } };
+    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅后台回合（自主唤醒/心跳）可用' } };
     if (ctx.backgroundRunId) {
       this.db.prepare("UPDATE background_runs SET result_code = ?, updated_at = ? WHERE id = ?").run(`complete:${args.outcome}`, new Date().toISOString(), ctx.backgroundRunId);
     }
     return { ok: true, output: { completed: true, outcome: args.outcome } };
   }
 
-  /** EXEC_V1 §04.6.2：自主活动正式公开发言——复用正式发布链（幂等键派生；重试只发一次）。 */
+  /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（05）：后台正式公开发言——心跳与自主共用；
+   *  复用正式发布链（幂等键派生；重试只发一次）。普通最终回复不自动发布（E03）。 */
   private chatSendText(args: { text: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.messages) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'chat') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID' } };
+    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'chat' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID' } };
     const clientMessageId = `tool-text:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
     const msg = this.messages.publishAssistantMessage({ conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.text, clientMessageId });
     void this.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
     return { ok: true, output: { message_id: msg.id, published: true } };
+  }
+
+  /** WAKE_KEEPWARM_V1 §04：wake_manage——char自主预约的唯一工具面。
+   *  conversation/actor 取可信 ToolExecContext（schema 不接受注入，W-19）；
+   *  schedule/update 受自主开关门（SELF_WAKE_DISABLED）；list/cancel 关闭时仍可用。 */
+  private wakeManage(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
+    if (!this.taskService) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '预约服务未装配（能力缺口，如实拒绝）' } };
+    const op = args.operation;
+    const convId = ctx.roomId;
+    const err = (code: string, detail: string): ToolExecResult => ({ ok: false, output: { error_code: code, detail } });
+    if (op === 'schedule') {
+      const r = this.taskService.schedule({
+        actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''),
+        note: args.note as string, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, createdBy: 'jiaming',
+      });
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
+      return { ok: true, output: { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision, duplicate: r.duplicate } };
+    }
+    if (op === 'list') {
+      const r = this.taskService.list({ actorId: 'jiaming', conversationId: convId, cursor: args.cursor, limit: args.limit });
+      if (!r.ok) return err(r.code, r.detail ?? '');
+      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, note_preview: t.note_preview })), next_cursor: r.next_cursor } };
+    }
+    if (op === 'update') {
+      const r = this.taskService.update({
+        actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''),
+        expectedRevision: Number(args.expected_revision ?? 0), note: args.note ?? undefined, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined,
+      });
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
+      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, scheduled_at: r.task.scheduled_at, duplicate: r.duplicate } };
+    }
+    if (op === 'cancel') {
+      const r = this.taskService.cancel({ actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''), expectedRevision: Number(args.expected_revision ?? 0) });
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
+      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, cancelled: true, duplicate: r.duplicate } };
+    }
+    return err('WAKE_REQUEST_INVALID', `未知操作：${String(op)}`);
   }
 
   /** EXEC_V1 §03.6.3：外部图片持久导入（幂等键由 turn+请求稳定派生，模型不可指定他人操作）。 */
@@ -1164,7 +1229,7 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1190,6 +1255,7 @@ export class HostToolExecutor {
     if (name === 'creation_save_artifact') return await this.creationSaveArtifact(checked.value as { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx);
     if (name === 'background_complete') return this.backgroundComplete(checked.value as { outcome: 'done' | 'noop' }, ctx);
     if (name === 'chat_send_text') return this.chatSendText(checked.value as { text: string; idempotency_key: string }, ctx);
+    if (name === 'wake_manage') return this.wakeManage(checked.value as Record<string, unknown>, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);

@@ -26,9 +26,13 @@ export type SurfacingMessageHooks = {
 export class MessageService {
   private db: Db;
   private surfacing: SurfacingMessageHooks | null;
-  constructor(db: Db, surfacing: SurfacingMessageHooks | null = null) {
+  /** WAKE_KEEPWARM_V1 §05（2026-10-22）：真实活动锚点投影——正式发布事务内更新 L；
+   *  未注入（旧测试/最小装配）=零变化。 */
+  private activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
+  constructor(db: Db, surfacing: SurfacingMessageHooks | null = null, activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null = null) {
     this.db = db;
     this.surfacing = surfacing;
+    this.activity = activity;
   }
 
   ensureConversation(conversationId: string, title: string | null = null): void {
@@ -169,6 +173,8 @@ export class MessageService {
         sequence: seqRow.next, content, contentHash: msgDto.revision.content_hash,
         occurredAt,
       });
+      // WAKE_KEEPWARM_V1 §05：真实发布（非幂等重放路径）同事务更新 L 锚点
+      this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
       return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };
     });
     // 事务提交后唤醒（worker 网络面绝不进本事务）
@@ -291,6 +297,8 @@ export class MessageService {
         ).run(messageId, 1, i, atts[i]!.asset_id, atts[i]!.presentation, atts[i]!.caption ?? null, nowIso);
       }
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
+      // WAKE_KEEPWARM_V1 §05：assistant 正式发布（含后台正式发言）同事务更新 L
+      this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
     });
     return this.getMessage(messageId)!;
   }
@@ -309,6 +317,8 @@ export class MessageService {
       this.insertRevision({ messageId, revision: row.current_revision + 1, kind: 'text', content: merged, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish', fingerprint: messageFingerprint(merged, []), supersedes: row.current_revision });
       this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(row.current_revision + 1, messageId);
       this.insertOutbox(`archive:${messageId}:${row.current_revision + 1}`, { message_id: messageId }, nowIso);
+      // WAKE_KEEPWARM_V1 §05（K-05/B18）：同一 assistant 消息真正追加的新段落=新真实活动
+      this.activity?.noteRealPublication(row.conversation_id, messageId, row.current_revision + 1, nowIso);
     });
     return this.getMessage(messageId);
   }

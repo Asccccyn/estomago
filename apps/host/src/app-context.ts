@@ -36,6 +36,8 @@ import { MediaService } from './media/assets.ts';
 import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
+import { BackgroundTaskService } from './runtime/background-task-service.ts';
+import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
 
@@ -138,7 +140,10 @@ export class Host {
       logger,
       events,
     );
-    const messages = new MessageService(db, surfacing.enabled ? surfacing : null);
+    // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
+    // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
+    const activity = new ConversationActivityService(db);
+    const messages = new MessageService(db, surfacing.enabled ? surfacing : null, activity);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
@@ -194,7 +199,13 @@ export class Host {
     // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
     const { WishstarClient } = await import('./integrations/wishstar/client.ts');
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar });
+    // WAKE_KEEPWARM_V1（2026-10-22）：后台设置与预约管理正本——HTTP 管理面、
+    // wake_manage 工具、调度器共用同一实例（单一正本，不另写第二套业务）。
+    const bgSettings = new BackgroundSettingsService(db, opts.config);
+    const taskService = new BackgroundTaskService(db, bgSettings);
+    // S-06：心跳让位检查经可变引用接线（scheduler 在 supervisor 之后构造）
+    let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService });
     const supervisor = new TurnSupervisor({
       wishstar,
       db,
@@ -218,47 +229,49 @@ export class Host {
       settings,
       alerts,
       media,
+      activity,
+      keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
     });
 
-    // EXEC_V1 WP4：后台设置+调度器（宿主内单实例；自主/保温模型执行器=接线批，交付期 readiness=false）
-    const bgSettings = new BackgroundSettingsService(db, opts.config);
-    const scheduler = new BackgroundScheduler({
+    // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
+    // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
+    // 会话串行链（03 统一执行入口——chatBusy 用户在场门已删，排队与让位在执行位内处理）。
+    const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
-      // §7.1 聊天优先：有活动/待处理回合即视为忙
-      chatBusy: () => (db.prepare("SELECT COUNT(*) n FROM turns WHERE state IN ('pending','running','route_pending')").get() as { n: number }).n > 0,
       executor: {
-        async executeRun(input) {
+        async executeRun(input: Parameters<import('./runtime/background-scheduler.ts').BackgroundExecutor['executeRun']>[0]): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }> {
           if (input.kind === 'reminder') {
             // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
             const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
-            const msg = messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` });
+            const msg = await supervisor.enqueueBackground(input.conversationId, () => Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` })));
             events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
             return { outcome: 'completed', result_code: 'delivered' };
           }
           // EXEC_V1 §04.10.2：付费模型预占须可信上界——价格未核验（runtime_settings 可配）→
           // BUDGET_ESTIMATE_UNAVAILABLE，不开后台付费请求（unknown 不当免费）
-          const es = bgSettings.effective();
-          const drvCfg = opts.config.runtime.provider;
-          void drvCfg;
-          const modelRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
-          const price = modelRow ? JSON.parse(modelRow.value) as { input_micro_per_token?: number; output_micro_per_token?: number } : null;
+          const priceRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
+          const price = priceRow ? JSON.parse(priceRow.value) as { input_micro_per_token?: number; output_micro_per_token?: number } : null;
           if (!price || typeof price.input_micro_per_token !== 'number' || typeof price.output_micro_per_token !== 'number') {
-            return { outcome: 'failed', result_code: 'BUDGET_ESTIMATE_UNAVAILABLE', result_detail: '模型价格未核验（or_model_price 未配置）——后台付费请求不开' };
+            return { outcome: 'failed', result_code: 'BUDGET_ESTIMATE_UNAVAILABLE' };
           }
-          const kindCfg: { max_output_tokens_per_run: number } = input.kind === 'keepwarm' ? es.keepwarm : es.autonomous;
-          const r = await supervisor.runBackgroundTurn({
+          // 开关在执行位内重查（03：领取≠执行——tick 快照不算数）
+          const es = bgSettings.effective();
+          if (es[input.kind].enabled !== true) return { outcome: 'noop', result_code: input.kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' };
+          if (es[input.kind].daily_cost_cap_usd === null) return { outcome: 'failed', result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' };
+          // WAKE_KEEPWARM_V1：心跳与自主同为完整回合（09）——正常模型请求边界（每 run
+          // 付费上限）、主会话输出上限、完整工具循环；旧的 keepwarm 单请求封锁已退役。
+          return supervisor.enqueueBackground(input.conversationId, () => supervisor.runBackgroundTurn({
             kind: input.kind as 'autonomous' | 'keepwarm',
             runId: input.runId, conversationId: input.conversationId, payload: input.payload,
             isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
             recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, logicalActionKey: info.logicalActionKey, attemptNo: info.attemptNo, dispatchKind: info.dispatchKind, capabilityName: null, reservedCostMicroUsd: info.reservedCostMicroUsd }),
-            maxModelRequests: input.kind === 'keepwarm' ? 1 : es.autonomous.max_model_requests_per_run,
-            maxOutputTokens: kindCfg.max_output_tokens_per_run,
-          });
-          return { outcome: r.outcome, result_code: r.result_code };
+            maxModelRequests: es.autonomous.max_model_requests_per_run,
+          }));
         },
       },
     });
+    schedulerRef = scheduler;
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
     // AUD-02 P1：注入关闭→终止回调
     bgSettings.onDisable = (kind) => scheduler.disableKind(kind);
@@ -285,6 +298,8 @@ export class Host {
       bgSettings,
       scheduler,
       bgExecutorReady,
+      taskService,
+      activity,
       contentClient,
       voice,
       surfacing,

@@ -68,6 +68,8 @@ export type RequestDeps = {
   bgSettings?: import('../runtime/background-settings.ts').BackgroundSettingsService; // EXEC_V1 WP4
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
+  taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
+  activity?: import('../runtime/wake-activity.ts').ConversationActivityService; // WAKE_KEEPWARM_V1：活动投影/保温状态派生
   contentClient?: import('../integrations/content/client.ts').ContentClient | null; // EXEC_V1 WP5：内容服务薄代理
   surfacing?: import('../memory-surfacing/service.ts').SurfacingService | null; // 自动浮现（默认 disabled）
   auth: AuthService;
@@ -752,18 +754,43 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, result.status, result.body);
     }
 
-    // —— EXEC_V1 §04.11（WP4）：后台设置/任务/运行（Idempotency-Key；PUT/DELETE 另带 If-Match）——
+    // —— EXEC_V1 §04.11（WP4）+ WAKE_KEEPWARM_V1 §08（2026-10-22）：后台设置/任务/运行 ——
+    // 任务管理全部经 BackgroundTaskService（与模型 wake_manage 共用幂等/CAS/鉴权；
+    // HTTP 不再直写表、不再拼 Date.now 伪幂等，B14/B15 修复）。
     if (route === 'GET /api/v1/background/settings') {
       if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });
       const es = d.bgSettings.effective();
+      // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
+      const activityRow = d.activity?.get('primary') ?? null;
+      let keepwarmStatus: Record<string, unknown> = { scheduled: false };
+      if (d.activity && d.scheduler) {
+        const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+        if (win) {
+          const target = d.activity.nextKeepwarmTarget({ conversationId: 'primary', windowId: win.id });
+          const ev = (d.db.prepare(
+            `SELECT u.cache_read_input_tokens AS rt, u.cache_creation_input_tokens AS wt, pr.dispatch_started_at AS started
+             FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id
+             WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+               AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0) OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
+             ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
+          ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined);
+          const cacheStatus = !ev ? 'unknown' : (ev.started && Date.now() - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
+          keepwarmStatus = {
+            scheduled: target.scheduled && es.keepwarm.enabled,
+            ...(target.scheduled ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
+            last_real_activity_at: activityRow?.last_real_activity_at ?? null,
+            cache_status: cacheStatus,
+          };
+        }
+      }
       return json(res, 200, {
         revision: es.revision,
-        autonomous: { enabled: es.autonomous.enabled, max_model_requests_per_run: es.autonomous.max_model_requests_per_run, max_output_tokens_per_run: es.autonomous.max_output_tokens_per_run, max_tool_calls_per_run: es.autonomous.max_tool_calls_per_run, max_run_ms: es.autonomous.max_run_ms, paid_tools_enabled: es.autonomous.paid_tools_enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
-        keepwarm: { enabled: es.keepwarm.enabled, max_output_tokens_per_run: es.keepwarm.max_output_tokens_per_run, max_run_ms: es.keepwarm.max_run_ms, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, idle_after_cache_ms: 3000000 },
-        reminders: { enabled: es.reminders.enabled, delivery_grace_ms: es.reminders.delivery_grace_ms, default_local_time: es.reminders.default_local_time },
+        autonomous: { enabled: es.autonomous.enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
+        keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd },
+        reminders: { enabled: es.reminders.enabled },
         executor_ready: d.bgExecutorReady ?? { autonomous: false, keepwarm: false },
-        // 关闭语义说明（§4.1）：已产生费用与已完成动作保留
-        notice: '关闭后不再开始自主活动/保温，正在进行的后续步骤会停止；已经产生的费用和已经完成的动作保留。',
+        keepwarm_status: keepwarmStatus,
+        notice: '关闭后不再开始自主预约唤醒/心跳保温，正在进行的后续步骤会停止；已产生的费用和已完成的动作保留。两项开关独立。',
       });
     }
     if (route === 'PUT /api/v1/background/settings') {
@@ -796,63 +823,90 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       }
     }
     if (route === 'GET /api/v1/background/tasks') {
+      if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
       const conversationId = url.searchParams.get('conversation_id') ?? 'primary';
-      const rows = d.db.prepare('SELECT id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, created_by_actor_id, created_at FROM background_tasks WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 100').all(conversationId);
-      return json(res, 200, { tasks: rows });
+      const r = d.taskService.list({ actorId: 'jiaming', conversationId, cursor: url.searchParams.get('cursor') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 20) });
+      if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null } });
+      // 08 瘦返回：id/revision/kind/scheduled_at/status/短预览；全文 note 走详情
+      return json(res, 200, { tasks: r.tasks, next_cursor: r.next_cursor });
+    }
+    const bgTaskDetail = /^GET \/api\/v1\/background\/tasks\/([^/]+)$/.exec(route);
+    if (bgTaskDetail) {
+      if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
+      const r = d.taskService.detail({ actorId: 'jiaming', conversationId: url.searchParams.get('conversation_id') ?? 'primary', taskId: decodeURIComponent(bgTaskDetail[1]!) });
+      if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null } });
+      return json(res, 200, { task: r.task });
     }
     if (route === 'POST /api/v1/background/tasks') {
       const opKey = String(req.headers['idempotency-key'] ?? '');
       if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
       const body = (await readJson(req, d)) as Record<string, unknown>;
-      const kind = body.kind;
-      if (kind !== 'reminder' && kind !== 'autonomous') return json(res, 400, { error: { code: 'bad_kind', message: 'kind 必须是 reminder|autonomous（保温任务由系统按缓存证据排程，不可手建）' } });
-      const scheduleKind = body.schedule_kind ?? 'once';
-      if (scheduleKind !== 'once' && scheduleKind !== 'daily' && scheduleKind !== 'interval') return json(res, 400, { error: { code: 'bad_schedule', message: 'schedule_kind 必须是 once|daily|interval' } });
-      if (typeof body.scheduled_at !== 'string' || !body.scheduled_at) return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填（完整时间，不暗补当前时间）' } });
-      if (kind === 'autonomous' && scheduleKind === 'interval' && (typeof body.interval_ms !== 'number' || body.interval_ms < 3_600_000)) return json(res, 422, { error: { code: 'interval_too_short', message: '周期自主任务间隔不能小于 60 分钟' } });
-      const payload = body.payload && typeof body.payload === 'object' ? body.payload : {};
-      const id = `bgt_${opKey.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)}_${Date.now().toString(36)}`;
-      const nowIso = new Date().toISOString();
-      d.db.prepare(
-        `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, created_at, updated_at)
-         VALUES (?,?,'jiaming',?,1,1,?,?,?,'Asia/Shanghai',NULL,?,?,'qiaosheng',?,?)`,
-      ).run(id, String(body.conversation_id ?? 'primary'), kind, scheduleKind, body.scheduled_at as string, body.scheduled_at as string, typeof body.interval_ms === 'number' ? body.interval_ms : null, JSON.stringify(payload), nowIso, nowIso);
-      return json(res, 201, { task_id: id, next_due_at: body.scheduled_at });
+      if (body.kind === 'reminder') {
+        // 普通提醒（无模型投递）保留直建；ID 由服务端生成（不再拼 Date.now，B14）
+        const scheduleKind = body.schedule_kind ?? 'once';
+        if (scheduleKind !== 'once' && scheduleKind !== 'daily') return json(res, 400, { error: { code: 'bad_schedule', message: 'reminder 的 schedule_kind 必须是 once|daily' } });
+        if (typeof body.scheduled_at !== 'string' || !body.scheduled_at) return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填（完整时间，不暗补当前时间）' } });
+        const prior = d.db.prepare('SELECT id FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(String(body.conversation_id ?? 'primary'), opKey) as { id: string } | undefined;
+        if (prior) return json(res, 200, { task_id: prior.id, duplicate: true });
+        const id = genId('bgt');
+        const nowIso = new Date().toISOString();
+        d.db.prepare(
+          `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, client_operation_key, created_at, updated_at)
+           VALUES (?,?,'jiaming','reminder',1,1,?,?,?,'Asia/Shanghai',NULL,NULL,?,'qiaosheng','legacy_unknown',?,?,?)`,
+        ).run(id, String(body.conversation_id ?? 'primary'), scheduleKind, body.scheduled_at as string, body.scheduled_at as string, JSON.stringify(body.payload && typeof body.payload === 'object' ? body.payload : { text: String(body.text ?? '') }), opKey, nowIso, nowIso);
+        return json(res, 201, { task_id: id, next_due_at: body.scheduled_at });
+      }
+      // 自主预约（WAKE_KEEPWARM_V1）：统一经 taskService——服务端幂等/CAS/时间校验；
+      // creator=用户（qiaosheng），审计保留操作者（04：用户可代设，操作者可查）。
+      if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
+      const r = d.taskService.schedule({
+        actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: opKey,
+        note: String(body.note ?? ''), at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined, createdBy: 'qiaosheng',
+      });
+      if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}) } });
+      return json(res, r.duplicate ? 200 : 201, { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision, duplicate: r.duplicate });
     }
     const bgTaskPut = /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.exec(route);
     if (bgTaskPut) {
+      if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
       const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
       if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '必须带 If-Match' } });
       if (!String(req.headers['idempotency-key'] ?? '')) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const row = d.db.prepare('SELECT revision FROM background_tasks WHERE id = ?').get(decodeURIComponent(bgTaskPut[1]!)) as { revision: number } | undefined;
-      if (!row) return json(res, 404, { error: { code: 'not_found', message: '任务不存在' } });
-      if (row.revision !== Number(ifMatch)) return json(res, 409, { error: { code: 'revision_conflict', message: '任务版本不匹配' } });
       const body = (await readJson(req, d)) as Record<string, unknown>;
-      const nowIso = new Date().toISOString();
-      const sets: string[] = ['revision = revision + 1', 'updated_at = ?'];
-      const args: Array<string | number | null> = [nowIso];
-      if (body.enabled === true || body.enabled === false) { sets.push('enabled = ?'); args.push(body.enabled ? 1 : 0); }
-      if (typeof body.scheduled_at === 'string') { sets.push('scheduled_at = ?', 'next_due_at = ?'); args.push(body.scheduled_at as string, body.scheduled_at as string); }
-      args.push(decodeURIComponent(bgTaskPut[1]!));
-      d.db.prepare(`UPDATE background_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...args);
-      return json(res, 200, { task_id: decodeURIComponent(bgTaskPut[1]!), revision: row.revision + 1 });
+      const r = d.taskService.update({
+        actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: String(req.headers['idempotency-key']),
+        taskId: decodeURIComponent(bgTaskPut[1]!), expectedRevision: Number(ifMatch),
+        note: body.note ?? undefined, at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined,
+      });
+      if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}) } });
+      return json(res, 200, { task_id: r.task.task_id, revision: r.task.revision, duplicate: r.duplicate });
     }
     const bgTaskDelete = /^DELETE \/api\/v1\/background\/tasks\/([^/]+)$/.exec(route);
     if (bgTaskDelete) {
+      if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
       const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
       if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '必须带 If-Match' } });
-      if (!String(req.headers['idempotency-key'] ?? '')) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const id = decodeURIComponent(bgTaskDelete[1]!);
-      const row = d.db.prepare('SELECT revision FROM background_tasks WHERE id = ?').get(id) as { revision: number } | undefined;
-      if (!row) return json(res, 404, { error: { code: 'not_found', message: '任务不存在' } });
-      if (row.revision !== Number(ifMatch)) return json(res, 409, { error: { code: 'revision_conflict', message: '任务版本不匹配' } });
-      // 取消未来领取；不删除已发生执行/费用记录（§11 DELETE 语义）
-      d.db.prepare('UPDATE background_tasks SET enabled = 0, next_due_at = NULL, updated_at = ? WHERE id = ?').run(new Date().toISOString(), id);
-      return json(res, 200, { task_id: id, cancelled: true });
+      // A-03：取消递增 revision（不只是 enabled=0）；零派发排队 run 失效
+      const r = d.taskService.cancel({
+        actorId: 'jiaming', conversationId: url.searchParams.get('conversation_id') ?? 'primary', operationId: String(req.headers['idempotency-key']),
+        taskId: decodeURIComponent(bgTaskDelete[1]!), expectedRevision: Number(ifMatch),
+      });
+      if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}) } });
+      return json(res, 200, { task_id: r.task.task_id, revision: r.task.revision, cancelled: true });
     }
     if (route === 'GET /api/v1/background/runs') {
       const conversationId = url.searchParams.get('conversation_id') ?? 'primary';
-      const rows = d.db.prepare('SELECT id, task_id, kind, state, result_code, cancel_reason, model_requests_started, tool_calls_started, reserved_cost_micro_usd, known_cost_micro_usd, unknown_cost_count, first_dispatch_started_at, finished_at, created_at FROM background_runs WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 100').all(conversationId);
+      // 08 瘦返回：来源（trigger_origin 从 task origin 派生）/状态/实际派发时间/动作与
+      // 发布计数/成本/阻断原因——不含原 payload、工具 JSON、reasoning 或聊天正文。
+      const rows = d.db.prepare(
+        `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason,
+                CASE WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' ELSE 'legacy' END AS trigger_origin,
+                r.model_requests_started, r.tool_calls_started, r.tool_calls_observed, r.published_message_count,
+                r.reserved_cost_micro_usd, r.known_cost_micro_usd, r.unknown_cost_count, r.retention,
+                r.first_dispatch_started_at, r.claimed_at, r.finished_at, r.created_at
+         FROM background_runs r JOIN background_tasks t ON t.id = r.task_id
+         WHERE r.conversation_id = ? ORDER BY r.created_at DESC LIMIT 100`,
+      ).all(conversationId) as Array<Record<string, unknown>>;
       return json(res, 200, { runs: rows });
     }
     const bgRunStop = /^POST \/api\/v1\/background\/runs\/([^/]+)\/stop$/.exec(route);

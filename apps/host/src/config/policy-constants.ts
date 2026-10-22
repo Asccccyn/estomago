@@ -11,17 +11,15 @@
 export const POLICY_CONSTANTS = {
   background: {
     keepwarm: {
-      // 50 分钟：从经实际缓存读写证据确认的那次 dispatch 开始计时；普通聊天成功刷新则顺延
+      // 50 分钟：真实发布锚点 L +50 分；有效维护回执则按其 dispatch +50 分（技术续温）
       idle_after_cache_ms: 3_000_000,
-      max_model_requests_per_run: 1, // V1：保温只允许一次维护请求，不能 UI 调大绕过
-      max_tool_calls_per_run: 0, // V1：工具定义保持稳定，但宿主不执行维护请求的任何工具
-      paid_tools_enabled: false, // V1：维护不允许外部收费工具
-      allow_cold_start: false, // V1：不以保温名义补冷写
+      allow_cold_start: false, // 保温不以维护名义补冷写（自主预约不受此门影响）
+      // 2026-10-22（WAKE_KEEPWARM_V1 她 1022 裁定）：心跳是完整回合——旧的
+      // 单请求/零工具/128 输出/禁收费工具封锁已删除；心跳沿用主会话工具循环、
+      // 正常输出上限、既有授权与真实预算（09：资金保护不得变相撤销行为自由）。
     },
-    autonomous: {
-      // 60 分钟滚动：同一主体最多一次首次实际派发（跨房间任务）；不是整点 cron
-      min_interval_ms: 3_600_000,
-    },
+    // 2026-10-22（WAKE_KEEPWARM_V1 她 1022 裁定 U02）：60 分钟自主冷却已删除——
+    // char自己决定何时醒来，十分钟、半小时均可，无每日配额、无单任务限制。
   },
   pagination: {
     default_limit: 20,

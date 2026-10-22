@@ -49,6 +49,8 @@ import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBoot
 import type { WishstarClient } from '../integrations/wishstar/client.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
+import { lastCacheEvidence } from './cache-observation.ts';
+import { ConversationActivityService } from './wake-activity.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 
 export type SupervisorDeps = {
@@ -76,6 +78,12 @@ export type SupervisorDeps = {
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
   media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
+  // WAKE_KEEPWARM_V1（2026-10-22）：真实活动锚点投影（L/维护回执 CAS）。
+  activity?: ConversationActivityService;
+  // WAKE_KEEPWARM_V1：后台派发让位检查（用户消息到来→心跳在安全边界让位，S-06）
+  keepwarmYieldCheck?: (runId: string) => boolean;
+  /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
+  now?: () => number;
   // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
   // 未注入=零变化；supervisor 只持薄接口，策略全在 memory-surfacing/service.ts。
   surfacing?: {
@@ -221,11 +229,27 @@ export class TurnSupervisor {
   }
 
   /**
-   * EXEC_V1 §04.5/§04.6（WP4 收尾）：后台模型回合——自主（proactive_turn）与保温（cache_keepalive）。
-   * 复用 runOrToolLoop（互斥/取消 fence/append-only/逐尝试派发账本/用量记账）。差异由 background 参数承载：
-   * 自主=宿主唤醒说明尾部+正常工具循环+背景预算；终答不自动发布（chat_send_text/background_complete 才公开）。
-   * 保温=最短维护说明尾部+单请求+工具执行门拒绝；**不推进轨迹/书签/选集**（finalMessages 丢弃，
-   * 请求证据与用量保留在 provider_requests/usage）。
+   * WAKE_KEEPWARM_V1 §03：后台进入同一会话串行链的唯一入口。在链**外**调用
+   * （调度器/HTTP）；内部执行体不得再向同链挂任务（自锁，S-03）。用户回合、到期
+   * 自主唤醒、心跳与人工换窗共用 runSerialized——同 conversation 任意时刻最多一个
+   * 真实 runner（S-01），后到的用户消息按既有链序处理（W-04：不无限插队）。
+   */
+  enqueueBackground<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+    return this.runSerialized(conversationId, fn);
+  }
+
+  /**
+   * WAKE_KEEPWARM_V1（2026-10-22 重写）：后台模型回合——自主预约唤醒与心跳保温。
+   * 在会话串行链内被调用（app-context executor 经 enqueueBackground 包裹）；
+   * 复用 runOrToolLoop（互斥/取消 fence/append-only/逐尝试派发账本/用量记账）。
+   * 与旧实现的差别（02 基线缺口 B09-B13 修复）：
+   *  - 请求基底=当前活动窗的**规范轨迹正本**（system 段沿用窗冻结前缀，不重建第二份
+   *    system——C-06），host 事件只在尾部追加一次；
+   *  - 自主预约 note 全文投递（不截断 200）；心跳用固定英文维护提示（05）；
+   *  - 完整工具循环（无零工具/单请求封锁）；已见视野从轨迹 manifest 派生（非空）；
+   *  - 结果按整轮确定性分类：PURE_ACK（成功且整轮恰为"1"）不进聊天原文与主轨迹；
+   *    SUBSTANTIVE（任意工具/发布/非1文本）共享聊天轨迹提交与恢复（B11）；
+   *  - 每次真实 transport 前估算保守费用上界并预占（不再固定 0，B-01）。
    */
   async runBackgroundTurn(opts: {
     kind: 'autonomous' | 'keepwarm';
@@ -236,11 +260,18 @@ export class TurnSupervisor {
     registerAbort: (c: AbortController) => void;
     recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
     maxModelRequests: number;
-    maxOutputTokens: number;
   }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string; detail?: string }> {
     const d = this.d;
     const dv = this.drv();
     if (dv === null) return { outcome: 'failed', result_code: 'SDK_BACKGROUND_POLICY_UNVERIFIED', detail: '当前驱动不支持后台回合（SDK 背景策略未验证）' };
+    // —— 执行位内重检（03：领取≠执行；开关/任务 revision/取消只在 15 秒 tick 查一次不算数）——
+    const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null } | undefined;
+    if (!runRow) return { outcome: 'failed', result_code: 'RUN_NOT_FOUND' };
+    if (runRow.state !== 'claimed' && runRow.state !== 'running') return { outcome: 'noop', result_code: `CANCELLED_${runRow.state.toUpperCase()}` };
+    const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string } | undefined;
+    if (!taskRow) return { outcome: 'failed', result_code: 'TASK_NOT_FOUND' };
+    if (taskRow.revision !== runRow.task_revision) return { outcome: 'noop', result_code: 'TASK_SUPERSEDED', detail: '任务已修改/取消——旧 revision 零派发' };
+    if (taskRow.enabled !== 1) return { outcome: 'noop', result_code: 'TASK_CANCELLED', detail: '任务已禁用——零派发' };
     const window = d.windows.activeWindow(opts.conversationId);
     if (!window) return { outcome: 'failed', result_code: 'NO_ACTIVE_WINDOW' };
     const pendingSel = d.selections ? d.selections.forTargetWindow(window.id) : null;
@@ -249,27 +280,65 @@ export class TurnSupervisor {
     if (!traj || traj.messages.length === 0) return { outcome: 'failed', result_code: 'NO_TRAJECTORY', detail: '窗口尚无规范轨迹' };
     const gate = d.identity.evaluateGate(d.db, { driver: dv.kind });
     if (gate.state !== 'READY' || !gate.manifest) return { outcome: 'failed', result_code: 'IDENTITY_BLOCKED' };
-    const materials = d.identity.loadVerifiedMaterials(gate.manifest);
     if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_BEFORE_START' };
 
-    // 尾部说明：宿主事件口径——不伪造用户消息（§6.3/§5.3）
-    const tailNote = opts.kind === 'keepwarm'
-      ? '[宿主缓存维护请求] 这不是用户消息。这是一次受限的缓存保温请求：请只回复"ok"，不要调用任何工具。'
-      : `[宿主自主活动窗口] 这是一次自主活动机会，不是来自宿主用户的新消息。${typeof opts.payload.intent === 'string' && opts.payload.intent.length > 0 ? `本次意图：${String(opts.payload.intent).slice(0, 200)}` : '你可以自由选择做什么，也可以什么都不做。'}要对宿主用户说话必须调用 chat_send_text；结束时调用 background_complete（outcome=noop 表示正常地什么都没做，不要求产出）。`;
-    const sysText = [materials?.identityText ?? '', materials?.iText ?? '', materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
+    const nowIso0 = new Date().toISOString();
+    let capturedActivityRevision: number | null = null;
+    // —— 心跳专属派发门（05 §派发门与异常；执行位内重算，不用 tick 快照）——
+    if (opts.kind === 'keepwarm') {
+      const act = d.activity?.get(opts.conversationId) ?? null;
+      if (!act || act.last_real_activity_at === null) return { outcome: 'noop', result_code: 'KEEPWARM_NO_REAL_ACTIVITY' };
+      if (runRow.input_activity_revision !== null && runRow.input_activity_revision !== act.activity_revision) {
+        return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '新真实消息已使本维护候选失效' };
+      }
+      const target = d.activity!.nextKeepwarmTarget({ conversationId: opts.conversationId, windowId: window.id });
+      if (target.scheduled && this.nowMs() < target.dueAtMs) return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '目标已被新证据推后' };
+      const evidence = lastCacheEvidence(d.db, window.id);
+      if (evidence === null) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN', detail: '无已确认缓存证据——保温不冷启动' };
+      if (this.nowMs() - Date.parse(evidence.startedAt) >= 3_600_000) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_ALREADY_COLD', detail: '缓存估计已冷——不补冷写' };
+      // 05 satisfied_by_request：同机会内一次真实请求已实际刷新有效缓存（自主唤醒/普通
+      // 聊天）→ 本维护机会记技术回执进入后继，不重复付费。
+      const prq = d.db.prepare('SELECT purpose FROM provider_requests WHERE id = ?').get(evidence.requestId) as { purpose: string } | undefined;
+      const L = Date.parse(act.last_real_activity_at);
+      const refreshedByOther = prq && prq.purpose !== 'cache_keepalive' && Date.parse(evidence.startedAt) >= L && (this.nowMs() - Date.parse(evidence.startedAt)) < 3_000_000;
+      if (refreshedByOther) {
+        d.activity!.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: act.activity_revision, requestId: evidence.requestId, windowId: window.id, dispatchStartedAtIso: evidence.startedAt });
+        return { outcome: 'noop', result_code: 'satisfied_by_request', detail: '同机会缓存已由真实请求刷新——本维护机会不重复付费' };
+      }
+      capturedActivityRevision = act.activity_revision;
+    }
+
+    // —— 尾部 host 事件（05/04：宿主事件口径，不伪造用户消息；一次冻结，续轮不重生成）——
+    let tailNote: string;
+    if (opts.kind === 'keepwarm') {
+      tailNote = 'Cache keepalive (host event, not Qiaosheng). Reply 1 by default; you may choose otherwise and use available tools.';
+    } else {
+      const mergedPayload = { ...JSON.parse(taskRow.payload_json) as Record<string, unknown>, ...opts.payload };
+      const note = typeof mergedPayload.note === 'string' ? mergedPayload.note : '';
+      const scheduledFor = typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null;
+      if (note.length > 8000) return { outcome: 'failed', result_code: 'WAKE_NOTE_INVALID', detail: '预约正文超长——报错不静默截断' };
+      const lines = ['[Host self-wake; not a message from Qiaosheng]'];
+      if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
+      lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
+      if (scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs()) {
+        lines.push(`Actual delivery: ${nowIso0} (delayed; host was not running or busy)`);
+      }
+      lines.push('To speak to Qiaosheng use chat_send_text; you may also choose to do nothing (call background_complete with outcome=noop).');
+      tailNote = lines.join('\n');
+    }
+    // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
     const baseMessages: OrMessage[] = [
-      { role: 'system', content: [{ type: 'text', text: sysText }] },
-      ...traj.messages.slice(1), // 轨迹正本（system 段重建同源；历史按窗口冻结正本）
+      ...traj.messages,
       { role: 'user', content: [{ type: 'text', text: tailNote }] } as unknown as OrMessage,
     ];
-    const { boundaries } = planBoundaries({ messages: baseMessages, systemMessageCount: fixedSystemCount(baseMessages), prevBoundary: traj.lastBoundary });
+    const { boundaries } = planBoundaries({ messages: baseMessages, systemMessageCount: fixedSystemCount(traj.messages), prevBoundary: traj.lastBoundary });
     const envelope: OrRequestEnvelope = {
       model: dv.model,
       sessionId: dv.sessionId(opts.conversationId),
       messages: baseMessages,
-      tools: this.windowTools(window.id), // 同一冻结快照（§5.3 不为保温清空工具破坏前缀；执行门负责拒绝）
+      tools: this.windowTools(window.id), // 同一冻结快照（06 §4：心跳不换 tools）
       boundaries,
-      maxTokens: Math.min(opts.maxOutputTokens, dv.maxTokens),
+      maxTokens: dv.maxTokens, // 主会话有效输出上限（09：不用旧 128 封锁）
       reasoning: dv.reasoning,
     };
     const { reasoning: _r, ...prevParams } = envelope;
@@ -277,16 +346,17 @@ export class TurnSupervisor {
     const previousEnvelope: OrRequestEnvelope = { ...(prevParams as OrRequestEnvelope), messages: traj.messages };
 
     // 后台 turn（无用户消息；trigger 区分用途——usage 按 purpose/预算日归属可查）
-    const nowIso = new Date().toISOString();
+    const nowIso = nowIso0;
     const turnId = genId('turn');
     const attemptId = genId('att');
     d.db.prepare(`INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES (?,?,?, 'pending', ?)`)
       .run(turnId, opts.conversationId, opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', nowIso);
     d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,NULL,'pending')").run(attemptId, turnId);
-    d.db.prepare("UPDATE background_runs SET state = 'running', window_id = ?, driver = ?, model = ?, updated_at = ? WHERE id = ?").run(window.id, dv.kind, dv.model, nowIso, opts.runId);
+    d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
     const controller = new AbortController();
     opts.registerAbort(controller);
+    let toolCallsObserved = 0;
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
       conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
@@ -296,9 +366,15 @@ export class TurnSupervisor {
           d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: dv.model, source: ev.source, completeness: ev.completeness });
         }
       },
-      seenSequence: 0, seenMessages: [],
+      // B12 修复：已见视野从轨迹 manifest 派生（不再恒空）；续轮工具片段由循环内部并入
+      seenSequence: traj.manifest && traj.manifest.length > 0 ? Math.max(...traj.manifest.map((m) => m.seq)) : 0,
+      seenMessages: (traj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })),
       previousEnvelope,
-      background: { runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested },
+      background: {
+        runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
+        observeToolCall: () => { toolCallsObserved++; },
+        yieldRequested: opts.kind === 'keepwarm' && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
+      },
     });
     // §04.10.1：返回后逐笔结算——dispatch 经 provider_requests.background_dispatch_id 反查请求行，
     // 再按 request_id 取真实 usage 费用；未知保留预占（state=unknown，不释放）
@@ -311,20 +387,54 @@ export class TurnSupervisor {
       d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ?").run(micro === null ? 'unknown' : 'settled', micro, new Date().toISOString(), micro === null ? 'cost_unknown' : 'settled', bgd.id);
       if (micro !== null) d.db.prepare('UPDATE background_runs SET known_cost_micro_usd = known_cost_micro_usd + ?, updated_at = ? WHERE id = ?').run(micro, new Date().toISOString(), opts.runId);
     }
-    // 派发↔请求行关联（provider_requests.background_dispatch_id 已在准入时写）
     const finishedState = loop.result.outcome === 'completed' ? 'completed' : 'failed';
-    const runRow = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
     d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
-    if (opts.kind === 'keepwarm') {
-      // §5.3：保温不推进规范轨迹/书签/选集——finalMessages 直接丢弃；证据与用量已在 provider_requests 保留
-      return { outcome: loop.result.outcome === 'completed' ? 'completed' : 'failed', result_code: loop.result.errorCode ?? (loop.result.outcome === 'completed' ? 'keepwarm_ok' : 'KEEPWARM_FAILED') };
+    if (loop.result.outcome !== 'completed') {
+      if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
+      return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
     }
-    const completion = runRow?.result_code?.startsWith('complete:') === true ? runRow.result_code.slice('complete:'.length) : null;
-    if (loop.result.outcome === 'completed') {
+
+    // —— 结果分类（06 §2：一条执行路径、两种提交结果；判定按整轮不是最后字符串）——
+    const finalText = loop.finalMessages !== null && loop.finalMessages.length > 0
+      ? (() => { const last = loop.finalMessages![loop.finalMessages!.length - 1]!; const c = last.content; return typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => (b as { type?: string }).type === 'text').map((b) => (b as { text?: string }).text ?? '').join('') : ''; })()
+      : '';
+    const publishedCount = Number((d.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(turnId) as { n: number }).n);
+    const pureAck = toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
+    d.db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
+      .run(toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), opts.runId);
+
+    if (!pureAck) {
+      // SUBSTANTIVE（06 §2）：提交最初事件与整个必要协议链——工具调用/结果/续轮/最终文本；
+      // 正式发言已在工具执行时入消息库与归档 outbox；已见清单并入轨迹 manifest（B11/C-09）。
+      if (d.trajectory && loop.finalMessages !== null) {
+        const baseManifest = traj.manifest ?? [];
+        const publishedEntries = (d.db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(turnId) as Array<{ id: string; sequence: number }>)
+          .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
+        d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen]);
+        d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
+      }
+      const runCode = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
+      const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
+      // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
       return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: completion === 'noop' ? 'complete:noop' : 'complete:done' };
     }
-    if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-    return { outcome: 'failed', result_code: loop.result.errorCode ?? 'AUTONOMOUS_FAILED' };
+
+    // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文与主轨迹。
+    if (opts.kind === 'keepwarm' && d.activity && capturedActivityRevision !== null) {
+      // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
+      // 不写"保温成功"，同活动版本不重试）
+      const evRow = d.db.prepare(
+        `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
+         JOIN background_dispatches bd ON bd.provider_request_id = pr.id
+         JOIN usage_observations u ON u.request_id = pr.id AND u.completeness = 'complete'
+         WHERE bd.run_id = ? AND pr.outcome = 'completed' AND (u.cache_read_input_tokens > 0 OR u.cache_creation_input_tokens > 0)
+         ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
+      ).get(opts.runId) as { rid: string; started: string } | undefined;
+      if (evRow) {
+        d.activity.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: capturedActivityRevision, requestId: evRow.rid, windowId: window.id, dispatchStartedAtIso: evRow.started });
+      }
+    }
+    return { outcome: 'completed', result_code: opts.kind === 'keepwarm' ? 'ack_only' : 'complete:noop' };
   }
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
@@ -363,14 +473,17 @@ export class TurnSupervisor {
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
-    /** EXEC_V1 §04.10（WP4 收尾）：后台回合——每次 transport 前过背景准入（取消/请求数/预算预占），
-     *  逐尝试记 dispatch 账；保温的工具执行门在此拒绝（工具定义保持冻结快照不破坏前缀）。 */
+    /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
+     *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
+     *  完整工具循环（2026-10-22：KEEPWARM_TOOL_REFUSED 已删除）。 */
     background?: {
       runId: string;
       kind: 'autonomous' | 'keepwarm';
       maxModelRequests: number;
       recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
       isCancelRequested: () => boolean;
+      observeToolCall?: () => void; // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为
+      yieldRequested?: (() => boolean) | null; // S-06：心跳安全边界让位（用户消息到来）
     };
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[] }> {
     const d = this.d;
@@ -435,13 +548,17 @@ export class TurnSupervisor {
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
           if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
+          // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
+          if (o.background.yieldRequested?.()) throw new Error('DISPATCH_ADMISSION_REJECTED:KEEPWARM_YIELDED');
           const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
           if (started >= o.background.maxModelRequests) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
         }
         const nowIso = new Date().toISOString();
         let bgDispatchId: string | null = null;
         if (o.background) {
-          const rec = o.background.recordDispatch({ logicalActionKey: `model:r${round}:a${info.attemptIndex}`, attemptNo: info.attemptIndex + 1, dispatchKind: 'model', reservedCostMicroUsd: 0 });
+          // B-01（2026-10-22）：真实费用上界预占——可缓存输入按未命中最坏写入价（1h TTL
+          // 公开溢价 2×input；显式 cache_write_micro_per_token 配置优先）+ 输入价 + 最大输出。
+          const rec = o.background.recordDispatch({ logicalActionKey: `model:r${round}:a${info.attemptIndex}`, attemptNo: info.attemptIndex + 1, dispatchKind: 'model', reservedCostMicroUsd: estimateModelRequestCostMicroUsd(d.db, envelope, this.drv()) });
           if (!rec.allowed) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
           bgDispatchId = rec.dispatchId;
         }
@@ -503,12 +620,8 @@ export class TurnSupervisor {
       if (round === MAX_TOOL_ROUNDS) {
         return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // O05：轮次耗尽=末轮工具结果未发出， pending 不转正
       }
-      // EXEC_V1 §04.5.3（CW-13）：保温请求的工具执行门——工具定义保持冻结快照（不破坏缓存前缀），
-      // 但宿主拒绝执行任何工具，也不发第二轮续答；请求证据与用量照常保留
-      if (o.background?.kind === 'keepwarm') {
-        d.logger.warn('keepwarm_tool_refused', { run_id: o.background.runId, tools: captured.map((t) => t.tool_name).join(',') });
-        return { result: { outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_TOOL_REFUSED', errorMessage: `保温工具执行已拒绝（${captured.length} 个）——无续答请求`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
-      }
+      // WAKE_KEEPWARM_V1（2026-10-22）：心跳与自主共用完整工具执行循环——
+      // 旧 KEEPWARM_TOOL_REFUSED 零工具封锁已删除（06 §4：修复所有心跳特有限制）。
       prevEnvelope = envelope;
       // F13：已发布正文随 assistant 消息续传（原样保留，§2.2）；opaque reasoning 片段作为
       // 协议继续态原样携带（§10：不解释不重构；真实端点兼容性=WP6 实测项，此处不冒称已验证）
@@ -540,6 +653,22 @@ export class TurnSupervisor {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
           return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+        }
+        // S-06：心跳安全边界让位——用户消息到来后不再分派后续工具；已执行工具的
+        // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：
+        // 协议链在 provider_requests 留证，后续发布经 catchup 进入下一轮）。
+        if (o.background?.yieldRequested?.()) {
+          return { result: { outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_YIELDED_DURING_TOOLS', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+        }
+        // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为（06 §2，按调用计数）
+        if (o.background?.observeToolCall) o.background.observeToolCall();
+        // WAKE_KEEPWARM_V1 §10（B-04/B-07）：后台工具逐笔记派发账（免费本地工具登记 0，
+        // 仍有取消 fence 与幂等身份）；取消/预算拒收后不再开始新工具动作
+        if (o.background) {
+          const toolRec = o.background.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: 0 });
+          if (!toolRec.allowed) {
+            return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'BACKGROUND_TOOL_ADMISSION_REJECTED', errorMessage: '后台工具派发被拒（取消/预算）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+          }
         }
         let args: Record<string, unknown>;
         try {
@@ -583,6 +712,9 @@ export class TurnSupervisor {
     if (model === config.openrouter.model) return config;
     return { ...config, openrouter: { ...config.openrouter, model } };
   }
+
+  /** WAKE_KEEPWARM_V1：后台执行位重检的统一时钟（测试可虚拟推进）。 */
+  private nowMs(): number { return this.d.now?.() ?? Date.now(); }
 
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */
@@ -999,14 +1131,16 @@ export class TurnSupervisor {
 
   /** F-J-39：追赶投影——清单高水位之后、有真实发出证据（purpose=chat 且 sent_at 非空）的
    *  回合消息。失败回合的已发输入/已发布助手原话真实被模型看过，应计入评审范围与
-   *  评审信封（不扫库假称已见；评审请求自身不算证据）。 */
+   *  评审信封（不扫库假称已见；评审请求自身不算证据）。
+   *  WAKE_KEEPWARM_V1（2026-10-22，B11 修复）：后台回合（自主唤醒/心跳）的真实发布
+   *  同样构成追赶证据——此前只筛 purpose=chat 使自主发言可能出现在 UI 却缺在下一请求。 */
   private catchupEntries(conversationId: string, dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }>, trajMaxSeq: number, windowId: string): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> {
     // WP-07（CX-07）：追赶只取**当前 window/epoch** 内真实发出过的回合——
     // 此前按全库曾发送集合筛选，新窗（trajMaxSeq=-1）会把旧窗历史原文
     // 整体注回追赶投影，绕过人工选集（新窗历史唯一来源=选集）。
     // 跨窗历史一律走选集；追赶只服务"同窗内上一轨迹落盘后新发布的消息"。
     const sentChatTurnIds = new Set((this.d.db.prepare(
-      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose = 'chat' AND pr.dispatch_started_at IS NOT NULL AND pr.window_id = ?",
+      "SELECT DISTINCT a.turn_id AS tid FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE pr.purpose IN ('chat','proactive_turn','cache_keepalive') AND pr.dispatch_started_at IS NOT NULL AND pr.window_id = ?",
     ).all(windowId) as Array<{ tid: string | null }>).map((r) => r.tid).filter((t): t is string => t !== null));
     return dialogue.filter((m) => m.sequence > trajMaxSeq && m.turnId !== null && sentChatTurnIds.has(m.turnId));
   }
@@ -2454,6 +2588,28 @@ function stableCode(err: unknown): string {
   if (/SQLITE|constraint|UNIQUE/i.test(msg)) return 'DB_ERROR';
   if (/ENOSPC|disk/i.test(msg)) return 'DISK_ERROR';
   return 'INTERNAL_ERROR';
+}
+
+/**
+ * WAKE_KEEPWARM_V1 §09（B-01）：单次模型请求的保守费用上界（微美元整数）。
+ * 上界组成：全部输入按未命中最坏写入价（1h TTL 公开溢价=2×input 价；价格配置若显式
+ * 给出 cache_write_micro_per_token 则优先）+ 本次请求实际配置的最大输出。不把全部输入
+ * 同时按普通 input 与 cache write 重复计费（按最坏单一分区）。价格缺失返回 null
+ * （调用方 recordDispatch 前被 BUDGET_ESTIMATE_UNAVAILABLE 拦截——09：无报价=明确
+ * blocked，不自填价格或放行）。
+ */
+function estimateModelRequestCostMicroUsd(db: import('../db/connection.ts').Db, envelope: OrRequestEnvelope, drv: { charsPerToken: number; maxTokens: number } | null): number {
+  const priceRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
+  if (!priceRow) return 0; // 无价格：executor 侧已按 BUDGET_ESTIMATE_UNAVAILABLE 拦截；此处 0 仅占位
+  let price: { input_micro_per_token?: number; output_micro_per_token?: number; cache_write_micro_per_token?: number };
+  try { price = JSON.parse(priceRow.value); } catch { return 0; }
+  const inMicro = typeof price.input_micro_per_token === 'number' ? price.input_micro_per_token : null;
+  const outMicro = typeof price.output_micro_per_token === 'number' ? price.output_micro_per_token : null;
+  if (inMicro === null || outMicro === null) return 0;
+  const writeMicro = typeof price.cache_write_micro_per_token === 'number' ? price.cache_write_micro_per_token : inMicro * 2; // 1h cache write 公开溢价
+  const inputTokens = Math.ceil(JSON.stringify(envelope.messages).length / (drv?.charsPerToken ?? 2.5));
+  const maxOut = envelope.maxTokens ?? drv?.maxTokens ?? 0;
+  return Math.ceil(inputTokens * writeMicro + maxOut * outMicro);
 }
 
 function codeOf(reason: string): string {

@@ -45,12 +45,14 @@ test('BASE-02：旧配置升级——保留既有字段，auto/keepwarm 关闭�
 
 test('BASE-02b：策略常量正本与配置硬规则（非法值拒绝，null≠0）', () => {
   // adjustable=false 常量（policy-defaults 唯一默认值表的常量面）
+  // 2026-10-22（WAKE_KEEPWARM_V1 U02/U06）：keepwarm 单请求/零工具封锁与
+  // autonomous 60min 冷却常量已按裁定退役——以下退役断言锁住不回流。
   assert.equal(POLICY_CONSTANTS.background.keepwarm.idle_after_cache_ms, 3_000_000); // 50min
-  assert.equal(POLICY_CONSTANTS.background.keepwarm.max_model_requests_per_run, 1);
-  assert.equal(POLICY_CONSTANTS.background.keepwarm.max_tool_calls_per_run, 0);
-  assert.equal(POLICY_CONSTANTS.background.keepwarm.paid_tools_enabled, false);
   assert.equal(POLICY_CONSTANTS.background.keepwarm.allow_cold_start, false);
-  assert.equal(POLICY_CONSTANTS.background.autonomous.min_interval_ms, 3_600_000); // 60min
+  assert.equal('max_model_requests_per_run' in POLICY_CONSTANTS.background.keepwarm, false, '心跳单请求封锁已退役');
+  assert.equal('max_tool_calls_per_run' in POLICY_CONSTANTS.background.keepwarm, false, '心跳零工具封锁已退役');
+  assert.equal('paid_tools_enabled' in POLICY_CONSTANTS.background.keepwarm, false, '心跳收费工具禁令已退役');
+  assert.equal('autonomous' in POLICY_CONSTANTS.background, false, '60min 冷却常量已退役');
   assert.equal(POLICY_CONSTANTS.pagination.default_limit, 20);
   assert.equal(POLICY_CONSTANTS.pagination.max_limit, 100);
   assert.equal(POLICY_CONSTANTS.system_alerts.read_batch_max, 100);

@@ -1034,6 +1034,89 @@ MIGRATIONS.push({
   );`,
 });
 
+// v33（WAKE_KEEPWARM_V1，2026-10-22）：自主预约唤醒 + 心跳保温的持久面。
+//  - background_tasks.origin/control_reason：区分 self_schedule / system_keepwarm / legacy_unknown，
+//    旧 daily/interval 自主任务标 needs_review 并停用（不静默转换/补发，07 升级语义）；
+//  - background_runs.turn_id/activity_revision/retention/trajectory_committed_at：
+//    后台轮与真实轮共用轨迹提交凭据；retention 区分 ephemeral_ack/retained（06 §2）；
+//  - conversation_activity：真实发布锚点 L 与维护回执的会话级投影（07"最小新增数据"；
+//    维护回执按 activity_revision CAS，新真实消息使旧回执失效）；
+//  - background_operations：后台管理操作（schedule/update/cancel/settings）幂等账本，
+//    同键同参数返回原回执、同键不同参数 409。
+// repair：从既有正式发布证据（published_at + 修订 received_at）一次性重建各会话的
+// L 投影——只读允许字段，不调用模型、不扫正文语义推断；证据不足保持空行（unknown）。
+MIGRATIONS.push({
+  version: 33,
+  name: 'wake_keepwarm_activity_and_operations',
+  sql: `
+ALTER TABLE background_tasks ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK (origin IN ('self_schedule','system_keepwarm','legacy_unknown'));
+ALTER TABLE background_tasks ADD COLUMN control_reason TEXT;
+ALTER TABLE background_tasks ADD COLUMN client_operation_key TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bg_tasks_client_op ON background_tasks(conversation_id, client_operation_key) WHERE client_operation_key IS NOT NULL;
+ALTER TABLE background_runs ADD COLUMN turn_id TEXT;
+ALTER TABLE background_runs ADD COLUMN input_activity_revision INTEGER;
+ALTER TABLE background_runs ADD COLUMN retention TEXT CHECK (retention IN ('ephemeral_ack','retained'));
+ALTER TABLE background_runs ADD COLUMN trajectory_committed_at TEXT;
+ALTER TABLE background_runs ADD COLUMN published_message_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE background_runs ADD COLUMN tool_calls_observed INTEGER NOT NULL DEFAULT 0;
+CREATE TABLE conversation_activity(
+  conversation_id TEXT PRIMARY KEY,
+  activity_revision INTEGER NOT NULL DEFAULT 0,
+  last_real_message_id TEXT,
+  last_real_message_revision INTEGER,
+  last_real_activity_at TEXT,
+  maintenance_request_id TEXT,
+  maintenance_for_activity_revision INTEGER,
+  maintenance_window_id TEXT,
+  maintenance_dispatch_started_at TEXT,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE background_operations(
+  actor_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,
+  action TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  response_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (actor_id, conversation_id, action, operation_id)
+);
+`,
+  repair: (db: Db): number => {
+    const nowIso = new Date().toISOString();
+    let touched = 0;
+    // 旧系统保温任务归位 system_keepwarm；旧自主任务（daily/interval/once 旧语义）
+    // 标 needs_review 并停用——重开不突发补发，未来任务按原时间继续由新代码创建。
+    db.prepare("UPDATE background_tasks SET origin = 'system_keepwarm' WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle'").run();
+    const legacyAuto = Number((db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE kind = 'autonomous' AND origin = 'legacy_unknown'").get() as { n: number }).n);
+    if (legacyAuto > 0) {
+      db.prepare("UPDATE background_tasks SET enabled = 0, next_due_at = NULL, control_reason = 'legacy_needs_review' WHERE kind = 'autonomous' AND origin = 'legacy_unknown'").run();
+      touched += legacyAuto;
+    }
+    // L 投影一次性重建：每会话取最近一条已正式发布的 owner/assistant 消息
+    // （发布证据=messages.published_at 非空；段落后缀时间=该消息最新修订的
+    // received_at——appendAssistantPublication 语义 B18）。只认服务端发布字段，
+    // 不读 occurred_at（可编辑）、不算 system/历史导入。
+    const convs = db.prepare("SELECT DISTINCT m.conversation_id AS cid FROM messages m WHERE m.speaker IN ('owner','assistant') AND m.published_at IS NOT NULL").all() as Array<{ cid: string }>;
+    for (const c of convs) {
+      const row = db.prepare(
+        `SELECT m.id AS id, m.current_revision AS rev, MAX(r.received_at) AS at
+         FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         WHERE m.conversation_id = ? AND m.speaker IN ('owner','assistant') AND m.published_at IS NOT NULL
+         ORDER BY at DESC LIMIT 1`,
+      ).get(c.cid) as { id: string; rev: number; at: string } | undefined;
+      if (!row) continue;
+      db.prepare(
+        `INSERT INTO conversation_activity(conversation_id, activity_revision, last_real_message_id, last_real_message_revision, last_real_activity_at, updated_at)
+         VALUES (?, 1, ?, ?, ?, ?)
+         ON CONFLICT(conversation_id) DO NOTHING`,
+      ).run(c.cid, row.id, row.rev, row.at, nowIso);
+      touched++;
+    }
+    return touched;
+  },
+});
+
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
