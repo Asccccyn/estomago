@@ -50,6 +50,7 @@ import type { WishstarClient } from '../integrations/wishstar/client.ts';
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
+import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 
@@ -1091,6 +1092,10 @@ export class TurnSupervisor {
         else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
         const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
+        // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
+        // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
+        const initialTools = renderInitialVisibleText(d.db);
+        if (initialTools !== null) seg.push(initialTools);
         if (seg.length === 1) {
           // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
           if (gaps.length > 0) report(gaps);

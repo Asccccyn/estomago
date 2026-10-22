@@ -360,34 +360,40 @@ export class IdentityService {
     return { text: fs.readFileSync(filePath, 'utf8'), version: manifest.identity_version ?? 'unknown' };
   }
 
-  static splitMilestoneEntries(text: string): string[] {
-    return text.replace(/\r\n/g, '\n').split(/\n{2,}/).map((b) => b.trim()).filter((b) => b.length > 0);
+  /** 条目=一行一条（她 2026-10-22 裁定：1.2.3.4. 编号、一个换行一条；空行不编号）。
+   *  Claude 老版 project memory 式：一份完整文档、开窗全文注入（既有装载语义不变）；
+   *  这里只做行级编辑的最小映射——返回非空行及其原文行下标。 */
+  static entryLines(text: string): Array<{ line: string; index: number }> {
+    return text.replace(/\r\n/g, '\n').split('\n').map((line, index) => ({ line, index })).filter((e) => e.line.trim().length > 0);
   }
 
-  /** 条目级操作：add=尾部追加；revise=替换第 item 条；remove=删除第 item 条。
-   *  沿用 updateMilestone 的版本链/manifest 原子更新/旧版留档语义。 */
+  /** 行级操作（极简）：add=末尾加一条（一行）；revise=改第 item 条；remove=删第 item 条。
+   *  其他行原样（行数组最小编辑）；沿用 updateMilestone 版本链/留档/manifest 原子更新。 */
   applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null): { file: string; version: string; hash: string; byteSize: number; entries: number } {
     const current = this.readMilestone();
-    const entries = IdentityService.splitMilestoneEntries(current.text);
+    const lines = current.text.replace(/\r\n/g, '\n').split('\n');
+    const entries = IdentityService.entryLines(current.text);
     if (op === 'add') {
       if (entryText === null || entryText.trim().length === 0) throw new Error('ENTRY_TEXT_REQUIRED');
-      entries.push(entryText.trim());
+      const clean = entryText.replace(/[\r\n]+/g, ' ').trim();
+      if (lines.length > 0 && lines[lines.length - 1]!.trim() !== '') lines.push('');
+      lines.push(clean);
     } else {
-      const idx = (item ?? 0) - 1;
-      if (!Number.isInteger(item) || idx < 0 || idx >= entries.length) {
-        throw new Error(`ITEM_OUT_OF_RANGE: 当前共 ${entries.length} 条（1..${entries.length}）`);
-      }
+      const e = entries[(item ?? 0) - 1];
+      if (!Number.isInteger(item) || !e) throw new Error(`ITEM_OUT_OF_RANGE: 当前共 ${entries.length} 条（1..${entries.length}）`);
       if (op === 'revise') {
         if (entryText === null || entryText.trim().length === 0) throw new Error('ENTRY_TEXT_REQUIRED');
-        entries[idx] = entryText.trim();
+        lines[e.index] = entryText.replace(/[\r\n]+/g, ' ').trim();
       } else {
-        if (entries.length <= 1) throw new Error('LAST_ENTRY: 至少保留一条里程碑——要清空请和她确认后整版替换');
-        entries.splice(idx, 1);
+        if (entries.length <= 1) throw new Error('LAST_ENTRY: 至少保留一条');
+        lines.splice(e.index, 1);
       }
     }
-    const written = this.updateMilestone(entries.join('\n\n') + '\n');
-    return { file: written.file, version: written.version, hash: written.hash, byteSize: written.byteSize, entries: entries.length };
+    const next = lines.join('\n');
+    const written = this.updateMilestone(next);
+    return { file: written.file, version: written.version, hash: written.hash, byteSize: written.byteSize, entries: IdentityService.entryLines(next).length };
   }
+
 
   // Bootstrap Receipt（05 §3 四层证据）；返回真实主键（AUD-22：window.receipt_id 引用它）
   buildAndStoreReceipt(db: Db, opts: {

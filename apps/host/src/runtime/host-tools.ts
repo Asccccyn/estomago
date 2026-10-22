@@ -13,6 +13,7 @@ import { modelResult, modelFailure, candidates as whitelistCandidates } from './
 //  - context_review_complete：宿主本地验证（review/账本/收据），不依赖模型自报成功名单。
 // 工具执行串行（写操作依赖顺序；review_complete 最后验证，不并发抢先放行）。
 import { buildDeferredTools, DISCOVERY_NAMES, storedToolset, definitionId, definitionWasSeen } from './tool-discovery.ts';
+import { initialDefinitionSeen, initialVisibleTools } from './tool-initial-visible.ts';
 import { sha256Hex } from '../util/id.ts';
 import { IdentityService as IdentityServiceStatic } from '../identity/service.ts';
 import type { Db } from '../db/connection.ts';
@@ -574,12 +575,13 @@ export function buildHostTools(): HostToolSpec[] {
     type: 'function',
     function: {
       name: 'identity_milestone_write',
-      description: '维护你的身份正文《长期记忆里程碑》（她 2026-10-17 授权你自维护；2026-10-22 起支持条目化）。里程碑按空行分成条目，序号 1 起。operation：read=读当前全文（带条目序号）；write=整版替换（text 为完整新版正文）；add=末尾追加一条；revise=改第 item 条（text 为该条新正文）；remove=删第 item 条（至少保留一条）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改须说明 change_reason。',
+      description: '维护你的《长期记忆里程碑》——一份完整文档，随开窗全文注入。内容一行一条（1.2.3.4. 依次编号，一个换行一条）。operation：read=读当前全文（带行号）；add=末尾加一条（text=一行内容）；revise=改第 item 条；remove=删第 item 条；write=整版替换（text=完整新版全文，通常不需要）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改说明 change_reason。',
       parameters: {
         type: 'object',
         properties: {
-          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '缺省=write（兼容整版替换）' },
+          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '缺省=write（整版替换，会覆盖全部现有条目——常规修改请用 add/revise/remove 单条操作，不覆盖其他条目）' },
           text: { type: 'string', minLength: 1, maxLength: 65536, description: 'write=完整新版正文；add/revise=该条目新正文' },
+          confirm_overwrite: { type: 'boolean', description: '仅 write：新正文未保留既有内容行时必须显式带 true（防误删她写的内容）；带 false/缺省将被拒绝并说明丢了哪些' },
           item: { type: 'integer', minimum: 1, description: 'revise/remove 的目标条目序号（read 结果里带）' },
           change_reason: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明这次更新了什么（进审计记录，她可见）' },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一版' },
@@ -1137,8 +1139,9 @@ export class HostToolExecutor {
     if (op === 'read') {
       try {
         const r = this.identity.readMilestone();
-        const entries = IdentityServiceStatic.splitMilestoneEntries(r.text);
-        return { ok: true, output: { version: r.version, entries: entries.length, text: entries.map((e: string, i: number) => `[${i + 1}] ${e}`).join('\n\n') } };
+        const entries = IdentityServiceStatic.entryLines(r.text);
+        // 1.2.3.4. 连续条号（=revise/remove 的 item 口径）；原文物理行号不外显
+        return { ok: true, output: { version: r.version, entries: entries.length, text: entries.map((e, i) => `${i + 1}. ${e.line}`).join('\n') } };
       } catch (err) {
         return { ok: false, output: { error_code: 'MILESTONE_READ_FAILED', detail: String((err as Error).message).slice(0, 200) } };
       }
@@ -1251,7 +1254,8 @@ export class HostToolExecutor {
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
-    if (args.definition_id !== definitionId(spec) || !definitionWasSeen(this.db,ctx,spec)) return deny('TOOL_DEFINITION_NOT_SEEN');
+    const initialSeen = initialVisibleTools(this.db).includes(spec.function.name) && initialDefinitionSeen(this.db, ctx.windowId, spec);
+    if (args.definition_id !== definitionId(spec) || (!definitionWasSeen(this.db,ctx,spec) && !initialSeen)) return deny('TOOL_DEFINITION_NOT_SEEN');
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return deny('TOOL_ARG_TYPE');
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, {...args.arguments as Record<string,unknown>,__tool_call_id:args.__tool_call_id},ctx,spec);
