@@ -278,3 +278,42 @@ test('C-02/K-12：心跳调用工具→实质执行+续轮（旧零工具封锁�
   assert.equal(blocked.allowed, false, '终态/取消后不再有新派发');
   sched.stop();
 });
+
+test('C-07（收尾）：自醒 chat_send_text 已发 → 下一用户请求恰好看到一次主动消息；UI 恰一条', async () => {
+  const payloads: Array<Record<string, unknown>> = [];
+  let bgRound = 0;
+  const transport: OrTransport = async (p) => {
+    payloads.push(structuredClone(p));
+    const isBg = JSON.stringify(p).includes('Host self-wake');
+    if (isBg) {
+      bgRound++;
+      if (bgRound === 1) return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(toolCallBody([{ id: 'tc-c7', name: 'chat_send_text', args: JSON.stringify({ text: '主动想说的话C7', idempotency_key: 'c7-1' }) }, { id: 'tc-c7b', name: 'background_complete', args: JSON.stringify({ outcome: 'done' }) }]))]) };
+      return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('（收尾）'))]) };
+    }
+    return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('收到'))]) };
+  };
+  const root = tempRoot('wp4-c7-');
+  const nowRef = { nowMs: Date.now() };
+  const ctx = compose(root, transport, nowRef);
+  await seedChatTurn(ctx, 'c7-0');
+  setPrice(ctx.db);
+  ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
+  const autoTask = `bgt_c7_${genId('x').slice(2, 8)}`;
+  const nowIso = new Date(nowRef.nowMs).toISOString();
+  ctx.db.prepare("INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES (?,'c1','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,'{}','qiaosheng','self_schedule',?,?)").run(autoTask, nowIso, nowIso, nowIso, nowIso);
+  const sched = wireExecutor(ctx, nowRef);
+  sched.start();
+  await sched.tick(); // 自醒执行：chat_send_text 发布一条正式消息
+  const published = ctx.messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 100 }).filter((m) => m.speaker === 'assistant' && m.revision.content.includes('主动想说的话C7'));
+  assert.equal(published.length, 1, 'UI/消息库恰一条主动消息');
+  // 下一用户请求：模型恰好看到一次
+  await seedChatTurn(ctx, 'c7-1');
+  const lastChat = payloads[payloads.length - 1]!;
+  const wire = JSON.stringify(lastChat);
+  const occurrences = wire.split('主动想说的话C7').length - 1;
+  const msgs = (lastChat as { messages?: Array<{ role: string; content: unknown }> }).messages ?? [];
+  console.log('DEBUG roles=', JSON.stringify(msgs.map(m => m.role)));
+  assert.equal(occurrences, 1, `下一请求恰好包含一次主动消息（实际 ${occurrences} 次）`);
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.speaker = 'assistant' AND r.content LIKE '%主动想说的话C7%'").get() as { n: number }).n, 1, '原文一致不重复');
+  sched.stop();
+});

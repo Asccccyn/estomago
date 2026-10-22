@@ -10,7 +10,8 @@ type Json = Record<string, any>
 const fmtTime = (iso: string | null | undefined): string => {
   if (!iso) return '—'
   const d = new Date(iso)
-  return Number.isFinite(d.getTime()) ? d.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '—'
+  // 08 口径：用户业务展示按 Asia/Shanghai（服务端权威值的显示层钉扎，不随访问者漂移）
+  return Number.isFinite(d.getTime()) ? d.toLocaleString([], { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai' }) : '—'
 }
 
 export function BackgroundControls({ client, onClose }: { client: EstomagoClient; onClose: () => void }) {

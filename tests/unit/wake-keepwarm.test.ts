@@ -320,3 +320,30 @@ test('A-01：v32→v33 迁移两次幂等；旧任务/费用/未知状态无损�
   const act = db.prepare('SELECT last_real_activity_at FROM conversation_activity WHERE conversation_id = ?').get('primary') as { last_real_activity_at: string };
   assert.equal(act.last_real_activity_at, '2026-01-01T00:00:00.000Z', '投影从发布证据重建');
 });
+
+// —— B-02（收尾）：跨 run 日占用聚合门 ——
+
+test('B-02：多 run 已结算+unknown 占用后，新派发超 cap 在记账入口被拒（不是只看当前 run）', () => {
+  const t = setup();
+  t.settings.applyUpdate({ expectedRevision: t.settings.revision(), patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
+  const nowIso = new Date(t.now).toISOString();
+  const day = new Date(t.now + 8 * 3_600_000).toISOString().slice(0, 10);
+  // run A（前一个 keepwarm run）：dispatch 已结算 actual=0.9 美元
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-a','t-a','primary','jiaming','keepwarm',1,'kw:a','completed',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, actual_cost_micro_usd, created_at) VALUES ('d-a','r-a','model:1',1,'model','settled',?,900000,900000,?)").run(day, nowIso);
+  // run B：结果未知（dispatch state=unknown，预占 0.08 美元保留）
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-b','t-b','primary','jiaming','keepwarm',1,'kw:b','unknown',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, created_at) VALUES ('d-b','r-b','model:1',1,'model','unknown',?,80000,?)").run(day, nowIso);
+  // 取消未发的不计
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-c','t-c','primary','jiaming','keepwarm',1,'kw:c','cancelled',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, created_at) VALUES ('d-c','r-c','model:1',1,'model','cancelled_before_send',?,50000,?)").run(day, nowIso);
+  // 新 run C：记账入口逐笔过日占用门
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-d','t-d','primary','jiaming','keepwarm',1,'kw:d','running',?,?)").run(nowIso, nowIso);
+  const sched = new BackgroundScheduler({ db: t.db, config: t.config, settings: t.settings, alerts: new SystemAlertService(t.db, t.events), executor: { async executeRun() { return { outcome: 'noop' }; } }, now: () => t.now });
+  assert.equal(sched.dailyOccupiedMicroUsd('keepwarm', day), 980000, 'settled actual + unknown 预占；取消未发不计');
+  const over = sched.recordDispatchStart({ runId: 'r-d', logicalActionKey: 'model:1', attemptNo: 1, dispatchKind: 'model', capabilityName: null, reservedCostMicroUsd: 50000 });
+  assert.equal(over.allowed, false, '0.98+0.05 > 1.0 → 拒（跨 run 聚合，transport 前）');
+  const within = sched.recordDispatchStart({ runId: 'r-d', logicalActionKey: 'model:1', attemptNo: 1, dispatchKind: 'model', capabilityName: null, reservedCostMicroUsd: 10000 });
+  assert.equal(within.allowed, true, '0.98+0.01 ≤ 1.0 → 放行并记账');
+  assert.equal(sched.dailyOccupiedMicroUsd('keepwarm', day), 990000, '新预占入账');
+});

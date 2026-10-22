@@ -288,16 +288,29 @@ export class BackgroundScheduler {
     return { state: row.state };
   }
 
-  /** 派发记账入口（executor 在每次 transport 前调用；§10.1 唯一预算账本）。 */
+  /** 派发记账入口（executor 在每次 transport 前调用；§10.1 唯一预算账本）。
+   *  WAKE_KEEPWARM_V1 §09（B-02 收尾）：日占用门=当日（上海日）同 kind 全部 run 的
+   *  已结算 actual + 未结算预占（含 unknown）+ 本次上界 ≤ 用户 cap——跨 run 聚合，
+   *  不只看当前 run；取消未发的不计。 */
   recordDispatchStart(input: { runId: string; logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool' | 'delivery'; capabilityName: string | null; reservedCostMicroUsd: number }): { allowed: boolean; dispatchId: string } {
     const nowMs = this.now();
     const nowIso = new Date(nowMs).toISOString();
     const dispatchId = genId('bgd');
-    const run = this.d.db.prepare('SELECT id, state, model_requests_started, tool_calls_started, first_dispatch_started_at FROM background_runs WHERE id = ?').get(input.runId) as { id: string; state: string; model_requests_started: number; tool_calls_started: number; first_dispatch_started_at: string | null } | undefined;
+    const run = this.d.db.prepare('SELECT id, state, kind, model_requests_started, tool_calls_started, first_dispatch_started_at FROM background_runs WHERE id = ?').get(input.runId) as { id: string; state: string; kind: string; model_requests_started: number; tool_calls_started: number; first_dispatch_started_at: string | null } | undefined;
     if (!run) return { allowed: false, dispatchId: '' };
     // 取消后不再发（§7.2.3：关闭返回后不得开始新 transport）；终态 run 同样拒新派发
     if (this.cancelRequested.has(input.runId)) return { allowed: false, dispatchId: '' };
     if (run.state !== 'claimed' && run.state !== 'running' && run.state !== 'cancelling') return { allowed: false, dispatchId: '' };
+    // B-02：跨 run 日占用聚合门（09 §资金准入顺序公式；无报价=0 上界已在 executor 价格门拦）
+    if (run.kind === 'autonomous' || run.kind === 'keepwarm') {
+      const s = this.d.settings.effective();
+      const capUsd = run.kind === 'autonomous' ? s.autonomous.daily_cost_cap_usd : s.keepwarm.daily_cost_cap_usd;
+      if (capUsd !== null) {
+        const capMicro = Math.round(capUsd * 1_000_000);
+        const occupied = this.dailyOccupiedMicroUsd(run.kind as 'autonomous' | 'keepwarm', this.budgetDayNow(nowMs));
+        if (occupied + input.reservedCostMicroUsd > capMicro) return { allowed: false, dispatchId: '' };
+      }
+    }
     tx(this.d.db, () => {
       this.d.db.prepare(
         `INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, capability_name, state, budget_day, reserved_cost_micro_usd, dispatch_started_at, created_at)
@@ -307,6 +320,17 @@ export class BackgroundScheduler {
       if (input.dispatchKind === 'tool') this.d.db.prepare('UPDATE background_runs SET tool_calls_started = tool_calls_started + 1, tool_calls_observed = tool_calls_observed + 1, reserved_cost_micro_usd = reserved_cost_micro_usd + ?, updated_at = ? WHERE id = ?').run(input.reservedCostMicroUsd, nowIso, input.runId);
     });
     return { allowed: true, dispatchId };
+  }
+
+  /** §10.1 日占用：settled 按 actual、未结算（reserved/started/unknown）按预占；
+   *  cancelled_before_send 不计；跨该 kind 全部 run 聚合（B-02）。 */
+  dailyOccupiedMicroUsd(kind: 'autonomous' | 'keepwarm', budgetDay: string): number {
+    const row = this.d.db.prepare(
+      `SELECT COALESCE(SUM(CASE WHEN bd.state = 'settled' THEN bd.actual_cost_micro_usd ELSE bd.reserved_cost_micro_usd END), 0) AS occ
+       FROM background_dispatches bd JOIN background_runs r ON r.id = bd.run_id
+       WHERE bd.budget_day = ? AND r.kind = ? AND bd.state != 'cancelled_before_send'`,
+    ).get(budgetDay, kind) as { occ: number };
+    return row?.occ ?? 0;
   }
 
   private budgetDayNow(nowMs: number): string {
