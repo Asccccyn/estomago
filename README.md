@@ -1,5 +1,7 @@
 # estómago
 
+- 2026-10-21（已部署并核验）：模型输出白名单、MCP 默认单份 JSON、按需工具和发生日期修复；固定版本在 Projects 发布目录运行。历史/缓存指纹一致，零 OR 验证请求。[部署、路径故障恢复与回滚](docs/reports/MODEL_OUTPUT_PRODUCTION_20261021.md)。
+
 - 2026-10-21（代码 `bd677ed` 已验证，未部署）：模型结果字段白名单；保留操作引用、并发版本与业务正文，修复发生日期被置信度置空。[输出合同与边界](docs/contracts/model-result-whitelist.md)。
 
 - 2026-10-21（代码 `af4fb6f` 已验证，待部署）：新窗按需工具定义，旧窗持久冻结；记忆模型视图去除内部元数据。[实现与验证](docs/reports/DEFERRED_TOOLS_MODEL_VIEW_20261021.md)。
