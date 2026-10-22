@@ -3,6 +3,7 @@ import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
+import { BackgroundControls } from './BackgroundControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { SurfacedMemories } from './SurfacedMemories'
@@ -11,7 +12,7 @@ import { HistoryBoundary, HistoryDatePicker, HistoryViewingBar } from './ChatHis
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
-  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X,
+  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock,
 } from 'lucide-react'
 
 function DotSpinner() {
@@ -220,7 +221,7 @@ export default function App() {
   const [plus, setPlus] = useState(false)
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
-  const [sheet, setSheet] = useState<null | 'bench' | 'log'>(null)
+  const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
   const [historyAction, setHistoryAction] = useState<'earlier' | 'later' | 'date' | 'latest' | null>(null)
@@ -283,7 +284,7 @@ export default function App() {
     return saved
   }
   useEffect(() => {
-    if (sheet) void client.loadPanel(sheet)
+    if (sheet && sheet !== 'wake') void client.loadPanel(sheet)
   }, [sheet, client])
   useEffect(() => {client.setAlertsOpen(alertsOpen);return ()=>client.setAlertsOpen(false)}, [alertsOpen, client])
   useEffect(() => {
@@ -320,7 +321,7 @@ export default function App() {
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setMore(false)} />
                   <div className="pop-in absolute right-0 top-9 z-40 w-52 rounded-2xl border border-black/10 bg-white p-1 shadow-xl">
-                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹']] as const).map(([k, I, t, d]) => (
+                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温']] as const).map(([k, I, t, d]) => (
                       <button key={k} onClick={() => { setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
                         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#f3e6df] text-[#c96442]"><I size={16} /></span>
                         <span><span className="block text-[14px]">{t}</span><span className="block text-[11.5px] text-[#8a8780]">{d}</span></span>
@@ -547,7 +548,8 @@ export default function App() {
         <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = '' }} />
         </>)}
       </footer>
-      {sheet && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
+      {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
+      {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
         onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}

@@ -133,6 +133,21 @@ export class EstomagoClient {
   private json(method: string, body: unknown, headers: Record<string,string> = {}): RequestInit {
     return {method,headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)}
   }
+  // —— WAKE_KEEPWARM_V1（2026-10-22）：后台设置/预约管理面（BackgroundControls 用；独立拉取不进主 Snapshot）——
+  backgroundSettings = (): Promise<Json> => this.request('/background/settings')
+  backgroundPutSettings = (ifMatch: number, patch: Json, opKey: string): Promise<Json> =>
+    this.request('/background/settings', this.json('PUT', patch, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
+  backgroundTasks = (cursor?: string | null): Promise<Json> => this.request('/background/tasks' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
+  backgroundTaskDetail = (id: string): Promise<Json> => this.request('/background/tasks/' + encodeURIComponent(id))
+  backgroundCreateWake = (body: Json, opKey: string): Promise<Json> =>
+    this.request('/background/tasks', this.json('POST', body, {'Idempotency-Key':opKey}))
+  backgroundUpdateTask = (id: string, ifMatch: number, body: Json, opKey: string): Promise<Json> =>
+    this.request('/background/tasks/' + encodeURIComponent(id), this.json('PUT', body, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
+  backgroundCancelTask = (id: string, ifMatch: number, opKey: string): Promise<Json> =>
+    this.request('/background/tasks/' + encodeURIComponent(id), {method:'DELETE',headers:{'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}})
+  backgroundRuns = (): Promise<Json> => this.request('/background/runs')
+  backgroundStopRun = (id: string, opKey: string): Promise<Json> =>
+    this.request('/background/runs/' + encodeURIComponent(id) + '/stop', {method:'POST',headers:{'Idempotency-Key':opKey}})
   start = async () => {
     if(this.started||this.redirecting)return
     this.disposed=false;this.started=true; const generation=++this.generation

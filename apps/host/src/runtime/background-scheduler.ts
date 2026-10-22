@@ -313,13 +313,15 @@ export class BackgroundScheduler {
     return new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10); // 上海日（与 attribution.shanghaiDayOf 同口径）
   }
 
-  /** 派发结算（§10.1 返回后逐笔；未知保留预占）。 */
+  /** 派发结算（§10.1 返回后逐笔；未知保留预占）。幂等：已结算/已取消的 dispatch 不重复入账。 */
   settleDispatch(dispatchId: string, opts: { actualCostMicroUsd: number | null; outcomeCode: string }): void {
+    const prior = this.d.db.prepare('SELECT state FROM background_dispatches WHERE id = ?').get(dispatchId) as { state: string } | undefined;
+    if (!prior || (prior.state !== 'reserved' && prior.state !== 'started')) return;
     const nowIso = new Date(this.now()).toISOString();
-    this.d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ? AND state IN ('reserved','started')").run(opts.actualCostMicroUsd === null ? 'unknown' : 'settled', opts.actualCostMicroUsd, nowIso, opts.outcomeCode, dispatchId);
+    this.d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ?").run(opts.actualCostMicroUsd === null ? 'unknown' : 'settled', opts.actualCostMicroUsd, nowIso, opts.outcomeCode, dispatchId);
     if (opts.actualCostMicroUsd !== null) {
       const runId = (this.d.db.prepare('SELECT run_id FROM background_dispatches WHERE id = ?').get(dispatchId) as { run_id: string }).run_id;
-      // B-03：结算幂等——已结算的 dispatch 不再重复累计（同 usage 重复到达不双计）
+      // B-03：结算幂等——已结算预占释放为 actual，不双计（同 usage 重复到达只计一次）
       this.d.db.prepare('UPDATE background_runs SET known_cost_micro_usd = known_cost_micro_usd + ?, reserved_cost_micro_usd = MAX(0, reserved_cost_micro_usd - (SELECT reserved_cost_micro_usd FROM background_dispatches WHERE id = ?)), updated_at = ? WHERE id = ?').run(opts.actualCostMicroUsd, dispatchId, nowIso, runId);
     }
   }

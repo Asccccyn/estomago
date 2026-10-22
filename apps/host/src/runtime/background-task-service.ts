@@ -42,7 +42,14 @@ function toSummary(r: TaskRow): TaskSummary {
 }
 
 export class BackgroundTaskService {
-  constructor(private db: Db, private settings: BackgroundSettingsService, private now: () => number = () => Date.now()) {}
+  private db: Db;
+  private settings: BackgroundSettingsService;
+  private now: () => number;
+  constructor(db: Db, settings: BackgroundSettingsService, now: () => number = () => Date.now()) {
+    this.db = db;
+    this.settings = settings;
+    this.now = now;
+  }
 
   private nowIso(): string { return new Date(this.now()).toISOString(); }
 
