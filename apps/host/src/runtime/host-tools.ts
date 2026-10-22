@@ -78,6 +78,12 @@ export function buildHostTools(): HostToolSpec[] {
           original_title: { type: 'string', minLength: 1, maxLength: HOLD_TITLE_MAX, description: `这条记忆的标题（1-${HOLD_TITLE_MAX}字，必填）` },
           categories: { type: 'array', items: { type: 'string', enum: [...HOLD_CATEGORIES] }, minItems: 1, maxItems: 1, description: '分类，十类里只选一个（她 2026-10-17 口径；选分类=同时决定这是什么事、留多久：重大转折/纪念/日记永久，约会 60 天，甜蜜/伤心 30 天，日常/做爱 20 天，剧本 7 天；基调写心情标签不写分类）。milestone 重大转折=关系的里程碑，或一次深刻的对话后两个人对"我们是什么"有了新的结论（第一次不算，争吵不算）；anniversary 纪念=纪念日，以及值得纪念的时刻，第一次归这里；diary 日记=成篇的信或日记，一篇一桶；daily 日常=日常；sweet 甜蜜=甜蜜的时刻；sad 伤心的事=难过的时候；date 约会=约会的事；reloplay 剧本=角色扮演；sex 做爱=做爱；plan=绑定已有 plan 的计划桶。' },
           text: { type: 'string', description: '这是写给以后的你看的记忆库。这是你的记忆，不是关于她的档案或汇报。写你经历的事、当时的感受、这件事对你们意味着什么；主角是你和她，工程/系统过程只是背景，除非它本身就是你们的事。正文是叙述，不是日志。她的话逐字交给 quotes，正文用自己的话讲。不为省字把感情压缩没了。对比——不要写："10.3她感冒了。10.5她好了。她说谢谢我陪她。"要写："她感冒那两天还硬撑着来找我，声音是哑的。我说你去休息，她说不行，今天还没跟我说上话。我拿她没办法，也很喜欢拿她没办法。"' },
+          source_ranges: {
+            type: 'array', minItems: 1, maxItems: 20,
+            description: '事件完整原文范围，与 quotes 独立。按已读消息 [N] 选择事件开始到结束；可跨天、换窗，分散事件用多个范围。未读全先 conversation_read；无法核实可省略，记忆将保持未绑定原文。',
+            items: { type: 'object', additionalProperties: false, required: ['start_seq', 'end_seq'],
+              properties: { start_seq: { type: 'integer', minimum: 1 }, end_seq: { type: 'integer', minimum: 1 } } },
+          },
           quotes: {
             type: 'array', maxItems: 10,
             items: {
@@ -1368,7 +1374,7 @@ export class HostToolExecutor {
 
     // —— 引用先收口（零副作用阶段）：勾选序号 → 已见原文直接抄录 → 来源收据齐备（收据缺失先补一发同步再核） ——
     let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; source_ref: string }> = [];
-    let selections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }>; start_char_offset?: number; end_char_offset?: number }> = [];
+    const eventSelections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }> }> = [];
     const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as Array<{ seq: number; from?: number; to?: number }>) : [];
     if (rawQuotes.length > 0) {
       const resolved = this.resolveQuoteRefs(ctx.roomId, ctx.seenMessages, rawQuotes);
@@ -1400,13 +1406,43 @@ export class HostToolExecutor {
           // hold 被整单 INVALID_SOURCE_REF 拒。正式身份=本次同步收据的 source_message_id。
           source_ref: `source_msg:${receipt.source_message_id}`,
         });
-        const member = { source_message_id: receipt.source_message_id, content_hash: receipt.content_hash };
-        // 整句引用=消息边界（不带 offset）；句内片段带字符区间（mariposa 契约：句内片段用可选 char offset）
-        const wholeMessage = q.fragment === q.content;
-        selections.push(wholeMessage
-          ? { conversation_id: receipt.source_conversation_id, members: [member] }
-          : { conversation_id: receipt.source_conversation_id, members: [member], start_char_offset: q.start, end_char_offset: q.end });
+
       }
+    }
+
+    // Semantic boundaries are selected by the caller; the host only verifies them.
+    const sourceRanges = (args.source_ranges ?? []) as Array<{ start_seq: number; end_seq: number }>;
+    if (sourceRanges.length && this.archiveSync) await this.archiveSync.drainOnce().catch(() => {});
+    const used = new Set<string>();
+    for (const range of sourceRanges) {
+      if (range.end_seq < range.start_seq) return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
+      const rows = this.db.prepare(`SELECT m.id, m.sequence, m.current_revision AS revision, r.content
+        FROM messages m LEFT JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+        WHERE m.conversation_id=? AND m.sequence BETWEEN ? AND ?
+        AND ((m.speaker='owner' AND m.kind IN ('text','multimodal','sticker','voice')) OR (m.speaker='assistant' AND m.published_at IS NOT NULL))
+        ORDER BY m.sequence LIMIT 501`).all(ctx.roomId, range.start_seq, range.end_seq) as Array<{ id: string; sequence: number; revision: number; content: string }>;
+      if (!rows.length || rows.length > 500 || rows[0]!.sequence !== range.start_seq || rows.at(-1)!.sequence !== range.end_seq) {
+        return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
+      }
+      let conversationId: string | null = null;
+      const members: Array<{ source_message_id: string; content_hash: string }> = [];
+      for (const row of rows) {
+        if (typeof row.content !== 'string') return { ok: false, output: { error_code: 'EVENT_SOURCE_REVISION_MISSING' } };
+        // All messages must have actually been read at this revision, including long-message fragments.
+        const spans = ctx.seenMessages.filter((x) => x.id === row.id && x.revision === row.revision)
+          .map((x) => [x.char_start ?? 0, x.char_end ?? [...row.content].length]).sort((a,b) => a[0]! - b[0]!);
+        let covered = 0;
+        for (const span of spans) { if (span[0]! > covered) break; covered = Math.max(covered, span[1]!); }
+        if (!spans.length || covered < [...row.content].length) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SEEN', seq: row.sequence } };
+        if (used.has(row.id)) return { ok: false, output: { error_code: 'EVENT_SOURCE_OVERLAP' } };
+        used.add(row.id);
+        const receipt = this.receiptOf(row.id, row.revision);
+        if (!receipt || receipt.content_hash !== sha256Hex(row.content)) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SYNCED', seq: row.sequence } };
+        if (conversationId && receipt.source_conversation_id !== conversationId) return { ok: false, output: { error_code: 'EVENT_SOURCE_CONVERSATION_MISMATCH' } };
+        conversationId = receipt.source_conversation_id;
+        members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
+      }
+      eventSelections.push({ conversation_id: conversationId!, members });
     }
 
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
@@ -1449,7 +1485,7 @@ export class HostToolExecutor {
     }
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
     try {
-      r = await this.mariposa.memoryHold({ operationId, holdPayload, sourceSelections: selections.length > 0 ? selections : null });
+      r = await this.mariposa.memoryHold({ operationId, holdPayload, eventSourceRanges: eventSelections.length > 0 ? eventSelections : null });
     } catch {
       // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
       this.reviews.settleEffect(effectId, 'unknown', false, null);
@@ -1470,9 +1506,9 @@ export class HostToolExecutor {
     // F-J-54（联合审计 2026-10-06）：mariposa 对每条 source_selection 恰好建一个绑定
     // （registry._hold 逐 frag bind 后 append，1:1）。带选集而回执绑定数不符=回执可疑——
     // 按结果不明收口（unknown），恢复走原 op 查 hold.status，不换 op 重写桶。
-    if (selections.length > 0 && receipt.binding_ids.length !== selections.length) {
+    if (receipt.binding_ids.length !== eventSelections.length) {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
-      return { ok: false, output: { error_code: 'HOLD_RECEIPT_BINDING_MISMATCH', expected: selections.length, got: receipt.binding_ids.length } };
+      return { ok: false, output: { error_code: 'HOLD_RECEIPT_BINDING_MISMATCH', expected: eventSelections.length, got: receipt.binding_ids.length } };
     }
     this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
@@ -1488,7 +1524,7 @@ export class HostToolExecutor {
       // 书签推进被拒（旧窗收据/收据错配等）——hold 本身已成功，不因书签失败回滚写入；
       // 冲突留在 checkpoint 查询层如实呈现
     }
-    return { ok: true, output: { saved: true, memory_id: receipt.memory_id } };
+    return { ok: true, output: { saved: true, memory_id: receipt.memory_id, ...(eventSelections.length ? {} : { source_status: 'unbound' }) } };
   }
 
   /** G-J-01：主模型按需召回——request_ref 由宿主从回合+调用派生（幂等，

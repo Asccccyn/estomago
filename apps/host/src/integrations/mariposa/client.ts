@@ -232,11 +232,13 @@ export class MariposaClient {
     operationId: string;
     holdPayload: Record<string, unknown>; // 既有业务字段（分类/正文/心情/plan_ids…）原样传递，宿主不改写
     sourceSelections?: HoldSourceSelection[] | null;
+    eventSourceRanges?: HoldSourceSelection[] | null;
   }): Promise<MariposaCallResult & { receipt?: HoldReceipt }> {
     const payload: Record<string, unknown> = {
       operation_id: args.operationId,
       ...args.holdPayload,
       ...(args.sourceSelections ? { source_selections: args.sourceSelections } : {}),
+      ...(args.eventSourceRanges ? { event_source_ranges: args.eventSourceRanges } : {}),
     };
     const r = await this.transport('memory.hold', payload);
     if (!r.ok) return r;

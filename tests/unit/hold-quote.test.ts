@@ -1,7 +1,7 @@
 // memory_hold 勾选式话语（她 2026-10-18 裁定）：quotes 只报消息序号
 // （可细到 from/to 句范围），宿主从已见原文直接抄录——一字不差是构造
 // 出来的，不再逐字比对；说话人按来源自动映射（owner=qiaosheng /
-// assistant=jiaming）；引用按 mariposa source_selections 钉住（收据齐
+// assistant=jiaming）；引用按 mariposa 不决定事件原文范围（收据齐
 // 全才发）。序号未见过/句范围无效/未同步=如实拒绝且零副作用。
 // 假 transport/假 Mariposa，零网络。
 import { test } from 'node:test';
@@ -49,7 +49,7 @@ function recordingMariposa(calls: HoldCall[]): MariposaTransport {
   return async (capability, payload) => {
     if (capability === 'memory.hold') {
       calls.push({ operationId: payload.operation_id as string, holdPayload: payload as Record<string, unknown>, sourceSelections: payload.source_selections ?? null });
-      const selCount = Array.isArray(payload.source_selections) ? (payload.source_selections as unknown[]).length : 0;
+      const selCount = Array.isArray(payload.event_source_ranges) ? (payload.event_source_ranges as unknown[]).length : 0;
       return { ok: true, result: { operation_id: payload.operation_id, memory_id: `mem-${calls.length}`, version: 1, binding_ids: Array.from({ length: selCount }, (_, i) => `msb-fake-${calls.length}-${i}`), committed_at: new Date().toISOString() } };
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
@@ -103,7 +103,7 @@ function seedReceipt(ctx: ReturnType<typeof compose>, messageId: string, revisio
   ).run(messageId, revision, srcConv, srcMsg, sha256Hex(content), new Date().toISOString(), new Date().toISOString());
 }
 
-test('真实顺序：提交→收据就位→hold 勾选句范围→our_words 直接抄录+说话人+source_selections 钉住', async () => {
+test('真实顺序：提交→收据就位→hold 勾选句范围→our_words 直接抄录+说话人+不决定事件原文范围', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq2-');
   const userText = '她今天路过花店。突然好想你。';
@@ -125,13 +125,7 @@ test('真实顺序：提交→收据就位→hold 勾选句范围→our_words �
   assert.equal(ourWords[0]!.speaker, 'qiaosheng', '用户原话→qiaosheng（来源自动映射）');
   assert.equal(ourWords[0]!.text, '突然好想你。', '系统直接抄录第 2 句（构造式一字不差）');
   assert.equal(ourWords[0]!.source_ref, 'source_msg:src-m-1', 'F-J-01：正式来源身份=source_msg:<同步收据 id>');
-  const sel = (call.sourceSelections as Array<Record<string, unknown>>)[0]!;
-  assert.equal(sel.conversation_id, 'src-conv-1', '按 mariposa 来源会话钉');
-  const member = (sel.members as Array<Record<string, string>>)[0]!;
-  assert.equal(member.source_message_id, 'src-m-1');
-  assert.equal(member.content_hash, sha256Hex(userText), '内容 hash=原文 sha256（mariposa 契约）');
-  assert.equal(sel.start_char_offset, '她今天路过花店。'.length, '句内片段带码点区间');
-  assert.equal(sel.end_char_offset, '她今天路过花店。'.length + '突然好想你。'.length);
+  assert.equal(call.sourceSelections, null, '引语不建立事件原文绑定');
   ctx.db.close();
 });
 
@@ -147,8 +141,7 @@ test('整条消息勾选（省略 from/to）：全量录入、不带 offset', as
   assert.equal(calls.length, 1);
   const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
   assert.equal(ourWords[0]!.text, userText, '整条消息=全文录入');
-  const sel = (calls[0]!.sourceSelections as Array<Record<string, unknown>>)[0]!;
-  assert.equal(sel.start_char_offset, undefined, '整条引用=消息边界（不带 offset）');
+  assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   ctx.db.close();
 });
 
@@ -165,10 +158,7 @@ test('自审 P2 回归：emoji（增补平面）在句子之前时，offset 按�
   assert.equal(calls.length, 1, '勾选解析成功');
   const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
   assert.equal(ourWords[0]!.text, '突然好想你。');
-  const sel = (calls[0]!.sourceSelections as Array<Record<string, unknown>>)[0]!;
-  const startCp = 8; // 😀(1)+今天路过花店(6)+。(1) —— UTF-16 下标会是 9
-  assert.equal(sel.start_char_offset, startCp, 'start=码点口径（mariposa query.py CB-029 契约），不是 UTF-16');
-  assert.equal(sel.end_char_offset, startCp + '突然好想你。'.length, 'end=码点半开区间');
+  assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   ctx.db.close();
 });
 
@@ -269,11 +259,7 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
   const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
   assert.equal(ourWords[0]!.speaker, 'jiaming', '助手原话→jiaming');
   assert.equal(ourWords[0]!.text, '这是上一轮的原话');
-  const sel = (calls[0]!.sourceSelections as Array<Record<string, unknown>>)[0]!;
-  assert.equal(sel.start_char_offset, undefined, '整条消息勾选=消息边界（不带 offset）');
-  assert.equal(sel.end_char_offset, undefined);
-  const member = (sel.members as Array<Record<string, string>>)[0]!;
-  assert.equal(member.source_message_id, 'src-m-2');
+  assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   db.close();
 });
 
@@ -288,5 +274,26 @@ test('未同步勾选：消息存在但无来源收据 → QUOTE_NOT_SYNCED 拒�
   assert.equal(calls.length, 0, '未同步=不发 hold');
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed', '回合照常收口（工具错误是模型可见输出，不是宿主故障）');
+  ctx.db.close();
+});
+
+
+test('独立事件范围：没有 quotes 仍在 hold 同次发送完整原文 manifest', async () => {
+  const calls: HoldCall[] = [];
+  const ctx = compose(tempRoot('event-no-quotes-'), { original_title: '事件', creation_mode: 'contemporaneous', categories: ['daily'], text: '事件正文', source_ranges: [{start_seq: 1,end_seq: 1}] }, recordingMariposa(calls));
+  const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '完整原文\n第二行', clientMessageId: 'event1', occurredAt: T0 });
+  seedReceipt(ctx, sub.message.id, 1, '完整原文\n第二行', 'event-conv', 'event-msg');
+  ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.holdPayload.our_words, undefined);
+  assert.deepEqual(calls[0]!.holdPayload.event_source_ranges, [{conversation_id:'event-conv',members:[{source_message_id:'event-msg',content_hash:sha256Hex('完整原文\n第二行')}]}]);
+  ctx.db.close();
+});
+
+test('事件范围未同步：整次 hold 拒绝，不能用引语或时间补齐', async () => {
+  const calls: HoldCall[] = [];
+  const ctx = compose(tempRoot('event-unsynced-'), {original_title:'事件', creation_mode:'contemporaneous', categories:['daily'],text:'正文',source_ranges:[{start_seq:1,end_seq:1}]}, recordingMariposa(calls));
+  await say(ctx,'尚未同步','event2',T0);
+  assert.equal(calls.length,0);
   ctx.db.close();
 });

@@ -53,7 +53,7 @@ test('define then sent proof before invoke; no direct/forged/cross-room invocati
  f.persist(tools,[{role:'assistant',tool_calls:[{id:'def-call',function:{name:'tool_define',arguments:JSON.stringify({name:'memory_hold'})}}]}, {role:'tool',tool_call_id:'def-call',content:JSON.stringify(defined.output)}]);
  assert.equal((await f.executor.execute('tool_invoke',invoke,{...f.ctx,roomId:'other'})).ok,false);
  const repeated=await f.executor.execute('tool_define',{name:'memory_hold'},f.ctx);assert.equal(repeated.output.already_available,true);assert.equal(repeated.output.parameters,undefined);
- const held=await f.executor.execute('tool_invoke',invoke,f.ctx);assert.deepEqual(held.output,{saved:true,memory_id:'m1'});
+ const held=await f.executor.execute('tool_invoke',invoke,f.ctx);assert.deepEqual(held.output,{saved:true,memory_id:'m1',source_status:'unbound'});
  assert.equal(f.calls.length,1);assert.equal(f.calls[0].cap,'memory.hold');
  assert.ok(f.calls[0].payload.operation_id.startsWith('es-hold-'));
  assert.equal(JSON.stringify(storedToolset(f.db,'w1')!.tools),before);
