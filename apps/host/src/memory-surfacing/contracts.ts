@@ -90,9 +90,13 @@ export function projectSurfacedMemory(item: SurfaceItem): { date: string | null;
   return { date: date === '不确定' ? null : date, text: item.event_text };
 }
 
-export function renderAugmentation(items: SurfaceItem[], _refs?: Map<string, string>): string {
+export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>): string {
   if (items.length === 0) return '';
-  return JSON.stringify({ memories: items.map(projectSurfacedMemory) });
+  return JSON.stringify({ memories: items.map(item => {
+    const ref = refs?.get(item.event_id) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
+    if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
+    return { memory_ref: ref, ...projectSurfacedMemory(item) };
+  }) });
 }
 
 /** 短 handle：内存安全的不透明引用（完整 UUID/版本/hash/分数不进模型文本）。 */

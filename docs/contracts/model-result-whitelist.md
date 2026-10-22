@@ -26,6 +26,6 @@ by the projection. Other tools retain their own contracts; external provider raw
 and explicit history are not recursively stripped with a generic null/false/zero filter.
 
 Bootstrap already assembles business text after completing/validating pages in supervisor;
-it is not a JSON dump. Automatic surfacing renders only occurrence date and original text.
+it is not a JSON dump. Automatic surfacing renders occurrence date and original text plus one memory_ref for the three-tier read contract.
 Unknown occurrence dates remain null there; an available date is no longer erased because
 of date_confidence. UI mappings and internal source/message/version checks remain separate.

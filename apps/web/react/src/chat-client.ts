@@ -384,8 +384,8 @@ export class EstomagoClient {
   private async loadUsage(id:string) {const epoch=this.historyEpoch;try{const data=await this.request('/turns/'+encodeURIComponent(id)+'/usage');if(epoch===this.historyEpoch&&this.visibleTurn(id))this.patch({usage:{...this.snapshot.usage,[id]:data}})}catch{}}
   loadSurfacedMemories = (turnId:string):Promise<Json> =>
     this.request('/conversations/primary/turns/'+encodeURIComponent(turnId)+'/memories')
-  loadSurfacedMemoryDetail = (turnId:string,ref:string,cursor?:string):Promise<Json> =>
-    this.request('/conversations/primary/turns/'+encodeURIComponent(turnId)+'/memories/'+encodeURIComponent(ref)+(cursor?'?cursor='+encodeURIComponent(cursor):''))
+  loadSurfacedMemoryDetail = (turnId:string,ref:string,cursor?:string,section:'memory'|'relations'|'source'='memory'):Promise<Json> =>
+    this.request('/conversations/primary/turns/'+encodeURIComponent(turnId)+'/memories/'+encodeURIComponent(ref)+'?section='+section+(cursor?'&cursor='+encodeURIComponent(cursor):''))
   loadTurnDetails = async (id:string):Promise<void> => {
     if(this.detailsLoaded.has(id)||!this.visibleTurn(id))return
     const epoch=this.historyEpoch

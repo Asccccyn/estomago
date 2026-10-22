@@ -501,10 +501,10 @@ export class SurfacingService {
       .map(({ memory_ref, date, text }) => ({ memory_ref, date, text }));
   }
 
-  async readMemoryForTurn(conversationId: string, turnId: string, ref: string, cursor?: string) {
+  async readMemoryForTurn(conversationId: string, turnId: string, ref: string, cursor?: string, section: 'memory' | 'relations' | 'source' = 'memory') {
     const binding = this.repo.visibleForTurn(conversationId, turnId).find(it => it.memory_ref === ref);
     if (!binding) return { ok: false as const, code: 'DETAIL_REF_NOT_SEEN', message: '该回忆不属于本轮已交付内容' };
-    return executeMemoryReadFull(this.repo, this.client, { memory_ref: ref, cursor },
+    return executeMemoryReadFull(this.repo, this.client, { memory_ref: ref, cursor, section, view: 'model' },
       { roomId: conversationId, windowId: binding.windowId, requestId: binding.requestId });
   }
 

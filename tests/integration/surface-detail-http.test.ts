@@ -14,8 +14,8 @@ test('回忆详情HTTP：鉴权、房间/轮绑定、游标传递；点击不触
  const a=host.messages.submitUserMessageWithTurn({conversationId:'primary',content:'合成原话',clientMessageId:'detail'});
  const reads:Array<unknown>=[];
  host.surfacing!.visibleMemoriesForTurn=()=>[{memory_ref:'sf_internal',date:'2026-07-09',text:'完整事件正文'}];
- host.surfacing!.readMemoryForTurn=async(room,turn,ref,cursor)=>{
-  reads.push({room,turn,ref,cursor});
+ host.surfacing!.readMemoryForTurn=async(room,turn,ref,cursor,section)=>{
+  reads.push({room,turn,ref,cursor,section});
   return ref==='sf_internal'?{ok:true as const,data:{sections:{our_words:['完整话语'],relations:[{direction:'in'},{direction:'out'}]},complete:!!cursor,next_cursor:cursor?null:'p1'}}:{ok:false as const,code:'DETAIL_REF_NOT_SEEN',message:'not seen'};
  };
  const base=`http://127.0.0.1:${host.port}/api/v1/conversations/primary/turns/${a.turnId}/memories`;
@@ -28,6 +28,12 @@ test('回忆详情HTTP：鉴权、房间/轮绑定、游标传递；点击不触
  assert.equal(page.next_cursor,'p1');assert.equal(page.sections.relations.length,2);
  assert.equal((await fetch(base+'/sf_internal?cursor=p1',{headers})).status,200);
  assert.equal((reads[1] as any).cursor,'p1');
+ assert.equal((reads[0] as any).section,'memory');
+ assert.equal((await fetch(base+'/sf_internal?section=source',{headers})).status,200);
+ assert.equal((reads.at(-1) as any).section,'source');
+ const count=reads.length;
+ assert.equal((await fetch(base+'/sf_internal?section=invalid',{headers})).status,400);
+ assert.equal(reads.length,count);
  assert.equal((await fetch(base+'/sf_forged',{headers})).status,404);
  assert.equal(enqueued.length,0);
 });

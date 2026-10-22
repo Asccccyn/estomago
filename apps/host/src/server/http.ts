@@ -193,8 +193,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       res.setHeader('Cache-Control', 'no-store');
       if (!surfaceView[3]) return json(res, 200, { items: d.surfacing?.visibleMemoriesForTurn(conversationId, turnId) ?? [] });
       if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+      const section = url.searchParams.get('section') || 'memory';
+      if (!['memory','relations','source'].includes(section)) return json(res, 400, { error: { code: 'INVALID_SECTION' } });
       const result = await d.surfacing.readMemoryForTurn(conversationId, turnId,
-        decodeURIComponent(surfaceView[3]), url.searchParams.get('cursor') || undefined);
+        decodeURIComponent(surfaceView[3]), url.searchParams.get('cursor') || undefined, section as 'memory' | 'relations' | 'source');
       return result.ok ? json(res, 200, result.data) : json(res, result.code === 'DETAIL_REF_NOT_SEEN' ? 404 : 422, { error: { code: result.code, message: result.message } });
     }
 

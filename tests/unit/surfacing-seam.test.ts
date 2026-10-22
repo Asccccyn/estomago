@@ -1,3 +1,4 @@
+import {memoryRefFor} from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -82,7 +83,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
     tools, reviews, checkpoint, trajectory, surfacing: svc,
   });
   messages.ensureConversation('c1');
-  return { db, config, messages, windows, supervisor, svc };
+  return { db, config, messages, windows, supervisor, svc, tools };
 }
 
 type Block = { type: string; text?: string };
@@ -92,7 +93,7 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
   const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
   const caps: string[] = [];
   const transport: OrTransport = async payload => {
-    assert.ok(!JSON.stringify(payload.messages).includes('sf_'));
+    assert.ok(!JSON.stringify(payload.messages).includes(ITEM.detail_ref));
     return { status: 200, headers: new Map(), body: frameStream(textBody('g1','合成回复')) };
   };
   const mariposa: MariposaTransport = async (cap, payload) => {
@@ -101,7 +102,11 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
     if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } };
     if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
-    if (cap === 'memory.detail.read') { assert.equal(payload.detail_ref, ITEM.detail_ref); return { ok: true, result: { sections: {memory:{text:'完整正文'},relations:[{direction:'in'},{direction:'out'}]}, next_cursor: payload.cursor ? null : 'p1' } }; }
+    if (cap === 'memory.detail.read') {
+      assert.equal(payload.detail_ref, ITEM.detail_ref); assert.equal(payload.view,'model');
+      assert.equal(payload.section,caps.filter(x=>x==='memory.detail.read').length===1?'source':'memory');
+      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',next_cursor:payload.cursor?null:'memory:p1'}};
+    }
     throw Error('unexpected '+cap);
   };
   const ctx=compose(root,transport,mariposa,log);
@@ -111,12 +116,20 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
     assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
     const before=caps.length;
+    const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
+    const visibleRef=JSON.parse((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!).memories[0].memory_ref;
+    assert.equal(visibleRef,list[0].memory_ref);
+    const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
+      {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
+    assert.equal(modelRead.ok,true);assert.equal((modelRead.output.source as any[])[0].text,'绑定的原文');
+    assert.deepEqual(caps.slice(before),['memory.detail.read'],'model opens source directly, no ordinary detail or new search');
+    const afterModel=caps.length;
     assert.equal((await ctx.svc.readMemoryForTurn('other',a.turnId,list[0].memory_ref)).ok,false);
     assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,'sf_forged')).ok,false);
-    assert.equal(caps.length,before);
+    assert.equal(caps.length,afterModel);
     const first=await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);assert.equal(first.ok,true);
-    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'p1')).ok,true);
-    assert.deepEqual(caps.slice(before),['memory.detail.read','memory.detail.read']);
+    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'memory:p1')).ok,true);
+    assert.deepEqual(caps.slice(afterModel),['memory.detail.read','memory.detail.read']);
     assert.equal(log.length,1,'clicking detail never calls the main model');
   } finally {await ctx.svc.stop();ctx.db.close();}
 });
@@ -153,8 +166,8 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   assert.equal(memoryMessage.role, 'system', 'host data is not a user message');
   const memoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
-  assert.deepEqual(JSON.parse(memoryText), { memories: [{ date: '2026-07-09', text: ITEM.event_text }] });
-  assert.ok(!memoryText.includes('sf_'));
+  assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), date: '2026-07-09', text: ITEM.event_text }] });
+  assert.ok(memoryText.includes(memoryRefFor(ITEM.detail_ref)));
 
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
   assert.ok(!tail2Text.includes('{"memories":'), 'real user input is not rewritten with host memory');

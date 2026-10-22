@@ -263,7 +263,7 @@ test('回忆展开只发定点GET，保持同轮引用和分页游标，不发�
   await h.client.loadSurfacedMemoryDetail('turn-a','sf_one','p1')
   assert.equal(h.calls.length,2)
   assert.ok(h.calls[0].url.endsWith('/conversations/primary/turns/turn-a/memories'))
-  assert.ok(h.calls[1].url.endsWith('/conversations/primary/turns/turn-a/memories/sf_one?cursor=p1'))
+  assert.ok(h.calls[1].url.endsWith('/conversations/primary/turns/turn-a/memories/sf_one?section=memory&cursor=p1'))
   assert.ok(h.calls.every(c=>!c.init?.method||c.init.method==='GET'))
  } finally {h.client.stop()}
 })

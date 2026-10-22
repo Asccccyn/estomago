@@ -156,12 +156,13 @@ export function buildHostTools(): HostToolSpec[] {
       // 全量详情（docs/05）。工具契约从新 epoch 初始即进冻结工具集——
       // 不等首次浮现出现后才动态加（docs/06 E）。
       name: 'memory_read_full',
-      description: '按已收到的记忆引用直接读取该桶当前完整内容与关联关系；不是搜索。未完时原样传 cursor 继续同一详情快照。读取不会自动写记忆、确认明确打开或续期。',
+      description: '凭浮现结果的 memory_ref 定点读取同一记忆。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。',
       parameters: {
         type: 'object',
         properties: {
-          memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '回忆浮现块里的 [记忆引用 sf_xxxx] 短引用' },
+          memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '浮现 JSON 中的 memory_ref，原样传回' },
           cursor: { type: 'string', minLength: 1, maxLength: 128, description: '上一页返回的 next_cursor（首页省略）' },
+          section: { type: 'string', enum: ['memory', 'relations', 'source'], description: '默认memory；可直接选relations或source，不必先读memory' },
         },
         required: ['memory_ref'],
         additionalProperties: false,
@@ -1259,7 +1260,7 @@ export class HostToolExecutor {
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
-    if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string }, ctx);
+    if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx);
     if (name.startsWith('wishstar_')) return await this.wishstarTool(name, checked.value as Record<string, unknown>, ctx);
     return this.reviewComplete(checked.value, ctx);
   }
@@ -1267,11 +1268,16 @@ export class HostToolExecutor {
   /** EST_MARIPOSA_AUTO_SURFACING_V1（docs/05）：已见 ref 门+E 侧 ref→
    *  detail_ref 解析+M detail 快照读取。绝不 recall；不建 view_receipt；
    *  结构化错误码原样作为工具结果返回（错误不吞）。 */
-  private async memoryReadFull(args: { memory_ref?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  private async memoryReadFull(args: { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx: ToolExecContext): Promise<ToolExecResult> {
     const client = this.surfaceDetailClient;
     if (!client) return { ok: false, output: { error_code: 'SURFACE_CLIENT_NOT_CONFIGURED', error: '独立浮现只读客户端未装配' } };
     const repo = new SurfacingRepository(this.db);
-    const r = await executeMemoryReadFull(repo, client, { memory_ref: args.memory_ref, cursor: args.cursor, view: 'model' }, ctx);
+    const frozen = storedToolset(this.db, ctx.windowId)?.catalog.find(t => t.function.name === 'memory_read_full');
+    const properties = frozen?.function.parameters.properties as Record<string, unknown> | undefined;
+    // Preserve the meaning of already cached legacy tool definitions. New windows
+    // advertise the three-tier contract; old toolsets are never rewritten in place.
+    const section = args.section ?? (!frozen || properties?.section ? 'memory' : undefined);
+    const r = await executeMemoryReadFull(repo, client, { memory_ref: args.memory_ref, cursor: args.cursor, section, view: 'model' }, ctx);
     if (!r.ok) return { ok: false, output: { error_code: r.code, error: r.message } };
     return { ok: true, output: r.data };
   }
