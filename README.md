@@ -246,3 +246,5 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 - 2026-10-19 联合审计：`2a20fa1` 清理无头协议层/运行时环，`0268567` 修前端生命周期；本批修自动浮现真实window、原子交付/可见性/版本/编辑停止、独立详情凭据与HTTP未知回执。OR/SDK浮现阻断，未部署；最终离线测试与剩余发布门见独立联合审计交付包。
 
 - 2026-10-21 event-source (`60c6998`): hold 事件选区与 quotes 分离，完整原文修订校验；契约见 [event-source-hold](docs/event-source-hold.md)。
+
+- 2026-10-21 OpenRouter 自动浮现修通（`06075e5`）：同轮尾部宿主数据注入，保留旧缓存；[验收](docs/reports/2026-10-21-openrouter-surfacing.md)。
