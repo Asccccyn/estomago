@@ -24,13 +24,17 @@ test('history controls distinguish loading, retry, and terminal boundaries', () 
   assert.match(render('HistoryBoundary', { ...base, direction: 'later' }), /加载后续消息/);
 });
 
-test('date viewing keeps return-to-latest visible and announces newer messages without replacing history', () => {
-  const html = render('HistoryViewingBar', { date: '2026-10-18', newMessages: true, busy: false, onLatest() {} });
-  assert.match(html, /正在查看 2026-10-18/);
-  assert.match(html, /有新消息/);
-  assert.match(html, /回到最新/);
-  assert.doesNotMatch(html, /\sdisabled=""/);
-  assert.match(render('HistoryViewingBar', { date: '2026-10-18', busy: false, disabled: true, onLatest() {} }), /\sdisabled=""/);
+// 2026-10-22 她裁定：删"回到最新"横幅，改微信式圆点（BackToLatestDot）
+test('back-to-latest dot: visible while away/newer messages, red badge, hidden at latest', () => {
+  const visible = render('BackToLatestDot', { visible: true, newMessages: true, busy: false, onLatest() {} });
+  assert.match(visible, /aria-label="有新消息，回到最新"/);
+  assert.match(visible, /回到最新/);
+  assert.match(visible, /bg-\[#fa5151\]/, '新消息红点');
+  assert.doesNotMatch(visible, /\sdisabled=""/);
+  assert.match(render('BackToLatestDot', { visible: true, newMessages: false, busy: false, onLatest() {} }), /aria-label="回到最新"/);
+  const disabled = render('BackToLatestDot', { visible: true, newMessages: true, busy: false, disabled: true, onLatest() {} });
+  assert.match(disabled, /\sdisabled=""/);
+  assert.equal(render('BackToLatestDot', { visible: false, newMessages: false, busy: false, onLatest() {} }), '', '在最新位置不渲染');
 });
 
 test('date picker exposes an accessible entry and can be disabled while editing', () => {
