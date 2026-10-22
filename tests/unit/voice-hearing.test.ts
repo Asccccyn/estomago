@@ -100,6 +100,20 @@ test('A05: 历史投影零变化（isCurrentInput=false 不带 audio_ref/引用�
   } finally { f.close(); }
 });
 
+test('预算：voice_model_view 带最长转写 ≤8192 字节（施工包 08 表）', () => {
+  const f = fixture();
+  try {
+    const longTranscript = '今'.repeat(1500); // schema 上限
+    const r = projectRevisionBlocks('', [voiceAttachment('ast_voice9', longTranscript)], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice9', 99999]]) });
+    const bytes = Buffer.byteLength(r.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n'), 'utf8');
+    assert.ok(bytes <= 8192, `语音投影 ${bytes}B 超预算`);
+    // 无转写引用块同样远小于上限
+    const r2 = projectRevisionBlocks('', [voiceAttachment('ast_voice10', null)], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice10', 1200]]) });
+    const bytes2 = Buffer.byteLength(r2.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n'), 'utf8');
+    assert.ok(bytes2 <= 1024, `引用块 ${bytes2}B 应远小于单附件 1024B 上限`);
+  } finally { f.close(); }
+});
+
 // ── façade 工具 ───────────────────────────────────────────────────────
 function executorFixture(transportCalls: Array<{ url: string; body?: string }>) {
   const f = fixture();
