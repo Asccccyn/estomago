@@ -150,6 +150,8 @@ export type Config = {
     semantic_auto_binding_threshold: number | null;
     semantic_auto_binding_enabled: boolean;
   };
+  // JOINT-VOICE-20261022（07）：媒体 embedding worker（est 归属叶子；null=未配置零行为）
+  media_embedding: { base_url: string | null };
   integrations: {
     mariposa: IntegrationConfig;
     siren: IntegrationConfig;
@@ -402,6 +404,7 @@ export const CONFIG_DEFAULTS: Config = {
     semantic_auto_binding_threshold: null,
     semantic_auto_binding_enabled: false,
   },
+  media_embedding: { base_url: null },
   integrations: {
     mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
@@ -564,6 +567,7 @@ const SHAPE: SectionSpec = { section: {
     enabled: 'boolean', continuous_grant_ref: 'string?', source_scope: 'string?',
     semantic_auto_binding_threshold: 'number?', semantic_auto_binding_enabled: 'boolean',
   } },
+  media_embedding: { section: { base_url: 'string?' } },
   integrations: { section: {
     mariposa: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     siren: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },

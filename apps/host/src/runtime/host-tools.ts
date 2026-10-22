@@ -593,6 +593,21 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'media_search',
+      description: '按中文语义在她发过的图片里找候选（如"那张水獭的图"）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
+          limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
+        },
+        required: ['query'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'oido_get',
       description: '读取深听结果：默认概览；detail=prosody_page 看逐字韵律谱（每页≤32音节，带 next_cursor 翻页）。analysis_id 来自 oido_analyze。',
       parameters: {
@@ -957,7 +972,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -973,6 +988,7 @@ export class HostToolExecutor {
     this.wishstar = deps.wishstar ?? null;
     this.taskService = deps.taskService ?? null;
     this.oido = deps.oido ?? null;
+    this.mediaIndex = deps.mediaIndex ?? null;
   }
 
   private media: import('../media/assets.ts').MediaService | null;
@@ -985,13 +1001,15 @@ export class HostToolExecutor {
   private taskService: import('./background-task-service.ts').BackgroundTaskService | null;
   /** JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；未配置=工具如实拒绝） */
   private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
+  /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
+  private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
   private static readonly SILENT_TOOLS = new Set(['context_review_complete', 'background_complete']);
   private static readonly TOOL_LABELS: Record<string, string> = {
     memory_hold: '写记忆', memory_recall: '查记忆', memory_recall_next: '翻查记忆', conversation_read: '读聊天原文',
     memory_i_read: '读 I', memory_i_write: '写 I', memory_open: '打开记忆桶', memory_correct: '订正记忆', deletion_review: '处理删除评审',
     episode_list: '查事件', episode_get: '看事件', episode_apply: '更新事件', plans_read: '读计划', plans_write: '写计划',
-    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', oido_analyze: '深听语音', oido_get: '读声音证据', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
+    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', oido_analyze: '深听语音', oido_get: '读声音证据', media_search: '找图', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
     content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
     identity_milestone_write: '更新长期记忆里程碑',
     wishstar_write_star: '往许愿星写了一颗星', wishstar_hidden_stars: '看自己的私人瓶子',
@@ -1259,6 +1277,32 @@ export class HostToolExecutor {
     }
   }
 
+  /** JOINT-VOICE-20261022（07）：中文找图——先补齐本会话未索引图片（有界），再查候选。
+   *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
+  private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
+    const fingerprint = await this.mediaIndex.workerFingerprint();
+    if (fingerprint === null) return { ok: false, output: { error_code: 'MEDIA_WORKER_UNAVAILABLE', detail: '媒体编码服务不可用；文字聊天不受影响' } };
+    const unindexed = this.mediaIndex.unindexedImagesInRoom(ctx.roomId, fingerprint).slice(0, 200);
+    let failed = 0;
+    for (const assetId of unindexed) {
+      try {
+        const r = await this.mediaIndex.indexImage(assetId);
+        if (!r.indexed) failed++;
+      } catch { failed++; } // 单张失败不拖检索（候选可能不全，如实标注）
+    }
+    try {
+      const result = await this.mediaIndex.searchImagesByRoom(args.query, ctx.roomId, args.limit ?? 3);
+      const out: Record<string, unknown> = { ...result };
+      if (failed > 0) out['indexing_note'] = `${failed} 张图暂未入索引（worker 不可用或读取失败），候选可能不全`;
+      return { ok: true, output: out };
+    } catch (err) {
+      const msg = String((err as Error).message ?? err);
+      if (msg.startsWith('MEDIA_WORKER')) return { ok: false, output: { error_code: msg.slice(0, 40), detail: '媒体编码服务不可用；文字聊天不受影响' } };
+      return { ok: false, output: { error_code: 'MEDIA_SEARCH_FAILED', detail: msg.slice(0, 200) } };
+    }
+  }
+
   /** JOINT-VOICE-20261022：读深听结果（概览/逐字谱分页）。 */
   private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入' } };
@@ -1353,7 +1397,7 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1384,6 +1428,7 @@ export class HostToolExecutor {
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'oido_analyze') return await this.oidoAnalyze(checked.value as { audio_ref: string; range_ms?: [number, number] }, ctx);
     if (name === 'oido_get') return await this.oidoGet(checked.value as { analysis_id: string; detail?: string; cursor?: string }, ctx);
+    if (name === 'media_search') return await this.mediaSearch(checked.value as { query: string; limit?: number }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
     if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx);
     if (name.startsWith('wishstar_')) return await this.wishstarTool(name, checked.value as Record<string, unknown>, ctx);

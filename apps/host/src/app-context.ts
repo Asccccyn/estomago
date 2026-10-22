@@ -210,7 +210,11 @@ export class Host {
     const oido = opts.config.integrations.oido.base_url
       ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
       : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido });
+    // JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=null，检索能力如实不可用）
+    const mediaIndex = opts.config.media_embedding.base_url
+      ? new (await import('./media/index/service.ts')).MediaIndexService(db, media, new (await import('./media/index/service.ts')).MediaEmbedWorkerClient(opts.config.media_embedding))
+      : null;
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex });
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测

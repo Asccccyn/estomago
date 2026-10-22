@@ -1163,6 +1163,29 @@ export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: numb
   return { applied };
 }
 
+// JOINT-VOICE-20261022（07）P4：图片语义索引——est 归属的 media-index 存储。
+// 向量本体（float32 小端 BLOB）进表；namespace = worker 指纹（model_id+revision+
+// modality/profile+preprocess_version+dims+normalization）——版本不同=不同 namespace，
+// 绝不混库混查（M02）。读路径权限门在查询时 join 活资产与会话绑定（删除/撤权立即
+// 阻断），索引行只做候选源；孤儿行由可重试清理收（读不依赖清理成功）。
+MIGRATIONS.push({
+  version: 34,
+  name: 'media_embedding_index',
+  sql: `
+CREATE TABLE IF NOT EXISTS media_embedding_index(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  asset_id TEXT NOT NULL,
+  modality TEXT NOT NULL CHECK (modality IN ('image','audio')),
+  namespace TEXT NOT NULL,
+  vector BLOB NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (asset_id, namespace)
+);
+CREATE INDEX IF NOT EXISTS idx_media_embed_namespace ON media_embedding_index(namespace, modality);
+`,
+});
+
 export function schemaVersion(db: Db): number {
   const row = db.prepare('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations').get() as { v: number };
   return row.v;
