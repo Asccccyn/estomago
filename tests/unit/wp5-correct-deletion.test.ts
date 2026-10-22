@@ -112,6 +112,6 @@ test('审批②：reject 必带理由；decide 走 memory.deletion.decide（幂�
   assert.equal(calls[0]!.cap, 'memory.deletion.decide');
   assert.equal(calls[0]!.payload.rejection_reason, '这条对我们还有意义');
   assert.ok(String(calls[0]!.payload.operation_id).startsWith('es-del-'));
-  assert.ok(String(rj.output.note).includes('拒绝'), '结果语义如实');
+  assert.equal(rj.output.status, 'rejected', '结果语义如实');
   db.close();
 });

@@ -170,7 +170,7 @@ test('RRA014-2 字节单口径：older 在 4000 ASCII 行上必须前进（不�
       assert.equal(r2.output.entries.length, 0, '翻尽后自然终止');
       assert.equal(r2.output.next_cursor, undefined);
     } else {
-      assert.equal(r.output.has_more, null, '单行翻尽即终止');
+      assert.equal(r.output.has_more, undefined, '单行翻尽即终止');
     }
   } finally { c.db.close(); }
 });

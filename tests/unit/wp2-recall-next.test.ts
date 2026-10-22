@@ -63,11 +63,11 @@ test('WP2：memory_recall 关闭模式首页——pagination/judge 字段穿透�
   // P01 穿透：10 条全部到达模型可见层（不再 slice(0,20) 之外还有二次裁剪，
   // 且未来 >20 的页也原样透传——服务端负责字节预算）
   assert.equal((o.candidates as unknown[]).length, 10);
-  assert.equal((o.pagination as Record<string, unknown>).candidate_total, 53);
-  assert.equal(o.judge_mode, 'off');
-  assert.equal(o.judgement_status, 'bypassed_by_user');
-  assert.ok(String(o.pagination_note).includes('memory_recall_next'), '翻页入口如实提示');
-  assert.ok(String(o.pagination_note).includes('pgc_next1'), '下一页游标进入提示');
+  assert.equal((o.pagination as Record<string, unknown>).candidate_total, undefined);
+  assert.equal(o.judgement, 'unjudged');
+  assert.equal(o.judgement_status, undefined);
+  assert.equal((o.pagination as any).result_set_id, 'rps_wp2');
+  assert.equal((o.pagination as any).next_cursor, 'pgc_next1');
   // 开启请求携带 room scope（页面请求与 session 绑定一致）
   assert.equal(calls[0]!.payload.conversation_scope, 'c1');
   db.close();
@@ -94,8 +94,8 @@ test('WP2：memory_recall_next 只消费冻结结果集——参数原样到达 
   assert.equal(pagePayload.session_id, 'rs_wp2');
   assert.equal(pagePayload.conversation_scope, 'c1', 'room scope 随页携带（session 归属门）');
   const o = out.output as Record<string, unknown>;
-  assert.equal(o.judge_mode, 'off');
-  assert.equal((o.pagination as Record<string, unknown>).has_more, false);
+  assert.equal(o.judgement, 'unjudged');
+  assert.equal(o.pagination, undefined);
   assert.ok(!(o as Record<string, unknown>).pagination_note, '翻尽无续页提示');
   db.close();
 });

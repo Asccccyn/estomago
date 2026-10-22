@@ -72,7 +72,7 @@ export type SurfaceJobEventPayload = {
 /** Event time only; never use storage/recall timestamps or invent midnight. */
 function eventTimeText(item: SurfaceItem): string {
   const value = item.memory_date;
-  if (!value || item.date_confidence !== 'exact') return '不确定';
+  if (!value) return '不确定';
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return validateAbsoluteIso(`${value}T00:00:00Z`).ok ? value : '不确定';
   const local = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?$/.exec(value);
   if (local) return validateAbsoluteIso(`${local[1]}T${local[2]}:00Z`).ok ? `${local[1]} ${local[2]}` : '不确定';

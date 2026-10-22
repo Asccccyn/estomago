@@ -100,7 +100,7 @@ test('链⑤：unkeep → memory.keep.revoke（谁留谁撤）；票据失效如
   const uk = await tools.execute('memory_open', { __tool_call_id: 'o9', action: 'unkeep', mark_id: 'mk_1' }, CTX);
   assert.equal(uk.ok, true);
   assert.equal(calls[0], 'memory.keep.revoke');
-  assert.equal(uk.output.note,undefined);assert.equal(uk.output.action,'unkeep');
+  assert.equal(uk.output.note,undefined);assert.equal(uk.output.revoked,true);
   const stale = await tools.execute('memory_open', { __tool_call_id: 'o10', action: 'confirm', memory_id: 'm1', receipt_id: 'vr_old' }, CTX);
   assert.equal(stale.ok, false);
   assert.equal(stale.output.error_code, 'OPEN_RECEIPT_INVALID', '票据失效如实上抛不吞');

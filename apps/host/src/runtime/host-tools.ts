@@ -1,3 +1,4 @@
+import { modelResult, modelFailure, candidates as whitelistCandidates } from './model-results.ts';
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
 //    operation_id 由宿主从 tool_call 派生（模型不能自编）；无 Mariposa 客户端 → 能力缺口，明确拒绝。
@@ -825,37 +826,9 @@ export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; see
 
 const rawToolCallIdRef = { current: null as string | null };
 
-/**
- * P2 模型出口层（她 2026-10-20 批 4-A：JSON 二次瘦身一阶段）——recall 卡
- * 最小投影，出站与入历史同形（工具结果进轨迹前就是本投影产物，不再驮
- * 内部字段）。消费者追踪依据（P2_JSON_SLIM_MEASUREMENT.md §三）：E 侧对
- * 卡片字段零代码消费，以下五字段模型零读零回传→宿主内部化；
- * matched_by+matched_fields 语义重叠→合并为 matched。保留面按她 1019
- * 字段表：resource_ref/excerpt/evidence/memory_date/speaker/truncated；
- * memory_id/word_id/ordinal 本期保留（memory_open 等回传寻址）。
- */
-const INTERNAL_CARD_FIELDS = new Set(['content_version', 'source_ref',
-  'source_binding_version', 'version_receipt', 'evidence_requirement_met']);
-
+/** Recall uses the same explicit business/operation whitelist as final tool output. */
 export function projectCandidatesForModel(cands: unknown[]): unknown[] {
-  return cands.map((c) => {
-    if (!c || typeof c !== 'object' || Array.isArray(c)) return c;
-    const card = c as Record<string, unknown>;
-    const outCard: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(card)) {
-      if (INTERNAL_CARD_FIELDS.has(k)) continue;
-      if (k === 'matched_by' || k === 'matched_fields') continue;
-      outCard[k] = v;
-    }
-    const by = card.matched_by;
-    const fields = Array.isArray(card.matched_fields)
-      ? card.matched_fields.join('+')
-      : card.matched_fields;
-    const matched = [by !== undefined ? String(by) : '', fields !== undefined ? String(fields) : '']
-      .filter((x) => x !== '').join(':');
-    if (matched) outCard.matched = matched;
-    return outCard;
-  });
+  return whitelistCandidates(cands);
 }
 function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
 
@@ -1153,6 +1126,12 @@ export class HostToolExecutor {
         payload: { ...identity(), phase: 'result', ok: Boolean(result.ok), error_code: (result.output as { error_code?: string }).error_code ?? null },
       });
     }
+    if (result.ok) {
+      const effectiveName = name === 'tool_invoke' ? String(rawArgs.name) : name;
+      const effectiveArgs = name === 'tool_invoke' ? (rawArgs.arguments as Record<string, unknown> ?? {}) : rawArgs;
+      result = { ...result, output: modelResult(effectiveName, effectiveArgs, result.output as Record<string, unknown>) };
+    }
+    if (!result.ok) result = { ...result, output: modelFailure(result.output as Record<string, unknown>) };
     return result;
   }
 

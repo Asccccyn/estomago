@@ -43,8 +43,8 @@ test('I①：what=current → i.get，正文穿透+数据标记', async () => {
   assert.equal(out.ok, true);
   assert.equal(calls[0], 'i.get');
   assert.equal(out.output.content, '我是char');
-  assert.equal(out.output.what, 'current');
-  assert.ok(String(out.output.note).includes('数据'));
+  assert.equal(out.output.what, undefined);
+  assert.equal(out.output.note, undefined);
   db.close();
 });
 
