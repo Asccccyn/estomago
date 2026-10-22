@@ -7,6 +7,8 @@ export function useEstomago() {
   useEffect(() => { void client.start(); return client.stop }, [client])
   const [rec, setRec] = useState<number | null>(null)
   const [recSecs, setRecSecs] = useState(0)
+  const [recPaused, setRecPaused] = useState(false)
+  const pausedRef = useRef(false)
   const recording = useRef<{ generation: number; starting: boolean; recorder: MediaRecorder | null; stream: MediaStream | null; cancelled: boolean }>({generation:0,starting:false,recorder:null,stream:null,cancelled:false})
   const stopRec = (sendIt: boolean) => {
     const r=recording.current;r.generation++;r.cancelled=!sendIt
@@ -20,9 +22,16 @@ export function useEstomago() {
   }, [])
   useEffect(() => {
     if(rec===null)return
-    const id=setInterval(()=>{const seconds=Math.floor((Date.now()-rec)/1000);setRecSecs(seconds);if(seconds>=120)stopRec(true)},200)
+    // 暂停期间计时冻结（spoken 时长与 UI 一致；MediaRecorder.pause 后无新帧）
+    const id=setInterval(()=>{if(pausedRef.current)return;const seconds=Math.floor((Date.now()-rec)/1000);setRecSecs(seconds);if(seconds>=120)stopRec(true)},200)
     return ()=>clearInterval(id)
   }, [rec])
+  const pauseRec = () => {
+    const r=recording.current
+    if(!r.recorder)return
+    if(r.recorder.state==='recording'){r.recorder.pause();pausedRef.current=true;setRecPaused(true)}
+    else if(r.recorder.state==='paused'){r.recorder.resume();pausedRef.current=false;setRecPaused(false)}
+  }
   const startRec = async () => {
     const r=recording.current
     if(r.starting||r.recorder)return
@@ -30,6 +39,7 @@ export function useEstomago() {
     if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){client.notify('此访问环境不支持录音，请使用支持麦克风的安全连接');return}
     r.starting=true;const generation=++r.generation
     try{
+      pausedRef.current=false;setRecPaused(false)
       if(!await client.voiceAvailable()||generation!==r.generation)return
       const mime=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t))
       if(!mime){client.notify('当前浏览器没有可用录音格式');return}
@@ -41,7 +51,7 @@ export function useEstomago() {
       recorder.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)}
       recorder.onerror=()=>{failed=true;stopRec(false);client.notify('录音中断，请重试')}
       recorder.onstop=()=>{
-        stream.getTracks().forEach(t=>t.stop());r.stream=null;r.recorder=null;setRec(null)
+        stream.getTracks().forEach(t=>t.stop());r.stream=null;r.recorder=null;setRec(null);pausedRef.current=false;setRecPaused(false)
         if(r.cancelled||failed)return
         const file=new Blob(chunks,{type:mime})
         if(file.size)void client.queue(file,'语音','voice')
@@ -66,5 +76,5 @@ export function useEstomago() {
       }
     }catch{client.notify('复制暂不可用，可以长按正文复制')}
   }
-  return {client,state,rec,recSecs,startRec,stopRec,onPick,copy}
+  return {client,state,rec,recSecs,recPaused,startRec,stopRec,pauseRec,onPick,copy}
 }

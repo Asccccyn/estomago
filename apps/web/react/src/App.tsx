@@ -209,7 +209,21 @@ function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: bo
 }
 
 export default function App() {
-  const { client, state, rec, recSecs, startRec, stopRec, onPick, copy } = useEstomago()
+  const { client, state, rec, recSecs, recPaused, startRec, stopRec, pauseRec, onPick, copy } = useEstomago()
+  // JOINT-VOICE（04）：录音前暂停本应用全部语音播放——不把char外放录进去
+  const previewAudio = useRef<HTMLAudioElement | null>(null)
+  const pauseAllVoice = () => {
+    document.querySelectorAll('audio').forEach(el => el.pause())
+    previewAudio.current?.pause()
+  }
+  const togglePreview = (assetId: string) => {
+    let el = previewAudio.current
+    if (el && !el.paused && el.dataset.assetId === assetId) { el.pause(); return }
+    if (!el) { el = new Audio(); previewAudio.current = el; }
+    el.dataset.assetId = assetId
+    el.src = '/api/v1/assets/' + encodeURIComponent(assetId) + '/content'
+    void el.play().catch(() => client.notify('试听失败，请稍后再试'))
+  }
   const msgs = state.messages
   const model = state.model
   const effort = state.effort
@@ -476,6 +490,7 @@ export default function App() {
         ) : (<>
         {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => <div key={a.id} className="flex items-center gap-1">
           <button onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
+          {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
           <button aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
         </div>)}</div>}
         <div className="flex items-center gap-2">
@@ -522,12 +537,13 @@ export default function App() {
                 </div>
               </>
             )}
-            <button aria-label="语音" onClick={() => (rec === null ? startRec() : stopRec(true))}
+            <button aria-label="语音" onClick={() => (rec === null ? (pauseAllVoice(), startRec()) : stopRec(true))}
               className={`p-1 ${rec === null ? 'text-[#5e5d59]' : 'text-[#c96442]'}`}><Mic size={18} /></button>
             {rec !== null ? (
               <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[14px] text-[#5e5d59]">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-[#d94a3a]" />
                 <span className="tabular-nums">0:{String(recSecs).padStart(2, '0')}</span>
+                <button onClick={pauseRec} aria-label={recPaused ? '继续录音' : '暂停录音'} className="text-[#a3a099]">{recPaused ? '继续' : '暂停'}</button>
                 <span className="flex flex-1 items-center gap-[2px] overflow-hidden">
                   {BARS.map((h, i) => <span key={i} className="w-[2px] animate-pulse rounded-full bg-[#c96442]/60" style={{ height: h * 0.8, animationDelay: `${i * 60}ms` }} />)}
                 </span>

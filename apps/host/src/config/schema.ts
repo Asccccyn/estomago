@@ -153,6 +153,7 @@ export type Config = {
   integrations: {
     mariposa: IntegrationConfig;
     siren: IntegrationConfig;
+    oido: IntegrationConfig;
     superposition: IntegrationConfig;
     zashidele: IntegrationConfig;
   };
@@ -404,6 +405,7 @@ export const CONFIG_DEFAULTS: Config = {
   integrations: {
     mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    oido: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     superposition: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     zashidele: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
   },
@@ -565,6 +567,7 @@ const SHAPE: SectionSpec = { section: {
   integrations: { section: {
     mariposa: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     siren: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
+    oido: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     superposition: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     zashidele: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
   } },

@@ -18,21 +18,32 @@ export type RevisionAttachment = { asset_id: string; presentation: string; capti
 /** 消息修订 → 内部投影块。语音带转写→标注来源的文本块；图片/表情→asset_image 引用块。
  *  textOnly（2026-10-18 她的裁定：多选只带文本）——人工选集装配专用：图片/表情不产出
  *  视觉引用块，以如实占位文本替代（模型知道此处有图、图未携带，不静默消失）；
- *  语音转写本就是文本，照常携带。 */
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+ *  语音转写本就是文本，照常携带。
+ *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
+ *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
+ *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null> } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const isCurrentInput = opts.isCurrentInput === true;
   const textOnly = opts.textOnly === true;
+  const hearing = opts.hearing?.available === true;
   const blocks: ProjectedBlock[] = [];
   if (content.length > 0) blocks.push({ type: 'text', text: content });
   let hasImage = false;
   let hasVoiceWithoutTranscript = false;
   for (const a of attachments) {
     if (a.presentation === 'voice') {
-      // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token
+      const audioRef = `est:${a.asset_id}`;
+      const durMs = opts.voiceDurations?.get(a.asset_id);
+      const durText = typeof durMs === 'number' ? `${Math.round(durMs)}ms` : '时长未知';
+      // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
+      // 转写只在投影里出现一次（不进 message.content/attachment 双份）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}` });
+        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 需要听语气时调用 oido_analyze(audio_ref="${audioRef}")——转写不含语气]` : ''}` });
+      } else if (isCurrentInput === true && hearing) {
+        // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
+        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n她刚发来一条语音，文字转写还没就绪。需要听她的语气时调用 oido_analyze(audio_ref="${audioRef}") 获取声音证据（停顿/语速/音高等可核对观察）；在取得证据前不要猜测语音内容。` });
       } else if (isCurrentInput === true) {
-        hasVoiceWithoutTranscript = true; // 当前输入无转写→不空输入唤起模型（门阻断）
+        hasVoiceWithoutTranscript = true; // 当前输入无转写且无听觉能力→不空输入唤起模型（门阻断）
       } else {
         // 历史语音无转写：如实占位（模型知道存在语音消息），不静默消失也不空输入阻断
         blocks.push({ type: 'text', text: '[语音消息：本条无转写，原音频已保留]' });

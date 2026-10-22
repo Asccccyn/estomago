@@ -79,6 +79,9 @@ export type SupervisorDeps = {
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
   media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
+  // JOINT-VOICE-20261022（04）：oído 听觉可用（=配置声明：integrations.oido 已配凭据）。
+  // true 时当前输入无转写语音以结构化引用进入模型（可调 oido_analyze）；未注入/false 保持阻断语义。
+  oidoHearing?: boolean;
   // WAKE_KEEPWARM_V1（2026-10-22）：真实活动锚点投影（L/维护回执 CAS）。
   activity?: ConversationActivityService;
   // WAKE_KEEPWARM_V1：后台派发让位检查（用户消息到来→心跳在安全边界让位，S-06）
@@ -449,7 +452,23 @@ export class TurnSupervisor {
       try {
         const proj = this.d.media.projectForRevision(messageId, revision);
         const text = opts.isCurrentInput && fallbackText !== proj.content ? fallbackText : proj.content;
-        const r = projectRevisionBlocks(withSeq(text), proj.attachments, opts);
+        // JOINT-VOICE-20261022（04）：当前输入语音引用带 audio_ref/时长；听觉可用性=配置声明
+        //（不在发送关键路径探测——视觉门教训）；时长取 voice_transcripts 真实值，缺省如实"时长未知"
+        let hearing: { available: boolean } | undefined;
+        let voiceDurations: Map<string, number | null> | undefined;
+        if (opts.isCurrentInput === true) {
+          hearing = { available: this.d.oidoHearing === true };
+          const voiceIds = proj.attachments.filter((a) => a.presentation === 'voice').map((a) => a.asset_id);
+          if (voiceIds.length > 0) {
+            voiceDurations = new Map(voiceIds.map((id) => [id, null]));
+            const marks = voiceIds.map(() => '?').join(',');
+            for (const row of this.d.db.prepare(`SELECT asset_id, duration_ms FROM voice_transcripts WHERE asset_id IN (${marks})`).all(...voiceIds) as Array<{ asset_id: string; duration_ms: number | null }>) {
+              voiceDurations.set(row.asset_id, row.duration_ms);
+            }
+          }
+        }
+        const extra = hearing || voiceDurations ? { ...opts, ...(hearing ? { hearing } : {}), ...(voiceDurations ? { voiceDurations } : {}) } : opts;
+        const r = projectRevisionBlocks(withSeq(text), proj.attachments, extra);
         return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript };
       } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
     }

@@ -206,9 +206,15 @@ export class Host {
     const taskService = new BackgroundTaskService(db, bgSettings);
     // S-06：心跳让位检查经可变引用接线（scheduler 在 supervisor 之后构造）
     let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService });
+    // JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；base_url 未配=不装配，工具/门控如实降级）
+    const oido = opts.config.integrations.oido.base_url
+      ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
+      : null;
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido });
     const supervisor = new TurnSupervisor({
       wishstar,
+      // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
+      oidoHearing: oido?.configured === true,
       db,
       config: opts.config,
       messages,
