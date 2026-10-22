@@ -60,10 +60,12 @@
 | `npm test -- --unit --file=tests/unit/exec-v1-wp4-background.test.ts` | 10/10 通过 |
 | `npm test -- --unit --file=tests/unit/exec-v1-wp0-base.test.ts` | 通过（常量退役断言更新后） |
 | `npm test -- --integration --file=tests/integration/exec-v1-wp4-http.test.ts` | 3/3 通过 |
-| `npm test -- --unit`（全量 123 文件） | 114/123 通过、9 失败——**失败清单与处置见下** |
+| 前端 DOM 实测（浏览器，临时 Host=mock provider+隔离根，127.0.0.1:59001） | 通过：更多菜单出现"自主预约与保温"入口；面板完整渲染（两开关/心跳排程空态/任务空态/代建表单/最近运行/边界说明）；默认关闭态正确；无预算开自主→422 提示+checkbox 回滚；配预算开启→checked；创建预约→列表出现（含时间）；详情+取消→列表项转"已取消"；刷新+重开面板 window.onerror/unhandledrejection 零捕获 |
+| `npm test -- --unit`（全量 123 文件） | 114/123 通过、9 文件失败（15 个用例）——**基线对照：与开工基线 `35da6fc` 完全一致，零新增失败** |
+| 基线对照命令 | `git checkout 35da6fc && npm test -- --unit --file=...`（9 文件逐个）：失败数逐一相同（4/1/1/1/1/2/2/1/2） |
 | `npm test`（unit+contract+integration 全量） | 见文末补记 |
 
-全量 unit 首轮 9 个失败文件的逐一处置在交付时点进行中；其中已知：本批退役旧断言的文件（冷却/心跳封锁/`maxOutputTokens` 参数/`chatBusy` 参数）需同步改写；与本批无关的既有 flaky 单独标注。**在全部处置完成前，本报告不宣称全量绿。**
+15 个既有失败用例属于白名单批（`bd677ed`/`2d77699`，模型输出白名单/MCP JSON 投影相关——words-channel 找话①②、envelope-golden R09-E 基线、joint-audit-b1 F-J-54、d2-gj01、remediation-batch2 F14、consumption-ops 2、review-r01 2、cross-contract 2、context-rotation-root M02），与本批改动无交集文件；本批触碰的测试文件全部通过。既有失败的修复归属另一路批次，本报告不代修（AGENTS 规 7：不卷他人半成品）。
 
 fake 网络范围：所有 L2 测试经 `OrTransport` 假传输（loopback）/`BackgroundScheduler` 假 executor；无真实 provider、无兄弟项目调用（A-09 保险丝+测试注入隔离）。
 
@@ -100,6 +102,7 @@ L1（包内 reference Python oracle）29 项通过为包作者记录；本轮未
 - **真实 Opus4.6/AWS 请求（L3）：NOT_RUN_REQUIRES_APPROVAL**——含缓存命中/断点/4 断点上限/1h TTL 实测。
 - **生产部署/重启/开关开启：NOT_DONE_REQUIRES_APPROVAL**（13_ROLLOUT_HANDOFF 步骤待她批）。
 - 生产凭据/身份/聊天读取：NOT_ACCESSED（全程只读本地仓库源码，未触生产 `~/Library/Application Support/estomago`）。
-- 收尾项（本轮代码已过 typecheck 与目标测试，但未全部完成）：全量 unit 回归 9 个失败文件的逐个处置（含既有 flaky 辨析）；B-02 跨 run 日占用聚合 SQL 接入 onBeforeDispatch；C-07 独立断言；前端 BackgroundControls 浏览器 DOM 实测（她的前端验收规矩：边界三态+onerror 零异常——当前仅 typecheck+build 通过）。
+- 收尾项：B-02 跨 run 日占用聚合 SQL 接入 onBeforeDispatch（当前预占按 run 累计+cap 检查在 budgetGate，日级全局聚合属收尾项）；C-07"下一请求可见"独立断言。前端 BackgroundControls 浏览器 DOM 实测已完成（见 TEST_EVIDENCE）；备注一个显示细节：`datetime-local` 值经 `new Date(v).toISOString()` 按访问者本地时区解析后存 UTC（语义正确）；面板时间显示用访问者本地 `toLocaleString`，生产（上海时区）显示即上海时间，未做固定时区钉扎（如需按业务时区显示再加 timeZone 参数）。
+- 既有 15 个失败用例（白名单批遗留）不在本批修复范围——见 TEST_EVIDENCE 基线对照。
 - 已知边界（13 必须显式交代）：旧窗无 wake_manage（下次正常换窗生效，UI 有说明）；纯 ACK 回执≠缓存命中；长生成可能令 L+50 晚于缓存估计过期（不提前心跳）；关闭期间错过预约不自动补发（needs_review）；外部动作结果 unknown 不自动重放；心跳中正式发言/工具在 UI 的展示走普通消息通道（后台运行列表另可见）。
-- 并行批注记：main 分支在施工期间前进到 `35da6fc`（docs only）；本分支基于 `2d77699`，合并时 README 需对齐（无实质冲突）。
+- 分支基线注记：本分支实际自 `35da6fc`（另一路代理的 docs-only 提交，在我建分支前已入 main）分出；历史完整包含并行提交，无需合并；README 索引行无冲突。
