@@ -1258,7 +1258,7 @@ export class HostToolExecutor {
     const assetId = m[1];
     // 会话可达性：资产必须绑定本会话某条消息（她发的或char发的语音都算）
     const bound = this.db.prepare(
-      'SELECT 1 FROM message_attachments ma JOIN messages msg ON msg.id = ma.message_id WHERE ma.asset_id = ? AND msg.conversation_id = ? LIMIT 1',
+      "SELECT 1 FROM message_attachments ma JOIN messages msg ON msg.id = ma.message_id WHERE ma.asset_id = ? AND ma.presentation = 'voice' AND msg.conversation_id = ? LIMIT 1",
     ).get(assetId, ctx.roomId);
     if (!bound) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM', detail: '该语音不属于当前会话' } };
     try {

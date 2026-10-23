@@ -34,6 +34,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 DIMS = 768
 MAX_BODY = 64 * 1024 * 1024
 BACKEND = os.environ.get("EG2_BACKEND", "fake").strip().lower()
+# 认证（09：同机不等于不需认证）：MEDIA_WORKER_TOKEN_FILE 给了就强制 Bearer（health 开放）
+_TOKEN_FILE = os.environ.get("MEDIA_WORKER_TOKEN_FILE", "").strip()
+_TOKEN = open(_TOKEN_FILE).read().strip() if _TOKEN_FILE and os.path.isfile(_TOKEN_FILE) else None
 # 官方非对称检索 prompt（模型卡 SearchQuery；本 worker 的文本输入恒为查询侧）
 QUERY_PROMPT = "task: search result | query: "
 
@@ -142,6 +145,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/v1/embed":
             self._json(404, {"code": "NOT_FOUND", "message": self.path})
             return
+        if _TOKEN is not None:
+            import hmac
+
+            provided = (self.headers.get("Authorization") or "")[7:].strip()
+            if not provided or not hmac.compare_digest(provided, _TOKEN):
+                self._json(401, {"code": "UNAUTHORIZED", "message": "bearer token required"})
+                return
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_BODY:
             self._json(413 if length else 400, {"code": "BODY_LIMIT", "message": "bad body size"})

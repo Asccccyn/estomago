@@ -12,6 +12,8 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
+import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
+import { oidoHearingAvailable } from '../../apps/host/src/runtime/supervisor.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 
@@ -111,6 +113,28 @@ test('预算：voice_model_view 带最长转写 ≤8192 字节（施工包 08 �
     const r2 = projectRevisionBlocks('', [voiceAttachment('ast_voice10', null)], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice10', 1200]]) });
     const bytes2 = Buffer.byteLength(r2.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n'), 'utf8');
     assert.ok(bytes2 <= 1024, `引用块 ${bytes2}B 应远小于单附件 1024B 上限`);
+  } finally { f.close(); }
+});
+
+test('自审修复：旧窗冻结目录无 oido_analyze → 听觉判定 false（退回阻断，不误导模型）', () => {
+  const f = fixture();
+  try {
+    // 未配置 → false
+    assert.equal(oidoHearingAvailable(f.db, false, 'w_new'), false);
+    // 新窗（无冻结记录=当前目录含 oido） → true
+    assert.equal(oidoHearingAvailable(f.db, true, 'w_fresh'), true);
+    // 旧窗冻结无 oido 的目录（手工塞一条旧 catalog） → false
+    const legacyCatalog = buildHostTools().filter((tool) => tool.function.name !== 'oido_analyze' && tool.function.name !== 'oido_get' && tool.function.name !== 'media_search');
+    const mkWindow = (id: string) => f.db.prepare(
+      "INSERT INTO windows(id, conversation_id, status, active_generation, revision, created_at, updated_at) VALUES (?, 'primary', 'CLOSED', 0, 1, ?, ?)").run(id, new Date().toISOString(), new Date().toISOString());
+    mkWindow('w_old'); mkWindow('w_new2');
+    f.db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
+      .run('w_old', 'deferred', JSON.stringify([]), JSON.stringify(legacyCatalog), new Date().toISOString());
+    assert.equal(oidoHearingAvailable(f.db, true, 'w_old'), false, '旧窗无 oido 工具=不可听（阻断语义）');
+    // 含 oido 的冻结目录 → true
+    f.db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
+      .run('w_new2', 'deferred', JSON.stringify([]), JSON.stringify(buildHostTools()), new Date().toISOString());
+    assert.equal(oidoHearingAvailable(f.db, true, 'w_new2'), true);
   } finally { f.close(); }
 });
 

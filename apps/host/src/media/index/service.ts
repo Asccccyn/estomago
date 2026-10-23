@@ -5,7 +5,7 @@
 import type { Db } from '../../db/connection.ts';
 import type { MediaService } from '../assets.ts';
 
-export type EmbedWorkerConfig = { base_url: string | null };
+export type EmbedWorkerConfig = { base_url: string | null; credential_ref?: string | null };
 export type MediaCandidates = {
   state: 'candidates' | 'no_match';
   items: Array<{ asset_ref: string; kind: 'image'; range_ms?: [number, number] }>;
@@ -23,7 +23,11 @@ export class MediaEmbedWorkerClient {
 
   constructor(cfg: EmbedWorkerConfig) {
     this.baseUrl = (cfg.base_url ?? 'http://127.0.0.1:8792').replace(/\/$/, '');
+    // 09：worker 配了 token 就带 Bearer（凭据按 env 名取，不落库不落日志）
+    this.token = cfg.credential_ref ? (process.env[cfg.credential_ref] ?? null) : null;
   }
+
+  private readonly token: string | null;
 
   async health(timeoutMs = 2500): Promise<{ ok: boolean; backend?: string; fingerprint?: string }> {
     try {
@@ -40,7 +44,7 @@ export class MediaEmbedWorkerClient {
     try {
       res = await fetch(`${this.baseUrl}/v1/embed`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
         body: JSON.stringify({ items: items.map((i) => ({ id: i.id, modality: i.modality, data_b64: i.bytes.toString('base64') })) }),
         signal: AbortSignal.timeout(60_000),
       });

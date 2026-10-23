@@ -53,6 +53,7 @@ import { lastCacheEvidence } from './cache-observation.ts';
 import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
+import { storedToolset } from './tool-discovery.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -101,6 +102,17 @@ export type SupervisorDeps = {
     markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
   };
 };
+
+/** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
+ *  旧窗目录冻结（A05 合同：不动态膨胀破缓存）没有 oido 工具——此时引导调用会
+ *  TOOL_NOT_IN_WINDOW，误导模型；退回阻断语义（转写未就绪明确报错）更诚实。
+ *  无冻结记录的新窗=当前目录（buildHostTools 含 oido_analyze）。 */
+export function oidoHearingAvailable(db: import('../db/connection.ts').Db, configured: boolean, windowId: string | null | undefined): boolean {
+  if (!configured || !windowId) return false;
+  const set = storedToolset(db, windowId);
+  if (set && !set.catalog.some((tool) => tool.function.name === 'oido_analyze')) return false;
+  return true;
+}
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
 const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
@@ -446,7 +458,7 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
@@ -457,7 +469,7 @@ export class TurnSupervisor {
         let hearing: { available: boolean } | undefined;
         let voiceDurations: Map<string, number | null> | undefined;
         if (opts.isCurrentInput === true) {
-          hearing = { available: this.d.oidoHearing === true };
+          hearing = { available: opts.hearingAvailable ?? (this.d.oidoHearing === true) };
           const voiceIds = proj.attachments.filter((a) => a.presentation === 'voice').map((a) => a.asset_id);
           if (voiceIds.length > 0) {
             voiceDurations = new Map(voiceIds.map((id) => [id, null]));
@@ -1171,6 +1183,8 @@ export class TurnSupervisor {
 
   private buildEnvelope(o: {
     conversationId: string;
+    /** JOINT-VOICE：窗口感知听觉判定（旧窗冻结目录无 oido 工具时退回阻断） */
+    windowId?: string;
     materials: { identityText: string; rulesText: string; iText: string | null } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
@@ -1222,7 +1236,7 @@ export class TurnSupervisor {
     const tailSeq = o.tailMessage?.id
       ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
       : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1970,8 +1984,8 @@ export class TurnSupervisor {
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
         const built0 = sel0
-          ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(sel0) })
-          : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(sel0) })
+          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -2005,8 +2019,8 @@ export class TurnSupervisor {
             // 绑定 target_window_id；无命中=兼容期自动回退）
             const selR = d.selections?.forTargetWindow(window.id) ?? null;
             const builtR = selR
-              ? this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(selR) })
-              : this.buildEnvelope({ conversationId: turn.conversation_id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(selR) })
+              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -2130,7 +2144,7 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id) });
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
