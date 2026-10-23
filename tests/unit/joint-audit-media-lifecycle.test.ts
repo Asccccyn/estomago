@@ -58,3 +58,9 @@ for(const mutation of ['message-revision','asset-revision'] as const)test(`image
     assert.deepEqual(index.unindexedImagesInRoom('primary','synthetic-test'),mutation==='asset-revision'?[asset.id]:[]);
   }finally{db.close();fs.rmSync(root,{recursive:true,force:true});}
 });
+test('worker redirect cannot forward media bytes to another route',async()=>{
+  const {createServer}=await import('node:http');let leaked=0;
+  const server=createServer((req,res)=>{req.resume();if(req.url==='/v1/embed'){res.writeHead(307,{Location:'/capture'});res.end();}else{leaked++;res.writeHead(503);res.end();}});
+  await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));
+  try{const address=server.address() as {port:number};const client=new MediaEmbedWorkerClient({base_url:`http://127.0.0.1:${address.port}`});await assert.rejects(client.embed([{id:'synthetic',modality:'text',bytes:Buffer.from('合成隐私边界夹具')} ]));assert.equal(leaked,0);}finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
+});

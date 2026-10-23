@@ -31,7 +31,7 @@ export class MediaEmbedWorkerClient {
   async health(timeoutMs = 2500, signal?: AbortSignal): Promise<{ ok: boolean; backend?: string; fingerprint?: string }> {
     signal?.throwIfAborted();
     try {
-      const res = await fetch(`${this.baseUrl}/health`, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
+      const res = await fetch(`${this.baseUrl}/health`, { redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return { ok: false };
       return await res.json() as { ok: boolean; backend: string; fingerprint: string };
     } catch {
@@ -45,7 +45,7 @@ export class MediaEmbedWorkerClient {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/embed`, {
-        method: 'POST',
+        redirect: 'error', method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
         body: JSON.stringify({ items: items.map((i) => ({ id: i.id, modality: i.modality, data_b64: i.bytes.toString('base64') })) }),
         signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),

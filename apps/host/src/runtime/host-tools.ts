@@ -1274,7 +1274,7 @@ export class HostToolExecutor {
       const { bytes, mime } = this.media.readContent(assetId);
       const row = this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
       if (!row) return { ok: false, output: { error_code: 'ASSET_NOT_FOUND' } };
-      const vt = this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND state = 'ready'").get(assetId) as { derived_text: string; derived_source: string } | undefined;
+      const vt = this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND conversation_id = ? AND content_sha256 = ? AND state = 'ready'").get(assetId, ctx.roomId, row.content_sha256) as { derived_text: string; derived_source: string } | undefined;
       const transcript = vt?.derived_text ? { text: vt.derived_text, source: vt.derived_source ?? 'siren:transcribe' } : null;
       ctx.signal?.throwIfAborted();
       await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript, signal:ctx.signal });
