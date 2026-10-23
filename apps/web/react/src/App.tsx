@@ -6,6 +6,7 @@ import { IntegrationControls } from './IntegrationControls'
 import { BackgroundControls } from './BackgroundControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
+import { CallPanel } from './CallPanel'
 import { SurfacedMemories } from './SurfacedMemories'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
@@ -285,6 +286,7 @@ export default function App() {
   const [plus, setPlus] = useState(false)
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
+  const [callOpen, setCallOpen] = useState(false)
   const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
@@ -378,7 +380,7 @@ export default function App() {
               disabled={editing !== null || state.selectionMode} onPick={jumpToDate} />
             <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
               onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
-            <IconBtn title="电话" onClick={() => client.notify('实时语音通话暂未接入')}><Phone size={18} /></IconBtn>
+            <IconBtn title="电话" onClick={() => setCallOpen(true)}><Phone size={18} /></IconBtn>
             <div className="relative">
               <IconBtn title="更多" onClick={() => setMore(!more)}><MoreHorizontal size={18} /></IconBtn>
               {more && (
@@ -616,6 +618,7 @@ export default function App() {
       </footer>
       {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
+      {callOpen && <CallPanel conversationId="primary" onExit={() => setCallOpen(false)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
         onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}

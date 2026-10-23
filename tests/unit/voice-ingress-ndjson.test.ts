@@ -95,8 +95,13 @@ test('未配置 token=503 fail-closed；错 token=401；缺 conversation=422；�
     res = new FakeRes();
     await handleVoiceChatStream(withHeaders(REQ({ text: 'hi' }), { authorization: 'Bearer tok' }) as never, res as never, ctx.deps);
     assert.equal(res.status, 422);
+    // B2/RE-03（2026-10-24）：call_id/turn_id 必填（先完备性校验，后会话查找）；
+    // 旧测试在缺 ID 时仍期待 404——被新合同替代
     res = new FakeRes();
     await handleVoiceChatStream(withHeaders(REQ({ conversation_id: 'nope', text: 'hi' }), { authorization: 'Bearer tok' }) as never, res as never, ctx.deps);
+    assert.equal(res.status, 422);
+    res = new FakeRes();
+    await handleVoiceChatStream(withHeaders(REQ({ conversation_id: 'nope', call_id: 'c', turn_id: 't', text: 'hi' }), { authorization: 'Bearer tok' }) as never, res as never, ctx.deps);
     assert.equal(res.status, 404);
     if (prev === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = prev;
   } finally { ctx.close(); }

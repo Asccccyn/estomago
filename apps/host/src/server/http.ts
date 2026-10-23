@@ -175,6 +175,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return serveStatic(res, url.pathname);
     }
 
+    // R4/RE-01（2026-10-24 返修）：voice ingress 在 owner 通用认证**之前**分派——
+    // 专用 Bearer 凭据只授权受控电话入口（Siren CoreBridge 不持有 owner 全权 token；
+    // 鉴权/绑定/限额由 handleVoiceChatStream 自行执行）。错误会话/撤销仍拒。
+    if (route === 'POST /v1/chat/stream') {
+      return await handleVoiceChatStream(req, res, d);
+    }
+    if (route === 'POST /v1/calls' || /^DELETE \/v1\/calls\/([^/]+)$/.test(route)) {
+      return await handleVoiceCallLifecycle(req, res, d, route);
+    }
+
     if (!d.auth.isAuthorized(req)) {
       return json(res, 401, { error: { code: 'unauthorized', message: '需要认证' } });
     }
@@ -423,18 +433,23 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     }
     const oidoUiImage = /^GET \/api\/v1\/oido\/analyses\/([^/]+)\/image$/.exec(route);
     if (oidoUiImage) {
-      if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
-      const out = await d.tools.execute('oido_view', { analysis_id: decodeURIComponent(oidoUiImage[1]!) }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
-      if (!out.ok) return json(res, 422, out.output);
-      const png = Buffer.from(String((out.output as Record<string, unknown>)['image_base64']), 'base64');
-      res.writeHead(200, { 'Content-Type': String((out.output as Record<string, unknown>)['image_mime'] ?? 'image/png') });
-      res.end(png);
-      return;
+      // RE-05（2026-10-24）：图与正文分路后，UI 图直读本地派生工件（无 oído 服务代理、无 base64 JSON）
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const analysisId = decodeURIComponent(oidoUiImage[1]!);
+      const art = d.db.prepare("SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json='full'").get(analysisId) as { asset_id: string } | undefined;
+      if (!art) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件' } });
+      try {
+        const { bytes, mime } = d.media.readContent(art.asset_id);
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
+        res.end(bytes);
+        return;
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
     }
-    // R4（2026-10-23）：voice ingress（Siren CoreBridge → est 同窗电话入口）
-    if (route === 'POST /v1/chat/stream') {
-      return await handleVoiceChatStream(req, res, d);
-    }
+    // R4（2026-10-23）：voice ingress——分派已在文件上方 owner 认证前完成（RE-01）；
+    // 此处不再重复分派
     const stopTurn = /^POST \/api\/v1\/turns\/([^/]+)\/stop$/.exec(route);
     if (stopTurn) {
       const turnId = decodeURIComponent(stopTurn[1]!);
@@ -1133,6 +1148,45 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       }
     }
 
+    // —— B2/RE-04（2026-10-24）：正式前端建呼代理（owner 面）——est 后端持 Siren 内部地址，
+    //    短 call token 只回给本次通话的页面（Siren 内部凭据不进前端）；同键立册 voice_calls
+    //    （memory_only 生效）。挂断：DELETE /api/v1/calls/:callId（est 收口；WS 1000 由面板关闭）。
+    if (route === 'POST /api/v1/calls') {
+      const rawBody = (await readJson(req, d, 16 * 1024)) as { conversation_id?: unknown } | null;
+      if (typeof rawBody?.conversation_id !== 'string' || !rawBody.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
+      if (!d.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(rawBody.conversation_id)) return json(res, 404, { error: { code: 'not_found', message: '会话不存在' } });
+      const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
+      if (!sirenBase) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置（能力缺口，如实拒绝）' } });
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
+      if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
+      let sirenRes: Response;
+      try {
+        sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: rawBody.conversation_id }), signal: AbortSignal.timeout(5000) });
+      } catch {
+        return json(res, 502, { error: { code: 'siren_unreachable', message: 'Siren 通话服务不可达（文字聊天不受影响）' } });
+      }
+      if (!sirenRes.ok) {
+        const body = await sirenRes.text().catch(() => '');
+        return json(res, 502, { error: { code: 'siren_call_failed', message: `Siren 建呼失败（${sirenRes.status}）：${body.slice(0, 120)}` } });
+      }
+      const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string; expires_at?: string };
+      if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
+        return json(res, 502, { error: { code: 'siren_contract_invalid', message: 'Siren 建呼回执合同不符' } });
+      }
+      d.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)")
+        .run(created.call_id, rawBody.conversation_id, new Date().toISOString());
+      return json(res, 200, { call_id: created.call_id, ws_url: created.ws_url, token: created.token, ...(typeof created.expires_at === 'string' ? { expires_at: created.expires_at } : {}), memory_only: true });
+    }
+    const estCallEnd = /^DELETE \/api\/v1\/calls\/([^/]+)$/.exec(route);
+    if (estCallEnd) {
+      const callId = decodeURIComponent(estCallEnd[1]!);
+      const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
+      if (!row) return json(res, 404, { error: { code: 'not_found', message: '通话不存在' } });
+      if (row.state === 'active') d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
+      return json(res, 200, { call_id: callId, state: 'ended' });
+    }
+
     // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
     if (route === 'POST /api/v1/token-estimates') {
       const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);
@@ -1478,82 +1532,157 @@ function json(res: ServerResponse, status: number, body: unknown): void {
 //   POST /v1/chat/stream，content-type application/x-ndjson，body=单 JSON 对象
 //   {conversation_id, call_id, turn_id, modality, text, interrupted_turn?{...}}
 //   响应逐行 NDJSON：{"type":"delta","text"}* → {"type":"done"}；失败 {"type":"error","message"}
-//   客户端断开=取消（stop 同一管线）；同窗=supervisor.enqueue（与文字轮共用串行链/工具/轨迹）
+// B2 返修（2026-10-24，RE-02/03 + NDJSON_PLAN）：
+//   - 正文=同一生成流真实新增（supervisor 语音抽头，与聊天落库同源、provider 速度）；
+//     按句成帧（。！？!?…），取消代际内不再供给——拼接与聊天正本逐字一致、单句不必等整轮结束
+//   - 幂等接纳 (call_id, turn_id)：同键同文已完成=重放终态回执（不再开模型/不再订未来事件）；
+//     同键异文=409；在途重复=409；缺 call_id/turn_id=422（不再回落固定字面量）
+//   - 断开=stop（含排队轮：CANCELLED_BEFORE_DISPATCH 不派发）；接纳行落确定终态
+//   - 请求体走 readJson（限额+字节安全，分片 UTF-8 不破）；modality/interrupted_turn 入册
 // 鉴权：Bearer 对 ESTOMAGO_VOICE_INGRESS_TOKEN（未配置=503 fail-closed，不静默开放）。
 export async function handleVoiceChatStream(req: IncomingMessage, res: ServerResponse, d: RequestDeps): Promise<void> {
+  const ndjsonError = (status: number, message: string): void => {
+    try { res.writeHead(status, { 'Content-Type': 'application/x-ndjson' }); res.end(JSON.stringify({ type: 'error', message }) + '\n'); } catch { /* 已断 */ }
+  };
   const token = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
-  if (!token || !token.trim()) {
-    res.writeHead(503, { 'Content-Type': 'application/x-ndjson' });
-    res.end(JSON.stringify({ type: 'error', message: 'voice ingress not configured' }) + '\n');
-    return;
-  }
+  if (!token || !token.trim()) return ndjsonError(503, 'voice ingress not configured');
   const authz = String(req.headers.authorization ?? '');
-  if (authz !== `Bearer ${token}`) {
-    res.writeHead(401, { 'Content-Type': 'application/x-ndjson' });
-    res.end(JSON.stringify({ type: 'error', message: 'unauthorized' }) + '\n');
-    return;
+  if (authz !== `Bearer ${token}`) return ndjsonError(401, 'unauthorized');
+  let input: { conversation_id?: unknown; call_id?: unknown; turn_id?: unknown; modality?: unknown; text?: unknown; interrupted_turn?: unknown };
+  try {
+    input = (await readJson(req, d, 256 * 1024)) as typeof input;
+  } catch (err) {
+    const status = err instanceof ClientBodyError ? err.status : 400;
+    return ndjsonError(status, 'invalid body');
   }
-  let body = '';
-  for await (const chunk of req) body += String(chunk);
-  let input: { conversation_id?: string; call_id?: string; turn_id?: string; modality?: string; text?: string };
-  try { input = JSON.parse(body) as typeof input; } catch {
-    res.writeHead(400, { 'Content-Type': 'application/x-ndjson' });
-    res.end(JSON.stringify({ type: 'error', message: 'invalid JSON body' }) + '\n');
-    return;
+  const idOk = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128;
+  if (!idOk(input.conversation_id) || !idOk(input.call_id) || !idOk(input.turn_id)) {
+    return ndjsonError(422, 'conversation_id, call_id and turn_id are required (1..128 chars)');
   }
-  if (typeof input.conversation_id !== 'string' || typeof input.text !== 'string' || input.text.length === 0) {
-    res.writeHead(422, { 'Content-Type': 'application/x-ndjson' });
-    res.end(JSON.stringify({ type: 'error', message: 'conversation_id and non-empty text required' }) + '\n');
-    return;
+  if (typeof input.text !== 'string' || input.text.length === 0) return ndjsonError(422, 'non-empty text required');
+  if (input.modality !== undefined && input.modality !== 'voice' && input.modality !== 'voice_call') return ndjsonError(422, 'modality must be voice|voice_call');
+  const conversationId: string = input.conversation_id;
+  const callId: string = input.call_id;
+  const turnKey: string = input.turn_id;
+  const conv = d.db.prepare('SELECT id FROM conversations WHERE id = ?').get(conversationId) as { id: string } | undefined;
+  if (!conv) return ndjsonError(404, 'conversation not found');
+
+  // —— RE-03：幂等接纳（同窗提交仍走文字轮同一串行链/窗口工具/轨迹/计量）——
+  const nowIso = new Date().toISOString();
+  const textSha = sha256Hex(input.text);
+  const prior = d.db.prepare('SELECT text_sha256, state FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get(callId, turnKey) as { text_sha256: string; state: string } | undefined;
+  if (prior) {
+    if (prior.text_sha256 !== textSha) return ndjsonError(409, 'idempotency conflict: same call/turn with different text');
+    if (prior.state === 'completed' || prior.state === 'failed' || prior.state === 'cancelled') {
+      // 完成重试：返回合同终态回执——不再开模型、不再订阅未来事件、不重播整段旧音频
+      res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache, no-transform' });
+      try { res.end(JSON.stringify({ type: 'done', replayed: true, prior_state: prior.state }) + '\n'); } catch { /* 已断 */ }
+      return;
+    }
+    return ndjsonError(409, 'same call/turn already in flight');
   }
-  const conv = d.db.prepare('SELECT id FROM conversations WHERE id = ?').get(input.conversation_id) as { id: string } | undefined;
-  if (!conv) {
-    res.writeHead(404, { 'Content-Type': 'application/x-ndjson' });
-    res.end(JSON.stringify({ type: 'error', message: 'conversation not found' }) + '\n');
-    return;
+  d.db.prepare('INSERT INTO voice_stream_turns(call_id,turn_key,conversation_id,text_sha256,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?)')
+    .run(callId, turnKey, conversationId, textSha, 'admitted', nowIso, nowIso);
+  // 通话登记：未显式 POST /v1/calls 时按首个电话轮自动立册（memory_only 以此为准；挂断由 DELETE /v1/calls 收口）
+  if (!d.db.prepare('SELECT 1 FROM voice_calls WHERE call_id=?').get(callId)) {
+    d.db.prepare("INSERT OR IGNORE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(callId, conversationId, nowIso);
   }
-  // 同窗提交：与文字轮同管线（串行链/窗口工具/轨迹/计量）——不另建电话旁路历史
+  if (input.interrupted_turn !== undefined && (typeof input.interrupted_turn !== 'object' || input.interrupted_turn === null)) {
+    return ndjsonError(422, 'interrupted_turn must be an object');
+  }
+
   const sub = d.messages.submitUserMessageWithTurn({
-    conversationId: input.conversation_id,
+    conversationId: conversationId,
     content: input.text,
-    clientMessageId: `voice:${input.call_id ?? 'call'}:${input.turn_id ?? 'turn'}`,
+    clientMessageId: `voice:${callId}:${turnKey}`,
     occurredAt: new Date().toISOString(),
   });
+  d.db.prepare("UPDATE voice_stream_turns SET est_turn_id=?, state='running', updated_at=? WHERE call_id=? AND turn_key=?")
+    .run(sub.turnId, new Date().toISOString(), callId, turnKey);
+
   res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache, no-transform' });
-  const send = (obj: Record<string, unknown>): void => { try { res.write(JSON.stringify(obj) + '\n'); } catch { /* 已断 */ } };
-  const finish = (): void => { try { res.end(); } catch { /* 已断 */ } };
-  const subEvents = d.events.subscribe(input.conversation_id);
+  const send = (obj: Record<string, unknown>): boolean => { try { return res.write(JSON.stringify(obj) + '\n'); } catch { return false; } };
+
+  // —— RE-02：同一生成流的语音正文通道 ——
+  // 行首学舌标记剥离与聊天发布层同规则；句级成帧（含无换行短句：完整句尾即发）；
+  // 末尾残余在终态前冲刷。拼接==聊天正本（正常内容逐字一致）。
+  let pending = '';
+  let atLineStart = true;
+  const SENTENCE_END = new Set(['。', '！', '？', '!', '?', '…']);
+  const stripMarker = (t: string): string => t.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, '');
+  const emitSentences = (flush: boolean): void => {
+    for (;;) {
+      const chars = [...pending];
+      let cut = -1;
+      for (let i = 0; i < chars.length; i++) {
+        if (SENTENCE_END.has(chars[i]!)) cut = i + 1;
+      }
+      if (cut <= 0) break;
+      let chunk = chars.slice(0, cut).join('');
+      pending = chars.slice(cut).join('');
+      if (atLineStart) chunk = stripMarker(chunk);
+      atLineStart = chunk.endsWith('\n');
+      if (chunk.length > 0) send({ type: 'delta', text: chunk });
+    }
+    if (flush && pending.length > 0) {
+      let chunk = pending;
+      pending = '';
+      if (atLineStart) chunk = stripMarker(chunk);
+      atLineStart = chunk.endsWith('\n');
+      if (chunk.length > 0) send({ type: 'delta', text: chunk });
+    }
+  };
+  const detachTap = d.supervisor.registerVoiceTap(sub.turnId, (tail) => {
+    // 行边界维护：换行符原样保留（拼接与正本逐字一致）；行首标记按聊天发布层同规则剥离
+    const lines = tail.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) { pending += '\n'; atLineStart = true; }
+      const piece = lines[i]!;
+      pending += atLineStart ? stripMarker(piece) : piece;
+      if (piece.length > 0) atLineStart = false;
+    }
+    emitSentences(false);
+  });
+
+  const subEvents = d.events.subscribe(conversationId);
   let closed = false;
+  const admissionClose = (state: 'completed' | 'failed' | 'cancelled'): void => {
+    d.db.prepare("UPDATE voice_stream_turns SET state=?, updated_at=? WHERE call_id=? AND turn_key=? AND state NOT IN ('completed','failed','cancelled')")
+      .run(state, new Date().toISOString(), callId, turnKey);
+  };
   const cleanup = (): void => {
     if (closed) return;
     closed = true;
     clearInterval(pump);
+    detachTap();
     d.events.unsubscribe(subEvents);
-    finish();
+    try { res.end(); } catch { /* 已断 */ }
   };
-  req.on('close', () => {
-    // 客户端断开=取消（打断/挂断走同一 stop 管线：fence+中断，已生成原文保留）
-    void d.supervisor.stop(sub.turnId);
+  const onDisconnect = (): void => {
+    // 客户端断开=取消（排队轮 CANCELLED_BEFORE_DISPATCH / 活动轮 fence+中断；已生成原文保留）
+    if (!closed) {
+      void d.supervisor.stop(sub.turnId);
+      admissionClose('cancelled');
+    }
     cleanup();
-  });
+  };
+  req.on('close', onDisconnect);
+  res.on('close', onDisconnect);
   const pump = setInterval(() => {
     if (closed) return;
     for (const queued of subEvents.queue.splice(0)) {
-      const row = toSseDto(queued.eventRow); // 统一 DTO：payload 字段已展平到顶层（row.message / row.state）
+      const row = toSseDto(queued.eventRow);
       if (row.turn_id !== sub.turnId) continue;
-      if (row.kind === 'message.published') {
-        const message = row['message'] as { content?: unknown; speaker?: string; revision?: { content?: unknown } } | undefined;
-        // 正文在修订层（revision.content）；顶层 content 兼容旧形状
-        const text = message?.revision?.content ?? message?.content;
-        if (message?.speaker === 'assistant' && typeof text === 'string' && text.length > 0) {
-          send({ type: 'delta', text });
-        }
-      } else if (row.kind === 'turn.completed') {
+      if (row.kind === 'turn.completed') {
+        emitSentences(true);
         send({ type: 'done' });
+        admissionClose('completed');
         cleanup();
         return;
       } else if (row.kind === 'turn.interrupted') {
-        send({ type: 'done' }); // 打断=已生成原文保留（SIR-03）；作为完成流收口，不丢正文
+        emitSentences(true);
+        send({ type: 'done', interrupted: true }); // 打断=已生成原文保留；作为完成流收口
+        admissionClose('completed');
         cleanup();
         return;
       } else if (row.kind === 'turn.status') {
@@ -1561,6 +1690,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
         const reason = row['reason'] as string | undefined;
         if (state === 'failed') {
           send({ type: 'error', message: reason ?? 'turn failed' });
+          admissionClose('failed');
           cleanup();
           return;
         }
@@ -1568,4 +1698,36 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
     }
   }, 25);
   d.supervisor.enqueue(sub.turnId);
+}
+
+/** B2（2026-10-24）：通话生命周期（专用 token 面）——POST /v1/calls 立册 active（memory_only 生效），
+ *  DELETE /v1/calls/:id 挂断收口（幂等）。Siren CallSession 建立即调；未显式调用时首个电话轮自动立册。 */
+export async function handleVoiceCallLifecycle(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string): Promise<void> {
+  const ndjsonError = (status: number, message: string): void => {
+    json(res, status, { error: { code: 'voice_call_error', message } });
+  };
+  const token = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  if (!token || !token.trim()) return ndjsonError(503, 'voice ingress not configured');
+  const authz = String(req.headers.authorization ?? '');
+  if (authz !== `Bearer ${token}`) return ndjsonError(401, 'unauthorized');
+  const nowIso = new Date().toISOString();
+  if (route === 'POST /v1/calls') {
+    let body: { call_id?: unknown; conversation_id?: unknown };
+    try { body = (await readJson(req, d, 64 * 1024)) as typeof body; } catch { return ndjsonError(400, 'invalid body'); }
+    const idOk = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128;
+    if (!idOk(body.call_id) || !idOk(body.conversation_id)) return ndjsonError(422, 'call_id and conversation_id required');
+    if (!d.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(body.conversation_id)) return ndjsonError(404, 'conversation not found');
+    const existing = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(body.call_id) as { state: string } | undefined;
+    if (existing?.state === 'active') return json(res, 200, { call_id: body.call_id, state: 'active' });
+    if (existing?.state === 'ended') return ndjsonError(409, 'call already ended (new call needs a new call_id)');
+    d.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,\'active\',?)".replace("\\'", "'")).run(body.call_id, body.conversation_id, nowIso);
+    return json(res, 200, { call_id: body.call_id, state: 'active', memory_only: true });
+  }
+  const m = /^DELETE \/v1\/calls\/([^/]+)$/.exec(route);
+  const callId = decodeURIComponent(m?.[1] ?? '');
+  const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
+  if (!row) return ndjsonError(404, 'call not found');
+  if (row.state === 'ended') return json(res, 200, { call_id: callId, state: 'ended' });
+  d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(nowIso, callId);
+  return json(res, 200, { call_id: callId, state: 'ended' });
 }

@@ -1245,4 +1245,28 @@ CREATE TABLE oido_view_artifacts(
 );
 CREATE INDEX IF NOT EXISTS idx_oido_view_asset ON oido_view_artifacts(asset_id);
 ` });
+// 39（2026-10-24，B2 电话核心 P0）：通话生命周期与电话轮幂等接纳。
+//  - voice_calls：Siren 通话↔est 会话绑定（active 期间该会话模型工具走 memory_only 策略）；
+//  - voice_stream_turns：(call_id, turn_key) 幂等接纳——同键同文=重放终态回执；同键异文=409。
+MIGRATIONS.push({ version: 39, name: 'voice_calls_and_stream_turns', sql: `
+CREATE TABLE voice_calls(
+ call_id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('active','ended')),
+ started_at TEXT NOT NULL,
+ ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_voice_calls_conv ON voice_calls(conversation_id, state);
+CREATE TABLE voice_stream_turns(
+ call_id TEXT NOT NULL,
+ turn_key TEXT NOT NULL,
+ conversation_id TEXT NOT NULL,
+ text_sha256 TEXT NOT NULL,
+ est_turn_id TEXT,
+ state TEXT NOT NULL CHECK (state IN ('admitted','running','completed','failed','cancelled')),
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(call_id, turn_key)
+);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

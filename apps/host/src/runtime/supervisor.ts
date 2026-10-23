@@ -156,12 +156,21 @@ export class TurnSupervisor {
     const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
     if (!conv) return;
     this.runSerialized(conv.conversation_id, async () => {
+      if (this.cancelledBeforeRun.delete(turnId)) {
+        // RE-03：排队期已 stop——不派发，落确定终态（订阅者可见失败收口）
+        this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
+        this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
+        this.voiceTaps.delete(turnId);
+        return;
+      }
       try {
         await this.runTurn(turnId);
       } catch (err) {
         // AUD-10：链条内崩溃不留悬挂——该 turn 落 failed 终态
         this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err) });
         this.failTurnQuietly(turnId, 'RUNNER_CRASHED');
+      } finally {
+        this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
       }
     });
   }
@@ -182,9 +191,30 @@ export class TurnSupervisor {
     await Promise.all([...this.chains.values()]);
   }
 
+  /** RE-03（2026-10-24 返修）：排队取消登记——尚未获得串行链的 turn 被 stop 时记录，
+   *  链到达时不再派发（上轮反例：断开的排队电话轮在前序释放后仍派发模型） */
+  private cancelledBeforeRun = new Set<string>();
+
+  /** RE-02（2026-10-24 返修）：语音正文抽头——同一生成流（publishText 的真实新增 tail，
+   *  与聊天落库同源）逐段供给 voice ingress；不经公共事件总线（不进 SSE/UI 面）。
+   *  取消后代际内不再供给（与 publishSegments 同一 fence）。 */
+  private voiceTaps = new Map<string, (text: string) => void>();
+  registerVoiceTap(turnId: string, onTap: (text: string) => void): () => void {
+    this.voiceTaps.set(turnId, onTap);
+    return () => { this.voiceTaps.delete(turnId); };
+  }
+
   stop(turnId: string): { stopped: boolean; generation: number | null } {
     const run = this.active.get(turnId);
-    if (!run) return { stopped: false, generation: null };
+    if (!run) {
+      // 排队中（无活动代）：登记取消；链到达即拒发。若 turn 已完成/从未入队，无害空集。
+      const queued = this.d.db.prepare("SELECT 1 FROM turns WHERE id = ? AND state IN ('queued','running','pending')").get(turnId);
+      if (queued) {
+        this.cancelledBeforeRun.add(turnId);
+        return { stopped: true, generation: null };
+      }
+      return { stopped: false, generation: null };
+    }
     this.d.surfacing?.cancelForTurn?.(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
@@ -2313,6 +2343,9 @@ export class TurnSupervisor {
       const tail = text.slice(prev.length);
       if (tail.length === 0) return;
       publishedByKey.set(key, text);
+      // RE-02（2026-10-24）：语音抽头与聊天落库同源（同一真实新增 tail，provider 速度）；
+      // 取消后代际内不供给（与下方 publishSegments 的 fence 一致）
+      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail);
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
@@ -2722,7 +2755,8 @@ export class TurnSupervisor {
     try {
       tx(this.d.db, () => {
         const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state IN ('running')").get(turnId) as { id: string } | undefined;
-        this.d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ? AND state IN ('running')").run(now, turnId);
+        // RE-03：pending（排队期被取消，从未获得执行权）同样落确定终态
+        this.d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ? AND state IN ('running','pending')").run(now, turnId);
         if (att) {
           this.d.db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = ?, completed_at = ? WHERE id = ?").run(code, now, att.id);
           this.d.db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE attempt_id = ? AND state = 'streaming'").run(now, att.id);

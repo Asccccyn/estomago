@@ -1337,6 +1337,26 @@ export class HostToolExecutor {
     return Boolean(row && (sha===undefined || sha===row.content_sha256));
   }
 
+  // —— B2/A04（2026-10-24）：通话 memory_only 能力策略（宿主施行，非第二套注册表）——
+  // 逐项语义表（03 实现合同 §2）：记忆读取/分页/全量/原文/关系、合法会话读取、已授权
+  // 记忆写/hold/纠错/I 读写（沿用原权限不扩权）、episode 记忆流程、轻量 oído 快证据
+  //（analyze/get/capabilities）、只读计划、宿主评审收口、延迟发现机制与未来 call_control。
+  // 关闭=非记忆业务（朋友圈/许愿星/内容/创作/日历唤醒/媒体导入检索/消息发送等）；
+  // 重型 find/compare/view 不在通话热路径。普通聊天与既有自主活动权限不变。
+  static readonly MEMORY_ONLY_TOOLS: ReadonlySet<string> = new Set([
+    'memory_recall', 'memory_recall_next', 'memory_open', 'memory_read_full', 'memory_i_read',
+    'memory_correct', 'memory_hold', 'memory_i_write',
+    'episode_apply', 'episode_get', 'episode_list',
+    'conversation_read', 'transcript_read',
+    'oido_analyze', 'oido_get', 'oido_capabilities',
+    'plans_read', 'context_review_complete',
+    'tool_catalog', 'tool_define', 'tool_invoke', 'call_control',
+  ]);
+  /** 通话激活（voice_calls active）——模型工具调用门与目录过滤的同一事实源 */
+  private voiceCallActive(roomId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(roomId));
+  }
+
   /** RE-12（2026-10-24）：远端删除意图登记——markAssetMissing 与迟到导入回执共用同一入口
    *  （幂等 upsert；重试循环=delete-retry.ts 的 outbox）。 */
   private recordOidoDeleteIntent(estAssetId: string, oidoAudioId: string): void {
@@ -1612,6 +1632,14 @@ export class HostToolExecutor {
         payload: { ...identity(), phase: 'start' },
       });
     }
+    // A04（2026-10-24）：通话 memory_only——catalog/define/invoke/直接执行/执行前最后边界
+    // 同一策略（effective name 判定）；仅约束模型发起的调用（ctx.turnId 非空），UI/宿主内部调用不受限
+    if (ctx.turnId) {
+      const effectiveName0 = name === 'tool_invoke' ? String(rawArgs.name ?? '') : name;
+      if (this.voiceCallActive(ctx.roomId) && !HostToolExecutor.MEMORY_ONLY_TOOLS.has(effectiveName0)) {
+        return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
+      }
+    }
     let result: ToolExecResult;
     try {
       result = await this.executeInner(name, rawArgs, ctx);
@@ -1645,7 +1673,13 @@ export class HostToolExecutor {
     if (set?.protocol !== 'deferred') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
     const allowed = name === 'tool_catalog' ? ['__tool_call_id'] : name === 'tool_define' ? ['name','__tool_call_id'] : ['name','definition_id','arguments','__tool_call_id'];
     if (Object.keys(args).some(k=>!allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
-    if (name === 'tool_catalog') return {ok:true,output:{tools:set.catalog.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
+    if (name === 'tool_catalog') {
+      // A04：通话内**新生成**的 catalog 只列记忆与必要通话控制；冻结目录/历史结果不变
+      const listing = this.voiceCallActive(ctx.roomId) && ctx.turnId
+        ? set.catalog.filter(t=>HostToolExecutor.MEMORY_ONLY_TOOLS.has(t.function.name))
+        : set.catalog;
+      return {ok:true,output:{tools:listing.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
+    }
     const spec = set.catalog.find(t=>t.function.name===args.name);
     if (!spec) return deny('TOOL_NOT_IN_ALLOWLIST');
     if (name === 'tool_define') {
