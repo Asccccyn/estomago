@@ -223,6 +223,12 @@ background:
     max_output_tokens_per_run: 128
     max_run_ms: 30000
     daily_cost_cap_usd: null
+    # 可按实际作息修改；开始含、结束不含。仅阻止系统心跳，不影响显式自主预约。
+    sleep_window:
+      enabled: true
+      start: '23:00'
+      end: '08:00'
+      timezone: 'Asia/Shanghai'
   reminders:
     enabled: true
     delivery_grace_ms: 300000

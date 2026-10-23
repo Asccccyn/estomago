@@ -44,6 +44,7 @@ import type { SubmitMessageRequest, MessagePageDto } from '../../../../packages/
 import { estimateTokens, snapshotFor, ESTIMATOR_REVISION, type AttachmentEstimateMeta } from '../usage/estimator.ts';
 import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../messages/constants.ts';
+import { keepwarmSleepState } from '../runtime/keepwarm-sleep.ts';
 
 export type RequestDeps = {
   config: Config;
@@ -763,6 +764,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });
       const es = d.bgSettings.effective();
       // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
+      const sleep = keepwarmSleepState(es.keepwarm.sleep_window, Date.now());
       const activityRow = d.activity?.get('primary') ?? null;
       let keepwarmStatus: Record<string, unknown> = { scheduled: false };
       if (d.activity && d.scheduler) {
@@ -778,8 +780,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
           ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined);
           const cacheStatus = !ev ? 'unknown' : (ev.started && Date.now() - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
           keepwarmStatus = {
-            scheduled: target.scheduled && es.keepwarm.enabled,
-            ...(target.scheduled ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
+            scheduled: target.scheduled && es.keepwarm.enabled && !sleep.blocked,
+            ...(target.scheduled && !sleep.blocked ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
             last_real_activity_at: activityRow?.last_real_activity_at ?? null,
             cache_status: cacheStatus,
           };
@@ -788,10 +790,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, {
         revision: es.revision,
         autonomous: { enabled: es.autonomous.enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
-        keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd },
+        keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
         reminders: { enabled: es.reminders.enabled },
         executor_ready: d.bgExecutorReady ?? { autonomous: false, keepwarm: false },
-        keepwarm_status: keepwarmStatus,
+        keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: sleep.code, local_time: sleep.local_time },
         notice: '关闭后不再开始自主预约唤醒/心跳保温，正在进行的后续步骤会停止；已产生的费用和已完成的动作保留。两项开关独立。',
       });
     }

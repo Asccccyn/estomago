@@ -41,9 +41,9 @@ const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
 
-function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }) {
+function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -58,7 +58,7 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const media = new MediaService(db, paths.mediaDir, config);
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
-  const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
+  const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
@@ -71,6 +71,89 @@ const chatBody = (text: string) => sse({ id: `gen-${text.length}`, choices: [{ d
 const toolCallBody = (calls: Array<{ id: string; name: string; args: string }>, usage = { prompt_tokens: 500, completion_tokens: 10, cost: 0.001 }) =>
   sse({ id: `gen-tc-${calls[0]!.id}`, choices: [{ delta: { tool_calls: calls.map((c, i) => ({ index: i, id: c.id, type: 'function', function: { name: c.name, arguments: c.args } })) } }] })
   + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage }) + DONE;
+
+/** 将真实本地测试轨迹的活动/缓存证据对齐到虚拟睡前时间；无网络。 */
+function readySleepBoundaryRun(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }) {
+  setPrice(ctx.db);
+  ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
+  const iso = new Date(nowRef.nowMs).toISOString();
+  const before = new Date(nowRef.nowMs - 3_000_001).toISOString();
+  ctx.db.prepare("UPDATE conversation_activity SET last_real_activity_at = ?, maintenance_request_id = NULL WHERE conversation_id = 'c1'").run(before);
+  // 当前唯一请求是 seed chat。
+  ctx.db.prepare('UPDATE provider_requests SET dispatch_started_at = ?').run(before);
+  ctx.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,next_due_at,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('sleep-task','c1','jiaming','keepwarm',1,1,'cache_idle',?,'Asia/Shanghai','{}','system','system_keepwarm',?,?)").run(iso, iso, iso);
+  ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('sleep-run','sleep-task','c1','jiaming','keepwarm',1,'sleep-boundary','running',?,?)").run(iso, iso);
+  const scheduler = wireExecutor(ctx, nowRef);
+  const run = () => ctx.supervisor.runBackgroundTurn({ kind: 'keepwarm', runId: 'sleep-run', conversationId: 'c1', payload: {}, isCancelRequested: () => false, registerAbort: () => {}, maxModelRequests: 4, recordDispatch: (info) => scheduler.recordDispatchStart({ runId: 'sleep-run', ...info, capabilityName: null }) });
+  return { scheduler, run };
+}
+
+test('睡眠执行位复核：22:59 排队、23:00 获锁，零 provider/dispatch/turn 新增', async (t) => {
+  const nowRef = { nowMs: Date.parse('2026-10-23T22:59:59+08:00') };
+  let requests = 0;
+  const ctx = compose(tempRoot('wp4-sleep-queue-'), async () => { requests++; return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody('收到'))]) }; }, nowRef, true);
+  t.after(() => ctx.db.close());
+  await seedChatTurn(ctx, 'sleep-queue');
+  const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
+  t.after(() => scheduler.stop());
+  let release!: () => void;
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+  const blocking = ctx.supervisor.enqueueBackground('c1', async () => { entered(); await new Promise<void>(resolve => { release = resolve; }); });
+  await enteredPromise;
+  const queued = ctx.supervisor.enqueueBackground('c1', run);
+  nowRef.nowMs = Date.parse('2026-10-23T23:00:00+08:00');
+  release();
+  await blocking;
+  assert.deepEqual(await queued, { outcome: 'noop', result_code: 'KEEPWARM_SLEEP_WINDOW', detail: '睡眠时段暂停心跳——排队任务零派发' });
+  assert.equal(requests, 1, '只有测试 seed 聊天请求');
+  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM background_dispatches').get() as { n: number }).n, 0);
+  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM turns').get() as { n: number }).n, 1);
+});
+
+test('睡眠重试边界：首发429后跨23:00，重试不传输且元数据保留睡眠原因', async (t) => {
+  const nowRef = { nowMs: Date.parse('2026-10-23T22:59:59+08:00') };
+  let heartbeatRequests = 0;
+  const ctx = compose(tempRoot('wp4-sleep-retry-'), async (payload) => {
+    if (JSON.stringify(payload).includes('Cache keepalive')) {
+      heartbeatRequests++;
+      nowRef.nowMs = Date.parse('2026-10-23T23:00:00+08:00');
+      return { status: 429, headers: new Map([['retry-after', '0']]), body: Readable.from([]) };
+    }
+    return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody('收到'))]) };
+  }, nowRef, true, 1);
+  t.after(() => ctx.db.close());
+  await seedChatTurn(ctx, 'sleep-retry');
+  const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
+  t.after(() => scheduler.stop());
+  const result = await ctx.supervisor.enqueueBackground('c1', run);
+  assert.equal(result.result_code, 'KEEPWARM_SLEEP_WINDOW');
+  assert.equal(heartbeatRequests, 1, '睡眠后零重试');
+  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM background_dispatches').get() as { n: number }).n, 1, '保留睡前尝试，睡后无新增预占');
+});
+
+test('睡眠工具边界：模型睡前已发，回包时23:00，零工具执行与后续模型请求', async (t) => {
+  const nowRef = { nowMs: Date.parse('2026-10-23T22:59:59+08:00') };
+  let heartbeatRequests = 0;
+  const ctx = compose(tempRoot('wp4-sleep-tool-'), async (payload) => {
+    if (JSON.stringify(payload).includes('Cache keepalive')) {
+      heartbeatRequests++;
+      nowRef.nowMs = Date.parse('2026-10-23T23:00:00+08:00');
+      return { status: 200, headers: new Map(), body: Readable.from([enc.encode(toolCallBody([{ id: 'sleep-tool', name: 'chat_send_text', args: JSON.stringify({ text: '不应发布', idempotency_key: 'sleep-tool' }) }]))]) };
+    }
+    return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody('收到'))]) };
+  }, nowRef, true);
+  t.after(() => ctx.db.close());
+  await seedChatTurn(ctx, 'sleep-tool');
+  const count = (ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n;
+  const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
+  t.after(() => scheduler.stop());
+  const result = await ctx.supervisor.enqueueBackground('c1', run);
+  assert.equal(result.result_code, 'KEEPWARM_SLEEP_WINDOW');
+  assert.equal(heartbeatRequests, 1);
+  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n, count, '未开始的发送工具零副作用');
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM background_dispatches WHERE dispatch_kind = 'tool'").get() as { n: number }).n, 0);
+});
 
 /** 价格注入（§10.2：预占需可信上界——测试注入；生产=runtime_settings 配置后生效）。 */
 function setPrice(db: ReturnType<typeof openDatabase>, inputMicroPerToken = 0.000003, outputMicroPerToken = 0.000015): void {

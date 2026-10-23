@@ -24,6 +24,27 @@ before(async () => {
 });
 after(async () => { await host.stop(); });
 
+test('睡眠 JSON 元数据：配置可见，23:00 active/无排程，08:00解除；读设置零模型回合', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-23T23:00:00+08:00') });
+  const read = async () => await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as {
+    keepwarm: { sleep_window: { enabled: boolean; start: string; end: string; timezone: string } };
+    keepwarm_status: { scheduled: boolean; sleep_window_active: boolean; blocked_reason: string | null; local_time: string; next_keepwarm_at?: string };
+  };
+  const sleep = await read();
+  assert.deepEqual(sleep.keepwarm.sleep_window, { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' });
+  assert.equal(sleep.keepwarm_status.sleep_window_active, true);
+  assert.equal(sleep.keepwarm_status.blocked_reason, 'KEEPWARM_SLEEP_WINDOW');
+  assert.equal(sleep.keepwarm_status.scheduled, false);
+  assert.equal(sleep.keepwarm_status.local_time, '23:00');
+  assert.equal(sleep.keepwarm_status.next_keepwarm_at, undefined);
+  t.mock.timers.setTime(Date.parse('2026-10-24T08:00:00+08:00'));
+  const awake = await read();
+  assert.equal(awake.keepwarm_status.sleep_window_active, false);
+  assert.equal(awake.keepwarm_status.blocked_reason, null);
+  assert.equal(awake.keepwarm_status.local_time, '08:00');
+  assert.equal((host.db.prepare('SELECT COUNT(*) n FROM turns').get() as { n: number }).n, 0);
+});
+
 test('BACKGROUND-01/02：默认三关状态如实；开自主无预算=422；有预算可开；revision CAS', async () => {
   const s0 = await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as { autonomous: { enabled: boolean; daily_cost_cap_usd: number | null }; reminders: { enabled: boolean }; executor_ready: { autonomous: boolean } };
   assert.equal(s0.autonomous.enabled, false); // CW-01：默认关闭

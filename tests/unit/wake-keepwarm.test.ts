@@ -324,7 +324,7 @@ test('A-01：v32→v33 迁移两次幂等；旧任务/费用/未知状态无损�
 // —— B-02（收尾）：跨 run 日占用聚合门 ——
 
 test('B-02：多 run 已结算+unknown 占用后，新派发超 cap 在记账入口被拒（不是只看当前 run）', () => {
-  const t = setup();
+  const t = setup(Date.parse('2026-10-22T12:00:00+08:00')); // 独立测试预算门，避开睡眠时段
   t.settings.applyUpdate({ expectedRevision: t.settings.revision(), patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
   const nowIso = new Date(t.now).toISOString();
   const day = new Date(t.now + 8 * 3_600_000).toISOString().slice(0, 10);

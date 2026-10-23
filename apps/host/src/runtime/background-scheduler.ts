@@ -20,6 +20,7 @@ import { BackgroundSettingsService } from './background-settings.ts';
 import { restartDisposition, clockRegressionAction, type RunState } from './background-policy.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
 import { ConversationActivityService } from './wake-activity.ts';
+import { keepwarmSleepState } from './keepwarm-sleep.ts';
 
 export type BackgroundExecutor = {
   /** 执行一次已领取的 run（在会话串行链内被调用——executor 负责取得执行位）。scheduler 负责状态/记账框架。 */
@@ -171,6 +172,8 @@ export class BackgroundScheduler {
         continue;
       }
       if (task.kind === 'keepwarm' && !settings.keepwarm.enabled) continue;
+      // 前面的执行可能跨入睡眠时段；每次领取用当前时钟再查，不能复用 tick 快照。
+      if (task.kind === 'keepwarm' && keepwarmSleepState(this.d.settings.effective().keepwarm.sleep_window, this.now()).blocked) continue;
       if (task.kind === 'reminder' && !settings.reminders.enabled) continue;
       // 同主体同 kind 已有打开的执行（唯一索引兜底；此处先查少一次约束冲突）
       const open = this.d.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE actor_id = ? AND kind = ? AND state IN ('claimed','running','cancelling')").get(task.actor_id, task.kind) as { n: number };
@@ -227,6 +230,10 @@ export class BackgroundScheduler {
     const rows = this.d.db.prepare("SELECT * FROM background_tasks WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle' AND enabled = 1").all() as TaskRow[];
     const nowIso = new Date(nowMs).toISOString();
     for (const t of rows) {
+      if (keepwarmSleepState(settings.keepwarm.sleep_window, nowMs).blocked) {
+        this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
+        continue;
+      }
       const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(t.conversation_id) as { id: string } | undefined;
       if (!win) {
         this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
@@ -304,6 +311,8 @@ export class BackgroundScheduler {
     // B-02：跨 run 日占用聚合门（09 §资金准入顺序公式；无报价=0 上界已在 executor 价格门拦）
     if (run.kind === 'autonomous' || run.kind === 'keepwarm') {
       const s = this.d.settings.effective();
+      // 最后一个同步派发边界：排队、重试或工具循环跨入睡眠后不得开始新动作/新费用。
+      if (run.kind === 'keepwarm' && keepwarmSleepState(s.keepwarm.sleep_window, nowMs).blocked) return { allowed: false, dispatchId: '' };
       const capUsd = run.kind === 'autonomous' ? s.autonomous.daily_cost_cap_usd : s.keepwarm.daily_cost_cap_usd;
       if (capUsd !== null) {
         const capMicro = Math.round(capUsd * 1_000_000);

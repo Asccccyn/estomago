@@ -7,6 +7,7 @@
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { shanghaiDayOf } from '../usage/attribution.ts';
 import type { Config } from '../config/schema.ts';
+import { keepwarmSleepState, type KeepwarmSleepWindow } from './keepwarm-sleep.ts';
 
 export type BackgroundKind = 'autonomous' | 'keepwarm' | 'reminder';
 export type RunState = 'claimed' | 'running' | 'cancelling' | 'completed' | 'noop' | 'skipped' | 'cancelled' | 'failed' | 'unknown';
@@ -14,7 +15,7 @@ export type RunState = 'claimed' | 'running' | 'cancelling' | 'completed' | 'noo
 export type EffectiveSettings = {
   revision: number;
   autonomous: { enabled: boolean; max_model_requests_per_run: number; max_output_tokens_per_run: number; max_tool_calls_per_run: number; max_run_ms: number; paid_tools_enabled: boolean; daily_cost_cap_usd: number | null };
-  keepwarm: { enabled: boolean; max_output_tokens_per_run: number; max_run_ms: number; daily_cost_cap_usd: number | null };
+  keepwarm: { enabled: boolean; max_output_tokens_per_run: number; max_run_ms: number; daily_cost_cap_usd: number | null; sleep_window: KeepwarmSleepWindow };
   reminders: { enabled: boolean; delivery_grace_ms: number; default_local_time: string };
 };
 
@@ -38,6 +39,7 @@ export function effectiveSettings(config: Config, storedRevision: number, stored
       max_output_tokens_per_run: config.background.keepwarm.max_output_tokens_per_run,
       max_run_ms: config.background.keepwarm.max_run_ms,
       daily_cost_cap_usd: config.background.keepwarm.daily_cost_cap_usd,
+      sleep_window: { ...config.background.keepwarm.sleep_window },
     },
     reminders: { enabled: stored?.reminders_enabled ?? config.background.reminders.enabled, delivery_grace_ms: config.background.reminders.delivery_grace_ms, default_local_time: config.background.reminders.default_local_time },
   };
@@ -53,8 +55,10 @@ export function keepwarmAdmission(input: {
   evidenceStartedAtMs: number | null; // 最近有效缓存证据请求的 dispatch 开始（无证据=null）
   nowMs: number;
   autonomousRunOpen: boolean; // 同主体已有合法自主执行（同到期自主优先，K-15）
-}): { skip: 'KEEPWARM_DISABLED' | 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN' | 'KEEPWARM_CACHE_ALREADY_COLD' | 'AUTONOMOUS_FIRST' | null; nextCheckAtMs?: number } {
+}): { skip: 'KEEPWARM_DISABLED' | 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN' | 'KEEPWARM_CACHE_ALREADY_COLD' | 'AUTONOMOUS_FIRST' | null; nextCheckAtMs?: number } {
   if (!input.settings.keepwarm.enabled) return { skip: 'KEEPWARM_DISABLED' };
+  const sleep = keepwarmSleepState(input.settings.keepwarm.sleep_window, input.nowMs);
+  if (sleep.blocked) return { skip: sleep.code };
   if (input.evidenceStartedAtMs === null) return { skip: 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN' }; // §5.1：没证据不宣称命中
   // K-15：同时有到期自主活动 → 先自主（它刷新缓存后这次机会可标 satisfied_by_request）
   if (input.autonomousRunOpen) return { skip: 'AUTONOMOUS_FIRST' };

@@ -52,6 +52,8 @@ import { observeCacheUsage } from './cache-observation.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
 import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
+import { keepwarmSleepState } from './keepwarm-sleep.ts';
+import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 import { storedToolset } from './tool-discovery.ts';
 
@@ -280,6 +282,10 @@ export class TurnSupervisor {
     const d = this.d;
     const dv = this.drv();
     if (dv === null) return { outcome: 'failed', result_code: 'SDK_BACKGROUND_POLICY_UNVERIFIED', detail: '当前驱动不支持后台回合（SDK 背景策略未验证）' };
+    if (opts.kind === 'keepwarm') {
+      const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
+      if (sleep.blocked) return { outcome: 'noop', result_code: sleep.code!, detail: '睡眠时段暂停心跳——排队任务零派发' };
+    }
     // —— 执行位内重检（03：领取≠执行；开关/任务 revision/取消只在 15 秒 tick 查一次不算数）——
     const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null } | undefined;
     if (!runRow) return { outcome: 'failed', result_code: 'RUN_NOT_FOUND' };
@@ -403,10 +409,12 @@ export class TurnSupervisor {
       d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ?").run(micro === null ? 'unknown' : 'settled', micro, new Date().toISOString(), micro === null ? 'cost_unknown' : 'settled', bgd.id);
       if (micro !== null) d.db.prepare('UPDATE background_runs SET known_cost_micro_usd = known_cost_micro_usd + ?, updated_at = ? WHERE id = ?').run(micro, new Date().toISOString(), opts.runId);
     }
-    const finishedState = loop.result.outcome === 'completed' ? 'completed' : 'failed';
+    const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
+    const finishedState = loop.result.outcome === 'completed' || sleepPaused ? 'completed' : 'failed';
     d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
     if (loop.result.outcome !== 'completed') {
       if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
+      if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
       return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
     }
 
@@ -432,7 +440,7 @@ export class TurnSupervisor {
       const runCode = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
       const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
       // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
-      return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: completion === 'noop' ? 'complete:noop' : 'complete:done' };
+      return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') ? loop.result.errorCode : completion === 'noop' ? 'complete:noop' : 'complete:done' };
     }
 
     // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文与主轨迹。
@@ -580,6 +588,10 @@ export class TurnSupervisor {
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
           if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
+          if (o.background.kind === 'keepwarm') {
+            const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
+            if (sleep.blocked) throw new ContractError(sleep.code!);
+          }
           // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
           if (o.background.yieldRequested?.()) throw new Error('DISPATCH_ADMISSION_REJECTED:KEEPWARM_YIELDED');
           const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
@@ -685,6 +697,10 @@ export class TurnSupervisor {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
           return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+        }
+        if (o.background?.kind === 'keepwarm') {
+          const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
+          if (sleep.blocked) return { result: { outcome: 'completed', errorClassified: null, errorCode: sleep.code, errorMessage: '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
         }
         // S-06：心跳安全边界让位——用户消息到来后不再分派后续工具；已执行工具的
         // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：

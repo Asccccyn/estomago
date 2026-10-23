@@ -148,7 +148,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 <span>
                   <span className="block">心跳保温</span>
                   <span className="block text-[11.5px] text-[#8a8780]">
-                    {kw.scheduled ? `下次 ${fmtTime(kw.next_keepwarm_at)}（${kw.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）` : '暂无排程（无真实活动或未开启）'}
+                    {kw.blocked_reason === 'KEEPWARM_SLEEP_WINDOW' ? `睡眠时段暂停（${settings.keepwarm.sleep_window.start}–${settings.keepwarm.sleep_window.end}，${settings.keepwarm.sleep_window.timezone}）` : kw.blocked_reason === 'KEEPWARM_SLEEP_CONFIG_INVALID' ? '睡眠时段配置无效，心跳已暂停' : kw.scheduled ? `下次 ${fmtTime(kw.next_keepwarm_at)}（${kw.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）` : '暂无排程（无真实活动或未开启）'}
                   </span>
                 </span>
                 <input type="checkbox" checked={settings.keepwarm?.enabled === true} disabled={busy} onChange={() => void toggle('keepwarm')} />

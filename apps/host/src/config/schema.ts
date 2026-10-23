@@ -225,6 +225,7 @@ export type Config = {
       max_output_tokens_per_run: number;
       max_run_ms: number;
       daily_cost_cap_usd: number | null; // 与自主日预算独立
+      sleep_window: { enabled: boolean; start: string; end: string; timezone: string }; // 仅暂停心跳；不取消显式自主预约
     };
     reminders: {
       enabled: boolean; // 三开关之一：普通定时投递（不生成内容，不控制系统红点）
@@ -471,7 +472,7 @@ export const CONFIG_DEFAULTS: Config = {
       paid_tools_enabled: false,
       daily_cost_cap_usd: null,
     },
-    keepwarm: { enabled: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null },
+    keepwarm: { enabled: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null, sleep_window: { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' } },
     reminders: { enabled: true, delivery_grace_ms: 300000, default_local_time: '09:00' },
   },
   content: { enabled: false, port: 18788 },
@@ -606,6 +607,7 @@ const SHAPE: SectionSpec = { section: {
     keepwarm: { section: {
       enabled: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
       daily_cost_cap_usd: 'number?',
+      sleep_window: { section: { enabled: 'boolean', start: 'string', end: 'string', timezone: 'string' } },
     } },
     reminders: { section: {
       enabled: 'boolean', delivery_grace_ms: 'number', default_local_time: 'string',
@@ -739,6 +741,7 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
       const posInt = (v: number) => Number.isSafeInteger(v) && v >= 1;
       const posMs = (v: number) => Number.isFinite(v) && v > 0;
       const capOk = (v: number | null) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0);
+      const timezoneOk = (v: string) => { try { new Intl.DateTimeFormat('en-GB', { timeZone: v }).format(0); return v.length > 0; } catch { return false; } };
       const a = c.background.autonomous, k = c.background.keepwarm, r = c.background.reminders;
       const checks: Array<[boolean, string]> = [
         [posInt(a.max_model_requests_per_run), 'background.autonomous.max_model_requests_per_run 必须是 ≥1 的整数'],
@@ -749,6 +752,10 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
         [posInt(k.max_output_tokens_per_run), 'background.keepwarm.max_output_tokens_per_run 必须是 ≥1 的整数'],
         [posMs(k.max_run_ms), 'background.keepwarm.max_run_ms 必须为正数'],
         [capOk(k.daily_cost_cap_usd), 'background.keepwarm.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止保温付费，不是无限）'],
+        [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.start), 'background.keepwarm.sleep_window.start 必须是 HH:MM'],
+        [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.end), 'background.keepwarm.sleep_window.end 必须是 HH:MM'],
+        [k.sleep_window.start !== k.sleep_window.end, 'background.keepwarm.sleep_window.end 必须与 start 不同（无需睡眠门时设 enabled=false）'],
+        [timezoneOk(k.sleep_window.timezone), 'background.keepwarm.sleep_window.timezone 必须是有效 IANA 时区'],
         [posMs(r.delivery_grace_ms), 'background.reminders.delivery_grace_ms 必须为正数'],
         [/^([01]\d|2[0-3]):[0-5]\d$/.test(r.default_local_time), 'background.reminders.default_local_time 必须是 HH:MM（仅前端初值，API 仍须带完整 scheduled_at）'],
         [Number.isSafeInteger(c.content.port) && c.content.port >= 1 && c.content.port <= 65535, 'content.port 必须在 1..65535'],
