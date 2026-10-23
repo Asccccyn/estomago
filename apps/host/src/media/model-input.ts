@@ -22,6 +22,9 @@ export type RevisionAttachment = { asset_id: string; presentation: string; capti
  *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
  *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
  *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
+/** R3′（2026-10-23）：转写首页字数（按 UTF-8 3B/汉字上界 ≈7.4KB，留标注余量在 8192B 预算内） */
+export const TRANSCRIPT_PAGE_CHARS = 2400;
+
 export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null> } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const isCurrentInput = opts.isCurrentInput === true;
   const textOnly = opts.textOnly === true;
@@ -37,8 +40,15 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       const durText = typeof durMs === 'number' ? `${Math.round(durMs)}ms` : '时长未知';
       // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
       // 转写只在投影里出现一次（不进 message.content/attachment 双份）。
+      // R3′（2026-10-23）：长转写分页——首页 TRANSCRIPT_PAGE_CHARS 字内（UTF-8 ≤ ~7.4KB，
+      // 含标注在转写 8192B 预算内），未完部分用 transcript_read 续读（无 cursor=从头读）；
+      // 不静默截断、不拆出无法续读的摘要。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : ''}` });
+        const chars = [...a.derived_text];
+        const totalPages = Math.ceil(chars.length / TRANSCRIPT_PAGE_CHARS);
+        const firstPage = totalPages > 1 ? chars.slice(0, TRANSCRIPT_PAGE_CHARS).join('') : a.derived_text;
+        const moreHint = totalPages > 1 ? `\n[转写第 1/${totalPages} 页（共 ${chars.length} 字）；续读用 transcript_read（audio_ref="${audioRef}"，无 cursor 从头，翻页传上页 next_cursor）]` : '';
+        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${firstPage}${moreHint}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : ''}` });
       } else if (isCurrentInput === true && hearing) {
         // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
         blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n仅有原声；需声音证据时用 oido_analyze，取得证据前不推断内容或语气。` });

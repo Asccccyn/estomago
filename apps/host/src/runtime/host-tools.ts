@@ -625,6 +625,23 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      // R3′（2026-10-23）：长转写稳定续读——cursor 绑定 (asset, offset, 总字数)，
+      // 读取时按当前会话+活资产+可信转写复验（E10 同门），源变更如实报不静默重读
+      name: 'transcript_read',
+      description: '读取语音消息转写的下一页（长转写分页续读）。audio_ref 如 "est:<asset_id>"；首页可不带 cursor（从头读）；翻页带上页 next_cursor。源被删除或转写版本变化时如实报错，不静默重读。',
+      parameters: {
+        type: 'object',
+        properties: {
+          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
+          cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
+        },
+        required: ['audio_ref'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'identity_milestone_write',
       description: '维护你的《长期记忆里程碑》——一份完整文档，随开窗全文注入。内容一行一条（1.2.3.4. 依次编号，一个换行一条）。operation：read=读当前全文（带行号）；add=末尾加一条（text=一行内容）；revise=改第 item 条；remove=删第 item 条；write=整版替换（text=完整新版全文，通常不需要）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改说明 change_reason。',
       parameters: {
@@ -1326,6 +1343,42 @@ export class HostToolExecutor {
   }
 
   /** JOINT-VOICE-20261022：读深听结果（概览/逐字谱分页）。 */
+  // R3′（2026-10-23）：长转写分页续读——可信转写复验（会话+活资产+hash 绑定 join）+
+  // cursor (asset, offset, total) 校验；源变更=SOURCE_CHANGED 如实报，不静默重读新版本
+  private transcriptRead(args: { audio_ref: string; cursor?: string }, ctx: ToolExecContext): ToolExecResult {
+    const assetId = args.audio_ref.slice('est:'.length);
+    const row = this.db.prepare(
+      `SELECT t.derived_text, a.content_sha256 FROM voice_transcripts t JOIN media_assets a ON a.id = t.asset_id
+       WHERE t.asset_id = ? AND t.conversation_id = ? AND t.state = 'ready' AND t.content_sha256 = a.content_sha256 AND a.state = 'available'`,
+    ).get(assetId, ctx.roomId) as { derived_text: string; content_sha256: string } | undefined;
+    if (!row) return { ok: false, output: { error_code: 'TRANSCRIPT_NOT_FOUND', message: '本会话无此语音的可信转写（未就绪/已删除/不在本会话）' } };
+    const chars = [...row.derived_text];
+    let offset = 0;
+    if (args.cursor) {
+      let parsed: { a?: string; o?: number; n?: number };
+      try { parsed = JSON.parse(Buffer.from(args.cursor, 'base64url').toString('utf8')) as typeof parsed; } catch { return { ok: false, output: { error_code: 'TRANSCRIPT_CURSOR_INVALID' } }; }
+      const o = parsed.o;
+      if (parsed.a !== assetId || !Number.isInteger(o) || o === undefined || o < 0 || o > chars.length || parsed.n !== chars.length) {
+        return { ok: false, output: { error_code: 'TRANSCRIPT_SOURCE_CHANGED', message: '转写与游标不一致（源版本变化或游标过期）——请重读首页' } };
+      }
+      offset = o;
+    }
+    const TRANSCRIPT_PAGE_CHARS = 2400;
+    const pageText = chars.slice(offset, offset + TRANSCRIPT_PAGE_CHARS).join('');
+    const nextOffset = offset + [...pageText].length;
+    const done = nextOffset >= chars.length;
+    return {
+      ok: true,
+      output: {
+        audio_ref: args.audio_ref,
+        page_text: pageText,
+        page: Math.floor(offset / TRANSCRIPT_PAGE_CHARS) + 1,
+        total_pages: Math.ceil(chars.length / TRANSCRIPT_PAGE_CHARS),
+        ...(done ? {} : { next_cursor: Buffer.from(JSON.stringify({ a: assetId, o: nextOffset, n: chars.length }), 'utf8').toString('base64url') }),
+      },
+    };
+  }
+
   private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED'}};
     const binding=this.db.prepare('SELECT asset_id,content_sha256 FROM oido_source_bindings WHERE analysis_id=? AND conversation_id=?').get(args.analysis_id,ctx.roomId) as {asset_id:string;content_sha256:string}|undefined;
@@ -1424,7 +1477,7 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1455,6 +1508,7 @@ export class HostToolExecutor {
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'oido_analyze') return await this.oidoAnalyze(checked.value as { audio_ref: string; range_ms?: [number, number] }, ctx);
     if (name === 'oido_get') return await this.oidoGet(checked.value as { analysis_id: string; detail?: string; cursor?: string }, ctx);
+    if (name === 'transcript_read') return this.transcriptRead(checked.value as { audio_ref: string; cursor?: string }, ctx);
     if (name === 'media_search') return await this.mediaSearch(checked.value as { query: string; limit?: number }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
     if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx);
