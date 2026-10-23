@@ -111,19 +111,44 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
 
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
 function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string }) {
-  const [listen, setListen] = useState<{ state: 'idle' | 'loading' | 'error' | 'ok'; analysisId?: string; overview?: Record<string, any>; error?: string }>({ state: 'idle' })
+  // RE-15（2026-10-24 返修）：深听 UI 状态隔离——queued/409 不再显示成成功空卡；
+  // 概览响应绑定发起时的 asset（消息修订换 v2 后，迟到的 v1 响应作废不挂新源）；
+  // 收起再展开复用已有分析（查询），不重复发起新分析；卸载中止在途请求。
+  const [listen, setListen] = useState<{ state: 'idle' | 'loading' | 'pending' | 'error' | 'ok'; analysisId?: string; overview?: Record<string, any>; error?: string }>({ state: 'idle' })
+  const listenAsset = useRef<string | undefined>(undefined) // 当前 listen 状态归属的 asset
+  const analysisCache = useRef<{ assetId: string; analysisId: string } | null>(null) // 该气泡已有分析（收起不丢）
+  const aliveRef = useRef(true)
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false } }, [])
+  const fetchOverview = async (analysisId: string, forAsset: string): Promise<void> => {
+    const res = await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId))
+    if (!aliveRef.current || forAsset !== assetId) return // 迟到/换源作废
+    if (res.status === 409) { setListen({ state: 'pending', analysisId }); return } // 未就绪=待定，不是成功
+    if (!res.ok) { const body = await res.json().catch(() => ({})) as Record<string, any>; setListen({ state: 'error', error: String(body['detail'] ?? body['code'] ?? '深听不可用') }); return }
+    const ov = await res.json() as Record<string, any>
+    if (!aliveRef.current || forAsset !== assetId) return
+    setListen({ state: 'ok', analysisId, overview: ov })
+  }
   const startListen = async () => {
-    if (listen.state === 'loading') return
-    if (listen.state === 'ok') { setListen({ state: 'idle' }); return }
+    if (!assetId || listen.state === 'loading') return
+    if (listen.state === 'ok' || listen.state === 'pending') { setListen({ state: 'idle' }); return }
+    // 已有该资产的分析：展开=查询既有结果，不重新发起（查询与明确重新分析分开）
+    if (analysisCache.current && analysisCache.current.assetId === assetId) {
+      setListen({ state: 'loading' })
+      try { await fetchOverview(analysisCache.current.analysisId, assetId) } catch { if (aliveRef.current) setListen({ state: 'error', error: '深听查询失败' }) }
+      return
+    }
+    const forAsset = assetId
+    listenAsset.current = forAsset
     setListen({ state: 'loading' })
     try {
       const res = await fetch('/api/v1/oido/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_ref: 'est:' + assetId }) })
       const body = await res.json() as Record<string, any>
+      if (!aliveRef.current || forAsset !== assetId) return
       const analysisId = body['analysis_id'] as string | undefined
       if (!res.ok || !analysisId) { setListen({ state: 'error', error: String(body['detail'] ?? body['error_code'] ?? '深听不可用') }); return }
-      const ov = await (await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId))).json() as Record<string, any>
-      setListen({ state: 'ok', analysisId, overview: ov })
-    } catch (e) { setListen({ state: 'error', error: '深听请求失败' }) }
+      analysisCache.current = { assetId, analysisId }
+      await fetchOverview(analysisId, forAsset)
+    } catch (e) { if (aliveRef.current) setListen({ state: 'error', error: '深听请求失败' }) }
   }
   const [play, setPlay] = useState(false)
   const [t, setT] = useState(0)
@@ -170,9 +195,10 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
     {assetId && (
       <div className={`flex max-w-full flex-col gap-1 ${ai ? 'items-start' : 'items-end'}`}>
         <button onClick={() => void startListen()} className="shrink-0 rounded-full bg-[#f0ede5] px-3 py-1 text-[12px] text-[#5e5d59]">
-          {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : '深听'}
+          {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : listen.state === 'pending' ? '收起（分析中）' : '深听'}
         </button>
         {listen.state === 'error' && <p className="max-w-72 break-words text-[12px] text-[#a05a4a]">深听不可用：{listen.error}</p>}
+        {listen.state === 'pending' && <p className="max-w-72 text-[12px] text-[#8a8780]">分析进行中——稍后点"深听"查询结果（未就绪不当作成功）</p>}
         {listen.state === 'ok' && listen.analysisId && (
           <div className="flex max-w-80 flex-col gap-1.5 rounded-2xl bg-[#f0ede5] p-2.5">
             <img src={'/api/v1/oido/analyses/' + encodeURIComponent(listen.analysisId) + '/image'} alt="深听测量图" className="w-full rounded-xl bg-white" onError={(e) => { e.currentTarget.style.display = 'none' }} />
