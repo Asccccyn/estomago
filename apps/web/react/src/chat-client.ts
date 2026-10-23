@@ -502,6 +502,8 @@ export class EstomagoClient {
     a.busy=true;a.status='uploading';this.patch({attachments:[...this.snapshot.attachments]})
     try{
       if(!a.assetId){const asset=await this.request('/assets?purpose='+(a.kind==='voice'?'chat_voice':'chat_image'),{method:'POST',headers:{'Content-Type':'application/octet-stream','Idempotency-Key':a.operationId},body:a.file});a.assetId=asset.asset_id}
+      // Removing an upload invalidates the draft; a late upload receipt must not start paid ASR.
+      if(!this.snapshot.attachments.includes(a))return
       if(a.kind==='voice'){
         a.status='transcribing';this.patch({attachments:[...this.snapshot.attachments]})
         a.transcriptionId??=operationId()

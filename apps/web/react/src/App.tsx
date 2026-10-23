@@ -212,6 +212,20 @@ export default function App() {
   const { client, state, rec, recSecs, recPaused, startRec, stopRec, pauseRec, onPick, copy } = useEstomago()
   // JOINT-VOICE（04）：录音前暂停本应用全部语音播放——不把char外放录进去
   const previewAudio = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => {
+    const stopPreview = () => {
+      const audio = previewAudio.current
+      if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); previewAudio.current = null }
+    }
+    window.addEventListener('pagehide', stopPreview)
+    return () => { stopPreview(); window.removeEventListener('pagehide', stopPreview) }
+  }, [])
+  useEffect(() => {
+    const audio = previewAudio.current
+    if (audio && !state.attachments.some(a => a.assetId === audio.dataset.assetId)) {
+      audio.pause(); audio.removeAttribute('src'); audio.load(); previewAudio.current = null
+    }
+  }, [state.attachments])
   const pauseAllVoice = () => {
     document.querySelectorAll('audio').forEach(el => el.pause())
     previewAudio.current?.pause()
