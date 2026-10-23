@@ -36,6 +36,7 @@ import { MediaService } from './media/assets.ts';
 import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
+import { runMediaBackfillTick } from './media/index/backfill.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -68,6 +69,11 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  /** R8′（2026-10-23）：媒体索引后台补全——独立定时器/单飞门/批次中止（不经调度器与会话串行链） */
+  private mediaBackfillTimer: ReturnType<typeof setInterval> | null = null;
+  private mediaBackfillTicking = false;
+  private mediaBackfillAbort: AbortController | null = null;
+  private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
@@ -98,6 +104,7 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
     this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
@@ -308,6 +315,7 @@ export class Host {
       media,
       bgSettings,
       scheduler,
+      mediaIndex: mediaIndex ?? undefined,
       bgExecutorReady,
       taskService,
       activity,
@@ -348,12 +356,30 @@ export class Host {
     });
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
+    // R8′（2026-10-23）：媒体索引后台补全——独立任务边界（不经调度器/会话串行链：
+    // scheduler 的模型执行经 enqueueBackground 进 runSerialized，搬进去只是换入口排队）。
+    // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
+    this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
+    this.mediaBackfillTimer.unref?.();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
+  /** R8′（2026-10-23）：后台补索引一跳——单飞+独立中止（逻辑在 media/index/backfill.ts） */
+  private async mediaBackfillTick(): Promise<void> {
+    if (this.mediaBackfillTicking) return;
+    const mediaIndex = this.mediaIndexRef;
+    if (!mediaIndex) return;
+    this.mediaBackfillTicking = true;
+    this.mediaBackfillAbort = new AbortController();
+    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal); }
+    finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
+  }
+
   async stop(): Promise<void> {
+    if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
+    this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代

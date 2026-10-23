@@ -1323,19 +1323,15 @@ export class HostToolExecutor {
       const fingerprint=await this.mediaIndex.workerFingerprint(signal);
       signal?.throwIfAborted();
       if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
+      // R8′（2026-10-23）：检索路径不再前台补索引——此前工具内顺序 await ≤200 图，
+      // 长期占住同会话串行链；补索引移至 app-context 独立循环（media/index/backfill.ts，
+      // ≤5 图/跳）。检索不完整与 no_match 分开如实报：pending>0 = coverage:'incomplete'。
       const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
-      const indexing=signal;
-      let indexed=0;
-      for(const assetId of pending.slice(0,200)) {
-        if(indexing?.aborted)break;
-        try {if((await this.mediaIndex.indexImage(assetId,indexing)).indexed)indexed++;}
-        catch {if(indexing?.aborted)break;}
-      }
       signal?.throwIfAborted();
       const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal);
       signal?.throwIfAborted();
       const out:Record<string,unknown>={...result};
-      if(indexed<pending.length)out.coverage='incomplete';
+      if(pending.length>0){out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';}
       return {ok:true,output:out};
     }catch {
       return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':'MEDIA_WORKER_UNAVAILABLE'}};

@@ -166,6 +166,22 @@ export class MediaIndexService {
 
   /** 索引覆盖面（诊断/后台补索引用；不是检索路径）。
    *  namespace 给定时只认当前指纹缺行——异版本残留行不算"已索引"（M02）。 */
+  /** R8′（2026-10-23）：有待索引图片的房间清单（后台补索引循环用；非检索路径）。
+   *  独立任务边界：本循环不经 BackgroundScheduler/enqueueBackground（那会进同会话
+   *  runSerialized 串行链——前台阻塞只是换了入口）；纯本地 worker HTTP 调用，无模型执行。 */
+  roomsWithUnindexedImages(namespace?: string): string[] {
+    const notIndexed = namespace
+      ? 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256 AND e.namespace = ?)'
+      : 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256)';
+    return (this.db.prepare(
+      `SELECT DISTINCT m.conversation_id FROM message_attachments ma
+       JOIN messages m ON m.id = ma.message_id AND m.current_revision = ma.revision
+       JOIN media_assets a ON a.id = ma.asset_id
+       WHERE ma.presentation IN ('image','sticker') AND a.state = 'available'
+         ${notIndexed}`,
+    ).all(...(namespace ? [namespace] : [])) as Array<{ conversation_id: string }>).map((r) => r.conversation_id);
+  }
+
   unindexedImagesInRoom(roomId: string, namespace?: string): string[] {
     const notIndexed = namespace
       ? 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256 AND e.namespace = ?)'
