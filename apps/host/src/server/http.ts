@@ -69,6 +69,7 @@ export type RequestDeps = {
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
+  tools?: import('../runtime/host-tools.ts').HostToolExecutor; // R5：深听 UI 端点（会话绑定同门）
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
   taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
   activity?: import('../runtime/wake-activity.ts').ConversationActivityService; // WAKE_KEEPWARM_V1：活动投影/保温状态派生
@@ -404,6 +405,32 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId) });
     }
 
+    // R5（2026-10-23）：深听 UI 端点——同 oido_analyze/oido_view 工具门（会话绑定+活资产复验）
+    const oidoUiAnalyze = /^POST \/api\/v1\/oido\/analyze$/.exec(route);
+    if (oidoUiAnalyze) {
+      if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
+      const body = (await readJson(req, d)) as Record<string, unknown> | null;
+      if (!body || typeof body['audio_ref'] !== 'string') return json(res, 422, { error: { code: 'bad_request', message: 'audio_ref 必填' } });
+      const out = await d.tools.execute('oido_analyze', { audio_ref: body['audio_ref'] }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
+      return json(res, out.ok ? 200 : (out.output as { error_code?: string })['error_code'] === 'OIDO_UNAVAILABLE' ? 503 : 422, out.output);
+    }
+    const oidoUiView = /^GET \/api\/v1\/oido\/analyses\/([^/]+)$/.exec(route);
+    if (oidoUiView) {
+      if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
+      const out = await d.tools.execute('oido_get', { analysis_id: decodeURIComponent(oidoUiView[1]!) }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
+      if (!out.ok) return json(res, 422, out.output);
+      return json(res, 200, out.output);
+    }
+    const oidoUiImage = /^GET \/api\/v1\/oido\/analyses\/([^/]+)\/image$/.exec(route);
+    if (oidoUiImage) {
+      if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
+      const out = await d.tools.execute('oido_view', { analysis_id: decodeURIComponent(oidoUiImage[1]!) }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
+      if (!out.ok) return json(res, 422, out.output);
+      const png = Buffer.from(String((out.output as Record<string, unknown>)['image_base64']), 'base64');
+      res.writeHead(200, { 'Content-Type': String((out.output as Record<string, unknown>)['image_mime'] ?? 'image/png') });
+      res.end(png);
+      return;
+    }
     // R4（2026-10-23）：voice ingress（Siren CoreBridge → est 同窗电话入口）
     if (route === 'POST /v1/chat/stream') {
       return await handleVoiceChatStream(req, res, d);

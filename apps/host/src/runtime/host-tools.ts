@@ -642,6 +642,63 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      // R5（2026-10-23）：补齐 oído 六工具 façade（此前仅 analyze/get）
+      name: 'oido_capabilities',
+      description: '查看 oído 声学分析服务当前能力状态（各分面开关）。仅诊断用。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'oido_view',
+      description: '读取深听结果的测量图（波形+基频 PNG）。返回 base64 图与元数据；原生图块直送主模型的运输路径尚未接通（如实声明），图主要供界面展示。',
+      parameters: {
+        type: 'object',
+        properties: {
+          analysis_id: { type: 'string', minLength: 1, maxLength: 128 },
+          range_ms: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+        },
+        required: ['analysis_id'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'oido_find',
+      description: '在已分析的语音转写文字里找匹配片段（转写文字匹配，不是音频语义检索）。返回区间毫秒与命中文本；未对齐/无转写如实报。',
+      parameters: {
+        type: 'object',
+        properties: {
+          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$' },
+          query: { type: 'string', minLength: 1, maxLength: 200 },
+          mode: { type: 'string', enum: ['substring', 'fuzzy'] },
+          limit: { type: 'integer', minimum: 1, maximum: 10 },
+          cursor: { type: 'string', minLength: 8, maxLength: 200 },
+        },
+        required: ['audio_ref', 'query'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'oido_compare',
+      description: '对比两次深听分析的声学测量（音高/时长等）。无已批准个人基线时明确 unavailable，不做"比平时"类判断。',
+      parameters: {
+        type: 'object',
+        properties: {
+          left: { type: 'object', properties: { audio_ref: { type: 'string' } }, required: ['audio_ref'], additionalProperties: false },
+          right: { type: 'object', properties: { audio_ref: { type: 'string' } }, required: ['audio_ref'], additionalProperties: false },
+        },
+        required: ['left', 'right'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'identity_milestone_write',
       description: '维护你的《长期记忆里程碑》——一份完整文档，随开窗全文注入。内容一行一条（1.2.3.4. 依次编号，一个换行一条）。operation：read=读当前全文（带行号）；add=末尾加一条（text=一行内容）；revise=改第 item 条；remove=删第 item 条；write=整版替换（text=完整新版全文，通常不需要）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改说明 change_reason。',
       parameters: {
@@ -1387,6 +1444,73 @@ export class HostToolExecutor {
     };
   }
 
+  /** R5（2026-10-23）：oído 六工具 façade 补齐——capabilities/view/find/compare。
+   *  view/find/compare 与 get 同门：analysis/源必须绑定当前会话（oidoSourceAllowed），
+   *  前后复验；view 的原生图块直送主模型尚未接通（如实声明，图供界面）。 */
+  private async oidoCapabilities(ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入' } };
+    try {
+      const caps = await this.oido.capabilities();
+      return { ok: true, output: caps as unknown as Record<string, unknown> };
+    } catch { return { ok: false, output: { error_code: 'OIDO_UNAVAILABLE' } }; }
+  }
+
+  private oidoAnalysisAllowed(analysisId: string, ctx: ToolExecContext): boolean {
+    const binding = this.db.prepare('SELECT asset_id,content_sha256 FROM oido_source_bindings WHERE analysis_id=? AND conversation_id=?').get(analysisId, ctx.roomId) as { asset_id: string; content_sha256: string } | undefined;
+    return Boolean(binding && this.oidoSourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256));
+  }
+
+  private async oidoView(args: { analysis_id: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    if (!this.oidoAnalysisAllowed(args.analysis_id, ctx)) return { ok: false, output: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听' } };
+    try {
+      ctx.signal?.throwIfAborted();
+      const view = await this.oido.getView(args.analysis_id, args.range_ms, ctx.signal);
+      ctx.signal?.throwIfAborted();
+      if (!this.oidoAnalysisAllowed(args.analysis_id, ctx)) return { ok: false, output: { error_code: 'ANALYSIS_NOT_IN_ROOM' } };
+      // 模型面：元数据+图 base64（预算门：图不入普通 JSON 投影的常规路径，超预算如实报）
+      const out = { ...view.metadata, image_base64: view.pngBase64, image_mime: view.mime, note: '测量图；原生图块直送主模型的运输路径未接通' };
+      const bytes = Buffer.byteLength(JSON.stringify(out), 'utf8');
+      if (bytes > 16384) return { ok: false, output: { error_code: 'OIDO_VIEW_OVER_BUDGET', detail: `测量图 ${bytes}B 超 16384B 投影预算` } };
+      return { ok: true, output: out };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };
+      return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 40) || 'OIDO_FAILED' } };
+    }
+  }
+
+  private async oidoFind(args: { audio_ref: string; query: string; mode?: string; limit?: number; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
+    if (!m) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID' } };
+    const sha = (this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(m[1]!) as { content_sha256: string } | undefined)?.content_sha256;
+    if (!sha || !this.oidoSourceAllowed(m[1]!, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM' } };
+    try {
+      const result = await this.oido.find({ audioRef: args.audio_ref, query: args.query, mode: args.mode, limit: args.limit, cursor: args.cursor, signal: ctx.signal });
+      return { ok: true, output: result };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };
+      return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 60) || 'OIDO_FAILED' } };
+    }
+  }
+
+  private async oidoCompare(args: { left: { audio_ref: string }; right: { audio_ref: string } }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    for (const side of [args.left, args.right]) {
+      const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(side.audio_ref ?? '');
+      if (!m) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID' } };
+      const sha = (this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(m[1]!) as { content_sha256: string } | undefined)?.content_sha256;
+      if (!sha || !this.oidoSourceAllowed(m[1]!, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM' } };
+    }
+    try {
+      const result = await this.oido.compare({ left: { audio_ref: args.left.audio_ref }, right: { audio_ref: args.right.audio_ref }, signal: ctx.signal });
+      return { ok: true, output: result };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };
+      return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 60) || 'OIDO_FAILED' } };
+    }
+  }
+
   private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED'}};
     const binding=this.db.prepare('SELECT asset_id,content_sha256 FROM oido_source_bindings WHERE analysis_id=? AND conversation_id=?').get(args.analysis_id,ctx.roomId) as {asset_id:string;content_sha256:string}|undefined;
@@ -1485,7 +1609,7 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1517,6 +1641,10 @@ export class HostToolExecutor {
     if (name === 'oido_analyze') return await this.oidoAnalyze(checked.value as { audio_ref: string; range_ms?: [number, number] }, ctx);
     if (name === 'oido_get') return await this.oidoGet(checked.value as { analysis_id: string; detail?: string; cursor?: string }, ctx);
     if (name === 'transcript_read') return this.transcriptRead(checked.value as { audio_ref: string; cursor?: string }, ctx);
+    if (name === 'oido_capabilities') return await this.oidoCapabilities(ctx);
+    if (name === 'oido_view') return await this.oidoView(checked.value as { analysis_id: string; range_ms?: [number, number] }, ctx);
+    if (name === 'oido_find') return await this.oidoFind(checked.value as { audio_ref: string; query: string; mode?: string; limit?: number; cursor?: string }, ctx);
+    if (name === 'oido_compare') return await this.oidoCompare(checked.value as { left: { audio_ref: string }; right: { audio_ref: string } }, ctx);
     if (name === 'media_search') return await this.mediaSearch(checked.value as { query: string; limit?: number }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
     if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx);

@@ -109,7 +109,21 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
 }
 
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
-function VoiceBar({ dur, text, ai, src }: { dur?: number; text: string; ai?: boolean; src?: string }) {
+function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string }) {
+  const [listen, setListen] = useState<{ state: 'idle' | 'loading' | 'error' | 'ok'; analysisId?: string; overview?: Record<string, any>; error?: string }>({ state: 'idle' })
+  const startListen = async () => {
+    if (listen.state === 'loading') return
+    if (listen.state === 'ok') { setListen({ state: 'idle' }); return }
+    setListen({ state: 'loading' })
+    try {
+      const res = await fetch('/api/v1/oido/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_ref: 'est:' + assetId }) })
+      const body = await res.json() as Record<string, any>
+      const analysisId = body['analysis_id'] as string | undefined
+      if (!res.ok || !analysisId) { setListen({ state: 'error', error: String(body['detail'] ?? body['error_code'] ?? '深听不可用') }); return }
+      const ov = await (await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId))).json() as Record<string, any>
+      setListen({ state: 'ok', analysisId, overview: ov })
+    } catch (e) { setListen({ state: 'error', error: '深听请求失败' }) }
+  }
   const [play, setPlay] = useState(false)
   const [t, setT] = useState(0)
   const [duration, setDuration] = useState<number | null>(dur ?? null)
@@ -151,6 +165,27 @@ function VoiceBar({ dur, text, ai, src }: { dur?: number; text: string; ai?: boo
       <p className={`max-w-full break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${ai ? 'pl-1' : 'pr-1 text-right'}`}>
         {text.slice(0, shown)}{shown < text.length && <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-[#8a8780] align-middle" />}
       </p>
+    )}
+    {assetId && (
+      <div className={`flex max-w-full flex-col gap-1 ${ai ? 'items-start' : 'items-end'}`}>
+        <button onClick={() => void startListen()} className="shrink-0 rounded-full bg-[#f0ede5] px-3 py-1 text-[12px] text-[#5e5d59]">
+          {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : '深听'}
+        </button>
+        {listen.state === 'error' && <p className="max-w-72 break-words text-[12px] text-[#a05a4a]">深听不可用：{listen.error}</p>}
+        {listen.state === 'ok' && listen.analysisId && (
+          <div className="flex max-w-80 flex-col gap-1.5 rounded-2xl bg-[#f0ede5] p-2.5">
+            <img src={'/api/v1/oido/analyses/' + encodeURIComponent(listen.analysisId) + '/image'} alt="深听测量图" className="w-full rounded-xl bg-white" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+            <ul className="flex flex-col gap-0.5 text-[12px] leading-[1.5] text-[#5e5d59]">
+              {(Array.isArray(listen.overview?.['observations']) ? listen.overview!['observations'] : []).slice(0, 6).map((o: Record<string, any>, i: number) => (
+                <li key={i}>{String(o['kind'] ?? '观察')}：{o['value'] == null ? String(o['reason'] ?? '不可用') : `${o['value']}${o['unit'] ? ' ' + o['unit'] : ''}（${String(o['quality'] ?? '')}）`}</li>
+              ))}
+            </ul>
+            {Array.isArray(listen.overview?.['limits']) && listen.overview!['limits'].length > 0 && (
+              <p className="text-[11px] leading-[1.4] text-[#8a8780]">限制：{listen.overview!['limits'].map(String).join('；')}</p>
+            )}
+          </div>
+        )}
+      </div>
     )}
     </div>
   )
@@ -199,7 +234,8 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
 
 function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
   if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
-  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} />
+  const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
+  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} />
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />

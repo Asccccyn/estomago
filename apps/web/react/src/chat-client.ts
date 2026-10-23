@@ -428,7 +428,10 @@ export class EstomagoClient {
       this.patch({draftEstimate:data.estimate??null})
     } catch {/* Estimates must not gate sending. */}
   }
-  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&!this.historyFetching()&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.snapshot.attachments.some(a=>a.status==='ready')}))}
+  // R5（2026-10-23）：无转写语音可发——ASR failed/uncertain 的语音附件照常发送（服务端
+  // 持可信状态：无转写走按需深听路径；unknown 绝不自动重放转写防双收费）。图片仍须 ready。
+  private sendableAttachments = () => this.snapshot.attachments.filter(a => a.kind !== 'voice' ? a.status === 'ready' : a.status !== 'uploading' && a.status !== 'transcribing' && Boolean(a.assetId))
+  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&!this.historyFetching()&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.sendableAttachments().length>0}))}
   send = async () => {
     if(!this.canSend)return
     const draft=this.snapshot.draft
@@ -438,7 +441,7 @@ export class EstomagoClient {
       return
     }
     if(!this.pending||(draft!==''&&draft!==this.pending.draft)){
-      const id=operationId(),entries=this.snapshot.attachments.filter(a=>a.status==='ready')
+      const id=operationId(),entries=this.sendableAttachments()
       const body:Json=buildOutgoingDraft(draft,id)
       if(entries.length){delete body.kind;body.attachments=entries.map(a=>({asset_id:a.assetId,presentation:a.kind}))}
       this.pending={id,draft,revision:this.draftRevision,entries,body}

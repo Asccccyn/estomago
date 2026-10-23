@@ -41,7 +41,9 @@ export function useEstomago() {
     r.starting=true;const generation=++r.generation
     try{
       pausedRef.current=false;setRecPaused(false)
-      if(!await client.voiceAvailable()||generation!==r.generation)return
+      // R5（2026-10-23）：录音门禁=输入设备可用（不再绑死 Siren 转写可用性）——ASR 失败的
+    // 语音仍可录制并发送，服务端按需深听；Siren 不可用只影响转写不影响录音
+    if(generation!==r.generation)return
       const mime=['audio/mp4','audio/webm;codecs=opus','audio/webm','audio/ogg;codecs=opus'].find(t=>MediaRecorder.isTypeSupported(t))
       if(!mime){client.notify('当前浏览器没有可用录音格式');return}
       const stream=await navigator.mediaDevices.getUserMedia({audio:true})

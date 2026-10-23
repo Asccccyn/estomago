@@ -132,6 +132,29 @@ export class OidoAdapter {
   }
 
   /** 能力探测（匿名面）：给后台/诊断用，不进发送关键路径。 */
+  /** R5（2026-10-23）：view——测量图 PNG + 元数据（MCP 原生 ImageContent 的 HTTP 面）。 */
+  async getView(analysisId: string, rangeMs?: [number, number], signal?: AbortSignal): Promise<{ mime: string; pngBase64: string; metadata: Record<string, unknown> }> {
+    let res: Response;
+    try {
+      const q = rangeMs ? `?range_ms=${rangeMs[0]},${rangeMs[1]}` : '';
+      res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}/view${q}`, { redirect: 'error', headers: this.headers(), signal: lifetime(signal, 8000) });
+    } catch { throw new Error('OIDO_UNAVAILABLE'); }
+    if (!res.ok) throw new Error('OIDO_VIEW_UNAVAILABLE');
+    const mime = res.headers.get('content-type') ?? 'image/png';
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { mime, pngBase64: buf.toString('base64'), metadata: { analysis_id: analysisId, ...(rangeMs ? { range_ms: rangeMs } : {}) } };
+  }
+
+  /** R5：find——转写文字匹配（非语义检索，如实命名）。 */
+  async find(args: { audioRef: string; query: string; mode?: string; limit?: number; cursor?: string; signal?: AbortSignal }): Promise<Record<string, unknown>> {
+    return await this.postJson('/v1/find', { audio_ref: args.audioRef, query: args.query, mode: args.mode ?? 'substring', limit: args.limit ?? 3, ...(args.cursor ? { cursor: args.cursor } : {}) }, args.signal, 8000);
+  }
+
+  /** R5：compare——两分析测量对比（无个人基线=如实 unavailable）。 */
+  async compare(args: { left: Record<string, unknown>; right: Record<string, unknown>; metrics?: string[]; signal?: AbortSignal }): Promise<Record<string, unknown>> {
+    return await this.postJson('/v1/compare', { left: args.left, right: args.right, ...(args.metrics ? { metrics: args.metrics } : {}) }, args.signal, 8000);
+  }
+
   async capabilities(): Promise<{ ok: boolean; flags?: Record<string, boolean> }> {
     try {
       const res = await fetch(`${this.baseUrl}/v1/capabilities`, { signal: AbortSignal.timeout(2500) });
@@ -141,6 +164,18 @@ export class OidoAdapter {
     } catch {
       return { ok: false };
     }
+  }
+
+  private async postJson(path: string, body: Record<string, unknown>, signal: AbortSignal | undefined, timeout: number): Promise<Record<string, unknown>> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, { redirect: 'error', method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }), body: JSON.stringify(body), signal: lifetime(signal, timeout) });
+    } catch { throw new Error('OIDO_UNAVAILABLE'); }
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      throw new Error(`OIDO_${res.status}:${errBody.slice(0, 80)}`);
+    }
+    return await res.json() as Record<string, unknown>;
   }
 }
 

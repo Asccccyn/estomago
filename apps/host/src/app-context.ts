@@ -322,6 +322,7 @@ export class Host {
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
       oido: oido ?? undefined,
+      tools,
       bgExecutorReady,
       taskService,
       activity,
