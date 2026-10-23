@@ -1,28 +1,38 @@
 # media-embedding worker（est 归属）
 
-联合施工 JOINT-VOICE-20261022（07）：EmbeddingGemma 2 的代码与部署归属 estómago，
-作为隔离的本地媒体推理 worker。est 用它做图片语义检索；oído 只在需要声音语义检索时
-才调用它。worker 不读聊天数据库、不管会话、不回调任何上层，故障不拖电话。
+本地叶子编码进程：只接文本/图片字节并返回向量，不读聊天库、不回调宿主、不抓取 URL。
+业务资产权限、索引、删除失效归 est 的 `apps/host/src/media/index/service.ts`。
 
-## 现状（如实）
-- backend = **fake**：确定性哈希向量（768 维 L2），供合同/管线离线验证。
-- **真实 google/embeddinggemma-2 权重未下载**（未获批准）——模型效果 = NOT_EXECUTED；
-  接真实后端时：独立 venv、依赖锁、模型 revision 与预处理配置锁、内存预算后启用。
-- 中文文字记忆检索仍走 Mariposa 的 Qwen3-Embedding-4B（不迁移、不混库、不同空间不比较）。
+## 后端与证据边界
 
-## 运行
+- 必须显式设置 `EG2_BACKEND=eg2` 或测试专用 `EG2_BACKEND=fake`；缺失/拼错配置退出。
+- `fake` 仅 `ESTOMAGO_TEST_MODE=1` 可启用；哈希向量没有语义能力。
+- `eg2` 使用 `google/embeddinggemma-2`，仅加载文本与图像（`audio_config=None`），不提供音频编码。
+- 默认锁定现场已有权重 revision `914f7f89142e33e77833254d9c9b90c3cef7303b`；显式 `EG2_REVISION` 必须为完整40位提交。`local_files_only=True`，禁止 remote code，缺权重退出，不下载、不退回 fake。
+- 指纹包含实际传入加载器的完整 revision、text-image profile、查询预处理版本、768维和 L2；不同指纹分索引，不原地混写旧向量。
+- `requirements-eg2.lock` 是已有依赖版本清单。锁定权重不等于评测效果；本轮未执行真实中文 Recall/nDCG、音频或 Qwen 对照，不宣称语义质量。
+- 2026-10-23 审计只读见运行 worker 自报 eg2 与上述 revision 前12位；缓存 config 确有相同完整 revision。审计未重新加载重模型，旧运行进程尚未加载此修复。
+
+## 隔离运行
+
+```sh
+EG2_BACKEND=fake ESTOMAGO_TEST_MODE=1 python3 worker.py --port 18792
+# 已有缓存/依赖、获准启动真实模型时：
+EG2_BACKEND=eg2 python3 worker.py --port 8792
+python3 test_worker_contract.py
 ```
-python3 worker.py --port 8792
-```
-stdlib only（无第三方依赖）。只绑回环。worker 停止时：图片直看、文字聊天、录音、
-oído 韵律、电话全部不受影响（宿主侧能力单独降级 unavailable）。
 
-## 端点
-- `GET /health` → `{ok, backend, fingerprint}`；fingerprint 含 model/revision/preprocess/dims/norm
-- `POST /v1/embed`（JSON）→ 向量 float32 小端 base64；items ≤16；体 ≤64MB；并发由宿主侧队列控制
+只允许回环绑定。配置 `MEDIA_WORKER_TOKEN_FILE` 时强制非空有效 token 文件；文件缺失/为空即失败，不静默关闭认证。
 
-## 边界（07）
-- worker 只编码；业务索引（候选→资产映射、权限过滤、删除失效）在 est 宿主的
-  `apps/host/src/media/index/` 持有——共享模型不等于共享素材与权限。
-- 不提供图片解说/语气分析/OCR：模型说"图里是什么"时走 est 既有真实视觉输入；
-  索引只帮助找原图。
+## 协议与资源
+
+- `GET /health`：backend、modalities（text/image）和指纹；健康是运维响应，不进入主模型。
+- `POST /v1/embed`：items 1–16，64MiB 请求上限、文本100KB；返回float32小端base64，仅服务间使用。
+- 单在途请求、忙时503，没有无界等待队列；socket 30秒超时；图像最多4000万像素。
+- Node宿主取消会中止HTTP请求并阻止迟到向量写库。已开始的本地模型计算不能据此承诺立即被内核抢占。
+- 图片检索仅返回候选引用。精确视觉理解仍须走现有原图输入，不能以候选替代OCR、数量或关系判断。
+- 中文文字记忆检索保留 Mariposa Qwen3-Embedding-4B；没有同域评测证据，不启用双模型全跑或混向量。
+
+## 清理与状态
+
+2026-10-23 独立审计修复：拒绝非法/fake生产配置、离线固定加载、拒绝错误维度与非有限向量、token配置失败关闭、并发限额；索引结果在取消/删除/源变更后禁止写回。修复仅隔离工作树，未部署。
