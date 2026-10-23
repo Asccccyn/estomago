@@ -1,3 +1,4 @@
+import { oidoModelView } from '../integrations/oido/model-view.ts';
 import { modelResult, modelFailure, candidates as whitelistCandidates } from './model-results.ts';
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
@@ -892,6 +893,7 @@ export type SeenRef = { id: string; revision: number; char_start?: number; char_
 // 只放行落在已读范围内的匹配；整条装配（对话轨迹）不带范围=全文已见。
 
 export type ToolExecContext = {
+  signal?: AbortSignal; // Host-owned cancellation, never a model parameter.
   roomId: string;
   backgroundRunId?: string | null; // EXEC_V1 §04.6.2：后台回合上下文（background_complete/noop 记账用）
   windowId: string;
@@ -1251,15 +1253,22 @@ export class HostToolExecutor {
   /** JOINT-VOICE-20261022（04 按需深听）：宿主完成权限核验与受信本地导入后转发 oído。
    *  模型只能引用当前会话可达的语音资产（audio_ref=est:<asset_id>）；跨会话/未绑定
    *  资产一律拒绝——不因"模型报了个 asset_id"就放行（09 授权边界）。 */
+  private oidoSourceAllowed(assetId: string, roomId: string, sha?: string): boolean {
+    const row = this.db.prepare(`SELECT a.content_sha256 FROM media_assets a
+      JOIN message_attachments ma ON ma.asset_id=a.id
+      JOIN messages msg ON msg.id=ma.message_id AND msg.current_revision=ma.revision
+      WHERE a.id=? AND a.state='available' AND ma.presentation='voice'
+        AND msg.conversation_id=? LIMIT 1`).get(assetId,roomId) as {content_sha256:string}|undefined;
+    return Boolean(row && (sha===undefined || sha===row.content_sha256));
+  }
+
   private async oidoAnalyze(args: { audio_ref: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入（能力缺口，如实拒绝）' } };
     const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
     if (!m) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'audio_ref 必须形如 est:<asset_id>' } };
     const assetId = m[1];
     // 会话可达性：资产必须绑定本会话某条消息（她发的或char发的语音都算）
-    const bound = this.db.prepare(
-      "SELECT 1 FROM message_attachments ma JOIN messages msg ON msg.id = ma.message_id WHERE ma.asset_id = ? AND ma.presentation = 'voice' AND msg.conversation_id = ? LIMIT 1",
-    ).get(assetId, ctx.roomId);
+    const bound = this.oidoSourceAllowed(assetId,ctx.roomId);
     if (!bound) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM', detail: '该语音不属于当前会话' } };
     try {
       const { bytes, mime } = this.media.readContent(assetId);
@@ -1267,10 +1276,18 @@ export class HostToolExecutor {
       if (!row) return { ok: false, output: { error_code: 'ASSET_NOT_FOUND' } };
       const vt = this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND state = 'ready'").get(assetId) as { derived_text: string; derived_source: string } | undefined;
       const transcript = vt?.derived_text ? { text: vt.derived_text, source: vt.derived_source ?? 'siren:transcribe' } : null;
-      await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript });
-      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000 });
-      return { ok: true, output: result as unknown as Record<string, unknown> };
+      ctx.signal?.throwIfAborted();
+      await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript, signal:ctx.signal });
+      ctx.signal?.throwIfAborted();
+      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
+      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, signal:ctx.signal });
+      ctx.signal?.throwIfAborted();
+      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
+      const output=oidoModelView(result as unknown as Record<string,unknown>);
+      this.db.prepare('INSERT OR REPLACE INTO oido_source_bindings(analysis_id,conversation_id,asset_id,content_sha256) VALUES (?,?,?,?)').run(String(output.analysis_id),ctx.roomId,assetId,row.content_sha256);
+      return { ok: true, output };
     } catch (err) {
+      if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
       const msg = String((err as Error).message ?? err);
       if (msg.startsWith('OIDO_UNAVAILABLE')) return { ok: false, output: { error_code: 'OIDO_UNAVAILABLE', detail: 'oído 服务当前不可达；稍后可用 oido_analyze 重试' } };
       return { ok: false, output: { error_code: msg.slice(0, 40) || 'OIDO_FAILED', detail: msg.slice(0, 200) } };
@@ -1281,44 +1298,53 @@ export class HostToolExecutor {
    *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
   private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
-    const fingerprint = await this.mediaIndex.workerFingerprint();
-    if (fingerprint === null) return { ok: false, output: { error_code: 'MEDIA_WORKER_UNAVAILABLE', detail: '媒体编码服务不可用；文字聊天不受影响' } };
-    const unindexed = this.mediaIndex.unindexedImagesInRoom(ctx.roomId, fingerprint).slice(0, 200);
-    let failed = 0;
-    for (const assetId of unindexed) {
-      try {
-        const r = await this.mediaIndex.indexImage(assetId);
-        if (!r.indexed) failed++;
-      } catch { failed++; } // 单张失败不拖检索（候选可能不全，如实标注）
-    }
+    // One bounded tool lifetime; do not hold the conversation queue for 200×60s.
+    const signal=ctx.signal?AbortSignal.any([ctx.signal,AbortSignal.timeout(10_000)]):AbortSignal.timeout(10_000);
     try {
-      const result = await this.mediaIndex.searchImagesByRoom(args.query, ctx.roomId, args.limit ?? 3);
-      const out: Record<string, unknown> = { ...result };
-      if (failed > 0) out['indexing_note'] = `${failed} 张图暂未入索引（worker 不可用或读取失败），候选可能不全`;
-      return { ok: true, output: out };
-    } catch (err) {
-      const msg = String((err as Error).message ?? err);
-      if (msg.startsWith('MEDIA_WORKER')) return { ok: false, output: { error_code: msg.slice(0, 40), detail: '媒体编码服务不可用；文字聊天不受影响' } };
-      return { ok: false, output: { error_code: 'MEDIA_SEARCH_FAILED', detail: msg.slice(0, 200) } };
+      signal.throwIfAborted();
+      const fingerprint=await this.mediaIndex.workerFingerprint(signal);
+      signal.throwIfAborted();
+      if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
+      const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
+      const indexing=AbortSignal.any([signal,AbortSignal.timeout(5_000)]);
+      let indexed=0;
+      for(const assetId of pending.slice(0,200)) {
+        if(indexing.aborted)break;
+        try {if((await this.mediaIndex.indexImage(assetId,indexing)).indexed)indexed++;}
+        catch {if(indexing.aborted)break;}
+      }
+      signal.throwIfAborted();
+      const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal);
+      signal.throwIfAborted();
+      const out:Record<string,unknown>={...result};
+      if(indexed<pending.length)out.coverage='incomplete';
+      return {ok:true,output:out};
+    }catch {
+      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':signal.aborted?'MEDIA_SEARCH_TIMEOUT':'MEDIA_WORKER_UNAVAILABLE'}};
     }
   }
 
   /** JOINT-VOICE-20261022：读深听结果（概览/逐字谱分页）。 */
-  private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入' } };
+  private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.oido) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED'}};
+    const binding=this.db.prepare('SELECT asset_id,content_sha256 FROM oido_source_bindings WHERE analysis_id=? AND conversation_id=?').get(args.analysis_id,ctx.roomId) as {asset_id:string;content_sha256:string}|undefined;
+    const allowed=()=>binding && this.oidoSourceAllowed(binding.asset_id,ctx.roomId,binding.content_sha256);
+    if(!allowed())return {ok:false,output:{error_code:'ANALYSIS_NOT_IN_ROOM',detail:'请从当前会话原声引用重新发起深听。'}};
     try {
-      const result = args.detail === 'prosody_page'
-        ? await this.oido.getProsodyPage(args.analysis_id, args.cursor)
-        : await this.oido.getOverview(args.analysis_id);
-      return { ok: true, output: result as unknown as Record<string, unknown> };
-    } catch (err) {
-      const msg = String((err as Error).message ?? err);
-      if (msg.startsWith('OIDO_UNAVAILABLE')) return { ok: false, output: { error_code: 'OIDO_UNAVAILABLE', detail: 'oído 服务当前不可达' } };
-      return { ok: false, output: { error_code: msg.slice(0, 40) || 'OIDO_FAILED', detail: msg.slice(0, 200) } };
+      ctx.signal?.throwIfAborted();
+      const page=args.detail==='prosody_page';
+      const result=page?await this.oido.getProsodyPage(args.analysis_id,args.cursor,ctx.signal):await this.oido.getOverview(args.analysis_id,ctx.signal);
+      ctx.signal?.throwIfAborted();
+      if(!allowed())return {ok:false,output:{error_code:'ANALYSIS_NOT_IN_ROOM'}};
+      if(result.analysis_id!==args.analysis_id)throw new Error('OIDO_RESULT_INVALID');
+      return {ok:true,output:oidoModelView(result as unknown as Record<string,unknown>,page)};
+    }catch(err){
+      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':String((err as Error).message).slice(0,64)}};
     }
   }
 
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
     // R07（审计 FE-12）：工具生命周期事件合同——同一身份贯穿
     // start/result/error 三阶段；执行前后各一次真实回执，0 假成功
     // （ok/error_code 如实来自执行结果）。身份=tool_call_id+turn+attempt+

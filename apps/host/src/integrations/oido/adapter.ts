@@ -34,7 +34,7 @@ export class OidoAdapter {
   }
 
   /** 受信本地导入：推送原声字节（幂等，重放零成本）；transcript 有则一次带上。 */
-  async ingestVoice(args: { assetId: string; bytes: Buffer; sha256: string; mime: string; transcript?: { text: string; source: string } | null; timeoutMs?: number }): Promise<{ audioId: string; deduplicated: boolean }> {
+  async ingestVoice(args: { assetId: string; bytes: Buffer; sha256: string; mime: string; transcript?: { text: string; source: string } | null; signal?: AbortSignal; timeoutMs?: number }): Promise<{ audioId: string; deduplicated: boolean }> {
     const headers = this.headers({
       'Content-Type': 'application/octet-stream',
       'X-Oido-Audio-Ref': `est:${args.assetId}`,
@@ -44,7 +44,7 @@ export class OidoAdapter {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/audio:ingest`, {
-        method: 'POST', headers, body: new Uint8Array(args.bytes), signal: AbortSignal.timeout(args.timeoutMs ?? 30_000),
+        redirect: 'error', method: 'POST', headers, body: new Uint8Array(args.bytes), signal: lifetime(args.signal,args.timeoutMs ?? 30_000),
       });
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
@@ -55,9 +55,9 @@ export class OidoAdapter {
     if (args.transcript) {
       try {
         await fetch(`${this.baseUrl}/v1/audio/${encodeURIComponent(body.audio_id)}/transcript`, {
-          method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }),
+          redirect: 'error', method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(args.transcript),
-          signal: AbortSignal.timeout(5000),
+          signal: lifetime(args.signal,5000),
         });
       } catch {
         // 转写补挂失败不阻断分析（oído 有 no_transcript 降级路径）；如实忽略
@@ -67,18 +67,18 @@ export class OidoAdapter {
   }
 
   /** 按需深听：有界同步等待内完成→概览；未完成→票据。 */
-  async analyze(args: { assetId: string; rangeMs?: [number, number]; waitMs?: number; timeoutMs?: number }): Promise<OidoOverview | OidoTicket> {
+  async analyze(args: { assetId: string; rangeMs?: [number, number]; waitMs?: number; signal?: AbortSignal; timeoutMs?: number }): Promise<OidoOverview | OidoTicket> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/analyses`, {
-        method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }),
+        redirect: 'error', method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           audio_ref: `est:${args.assetId}`,
           profile: 'prosody',
           ...(args.rangeMs ? { range_ms: args.rangeMs } : {}),
           wait_ms: args.waitMs ?? 6000,
         }),
-        signal: AbortSignal.timeout(args.timeoutMs ?? (args.waitMs ?? 6000) + 8000),
+        signal: lifetime(args.signal,args.timeoutMs ?? (args.waitMs ?? 6000) + 8000),
       });
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
@@ -92,10 +92,10 @@ export class OidoAdapter {
     return body as unknown as OidoOverview;
   }
 
-  async getOverview(analysisId: string): Promise<OidoOverview> {
+  async getOverview(analysisId: string, signal?: AbortSignal): Promise<OidoOverview> {
     let res: Response;
     try {
-      res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}`, { headers: this.headers(), signal: AbortSignal.timeout(10_000) });
+      res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}`, { redirect: 'error', headers: this.headers(), signal: lifetime(signal,10_000) });
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
     }
@@ -103,11 +103,11 @@ export class OidoAdapter {
     return await res.json() as OidoOverview;
   }
 
-  async getProsodyPage(analysisId: string, cursor?: string): Promise<OidoPage> {
+  async getProsodyPage(analysisId: string, cursor?: string, signal?: AbortSignal): Promise<OidoPage> {
     let res: Response;
     const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
     try {
-      res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}/prosody${qs}`, { headers: this.headers(), signal: AbortSignal.timeout(10_000) });
+      res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}/prosody${qs}`, { redirect: 'error', headers: this.headers(), signal: lifetime(signal,10_000) });
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
     }
@@ -127,3 +127,5 @@ export class OidoAdapter {
     }
   }
 }
+
+function lifetime(signal: AbortSignal|undefined, timeout:number): AbortSignal { return signal?AbortSignal.any([signal,AbortSignal.timeout(timeout)]):AbortSignal.timeout(timeout); }

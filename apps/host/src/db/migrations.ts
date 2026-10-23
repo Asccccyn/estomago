@@ -1119,7 +1119,7 @@ CREATE TABLE background_operations(
 
 // 单一口径：代码支持的 schema 最高版（restore 等外部脚本引用，不手写数字——
 // v20 批前 restore.mjs 硬编码 19 与迁移链分叉曾误拒合法备份）
-export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
+
 
 export function migrate(db: Db, codeHashOf: (sql: string) => string, upTo?: number): { applied: number[] } { // upTo：测试构造历史版本库用
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations(
@@ -1190,3 +1190,14 @@ export function schemaVersion(db: Db): number {
   const row = db.prepare('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations').get() as { v: number };
   return row.v;
 }
+
+// Local authorization receipts; no analysis facts or user content are copied here.
+MIGRATIONS.push({ version: 35, name: 'oido_source_bindings', sql: `
+CREATE TABLE oido_source_bindings(
+ analysis_id TEXT NOT NULL, conversation_id TEXT NOT NULL, asset_id TEXT NOT NULL,
+ content_sha256 TEXT NOT NULL,
+ PRIMARY KEY(analysis_id, conversation_id)
+);
+CREATE INDEX idx_oido_source_asset ON oido_source_bindings(asset_id);
+` });
+export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

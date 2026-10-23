@@ -141,6 +141,8 @@ integrations:
     contract_version: null
   # oído 深听（JOINT-VOICE-20261022）：未配置=听觉不可用，无转写语音保持阻断语义
   oido:
+    base_url: null
+    credential_ref: null
     # base_url: http://127.0.0.1:8791
     # credential_ref: ESTOMAGO_OIDO_TOKEN   # 环境变量名（值绝不入配置/日志）
   siren:

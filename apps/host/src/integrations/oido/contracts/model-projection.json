@@ -1,0 +1,475 @@
+{
+  "source": "oido/contracts",
+  "sha256": {
+    "projection": "7ff7ccb9c4e9c2a36b23301dd7a380e3782ad9e0fd98f908bf56b0817c815ebc",
+    "budgets": "6dc37af431fcf5af7c1e895967090821483419c9908ff3f2021a4c6c6678993b"
+  },
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "urn:oido:projections:v1",
+    "title": "oído 模型投影 v1（联合施工 JOINT-VOICE-20261022 唯一真源；字节预算见 contracts/json_budgets.json）",
+    "$defs": {
+      "range_ms": {
+        "type": "array",
+        "prefixItems": [
+          {
+            "type": "integer",
+            "minimum": 0
+          },
+          {
+            "type": "integer",
+            "minimum": 0
+          }
+        ],
+        "items": false,
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "measurement": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "enum": [
+              "pause",
+              "duration",
+              "pitch",
+              "rate"
+            ]
+          },
+          "range_ms": {
+            "$ref": "#/$defs/range_ms"
+          },
+          "value": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "unit": {
+            "enum": [
+              "ms",
+              "semitone",
+              "syllables_per_s"
+            ]
+          },
+          "quality": {
+            "enum": [
+              "measured",
+              "uncertain",
+              "unavailable"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "unvoiced",
+              "unaligned",
+              "low_signal",
+              "insufficient_baseline",
+              "capture_processing_unknown",
+              "phrase_tone_unresolved",
+              "provider_unavailable",
+              "no_transcript"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "range_ms",
+          "value",
+          "unit",
+          "quality"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "value": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "value"
+              ]
+            },
+            "then": {
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "quality": {
+                  "const": "unavailable"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "pause",
+                    "duration"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "ms"
+                },
+                "value": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "pitch"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "semitone"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "rate"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "unit": {
+                  "const": "syllables_per_s"
+                },
+                "value": {
+                  "type": [
+                    "number",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "analysis_ticket": {
+        "type": "object",
+        "properties": {
+          "analysis_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running"
+            ]
+          }
+        },
+        "required": [
+          "analysis_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "evidence_overview": {
+        "type": "object",
+        "properties": {
+          "analysis_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "partial"
+            ]
+          },
+          "range_ms": {
+            "$ref": "#/$defs/range_ms"
+          },
+          "observations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/measurement"
+            },
+            "maxItems": 8
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "unvoiced",
+                "unaligned",
+                "low_signal",
+                "insufficient_baseline",
+                "capture_processing_unknown",
+                "phrase_tone_unresolved",
+                "provider_unavailable",
+                "no_transcript"
+              ]
+            },
+            "uniqueItems": true,
+            "maxItems": 8
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "required": [
+          "analysis_id",
+          "revision",
+          "state",
+          "range_ms",
+          "observations"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "state": {
+                  "const": "partial"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "limits"
+              ],
+              "properties": {
+                "limits": {
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        ]
+      },
+      "syllable": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 6
+          },
+          "pinyin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "lexical_tone": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "普通话词汇本调1-4，5=轻声；未知省略，不用0混代未知或轻声。不是实际表层读音的确定判断。"
+          },
+          "range_ms": {
+            "$ref": "#/$defs/range_ms"
+          },
+          "pitch_st": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "number"
+            },
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "quality": {
+            "enum": [
+              "measured",
+              "uncertain",
+              "unavailable"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "unvoiced",
+              "unaligned",
+              "low_signal",
+              "insufficient_baseline",
+              "capture_processing_unknown",
+              "phrase_tone_unresolved",
+              "provider_unavailable",
+              "no_transcript"
+            ]
+          }
+        },
+        "required": [
+          "text",
+          "range_ms",
+          "pitch_st",
+          "quality"
+        ],
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "pitch_st": {
+                  "type": "null"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "reason"
+              ],
+              "properties": {
+                "quality": {
+                  "const": "unavailable"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "prosody_page": {
+        "type": "object",
+        "properties": {
+          "analysis_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "range_ms": {
+            "$ref": "#/$defs/range_ms"
+          },
+          "pitch_reference": {
+            "enum": [
+              "utterance_median",
+              "approved_baseline"
+            ]
+          },
+          "syllables": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/syllable"
+            },
+            "minItems": 1,
+            "maxItems": 32
+          },
+          "limits": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "unvoiced",
+                "unaligned",
+                "low_signal",
+                "insufficient_baseline",
+                "capture_processing_unknown",
+                "phrase_tone_unresolved",
+                "provider_unavailable",
+                "no_transcript"
+              ]
+            },
+            "maxItems": 8,
+            "uniqueItems": true
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          }
+        },
+        "required": [
+          "analysis_id",
+          "revision",
+          "range_ms",
+          "pitch_reference",
+          "syllables"
+        ],
+        "additionalProperties": false
+      },
+      "error": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]{1,63}$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "retryable": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "additionalProperties": false
+      },
+      "analyze_request": {
+        "type": "object",
+        "properties": {
+          "audio_ref": {
+            "type": "string",
+            "pattern": "^(est|siren):[A-Za-z0-9_-]{1,128}$",
+            "maxLength": 135
+          },
+          "profile": {
+            "enum": [
+              "prosody",
+              "inspect_range"
+            ]
+          },
+          "range_ms": {
+            "$ref": "#/$defs/range_ms"
+          }
+        },
+        "required": [
+          "audio_ref"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "description": "est 拥有的 voice_model_view/media_candidates 不在本文件。内部源版本/权限/hash/fence 另存（见施工包 contracts/内部契约说明.md），不等于生产接口已支持。"
+  },
+  "budgets": {
+    "analysis_ticket": 512,
+    "evidence_overview": 8192,
+    "prosody_page": 16384,
+    "media_candidates": 4096,
+    "error": 512,
+    "analyze_request": 512,
+    "$comment": "UTF-8 紧凑 JSON 字节上限（联合施工包 08）。bytes≠token；token 计数另行用实际运行期 tokenizer 补测。预算失败即 CI 失败；调整须附前后真实样本。"
+  }
+}

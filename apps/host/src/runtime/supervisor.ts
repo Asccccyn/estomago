@@ -710,7 +710,7 @@ export class TurnSupervisor {
         }
         args.__tool_call_id = t.tool_id;
         const exec = await d.tools!.execute(t.tool_name ?? '', args, {
-          roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
+          signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: lastPrqId, // internal request ledger identity; provider generation is separate

@@ -38,10 +38,10 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
       // 转写只在投影里出现一次（不进 message.content/attachment 双份）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 需要听语气时调用 oido_analyze(audio_ref="${audioRef}")——转写不含语气]` : ''}` });
+        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : ''}` });
       } else if (isCurrentInput === true && hearing) {
         // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
-        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n她刚发来一条语音，文字转写还没就绪。需要听她的语气时调用 oido_analyze(audio_ref="${audioRef}") 获取声音证据（停顿/语速/音高等可核对观察）；在取得证据前不要猜测语音内容。` });
+        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n仅有原声；需声音证据时用 oido_analyze，取得证据前不推断内容或语气。` });
       } else if (isCurrentInput === true) {
         hasVoiceWithoutTranscript = true; // 当前输入无转写且无听觉能力→不空输入唤起模型（门阻断）
       } else {
