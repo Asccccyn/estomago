@@ -404,6 +404,10 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId) });
     }
 
+    // R4（2026-10-23）：voice ingress（Siren CoreBridge → est 同窗电话入口）
+    if (route === 'POST /v1/chat/stream') {
+      return await handleVoiceChatStream(req, res, d);
+    }
     const stopTurn = /^POST \/api\/v1\/turns\/([^/]+)\/stop$/.exec(route);
     if (stopTurn) {
       const turnId = decodeURIComponent(stopTurn[1]!);
@@ -1397,4 +1401,101 @@ function parseSelectionItems(raw: unknown): Array<{ message_id: string; revision
 function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
+}
+
+// ── R4（2026-10-23）：voice ingress——Siren CoreBridge 的同窗电话入口（NDJSON）──────────
+// 合同（Siren packages/core-bridge/src/http-core-bridge.ts，逐字段对齐）：
+//   POST /v1/chat/stream，content-type application/x-ndjson，body=单 JSON 对象
+//   {conversation_id, call_id, turn_id, modality, text, interrupted_turn?{...}}
+//   响应逐行 NDJSON：{"type":"delta","text"}* → {"type":"done"}；失败 {"type":"error","message"}
+//   客户端断开=取消（stop 同一管线）；同窗=supervisor.enqueue（与文字轮共用串行链/工具/轨迹）
+// 鉴权：Bearer 对 ESTOMAGO_VOICE_INGRESS_TOKEN（未配置=503 fail-closed，不静默开放）。
+export async function handleVoiceChatStream(req: IncomingMessage, res: ServerResponse, d: RequestDeps): Promise<void> {
+  const token = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  if (!token || !token.trim()) {
+    res.writeHead(503, { 'Content-Type': 'application/x-ndjson' });
+    res.end(JSON.stringify({ type: 'error', message: 'voice ingress not configured' }) + '\n');
+    return;
+  }
+  const authz = String(req.headers.authorization ?? '');
+  if (authz !== `Bearer ${token}`) {
+    res.writeHead(401, { 'Content-Type': 'application/x-ndjson' });
+    res.end(JSON.stringify({ type: 'error', message: 'unauthorized' }) + '\n');
+    return;
+  }
+  let body = '';
+  for await (const chunk of req) body += String(chunk);
+  let input: { conversation_id?: string; call_id?: string; turn_id?: string; modality?: string; text?: string };
+  try { input = JSON.parse(body) as typeof input; } catch {
+    res.writeHead(400, { 'Content-Type': 'application/x-ndjson' });
+    res.end(JSON.stringify({ type: 'error', message: 'invalid JSON body' }) + '\n');
+    return;
+  }
+  if (typeof input.conversation_id !== 'string' || typeof input.text !== 'string' || input.text.length === 0) {
+    res.writeHead(422, { 'Content-Type': 'application/x-ndjson' });
+    res.end(JSON.stringify({ type: 'error', message: 'conversation_id and non-empty text required' }) + '\n');
+    return;
+  }
+  const conv = d.db.prepare('SELECT id FROM conversations WHERE id = ?').get(input.conversation_id) as { id: string } | undefined;
+  if (!conv) {
+    res.writeHead(404, { 'Content-Type': 'application/x-ndjson' });
+    res.end(JSON.stringify({ type: 'error', message: 'conversation not found' }) + '\n');
+    return;
+  }
+  // 同窗提交：与文字轮同管线（串行链/窗口工具/轨迹/计量）——不另建电话旁路历史
+  const sub = d.messages.submitUserMessageWithTurn({
+    conversationId: input.conversation_id,
+    content: input.text,
+    clientMessageId: `voice:${input.call_id ?? 'call'}:${input.turn_id ?? 'turn'}`,
+    occurredAt: new Date().toISOString(),
+  });
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache, no-transform' });
+  const send = (obj: Record<string, unknown>): void => { try { res.write(JSON.stringify(obj) + '\n'); } catch { /* 已断 */ } };
+  const finish = (): void => { try { res.end(); } catch { /* 已断 */ } };
+  const subEvents = d.events.subscribe(input.conversation_id);
+  let closed = false;
+  const cleanup = (): void => {
+    if (closed) return;
+    closed = true;
+    clearInterval(pump);
+    d.events.unsubscribe(subEvents);
+    finish();
+  };
+  req.on('close', () => {
+    // 客户端断开=取消（打断/挂断走同一 stop 管线：fence+中断，已生成原文保留）
+    void d.supervisor.stop(sub.turnId);
+    cleanup();
+  });
+  const pump = setInterval(() => {
+    if (closed) return;
+    for (const queued of subEvents.queue.splice(0)) {
+      const row = toSseDto(queued.eventRow); // 统一 DTO：payload 字段已展平到顶层（row.message / row.state）
+      if (row.turn_id !== sub.turnId) continue;
+      if (row.kind === 'message.published') {
+        const message = row['message'] as { content?: unknown; speaker?: string; revision?: { content?: unknown } } | undefined;
+        // 正文在修订层（revision.content）；顶层 content 兼容旧形状
+        const text = message?.revision?.content ?? message?.content;
+        if (message?.speaker === 'assistant' && typeof text === 'string' && text.length > 0) {
+          send({ type: 'delta', text });
+        }
+      } else if (row.kind === 'turn.completed') {
+        send({ type: 'done' });
+        cleanup();
+        return;
+      } else if (row.kind === 'turn.interrupted') {
+        send({ type: 'done' }); // 打断=已生成原文保留（SIR-03）；作为完成流收口，不丢正文
+        cleanup();
+        return;
+      } else if (row.kind === 'turn.status') {
+        const state = row['state'] as string | undefined;
+        const reason = row['reason'] as string | undefined;
+        if (state === 'failed') {
+          send({ type: 'error', message: reason ?? 'turn failed' });
+          cleanup();
+          return;
+        }
+      }
+    }
+  }, 25);
+  d.supervisor.enqueue(sub.turnId);
 }
