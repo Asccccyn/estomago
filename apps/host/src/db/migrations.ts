@@ -1232,4 +1232,17 @@ CREATE TABLE oido_delete_intents(
  updated_at TEXT NOT NULL
 );
 ` });
+// 36（2026-10-24，RE-05）：oído 测量图派生工件——PNG 字节落本地媒体资产（derived_view 用途），
+// 本表记 analysis+range → asset 映射；UI 二进制路由与宿主原生图物化共用。base64 不入模型 JSON。
+MIGRATIONS.push({ version: 38, name: 'oido_view_artifacts', sql: `
+CREATE TABLE oido_view_artifacts(
+ analysis_id TEXT NOT NULL,
+ range_json TEXT NOT NULL,
+ asset_id TEXT NOT NULL,
+ content_sha256 TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(analysis_id, range_json)
+);
+CREATE INDEX IF NOT EXISTS idx_oido_view_asset ON oido_view_artifacts(asset_id);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

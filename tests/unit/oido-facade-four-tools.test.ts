@@ -24,7 +24,7 @@ function fixture() {
   const adapter = {
     configured: true,
     capabilities: async () => ({ ok: true, providers: [{ name: 'local' }], status: 'ok' }),
-    getView: async (id: string) => { calls.push({ view: id }); return { mime: 'image/png', pngBase64: Buffer.from('89504e47').toString('base64'), metadata: { analysis_id: id } }; },
+    getView: async (id: string) => { calls.push({ view: id }); return { mime: 'image/png', pngBase64: Buffer.from('89504e470d0a1a0a', 'hex').toString('base64'), metadata: { analysis_id: id } }; },
     find: async (a: Record<string, unknown>) => { calls.push({ find: a }); return { state: 'candidates', items: [{ range_ms: [0, 500], match: '嗯' }] }; },
     compare: async (a: Record<string, unknown>) => { calls.push({ compare: a }); return { metrics: [], limits: [], baseline_comparison: { state: 'unavailable' } }; },
   };
@@ -49,7 +49,13 @@ test('capabilities 直达；view/find/compare 跨会话拒（绑定同门）', a
     // view 绑定门：a 会话过、b 会话拒
     const v1 = await f.tools.execute('oido_view', { analysis_id: 'an-x' }, f.ctx('a'));
     assert.equal(v1.ok, true);
-    assert.equal((v1.output as Record<string, unknown>)['image_mime'], 'image/png');
+    // R3″/RE-05（2026-10-24）：图与正文分路——模型 JSON 不再含 base64/image_mime；
+    // 图存为界面资产（ui_ref），播放器/界面走宿主二进制路由
+    const img = (v1.output as Record<string, unknown>)['image'] as Record<string, unknown>;
+    assert.equal(img['view'], 'ui_only');
+    assert.equal(img['mime'], 'image/png');
+    assert.ok(typeof img['ui_ref'] === 'string' && String(img['ui_ref']).startsWith('/api/v1/oido/views/'));
+    assert.ok(!('image_base64' in (v1.output as Record<string, unknown>)));
     const v2 = await f.tools.execute('oido_view', { analysis_id: 'an-x' }, f.ctx('b'));
     assert.equal(v2.ok, false, '跨会话拒读');
     // find/compare 源门

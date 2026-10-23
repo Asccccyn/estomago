@@ -1090,6 +1090,49 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       }
     }
 
+    // —— RE-12c（2026-10-24）：资产删除正式入口——markAssetMissing 的真实产品消费者。
+    // 守卫：仍被任何消息修订附件或 protected/committed 外部引用的资产拒绝删除（多合法引用
+    // 不误删）；通过→state=missing（本地源停止读取），有 oído 导入回执时同事务写远端删除
+    // 意图，物理清理由既有 outbox 重试（delete-retry.ts）收口；pending≠已删。
+    const assetDelete = /^DELETE \/api\/v1\/assets\/([^/]+)$/.exec(route);
+    if (assetDelete) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const id = decodeURIComponent(assetDelete[1]!);
+      try {
+        d.media.getAsset(id); // 不存在=404
+        const refs = d.media.isAssetReferenced(id);
+        if (refs.referenced) {
+          return json(res, 409, { error: { code: 'asset_referenced', message: `资产仍被引用（消息修订附件 ${refs.by_message_revisions} 条、外部引用 ${refs.by_external_refs} 条）；先解除全部引用再删除`, by_message_revisions: refs.by_message_revisions, by_external_refs: refs.by_external_refs } });
+        }
+        d.media.markAssetMissing(id);
+        return json(res, 200, { asset_id: id, state: 'missing', note: '源已标删；远端派生副本（如有）由删除意图重试清理' });
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+
+    // —— RE-05（2026-10-24）：oído 测量图二进制路由（UI 消费）——读 oido_view 工具落的本地
+    // 派生工件（oido_view_artifacts → media 资产）；无工件 404 如实（不代理远端、不落 base64）。
+    const oidoViewRoute = /^GET \/api\/v1\/oido\/views\/([^/]+)$/.exec(route);
+    if (oidoViewRoute) {
+      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
+      const analysisId = decodeURIComponent(oidoViewRoute[1]!);
+      const rangeParam = String(url.searchParams.get('range_ms') ?? '');
+      const rangeKey = /^\d+,\d+$/.test(rangeParam) ? rangeParam : 'full';
+      const row = d.db.prepare('SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json=?').get(analysisId, rangeKey) as { asset_id: string } | undefined;
+      if (!row) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件（先由 oido_view 生成）' } });
+      try {
+        const { bytes, mime } = d.media.readContent(row.asset_id);
+        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
+        res.end(bytes);
+        return;
+      } catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
+
     // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
     if (route === 'POST /api/v1/token-estimates') {
       const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);

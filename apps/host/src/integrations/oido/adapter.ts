@@ -68,8 +68,11 @@ export class OidoAdapter {
 
   /** 按需深听：有界同步等待内完成→概览；未完成→票据。 */
   /** R6′（2026-10-23）：删除传播——按 oído audio_id 物理清理远端副本与派生物。
-   *  404=已删（幂等成功）；网络/5xx=抛 OIDO_UNAVAILABLE 由意图重试层退避。 */
-  async deleteAudio(args: { audioId: string; signal?: AbortSignal; timeoutMs?: number }): Promise<{ deleted: boolean }> {
+   *  404=已删（幂等成功）；网络/5xx=抛 OIDO_UNAVAILABLE 由意图重试层退避。
+   *  RE-12b（2026-10-24 返修）：200 响应读 body 语义——只有权威终态（tombstoned/
+   *  already_gone）才算 deleted；pending 清理中（deletion_requested*）如实返回
+   *  pending:true，重试层保留意图下跳再试（上轮反例：pending_cleanup 被当物理删除完成）。 */
+  async deleteAudio(args: { audioId: string; signal?: AbortSignal; timeoutMs?: number }): Promise<{ deleted: boolean; pending?: boolean; lifecycle?: string }> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/audio/${encodeURIComponent(args.audioId)}`, {
@@ -77,9 +80,12 @@ export class OidoAdapter {
         signal: lifetime(args.signal, args.timeoutMs ?? 10_000),
       });
     } catch { throw new Error('OIDO_UNAVAILABLE'); }
-    if (res.status === 404) return { deleted: true };
+    if (res.status === 404) return { deleted: true, lifecycle: 'already_gone' };
     if (!res.ok) throw new Error('OIDO_UNAVAILABLE');
-    return { deleted: true };
+    const body = await res.json().catch(() => null) as { lifecycle?: string } | null;
+    const lifecycle = typeof body?.lifecycle === 'string' ? body.lifecycle : '';
+    if (lifecycle === 'tombstoned' || lifecycle === 'already_gone' || lifecycle === 'purged') return { deleted: true, lifecycle };
+    return { deleted: false, pending: true, ...(lifecycle ? { lifecycle } : {}) };
   }
 
   async analyze(args: { assetId: string; rangeMs?: [number, number]; waitMs?: number; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<OidoOverview | OidoTicket> {

@@ -13,7 +13,7 @@ import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 
-export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work';
+export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
 
 // 用途 → 格式白名单（§5.1：两套小名单；不是按扩展名信任）
 const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
@@ -22,6 +22,8 @@ const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
   chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4'],
   creation_icon: ['image/svg+xml', 'image/png', 'image/webp'],
   creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp'],
+  // derived_view（2026-10-24，RE-05）：oído 测量图等宿主派生图工件（origin=generated+origin_service 标来源）
+  derived_view: ['image/png'],
 };
 
 // 魔数/文件头校验：不按扩展名或 Content-Type 冒充（§7.5、MEDIA-02）
@@ -75,6 +77,7 @@ export class MediaService {
     if (purpose === 'chat_image' || purpose === 'chat_sticker') return m.max_image_bytes;
     if (purpose === 'chat_voice') return m.max_audio_bytes;
     if (purpose === 'creation_icon' || purpose === 'creation_work') return Math.max(m.max_code_artifact_bytes, m.max_video_bytes, m.max_image_bytes);
+    if (purpose === 'derived_view') return m.max_image_bytes;
     return 0;
   }
 

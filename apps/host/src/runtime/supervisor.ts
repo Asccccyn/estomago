@@ -36,7 +36,7 @@ import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
-import { buildOrPayload, type OrMessage } from './or-payload.ts';
+import { buildOrPayload, withoutCacheMarkers, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
@@ -459,7 +459,7 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
@@ -738,7 +738,15 @@ export class TurnSupervisor {
             });
           }
         }
-        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
+        // RE-05（2026-10-24）：工具结果携带内部图引用（如 oido_view 测量图）且当前型号
+        // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
+        // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
+        // 图未随正文携带，模型不得声称已看图）
+        const modelSupportsImages = visionSupportCached(envelope.model) === true;
+        const imageBlocks = modelSupportsImages && exec.imageRefs && exec.imageRefs.length > 0
+          ? exec.imageRefs.map((id) => ({ type: 'asset_image', asset_id: id, projection_version: 'v1' as const }))
+          : [];
+        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, ...(imageBlocks.length > 0 ? { content: [{ type: 'text', text: JSON.stringify(exec.output) }, ...imageBlocks] } : { content: JSON.stringify(exec.output) }) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
@@ -754,6 +762,16 @@ export class TurnSupervisor {
     const model = this.d.settings.effectiveOrModel(config.openrouter.model);
     if (model === config.openrouter.model) return config;
     return { ...config, openrouter: { ...config.openrouter, model } };
+  }
+
+  /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
+   *  （旧窗无 transcript_read=如实受限提示，不宣传不存在的读取能力）。无冻结目录=旧窗，保守 false。 */
+  private windowHasTool(windowId: string | null | undefined, name: string): boolean {
+    if (!windowId) return false;
+    const set = storedToolset(this.d.db, windowId);
+    if (!set) return false;
+    const names = [...(Array.isArray(set.tools) ? set.tools : []), ...(Array.isArray((set as unknown as { catalog?: unknown }).catalog) ? (set as unknown as { catalog: unknown[] }).catalog : [])] as Array<{ function?: { name?: string } } | null | undefined>;
+    return names.some((t) => t?.function?.name === name);
   }
 
   /** WAKE_KEEPWARM_V1：后台执行位重检的统一时钟（测试可虚拟推进）。 */
@@ -1257,7 +1275,7 @@ export class TurnSupervisor {
     const tailSeq = o.tailMessage?.id
       ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
       : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1985,6 +2003,7 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'STOPPED_DURING_PREP:准备阶段已取消——迟到资料不派发模型，输入已保存', 'blocked');
       return true;
     };
+    let trajInitializedThisTurn = false; // RE-10：懒初始化重建的轨迹=合法新基线，wire 守卫跳过
     if (dv && d.trajectory) {
       if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
       const trajExists = d.trajectory.forWindow(window.id) !== null;
@@ -1994,6 +2013,7 @@ export class TurnSupervisor {
         return;
       }
       if (!trajExists) {
+        trajInitializedThisTurn = true;
         // WP3：新窗历史装配只经人工选集（forTargetWindow 命中=消费过选集的
         // 新窗，严格按引用装配；空选=不带历史）。无选集命中的窗（真全新
         // 首窗/升级兼容期）维持旧自动回退——由 WP5 随 DS/12k 一并退役。
@@ -2165,7 +2185,7 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id) });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
@@ -2207,7 +2227,7 @@ export class TurnSupervisor {
     // 的）轨迹重建 previous，两份同源派生=结构性失明（审计真实复现：6→7 请求旧 assistant 的
     // reasoning_content 被剥而无人发现）。不通过忽略 reasoning_content 键让断言通过——legacy 的
     // 跨轮剥除是 D01 有意变换，按政策核验其被一致执行；新政策下 wire 有而轨迹无=直接拒发。
-    if (dv?.kind === 'deepseek' && orTraj) {
+    if (dv?.kind === 'deepseek' && orTraj && !trajInitializedThisTurn) {
       // 只比已完成回合的最后一笔实发 wire：失败回合的工具 assistant 在 wire 里而轨迹/追赶投影
       // 不含它，拿它当前缀基准会假阳性（位置性错位）。已完成回合的 traj 基底==该回合末请求消息。
       const wireRow = d.db.prepare("SELECT pr.payload_wire_json FROM provider_requests pr JOIN turns t ON t.id = pr.turn_id WHERE pr.window_id = ? AND pr.purpose = 'chat' AND pr.sent_at IS NOT NULL AND pr.outcome IS NOT 'SUPERSEDED_BY_RETRY' AND t.state = 'completed' ORDER BY pr.sent_at DESC, pr.rowid DESC LIMIT 1").get(window.id) as { payload_wire_json: string | null } | undefined;
@@ -2218,9 +2238,44 @@ export class TurnSupervisor {
           const trajSide = [...orTraj.messages, ...catchupMessages] as Array<Record<string, unknown>>;
           if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_HISTORY_SHORTENED:${wireMsgs.length}>${trajSide.length}`);
           const dsPolicy = this.reasoningPolicyOf(window.id);
+          // RE-10（2026-10-24 返修）：完整前缀核对——role 之外，content（含旧 user 正文）、
+          // tool_calls 参数、tool_call_id、name 等逐字段比对（上轮反例：已发送 user 内容被改写
+          // 成 CORRUPTED…仍照发）。两侧按 DS 发送同态归一：块数组拍平为文本（镜像
+          // buildDeepSeekPayload），图块（traj=asset_image 引用 / wire=image 物化+存储脱敏）
+          // 统一占位——字节身份由资产不可变性与存储指纹另行保障；键序无关（canonical 序列化）。
+          const wireNorm = withoutCacheMarkers({ messages: wireMsgs }).messages as Array<Record<string, unknown>>;
+          const flatten = (content: unknown): unknown => {
+            if (!Array.isArray(content)) return content ?? null;
+            return content.map((b) => {
+              const blk = b as Record<string, unknown> | null;
+              if (blk && (blk.type === 'asset_image' || blk.type === 'image')) return '\u0000IMG\u0000';
+              return typeof blk?.text === 'string' ? blk.text : '';
+            }).join('');
+          };
+          const canon = (v: unknown): string => {
+            if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+            if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+            const o = v as Record<string, unknown>;
+            const keys = Object.keys(o).sort();
+            return `{${keys.map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+          };
+          const comparable = (m: Record<string, unknown>): Record<string, unknown> => {
+            const out: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(m)) {
+              if (k === 'cache_control' || k === 'reasoning_content') continue; // 缓存标记随轮次变化；继续态按政策单独核对
+              out[k] = k === 'content' ? flatten(v) : v;
+            }
+            return out;
+          };
           for (let i = 0; i < wireMsgs.length; i++) {
-            const w = wireMsgs[i]!, t = trajSide[i]!;
+            const w = wireNorm[i]!, t = trajSide[i]!;
             if (w.role !== t.role) throw new Error(`WIRE_TRAJECTORY_DIVERGED:role@${i}`);
+            // system 段逐请求合法可变（time_context 等），不属于不可变历史——只比对
+            // user/assistant/tool 消息（守卫职责=已发送历史正文/工具轨迹不被改写）
+            if (w.role !== 'system') {
+              const wC = canon(comparable(w)), tC = canon(comparable(t));
+              if (wC !== tC) throw new Error(`WIRE_TRAJECTORY_DIVERGED:content@${i}`);
+            }
             if (w.role === 'assistant') {
               const wireHas = typeof w.reasoning_content === 'string' && w.reasoning_content.length > 0;
               const trajHas = typeof t.reasoning_content === 'string' && t.reasoning_content.length > 0;

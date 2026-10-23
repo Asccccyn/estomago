@@ -1,4 +1,5 @@
 import { oidoModelView } from '../integrations/oido/model-view.ts';
+import { sliceByByteBudget, TRANSCRIPT_PAGE_BUDGET_BYTES } from '../media/model-input.ts';
 import { modelResult, modelFailure, candidates as whitelistCandidates } from './model-results.ts';
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
@@ -986,7 +987,7 @@ export type ToolExecContext = {
   generationId?: string | null;
 };
 
-export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef> };
+export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef>; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };
 
 const rawToolCallIdRef = { current: null as string | null };
 
@@ -1336,6 +1337,15 @@ export class HostToolExecutor {
     return Boolean(row && (sha===undefined || sha===row.content_sha256));
   }
 
+  /** RE-12（2026-10-24）：远端删除意图登记——markAssetMissing 与迟到导入回执共用同一入口
+   *  （幂等 upsert；重试循环=delete-retry.ts 的 outbox）。 */
+  private recordOidoDeleteIntent(estAssetId: string, oidoAudioId: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
+      ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id, updated_at=excluded.updated_at`)
+      .run(estAssetId, oidoAudioId, now, now);
+  }
+
   private async oidoAnalyze(args: { audio_ref: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入（能力缺口，如实拒绝）' } };
     const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
@@ -1357,10 +1367,19 @@ export class HostToolExecutor {
       this.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
         .run(assetId, row.content_sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString());
       ctx.signal?.throwIfAborted();
-      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
-      // R6′：操作幂等键=（turn,tool_call）——同轮重试同键（服务端幂等去重）；版本升级后
-      // 同键异 digest 会 409——如实透传"分析合同已变更"，模型重新发起即新键
-      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`, signal:ctx.signal }).catch((err: Error) => {
+      // RE-12a（2026-10-24 返修）：导入后复验——源在导入期间被删除/撤权时，回执已落（远端
+      // 副本真实存在），必须登记删除意图（outbox 重试可定位）再如实拒绝；不静默留下无主副本
+      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)){
+        this.recordOidoDeleteIntent(assetId, receipt.audioId);
+        return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM',detail:'导入期间源已删除/撤权；远端副本已登记删除意图，稍后自动清理'}};
+      }
+      // RE-11（2026-10-24 返修）：操作幂等键=（turn,request,tool_call）——同轮同一工具调用
+      // 重试同键（服务端幂等去重）；同一请求内不同 tool_call 各自独立（上轮反例：同 request
+      // 两次 oido_analyze 共用一个键，接真实 oído 即 409）。旧执行路径无 tool_call_id 时
+      // 保留 (turn,request) 形态（legacy 直调，一次只有一个调用在跑）
+      const toolCallId = ctx.toolCallId ?? (typeof (args as Record<string, unknown>).__tool_call_id === 'string' ? String((args as Record<string, unknown>).__tool_call_id) : null);
+      const idemKey = toolCallId ? `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}:${toolCallId}` : `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`;
+      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal:ctx.signal }).catch((err: Error) => {
         if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
           throw new Error('OIDO_CONTRACT_CHANGED');
         }
@@ -1408,38 +1427,50 @@ export class HostToolExecutor {
   }
 
   /** JOINT-VOICE-20261022：读深听结果（概览/逐字谱分页）。 */
-  // R3′（2026-10-23）：长转写分页续读——可信转写复验（会话+活资产+hash 绑定 join）+
-  // cursor (asset, offset, total) 校验；源变更=SOURCE_CHANGED 如实报，不静默重读新版本
+  // R3″（2026-10-24，RE-07/08/09 返修）：三道边界——
+  //  ① 源权限：转写必须挂在**本会话当前修订的已发布消息附件**上（voice presentation）；
+  //     未发送草稿、已被新修订移除附件的旧引用一律拒读（不用 transcript.conversation_id
+  //     替代已发送范围——上轮反例：从未发布的草稿转写可直接读）。
+  //  ② 字节预算：页按紧凑 JSON 序列化 UTF-8 字节切（含包装与游标），4 字节汉字/转义
+  //     不再凭 2400 字符假定破 8192B 门。
+  //  ③ 快照游标：cursor 绑定转写内容身份（derived_text 的 sha256）+ 总字数——等长改写
+  //     （甲→乙）也能检出旧游标失效（音频 hash 只代表资产身份，不代表转写版本）。
   private transcriptRead(args: { audio_ref: string; cursor?: string }, ctx: ToolExecContext): ToolExecResult {
     const assetId = args.audio_ref.slice('est:'.length);
     const row = this.db.prepare(
-      `SELECT t.derived_text, a.content_sha256 FROM voice_transcripts t JOIN media_assets a ON a.id = t.asset_id
-       WHERE t.asset_id = ? AND t.conversation_id = ? AND t.state = 'ready' AND t.content_sha256 = a.content_sha256 AND a.state = 'available'`,
-    ).get(assetId, ctx.roomId) as { derived_text: string; content_sha256: string } | undefined;
-    if (!row) return { ok: false, output: { error_code: 'TRANSCRIPT_NOT_FOUND', message: '本会话无此语音的可信转写（未就绪/已删除/不在本会话）' } };
+      `SELECT t.derived_text, a.content_sha256 FROM voice_transcripts t
+       JOIN media_assets a ON a.id = t.asset_id
+       WHERE t.asset_id = ? AND t.conversation_id = ? AND t.state = 'ready' AND t.content_sha256 = a.content_sha256 AND a.state = 'available'
+         AND EXISTS (SELECT 1 FROM message_attachments ma JOIN messages msg ON msg.id = ma.message_id AND msg.current_revision = ma.revision
+                     WHERE ma.asset_id = a.id AND ma.presentation = 'voice' AND msg.conversation_id = ?)`,
+    ).get(assetId, ctx.roomId, ctx.roomId) as { derived_text: string; content_sha256: string } | undefined;
+    if (!row) return { ok: false, output: { error_code: 'TRANSCRIPT_NOT_FOUND', message: '本会话无此语音的可信转写（未就绪/已删除/不在本会话/未作为已发送消息附件）' } };
     const chars = [...row.derived_text];
+    const transcriptSha = sha256Hex(row.derived_text);
     let offset = 0;
     if (args.cursor) {
-      let parsed: { a?: string; o?: number; n?: number };
+      let parsed: { a?: string; o?: number; n?: number; h?: string };
       try { parsed = JSON.parse(Buffer.from(args.cursor, 'base64url').toString('utf8')) as typeof parsed; } catch { return { ok: false, output: { error_code: 'TRANSCRIPT_CURSOR_INVALID' } }; }
       const o = parsed.o;
-      if (parsed.a !== assetId || !Number.isInteger(o) || o === undefined || o < 0 || o > chars.length || parsed.n !== chars.length) {
-        return { ok: false, output: { error_code: 'TRANSCRIPT_SOURCE_CHANGED', message: '转写与游标不一致（源版本变化或游标过期）——请重读首页' } };
+      if (parsed.a !== assetId || !Number.isInteger(o) || o === undefined || o < 0 || o > chars.length || parsed.n !== chars.length || parsed.h !== transcriptSha) {
+        return { ok: false, output: { error_code: 'TRANSCRIPT_SOURCE_CHANGED', message: '转写与游标不一致（转写版本变化或游标过期）——请重读首页' } };
       }
       offset = o;
     }
-    const TRANSCRIPT_PAGE_CHARS = 2400;
-    const pageText = chars.slice(offset, offset + TRANSCRIPT_PAGE_CHARS).join('');
-    const nextOffset = offset + [...pageText].length;
-    const done = nextOffset >= chars.length;
+    // 包装开销：audio_ref/page/total_pages/next_cursor(h=64hex) 等字段序列化上界（实测 <640B，取保守值）
+    const WRAPPER_BUDGET = 700;
+    const sliced = sliceByByteBudget(row.derived_text, offset, TRANSCRIPT_PAGE_BUDGET_BYTES, WRAPPER_BUDGET);
+    if (sliced.pageText === '' && !sliced.done) return { ok: false, output: { error_code: 'TRANSCRIPT_PAGE_OVER_BUDGET', message: '单页预算内无进展（异常输入）' } };
+    const done = sliced.done;
     return {
       ok: true,
       output: {
         audio_ref: args.audio_ref,
-        page_text: pageText,
-        page: Math.floor(offset / TRANSCRIPT_PAGE_CHARS) + 1,
-        total_pages: Math.ceil(chars.length / TRANSCRIPT_PAGE_CHARS),
-        ...(done ? {} : { next_cursor: Buffer.from(JSON.stringify({ a: assetId, o: nextOffset, n: chars.length }), 'utf8').toString('base64url') }),
+        page_text: sliced.pageText,
+        page_chars: [...sliced.pageText].length,
+        total_chars: chars.length,
+        byte_budget: TRANSCRIPT_PAGE_BUDGET_BYTES,
+        ...(done ? {} : { next_cursor: Buffer.from(JSON.stringify({ a: assetId, o: sliced.nextOffset, n: chars.length, h: transcriptSha }), 'utf8').toString('base64url') }),
       },
     };
   }
@@ -1468,11 +1499,31 @@ export class HostToolExecutor {
       const view = await this.oido.getView(args.analysis_id, args.range_ms, ctx.signal);
       ctx.signal?.throwIfAborted();
       if (!this.oidoAnalysisAllowed(args.analysis_id, ctx)) return { ok: false, output: { error_code: 'ANALYSIS_NOT_IN_ROOM' } };
-      // 模型面：元数据+图 base64（预算门：图不入普通 JSON 投影的常规路径，超预算如实报）
-      const out = { ...view.metadata, image_base64: view.pngBase64, image_mime: view.mime, note: '测量图；原生图块直送主模型的运输路径未接通' };
-      const bytes = Buffer.byteLength(JSON.stringify(out), 'utf8');
-      if (bytes > 16384) return { ok: false, output: { error_code: 'OIDO_VIEW_OVER_BUDGET', detail: `测量图 ${bytes}B 超 16384B 投影预算` } };
-      return { ok: true, output: out };
+      // RE-05（2026-10-24 返修）：图与正文分路——PNG base64 不再进普通工具 JSON（上轮实测
+      // 14010B 回执全为编码噪声）。字节落为本地派生工件（幂等键=analysis+range，同图复用），
+      // 模型面只带最小引用与限制；UI 经宿主二进制路由读取（GET /api/v1/oido/views/<id>）；
+      // 支持图的宿主在发送边界把原图作为原生块随工具结果物化（supervisor 按
+      // 型号图像能力门决定携带与否——不支持时如实声明"未随正文携带"，不伪称已看图）。
+      const rangeKey = args.range_ms ? `${args.range_ms[0]},${args.range_ms[1]}` : 'full';
+      let artifactAssetId: string | null = null;
+      if (this.media) {
+        const asset = await this.media.saveBuffer({
+          bytes: Uint8Array.from(Buffer.from(view.pngBase64, 'base64')),
+          purpose: 'derived_view', operationId: `oido-view-${args.analysis_id}:${rangeKey}`,
+          createdBy: 'host', origin: 'generated', originService: 'oido', originRef: args.analysis_id,
+        });
+        this.db.prepare('INSERT OR REPLACE INTO oido_view_artifacts(analysis_id,range_json,asset_id,content_sha256,created_at) VALUES (?,?,?,?,?)')
+          .run(args.analysis_id, rangeKey, asset.id, asset.content_sha256, new Date().toISOString());
+        artifactAssetId = asset.id;
+      }
+      const out: Record<string, unknown> = {
+        analysis_id: args.analysis_id,
+        ...(args.range_ms ? { range_ms: args.range_ms } : {}),
+        image: artifactAssetId !== null
+          ? { view: 'ui_only', ui_ref: `/api/v1/oido/views/${encodeURIComponent(args.analysis_id)}${args.range_ms ? `?range_ms=${args.range_ms[0]},${args.range_ms[1]}` : ''}`, mime: view.mime, note: '测量图已存为界面资产，未随工具正文携带；当前型号/通道未携带原图时不得声称已看图，结论以 oido_get 的数值证据为准' }
+          : { view: 'unavailable', note: '宿主未配置媒体服务，图未保存；不得声称已看图' },
+      };
+      return { ok: true, output: out, ...(artifactAssetId !== null ? { imageRefs: [artifactAssetId] } : {}) };
     } catch (err) {
       if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };
       return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 40) || 'OIDO_FAILED' } };
@@ -1487,6 +1538,9 @@ export class HostToolExecutor {
     if (!sha || !this.oidoSourceAllowed(m[1]!, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM' } };
     try {
       const result = await this.oido.find({ audioRef: args.audio_ref, query: args.query, mode: args.mode, limit: args.limit, cursor: args.cursor, signal: ctx.signal });
+      // RE-06（2026-10-24 返修）：交付前复验——远端读取期间源被删除/撤权（等长改写亦换 sha）
+      // 的迟到结果不交付（上轮反例：await 后直接 ok:true 交付撤权后证据）
+      if (!this.oidoSourceAllowed(m[1]!, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
       return { ok: true, output: result };
     } catch (err) {
       if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };
@@ -1496,14 +1550,20 @@ export class HostToolExecutor {
 
   private async oidoCompare(args: { left: { audio_ref: string }; right: { audio_ref: string } }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.oido) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const shas: Array<[string, string]> = [];
     for (const side of [args.left, args.right]) {
       const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(side.audio_ref ?? '');
       if (!m) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID' } };
       const sha = (this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(m[1]!) as { content_sha256: string } | undefined)?.content_sha256;
       if (!sha || !this.oidoSourceAllowed(m[1]!, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM' } };
+      shas.push([m[1]!, sha]);
     }
     try {
       const result = await this.oido.compare({ left: { audio_ref: args.left.audio_ref }, right: { audio_ref: args.right.audio_ref }, signal: ctx.signal });
+      // RE-06：同 find——迟到交付前双侧复验
+      for (const [assetId, sha] of shas) {
+        if (!this.oidoSourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
+      }
       return { ok: true, output: result };
     } catch (err) {
       if (ctx.signal?.aborted) return { ok: false, output: { error_code: 'CANCELLED' } };

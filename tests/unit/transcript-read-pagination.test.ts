@@ -29,6 +29,8 @@ function fixture() {
     const row = db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(asset.id) as { content_sha256: string };
     db.prepare("INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,content_sha256,state,derived_text,created_at,updated_at) VALUES (?,?,?,?,'ready',?,?,?)")
       .run(asset.id, 'a', 'r3p-op', row.content_sha256, text, new Date().toISOString(), new Date().toISOString());
+    // RE-07（2026-10-24）：合法源=已发布消息附件（当前修订）——未发布草稿不可读
+    messages.publishAssistantMessage({ conversationId: 'a', turnId: 'synthetic', content: '', kind: 'voice', clientMessageId: `m-${Math.random()}`, attachments: [{ asset_id: asset.id, presentation: 'voice' }] });
     return asset;
   };
   return { root, db, media, messages, tools, ctx, createWithTranscript, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
@@ -44,9 +46,9 @@ test('投影分页：10k 字转写首页 ≤8192B、提示续读、全文不整�
     assert.equal(block.type, 'text');
     const bytes = Buffer.byteLength(block.text, 'utf8');
     assert.ok(bytes <= 8192, `首页块 ${bytes}B 须 ≤8192B`);
-    assert.match(block.text, /转写第 1\/5 页/);
+    assert.match(block.text, /转写第 1\/\? 页/); // R3″：字节预算分页（页数随内容字宽变化，不再固定 2400 字/页）
     assert.match(block.text, /transcript_read/);
-    assert.equal(block.text.includes('窗'.repeat(TRANSCRIPT_PAGE_CHARS + 1)), false, '不整段全文');
+    assert.equal(block.text.includes('窗'.repeat(10000)), false, '不整段全文');
   } finally { f.close(); }
 });
 
@@ -68,8 +70,7 @@ test('续读读尽：首页+翻页拼回全文逐字相等；游标元数据如�
       cursor = out.next_cursor;
       assert.ok(pages < 10, '不收敛');
     }
-    assert.equal(pages, 5);
-    assert.equal(out_total(f), 5);
+    assert.ok(pages >= 2, `字节预算分页应至少 2 页（12000 汉字），实际 ${pages}`);
     assert.equal(collected, text, '拼回全文逐字相等');
   } finally { f.close(); }
 });
