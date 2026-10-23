@@ -1,6 +1,7 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
+import { resolveReasoningReplayPolicy, storedReasoningReplayPolicy, type ReasoningReplayPolicy } from './ds-replay-policy.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -644,9 +645,19 @@ export class TurnSupervisor {
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
         // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
-        const finalMessages = lastText !== null && lastText.length > 0
-          ? [...envelope.messages, { role: 'assistant', content: [{ type: 'text', text: lastText }] } as unknown as OrMessage]
-          : envelope.messages;
+        let finalMessages = envelope.messages;
+        if (lastText !== null && lastText.length > 0) {
+          const finalAssistant: Record<string, unknown> = { role: 'assistant', content: [{ type: 'text', text: lastText }] };
+          // R2（2026-10-23，E08 根因一）：ds_tools_all_turns_v1 政策窗——DS 官方 tools 合同要求
+          // 最终无工具 assistant 的 reasoning_content 也随轨迹保留（下一用户轮回传）；legacy 维持
+          // D01 不保留。仅协议轨迹（window_trajectories/provider_requests），不进 UI/Mariposa/导出。
+          const finalReasoning = (result as { reasoningContent?: unknown }).reasoningContent;
+          if (this.drv()?.kind === 'deepseek' && this.reasoningPolicyOf(o.windowId) === 'ds_tools_all_turns_v1'
+            && typeof finalReasoning === 'string' && finalReasoning.length > 0) {
+            finalAssistant.reasoning_content = finalReasoning;
+          }
+          finalMessages = [...envelope.messages, finalAssistant as unknown as OrMessage];
+        }
         return { result, finalMessages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive };
       }
       if (round === MAX_TOOL_ROUNDS) {
@@ -1156,6 +1167,16 @@ export class TurnSupervisor {
   }
 
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
+  // R2（2026-10-23，E08）：每窗冻结的 reasoning 继续态政策（schema 36；详见 ds-replay-policy.ts）
+  private readonly reasoningPolicyCache = new Map<string, ReasoningReplayPolicy>();
+  private reasoningPolicyOf(windowId: string): ReasoningReplayPolicy {
+    let policy = this.reasoningPolicyCache.get(windowId);
+    if (!policy) {
+      policy = storedReasoningReplayPolicy(this.d.db.prepare('SELECT reasoning_replay_policy FROM windows WHERE id = ?').get(windowId) as { reasoning_replay_policy?: string | null } | undefined);
+      this.reasoningPolicyCache.set(windowId, policy);
+    }
+    return policy;
+  }
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
@@ -1550,7 +1571,7 @@ export class TurnSupervisor {
     // 要么全成要么全回滚）
     const latestGate = this.d.identity.evaluateGate(this.d.db, { driver: this.drv()?.kind ?? 'claude-agent-sdk' });
     if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(this.d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(this.d.config), o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
-    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory });
+    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory, ...(resolveReasoningReplayPolicy({ provider: this.d.config.runtime.provider, deepseek: this.d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
     // pending 键上的 bootstrap 缓存迁移到真实窗 id（同窗不重复拉）
@@ -1755,7 +1776,7 @@ export class TurnSupervisor {
           try {
             const latestGate = d.identity.evaluateGate(d.db, { driver: dv?.kind ?? 'claude-agent-sdk' });
             if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
-            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
+            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
             rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
             // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
             // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
@@ -1915,7 +1936,7 @@ export class TurnSupervisor {
           return;
         }
       }
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -2181,6 +2202,40 @@ export class TurnSupervisor {
     const { reasoning: _prevReasoning, ...orPrevParams } = orEnvelope !== null ? orEnvelope : ({} as OrRequestEnvelope);
     void _prevReasoning;
     const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...(orPrevParams as OrRequestEnvelope), tools: this.windowTools(window.id), messages: [...orTraj.messages, ...catchupMessages] } : null;
+    // R2（2026-10-23，E08）：DS 跨用户轮 wire 守卫——上一笔**实际派发**记录（provider_requests 的
+    // wire_v1 存储投影）与本次将发出的轨迹前缀逐位核对 role/长度/继续态。此前守卫从（可能已剥除
+    // 的）轨迹重建 previous，两份同源派生=结构性失明（审计真实复现：6→7 请求旧 assistant 的
+    // reasoning_content 被剥而无人发现）。不通过忽略 reasoning_content 键让断言通过——legacy 的
+    // 跨轮剥除是 D01 有意变换，按政策核验其被一致执行；新政策下 wire 有而轨迹无=直接拒发。
+    if (dv?.kind === 'deepseek' && orTraj) {
+      // 只比已完成回合的最后一笔实发 wire：失败回合的工具 assistant 在 wire 里而轨迹/追赶投影
+      // 不含它，拿它当前缀基准会假阳性（位置性错位）。已完成回合的 traj 基底==该回合末请求消息。
+      const wireRow = d.db.prepare("SELECT pr.payload_wire_json FROM provider_requests pr JOIN turns t ON t.id = pr.turn_id WHERE pr.window_id = ? AND pr.purpose = 'chat' AND pr.sent_at IS NOT NULL AND pr.outcome IS NOT 'SUPERSEDED_BY_RETRY' AND t.state = 'completed' ORDER BY pr.sent_at DESC, pr.rowid DESC LIMIT 1").get(window.id) as { payload_wire_json: string | null } | undefined;
+      if (wireRow?.payload_wire_json) {
+        let wireMsgs: Array<Record<string, unknown>> | null = null;
+        try { const parsed = JSON.parse(wireRow.payload_wire_json) as { messages?: unknown }; if (Array.isArray(parsed.messages)) wireMsgs = parsed.messages as Array<Record<string, unknown>>; } catch { wireMsgs = null; }
+        if (wireMsgs) {
+          const trajSide = [...orTraj.messages, ...catchupMessages] as Array<Record<string, unknown>>;
+          if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_HISTORY_SHORTENED:${wireMsgs.length}>${trajSide.length}`);
+          const dsPolicy = this.reasoningPolicyOf(window.id);
+          for (let i = 0; i < wireMsgs.length; i++) {
+            const w = wireMsgs[i]!, t = trajSide[i]!;
+            if (w.role !== t.role) throw new Error(`WIRE_TRAJECTORY_DIVERGED:role@${i}`);
+            if (w.role === 'assistant') {
+              const wireHas = typeof w.reasoning_content === 'string' && w.reasoning_content.length > 0;
+              const trajHas = typeof t.reasoning_content === 'string' && t.reasoning_content.length > 0;
+              if (dsPolicy === 'ds_tools_all_turns_v1') {
+                if (wireHas !== trajHas) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning@${i}`);
+                if (wireHas && w.reasoning_content !== t.reasoning_content) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning_text@${i}`);
+              } else if (trajHas) {
+                // legacy：跨轮轨迹不得携带继续态（D01 剥除必须一致执行；wire 同轮有、轨迹无=正常）
+                throw new Error(`WIRE_TRAJECTORY_DIVERGED:legacy_reasoning_leak@${i}`);
+              }
+            }
+          }
+        }
+      }
+    }
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单
@@ -2546,9 +2601,12 @@ export class TurnSupervisor {
         ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }]
         : [];
       // D01（审计 3655d60）：DS 的 reasoning_content 只是同轮工具续传的协议继续态——落轨迹前剥除，
-      // 下一用户回合绝不携带（DS 官方合同：跨回合回传不被允许且无意义）。provider_requests 留的是
-      // 实际发送副本，不剥（对账需要真实形状）。
-      const trajMessages: OrMessage[] = dv?.kind === 'deepseek'
+      // 下一用户回合绝不携带（deepseek-chat 时代官方合同）。
+      // R2（2026-10-23，E08 根因二）：剥除仅适用于 legacy_turn_only 政策窗；ds_tools_all_turns_v1
+      // （官方直连 deepseek-flash/v4-pro 新窗）按当前官方 tools 合同保留全部轮次继续态。
+      // provider_requests 留的是实际发送副本，不剥（对账需要真实形状）。
+      const stripDsReasoning = dv?.kind === 'deepseek' && this.reasoningPolicyOf(window.id) === 'legacy_turn_only';
+      const trajMessages: OrMessage[] = stripDsReasoning
         ? orFinalMessages.map((m) => (m.role === 'assistant' && typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string'
           ? (({ reasoning_content: _strip, ...rest }) => rest as OrMessage)(m as Record<string, unknown> & OrMessage)
           : m))

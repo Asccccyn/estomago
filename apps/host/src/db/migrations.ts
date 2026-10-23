@@ -1200,4 +1200,13 @@ CREATE TABLE oido_source_bindings(
 );
 CREATE INDEX idx_oido_source_asset ON oido_source_bindings(asset_id);
 ` });
+
+// R2（2026-10-23，E08/DS 新型号协议适配）：每窗冻结的 reasoning 继续态回传政策。
+// NULL = legacy_turn_only（旧 D01：跨用户轮剥除，deepseek-chat/代理/旧窗默认）；
+// 'ds_tools_all_turns_v1' = 仅官方直连 deepseek-flash/v4-pro 的新窗（带 tools 的后续请求
+// 按当前官方合同回传全部轮次 assistant 的 reasoning_content，含最终无工具回复）。
+// additive 列：旧窗 NULL 不回填、不因升级被重标。
+MIGRATIONS.push({ version: 36, name: 'windows_reasoning_replay_policy', sql: `
+ALTER TABLE windows ADD COLUMN reasoning_replay_policy TEXT;
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
