@@ -1,5 +1,7 @@
 # estómago
 
+- 2026-10-23（隔离审计修复，未部署）：同轮浮现/自主预约/睡眠保温、真实派发预算、正式SSE发布、DS协议与异常轨迹收口；EST407/M221定向验证通过，生产配置回退仍待发布处理。代码 `3aa0164`。[联合交接](docs/reports/SURFACING_WAKE_KEEPWARM_AUDIT_20261023.md)。
+
 - 2026-10-22（分支 `voice-joint-20261022`，未部署）：三仓联合语音批 `JOINT-VOICE-20261022`（林石见施工包）est 部分——oído 深听接入（integrations.oido，默认未配置零行为）；无转写语音门控改造（听觉可用→结构化引用进入可按需深听，不可用→阻断语义不变，历史投影零变化）；oido_analyze/oido_get façade（会话绑定权限门）；前端录音暂停/试听/录音时暂停播放；媒体 embedding worker（fake 后端，EG2 真实权重未下载）+图片语义索引 v34+media_search（权限门/不混库/删除失效）。commit `c45504f`+`769e3a4`。**2026-10-22 她批已切生产**：发布目录 `voice-joint-20261022`（含保温批 v33 一并生效）+v34 迁移；oído/媒体 worker（EG2 真实权重 rev `914f7f89142e`）launchd 上线（`com.charstarearth.oido`/`com.charstarearth.media-embedding`）；合成 WAV 生产链路烟测过并已清理。
 - 2026-10-22（分支 `wake-keepwarm-20261022`，未部署）：她六项反馈批——回忆门宽召回（116 条生产判定全 skip 的修正：陈述式回忆触发+词表扩变体，原 66 条矩阵零回归）；里程碑条目化（read/add/revise/remove）；浮现区挂载即拉取默认展开；回最新改微信式圆点；MCP 39 工具勾选清单待她批；掉缓存取证=OR 上游间歇丢失（同 1019，$0.199 一次，前缀指纹无漂移）。I_FORBIDDEN 已修（mariposa 白名单热更新 14→44 项，生产已生效，见 mariposa `23b777d`）。[六项报告](docs/reports/SIX_ITEMS_20261022.md)。
 - 2026-10-21（已部署）：三级记忆读取，首层保留一个 memory_ref，普通详情不带来源纠错元数据；关系/原文可直接读取，沿用同桶原文链路。代码 E `9a81173` / M `5c8a816`，数据与缓存指纹不变。[验收、兼容与回滚](docs/reports/THREE_TIER_MEMORY_PRODUCTION_20261021.md)。
