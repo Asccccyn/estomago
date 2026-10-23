@@ -67,7 +67,22 @@ export class OidoAdapter {
   }
 
   /** 按需深听：有界同步等待内完成→概览；未完成→票据。 */
-  async analyze(args: { assetId: string; rangeMs?: [number, number]; waitMs?: number; signal?: AbortSignal; timeoutMs?: number }): Promise<OidoOverview | OidoTicket> {
+  /** R6′（2026-10-23）：删除传播——按 oído audio_id 物理清理远端副本与派生物。
+   *  404=已删（幂等成功）；网络/5xx=抛 OIDO_UNAVAILABLE 由意图重试层退避。 */
+  async deleteAudio(args: { audioId: string; signal?: AbortSignal; timeoutMs?: number }): Promise<{ deleted: boolean }> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/v1/audio/${encodeURIComponent(args.audioId)}`, {
+        redirect: 'error', method: 'DELETE', headers: this.headers(),
+        signal: lifetime(args.signal, args.timeoutMs ?? 10_000),
+      });
+    } catch { throw new Error('OIDO_UNAVAILABLE'); }
+    if (res.status === 404) return { deleted: true };
+    if (!res.ok) throw new Error('OIDO_UNAVAILABLE');
+    return { deleted: true };
+  }
+
+  async analyze(args: { assetId: string; rangeMs?: [number, number]; waitMs?: number; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number }): Promise<OidoOverview | OidoTicket> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/analyses`, {
@@ -76,6 +91,7 @@ export class OidoAdapter {
           audio_ref: `est:${args.assetId}`,
           profile: 'prosody',
           ...(args.rangeMs ? { range_ms: args.rangeMs } : {}),
+          ...(args.idempotencyKey ? { idempotency_key: args.idempotencyKey } : {}),
           wait_ms: args.waitMs ?? 6000,
         }),
         signal: lifetime(args.signal,args.timeoutMs ?? (args.waitMs ?? 6000) + 8000),

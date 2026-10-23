@@ -9,6 +9,7 @@ import net from 'node:net';
 import dns from 'node:dns';
 import https from 'node:https';
 import type { Db } from '../db/connection.ts';
+import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 
@@ -260,6 +261,22 @@ export class MediaService {
     const byMsg = (this.db.prepare('SELECT COUNT(*) n FROM message_attachments WHERE asset_id = ?').get(assetId) as { n: number }).n;
     const byRef = (this.db.prepare("SELECT COUNT(*) n FROM asset_external_refs WHERE asset_id = ? AND state IN ('protected','committed')").get(assetId) as { n: number }).n;
     return { referenced: byMsg > 0 || byRef > 0, by_message_revisions: byMsg, by_external_refs: byRef };
+  }
+
+  /** R6′（2026-10-23，她批 R6P 方案）：源资产删除原语——state→missing（引用守卫外的显式删除）。
+   *  若该语音有 oído 导入回执，同事务写删除传播意图（远端物理清理由独立重试循环收口，
+   *  404=已删幂等成功；失败退避下跳再试；重启恢复=表即状态）。解除单条分析引用不删数据
+   *  ——那只是删 oido_source_bindings 行（撤权不毁原声，其他会话可共享同一远端资产）。 */
+  markAssetMissing(assetId: string): void {
+    const now = new Date().toISOString();
+    tx(this.db, () => {
+      this.db.prepare("UPDATE media_assets SET state = 'missing', updated_at = ? WHERE id = ?").run(now, assetId);
+      const receipt = this.db.prepare('SELECT oido_audio_id FROM oido_ingest_receipts WHERE est_asset_id = ?').get(assetId) as { oido_audio_id: string } | undefined;
+      if (receipt) {
+        this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
+          ON CONFLICT(est_asset_id) DO UPDATE SET updated_at=excluded.updated_at`).run(assetId, receipt.oido_audio_id, now, now);
+      }
+    });
   }
 
   /** 消息附件绑定：按 (message, revision, position) 固定；新修订复制沿用（§3.3 编辑保留原附件）。 */

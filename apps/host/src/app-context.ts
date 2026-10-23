@@ -37,6 +37,7 @@ import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { runMediaBackfillTick } from './media/index/backfill.ts';
+import { retryOneOidoDelete } from './integrations/oido/delete-retry.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -74,6 +75,9 @@ export class Host {
   private mediaBackfillTicking = false;
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
+  private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
+  private oidoDeleteTimer: ReturnType<typeof setInterval> | null = null;
+  private oidoDeleteAbort: AbortController | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
@@ -105,6 +109,7 @@ export class Host {
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
+    this.oidoRef = deps.oido ?? null;
     this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
@@ -316,6 +321,7 @@ export class Host {
       bgSettings,
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
+      oido: oido ?? undefined,
       bgExecutorReady,
       taskService,
       activity,
@@ -361,6 +367,13 @@ export class Host {
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
     this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
     this.mediaBackfillTimer.unref?.();
+    // R6′：oído 删除传播重试——独立定时器（≤1 条/跳，指数退避；表即状态，重启恢复）
+    this.oidoDeleteTimer = setInterval(() => {
+      if (!this.oidoRef) return;
+      this.oidoDeleteAbort = this.oidoDeleteAbort ?? new AbortController();
+      void retryOneOidoDelete(this.db, this.oidoRef, this.oidoDeleteAbort.signal).catch(() => {});
+    }, 30_000);
+    this.oidoDeleteTimer.unref?.();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
@@ -380,6 +393,8 @@ export class Host {
   async stop(): Promise<void> {
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
+    if (this.oidoDeleteTimer) { clearInterval(this.oidoDeleteTimer); this.oidoDeleteTimer = null; }
+    this.oidoDeleteAbort?.abort(); // R6′：停删除传播重试
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代

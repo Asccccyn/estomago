@@ -1294,10 +1294,21 @@ export class HostToolExecutor {
       const vt = this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND conversation_id = ? AND content_sha256 = ? AND state = 'ready'").get(assetId, ctx.roomId, row.content_sha256) as { derived_text: string; derived_source: string } | undefined;
       const transcript = vt?.derived_text ? { text: vt.derived_text, source: vt.derived_source ?? 'siren:transcribe' } : null;
       ctx.signal?.throwIfAborted();
-      await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript, signal:ctx.signal });
+      const receipt = await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript, signal:ctx.signal });
+      // R6′（2026-10-23）：导入回执持久化——est asset ↔ oído audio_id 映射（此前被丢弃，
+      // 删除传播无从定位远端副本；幂等 upsert，deduplicated 指向既有资产时如实更新）
+      this.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
+        .run(assetId, row.content_sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString());
       ctx.signal?.throwIfAborted();
       if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
-      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, signal:ctx.signal });
+      // R6′：操作幂等键=（turn,tool_call）——同轮重试同键（服务端幂等去重）；版本升级后
+      // 同键异 digest 会 409——如实透传"分析合同已变更"，模型重新发起即新键
+      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`, signal:ctx.signal }).catch((err: Error) => {
+        if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
+          throw new Error('OIDO_CONTRACT_CHANGED');
+        }
+        throw err;
+      });
       ctx.signal?.throwIfAborted();
       if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
       const output=oidoModelView(result as unknown as Record<string,unknown>);
@@ -1307,6 +1318,7 @@ export class HostToolExecutor {
       if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
       const msg = String((err as Error).message ?? err);
       if (msg.startsWith('OIDO_UNAVAILABLE')) return { ok: false, output: { error_code: 'OIDO_UNAVAILABLE', detail: 'oído 服务当前不可达；稍后可用 oido_analyze 重试' } };
+      if (msg.startsWith('OIDO_CONTRACT_CHANGED')) return { ok: false, output: { error_code: 'OIDO_CONTRACT_CHANGED', detail: '分析合同已变更（版本升级）；请重新发起 oido_analyze（新键新分析）' } };
       return { ok: false, output: { error_code: msg.slice(0, 40) || 'OIDO_FAILED', detail: msg.slice(0, 200) } };
     }
   }

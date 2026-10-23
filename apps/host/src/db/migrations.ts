@@ -1209,4 +1209,27 @@ CREATE INDEX idx_oido_source_asset ON oido_source_bindings(asset_id);
 MIGRATIONS.push({ version: 36, name: 'windows_reasoning_replay_policy', sql: `
 ALTER TABLE windows ADD COLUMN reasoning_replay_policy TEXT;
 ` });
+
+// R6′（2026-10-23，她批 R6P 方案）：oído 导入定位与删除传播意图。
+//  - oido_ingest_receipts：est asset ↔ oído audio_id 持久映射（此前 host-tools 调
+//    ingestVoice 后丢弃回执，删除传播无从定位远端副本）
+//  - oido_delete_intents：est 源删除 → 远端物理清理的 outbox 式重试意图
+//    （成功/404=删除行；失败退避下跳再试；重启恢复=表即状态）
+MIGRATIONS.push({ version: 37, name: 'oido_ingest_and_delete_intents', sql: `
+CREATE TABLE oido_ingest_receipts(
+ est_asset_id TEXT PRIMARY KEY,
+ content_sha256 TEXT NOT NULL,
+ oido_audio_id TEXT NOT NULL,
+ deduplicated INTEGER NOT NULL,
+ ingested_at TEXT NOT NULL
+);
+CREATE TABLE oido_delete_intents(
+ est_asset_id TEXT PRIMARY KEY,
+ oido_audio_id TEXT NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
