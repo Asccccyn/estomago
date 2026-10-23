@@ -69,10 +69,13 @@ class Eg2Backend:
         )
         self.backend = "eg2"
 
-    def encode(self, modality: str, raw: bytes) -> list[float]:
+    def encode(self, modality: str, raw: bytes):
         with self._lock:
             if modality == "text":
-                text = raw.decode("utf-8", errors="strict")
+                try:
+                    text = raw.decode("utf-8", errors="strict")
+                except UnicodeDecodeError as exc:
+                    raise ValueError("INVALID_TEXT_ENCODING: text must be valid UTF-8") from exc
                 vec = self._model.encode(
                     [QUERY_PROMPT + text], normalize_embeddings=True
                 )[0]
@@ -182,7 +185,11 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(413, {"code": "TEXT_LIMIT", "message": "text too long"})
                 return
             if BACKEND == "eg2":
-                vec = backend_impl().encode(modality, raw)
+                try:
+                    vec = backend_impl().encode(modality, raw)
+                except ValueError as exc:
+                    self._json(422, {"code": str(exc).split(":")[0], "message": str(exc)[:120]})
+                    return
             else:
                 seed = hashlib.sha256(modality.encode() + b":" + raw).digest()
                 vec = _fake_vector(seed)
