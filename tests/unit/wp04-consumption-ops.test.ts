@@ -148,8 +148,11 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
   const out = await tools.execute('memory_recall_next', { __tool_call_id: 'c1', result_set_id: 'rps_x' }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output));
-  assert.equal((out.output as Record<string, unknown>).judge_policy_revision, 7, '纪元随页透传');
-  assert.equal((out.output as Record<string, unknown>).judged_count, 0, 'judged_count 随页透传');
+  // R1′（2026-10-23）：judge_policy_revision/judged_count 属诊断字段，按模型输出合同
+  // （bd677ed）不进普通投影；judge 状态以 judgement 等价表达（off=unjudged）
+  assert.equal((out.output as Record<string, unknown>).judgement, 'unjudged', 'judge off 状态以 judgement 表达');
+  assert.equal((out.output as Record<string, unknown>).judge_policy_revision, undefined);
+  assert.equal((out.output as Record<string, unknown>).judged_count, undefined);
 
   // off 首页缺 pagination → 结构化拒绝（走 memory_recall 首页门）
   const homeOff = { transport: null as unknown };
@@ -346,8 +349,10 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
     for (const e of (out.output as { entries: Array<{ seq?: number }> }).entries) {
       if (e.seq) seenIds.add(e.seq);
     }
-    const o = out.output as { has_more?: boolean; next_cursor?: Record<string, unknown> | null };
-    cursor = o.has_more ? o.next_cursor! : null;
+    // R1′（2026-10-23）：conversation_read 投影（bd677ed 合同）以 next_cursor 存在性为
+    // 续读信号（has_more 不再单独输出）；"读尽"验收不变——翻到无 cursor 为止须覆盖全部
+    const o = out.output as { next_cursor?: Record<string, unknown> | null };
+    cursor = o.next_cursor ?? null;
     pages += 1;
     assert.ok(pages < 30, 'range 不收敛');
   } while (cursor);
@@ -381,8 +386,8 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
         addRange(`m${e.seq}`, 0, [...(e.text ?? '')].length, e.text ?? '');
       }
     }
-    const o = out.output as { has_more?: unknown; next_cursor?: Record<string, unknown> | null };
-    oc = o.has_more ? o.next_cursor! : null;
+    const o = out.output as { next_cursor?: Record<string, unknown> | null };
+    oc = o.next_cursor ?? null; // R1′(1023)：next_cursor 存在性=续读信号（同上）
     pages += 1;
     assert.ok(pages < 30, 'older 不收敛');
   } while (oc);

@@ -51,7 +51,9 @@ test('找话①：省略 channel 的首轮仍走 event（旧行为不变）', as
   assert.equal(out.ok, true);
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
   assert.deepEqual(qp.channels, ['event'], '缺省=查事件');
-  assert.equal(out.output.channel, 'event', '结果回显目标');
+  // R1′（1023）：channel 回显属 scope echo，按模型输出合同（bd677ed）不进普通投影——
+  // 模型自己的调用参数即目标；执行保真由上方 query_plan 断言承担
+  assert.equal('channel' in out.output, false);
   db.close();
 });
 
@@ -67,7 +69,7 @@ test('找话②：channel=words 首轮真实走 words 通道、原话候选穿�
   assert.equal(calls[0]!.cap, 'memory.recall.start');
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
   assert.deepEqual(qp.channels, ['words'], 'start 携带 words');
-  assert.equal(out.output.channel, 'words');
+  assert.equal('channel' in out.output, false); // R1′(1023)：scope echo 不回显，见①
   assert.ok(JSON.stringify(out.output.candidates).includes('我们去看海吧'), '原话真实穿透到模型可见层');
   db.close();
 });
@@ -94,7 +96,7 @@ test('找话③b：带 channel=words 的续查保持 words（关键词不丢目�
   assert.equal(calls[0]!.cap, 'memory.recall.refine');
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
   assert.deepEqual(qp.channels, ['words'], 'refine 保持 words');
-  assert.equal(out.output.channel, 'words');
+  assert.equal('channel' in out.output, false); // R1′(1023)：scope echo 不回显，见①
   db.close();
 });
 
@@ -147,8 +149,10 @@ test('深搜①：deep_search 走 memory.recall.round2 独立入口（session+re
   assert.equal(p.session_id, 'rs_w');
   assert.equal(p.reason, 'EVIDENCE_INSUFFICIENT');
   assert.ok(String(p.operation_id).startsWith('es-r2-'), '宿主派生幂等 op');
-  assert.equal(out.output.channel, 'raw', '深搜结果回显 raw');
-  assert.equal(out.output.deep_search, true);
+  // R1′（1023）：channel/deep_search 回显属 scope echo，按模型输出合同（bd677ed）不进
+  // 普通投影——执行保真由上方 round2 入口/session/reason/op 断言承担
+  assert.equal('channel' in out.output, false);
+  assert.equal('deep_search' in out.output, false);
   assert.ok(JSON.stringify(out.output.candidates).includes('我们去看海吧'), '原文证据穿透');
   db.close();
 });

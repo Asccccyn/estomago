@@ -70,8 +70,10 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   // withSdkEnv=false：完全不给 SDK 前提（无 sdk_version 锁定/无订阅确认/无探针证据）——审计 F01 场景
   const identityPatch = { expected_identity_version: 'test-v1', expected_i_version: 'test-i-1', expected_rules_version: 'test-rules-1' };
   const base = opts.withSdkEnv === false
-    ? { runtime: { provider: 'openrouter' }, identity: identityPatch, openrouter: { model: MODEL } }
-    : { runtime: { provider: 'openrouter', sdk_version: '0.0.0-test', auth_and_billing_verified: true }, identity: identityPatch, openrouter: { model: MODEL } };
+    // R1′（2026-10-23）：af4fb6f 起 tool_schema_mode 默认 deferred——本测试测直接工具调用
+    // 路径（memory_hold 免三跳），显式钉 legacy（configOver 仍可覆盖）
+    ? { runtime: { provider: 'openrouter', tool_schema_mode: 'legacy' }, identity: identityPatch, openrouter: { model: MODEL } }
+    : { runtime: { provider: 'openrouter', tool_schema_mode: 'legacy', sdk_version: '0.0.0-test', auth_and_billing_verified: true }, identity: identityPatch, openrouter: { model: MODEL } };
   const config = buildConfig({ ...base, ...(opts.configOver ?? {}) });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));

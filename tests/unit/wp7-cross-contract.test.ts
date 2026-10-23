@@ -45,12 +45,14 @@ test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端�
   const first = await executor.execute('memory_recall', { __tool_call_id: 'c1', query: '搬家' }, CTX);
   assert.equal(first.ok, true, JSON.stringify(first.output).slice(0, 200));
   const o = first.output as Record<string, unknown>;
-  // 字段保真（真实 M 包逐项穿透，缺一即败）
-  assert.equal(o.judge_mode, 'off');
-  assert.equal(o.judgement_status, 'bypassed_by_user');
-  assert.equal((o.pagination as Record<string, unknown>).candidate_total, 15);
+  // R1′（1023，模型输出合同 bd677ed）：judge_mode/judgement_status/candidate_total/
+  // pagination_note 不再逐字段回显——judge 状态以 judgement 等价表达（off=unjudged、
+  // 非常规状态原样）；翻页续读信号=pagination 块存在性（含 result_set_id/next_cursor/
+  // has_more）。业务实质（双页并集/有界交付/会话范围）不变。
+  assert.equal(o.judgement, 'unjudged', 'judge off 以 judgement 表达');
+  assert.equal((o.pagination as Record<string, unknown>).next_cursor !== undefined, true, '翻页续读引用到达模型可见层');
+  assert.equal((o.pagination as Record<string, unknown>).has_more, true, 'R1′(1023) 旧窗兼容：块内恒带 has_more——旧冻结描述读 pagination.has_more 仍可完整续读');
   assert.equal((o.candidates as unknown[]).length, 10);
-  assert.ok(String(o.pagination_note).includes('memory_recall_next'), '翻页入口到达模型可见层');
   // 续页：真实 page 包经 memory_recall_next
   const next = await executor.execute('memory_recall_next', {
     __tool_call_id: 'c2',
@@ -61,7 +63,7 @@ test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端�
   assert.equal(next.ok, true, JSON.stringify(next.output).slice(0, 200));
   const n = next.output as Record<string, unknown>;
   assert.equal((n.candidates as unknown[]).length, 5);
-  assert.equal((n.pagination as Record<string, unknown>).has_more, false);
+  assert.equal('pagination' in n, false, '尾页无 pagination 块=本次结果集已尽（R1′ 存在性信号）');
   // 双页并集=15（全候选可取，不截于 3/10）
   assert.equal(10 + 5, 15);
   assert.equal(calls[0]!.payload.conversation_scope, 'c1');
@@ -77,10 +79,11 @@ test('I01：on 模式真实包——有界交付字段保真（judgement_status=
   const out = await executor.execute('memory_recall', { __tool_call_id: 'c', query: '搬家' }, CTX);
   assert.equal(out.ok, true);
   const o = out.output as Record<string, unknown>;
-  assert.equal(o.judge_mode, 'on');
-  assert.equal(o.judgement_status, 'evaluated');
+  // R1′（1023）：on+evaluated 属常规完成态——judgement 不输出（无异常即成功）；
+  // 有界交付 0-3 卡与尾页无 pagination 块语义不变
+  assert.equal('judgement' in o, false);
   assert.equal((o.candidates as unknown[]).length, 3, '有界交付保持 0-3 卡');
-  assert.equal((o.pagination as Record<string, unknown>).has_more, false);
+  assert.equal('pagination' in o, false);
   db_close(root);
 });
 

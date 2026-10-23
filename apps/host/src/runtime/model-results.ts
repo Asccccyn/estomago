@@ -84,7 +84,9 @@ function recall(v: Obj): Obj {
   if(coverage.truncated===true || coverage.retrieval_scope_exhaustive===false)out.coverage='incomplete';
   if(list(v.invalidated).length)out.invalidated=true;
   const p=obj(v.pagination);
-  if(p.has_more===true){out.pagination=select(p,['result_set_id','next_cursor']);if(!out.pagination.result_set_id&&v.result_set_id)out.pagination.result_set_id=v.result_set_id;}
+  // R1′（2026-10-23）：块内恒带 has_more:true——旧冻结描述（读 pagination.has_more）与
+  // 新描述（读块存在性）同一形状都成立；块不存在=本次固定结果集已尽（非全库穷尽）。
+  if(p.has_more===true){out.pagination=select(p,['result_set_id','next_cursor']);out.pagination.has_more=true;if(!out.pagination.result_set_id&&v.result_set_id)out.pagination.result_set_id=v.result_set_id;}
   if(v.search_status && v.search_status!=='FOUND')out.status=v.search_status;
   return out;
 }

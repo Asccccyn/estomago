@@ -150,7 +150,9 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
   const out = await tools.execute('memory_hold', {
     __tool_call_id: 'call-j54',
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
-    quotes: [{ seq: 1 }],
+    // R1′（2026-10-23）：60c6998 起 F-J-54 绑定核对按事件选集（source_ranges）算；
+    // quotes 走我们的话勾选链路（1018 批），不再计入本核对。驱动改为 source_ranges。
+    source_ranges: [{ start_seq: 1, end_seq: 1 }],
   }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54' });
   return { out, reviews };
 }
@@ -174,8 +176,9 @@ test('F-J-54：带 1 条选集而回执 0 个绑定 → HOLD_RECEIPT_BINDING_MIS
   const { out, reviews } = await execHoldWithBindingCount(db, 0, msg.id, content);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'HOLD_RECEIPT_BINDING_MISMATCH');
-  assert.equal(out.output.expected, 1);
-  assert.equal(out.output.got, 0);
+  // R1′（2026-10-23）：expected/got 诊断数字按模型输出合同（bd677ed+docs/contracts/
+  // model-result-whitelist.md）不进普通投影——错误码即失败信号，恢复由宿主按原 op
+  // 核实。业务反例（可疑回执=unknown 账本、不换 op 重写桶）保留在下方账本断言。
   const effects = db.prepare('SELECT state FROM tool_side_effects').all() as Array<{ state: string }>;
   assert.ok(effects.some((e) => e.state === 'unknown'), '可疑回执=结果不明（换窗前 recoverUnknownEffects 按原 op 核实，不重写桶）');
   db.close();

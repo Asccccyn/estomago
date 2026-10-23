@@ -61,19 +61,25 @@ test('R01：真实 registry 包（单层信封）→ 候选/session/状态到达
   assert.ok(Array.isArray(out.output.candidates) && out.output.candidates.length === (packet.candidates as unknown[]).length,
     'FOUND 的候选正文必须真的到达主模型');
   assert.equal(out.output.recall_session_id, packet.recall_session_id);
-  assert.equal(out.output.search_status, packet.search_status);
-  assert.equal((out.output as Record<string, unknown>).idempotent_replay, undefined, '首次成功不带重放标记');
+  // R1′（2026-10-23）：模型输出合同（bd677ed）下 FOUND=正常命中静默（无异常即成功），
+  // 仅非 FOUND 状态可见（recall() 的 status 分支）；信封硬门（缺必需字段=RECALL_ENVELOPE_INVALID）
+  // 在投影前的工具层保留（见下方双层信封反例）。
+  assert.equal(out.output.status, undefined, 'FOUND 静默=新合同语义（非 FOUND 才输出 status）');
+  assert.equal((out.output as Record<string, unknown>).idempotent_replay, undefined, '重放标记由宿主管理，不进普通投影');
 });
 
-test('R01：同 ref 重放（顶层 idempotent_replay）→ 标记透传', async () => {
+test('R01：同 ref 重放（顶层 idempotent_replay）→ 可见结果与首发一致（重放不变形）', async () => {
   const packet = JSON.parse(foundBody).data as Record<string, unknown>;
   const replayBody = JSON.stringify({ ok: true, data: { ...packet, idempotent_replay: true } });
   const tools = toolsWithHttpBody((cap) => (cap === 'memory.recall.start' ? replayBody : null));
   const out = await tools.execute('memory_recall', { __tool_call_id: 'call-e2', query: '上次聊中秋看月亮' }, CTX);
   tools.close();
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
-  assert.equal((out.output as Record<string, unknown>).idempotent_replay, true, '重放标记透传到主模型输出');
+  // R1′（2026-10-23）：重放=同请求同结果，宿主管理幂等（R01 业务反例保留为：
+  // 重放结果与首发完全一致、无二次副作用征兆、session 不变——不是把重放标记送模）
+  assert.ok(Array.isArray(out.output.candidates) && out.output.candidates.length === (packet.candidates as unknown[]).length, '重放候选与首发一致');
   assert.equal(out.output.recall_session_id, packet.recall_session_id);
+  assert.equal((out.output as Record<string, unknown>).idempotent_replay, undefined, '重放标记由宿主管理，不进普通投影');
 });
 
 test('R01：冻结版双层信封（反例原始形状）→ 结构化报错，不再空候选装成功', async () => {

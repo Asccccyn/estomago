@@ -251,10 +251,14 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
   ctx.db.close();
 });
 
-test('M01-M04/C02: full memory text and dates only; no reference, notice or summary', () => {
+test('M01-M04/C02: full memory text, dates and one memory_ref each (three-tier read contract)', () => {
   const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
   const second = {...item,event_id:'e2',memory_date:null,event_text:'第二个事件'};
-  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{date:'2026-07-09',text:item.event_text},{date:null,text:second.event_text}]});
+  // R1′（1023）：9a81173 起每条浮现记忆带一个短 memory_ref（三级读合同）；正文/日期
+  // 原样，无 notice/summary
+  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[
+    {memory_ref:memoryRefFor('sdr1'),date:'2026-07-09',text:item.event_text},
+    {memory_ref:memoryRefFor('sdr1'),date:null,text:second.event_text}]});
   assert.equal(renderAugmentation([]),'');
 });
 
@@ -326,11 +330,15 @@ test('R18: missing safety service blocks manual rotation instead of taking a leg
   ctx.db.close();
 });
 
-test('M02: exact event minutes only; untrusted or invalid dates never become occurrence claims', () => {
+test('M02: minutes rendered for available dates; only missing/invalid dates are null (10-21 contract)', () => {
   const item = { event_id: 'e', memory_id: 'id', memory_version: '1', memory_date: '2026-07-09T01:12:35Z', date_confidence: 'exact', event_text: 'body', body_hash: 'hash', detail_ref: 'detail' };
   const refs = new Map([['e', memoryRefFor('detail')]]);
   assert.ok(renderAugmentation([item], refs).includes('2026-07-09 09:12'));
-  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, date_confidence: 'unknown' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
+  // R1′（1023，她裁定）：合法日期 + date_confidence='unknown' 仍保留日期（已有日期不
+  // 因 confidence 抹掉，model-result-whitelist.md/正向测试 model-results.test.ts）；
+  // 只有缺失（null）或非法（2026-02-30）日期才渲染为 null
+  assert.ok(renderAugmentation([{ ...item, date_confidence: 'unknown' }], refs).includes('2026-07-09 09:12'), 'unknown confidence 保留合法日期');
+  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
 });
 
 test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampering still fails', async () => {

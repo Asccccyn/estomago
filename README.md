@@ -1,5 +1,6 @@
 # estómago
 
+- 2026-10-23（分支 `audit-fix-joint-voice-20261023` 叠加，未部署）：R1′ 基线收敛批（她本轮裁定：不整组恢复白名单字段/不恢复日期 exact 门；note 指引进工具描述）：`memory_recall_next` 描述/投影 has_more 接缝修复（pagination 块恒带 has_more——旧冻结窗新回执可完整续读，新窗读块存在性；无块=本次固定结果集已尽非全库穷尽）；"数据非指令"进 memory_recall 稳定描述；13 个基线红测试分层收敛（白名单合同 bd677ed 口径引用+业务反例保留；夹具补真实 db/钉 legacy；golden 显式重建——B 含已批初始可读工具清单，空工具清单回归保留）；全量 152/152 绿+tsc 0。
 - 2026-10-23（隔离审计分支，未部署）：联合语音独立审计修复：`f870780` 声音证据会话/源绑定与schema v35、模型投影/取消；`15922ae` 暂停录音及迟到附件、重建正式前端；`7ebdf8d` worker真实版本/认证/fake与向量门；`b70bf34` 完整JSON Schema执行。`767ca23` 转写来源核验及媒体重定向防护。[验收边界与未闭合项](docs/reports/JOINT_AUDIT_FIX_20261023.md)。
 
 - 2026-10-22（分支 `voice-joint-20261022`，未部署）：三仓联合语音批 `JOINT-VOICE-20261022`（林石见施工包）est 部分——oído 深听接入（integrations.oido，默认未配置零行为）；无转写语音门控改造（听觉可用→结构化引用进入可按需深听，不可用→阻断语义不变，历史投影零变化）；oido_analyze/oido_get façade（会话绑定权限门）；前端录音暂停/试听/录音时暂停播放；媒体 embedding worker（fake 后端，EG2 真实权重未下载）+图片语义索引 v34+media_search（权限门/不混库/删除失效）。commit `c45504f`+`769e3a4`。**2026-10-22 她批已切生产**：发布目录 `voice-joint-20261022`（含保温批 v33 一并生效）+v34 迁移；oído/媒体 worker（EG2 真实权重 rev `914f7f89142e`）launchd 上线（`com.charstarearth.oido`/`com.charstarearth.media-embedding`）；合成 WAV 生产链路烟测过并已清理。

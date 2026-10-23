@@ -99,3 +99,13 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   assert.equal((refused.output as { error_code: string }).error_code, 'TOOL_DEFINITION_NOT_SEEN');
   db.close();
 });
+
+// R1′（2026-10-23，D2 裁定）：空工具清单回归——显式配置空数组=如实无 tools/initial 段
+// （renderInitialVisibleText 返回 null），空资料窗不带占位 B；B 是否携带仅由清单决定
+test('空工具清单：显式配置 [] → 无 tools/initial 段（renderInitialVisibleText=null）', async () => {
+  const { makeDb } = await import('../helpers.ts');
+  const { db } = makeDb(tempRoot('tiv-empty-'), { seed: false });
+  db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES ('tools_initial_visible','[]','2026-10-23T00:00:00Z')").run();
+  assert.equal(renderInitialVisibleText(db), null, '空清单=无注入');
+  db.close();
+});
