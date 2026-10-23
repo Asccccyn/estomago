@@ -5,7 +5,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { extractHypotheses } from '../../apps/host/src/memory-surfacing/trigger.ts';
-import { estimateTokens, memoryRefFor, renderAugmentation, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { executeMemoryReadFull } from '../../apps/host/src/memory-surfacing/detail-tool.ts';
 
 const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1',
@@ -73,14 +73,14 @@ test('JA-S02: a late source result never drifts from B to C', async () => {
 
 test('JA-S03: packet budget is counted once and all three independent winners fit', async () => {
   const refs = new Map(items.map(x => [x.event_id, memoryRefFor(x.detail_ref)]));
-  const budget = estimateTokens(renderAugmentation(items, refs));
+  const budget = estimateTokens(SURFACE_HOST_NOTICE + renderAugmentation(items, refs));
   const f = fixture({ selected: items, budget });
   try {
     const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
     const b = a;
     const result = await f.augment(b);
     assert.equal(result?.items.length, 3);
-    assert.equal(estimateTokens(result!.text), budget);
+    assert.equal(estimateTokens(SURFACE_HOST_NOTICE + result!.text), budget);
   } finally { await f.close(); }
 });
 

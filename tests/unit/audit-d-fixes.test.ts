@@ -222,7 +222,7 @@ function composeSup(root: string, transport: OrTransport, configOver: Record<str
   return { db, config, messages, windows, supervisor, trajectory };
 }
 
-test('D01：DS thinking 工具续轮回传 reasoning_content；落轨迹前剥除（跨回合不携带）', async () => {
+test('D01更新：带tools的DS保留opaque协议继续态，下一用户回合不改已发送历史', async () => {
   const root = tempRoot('d01-');
   const seenPayloads: Array<Record<string, unknown>> = [];
   let gen = 0;
@@ -249,7 +249,12 @@ test('D01：DS thinking 工具续轮回传 reasoning_content；落轨迹前剥�
   const win = ctx.windows.activeWindow('c1')!;
   const traj = ctx.trajectory.forWindow(win.id)!;
   const trajJson = JSON.stringify(traj.messages);
-  assert.equal(trajJson.includes('reasoning_content'), false, '轨迹正本剥除——下一用户回合绝不携带（D01/DS 合同）');
+  assert.equal(trajJson.includes('reasoning_content'), true, '2026-10-23已核DS带tools合同要求保留opaque继续态');
+  const next = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '继续聊天', clientMessageId: 'r2', occurredAt: new Date().toISOString() });
+  ctx.supervisor.enqueue(next.turnId); await ctx.supervisor.waitIdle();
+  const replay = (seenPayloads.at(-1)!.messages as Array<Record<string, unknown>>).find(m => m.role === 'assistant' && Array.isArray(m.tool_calls));
+  assert.equal(replay?.reasoning_content, '思考片段甲乙');
+  assert.deepEqual(ctx.trajectory.forWindow(win.id)!.messages.slice(0,traj.messages.length),traj.messages,'旧协议前缀逐字段不变');
   ctx.db.close();
 });
 

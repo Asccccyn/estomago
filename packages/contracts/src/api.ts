@@ -38,6 +38,7 @@ export type MessageDto = {
   created_at: string;
   revision: MessageRevisionDto; // 当前有效修订
   reply_status?: MessageReplyStatusDto;
+  mutation_status?: { can_edit: boolean; can_withdraw: boolean; reason: string | null };
 };
 
 export type MessageReplyStatusDto = {

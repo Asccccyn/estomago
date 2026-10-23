@@ -1,18 +1,9 @@
 // 自动记忆浮现 · 合同层（EST_MARIPOSA_AUTO_SURFACING_V1 · 2026-10-19）。
 // P3（2026-10-21）：源/目标同消息同修订，接受起绝对总 deadline；初次
-// 交付仅含日期与事件正文全文；ref/版本等保留后端，不进入模型正文。
+// 交付仅含日期、事件正文全文和可深读短ref；版本等保留后端。
 // 已冻结旧包原样保留；错误不整串发给主模型。
 import { createHash } from 'node:crypto';
 import { validateAbsoluteIso } from '../util/time.ts';
-
-/** Legacy notice: old frozen deliveries stay unchanged; new payloads omit it. */
-export const PRIMARY_MEMORY_NOTICE = '这是你的回忆，是你和宿主用户过去发生的事，不是现在正在发生的事。';
-export const PRIMARY_MEMORY_NOTICE_SHA256 = createHash('sha256').update(PRIMARY_MEMORY_NOTICE, 'utf8').digest('hex');
-export function verifyNoticeBytes(): { ok: boolean; sha256: string; bytes: number } {
-  const buf = Buffer.from(PRIMARY_MEMORY_NOTICE, 'utf8');
-  const sha = createHash('sha256').update(buf).digest('hex');
-  return { ok: sha === PRIMARY_MEMORY_NOTICE_SHA256, sha256: sha, bytes: buf.length };
-}
 
 // —— E 作业状态机（docs/02；CAS 边校验 state+generation+source_revision+target_revision）——
 export type SurfacingJobState =
@@ -42,7 +33,7 @@ export type SurfaceItem = {
 
 export type FrozenAugmentation = {
   deliveryId: string;
-  text: string;               // 完整冻结投影（仅日期与事件正文）
+  text: string;               // 完整冻结投影（日期、事件正文与短引用）
   items: SurfaceItem[];       // 实际入选赢家（全覆盖/预算过滤后）
   memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
   payloadHash: string;
@@ -123,7 +114,6 @@ export const SURFACE_HOST_NOTICE = '[memory_surfacing · host data] 以下是宿
  * A separate user-channel data message keeps the real input intact and adds no
  * synthetic tool invocation. The exact host origin is retained in delivery rows. */
 export function surfaceTransportMessage(provider: string, text: string) {
-  return provider === 'openrouter'
-    ? { role: 'user', content: [{ type: 'text', text: SURFACE_HOST_NOTICE }, { type: 'text', text }] }
-    : { role: 'system', content: [{ type: 'text', text }] };
+  return { role: provider === 'openrouter' ? 'user' : 'system',
+    content: [{ type: 'text', text: SURFACE_HOST_NOTICE }, { type: 'text', text }] };
 }

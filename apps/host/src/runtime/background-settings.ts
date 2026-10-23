@@ -43,20 +43,33 @@ export class BackgroundSettingsService {
   /** AUD-02 修复：关闭时终止运行中执行的回调（由 scheduler 装配时注入） */
   onDisable: ((kind: 'autonomous' | 'keepwarm') => void) | null = null;
 
-  applyUpdate(opts: { expectedRevision: number; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number } {
+  applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
     return tx(this.db, () => {
+      const requestHash = JSON.stringify({ expectedRevision: opts.expectedRevision, patch: Object.fromEntries(Object.entries(opts.patch).sort(([a], [b]) => a.localeCompare(b))) });
+      if (opts.operationId !== undefined) {
+        if (!opts.operationId || opts.operationId.length > 128) throw new Error('SETTINGS_OPERATION_ID_INVALID');
+        const previous = this.db.prepare("SELECT request_hash,response_json FROM background_operations WHERE actor_id='qiaosheng' AND conversation_id='primary' AND action='settings_update' AND operation_id=?").get(opts.operationId) as { request_hash: string; response_json: string } | undefined;
+        if (previous) {
+          if (previous.request_hash !== requestHash) throw new Error('IDEMPOTENCY_CONFLICT');
+          return { ...JSON.parse(previous.response_json) as { revision: number }, duplicate: true };
+        }
+      }
       const current = this.revision();
       if (opts.expectedRevision !== current) throw new Error(`REVISION_CONFLICT:${current}`);
+      const before = this.effective();
+      for (const cap of ['autonomous_daily_cost_cap_usd', 'keepwarm_daily_cost_cap_usd'] as const) {
+        if (cap in opts.patch && opts.patch[cap] !== null && !(typeof opts.patch[cap] === 'number' && Number.isFinite(opts.patch[cap]) && opts.patch[cap]! > 0)) throw new Error(`BACKGROUND_BUDGET_INVALID:${cap}`);
+      }
       // §4.2 422 门：开启付费用途须预算已配（null=未配置非无限）+执行器就绪——不先开功能再等第一次付费失败
       const readiness = opts.readiness ?? { autonomousExecutorReady: true, keepwarmExecutorReady: true };
       if (opts.patch.autonomous_enabled === true) {
-        const cap = opts.patch.autonomous_daily_cost_cap_usd ?? (JSON.parse((this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as { value: string } | undefined)?.value ?? '{}') as { autonomous_daily_cost_cap_usd?: number | null }).autonomous_daily_cost_cap_usd ?? null;
-        if (cap === null || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:autonomous');
+        const cap = 'autonomous_daily_cost_cap_usd' in opts.patch ? opts.patch.autonomous_daily_cost_cap_usd : before.autonomous.daily_cost_cap_usd;
+        if (typeof cap !== 'number' || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:autonomous');
         if (!readiness.autonomousExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:autonomous');
       }
       if (opts.patch.keepwarm_enabled === true) {
-        const cap = opts.patch.keepwarm_daily_cost_cap_usd ?? (JSON.parse((this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as { value: string } | undefined)?.value ?? '{}') as { keepwarm_daily_cost_cap_usd?: number | null }).keepwarm_daily_cost_cap_usd ?? null;
-        if (cap === null || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:keepwarm');
+        const cap = 'keepwarm_daily_cost_cap_usd' in opts.patch ? opts.patch.keepwarm_daily_cost_cap_usd : before.keepwarm.daily_cost_cap_usd;
+        if (typeof cap !== 'number' || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:keepwarm');
         if (!readiness.keepwarmExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:keepwarm');
       }
       // 预算上限写入（有限正数才接受；null=显式未配置）
@@ -67,6 +80,11 @@ export class BackgroundSettingsService {
       const stored = row ? JSON.parse(row.value) as Record<string, unknown> : {};
       const merged = { ...stored, ...Object.fromEntries(Object.entries(opts.patch).filter(([, v]) => typeof v === 'boolean')), ...caps };
       const nowIso = new Date().toISOString();
+      // No tick is guaranteed while the host is stopped or a previous run is in
+      // flight. The reopening transaction must quarantine disabled-period misses.
+      if (!before.autonomous.enabled && opts.patch.autonomous_enabled === true) {
+        this.db.prepare("UPDATE background_tasks SET control_reason='disabled_missed_needs_review', updated_at=? WHERE kind='autonomous' AND schedule_kind='once' AND enabled=1 AND control_reason IS NULL AND next_due_at <= ?").run(nowIso, nowIso);
+      }
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(SETTINGS_KEY, JSON.stringify(merged), nowIso);
       const nextRev = current + 1;
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(REVISION_KEY, String(nextRev), nowIso);
@@ -75,7 +93,7 @@ export class BackgroundSettingsService {
         const existingKw = this.db.prepare("SELECT id FROM background_tasks WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle' AND conversation_id = 'primary'").get() as { id: string } | undefined;
         if (!existingKw) {
           this.db.prepare(
-            "INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, created_at, updated_at) VALUES ('bgt_keepwarm_system', 'primary', 'jiaming', 'keepwarm', 1, 1, 'cache_idle', NULL, NULL, 'Asia/Shanghai', NULL, NULL, '{}', 'system', ?, ?)",
+            "INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES ('bgt_keepwarm_system', 'primary', 'jiaming', 'keepwarm', 1, 1, 'cache_idle', NULL, NULL, 'Asia/Shanghai', NULL, NULL, '{}', 'system', 'system_keepwarm', ?, ?)",
           ).run(nowIso, nowIso);
         } else {
           this.db.prepare('UPDATE background_tasks SET enabled = 1, updated_at = ? WHERE id = ?').run(nowIso, existingKw.id);
@@ -92,6 +110,7 @@ export class BackgroundSettingsService {
         // AUD-02 P1 修复：终止运行中的保温执行
         this.onDisable?.('keepwarm');
       }
+      if (opts.operationId !== undefined) this.db.prepare("INSERT INTO background_operations(actor_id,conversation_id,action,operation_id,request_hash,response_json,created_at) VALUES ('qiaosheng','primary','settings_update',?,?,?,?)").run(opts.operationId, requestHash, JSON.stringify({ revision: nextRev }), nowIso);
       return { revision: nextRev };
     });
   }

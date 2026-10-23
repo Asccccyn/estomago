@@ -40,7 +40,7 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
-import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext } from './host-tools.ts';
+import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext, type ToolExecResult } from './host-tools.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
@@ -53,6 +53,9 @@ import { lastCacheEvidence } from './cache-observation.ts';
 import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
+import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
+import type { BackgroundToolQuote } from './background-tool-cost.ts';
+import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 import { storedToolset } from './tool-discovery.ts';
@@ -276,7 +279,7 @@ export class TurnSupervisor {
     payload: Record<string, unknown>;
     isCancelRequested: () => boolean;
     registerAbort: (c: AbortController) => void;
-    recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
+    recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
     maxModelRequests: number;
   }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string; detail?: string }> {
     const d = this.d;
@@ -343,9 +346,9 @@ export class TurnSupervisor {
       if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
       lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
       if (scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs()) {
-        lines.push(`Actual delivery: ${nowIso0} (delayed; host was not running or busy)`);
+        lines.push(`Actual delivery: ${nowIso0} (late)`);
       }
-      lines.push('To speak to Qiaosheng use chat_send_text; you may also choose to do nothing (call background_complete with outcome=noop).');
+      lines.push('You may use available tools and choose whether to speak.');
       tailNote = lines.join('\n');
     }
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
@@ -374,6 +377,8 @@ export class TurnSupervisor {
     d.db.prepare(`INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES (?,?,?, 'pending', ?)`)
       .run(turnId, opts.conversationId, opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', nowIso);
     d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,NULL,'pending')").run(attemptId, turnId);
+    d.db.prepare("UPDATE attempts SET state='running',window_id=?,started_at=? WHERE id=?").run(window.id,nowIso,attemptId);
+    d.db.prepare("UPDATE turns SET state='running',started_at=? WHERE id=?").run(nowIso,turnId);
     d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
     const controller = new AbortController();
@@ -398,32 +403,19 @@ export class TurnSupervisor {
         yieldRequested: opts.kind === 'keepwarm' && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
       },
     });
-    // §04.10.1：返回后逐笔结算——dispatch 经 provider_requests.background_dispatch_id 反查请求行，
-    // 再按 request_id 取真实 usage 费用；未知保留预占（state=unknown，不释放）
-    for (const bgd of d.db.prepare("SELECT bd.id AS id, pr.id AS prq_id FROM background_dispatches bd LEFT JOIN provider_requests pr ON pr.background_dispatch_id = bd.id WHERE bd.run_id = ? AND bd.state IN ('reserved','started')").all(opts.runId) as Array<{ id: string; prq_id: string | null }>) {
-      if (bgd.prq_id) d.db.prepare('UPDATE background_dispatches SET provider_request_id = ? WHERE id = ?').run(bgd.prq_id, bgd.id);
-      const cost = bgd.prq_id
-        ? (d.db.prepare('SELECT cost_usd FROM usage_observations WHERE request_id = ? ORDER BY observed_at DESC LIMIT 1').get(bgd.prq_id) as { cost_usd: number | null } | undefined)?.cost_usd ?? null
-        : null;
-      const micro = cost !== null ? Math.round(cost * 1_000_000) : null;
-      d.db.prepare("UPDATE background_dispatches SET state = ?, actual_cost_micro_usd = ?, settled_at = ?, outcome_code = ? WHERE id = ?").run(micro === null ? 'unknown' : 'settled', micro, new Date().toISOString(), micro === null ? 'cost_unknown' : 'settled', bgd.id);
-      if (micro !== null) d.db.prepare('UPDATE background_runs SET known_cost_micro_usd = known_cost_micro_usd + ?, updated_at = ? WHERE id = ?').run(micro, new Date().toISOString(), opts.runId);
-    }
+    // Same idempotent ledger as live/late usage. Missing charges retain reservations.
+    settleBackgroundRun(d.db, opts.runId);
     const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
     const finishedState = loop.result.outcome === 'completed' || sleepPaused ? 'completed' : 'failed';
     d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
-    if (loop.result.outcome !== 'completed') {
-      if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-      if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
-      return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
-    }
+    d.db.prepare('UPDATE attempts SET state=?,blocked_reason=?,completed_at=? WHERE id=?').run(finishedState,loop.result.errorCode,new Date().toISOString(),attemptId);
 
     // —— 结果分类（06 §2：一条执行路径、两种提交结果；判定按整轮不是最后字符串）——
     const finalText = loop.finalMessages !== null && loop.finalMessages.length > 0
       ? (() => { const last = loop.finalMessages![loop.finalMessages!.length - 1]!; const c = last.content; return typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => (b as { type?: string }).type === 'text').map((b) => (b as { text?: string }).text ?? '').join('') : ''; })()
       : '';
     const publishedCount = Number((d.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(turnId) as { n: number }).n);
-    const pureAck = toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
+    const pureAck = loop.result.outcome === 'completed' && !loop.result.errorCode && toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
     d.db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
       .run(toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), opts.runId);
 
@@ -434,9 +426,16 @@ export class TurnSupervisor {
         const baseManifest = traj.manifest ?? [];
         const publishedEntries = (d.db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(turnId) as Array<{ id: string; sequence: number }>)
           .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
-        d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen]);
+        d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
         d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
       }
+      if (loop.result.outcome !== 'completed') {
+        if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
+        if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
+        if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
+        return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
+      }
+
       const runCode = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
       const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
       // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
@@ -444,6 +443,12 @@ export class TurnSupervisor {
     }
 
     // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文与主轨迹。
+    // A retained tool result from an earlier interrupted run may have entered
+    // the model in this pure maintenance request. Promote only that source
+    // evidence; the canonical messages and cache boundary remain untouched.
+    if (d.trajectory && loop.toolSeen.length > 0) {
+      d.trajectory.replaceManifest(window.id, [...(traj.manifest ?? []), ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
+    }
     if (opts.kind === 'keepwarm' && d.activity && capturedActivityRevision !== null) {
       // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
       // 不写"保温成功"，同活动版本不重试）
@@ -512,6 +517,7 @@ export class TurnSupervisor {
     seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：实际装载视野（引用核对）
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
+    inputBinding?: { messageId: string; revision: number };
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
@@ -520,12 +526,12 @@ export class TurnSupervisor {
       runId: string;
       kind: 'autonomous' | 'keepwarm';
       maxModelRequests: number;
-      recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number }) => { allowed: boolean; dispatchId: string };
+      recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
       isCancelRequested: () => boolean;
       observeToolCall?: () => void; // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为
       yieldRequested?: (() => boolean) | null; // S-06：心跳安全边界让位（用户消息到来）
     };
-  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[] }> {
+  }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
     let envelope = o.envelope;
@@ -534,12 +540,30 @@ export class TurnSupervisor {
     // **实际进入下一模型请求**（onDispatch 首发即真实发出）才从 pending 转
     // active；仅取到工具结果而未发送（停止/轮次耗尽/错误收口）不算已见（O05）
     const toolSeenActive: ManifestEntry[] = [];
-    let roundPendingSeen: ManifestEntry[] = [];
+    let roundPendingSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    let dispatched = false;
+    let lastSentMessages: OrMessage[] | null = null;
+    let pendingCalls: MatchedCompleteBlock[] = [];
+    let pendingAssistantIndex = -1;
+    // Only a response from an actually admitted request may extend canonical
+    // history. Finish every incomplete tool batch with explicit nonexecution;
+    // an attempted tool with unknown outcome is recorded separately below.
+    const incompleteProtocol = (code: string): OrMessage[] => {
+      const answered = new Set(envelope.messages.slice(pendingAssistantIndex + 1).filter(m => m.role === 'tool').map(m => m.tool_call_id));
+      return [...envelope.messages, ...pendingCalls.filter(t => !answered.has(t.tool_id)).map(t => ({ role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: code, executed: false }) }) as OrMessage)];
+    };
+    const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => ({
+      result, finalMessages: o.background && dispatched ? incompleteProtocol(code) : null,
+      lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen,
+    });
     const seqOf = (id: string): number => {
       const row = d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(id) as { sequence: number } | undefined;
       return row?.sequence ?? 0;
     };
+    try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+      pendingCalls = [];
+      pendingAssistantIndex = -1;
       const captured: MatchedCompleteBlock[] = [];
       let lastText = null as string | null; // 闭包内赋值（wrapped）：外层流分析按声明类型读（F-J-31）
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -562,7 +586,7 @@ export class TurnSupervisor {
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
       if (capacityNow !== null) {
-        const estNow = Math.ceil(JSON.stringify(envelope.messages).length / (this.drv()?.charsPerToken ?? 2.5));
+        const estNow = Math.ceil(JSON.stringify({ messages: envelope.messages, tools: envelope.tools }).length / (this.drv()?.charsPerToken ?? 2.5));
         const planNow = rotationPlan({
           currentInput: estNow, nextInput: estNow, capacity: capacityNow,
           maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
@@ -571,7 +595,7 @@ export class TurnSupervisor {
         });
         if (planNow.action === 'blocked_hard') {
           d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
-          return { result: { outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+          return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null });
         }
       }
       const payloadJson = JSON.stringify(envelope);
@@ -584,7 +608,11 @@ export class TurnSupervisor {
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
-        if (o.attemptId) d.surfacing?.markDispatched?.(o.attemptId);
+        if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+        if (o.inputBinding) {
+          const current = d.messages.getMessage(o.inputBinding.messageId);
+          if (!current || current.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
+        }
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
           if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
@@ -598,12 +626,13 @@ export class TurnSupervisor {
           if (started >= o.background.maxModelRequests) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
         }
         const nowIso = new Date().toISOString();
+        if (o.attemptId) d.surfacing?.markDispatched?.(o.attemptId);
         let bgDispatchId: string | null = null;
         if (o.background) {
           // B-01（2026-10-22）：真实费用上界预占——可缓存输入按未命中最坏写入价（1h TTL
           // 公开溢价 2×input；显式 cache_write_micro_per_token 配置优先）+ 输入价 + 最大输出。
-          const rec = o.background.recordDispatch({ logicalActionKey: `model:r${round}:a${info.attemptIndex}`, attemptNo: info.attemptIndex + 1, dispatchKind: 'model', reservedCostMicroUsd: estimateModelRequestCostMicroUsd(d.db, envelope, this.drv()) });
-          if (!rec.allowed) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
+          const rec = o.background.recordDispatch({ logicalActionKey: `model:r${round}:a${info.attemptIndex}`, attemptNo: info.attemptIndex + 1, dispatchKind: 'model', reservedCostMicroUsd: estimateModelRequestCostMicroUsd(d.db, runEnvelope) });
+          if (!rec.allowed) throw new ContractError(rec.code ?? 'BACKGROUND_BUDGET_EXHAUSTED');
           bgDispatchId = rec.dispatchId;
         }
         if (info.attemptIndex === 0) {
@@ -616,6 +645,16 @@ export class TurnSupervisor {
             .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
+        if (round === 0 && info.attemptIndex === 0 && o.inputBinding) {
+          const message = d.messages.getMessage(o.inputBinding.messageId);
+          if (message) d.events.publish('message.persisted', {
+            conversationId:o.conversationId,turnId:o.turnId,attemptId:o.attemptId,
+            entityRef:message.id,entityRevision:message.current_revision,
+            payload:{message:{...message,mutation_status:{can_edit:false,can_withdraw:false,reason:'MESSAGE_ALREADY_DISPATCHED'}}},
+          });
+        }
+        dispatched = true;
+        lastSentMessages = envelope.messages;
       };
       let roundSeenPromoted = false; // 本轮首个真实响应=工具结果实际进入模型（429 重试后成功同算——修 O05 边角）
       let roundGenerationId: string | null = null; // R07：本轮工具事件的 provider 生成标识
@@ -635,8 +674,25 @@ export class TurnSupervisor {
           }
         }
       };
+      let previousPayload = prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null;
+      if (round === 0 && prevEnvelope) {
+        const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
+          JOIN turns t ON t.id=p.turn_id LEFT JOIN background_runs b ON b.id=p.background_run_id
+          WHERE p.window_id=? AND p.outcome='completed' AND p.sent_at IS NOT NULL
+            AND p.payload_format='wire_v1' AND p.payload_wire_json IS NOT NULL
+            AND ((p.purpose='chat' AND t.state='completed') OR (b.retention='retained' AND b.trajectory_committed_at IS NOT NULL))
+          ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1`).get(o.windowId) as { payload_wire_json: string } | undefined;
+        if (anchor) {
+          const recorded = JSON.parse(anchor.payload_wire_json) as Record<string, unknown>;
+          if (this.drv()?.kind === 'deepseek' && legacyDsReasoningGap(recorded, this.buildPayloadFrom(runEnvelope))) {
+            return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW', errorMessage: '旧窗口缺少已发送的模型协议内容，请通过正常手动换窗选择原文后继续；已有历史保持不变。', sessionId: null, requestId: null });
+          }
+          // Stored redacted image payloads cannot be compared as exact wire bytes.
+          if (!hasStorageImageRedaction(recorded)) previousPayload = recorded;
+        }
+      }
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope: runEnvelope, previousPayload: prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
+        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -652,17 +708,14 @@ export class TurnSupervisor {
       if (lastPrqId !== prqId) {
         d.db.prepare("UPDATE provider_requests SET outcome = 'SUPERSEDED_BY_RETRY' WHERE id = ? AND outcome IS NULL").run(prqId);
       }
-      if (result.outcome !== 'completed') return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+      if (result.outcome !== 'completed') return failedLoop(result);
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
         // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
         const finalMessages = lastText !== null && lastText.length > 0
-          ? [...envelope.messages, { role: 'assistant', content: [{ type: 'text', text: lastText }] } as unknown as OrMessage]
+          ? [...envelope.messages, assistantProtocolMessage(lastText, result, this.drv()?.kind)]
           : envelope.messages;
-        return { result, finalMessages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive };
-      }
-      if (round === MAX_TOOL_ROUNDS) {
-        return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // O05：轮次耗尽=末轮工具结果未发出， pending 不转正
+        return { result, finalMessages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
       }
       // WAKE_KEEPWARM_V1（2026-10-22）：心跳与自主共用完整工具执行循环——
       // 旧 KEEPWARM_TOOL_REFUSED 零工具封锁已删除（06 §4：修复所有心跳特有限制）。
@@ -681,12 +734,17 @@ export class TurnSupervisor {
         assistantContinue.reasoning_details = flat;
       }
       // D01（审计 3655d60）：DS thinking 型号在同一工具回合的续请求必须原样回传 reasoning_content
-      // （官方协议继续态；§10 opaque 透传——不解释不重构，不入 UI/轨迹正本，下一用户回合清除）。
+      // （当前带 tools 的 DS 合同要求跨轮原样保留；只进受保护协议轨迹，不入 UI 正文）。
       // 仅 DS 驱动携带；OR 的协议继续态走上面的 reasoning_details 通道，两不混淆。
       if (this.drv()?.kind === 'deepseek' && typeof (result as { reasoningContent?: unknown }).reasoningContent === 'string' && (result as { reasoningContent: string }).reasoningContent.length > 0) {
         assistantContinue.reasoning_content = (result as { reasoningContent: string }).reasoningContent;
       }
+      pendingAssistantIndex = envelope.messages.length;
+      pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
+      if (round === MAX_TOOL_ROUNDS) {
+        return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, 'TOOL_ROUNDS_EXCEEDED');
+      }
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
       const ordered = [
@@ -696,28 +754,23 @@ export class TurnSupervisor {
       for (const t of ordered) {
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
-          return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+          return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, 'EXECUTION_CANCELLED');
         }
         if (o.background?.kind === 'keepwarm') {
           const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
-          if (sleep.blocked) return { result: { outcome: 'completed', errorClassified: null, errorCode: sleep.code, errorMessage: '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+          if (sleep.blocked) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: sleep.code, errorMessage: '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, sleep.code!);
         }
         // S-06：心跳安全边界让位——用户消息到来后不再分派后续工具；已执行工具的
         // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：
         // 协议链在 provider_requests 留证，后续发布经 catchup 进入下一轮）。
         if (o.background?.yieldRequested?.()) {
-          return { result: { outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_YIELDED_DURING_TOOLS', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+          return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_YIELDED_DURING_TOOLS', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, 'KEEPWARM_YIELDED');
         }
         // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为（06 §2，按调用计数）
         if (o.background?.observeToolCall) o.background.observeToolCall();
-        // WAKE_KEEPWARM_V1 §10（B-04/B-07）：后台工具逐笔记派发账（免费本地工具登记 0，
-        // 仍有取消 fence 与幂等身份）；取消/预算拒收后不再开始新工具动作
-        if (o.background) {
-          const toolRec = o.background.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: 0 });
-          if (!toolRec.allowed) {
-            return { result: { outcome: 'interrupted', errorClassified: null, errorCode: 'BACKGROUND_TOOL_ADMISSION_REJECTED', errorMessage: '后台工具派发被拒（取消/预算）', sessionId: null, requestId: result.requestId }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
-          }
-        }
+        // The real executor validates the frozen definition and arguments before
+        // quoting/admitting its effective handler. Never quote tool_invoke as free.
+        const toolDispatch: { current: { id: string; quote: BackgroundToolQuote } | null } = { current: null };
         let args: Record<string, unknown>;
         try {
           args = JSON.parse(t.text ?? '{}') as Record<string, unknown>;
@@ -725,14 +778,35 @@ export class TurnSupervisor {
           args = {}; // 参数非法：执行器会因缺必填字段拒绝（§8.2 输入完整校验后才执行）
         }
         args.__tool_call_id = t.tool_id;
-        const exec = await d.tools!.execute(t.tool_name ?? '', args, {
+        let exec: ToolExecResult;
+        try {
+        exec = await d.tools!.execute(t.tool_name ?? '', args, {
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: lastPrqId, // internal request ledger identity; provider generation is separate
           // R07（审计 FE-12）：工具生命周期统一身份
           toolCallId: t.tool_id, attemptId: o.attemptId, round, generationId: roundGenerationId,
+          ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
+            const rec = o.background!.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
+            if (!rec.allowed) throw new ContractError(rec.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
+            toolDispatch.current = { id: rec.dispatchId, quote };
+          } } : {}),
         });
+        } catch (error) {
+          if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
+            exec = { ok: false, output: { error_code: 'IDEMPOTENCY_CONFLICT' } };
+          } else if (o.background && toolDispatch.current === null) {
+            const code = error instanceof ContractError ? error.code : 'BACKGROUND_TOOL_ADMISSION_REJECTED';
+            return failedLoop({ outcome: 'error', errorClassified: null, errorCode: code, errorMessage: '后台工具未通过报价或派发准入，尚未开始执行。', sessionId: null, requestId: result.requestId }, code);
+          } else {
+            envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: 'TOOL_EXECUTION_OUTCOME_UNKNOWN', outcome: 'unknown' }) } as OrMessage] };
+            return failedLoop({ outcome: 'error', errorClassified: 'unknown', errorCode: 'TOOL_EXECUTION_OUTCOME_UNKNOWN', errorMessage: '工具已尝试执行，但未取得可信结果；不自动重放。', sessionId: null, requestId: result.requestId });
+          }
+        }
+        if (exec.ok && toolDispatch.current?.quote.verifiedFree) {
+          settleBackgroundDispatch(d.db, toolDispatch.current.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
+        }
         // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
         // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
         if (exec.seenAdditions && exec.seenAdditions.length > 0) {
@@ -746,10 +820,13 @@ export class TurnSupervisor {
         envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
-        return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
+        return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return { result: { outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null }, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive };
+    return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null });
+    } catch (error) {
+      return failedLoop({ outcome: 'error', errorClassified: 'unknown', errorCode: stableCode(error), errorMessage: String((error as Error).message ?? error), sessionId: null, requestId: null });
+    }
   }
 
   /** 指纹输入视图：并入运行时 override（or_model）。reasoning 不参与指纹
@@ -2460,6 +2537,7 @@ export class TurnSupervisor {
       // OR：工具循环（§8.2）——含 grace fence、跨轮 append-only 断言；错误已由循环收口为终态
       const loop = await this.runOrToolLoop({
         envelope: orEnvelope, purpose: 'chat', activeReviewId: null,
+        ...(inputMessage ? { inputBinding: { messageId: inputMessage.id, revision: effective.revision } } : {}),
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         onEvent: handleEvent, seenSequence: orSeenHighWater,
@@ -2561,14 +2639,9 @@ export class TurnSupervisor {
       const inputEntry: ManifestEntry[] = inputMessage
         ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }]
         : [];
-      // D01（审计 3655d60）：DS 的 reasoning_content 只是同轮工具续传的协议继续态——落轨迹前剥除，
-      // 下一用户回合绝不携带（DS 官方合同：跨回合回传不被允许且无意义）。provider_requests 留的是
-      // 实际发送副本，不剥（对账需要真实形状）。
-      const trajMessages: OrMessage[] = dv?.kind === 'deepseek'
-        ? orFinalMessages.map((m) => (m.role === 'assistant' && typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string'
-          ? (({ reasoning_content: _strip, ...rest }) => rest as OrMessage)(m as Record<string, unknown> & OrMessage)
-          : m))
-        : orFinalMessages;
+      // Provider protocol state is retained verbatim in the protected trajectory.
+      // Existing historical messages are never rewritten or backfilled.
+      const trajMessages = orFinalMessages;
       // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
@@ -2652,21 +2725,44 @@ function stableCode(err: unknown): string {
  * （调用方 recordDispatch 前被 BUDGET_ESTIMATE_UNAVAILABLE 拦截——09：无报价=明确
  * blocked，不自填价格或放行）。
  */
-function estimateModelRequestCostMicroUsd(db: import('../db/connection.ts').Db, envelope: OrRequestEnvelope, drv: { charsPerToken: number; maxTokens: number } | null): number {
-  const priceRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
-  if (!priceRow) return 0; // 无价格：executor 侧已按 BUDGET_ESTIMATE_UNAVAILABLE 拦截；此处 0 仅占位
-  let price: { input_micro_per_token?: number; output_micro_per_token?: number; cache_write_micro_per_token?: number };
-  try { price = JSON.parse(priceRow.value); } catch { return 0; }
-  const inMicro = typeof price.input_micro_per_token === 'number' ? price.input_micro_per_token : null;
-  const outMicro = typeof price.output_micro_per_token === 'number' ? price.output_micro_per_token : null;
-  if (inMicro === null || outMicro === null) return 0;
-  const writeMicro = typeof price.cache_write_micro_per_token === 'number' ? price.cache_write_micro_per_token : inMicro * 2; // 1h cache write 公开溢价
-  const inputTokens = Math.ceil(JSON.stringify(envelope.messages).length / (drv?.charsPerToken ?? 2.5));
-  const maxOut = envelope.maxTokens ?? drv?.maxTokens ?? 0;
-  return Math.ceil(inputTokens * writeMicro + maxOut * outMicro);
-}
 
 function codeOf(reason: string): string {
   const m = /^([A-Z_]+)[:：]/.exec(reason);
   return m ? m[1]! : reason.split(/[：:;（(]/)[0]!.slice(0, 30);
+}
+
+/** Preserve opaque provider state for new assistant messages; never expose it as UI text. */
+function assistantProtocolMessage(text: string, result: import('./runner.ts').RunnerRunResult, driver?: string): OrMessage {
+  const message: OrMessage = { role: 'assistant', content: [{ type: 'text', text }] };
+  if (driver === 'deepseek' && typeof result.reasoningContent === 'string') message.reasoning_content = result.reasoningContent;
+  if (driver === 'openrouter' && result.reasoningFrames?.length) message.reasoning_details = result.reasoningFrames.flatMap(f => Array.isArray(f) ? f : [f]);
+  return message;
+}
+
+function hasStorageImageRedaction(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(hasStorageImageRedaction);
+  if (!value || typeof value !== 'object') return false;
+  const object = value as Record<string, unknown>;
+  return object.data_redacted === true || Object.values(object).some(hasStorageImageRedaction);
+}
+
+/** Old DS releases stripped opaque reasoning when committing a tool turn.
+ * Recognize only that exact historical gap; all other drift still reaches the
+ * strict driver's HISTORY_CHANGED guard. Never rewrite or backfill old bytes. */
+function legacyDsReasoningGap(previous: Record<string, unknown>, current: Record<string, unknown>): boolean {
+  for (const key of ['model', 'session_id', 'provider', 'tools']) {
+    if (JSON.stringify(previous[key] ?? null) !== JSON.stringify(current[key] ?? null)) return false;
+  }
+  if (!Array.isArray(previous.messages) || !Array.isArray(current.messages) || current.messages.length < previous.messages.length) return false;
+  let missing = false;
+  for (let index = 0; index < previous.messages.length; index++) {
+    const before = previous.messages[index] as Record<string, unknown>;
+    const after = current.messages[index] as Record<string, unknown>;
+    if (before?.role === 'assistant' && typeof before.reasoning_content === 'string' && after?.reasoning_content === undefined) {
+      const { reasoning_content: _opaque, ...rest } = before;
+      if (JSON.stringify(rest) !== JSON.stringify(after)) return false;
+      missing = true;
+    } else if (JSON.stringify(before) !== JSON.stringify(after)) return false;
+  }
+  return missing;
 }

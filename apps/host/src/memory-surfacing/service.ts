@@ -14,7 +14,7 @@ import {
   type RecallGateResult, type RecentRecallState,
 } from './trigger.ts';
 import {
-  estimateTokens, memoryRefFor, renderAugmentation,
+  estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE,
   type FrozenAugmentation, type SurfaceItem,
 } from './contracts.ts';
 
@@ -270,6 +270,7 @@ export class SurfacingService {
       },
       recent_dialogue: this.recentDialogue(job.conversation_id, src.sequence),
       event_hypotheses: JSON.parse(job.hypotheses_json ?? '[]'),
+      deadline_at: new Date(this.deadline(job)).toISOString(),
     }, signal), this.deadline(job) - Date.now(), job.id);
     if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
     if (!r.ok) {
@@ -406,7 +407,7 @@ export class SurfacingService {
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(it.event_id, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs);
-      const wireText = (this.cfg.transport_overhead_text ?? '') + candidate;
+      const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + candidate;
       const tokens = estimateTokens(wireText);
       const bytes = Buffer.byteLength(wireText, 'utf8');
       if (tokens > this.cfg.max_added_tokens_per_turn

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts'
-const dto=(id:string,text:string,revision=1)=>({id,sequence:1,speaker:'owner',turn_id:'turn-fixture',current_revision:revision,revision:{revision,content:text,content_hash:'fixture-hash-'+revision,occurred_at:'2026-10-13T12:00:00Z',attachments:[]}})
+const dto=(id:string,text:string,revision=1)=>({id,sequence:1,speaker:'owner',turn_id:'turn-fixture',current_revision:revision,mutation_status:{can_edit:true,can_withdraw:true,reason:null},revision:{revision,content:text,content_hash:'fixture-hash-'+revision,occurred_at:'2026-10-13T12:00:00Z',attachments:[]}})
 test('推理默认是未选择状态，取消选择清除覆盖值，不添加第五档',async()=>{
   let effort:string|null=null
   const h=await setup((url,init)=>{
@@ -91,7 +91,7 @@ test('路由重新编辑更新原消息，携带If-Match的普通编辑也保留
     h.client.handleEvent({kind:'route.pending',sequence:2,decision_id:'route-fixture',turn_id:'turn-fixture'})
     await h.client.resolveRoute('edit');h.client.setDraft('修订内容');await h.client.send()
     assert.equal(h.client.snapshot.messages[0].text,'修订内容');assert.equal(h.calls.filter(c=>c.url.endsWith('/messages')&&c.init?.method==='POST').length,0)
-    await h.client.editMessage('m1','再次编辑');const request=h.calls.find(c=>c.url.endsWith('/messages/m1'))!
+    await h.client.editMessage('m1','再次编辑');const request=h.calls.find(c=>c.url.endsWith('/messages/m1')&&c.init?.method==='PUT')!
     assert.equal((request.init!.headers as any)['If-Match'],'"2"')
   }finally{h.client.stop()}
 })
@@ -267,3 +267,30 @@ test('回忆展开只发定点GET，保持同轮引用和分页游标，不发�
   assert.ok(h.calls.every(c=>!c.init?.method||c.init.method==='GET'))
  } finally {h.client.stop()}
 })
+
+test('服务端派发资格决定编辑：queued可改，已派发不可改，迟到同修订不得恢复资格',async()=>{
+  const h=await setup()
+  try{
+    h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('mutation','queued')})
+    assert.equal(h.client.snapshot.messages[0].canEdit,true)
+    h.client.handleEvent({kind:'message.persisted',sequence:2,message:{...dto('mutation','queued'),mutation_status:{can_edit:false,can_withdraw:false,reason:'MESSAGE_ALREADY_DISPATCHED'}}})
+    assert.equal(h.client.snapshot.messages[0].canEdit,false)
+    assert.equal(h.client.snapshot.messages.length,1)
+    assert.equal(h.client.snapshot.newMessages,false)
+    const count=h.calls.length
+    assert.equal(await h.client.editMessage('mutation','rewrite'),false)
+    assert.equal(h.calls.slice(count).filter(c=>c.init?.method==='PUT').length,0)
+    h.client.handleEvent({kind:'message.persisted',sequence:3,message:dto('mutation','queued')})
+    assert.equal(h.client.snapshot.messages[0].canEdit,false)
+  }finally{h.client.stop()}
+})
+
+test('旧DS协议缺失通过既有失败事件明确提示正常人工换窗，不自动派发',async()=>{
+ const h=await setup();try{
+  h.client.handleEvent({kind:'message.persisted',sequence:1,message:dto('legacy-ds','已保存输入')});
+  const before=h.calls.filter(c=>c.init?.method==='POST').length;
+  h.client.handleEvent({kind:'turn.status',sequence:2,turn_id:'turn-fixture',state:'failed',reason:'DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW:unknown'});
+  assert.match(h.client.snapshot.notice,/正常手动换窗/);assert.match(h.client.snapshot.notice,/本轮没有发出模型请求/);
+  assert.equal(h.calls.filter(c=>c.init?.method==='POST').length,before);
+ }finally{h.client.stop()}
+});

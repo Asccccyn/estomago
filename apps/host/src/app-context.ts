@@ -130,7 +130,7 @@ export class Host {
       surfaceMariposaClient,
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
-        transport_overhead_text: opts.config.runtime.provider === 'openrouter' ? SURFACE_HOST_NOTICE : '',
+        transport_overhead_text: SURFACE_HOST_NOTICE,
         policy_revision: 1,
         prompt_prepare_revision: 'surface_prepare_v1',
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
@@ -259,26 +259,20 @@ export class Host {
             events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
             return { outcome: 'completed', result_code: 'delivered' };
           }
-          // EXEC_V1 §04.10.2：付费模型预占须可信上界——价格未核验（runtime_settings 可配）→
-          // BUDGET_ESTIMATE_UNAVAILABLE，不开后台付费请求（unknown 不当免费）
-          const priceRow = db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
-          const price = priceRow ? JSON.parse(priceRow.value) as { input_micro_per_token?: number; output_micro_per_token?: number } : null;
-          if (!price || typeof price.input_micro_per_token !== 'number' || typeof price.output_micro_per_token !== 'number') {
-            return { outcome: 'failed', result_code: 'BUDGET_ESTIMATE_UNAVAILABLE' };
-          }
-          // 开关在执行位内重查（03：领取≠执行——tick 快照不算数）
-          const es = bgSettings.effective();
-          if (es[input.kind].enabled !== true) return { outcome: 'noop', result_code: input.kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' };
-          if (es[input.kind].daily_cost_cap_usd === null) return { outcome: 'failed', result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' };
-          // WAKE_KEEPWARM_V1：心跳与自主同为完整回合（09）——正常模型请求边界（每 run
-          // 付费上限）、主会话输出上限、完整工具循环；旧的 keepwarm 单请求封锁已退役。
-          return supervisor.enqueueBackground(input.conversationId, () => supervisor.runBackgroundTurn({
-            kind: input.kind as 'autonomous' | 'keepwarm',
-            runId: input.runId, conversationId: input.conversationId, payload: input.payload,
-            isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
-            recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, logicalActionKey: info.logicalActionKey, attemptNo: info.attemptNo, dispatchKind: info.dispatchKind, capabilityName: null, reservedCostMicroUsd: info.reservedCostMicroUsd }),
-            maxModelRequests: es.autonomous.max_model_requests_per_run,
-          }));
+          return supervisor.enqueueBackground(input.conversationId, () => {
+            // Recheck after acquiring the conversation's execution slot.
+            // Price validation and reservation occur once at every actual dispatch.
+            const kind = input.kind as 'autonomous' | 'keepwarm';
+            const es = bgSettings.effective();
+            if (!es[kind].enabled) return Promise.resolve({ outcome: 'noop' as const, result_code: kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' });
+            if (es[kind].daily_cost_cap_usd === null) return Promise.resolve({ outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' });
+            return supervisor.runBackgroundTurn({
+              kind, runId: input.runId, conversationId: input.conversationId, payload: input.payload,
+              isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
+              recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, ...info, capabilityName: info.capabilityName ?? null }),
+              maxModelRequests: es.autonomous.max_model_requests_per_run,
+            });
+          });
         },
       },
     });

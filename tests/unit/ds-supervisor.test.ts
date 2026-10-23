@@ -129,8 +129,8 @@ test('DS 直连端到端：turn 完成、payload 干净、usage=ds_stream、记�
 test('评审失败重试上限（审计 P2-1）：同窗 3 次失败后不再自动付费评审，消息仍保存', async () => {
   const seen: Seen = [];
   const root = tempRoot('dssup2-');
-  // 容量配置压低软线（C=40000 → 安全输入≈11808；soft=3000）：长输入每条都触发换窗评审
-  const ctx = compose(root, neverCompleteTransport(seen), { windows: { model_context_capacity: 40000, soft_limit_tokens: 3000 } });
+  // 容量配置压低软线（C=100000，硬容量包含完整冻结工具；软线仍保持测试触发值；soft=3000）：长输入每条都触发换窗评审
+  const ctx = compose(root, neverCompleteTransport(seen), { windows: { model_context_capacity: 100000, soft_limit_tokens: 3000 } });
   // 第 1 条：短输入不触发换窗，正常完成（给窗口留轨迹底）
   const s1 = await say(ctx, '开头。'.repeat(100), 'r1', T0);
   assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(s1.attemptId) as { state: string }).state, 'completed');
@@ -192,7 +192,7 @@ test('评审请求可被停止键中断（审计 P2-2）：abort 生效、评审
       resolve({ status: 200, headers: new Map<string, string>(), body: stream });
     });
   };
-  const ctx = compose(root, hangTransport, { windows: { model_context_capacity: 40000, soft_limit_tokens: 3000 } });
+  const ctx = compose(root, hangTransport, { windows: { model_context_capacity: 100000, soft_limit_tokens: 3000 } });
   await say(ctx, '开头。'.repeat(100), 'h1', T0); // 短输入：正常完成（给窗口留轨迹底）
   // 第二条长输入触发评审：不等待完成，进入评审后按停止键
   const sub2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '长话题。'.repeat(1500), clientMessageId: 'h2', occurredAt: new Date(Date.parse(T0) + 120_000).toISOString() });

@@ -67,7 +67,7 @@ test('重试 HTTP：鉴权/修订门、消息状态快照、同键回执、终�
   assert.equal(conflict.status, 409);
   assert.equal(((await conflict.json()) as any).error.code, 'idempotency_conflict');
   const saved = await fetch(messageUrl, { method: 'PUT', headers: { ...headers, 'If-Match': '"2"' }, body: JSON.stringify({ content: 'saved revision' }) });
-  assert.equal(saved.status, 200);
-  assert.equal(((await saved.json()) as any).message.reply_status.state, 'completed');
+  assert.equal(saved.status, 409);
+  assert.equal(((await saved.json()) as any).error.code, 'MESSAGE_ALREADY_DISPATCHED');
   assert.equal(queued.length, 1);
 });

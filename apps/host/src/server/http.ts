@@ -45,6 +45,7 @@ import { estimateTokens, snapshotFor, ESTIMATOR_REVISION, type AttachmentEstimat
 import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../messages/constants.ts';
 import { keepwarmSleepState } from '../runtime/keepwarm-sleep.ts';
+import { storedToolset } from '../runtime/tool-discovery.ts';
 
 export type RequestDeps = {
   config: Config;
@@ -321,6 +322,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         return json(res, 200, { message, revision_of: messageId });
       } catch (err) {
         const msg = String((err as Error).message ?? '');
+        if ((err as { code?: string }).code === 'MESSAGE_ALREADY_DISPATCHED') return json(res, 409, { error: { code: 'MESSAGE_ALREADY_DISPATCHED', message: msg } });
         if (msg.includes('仅空白')) return json(res, 422, { error: { code: 'blank_content', message: msg } });
         if (msg.includes('只有用户消息可编辑')) return json(res, 403, { error: { code: 'not_editable', message: msg } });
         if (msg.includes('message not found')) return json(res, 404, { error: { code: 'not_found', message: '消息不存在' } });
@@ -766,6 +768,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
       const sleep = keepwarmSleepState(es.keepwarm.sleep_window, Date.now());
       const activityRow = d.activity?.get('primary') ?? null;
+      const activeWindow = d.windows.activeWindow('primary');
+      const frozenTools = activeWindow ? storedToolset(d.db, activeWindow.id) : null;
+      const wakeToolAvailable = frozenTools ? frozenTools.catalog.some((tool) => tool.function.name === 'wake_manage') : null;
       let keepwarmStatus: Record<string, unknown> = { scheduled: false };
       if (d.activity && d.scheduler) {
         const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
@@ -793,6 +798,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
         reminders: { enabled: es.reminders.enabled },
         executor_ready: d.bgExecutorReady ?? { autonomous: false, keepwarm: false },
+        current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
         keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: sleep.code, local_time: sleep.local_time },
         notice: '关闭后不再开始自主预约唤醒/心跳保温，正在进行的后续步骤会停止；已产生的费用和已完成的动作保留。两项开关独立。',
       });
@@ -805,22 +811,30 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
       const body = (await readJson(req, d)) as Record<string, unknown>;
       const patch: Record<string, unknown> = {};
-      const readBool = (o: unknown): boolean | undefined => (o === true || o === false ? o : undefined);
       for (const section of ['autonomous', 'keepwarm', 'reminders'] as const) {
-        const sv = body[section] as Record<string, unknown> | undefined;
-        if (!sv) continue;
-        if (section === 'autonomous') patch.autonomous_enabled = readBool(sv.enabled);
-        if (section === 'keepwarm') patch.keepwarm_enabled = readBool(sv.enabled);
-        if (section === 'reminders') patch.reminders_enabled = readBool(sv.enabled);
-        if (section !== 'reminders' && sv.daily_cost_cap_usd !== undefined) patch[`${section}_daily_cost_cap_usd`] = typeof sv.daily_cost_cap_usd === 'number' && sv.daily_cost_cap_usd > 0 ? sv.daily_cost_cap_usd : null;
+        if (body[section] === undefined) continue;
+        const sv = body[section];
+        if (!sv || typeof sv !== 'object' || Array.isArray(sv)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section} 必须是对象` } });
+        const values = sv as Record<string, unknown>;
+        if ('enabled' in values) {
+          if (typeof values.enabled !== 'boolean') return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.enabled 必须为布尔值` } });
+          patch[`${section}_enabled`] = values.enabled;
+        }
+        if (section !== 'reminders' && 'daily_cost_cap_usd' in values) {
+          const cap = values.daily_cost_cap_usd;
+          if (cap !== null && (typeof cap !== 'number' || !Number.isFinite(cap) || cap <= 0)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.daily_cost_cap_usd 必须为正数或 null` } });
+          patch[`${section}_daily_cost_cap_usd`] = cap;
+        }
       }
       if (Object.values(patch).every((v) => v === undefined)) return json(res, 400, { error: { code: 'bad_patch', message: '无可识别的设置字段' } });
       try {
-        const r = d.bgSettings.applyUpdate({ expectedRevision: Number(ifMatch), patch: patch as never, readiness: d.bgExecutorReady ? { autonomousExecutorReady: d.bgExecutorReady.autonomous, keepwarmExecutorReady: d.bgExecutorReady.keepwarm } : undefined });
-        return json(res, 200, { revision: r.revision, applied: true });
+        const r = d.bgSettings.applyUpdate({ expectedRevision: Number(ifMatch), operationId: opKey, patch: patch as never, readiness: d.bgExecutorReady ? { autonomousExecutorReady: d.bgExecutorReady.autonomous, keepwarmExecutorReady: d.bgExecutorReady.keepwarm } : undefined });
+        return json(res, 200, { revision: r.revision, applied: true, duplicate: r.duplicate ?? false });
       } catch (err) {
         const msg = String((err as Error).message ?? '');
         if (msg.startsWith('REVISION_CONFLICT')) return json(res, 409, { error: { code: 'revision_conflict', message: `设置版本已变化（当前 ${msg.split(':')[1] ?? '?'}），请刷新重试` } });
+        if (msg.startsWith('IDEMPOTENCY_CONFLICT')) return json(res, 409, { error: { code: 'idempotency_conflict', message: '该操作键已用于不同的设置，请核对原操作' } });
+        if (msg.startsWith('BACKGROUND_BUDGET_INVALID') || msg.startsWith('SETTINGS_OPERATION_ID_INVALID')) return json(res, 422, { error: { code: 'invalid_background_settings', message: '设置操作或费用上限无效' } });
         if (msg.startsWith('BACKGROUND_BUDGET_NOT_CONFIGURED')) return json(res, 422, { error: { code: 'background_budget_not_configured', message: '该用途日费用上限未配置（null 不是无限）——先填有效上限再开启' } });
         if (msg.startsWith('BACKGROUND_EXECUTOR_NOT_READY')) return json(res, 422, { error: { code: 'background_executor_not_ready', message: '自主/保温的模型执行器尚未接线（后续批次）——开关意图已保存语义见 422，不开启付费路径' } });
         throw err;
@@ -900,6 +914,15 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     }
     if (route === 'GET /api/v1/background/runs') {
       const conversationId = url.searchParams.get('conversation_id') ?? 'primary';
+      const limit = Number(url.searchParams.get('limit') ?? 20);
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return json(res, 400, { error: { code: 'invalid_limit', message: 'limit 必须为 1..100 的整数' } });
+      const cursor = url.searchParams.get('cursor');
+      const cursorParts = cursor?.split('|');
+      if (cursor && (cursorParts?.length !== 2 || !Number.isFinite(Date.parse(cursorParts[0]!)) || !cursorParts[1])) return json(res, 400, { error: { code: 'invalid_cursor', message: '运行分页位置无效' } });
+      const params: Array<string | number> = [conversationId];
+      const after = cursorParts ? ' AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))' : '';
+      if (cursorParts) params.push(cursorParts[0]!, cursorParts[0]!, cursorParts[1]!);
+      params.push(limit + 1);
       // 08 瘦返回：来源（trigger_origin 从 task origin 派生）/状态/实际派发时间/动作与
       // 发布计数/成本/阻断原因——不含原 payload、工具 JSON、reasoning 或聊天正文。
       const rows = d.db.prepare(
@@ -909,9 +932,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
                 r.reserved_cost_micro_usd, r.known_cost_micro_usd, r.unknown_cost_count, r.retention,
                 r.first_dispatch_started_at, r.claimed_at, r.finished_at, r.created_at
          FROM background_runs r JOIN background_tasks t ON t.id = r.task_id
-         WHERE r.conversation_id = ? ORDER BY r.created_at DESC LIMIT 100`,
-      ).all(conversationId) as Array<Record<string, unknown>>;
-      return json(res, 200, { runs: rows });
+         WHERE r.conversation_id = ?${after} ORDER BY r.created_at DESC, r.id DESC LIMIT ?`,
+      ).all(...params) as Array<Record<string, unknown>>;
+      const page = rows.slice(0, limit);
+      const last = page.at(-1);
+      return json(res, 200, { runs: page, next_cursor: rows.length > limit && last ? `${last.created_at}|${last.id}` : null });
     }
     const bgRunStop = /^POST \/api\/v1\/background\/runs\/([^/]+)\/stop$/.exec(route);
     if (bgRunStop) {

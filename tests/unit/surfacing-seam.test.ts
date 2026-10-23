@@ -1,4 +1,4 @@
-import {memoryRefFor} from '../../apps/host/src/memory-surfacing/contracts.ts';
+import {memoryRefFor,SURFACE_HOST_NOTICE} from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -88,6 +88,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
 
 type Block = { type: string; text?: string };
 const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : typeof c === 'string' ? [{ type: 'text', text: c }] : []);
+// DS serializes content blocks into one string at its wire boundary.
+const memoryJson = (text: string): string => text.slice(text.indexOf('{"memories":'));
 
 test('JA-S08: owner can expand the same delivered bucket without exposing refs or retrieving again', async () => {
   const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
@@ -117,7 +119,7 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
     const before=caps.length;
     const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
-    const visibleRef=JSON.parse((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!).memories[0].memory_ref;
+    const visibleRef=JSON.parse(memoryJson((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!)).memories[0].memory_ref;
     assert.equal(visibleRef,list[0].memory_ref);
     const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
       {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
@@ -164,7 +166,9 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   // 两个有来源边界的段（分段 manifest 在 surfacing_deliveries）。
   const memoryMessage = msgs2[msgs2.length - 2]!;
   assert.equal(memoryMessage.role, 'system', 'host data is not a user message');
-  const memoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
+  const fullMemoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
+  assert.equal(fullMemoryText.split(SURFACE_HOST_NOTICE).length - 1, 1);
+  const memoryText = memoryJson(fullMemoryText);
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
   assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), date: '2026-07-09', text: ITEM.event_text }] });
   assert.ok(memoryText.includes(memoryRefFor(ITEM.detail_ref)));

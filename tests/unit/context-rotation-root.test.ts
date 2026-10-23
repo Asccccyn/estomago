@@ -19,7 +19,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { selectionIntroduction, selectionGuides } from '../../apps/host/src/context/selection-projection.ts';
-import { renderAugmentation, PRIMARY_MEMORY_NOTICE, memoryRefFor } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { renderAugmentation, memoryRefFor } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { fixedSystemCount } from '../../apps/host/src/runtime/cache-plan.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
@@ -238,7 +238,7 @@ test('T05-T07/T13: calendar guides, midnight, month/year boundaries and gaps', (
 
 test('T09/T12: selected edit retains original date; repaired/unknown time not invented; missing revisions rejected', async () => {
   const ctx = compose(tempRoot('root-date-'), dsTransport([]));
-  const first = await say(ctx, 'original', 'a', T0);
+  const first = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'original', clientMessageId: 'a', occurredAt: T0 }); // accepted but not dispatched: latest edit contract
   const edited = ctx.messages.editUserMessage(first.message.id, 'edited');
   const valid = ctx.selections.validateItems('c1', [{ message_id: first.message.id }], 999);
   assert.ok(valid.ok);
@@ -251,10 +251,10 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
   ctx.db.close();
 });
 
-test('M01-M04/C02: full memory text and dates only; no reference, notice or summary', () => {
+test('M01-M04/C02: full memory text/date and minimal deep-read reference; no summary or internal metadata', () => {
   const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
-  const second = {...item,event_id:'e2',memory_date:null,event_text:'第二个事件'};
-  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{date:'2026-07-09',text:item.event_text},{date:null,text:second.event_text}]});
+  const second = {...item,event_id:'e2',detail_ref:'sdr2',memory_date:null,event_text:'第二个事件'};
+  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{memory_ref:memoryRefFor('sdr1'),date:'2026-07-09',text:item.event_text},{memory_ref:memoryRefFor('sdr2'),date:null,text:second.event_text}]});
   assert.equal(renderAugmentation([]),'');
 });
 
@@ -326,11 +326,12 @@ test('R18: missing safety service blocks manual rotation instead of taking a leg
   ctx.db.close();
 });
 
-test('M02: exact event minutes only; untrusted or invalid dates never become occurrence claims', () => {
+test('M02: valid stored occurrence time survives legacy confidence metadata; invalid/missing dates remain null', () => {
   const item = { event_id: 'e', memory_id: 'id', memory_version: '1', memory_date: '2026-07-09T01:12:35Z', date_confidence: 'exact', event_text: 'body', body_hash: 'hash', detail_ref: 'detail' };
   const refs = new Map([['e', memoryRefFor('detail')]]);
   assert.ok(renderAugmentation([item], refs).includes('2026-07-09 09:12'));
-  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, date_confidence: 'unknown' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
+  assert.ok(renderAugmentation([{ ...item, date_confidence: 'unknown' }], refs).includes('2026-07-09 09:12'), 'current model-result-whitelist contract retains a valid stored occurrence date independently of legacy date_confidence');
+  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
 });
 
 test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampering still fails', async () => {

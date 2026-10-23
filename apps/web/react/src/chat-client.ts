@@ -2,7 +2,7 @@ import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; editPending?: boolean; editUnconfirmed?: boolean }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -145,7 +145,7 @@ export class EstomagoClient {
     this.request('/background/tasks/' + encodeURIComponent(id), this.json('PUT', body, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundCancelTask = (id: string, ifMatch: number, opKey: string): Promise<Json> =>
     this.request('/background/tasks/' + encodeURIComponent(id), {method:'DELETE',headers:{'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}})
-  backgroundRuns = (): Promise<Json> => this.request('/background/runs')
+  backgroundRuns = (cursor?: string | null): Promise<Json> => this.request('/background/runs' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
   backgroundStopRun = (id: string, opKey: string): Promise<Json> =>
     this.request('/background/runs/' + encodeURIComponent(id) + '/stop', {method:'POST',headers:{'Idempotency-Key':opKey}})
   start = async () => {
@@ -239,7 +239,9 @@ export class EstomagoClient {
       const previous=old.reply_status,next=dto.reply_status
       const regresses=previous?.attempt_id&&previous.attempt_id===next?.attempt_id
         &&['completed','failed','blocked','interrupted'].includes(previous.state)&&['pending','running'].includes(next.state)
-      if(next&&!regresses&&JSON.stringify(previous)!==JSON.stringify(next)){this.raw.set(dto.id,{...old,reply_status:next});return true}
+      const mutation=old.mutation_status?.reason==='MESSAGE_ALREADY_DISPATCHED'?old.mutation_status:(dto.mutation_status??old.mutation_status)
+      const reply=next&&!regresses?next:previous
+      if(JSON.stringify(previous)!==JSON.stringify(reply)||JSON.stringify(old.mutation_status)!==JSON.stringify(mutation)){this.raw.set(dto.id,{...old,reply_status:reply,mutation_status:mutation});return true}
       return false
     }
     this.raw.set(dto.id,dto)
@@ -285,6 +287,7 @@ export class EstomagoClient {
         time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
         steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,
         replyState:m.reply_status?.state,
+        canEdit:m.speaker==='owner'&&m.mutation_status?.can_edit===true,
         canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
         retryReason:retryReasons[m.reply_status?.reason]??undefined,editPending:this.editBusy.has(m.id),editUnconfirmed:this.edits.has(m.id)&&!this.editBusy.has(m.id),
         thinkSecs:thinkMs>0?Math.max(1,Math.round(thinkMs/1000)):undefined})
@@ -326,6 +329,7 @@ export class EstomagoClient {
       const max=Math.max(0,...[...this.raw.values()].map(m=>m.sequence))
       if(visible||(this.snapshot.historyMode==='latest'&&(!Number.isFinite(min)||message.sequence>=min))){
         if(this.absorb(message))this.render()
+        if(message.speaker==='owner')void this.refreshReply(message.id)
       }else if(data.kind!=='message.edited'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
     }
     if(id&&data.kind==='turn.started'){this.running.add(id);this.markReplyState(id,'running',data.attempt_id);this.render()}
@@ -336,7 +340,9 @@ export class EstomagoClient {
         this.running.delete(id)
         if(data.state==='blocked'||data.state==='failed'){
           const reason=typeof data.reason==='string'?data.reason:''
-          this.notify(reason.split(':')[0]==='MODEL_VISION_UNAVAILABLE'
+          this.notify(reason.split(':')[0]==='DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW'
+            ?'旧窗口缺少此前已发送的模型协议内容。请通过正常手动换窗选择原文后继续；已有历史保持不变，本轮没有发出模型请求。'
+            :reason.split(':')[0]==='MODEL_VISION_UNAVAILABLE'
             ?'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。'
             :'本轮暂未完成，可在活动日志查看状态')
           // The context event endpoint omits turn.status; retain failures from live
@@ -456,6 +462,7 @@ export class EstomagoClient {
   }
   editMessage = async (id:string,content:string,resend=false,expectedRevision?:number):Promise<boolean> => {
     const raw=this.raw.get(id);if(!raw||raw.speaker!=='owner'||this.editBusy.has(id)||this.redirecting||!this.snapshot.ready)return false
+    if(content!==raw.revision.content&&raw.mutation_status?.can_edit!==true){this.notify('这条消息已派发或编辑资格尚未确认，不能修改已发送的内容。');return false}
     let operation=this.edits.get(id)
     if(operation&&(operation.content!==content||operation.resend!==resend)){
       this.notify('上次提交结果尚未确认，请先按原提交内容重试，确认后再修改。');return false

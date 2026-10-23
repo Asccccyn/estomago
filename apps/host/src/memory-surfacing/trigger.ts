@@ -1,10 +1,10 @@
 // 触发假设提取（docs/03 §1）：分句是检索假设不是判定事实。
-// 程序只做有限分句/日期解析；事件粒度确认归 judge。短句不按长度
+// 程序只做有限分句/日期解析；交付归 M 的事实/确定性/语义准入。短句不按长度
 // 一刀切（R09）；thinking/工具输出/旧浮现包不可作为查询原话（R46）。
 import type { EventHypothesis } from './contracts.ts';
 
-/** Hypotheses are spans, never event verdicts. The Judge must confirm identity
- * and grouping; punctuation alone cannot authorize a memory. */
+/** Hypotheses are spans, never event verdicts. Mariposa must confirm identity;
+ * punctuation alone cannot authorize a memory. */
 export function extractHypotheses(text: string, maxHypotheses = 24): EventHypothesis[] {
   const points = [...(text ?? '')];
   if (points.join('').trim().length === 0) return [];
@@ -14,7 +14,12 @@ export function extractHypotheses(text: string, maxHypotheses = 24): EventHypoth
   const push = (end: number) => {
     const clause = points.slice(start, end).join('');
     if (clause.trim()) {
-      const date = /(?:\d{4}[-/.年])?\d{1,2}[-/.月]\d{1,2}[日号]?/.exec(clause);
+      // Reuse the same date forms/word boundaries as the intent gate. A
+      // version such as v1.2 must not become an inherited January 2 date.
+      const date = [FULL_CN, FULL_NUM, MD_CN, MD_NUM]
+        .flatMap(re => [...clause.matchAll(new RegExp(re.source, re.flags))])
+        .sort((a, b) => a.index - b.index || b[0].length - a[0].length)
+        .find(match => extractExplicitDates(match[0]).length > 0);
       const explicit = date ? { start_cp: start + [...clause.slice(0, date.index)].length,
         end_cp: start + [...clause.slice(0, date.index + date[0].length)].length } : null;
       out.push({ hypothesis_id: `h${out.length + 1}`, start_cp: start, end_cp: end,
@@ -149,6 +154,10 @@ const B_WRITE_EXEMPT = /先查|上次.*[谁哪]/;
 const B_FUTURE = /明天|下周|下次|明年/;
 
 function baselineRule(t: string): boolean {
+  // A future planning question can contain a date/event/question too. It is
+  // not a present recall request; mixed sentences still pass the clause gate.
+  if (FUTURE_LEAD.test(t.trim()) && !t.split(CLAUSE_SPLIT).some(clause =>
+    !FUTURE_LEAD.test(clause.trim()) && B_HISTORY.test(clause))) return false;
   const history = B_HISTORY.test(t);
   const event = B_EVENT.test(t);
   const question = B_QUESTION.test(t);

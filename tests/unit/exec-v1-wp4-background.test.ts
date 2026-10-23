@@ -1,3 +1,4 @@
+import { keepwarmAdmission, keepwarmTargetMs, autonomousAdmission, canTransition } from '../reference/background-policy.ts';
 // ESTOMAGO_CHAT_EXEC_V1 · WP4 地基（04 §4-§10）+ WAKE_KEEPWARM_V1（2026-10-22 改写）：
 // 策略纯函数 + 设置原子开关 + 调度器（虚拟时钟/假 executor）。
 // 2026-10-22 改写：60min 冷却（CW-06/07）与心跳零工具封锁（CW-13）按 U02/U06 退役；
@@ -15,7 +16,7 @@ import { SystemAlertService } from '../../apps/host/src/observability/system-ale
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler, type BackgroundExecutor } from '../../apps/host/src/runtime/background-scheduler.ts';
-import { keepwarmAdmission, keepwarmTargetMs, autonomousAdmission, budgetGate, canTransition, restartDisposition, budgetDayOfMs, clockRegressionAction, effectiveSettings } from '../../apps/host/src/runtime/background-policy.ts';
+import { budgetGate, restartDisposition, budgetDayOfMs, clockRegressionAction, effectiveSettings } from '../../apps/host/src/runtime/background-policy.ts';
 
 function setup(over: { config?: Record<string, unknown>; now?: number; executor?: BackgroundExecutor } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'exec-v1-wp4-'));

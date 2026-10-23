@@ -288,7 +288,7 @@ export default function App() {
   }
   const selectMessage = (id: string) => client.select(id)
   const editMessage = (m: Msg) => {
-    if (editing) return
+    if (editing || !m.canEdit) return
     setEditing({ id: m.id, text: client.editText(m.id), revision: client.messageRevision(m.id), resend: m.canRetry === true })
   }
   const saveEditedMessage = async (m: Msg) => {
@@ -419,7 +419,7 @@ export default function App() {
               <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
               <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
               <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
-              <IconBtn title="编辑" disabled={editing !== null || m.editPending || ['pending', 'running'].includes(m.replyState ?? '')} onClick={() => editMessage(m)}><Pencil size={15} /></IconBtn>
+              <IconBtn title={m.canEdit ? '编辑' : '已派发或编辑资格尚未确认'} disabled={editing !== null || m.editPending || !m.canEdit} onClick={() => editMessage(m)}><Pencil size={15} /></IconBtn>
               <span className="ml-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
             </div>
             </>}

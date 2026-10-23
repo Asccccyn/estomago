@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { detectRecallNeed, extractExplicitDates, type RecentRecallState } from '../../apps/host/src/memory-surfacing/trigger.ts';
+import { detectRecallNeed, extractExplicitDates, extractHypotheses, type RecentRecallState } from '../../apps/host/src/memory-surfacing/trigger.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
@@ -86,6 +86,20 @@ test('防倒退负例（本批标注，单列）：强信号放开后不得误�
   ];
   const fired = guards.filter((t) => gate(t, false).action === 'lookup');
   assert.deepEqual(fired, []);
+});
+
+test('future event questions do not bypass the recall gate; mixed recall remains available', () => {
+  for (const text of ['明年7.9的婚礼怎么安排？','明天那场婚礼在哪里？','下周项目怎么做？']) {
+    assert.equal(gate(text, false).action, 'skip', text);
+  }
+  assert.equal(gate('明天去公园吧，还记得去年我们去海边的事吗？', false).action, 'lookup');
+});
+
+test('inherited dates use real date spans, including Chinese dates, never version numbers', () => {
+  assert.equal(extractHypotheses('还记得v1.2发布吗，也是那次庆祝。')[1]!.inherited_date_span, null);
+  const text = '二〇二六年七月九号图书馆夜读，也是山谷徒步。';
+  const span = extractHypotheses(text)[1]!.inherited_date_span!;
+  assert.equal([...text].slice(span.start_cp, span.end_cp).join(''), '二〇二六年七月九号');
 });
 
 test('省略表达三态：无状态 needs_context；近期有已确定回忆对象 → lookup；否则 skip', () => {

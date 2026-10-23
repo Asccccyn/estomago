@@ -217,13 +217,13 @@ export type Config = {
       max_output_tokens_per_run: number;
       max_tool_calls_per_run: number;
       max_run_ms: number;
-      paid_tools_enabled: boolean; // 只限外部收费工具；开启仍需 cap+价格+凭据核验（422 门在运行面）
+      paid_tools_enabled: boolean; // deprecated：只兼容旧YAML；不是有效权限来源。现有工具授权+可信报价+金额cap决定准入。
       daily_cost_cap_usd: number | null; // null=未配置→该用途后台付费禁止；不是无限
     };
     keepwarm: {
       enabled: boolean; // 三开关之一：缓存保温（与自主独立）
-      max_output_tokens_per_run: number;
-      max_run_ms: number;
+      max_output_tokens_per_run: number; // deprecated：只兼容旧YAML；实际使用主回合输出上限。
+      max_run_ms: number; // deprecated：只兼容旧YAML；有效时限由正常background.autonomous.max_run_ms决定。
       daily_cost_cap_usd: number | null; // 与自主日预算独立
       sleep_window: { enabled: boolean; start: string; end: string; timezone: string }; // 仅暂停心跳；不取消显式自主预约
     };

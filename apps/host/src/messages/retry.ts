@@ -4,6 +4,7 @@ import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { normalizeNewlines, isBlankContent, type MessageDto, type MessageReplyStatusDto } from '../../../../packages/contracts/src/api.ts';
 import type { MessageService } from './service.ts';
+import { MESSAGE_FROZEN_SQL } from './mutation.ts';
 
 export class MessageRetryError extends Error {
   readonly status: number;
@@ -31,7 +32,7 @@ type StatusRow = {
   id: string; state: string | null; turn_id: string | null; attempt_id: string | null;
   attempt_state: string | null; window_id: string | null; active_window_id: string | null;
   window_status: string | null; latest: number; busy: number; route_pending: number;
-  has_reply: number; has_tool_activity: number; response_started: number; other_window: number;
+  has_reply: number; has_tool_activity: number; response_started: number; other_window: number; mutation_frozen: number;
 };
 
 export class MessageRetryService {
@@ -47,6 +48,7 @@ export class MessageRetryService {
     const rows = this.db.prepare(`
       SELECT m.id, t.id AS turn_id, t.state, a.id AS attempt_id, a.state AS attempt_state,
         a.window_id, c.active_window_id, w.status AS window_status,
+        ${MESSAGE_FROZEN_SQL} AS mutation_frozen,
         NOT EXISTS(SELECT 1 FROM messages newer WHERE newer.conversation_id=m.conversation_id AND newer.sequence>m.sequence) AS latest,
         EXISTS(SELECT 1 FROM turns busy WHERE busy.conversation_id=m.conversation_id AND busy.state IN ('pending','running','route_owner_pending')) AS busy,
         EXISTS(SELECT 1 FROM route_decisions rd WHERE rd.conversation_id=m.conversation_id AND rd.state='pending') AS route_pending,
@@ -85,7 +87,7 @@ export class MessageRetryService {
           let ids: Set<string> | null = null;
           try {
             const manifest: unknown = JSON.parse(trajectory?.manifest_json ?? 'null');
-            if (Array.isArray(manifest) && manifest.every(entry => entry && typeof entry.id === 'string')) ids = new Set(manifest.map(entry => entry.id));
+            if (Array.isArray(manifest) && manifest.every(entry => entry && typeof entry.id === 'string')) ids = new Set(manifest.filter(entry => entry.pending_dispatch !== true).map(entry => entry.id));
           } catch { /* Unknown historical evidence cannot authorize a replay. */ }
           manifests.set(row.active_window_id, ids);
         }
@@ -97,7 +99,8 @@ export class MessageRetryService {
         state: row?.state ?? 'unknown', can_retry: reason === null, reason,
         turn_id: row?.turn_id ?? message.turn_id, attempt_id: row?.attempt_id ?? null,
       };
-      return { ...message, reply_status };
+      const frozen = !row || Boolean(row.mutation_frozen);
+      return { ...message, reply_status, mutation_status: { can_edit: !frozen, can_withdraw: !frozen, reason: frozen ? 'MESSAGE_ALREADY_DISPATCHED' : null } };
     });
   }
 

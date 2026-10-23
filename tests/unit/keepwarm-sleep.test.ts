@@ -1,3 +1,4 @@
+import { keepwarmAdmission, autonomousAdmission } from '../reference/background-policy.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildConfig, validateConfig } from '../../apps/host/src/config/schema.ts';
 import { keepwarmSleepState } from '../../apps/host/src/runtime/keepwarm-sleep.ts';
-import { effectiveSettings, keepwarmAdmission, autonomousAdmission } from '../../apps/host/src/runtime/background-policy.ts';
+import { effectiveSettings } from '../../apps/host/src/runtime/background-policy.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';

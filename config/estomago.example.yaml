@@ -207,8 +207,8 @@ reasoning:
 
 # —— ESTOMAGO_CHAT_EXEC_V1 新增段（policy-defaults.json adjustable 面）——
 # autonomous/keepwarm 首版默认关闭；daily_cost_cap_usd: null=未配置（该用途后台付费
-# 禁止），不是无限。adjustable=false 的策略常量（保温 50min/自主 60min 滚动间隔、
-# keepwarm 单请求/禁工具、分页 max 100 等）在 apps/host/src/config/policy-constants.ts。
+# 禁止），不是无限。保温间隔50min与分页上限等固定策略在policy-constants.ts。
+# 自主60min冷却、心跳单请求/禁工具等旧限制已退役。工具沿用现有授权；费用由可信报价和金额cap约束。
 background:
   autonomous:
     enabled: false
@@ -216,12 +216,10 @@ background:
     max_output_tokens_per_run: 4096
     max_tool_calls_per_run: 8
     max_run_ms: 120000
-    paid_tools_enabled: false
     daily_cost_cap_usd: null
   keepwarm:
     enabled: false
-    max_output_tokens_per_run: 128
-    max_run_ms: 30000
+    # 旧纯保温输出/时限键已退役；实际使用主回合输出和正常后台运行时限。
     daily_cost_cap_usd: null
     # 可按实际作息修改；开始含、结束不含。仅阻止系统心跳，不影响显式自主预约。
     sleep_window:

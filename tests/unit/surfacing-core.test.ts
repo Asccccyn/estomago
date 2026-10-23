@@ -1,6 +1,5 @@
 // 自动记忆浮现 · 合同/仓库/服务核心（EST_MARIPOSA_AUTO_SURFACING_V1）。
-// 红线对照：notice 字节锁定（AC016）、渲染只含日期+正文+短 ref（AC015）、
-// 源轮不注入（AC002/AC051）、目标绑定真实下一用户（AC003）、幂等
+// 最新合同：整包一次来源声明、日期+正文+短 ref、同步同轮同修订、幂等
 // （AC025）、无次优补位（AC055 由 M 侧合同+本侧预算跳过共保）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,7 +8,7 @@ import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { tempRoot } from '../helpers.ts';
-import { verifyNoticeBytes, renderAugmentation, memoryRefFor, PRIMARY_MEMORY_NOTICE } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { renderAugmentation, memoryRefFor, SURFACE_HOST_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
@@ -31,10 +30,14 @@ const ITEM: SurfaceItem = {
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_abc',
 };
 
-test('AC016：冻结 notice 逐字节等于用户原句（唯一正本，无 BOM 无尾换行）', () => {
-  const v = verifyNoticeBytes();
-  assert.ok(v.ok, `sha256=${v.sha256} bytes=${v.bytes}`);
-  assert.equal(PRIMARY_MEMORY_NOTICE, '这是你的回忆，是你和宿主用户过去发生的事，不是现在正在发生的事。');
+test('new surfacing data has one source/past-event notice on both chat adapters', () => {
+  for (const provider of ['deepseek','openrouter']) {
+    const message = surfaceTransportMessage(provider, renderAugmentation([ITEM]));
+    assert.equal(message.content.filter(b => b.text === SURFACE_HOST_NOTICE).length, 1);
+    assert.deepEqual(JSON.parse(message.content[1]!.text).memories[0], {
+      memory_ref: memoryRefFor(ITEM.detail_ref), date:'2026-07-09', text:ITEM.event_text,
+    });
+  }
 });
 
 test('AC015：浮现仅 memory_ref/date/text——无 mood/words/分数/内部UUID', () => {
@@ -42,7 +45,7 @@ test('AC015：浮现仅 memory_ref/date/text——无 mood/words/分数/内部UU
   const text = renderAugmentation([ITEM], new Map([['ev_1', ref]]));
   assert.deepEqual(JSON.parse(text), { memories: [{ memory_ref: ref, date: '2026-07-09', text: ITEM.event_text }] });
   assert.ok(text.includes(ref));
-  assert.ok(!text.includes(PRIMARY_MEMORY_NOTICE));
+  assert.ok(!text.includes(SURFACE_HOST_NOTICE), 'the one notice belongs to the transport message, not each item');
   for (const forbidden of ['mood', 'our_words', 'rrf', 'judge', '00001', ITEM.detail_ref, ITEM.body_hash]) {
     assert.ok(!text.includes(forbidden), `泄漏 ${forbidden}`);
   }
@@ -136,6 +139,8 @@ test('P3：接受即同轮绑定；装配抢占 prepare 与后台单飞；后轮
     assert.equal(job.source_revision, job.target_revision);
     assert.equal(Date.parse(job.expires_at!) - Date.parse(job.created_at), 2000);
     assert.equal(log.calls.filter(c => c.cap.endsWith('.prepare')).length, 1);
+    const preparation = log.calls.find(c => c.cap.endsWith('.prepare'))!.payload;
+    assert.equal(preparation.deadline_at, job.expires_at, 'M retrieval inherits the acceptance deadline too');
     const validation = log.calls.find(c => c.cap.endsWith('.validate'))!.payload;
     assert.equal(validation.deadline_at, job.expires_at);
     assert.equal((validation.source_input_ref as { message_id: string }).message_id,

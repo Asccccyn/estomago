@@ -8,6 +8,8 @@ import { genId, sha256Hex } from '../util/id.ts';
 import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind, type MessagePageDto } from '../../../../packages/contracts/src/api.ts';
 import { sha256Hex as sha256HexOf } from '../util/id.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
+import { assertMessageMutable } from './mutation.ts';
+import type { EventService, StreamEventRow } from '../events/service.ts';
 
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
 export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: string; repaired: boolean };
@@ -191,6 +193,7 @@ export class MessageService {
     if (msg.speaker !== 'owner') throw new Error('只有用户消息可编辑');
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
+      assertMessageMutable(this.db, messageId);
       const nextRev = msg.current_revision + 1;
       // §3.3：文字编辑沿用原附件——同一套绑定复制到新修订；旧修订附件引用原样保留
       const oldAttachments = this.db.prepare('SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, msg.current_revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;
@@ -224,6 +227,7 @@ export class MessageService {
 
   // 供路由事务内直接修订（同一外部 tx；AUD-06/07）
   editMessageInTx(messageId: string, newContent: string, opts: { source?: string; tokenEstimateJson?: string | null; notifySurfacing?: boolean; resubmitSurfacing?: boolean; allowBlankWithAttachments?: boolean } = {}): { revision: number; contentHash: string } {
+    assertMessageMutable(this.db, messageId);
     const row = this.db
       .prepare('SELECT current_revision, kind, conversation_id FROM messages WHERE id = ?')
       .get(messageId) as { current_revision: number; kind: string; conversation_id: string } | undefined;
@@ -269,15 +273,21 @@ export class MessageService {
   notifyAfterEditCommit(): void { this.surfacing?.afterCommit(); }
 
   // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
-  publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[] }): MessageDto {
+  publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[]; events?: EventService | null }): MessageDto {
     const nowIso = new Date().toISOString();
     // EXEC_V1 §03.6.3：chat_send_attachment 幂等——同 client_message_id 重发返回原消息，
     // 复用既有 (conversation, client_message_id) 唯一索引，不另建工具专用消息通道
     if (opts.clientMessageId) {
       const dup = this.db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?').get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
-      if (dup) return this.getMessage(dup.id)!;
+      if (dup) {
+        const existing = this.getMessage(dup.id)!;
+        const sameAttachments = JSON.stringify(existing.revision.attachments.map(a => ({ asset_id:a.asset_id,presentation:a.presentation }))) === JSON.stringify((opts.attachments ?? []).map(a => ({asset_id:a.asset_id,presentation:a.presentation})));
+        if (existing.revision.content !== opts.content || !sameAttachments) throw Object.assign(new Error('同一发送动作的内容不一致'), { code: 'IDEMPOTENCY_CONFLICT' });
+        return existing;
+      }
     }
     const messageId = genId('msg');
+    const publishedEvents: StreamEventRow[] = [];
     tx(this.db, () => {
       const seqRow = this.db
         .prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?')
@@ -299,7 +309,12 @@ export class MessageService {
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
       // WAKE_KEEPWARM_V1 §05：assistant 正式发布（含后台正式发言）同事务更新 L
       this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
+      if (opts.events) publishedEvents.push(opts.events.persistInTx('message.published', {
+        conversationId:opts.conversationId, turnId:opts.turnId, entityRef:messageId, entityRevision:1,
+        payload:{message:this.getMessage(messageId)!},
+      }));
     });
+    for (const event of publishedEvents) opts.events!.dispatchRow(event);
     return this.getMessage(messageId)!;
   }
 

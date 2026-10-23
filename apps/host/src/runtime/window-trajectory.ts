@@ -1,5 +1,5 @@
 // 每窗口 append-only 协议轨迹（§2.2/§7.1）：实际送出的有序输入投影的唯一正本。
-// 成功回合才推进（失败回合不落轨迹——provider_requests 仍逐笔记录实际发送供审计）；
+// 普通聊天成功后推进；后台实际派发后的实质协议在失败/取消时也保留，待送达来源另标pending。
 // 换窗重建新轨迹（近期原话固定为初始段）；跨轮 previousPayload 断言以本表为依据。
 // 审计 F06/F14：manifest_json=实际已见对话清单（id/revision/seq）——提醒范围、书签视野、
 // 已检查去重全部以这份"实际发送证据"为准，不从聊天库另行投影。
@@ -9,7 +9,7 @@ import type { OrMessage } from './or-payload.ts';
 import type { PrevBoundary } from './cache-plan.ts';
 import type { ManifestEntry } from '../context/review-policy.ts';
 
-export type TrajectoryRow = { windowId: string; messages: OrMessage[]; lastBoundary: PrevBoundary | null; manifest: ManifestEntry[] | null }; // manifest=null：v11 前旧行未知（F27：不当作空清单）
+export type TrajectoryRow = { windowId: string; messages: OrMessage[]; lastBoundary: PrevBoundary | null; manifest: ManifestEntry[] | null; pendingManifest: ManifestEntry[] }; // manifest=null：v11 前旧行未知（F27：不当作空清单）
 
 export class WindowTrajectoryService {
   private db: Db;
@@ -22,11 +22,13 @@ export class WindowTrajectoryService {
       | { messages_json: string; last_boundary_json: string | null; manifest_json: string | null }
       | undefined;
     if (!row) return null;
+    const manifest = row.manifest_json === null ? null : (JSON.parse(row.manifest_json) as ManifestEntry[]);
     return {
       windowId,
       messages: JSON.parse(row.messages_json) as OrMessage[],
       lastBoundary: row.last_boundary_json ? (JSON.parse(row.last_boundary_json) as PrevBoundary) : null,
-      manifest: row.manifest_json === null ? null : (JSON.parse(row.manifest_json) as ManifestEntry[]),
+      manifest: manifest?.filter(entry => entry.pending_dispatch !== true) ?? null,
+      pendingManifest: manifest?.filter(entry => entry.pending_dispatch === true) ?? [],
     };
   }
 

@@ -66,7 +66,7 @@ export type RunnerRunResult = {
   requestId: string | null; // OR：generation id；SDK：null
   attempts?: number; // §9.2：真实发出的模型请求次数（含重试）；1=未重试
   reasoningFrames?: unknown[]; // OR §10：opaque reasoning 片段（按接收顺序；协议继续态保真用，非 UI 思考）
-  reasoningContent?: string; // DS §10/D01：reasoning_content 拼接——仅同一工具回合续传回传，跨用户回合不得携带
+  reasoningContent?: string; // DS opaque协议继续态：带tools的后续请求按当前合同原样保留，不进入UI正文
 };
 
 export interface AgentRunner {

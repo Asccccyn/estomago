@@ -20,6 +20,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
 import { budgetDayOfMs } from '../../apps/host/src/runtime/background-policy.ts';
+import { settleBackgroundDispatch } from '../../apps/host/src/runtime/background-ledger.ts';
 
 function setup(nowMs: number = Date.parse('2026-10-22T01:00:00.000+08:00')) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-kw-'));
@@ -277,9 +278,8 @@ test('B-03/B-09：dispatch 结算幂等（重复 settle 不双计）；上海日
   const nowIso = new Date(t.now).toISOString();
   t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, reserved_cost_micro_usd, created_at, updated_at) VALUES ('bgr-b3','tk','primary','jiaming','keepwarm',1,'occ-b3','running',100000,?,?)").run(nowIso, nowIso);
   t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, dispatch_started_at, created_at) VALUES ('bgd-b3','bgr-b3','model:1',1,'model','reserved','2026-10-22',100000,?,?)").run(nowIso, nowIso);
-  const sched = new BackgroundScheduler({ db: t.db, config: t.config, settings: t.settings, alerts: new SystemAlertService(t.db, t.events), executor: { async executeRun() { return { outcome: 'noop' }; } } });
-  sched.settleDispatch('bgd-b3', { actualCostMicroUsd: 80000, outcomeCode: 'settled' });
-  sched.settleDispatch('bgd-b3', { actualCostMicroUsd: 80000, outcomeCode: 'settled' }); // 同 usage 重复到达
+  settleBackgroundDispatch(t.db, 'bgd-b3', { actualCostMicroUsd: 80000, outcomeCode: 'settled' });
+  settleBackgroundDispatch(t.db, 'bgd-b3', { actualCostMicroUsd: 80000, outcomeCode: 'settled' }); // 同 usage 重复到达
   const d = t.db.prepare('SELECT state, actual_cost_micro_usd FROM background_dispatches WHERE id = ?').get('bgd-b3') as { state: string; actual_cost_micro_usd: number };
   assert.equal(d.state, 'settled');
   const run = t.db.prepare('SELECT known_cost_micro_usd FROM background_runs WHERE id = ?').get('bgr-b3') as { known_cost_micro_usd: number };
@@ -338,6 +338,7 @@ test('B-02：多 run 已结算+unknown 占用后，新派发超 cap 在记账入
   t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-c','t-c','primary','jiaming','keepwarm',1,'kw:c','cancelled',?,?)").run(nowIso, nowIso);
   t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, created_at) VALUES ('d-c','r-c','model:1',1,'model','cancelled_before_send',?,50000,?)").run(day, nowIso);
   // 新 run C：记账入口逐笔过日占用门
+  t.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('t-d','primary','jiaming','keepwarm',1,1,'cache_idle','Asia/Shanghai','{}','system','system_keepwarm',?,?)").run(nowIso, nowIso);
   t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-d','t-d','primary','jiaming','keepwarm',1,'kw:d','running',?,?)").run(nowIso, nowIso);
   const sched = new BackgroundScheduler({ db: t.db, config: t.config, settings: t.settings, alerts: new SystemAlertService(t.db, t.events), executor: { async executeRun() { return { outcome: 'noop' }; } }, now: () => t.now });
   assert.equal(sched.dailyOccupiedMicroUsd('keepwarm', day), 980000, 'settled actual + unknown 预占；取消未发不计');

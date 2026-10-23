@@ -7,8 +7,8 @@
 //  - 身份映射隔离：dsSessionId 独立命名空间（estomago:ds:session:*），与 OR session 派生互不重叠；
 //    该值只用于宿主内部关联（消息投影 id 等），绝不发给 DS。上下文指纹纳入 deepseek 配置段（identity/service），
 //    OR↔DS 切换 → CONTEXT_STALE 强制换窗，不复用旧窗轨迹。
-//  - reasoning：DS 官方合同 reasoning_content 由服务端剥离、无需也不应回传（区别于 OR reasoning_details
-//    续态）；本驱动不透出 reasoningFrames，工具续请求只靠 tool_calls 块。
+//  - reasoning：带tools的请求按当前DS合同保留所有已返回的reasoning_content作为opaque协议继续态。
+//    本驱动不混用OR reasoning_details；宿主保留原始协议字段，UI/归档不展示推理正文。
 //  - §9.2 同款重试纪律：401/402/400 不自动重试；429/瞬时网络故障仅在无已发布输出时有界重试并遵守 Retry-After。
 //  - 测试注入假 transport，不联网；真实外网只发生在她授权的 DS 冒烟（ESTOMAGO_DS_SMOKE=1）。
 import { Readable } from 'node:stream';
@@ -87,7 +87,7 @@ export function buildDeepSeekPayload(envelope: OrRequestEnvelope): Record<string
     if (Array.isArray((m as { tool_calls?: unknown }).tool_calls)) out.tool_calls = structuredClone((m as unknown as { tool_calls: unknown[] }).tool_calls);
     if (typeof (m as { tool_call_id?: unknown }).tool_call_id === 'string') out.tool_call_id = (m as unknown as { tool_call_id: string }).tool_call_id;
     // D01（审计 3655d60）：thinking 型号同一工具回合的官方协议继续态——仅 string 原样透传
-    // （宿主在落轨迹前剥除，绝不跨用户回合携带；UI 思考投影与本字段无通道）
+    // （宿主在受保护轨迹保留；UI 思考投影与本字段无通道）
     if (typeof (m as { reasoning_content?: unknown }).reasoning_content === 'string') out.reasoning_content = (m as unknown as { reasoning_content: string }).reasoning_content;
     return out;
   });
@@ -324,7 +324,7 @@ export class DeepSeekRunner implements AgentRunner {
     }
     emit({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: null, request_id: finish.id });
     // DS 无 reasoning_details 续态；reasoning_content（thinking）作为同轮工具续传的协议继续态透出——
-    // supervisor 只在同一工具回合内回传，落轨迹前剥除（§10/D01）
+    // supervisor按带tools协议保留原始继续态；不回填已缺失的旧历史
     return { kind: 'result', result: this.final('completed', null, null, null, attempt, finish.id, undefined, finish.reasoningContent ?? undefined) };
   }
 }

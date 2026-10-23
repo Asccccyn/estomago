@@ -88,7 +88,15 @@ test('same-turn retries preserve the actual wire prefix and frozen cache boundar
     try {
       const { window, failed, baseline } = await ctx.prepareFailure();
       const bootCalls = ctx.bootstrapCalls();
-      const result = ctx.retry.retry({ conversationId: 'c1', messageId: failed.message.id, content: edit ? editedInput : initialInput, expectedRevision: 1, operationKey: 'retry-1' });
+      if (edit) {
+        // Latest contract: dispatched inputs stay immutable even when the response is unknown.
+        assert.throws(() => ctx.retry.retry({ conversationId: 'c1', messageId: failed.message.id, content: editedInput, expectedRevision: 1, operationKey: 'retry-1' }), (error: any) => error.code === 'MESSAGE_ALREADY_DISPATCHED');
+        assert.equal(ctx.messages.getMessage(failed.message.id)!.current_revision, 1);
+        assert.equal(JSON.stringify(ctx.trajectory.forWindow(window.id)), baseline);
+        assert.equal(ctx.payloads.length, 2);
+        return;
+      }
+      const result = ctx.retry.retry({ conversationId: 'c1', messageId: failed.message.id, content: initialInput, expectedRevision: 1, operationKey: 'retry-1' });
       assert.equal(result.turn_id, failed.turnId);
       assert.notEqual(result.attempt_id, failed.attemptId);
       assert.equal(result.message.current_revision, edit ? 2 : 1);

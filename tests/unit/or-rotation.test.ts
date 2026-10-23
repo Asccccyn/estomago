@@ -193,8 +193,8 @@ test('模型不完成评审：如实阻断（不伪造完成凭证、不换窗�
 test('无已见原话的容量触发：零范围 → skipped_empty 直接换窗（不叫模型评审）', async () => {
   const log: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];
   const root = tempRoot('orrot5-');
-  // 容量配置：C=40000 → 安全输入≈11808；软线压到 5000（<安全输入）→ 长输入触发 rotate（非 blocked_hard）
-  const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 5000 } });
+  // 容量配置：C=100000，硬容量包含完整冻结工具；软线仍保持测试触发值；软线压到 5000（<安全输入）→ 长输入触发 rotate（非 blocked_hard）
+  const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk, { windows: { model_context_capacity: 100000, soft_limit_tokens: 5000 } });
   const big = '长话题。'.repeat(4000); // ~20000 字符 → 粗估 ≈8000 token：≥软线 5000、≤安全输入 11808
   const sub = await say(ctx, big, 's1', T0);
   const att = ctx.db.prepare('SELECT state, blocked_reason, window_id FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null; window_id: string };

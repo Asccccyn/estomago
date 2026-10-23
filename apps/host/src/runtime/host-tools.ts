@@ -22,6 +22,8 @@ import { SurfacingRepository } from '../memory-surfacing/repository.ts';
 import { executeMemoryReadFull } from '../memory-surfacing/detail-tool.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
+import { quoteBackgroundTool, type BackgroundToolQuote } from './background-tool-cost.ts';
+import { ContractError } from './or-contract.ts';
 
 export type HostToolSpec = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
 
@@ -908,6 +910,10 @@ export type ToolExecContext = {
   attemptId?: string | null;
   round?: number | null;
   generationId?: string | null;
+  // Trusted host callback only: invoked after tool discovery/schema checks and
+  // before the resolved handler. Neither the quote nor this callback is a model
+  // argument; tool_invoke admits the actual capability once, not its wrapper.
+  beforeBackgroundTool?: (quote: BackgroundToolQuote) => void;
 };
 
 export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef> };
@@ -1096,8 +1102,8 @@ export class HostToolExecutor {
   private chatSendText(args: { text: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.messages) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'chat' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID' } };
-    const clientMessageId = `tool-text:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
-    const msg = this.messages.publishAssistantMessage({ conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.text, clientMessageId });
+    const clientMessageId = `tool-text:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}`;
+    const msg = this.messages.publishAssistantMessage({ conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.text, clientMessageId, events: this.events });
     void this.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
     return { ok: true, output: { message_id: msg.id, published: true } };
   }
@@ -1109,32 +1115,32 @@ export class HostToolExecutor {
     if (!this.taskService) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '预约服务未装配（能力缺口，如实拒绝）' } };
     const op = args.operation;
     const convId = ctx.roomId;
-    const err = (code: string, detail: string): ToolExecResult => ({ ok: false, output: { error_code: code, detail } });
+    const err = (code: string, detail?: string): ToolExecResult => ({ ok: false, output: { error_code: code, ...(detail ? { detail } : {}) } });
     if (op === 'schedule') {
       const r = this.taskService.schedule({
         actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''),
         note: args.note as string, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, createdBy: 'jiaming',
       });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
-      return { ok: true, output: { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision, duplicate: r.duplicate } };
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
+      return { ok: true, output: { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision } };
     }
     if (op === 'list') {
-      const r = this.taskService.list({ actorId: 'jiaming', conversationId: convId, cursor: args.cursor, limit: args.limit });
+      const r = this.taskService.list({ actorId: 'jiaming', conversationId: convId, cursor: args.cursor, limit: args.limit, selfScheduledOnly: true });
       if (!r.ok) return err(r.code, r.detail ?? '');
-      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, note_preview: t.note_preview })), next_cursor: r.next_cursor } };
+      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, ...(t.note_preview ? { note_preview: t.note_preview } : {}) })), ...(r.next_cursor ? { next_cursor: r.next_cursor } : {}) } };
     }
     if (op === 'update') {
       const r = this.taskService.update({
         actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''),
-        expectedRevision: Number(args.expected_revision ?? 0), note: args.note ?? undefined, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined,
+        expectedRevision: Number(args.expected_revision ?? 0), note: args.note ?? undefined, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, selfScheduledOnly: true,
       });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
-      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, scheduled_at: r.task.scheduled_at, duplicate: r.duplicate } };
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
+      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, scheduled_at: r.task.scheduled_at } };
     }
     if (op === 'cancel') {
-      const r = this.taskService.cancel({ actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''), expectedRevision: Number(args.expected_revision ?? 0) });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), detail: r.detail ?? null } };
-      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, cancelled: true, duplicate: r.duplicate } };
+      const r = this.taskService.cancel({ actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''), expectedRevision: Number(args.expected_revision ?? 0), selfScheduledOnly: true });
+      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
+      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, cancelled: true } };
     }
     return err('WAKE_REQUEST_INVALID', `未知操作：${String(op)}`);
   }
@@ -1239,9 +1245,9 @@ export class HostToolExecutor {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_NOT_FOUND' } };
     }
     const kind = args.presentation === 'voice' ? 'voice' : args.presentation === 'sticker' ? 'sticker' : 'text';
-    const clientMessageId = `tool-send:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.asset_id}`;
+    const clientMessageId = `tool-send:${ctx.turnId ?? 'noturn'}:${args.asset_id}:${args.presentation}:${sha256Hex(args.content ?? '')}`;
     const msg = this.messages.publishAssistantMessage({
-      conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.content ?? '', kind, clientMessageId,
+      conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.content ?? '', kind, clientMessageId, events: this.events,
       attachments: [{ asset_id: args.asset_id, presentation: args.presentation }],
     });
     void this.archiveSync?.drainOnce().catch(() => { /* 归档失败走 drain 重试 */ });
@@ -1373,10 +1379,14 @@ export class HostToolExecutor {
     if (set?.protocol !== 'deferred') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
     const allowed = name === 'tool_catalog' ? ['__tool_call_id'] : name === 'tool_define' ? ['name','__tool_call_id'] : ['name','definition_id','arguments','__tool_call_id'];
     if (Object.keys(args).some(k=>!allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
-    if (name === 'tool_catalog') return {ok:true,output:{tools:set.catalog.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
+    if (name === 'tool_catalog') {
+      this.admitBackgroundTool(name, ctx);
+      return {ok:true,output:{tools:set.catalog.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
+    }
     const spec = set.catalog.find(t=>t.function.name===args.name);
     if (!spec) return deny('TOOL_NOT_IN_ALLOWLIST');
     if (name === 'tool_define') {
+      this.admitBackgroundTool(name, ctx);
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
@@ -1385,6 +1395,11 @@ export class HostToolExecutor {
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return deny('TOOL_ARG_TYPE');
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, {...args.arguments as Record<string,unknown>,__tool_call_id:args.__tool_call_id},ctx,spec);
+  }
+
+  private admitBackgroundTool(name: string, ctx: ToolExecContext): void {
+    if (ctx.backgroundRunId && !ctx.beforeBackgroundTool) throw new ContractError('BACKGROUND_TOOL_ADMISSION_MISSING');
+    if (ctx.beforeBackgroundTool) ctx.beforeBackgroundTool(quoteBackgroundTool(this.db, name));
   }
 
   private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext, frozenSpec?: HostToolSpec): Promise<ToolExecResult> {
@@ -1403,6 +1418,7 @@ export class HostToolExecutor {
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
     if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
     if (rawToolCallIdRef.current !== null) checked.value.__tool_call_id = rawToolCallIdRef.current;
+    this.admitBackgroundTool(name, ctx);
     if (name === 'memory_hold') return this.memoryHold(checked.value, ctx);
     if (name === 'memory_recall') return this.memoryRecall(checked.value, ctx);
     if (name === 'memory_recall_next') return this.memoryRecallNext(checked.value, ctx);

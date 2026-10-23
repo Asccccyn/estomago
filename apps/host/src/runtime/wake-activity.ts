@@ -59,8 +59,10 @@ export class ConversationActivityService {
       `UPDATE conversation_activity SET
          maintenance_request_id = ?, maintenance_for_activity_revision = ?,
          maintenance_window_id = ?, maintenance_dispatch_started_at = ?, updated_at = ?
-       WHERE conversation_id = ? AND activity_revision = ?`,
-    ).run(input.requestId, input.capturedActivityRevision, input.windowId, input.dispatchStartedAtIso, input.dispatchStartedAtIso, input.conversationId, input.capturedActivityRevision);
+       WHERE conversation_id = ? AND activity_revision = ?
+         AND (maintenance_dispatch_started_at IS NULL OR maintenance_for_activity_revision != ?
+              OR julianday(maintenance_dispatch_started_at) <= julianday(?))`,
+    ).run(input.requestId, input.capturedActivityRevision, input.windowId, input.dispatchStartedAtIso, input.dispatchStartedAtIso, input.conversationId, input.capturedActivityRevision, input.capturedActivityRevision, input.dispatchStartedAtIso);
     return Number(r.changes) === 1;
   }
 

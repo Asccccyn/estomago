@@ -10,6 +10,7 @@ import { genId } from '../util/id.ts';
 import type { RawUsage } from '../../../../packages/contracts/src/sdk-events.ts';
 import type { SystemAlertService } from '../observability/system-alerts.ts';
 import { shanghaiDayOf, providerInputTotal, fieldTotalOf, type FieldTotal } from './attribution.ts';
+import { settleBackgroundUsage } from '../runtime/background-ledger.ts';
 
 export class UsageCollector {
   private db: Db;
@@ -49,13 +50,14 @@ export class UsageCollector {
         return; // §2.1：隔离该观测，不用它覆盖可信终值
       }
     }
-    // EXEC_V1 §05.6：归属列——优先从 provider_requests 行取 purpose 与真实 sent_at（派发开始）；
+    // EXEC_V1 §05.6：归属列——以 dispatch_started_at 定上海日；sent_at 是收到响应的时间，
+    // 只供旧请求无派发字段时回退，不能把跨午夜响应挪到第二天。
     // 无请求行（评审/旧路径）→ purpose 缺省 unknown、日期落证据时间并标 legacy（不虚构派发时刻）
     const reqRow = o.requestId
-      ? (this.db.prepare('SELECT purpose, sent_at FROM provider_requests WHERE id = ?').get(o.requestId) as { purpose: string | null; sent_at: string | null } | undefined)
+      ? (this.db.prepare('SELECT purpose, sent_at, dispatch_started_at, background_run_id FROM provider_requests WHERE id = ?').get(o.requestId) as { purpose: string | null; sent_at: string | null; dispatch_started_at: string | null; background_run_id: string | null } | undefined)
       : undefined;
     const observedAt = new Date().toISOString();
-    const dispatchStartedAt = reqRow?.sent_at ?? null;
+    const dispatchStartedAt = reqRow?.dispatch_started_at ?? reqRow?.sent_at ?? null;
     const budgetDay = shanghaiDayOf(dispatchStartedAt) ?? shanghaiDayOf(observedAt);
     const legacy = dispatchStartedAt === null ? 1 : 0;
     if (dup) {
@@ -63,10 +65,11 @@ export class UsageCollector {
       const oldIsComplete = dup.completeness === 'complete';
       if (oldIsComplete && !newComplete) return;
       this.db
-        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, cost_usd = ?, reasoning_tokens = ?, anomalies_json = ?, raw_usage_json = ?, window_id = COALESCE(?, window_id), completeness = ?, observed_at = ?, purpose = COALESCE(?, purpose), budget_day = COALESCE(budget_day, ?), dispatch_started_at = COALESCE(dispatch_started_at, ?) WHERE id = ?')
+        .prepare('UPDATE usage_observations SET input_tokens = ?, output_tokens = ?, cache_read_input_tokens = ?, cache_creation_input_tokens = ?, cost_usd = COALESCE(?, cost_usd), reasoning_tokens = ?, anomalies_json = ?, raw_usage_json = ?, window_id = COALESCE(?, window_id), completeness = ?, observed_at = ?, purpose = COALESCE(?, purpose), budget_day = COALESCE(?, budget_day), dispatch_started_at = COALESCE(?, dispatch_started_at), background_run_id = COALESCE(?, background_run_id), legacy_observed_at = ? WHERE id = ?')
         .run(o.usage.input_tokens ?? null, o.usage.output_tokens ?? null, o.usage.cache_read_input_tokens ?? null, o.usage.cache_creation_input_tokens ?? null,
           o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null, o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null, o.windowId ?? null,
-          o.completeness ?? 'complete', observedAt, reqRow?.purpose ?? null, budgetDay, dispatchStartedAt, dup.id);
+          o.completeness ?? 'complete', observedAt, reqRow?.purpose ?? null, dispatchStartedAt !== null ? budgetDay : null, dispatchStartedAt, reqRow?.background_run_id ?? null, legacy, dup.id);
+      if (o.scope === 'request' && o.requestId) settleBackgroundUsage(this.db, o.requestId);
       return;
     }
     this.db
@@ -84,8 +87,9 @@ export class UsageCollector {
         o.usage.cost_usd ?? null, o.usage.reasoning_tokens ?? null,
         o.usage.anomalies ? JSON.stringify(o.usage.anomalies) : null, o.usage.raw_json ?? null, o.windowId ?? null,
         o.source, o.completeness ?? 'complete', observedAt,
-        reqRow?.purpose ?? null, null, budgetDay, dispatchStartedAt, legacy,
+        reqRow?.purpose ?? null, reqRow?.background_run_id ?? null, budgetDay, dispatchStartedAt, legacy,
       );
+    if (o.scope === 'request' && o.requestId) settleBackgroundUsage(this.db, o.requestId);
   }
 
   // 账本视图：每个 attempt 一行（所选口径）+ 汇总（已知值求和；任一未知则该项标 unknown）

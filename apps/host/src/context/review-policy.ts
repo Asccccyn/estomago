@@ -23,6 +23,9 @@ export type ManifestEntry = {
   seq: number;
   origin: 'dialogue' | 'tool' | 'control' | 'retrieval' | 'protocol';
   visible: boolean;
+  // Tool result retained in canonical protocol but not yet sent to a model.
+  // Kept in the same manifest JSON; never treated as an already-seen source.
+  pending_dispatch?: true;
   // WP4（2026-10-08，§7.2）：conversation_read 片段级已见的码点半开区间
   //（缺省=整条已见）。只在"实际进入下一模型请求"后由 supervisor 并入；
   // 不另建第二套覆盖系统。
