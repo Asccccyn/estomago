@@ -1298,29 +1298,30 @@ export class HostToolExecutor {
    *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
   private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
-    // One bounded tool lifetime; do not hold the conversation queue for 200×60s.
-    const signal=ctx.signal?AbortSignal.any([ctx.signal,AbortSignal.timeout(10_000)]):AbortSignal.timeout(10_000);
+    // Propagate host cancellation. A new short deadline would discard slow image results
+    // while the non-preemptible worker still encodes them; background indexing remains open.
+    const signal=ctx.signal;
     try {
-      signal.throwIfAborted();
+      signal?.throwIfAborted();
       const fingerprint=await this.mediaIndex.workerFingerprint(signal);
-      signal.throwIfAborted();
+      signal?.throwIfAborted();
       if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
       const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
-      const indexing=AbortSignal.any([signal,AbortSignal.timeout(5_000)]);
+      const indexing=signal;
       let indexed=0;
       for(const assetId of pending.slice(0,200)) {
-        if(indexing.aborted)break;
+        if(indexing?.aborted)break;
         try {if((await this.mediaIndex.indexImage(assetId,indexing)).indexed)indexed++;}
-        catch {if(indexing.aborted)break;}
+        catch {if(indexing?.aborted)break;}
       }
-      signal.throwIfAborted();
+      signal?.throwIfAborted();
       const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal);
-      signal.throwIfAborted();
+      signal?.throwIfAborted();
       const out:Record<string,unknown>={...result};
       if(indexed<pending.length)out.coverage='incomplete';
       return {ok:true,output:out};
     }catch {
-      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':signal.aborted?'MEDIA_SEARCH_TIMEOUT':'MEDIA_WORKER_UNAVAILABLE'}};
+      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':'MEDIA_WORKER_UNAVAILABLE'}};
     }
   }
 
