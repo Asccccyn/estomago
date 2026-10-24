@@ -25,6 +25,7 @@ import { executeMemoryReadFull } from '../memory-surfacing/detail-tool.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { quoteBackgroundTool } from './background-tool-cost.ts';
+import { OIDO_GET_DEFINITION } from '../modules/oido/module.ts';
 import { ContractError } from './or-contract.ts';
 // P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
@@ -32,6 +33,8 @@ import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from '../
 export type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult };
 // P01.2：通用参数形状校验（从 validateToolArgs 提取；业务约束留所属能力）。
 import { validateArgsAgainstSchema, type PropSpec } from '../capabilities/validation.ts';
+import { CapabilityRegistry } from '../capabilities/registry.ts';
+import { executeRegisteredCapability } from '../capabilities/executor.ts';
 
 // mariposa 现行 hold 契约常量（正本=mariposa input_schemas；此处只做形状门，域校验仍以服务端为准）
 export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'plan', 'sex', 'anniversary', 'reloplay', 'diary'] as const;
@@ -730,22 +733,8 @@ function oidoDefinitions(): HostToolSpec[] {
       },
     }
   },
-  {
-    type: 'function',
-    function: {
-      name: 'oido_get',
-      description: '读取深听结果：默认概览；detail=prosody_page 看逐字韵律谱（每页≤32音节，带 next_cursor 翻页）。analysis_id 来自 oido_analyze。',
-      parameters: {
-        type: 'object',
-        properties: {
-          analysis_id: { type: 'string', minLength: 1, maxLength: 128 },
-          detail: { type: 'string', enum: ['overview', 'prosody_page'] },
-          cursor: { type: 'string', minLength: 1, maxLength: 160, description: '翻页游标（上页 next_cursor）' },
-        },
-        required: ['analysis_id'], additionalProperties: false,
-      },
-    }
-  },
+  // P02.5：oido_get 定义唯一正本已迁 modules/oido/module.ts（逐字搬迁；此处只读同源，不双注册）
+  OIDO_GET_DEFINITION,
   {
     type: 'function',
     function: {
@@ -1158,6 +1147,10 @@ export class HostToolExecutor {
   private supervisorRef: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null = null;
   /** app-context 后置注入（tools 先于 supervisor 构造） */
   setSupervisorRef(s: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null): void { this.supervisorRef = s; }
+  /** P02.6：已迁能力注册表（未注入=全部走旧路径，装配前零变化） */
+  private capabilityRegistry: CapabilityRegistry | null = null;
+  /** P02.6：装配根注入已迁能力注册表（显式创建，非自动发现）。 */
+  setCapabilityRegistry(r: CapabilityRegistry | null): void { this.capabilityRegistry = r; }
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
@@ -1744,24 +1737,6 @@ export class HostToolExecutor {
     }
   }
 
-  private async oidoGet(args: { analysis_id: string; detail?: string; cursor?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.oido) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED'}};
-    const binding=this.db.prepare('SELECT asset_id,content_sha256 FROM oido_source_bindings WHERE analysis_id=? AND conversation_id=?').get(args.analysis_id,ctx.roomId) as {asset_id:string;content_sha256:string}|undefined;
-    const allowed=()=>binding && this.oidoSourceAllowed(binding.asset_id,ctx.roomId,binding.content_sha256);
-    if(!allowed())return {ok:false,output:{error_code:'ANALYSIS_NOT_IN_ROOM',detail:'请从当前会话原声引用重新发起深听。'}};
-    try {
-      ctx.signal?.throwIfAborted();
-      const page=args.detail==='prosody_page';
-      const result=page?await this.oido.getProsodyPage(args.analysis_id,args.cursor,ctx.signal):await this.oido.getOverview(args.analysis_id,ctx.signal);
-      ctx.signal?.throwIfAborted();
-      if(!allowed())return {ok:false,output:{error_code:'ANALYSIS_NOT_IN_ROOM'}};
-      if(result.analysis_id!==args.analysis_id)throw new Error('OIDO_RESULT_INVALID');
-      return {ok:true,output:oidoModelView(result as unknown as Record<string,unknown>,page)};
-    }catch(err){
-      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':String((err as Error).message).slice(0,64)}};
-    }
-  }
-
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
     // R07（审计 FE-12）：工具生命周期事件合同——同一身份贯穿
@@ -1811,12 +1786,15 @@ export class HostToolExecutor {
         payload: { ...identity(), phase: 'result', ok: Boolean(result.ok), error_code: (result.output as { error_code?: string }).error_code ?? null },
       });
     }
-    if (result.ok) {
-      const effectiveName = name === 'tool_invoke' ? String(rawArgs.name) : name;
+    // P02.6：已迁能力的成功/失败投影在 registry 执行外壳内完成唯一一次；
+    // 外层投影只作用于尚未迁移集合（同名不双投影）。tool_invoke 的真实能力名沿现行解析。
+    const effectiveName = name === 'tool_invoke' ? String(rawArgs.name ?? '') : name;
+    const migrated = this.capabilityRegistry !== null && this.capabilityRegistry.has(effectiveName);
+    if (result.ok && !migrated) {
       const effectiveArgs = name === 'tool_invoke' ? (rawArgs.arguments as Record<string, unknown> ?? {}) : rawArgs;
       result = { ...result, output: modelResult(effectiveName, effectiveArgs, result.output as Record<string, unknown>) };
     }
-    if (!result.ok) result = { ...result, output: modelFailure(result.output as Record<string, unknown>) };
+    if (!result.ok && !migrated) result = { ...result, output: modelFailure(result.output as Record<string, unknown>) };
     return result;
   }
 
@@ -1863,7 +1841,15 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    // P02.6：名称属于已迁集合 → registry 执行外壳（旧业务分支已删，绝不在新路径失败时回退）。
+    // 集合不相交：未迁名显式走下方旧路径。同一定义/handler 只有一个来源。
+    if (this.capabilityRegistry?.has(name)) {
+      return executeRegisteredCapability(this.capabilityRegistry.get(name)!, rawArgs, ctx, frozenSpec, {
+        db: this.db,
+        isVoiceCallActive: (roomId: string) => this.voiceCallActive(roomId),
+      });
+    }
+    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1895,7 +1881,6 @@ export class HostToolExecutor {
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
     if (name === 'oido_analyze') return await this.oidoAnalyze(checked.value as { audio_ref: string; range_ms?: [number, number] }, ctx);
-    if (name === 'oido_get') return await this.oidoGet(checked.value as { analysis_id: string; detail?: string; cursor?: string }, ctx);
     if (name === 'transcript_read') return this.transcriptRead(checked.value as { audio_ref: string; cursor?: string }, ctx);
     if (name === 'oido_capabilities') return await this.oidoCapabilities(ctx);
     if (name === 'oido_view') return await this.oidoView(checked.value as { analysis_id: string; range_ms?: [number, number] }, ctx);
