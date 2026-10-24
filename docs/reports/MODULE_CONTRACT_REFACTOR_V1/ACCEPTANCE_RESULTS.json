@@ -426,12 +426,18 @@
       "phase": "P07",
       "setup": "用HTTP管理预约，再从模型工具读取/修改合法任务。",
       "assertions": "同一领域正本与版本/幂等；HTTP不伪装模型已见。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "6e2c42447dba0701e39d542553284352488f8bd3",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --integration --file=tests/integration/records-api.test.ts --file=tests/integration/snapshot-http.test.ts --file=tests/integration/message-history-http.test.ts --file=tests/integration/mock-turn.test.ts  (exit 0；真实 Host HTTP 启动+路由可达+同一服务)",
+        "--file=tests/integration/aud-16-26-31-32-ops.test.ts 等 5/5（启停/健康/工具生命周期）"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/integration/records-api.test.ts",
+        "tests/integration/mock-turn.test.ts"
+      ],
+      "notes": "HTTP 与模型工具使用同一领域服务（HTTP 管理面与工具面身份/语义区分未变，底层同一 BackgroundTaskService/MessageService/OidoAdapter）；P07.1/P07.2 的逐域 handler 物理提取未在本批执行（登记 BLOCKERS——总入口认证/路径/响应未改，属结构收尾非行为项）。"
     },
     {
       "id": "A24",
@@ -440,12 +446,17 @@
       "phase": "P07",
       "setup": "隔离Host正常start/stop，手机式断线重连一次。",
       "assertions": "worker/timer只一份；不重复请求/发布；旧请求不覆盖新状态。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "6e2c42447dba0701e39d542553284352488f8bd3",
+      "commands": [
+        "--file=tests/integration/aud-16-26-31-32-ops.test.ts + tests/unit/health-readiness.test.ts + tests/unit/tool-lifecycle.test.ts + tests/unit/oido-delete-propagation.test.ts  (exit 0；start/stop 各一次无重复 timer、模块未配置=如实不可用)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/integration/aud-16-26-31-32-ops.test.ts",
+        "apps/host/src/modules/oido/lifecycle.ts"
+      ],
+      "notes": "启停：oído delete-retry 生命周期 start/stop（Host 实际启停点）；surfacing worker/背景调度沿原启停点；每定时器一处 owner。前端未改动（零 dist 改动）。"
     },
     {
       "id": "A25",

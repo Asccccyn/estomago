@@ -21,5 +21,6 @@
 | P04 收尾 | 3203d59 | MIGRATION_MATRIX 48 行全填；A13/A14 证据（hold-quote/来源核证/recall/三层详情/episodes 离线合同）；PROGRESS/RESUME 更新 | 见 ACCEPTANCE_RESULTS | 见git log | P04 DONE；下一卡 P05 |
 | P05 | P04 收尾 | messages/lifecycle.ts（通用事实+inTx/afterCommit+旧形适配）；context/contributions.ts（两类贡献叶合同，现行方法名沿 04 §F）；application/message-lifecycle.ts（浮现+活动锚点装配）；MessageService 六调用点发事实（firstAcceptance 语义）；supervisor surfacing 依赖叶类型化；app-context 绑定 bindMessageLifecycle | typecheck 0；surfacing-core/events/seam/openrouter+joint-audit-surfacing+frontend-lifecycle+session-snapshot+message-retry 10/10；A15/A16/A17=PASS | 见git log | P05 DONE；下一卡 P06 |
 | P06 | P05 提交 | application/background-execution.ts（executeRun 逐字迁移+schedulerRef 惰性转发）；P06.3-7 已在前卡达成（registry 唯一路径/单次准入/同信号/窄端口）；P06.8 顺序核对 | typecheck 0；wake-keepwarm/exec-v1-wp4-*/full-audit-wake+wake-wire+tool-budget/keepwarm-sleep 8/8；A18-A22=PASS | 见git log | P06 DONE；下一卡 P07 |
+| P07 | P06 提交 | 可验证范围：真实 Host HTTP 集成（records/snapshot/history/mock-turn 4/4）+启停/健康/ops 5/5；启停 owner 核对（oído 生命周期/surfacing/scheduler）；app-context 无 Siren 建呼/多步业务（P03 已抽 adapter）；BLOCKERS 登记 P07.1/2 逐域提取未做 | A23/A24=PASS；零前端改动 | 见git log | P07 部分完成（结构收尾登记 BLOCKERS）；下一卡 P08/P09 |
 
 只记可复核事实。不记录私有推理、凭据、聊天正文、完整请求。
