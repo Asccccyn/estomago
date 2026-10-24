@@ -110,6 +110,59 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
   )
 }
 
+// V06 深听逐字谱（2026-10-24）：按页读 prosody_page（每页≤32音节），带 next_cursor 续读。
+// 只展示可测声学量（半音/中音域参照）——不做情绪解读；每音节≤5 F0 点按合同渲染。
+function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element | null {
+  const [pages, setPages] = useState<Array<{ syllable: string; tone: string | null; f0: number[]; startS: number }[]>>([])
+  const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const [loading, setLoading] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { setPages([]); setCursor(undefined); setDone(false); setError(null) }, [analysisId])
+  const loadMore = async (): Promise<void> => {
+    if (loading || done) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId) + '/prosody' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''))
+      if (!res.ok) { const b = await res.json().catch(() => ({})) as Record<string, any>; setError(String(b['error_code'] ?? b['detail'] ?? '不可用')); setDone(true); return }
+      const body = await res.json() as Record<string, any>
+      const syllables = (body['syllables'] ?? []) as Array<Record<string, any>>
+      setPages((prev) => [...prev, syllables.map((x) => ({
+        syllable: String(x['text'] ?? '?'),
+        tone: x['tone'] == null ? null : String(x['tone']),
+        f0: (Array.isArray(x['f0_st']) ? x['f0_st'] : []).map(Number),
+        startS: Number(x['start_s'] ?? 0),
+      }))])
+      if (typeof body['next_cursor'] === 'string' && body['next_cursor']) setCursor(body['next_cursor'])
+      else { setCursor(undefined); setDone(true) }
+    } catch { setError('请求失败'); setDone(true) } finally { setLoading(false) }
+  }
+  if (error && pages.length === 0) return <p className="text-[11px] text-[#a05a4a]">逐字谱：{error}</p>
+  if (pages.length === 0 && !loading && !done) {
+    return (
+      <button onClick={() => void loadMore()} className="self-start rounded-full bg-white/60 px-2.5 py-0.5 text-[11px] text-[#5e5d59]">看逐字谱</button>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        {pages.flat().map((sy, i) => (
+          <span key={i} className="flex w-8 flex-col items-center rounded-lg bg-white/70 py-1" title={`${sy.startS.toFixed(2)}s${sy.tone ? ' · 本调 ' + sy.tone : ''}`}>
+            <span className="text-[13px] leading-none">{sy.syllable}</span>
+            <span className="mt-0.5 flex h-6 w-6 items-end justify-center gap-[1px]">
+              {sy.f0.slice(0, 5).map((v, j) => (
+                <span key={j} className="w-[3px] rounded-full bg-[#c96442]" style={{ height: `${Math.max(3, Math.min(24, 6 + (v + 12)))}px`, opacity: 0.45 + (j / Math.max(1, sy.f0.length - 1)) * 0.55 }} />
+              ))}
+            </span>
+          </span>
+        ))}
+      </div>
+      {!done && <button disabled={loading} onClick={() => void loadMore()} className="self-start rounded-full bg-white/60 px-2.5 py-0.5 text-[11px] text-[#5e5d59] disabled:opacity-50">{loading ? '读取中…' : '下一页'}</button>}
+      {error && pages.length > 0 && <p className="text-[11px] text-[#a05a4a]">续读：{error}</p>}
+    </div>
+  )
+}
+
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
 function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string }) {
   // RE-15（2026-10-24 返修）：深听 UI 状态隔离——queued/409 不再显示成成功空卡；
@@ -211,6 +264,7 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
             {Array.isArray(listen.overview?.['limits']) && listen.overview!['limits'].length > 0 && (
               <p className="text-[11px] leading-[1.4] text-[#8a8780]">限制：{listen.overview!['limits'].map(String).join('；')}</p>
             )}
+            <ProsodyPages analysisId={listen.analysisId} />
           </div>
         )}
       </div>

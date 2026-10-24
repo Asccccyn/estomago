@@ -425,6 +425,15 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       const out = await d.tools.execute('oido_analyze', { audio_ref: body['audio_ref'] }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
       return json(res, out.ok ? 200 : (out.output as { error_code?: string })['error_code'] === 'OIDO_UNAVAILABLE' ? 503 : 422, out.output);
     }
+    // V06 深听逐字谱（2026-10-24）：UI 翻页读 prosody_page（同 oido_get 工具门）
+    const oidoUiProsody = /^GET \/api\/v1\/oido\/analyses\/([^/]+)\/prosody$/.exec(route);
+    if (oidoUiProsody) {
+      if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
+      const cursor = url.searchParams.get('cursor');
+      const out = await d.tools.execute('oido_get', { analysis_id: decodeURIComponent(oidoUiProsody[1]!), detail: 'prosody_page', ...(cursor ? { cursor } : {}) }, { roomId: 'primary', windowId: 'ui', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: `ui-oido-${Date.now()}` });
+      if (!out.ok) return json(res, 422, out.output);
+      return json(res, 200, out.output);
+    }
     const oidoUiView = /^GET \/api\/v1\/oido\/analyses\/([^/]+)$/.exec(route);
     if (oidoUiView) {
       if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });
