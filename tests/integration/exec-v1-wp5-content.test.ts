@@ -3,7 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { tempRoot, writeApprovedIdentity, readyRuntimePatch, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { ContentServer } from '../../apps/content/src/service.ts';
@@ -205,7 +205,8 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token } });
+  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token } })
+  wireOidoCapabilitiesForTest(tools, {});;
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w1', turnId: 'turn-tool-test', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-test' };
   const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1', __tool_call_id: 'tc-model-1' }, ctx);
   assert.equal(r.ok, true);
