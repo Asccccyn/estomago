@@ -142,6 +142,61 @@ test('路由：待决 → 用户取消 → turn blocked；重复消费 409', asy
   assert.equal(again.status, 409, '票据一次消费，多端重复点击只有一个生效');
 });
 
+// 她 2026-10-24 裁定：approve 补完——真实恢复链验收（HTTP→supervisor→续跑）。
+// 路由信号时刻不存在完整可放行的回答（正文边流边落库、信号后内容被 fence 丢弃），
+// approve=接受路由结果并以原输入续跑一轮：service 建 fresh_session=0 新 attempt（同窗
+// resume，已执行工具不重放），HTTP 统一走 validateAndConsume（404/409/绑定链校验）。
+// 真实平台的实际路由行为仍是外部边界（mock 只验证宿主链路语义，不冒充供应商效果）。
+test('路由 approve：接受→新 attempt 续用原 session→turn 完成；半截回答保留、迟到内容不入库', async () => {
+  process.env.ESTOMAGO_MOCK_SCENARIO = 'route';
+  const { turn_id } = await submit('路由接受场景', 'int-route-approve-1');
+  await pollUntil(async () => (await turnState(turn_id)).state === 'route_owner_pending');
+  const decision = (await turnState(turn_id)).pending as { id: string } | null;
+  assert.ok(decision, '应产生待决票据');
+  // 续跑切正常回复场景；观测 mock runner 的 resume 请求（会话连续性）
+  process.env.ESTOMAGO_MOCK_SCENARIO = 'consistent';
+  const mock = (host.runnerSelection as { runner: { lastResumeRequest: string | null } }).runner;
+  mock.lastResumeRequest = null;
+  const approve = await api('POST', `/api/v1/route-decisions/${decision!.id}`, { choice: 'approve' });
+  assert.equal(approve.status, 200);
+  const data = (await approve.json()) as { resolved: string; attempt_id: string };
+  assert.equal(data.resolved, 'approve');
+  assert.ok(data.attempt_id, '响应携带新 attempt 供跨端跟踪');
+  await pollUntil(async () => (await turnState(turn_id)).state === 'completed', 10000);
+  // ① 会话续用：续跑请求 resume 首轮绑定的窗口 session（fresh_session=0；与 edit 的全新开跑相对）
+  assert.ok(mock.lastResumeRequest, 'approve 续跑 resume 原 session（工具继续态不重放）');
+  // ② 半截回答保留为真实消息；未断行尾巴与信号后迟到内容都不入库（不冒充完整回答）
+  const partial = (host.db.prepare("SELECT COUNT(*) n FROM message_revisions WHERE content LIKE '%路由信号前正文%'").get() as { n: number }).n;
+  assert.ok(partial >= 1, '信号前已发布正文保留');
+  const tail = (host.db.prepare("SELECT COUNT(*) n FROM message_revisions WHERE content LIKE '%未断行的尾巴%'").get() as { n: number }).n;
+  assert.equal(tail, 0, '无句界的缓冲尾巴随 fence 丢弃（不冒充完整回答）');
+  const late = (host.db.prepare("SELECT COUNT(*) n FROM message_revisions WHERE content LIKE '%AFTER-ROUTE-SIGNAL%'").get() as { n: number }).n;
+  assert.equal(late, 0, '信号后迟到气泡被 fence 丢弃，不发布不入库');
+  // ③ 续跑产生的新回答是独立消息（归属清晰，不与半截回答拼接）
+  const attempts = (await turnState(turn_id)).attempts;
+  assert.equal(attempts.length, 2, '同 turn 两个 attempt（原始+approve 续跑）');
+  // ④ 票据一次消费：重复 approve 409
+  const dup = await api('POST', `/api/v1/route-decisions/${decision!.id}`, { choice: 'approve' });
+  assert.equal(dup.status, 409, '多端重复点击只有一个生效');
+});
+
+test('路由 approve 后再次路由信号：不开新票据，明确失败终局（不无限循环）', async () => {
+  process.env.ESTOMAGO_MOCK_SCENARIO = 'route';
+  const { turn_id } = await submit('路由循环场景', 'int-route-loop-1');
+  await pollUntil(async () => (await turnState(turn_id)).state === 'route_owner_pending');
+  const decision = (await turnState(turn_id)).pending as { id: string } | null;
+  assert.ok(decision);
+  // 保持 route 场景：approve 续跑再次遇到路由信号 → 必须终局而非再次弹票
+  const approve = await api('POST', `/api/v1/route-decisions/${decision!.id}`, { choice: 'approve' });
+  assert.equal(approve.status, 200);
+  await pollUntil(async () => (await turnState(turn_id)).state === 'failed', 10000);
+  const st2 = await turnState(turn_id);
+  assert.ok(st2.attempts.some((a) => a.state === 'failed' && (a.blocked_reason ?? '').includes('ROUTE_SIGNAL_AFTER_APPROVE')), `终局原因如实（得到 ${JSON.stringify(st2.attempts.map((a) => [a.state, a.blocked_reason]))}）`);
+  assert.equal(st2.pending, null, '无新待决票据');
+  const tickets = (host.db.prepare('SELECT COUNT(*) n FROM route_decisions WHERE turn_id = ?').get(turn_id) as { n: number }).n;
+  assert.equal(tickets, 1, '本 turn 全程恰一张票据（接受→又被路由=终局，不再循环）');
+});
+
 test('停止：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
   process.env.ESTOMAGO_MOCK_SCENARIO = 'slow';
   const { turn_id } = await submit('停止场景', 'int-stop-1');

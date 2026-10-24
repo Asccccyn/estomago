@@ -108,22 +108,23 @@ test('no_fallback：记录为"拒绝未切换"，不打断回合', async () => {
   ctx.db.close();
 });
 
-test('approve：422 拒绝且票据不被消耗（仍 pending）；cancel 正常', async () => {
-  const root = tempRoot('appr-');
+test('approve：服务层消费建 fresh_session=0 新 attempt；route.resolved 如实携带', async () => {
+  const root = tempRoot('rappr-');
   const ctx = compose(root, { kind: 'mock', interruptSupport: 'claimed', async run() { return { outcome: 'completed', errorClassified: null, errorCode: null, errorMessage: null, sessionId: 's', requestId: null }; } });
-  const t = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'x', clientMessageId: 'ap1' });
-  const row = ctx.routing.createPending({ conversationId: 'c1', turnId: t.turnId, attemptId: t.attemptId, inputHash: 'h'.repeat(64), targetModel: null, evidenceCode: 'TEST', messageId: null, inputRevision: 1 });
-  const approved = ctx.routing.validateAndConsume(row.id, { choice: 'approve' });
-  // 服务层历史行为：approve 会重跑——由 HTTP 层拦截（422 不触达 validateAndConsume）。
-  // 这里直接断言 HTTP 层语义在 validateAndConsume 之前的位置：票据经 HTTP 拒绝后仍 pending
-  assert.ok(approved.ok === true || approved.ok === false); // 服务层自身行为不变（兼容既有测试）
-  void approved;
-  const stillPending = ctx.routing.get(row.id);
-  // 直接 cancel 验证票据流转正常
-  const cancelled = ctx.routing.validateAndConsume(row.id, { choice: 'cancel' });
-  assert.ok(cancelled.ok === true || cancelled.ok === false);
-  void stillPending;
-  void cancelled;
+  const t = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '原文', clientMessageId: 'rap1' });
+  const msg = ctx.messages.getMessage(t.message.id)!;
+  const row = ctx.routing.createPending({ conversationId: 'c1', turnId: t.turnId, attemptId: t.attemptId, inputHash: msg.revision.content_hash, targetModel: null, evidenceCode: 'TEST', messageId: msg.id, inputRevision: msg.current_revision });
+  const consumed = ctx.routing.validateAndConsume(row.id, { choice: 'approve' });
+  assert.ok(consumed.ok, 'approve 消费应成功');
+  const na = ctx.db.prepare('SELECT fresh_session, state FROM attempts WHERE id = ?').get(consumed.newAttemptId) as { fresh_session: number; state: string };
+  assert.equal(na.fresh_session, 0, 'approve 续用原 session（与 edit 的 fresh_session=1 相对；工具继续态不重放）');
+  assert.equal(na.state, 'pending', '新 attempt 待驱动');
+  const turnRow = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(t.turnId) as { state: string };
+  assert.equal(turnRow.state, 'pending', 'turn 回 pending 等待续跑');
+  const evt = ctx.db.prepare("SELECT payload_ref FROM runtime_stream_events WHERE kind = 'route.resolved' AND turn_id = ? ORDER BY sequence DESC LIMIT 1").get(t.turnId) as { payload_ref: string };
+  const payload = JSON.parse(evt.payload_ref) as { choice?: string; new_attempt_id?: string | null };
+  assert.equal(payload.choice, 'approve', '决议事件如实记录选择');
+  assert.equal(payload.new_attempt_id, consumed.newAttemptId, '事件携带新 attempt 供跨端跟踪');
   ctx.db.close();
 });
 

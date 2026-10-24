@@ -677,17 +677,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (body.choice !== 'approve' && body.choice !== 'edit' && body.choice !== 'cancel') {
         return json(res, 400, { error: { code: 'bad_choice', message: 'choice 必须是 approve/edit/cancel' } });
       }
-      // F18：approve（按原配置重跑）没有已验证的单次继续动作——拒绝且不消耗票据；
-      // 已消费/不存在的票据仍按原语义报 409/404（多端重复点击只有一个生效）
-      if (body.choice === 'approve') {
-        const row = d.routing.get(decisionId);
-        if (!row) return json(res, 404, { error: { code: 'ROUTE_NOT_FOUND', message: '票据不存在' } });
-        if (row.state !== 'pending') {
-          return json(res, 409, { error: { code: 'ROUTE_ALREADY_RESOLVED', message: `票据已 ${row.state}${row.choice ? `(${row.choice})` : ''}` } });
-        }
-        return json(res, 422, { error: { code: 'approve_not_supported', message: '继续路由动作未验证（无平台级路由执行能力）：票据保持待决，可重新编辑或取消' } });
-      }
-      // AUD-06：先完整验证（RoutingService.validateAndConsume），非法请求票据不受影响
+      // 她 2026-10-24 裁定（approve 补完）：三选择统一走 validateAndConsume——
+      // approve=接受路由结果并继续（路由信号时刻不存在完整可放行的回答：正文边流边落库、
+      // 信号后内容被 fence 丢弃；service 层为同 turn 建 fresh_session=0 的新 attempt，
+      // 续用窗口 session，已执行工具不重放）。票据校验（404/409/过期/绑定链）全部由
+      // service 统一承担；续跑再次路由信号由 supervisor 终局守卫（ROUTE_SIGNAL_AFTER_APPROVE）
+      // 收口，不开新票据。
       const consumed = d.routing.validateAndConsume(decisionId, body.choice === 'edit' ? { choice: 'edit', content: String(body.content ?? '') } : { choice: body.choice });
       if (!consumed.ok) return json(res, consumed.status, { error: { code: consumed.code, message: consumed.reason } });
       // 决议完成：重新驱动该房间排队的 turn（AUD-05）
@@ -697,8 +692,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
         const message = turn?.input_message_id ? d.messages.getMessage(turn.input_message_id) : null;
         return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision, released_waiting: consumed.releasedWaiting });
       }
-      // F-J-31（typecheck 基线）：下方 approve 分支为死代码——choice='approve' 已在上方提前
-      // return 422（approve_not_supported）/404/409，控制流到不了此处，按联合审计 B2 指示删除。
+      if (body.choice === 'approve') {
+        return json(res, 200, { resolved: 'approve', attempt_id: consumed.newAttemptId, released_waiting: consumed.releasedWaiting });
+      }
       return json(res, 200, { resolved: 'cancel' });
     }
 

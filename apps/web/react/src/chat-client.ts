@@ -606,13 +606,14 @@ export class EstomagoClient {
       this.cancelSelection()
     }catch(e){this.report(e)}finally{this.selectionBusy=false}
   }
-  resolveRoute = async (choice:'cancel'|'edit') => {
+  resolveRoute = async (choice:'cancel'|'edit'|'approve') => {
     const route=this.snapshot.route;if(!route)return
     if(choice==='edit'){
       const original=[...this.raw.values()].find(m=>m.turn_id===route.turn_id&&m.speaker==='owner')
       this.routeEdit=route.decision_id;this.setDraft(original?.revision.content??'');this.patch({route:null});this.notify('修改后点发送，将保存为原消息的新修订');return
     }
-    try{await this.request('/route-decisions/'+encodeURIComponent(route.decision_id),this.json('POST',{choice:'cancel'}));this.patch({route:null})}catch(e){this.report(e)}
+    // approve：接受路由结果并继续（同轮续跑；部分回答保留为已中断，新回答为独立消息）
+    try{await this.request('/route-decisions/'+encodeURIComponent(route.decision_id),this.json('POST',{choice}));this.patch({route:null})}catch(e){this.report(e)}
   }
   setAlertsOpen = (open:boolean) => {this.alertsOpen=open;if(open)void this.loadAlerts()}
   loadAlerts = (list=true):Promise<void> => {

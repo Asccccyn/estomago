@@ -2488,6 +2488,25 @@ export class TurnSupervisor {
       if (routeSignalHandled) return;
       routeSignalHandled = true;
       runToken.token.cancelled = true; // fence 立即生效（AUD-05：迟到输出不得发布）
+      // 她 2026-10-24 裁定（approve 补完）：同一输入已接受过一次路由（票据 consumed+
+      // choice=approve 的续跑）后再次路由信号 → 不再开新票据（无限"接受→又被路由"
+      // 循环不可达用户收口），attempt/turn 按明确失败终局，原因如实标注。
+      const approvedBefore = (d.db.prepare("SELECT COUNT(*) n FROM route_decisions WHERE turn_id = ? AND state = 'consumed' AND choice = 'approve'").get(turnId) as { n: number }).n;
+      if (approvedBefore > 0) {
+        try {
+          tx(d.db, () => {
+            d.db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'ROUTE_SIGNAL_AFTER_APPROVE', completed_at = ? WHERE id = ?").run(new Date().toISOString(), attempt.id);
+            d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ?").run(new Date().toISOString(), turnId);
+          });
+        } catch (err) {
+          d.logger.error('route_signal_loop_tx_failed', { turn_id: turnId, code: stableCode(err) });
+          return;
+        }
+        d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, scope: 'private', payload: { state: 'failed', reason: 'ROUTE_SIGNAL_AFTER_APPROVE' } });
+        runToken.controller.abort();
+        d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'interrupted', generation });
+        return;
+      }
       // 控制序列：持久票据 + generation fence + attempt/turn 状态，同一事务（事件在提交后发布）
       let ticketId: string | null = null;
       try {

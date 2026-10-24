@@ -143,13 +143,16 @@ export function fixtureScenario(name: ScenarioName, _prompt: string): RawStreamE
         { type: 'result', subtype: 'success', usage: { input_tokens: 55 }, session_id: 'sess_fixture_o' },
       ];
     case 'route': {
-      // 路由信号：错误 result 之后仍有一段迟到正文/思考（验证 fence 必须丢弃）
+      // 路由信号：错误 result 之后仍有一段迟到正文/思考（验证 fence 必须丢弃）。
+      // 她 2026-10-24 approve 验收：信号前正文带换行（行感知分句器按行发布）——
+      // 已发布部分=真实消息行保留；无换行的"未断行尾巴"滞留缓冲、随 fence 丢弃。
       return [
         se({ type: 'message_start', message: { id: 'msg_fixture_route' } }),
         se({ type: 'content_block_start', index: 0, content_block: { type: 'thinking' } }),
         se({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '路由前思考' } }),
         se({ type: 'content_block_start', index: 1, content_block: { type: 'text' } }),
-        se({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '路由信号前正文' } }),
+        se({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '路由信号前正文。\n\n' } }),
+        se({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '未断行的尾巴' } }),
         { type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'sess_fixture_route', error: 'route_signal: model_switch_requested candidate=fixture-other-model' },
         // 迟到增量：宿主 fence 必须丢弃
         se({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'AFTER-ROUTE-SIGNAL 迟到气泡' } }),
