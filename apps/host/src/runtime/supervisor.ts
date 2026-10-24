@@ -1294,7 +1294,8 @@ export class TurnSupervisor {
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
         // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
         // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
-        const initialTools = renderInitialVisibleText(d.db);
+        // P01.4：定义快照由装配方显式传入（tool-initial-visible 不再反向依赖 host-tools）
+        const initialTools = renderInitialVisibleText(d.db, buildHostTools());
         if (initialTools !== null) seg.push(initialTools);
         if (seg.length === 1) {
           // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
