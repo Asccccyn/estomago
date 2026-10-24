@@ -1213,6 +1213,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
       try {
         const out = await d.sirenCall.transitionInvite(decodeURIComponent(inviteAction[1]!), inviteAction[2] === 'accept' ? 'accept' : 'decline');
+        // 拒接留言调度①（2026-10-24）：她拒接 → char反应轮（他说一两句落本会话；
+        // 程序事实注入，不伪造她的话；幂等——重复拒接/重试不重建）
+        if (inviteAction[2] === 'decline' && (out?.['state'] as string | undefined) === 'declined') {
+          try {
+            const hm = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+            d.supervisor.submitProgramFactTurn('primary', 'invite_declined',
+              `她于 ${hm} 拒接了你发起的来电（邀请未接通，这是她自己的选择，不是故障）。你可以自然地说一两句话落在本会话——体谅她正忙、或说晚点再找她都行；不追问、不道歉。`,
+              `invite:${inviteAction[1]}:declined`);
+          } catch { /* 反应轮失败不拖垮拒接响应（如实降级：他不说这句） */ }
+        }
         return json(res, 200, out ?? {});
       } catch (err) {
         return json(res, 502, { error: { code: 'siren_invite_transition_failed', message: String((err as Error).message ?? err).slice(0, 120) } });

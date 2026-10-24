@@ -175,6 +175,24 @@ export class TurnSupervisor {
     });
   }
 
+  /** 拒接/取消留言调度（2026-10-24）：程序事实轮——宿主注入事实（她拒接了你的来电/你取消了自己的来电），
+   *  不是用户发言（不写 messages）；走同一串行链与正常发布链，char的回应落本会话。
+   *  dedupe_key（invite+action）幂等：前端重试/重复触发只跑一轮。 */
+  submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): { turnId: string } | { deduplicated: true } {
+    const d = this.d;
+    const existing = d.db.prepare('SELECT turn_id FROM program_fact_turns WHERE dedupe_key = ?').get(dedupeKey) as { turn_id: string } | undefined;
+    if (existing) return { deduplicated: true };
+    const turnId = genId('turn');
+    const nowIso = new Date().toISOString();
+    tx(d.db, () => {
+      d.db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'program_fact', 'pending', NULL, ?)").run(turnId, conversationId, nowIso);
+      d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,NULL,'pending')").run(genId('att'), turnId);
+      d.db.prepare('INSERT INTO program_fact_turns(turn_id, dedupe_key, kind, fact_text, created_at) VALUES (?,?,?,?,?)').run(turnId, dedupeKey, kind, factText, nowIso);
+    });
+    this.enqueue(turnId);
+    return { turnId };
+  }
+
   /** 审计 F05：房间唯一串行链的通用入口——turn、自动评审、手动换窗共用同一互斥；
    *  前序任务失败不阻断后续（fn 总被执行），返回值/异常原样传给调用方。 */
   private runSerialized<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
@@ -2171,9 +2189,13 @@ export class TurnSupervisor {
       },
       {},
     );
-    const prompt = assembledContext.segments
-      .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
-      .join('\n\n');
+    // 程序事实轮（拒接/取消留言调度）：空尾 + program_fact_turns 有行 → 事实块追加为尾部
+    // 宿主注入（[program_fact] 前缀，同 time_context 先例——不是用户发言，不写 messages）
+    const programFact = inputMessage ? null : (d.db.prepare('SELECT fact_text, kind FROM program_fact_turns WHERE turn_id = ?').get(turnId) as { fact_text: string; kind: string } | undefined ?? null);
+    const prompt = [
+      ...assembledContext.segments.map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`),
+      ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
+    ].join('\n\n');
     // SDK has no host tool bridge; automatic surfacing remains unsupported.
     const sdkPrompt = prompt;
     const inputHash = effective.hash || sha256Hex(effective.content);

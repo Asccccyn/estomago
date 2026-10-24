@@ -92,6 +92,7 @@ function compose(root: string, transport: OrTransport, sirenTransport: typeof fe
   const events = new EventService(db);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
+  messages.ensureConversation('primary'); // 邀请代理端点固定作用于 primary（产品单会话）
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);

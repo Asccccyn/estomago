@@ -118,6 +118,21 @@ export class SirenAdapter {
     return { active: (data.active ?? null) as Record<string, unknown> | null, recent: Array.isArray(data.recent) ? data.recent as Array<Record<string, unknown>> : [] };
   }
 
+  /** POST /v1/invites/:id/cancel——发起方取消邀请（char侧；幂等）。 */
+  async cancelInvite(inviteId: string, opts: { signal?: AbortSignal } = {}): Promise<Record<string, unknown> | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/invites/${encodeURIComponent(inviteId)}/cancel`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(6000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (res.status === 404) throw new SirenTranscriptionError('SIREN_INVITE_NOT_FOUND');
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_INVITE_TRANSITION_FAILED');
+    return await res.json() as Record<string, unknown>;
+  }
+
   /** POST /v1/invites/:id/accept|decline——接听/拒接（幂等；与过期竞态服务端单终态）。 */
   async transitionInvite(inviteId: string, action: 'accept' | 'decline', opts: { signal?: AbortSignal } = {}): Promise<Record<string, unknown> | null> {
     if (this.status === 'not_configured') return null;

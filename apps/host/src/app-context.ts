@@ -261,6 +261,9 @@ export class Host {
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
     });
+    // 拒接/取消留言调度（2026-10-24）：call_control(cancel) 的说话轮入口（tools 先于
+    // supervisor 构造，这里补引用；不注入=取消不触发说话轮，如实降级）
+    (tools as unknown as { setSupervisorRef: (s: unknown) => void }).setSupervisorRef?.(supervisor);
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一

@@ -581,7 +581,7 @@ export function buildHostTools(): HostToolSpec[] {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['invite', 'status', 'end'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）' },
+          action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请（取消后自然地跟她说一两句，比如改约）' },
           ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
         },
         required: ['action'], additionalProperties: false,
@@ -1064,7 +1064,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null; supervisorRef?: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -1081,6 +1081,7 @@ export class HostToolExecutor {
     this.taskService = deps.taskService ?? null;
     this.oido = deps.oido ?? null;
     this.sirenCall = deps.sirenCall ?? null;
+    this.supervisorRef = deps.supervisorRef ?? null;
     this.mediaIndex = deps.mediaIndex ?? null;
   }
 
@@ -1095,6 +1096,10 @@ export class HostToolExecutor {
   /** JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；未配置=工具如实拒绝） */
   private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
   private sirenCall: import('../integrations/siren/adapter.ts').SirenAdapter | null;
+  /** 拒接/取消留言调度（2026-10-24）：程序事实轮入口（可选注入；未注入=取消不触发说话轮，如实降级） */
+  private supervisorRef: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null = null;
+  /** app-context 后置注入（tools 先于 supervisor 构造） */
+  setSupervisorRef(s: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null): void { this.supervisorRef = s; }
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
@@ -1386,13 +1391,25 @@ export class HostToolExecutor {
   /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，
    *  不铺细碎工具）。invite=当前会话创建 Siren 来电邀请（服务端过期；拒接≠未接）；
    *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
-  private async callControl(args: { action: 'invite' | 'status' | 'end'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  private async callControl(args: { action: 'invite' | 'status' | 'end' | 'cancel'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.sirenCall || this.sirenCall.status !== 'available') return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
     try {
       if (args.action === 'invite') {
         const invite = await this.sirenCall.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
         if (!invite) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
         return { ok: true, output: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
+      }
+      if (args.action === 'cancel') {
+        const st = await this.sirenCall.listInvites(ctx.roomId);
+        const active = st?.active as { invite_id?: string } | null | undefined;
+        if (!st || !active || typeof active.invite_id !== 'string') return { ok: false, output: { error_code: 'NO_PENDING_INVITE', detail: '没有待取消的邀请（可能已过期或已被处理）' } };
+        const out = await this.sirenCall.cancelInvite(active.invite_id);
+        if ((out?.['state'] as string | undefined) !== 'cancelled') return { ok: false, output: { error_code: 'SIREN_INVITE_TRANSITION_FAILED', detail: `终态=${String(out?.['state'] ?? 'unknown')}` } };
+        // 拒接留言调度②（2026-10-24）：他取消 → 附带说话轮（说明/改约落本会话）
+        this.supervisorRef?.submitProgramFactTurn(ctx.roomId, 'invite_cancelled',
+          `你于刚刚取消了自己发起的来电（她还没接听）。自然地跟她说一两句——说明原因或改约时间，落在本会话。`,
+          `invite:${active.invite_id}:cancelled`);
+        return { ok: true, output: { invite_id: active.invite_id, state: 'cancelled', note: '邀请已取消；接下来你说的每句话都会正常发到会话里' } };
       }
       if (args.action === 'end') {
         // A11：模型提出挂断——找本会话 active 通话，转 Siren 柔性挂断（立即回执）。

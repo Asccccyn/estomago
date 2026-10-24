@@ -1269,4 +1269,16 @@ CREATE TABLE voice_stream_turns(
  PRIMARY KEY(call_id, turn_key)
 );
 ` });
+// 40（2026-10-24，拒接/取消留言调度）：程序事实轮——宿主注入的事实（她拒接/他取消来电），
+// 非用户发言（不进 messages 表）；turn=input_message_id NULL 的空尾轮，事实文本存本表，
+// runTurn 组装时以 [program_fact] 块注入 prompt。dedupe_key（invite+action）幂等：重试不重建轮。
+MIGRATIONS.push({ version: 40, name: 'program_fact_turns', sql: `
+CREATE TABLE program_fact_turns(
+ turn_id TEXT PRIMARY KEY,
+ dedupe_key TEXT NOT NULL UNIQUE,
+ kind TEXT NOT NULL,
+ fact_text TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
