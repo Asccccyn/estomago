@@ -40,7 +40,9 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
-import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext, type ToolExecResult } from './host-tools.ts';
+import { buildHostTools, hostToolNames, type HostToolExecutor } from './host-tools.ts';
+// P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
+import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
@@ -54,7 +56,6 @@ import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
-import type { BackgroundToolQuote } from './background-tool-cost.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';

@@ -1,6 +1,7 @@
 import type { Db } from '../db/connection.ts';
 import { sha256Hex } from '../util/id.ts';
-import type { HostToolSpec } from './host-tools.ts';
+// P01.4/P01.1：只依赖叶类型（capabilities/contracts），不再从 host-tools 导入。
+import type { HostToolSpec } from '../capabilities/contracts.ts';
 export const DISCOVERY_NAMES = ['tool_catalog','tool_define','tool_invoke'] as const;
 export function buildDeferredTools(): HostToolSpec[] {
   return [

@@ -24,10 +24,12 @@ import { SurfacingRepository } from '../memory-surfacing/repository.ts';
 import { executeMemoryReadFull } from '../memory-surfacing/detail-tool.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
-import { quoteBackgroundTool, type BackgroundToolQuote } from './background-tool-cost.ts';
+import { quoteBackgroundTool } from './background-tool-cost.ts';
 import { ContractError } from './or-contract.ts';
-
-export type HostToolSpec = { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } };
+// P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
+//（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
+import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from '../capabilities/contracts.ts';
+export type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult };
 
 // mariposa 现行 hold 契约常量（正本=mariposa input_schemas；此处只做形状门，域校验仍以服务端为准）
 export const HOLD_CATEGORIES = ['daily', 'milestone', 'sad', 'sweet', 'date', 'plan', 'sex', 'anniversary', 'reloplay', 'diary'] as const;
@@ -980,36 +982,8 @@ function propMinimumOf(prop: PropSpec): number | undefined {
   return (prop as PropSpec & { minimum?: number }).minimum;
 }
 
-export type SeenRef = { id: string; revision: number; char_start?: number; char_end?: number };
-// char_start/char_end（码点半开区间，缺省=整条已见）——WP4（2026-10-08）：
-// conversation_read 的片段级已见。引用核对（resolveQuotes）对带范围的条目
-// 只放行落在已读范围内的匹配；整条装配（对话轨迹）不带范围=全文已见。
-
-export type ToolExecContext = {
-  signal?: AbortSignal; // Host-owned cancellation, never a model parameter.
-  roomId: string;
-  backgroundRunId?: string | null; // EXEC_V1 §04.6.2：后台回合上下文（background_complete/noop 记账用）
-  windowId: string;
-  turnId: string | null;
-  purpose: 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive';
-  activeReviewId: string | null;
-  seenSequence: number; // 本次请求实际看见的聊天输入高水位（书签位置依据，§3.1）
-  seenMessages: ReadonlyArray<SeenRef>; // D13：发起请求**实际装载**的 (消息,修订) 清文——引用核对只认这份视野，不从库高水位推断
-  requestId: string; // 发起 hold 的模型请求标识
-  // R07（审计 FE-12）：工具生命周期统一身份——同一 tool_call_id 贯穿
-  // start/result/error 三阶段；round=本轮工具批次序号（模型请求轮）；
-  // generationId=provider 生成标识（首字节前可空，如实空不虚构）。
-  toolCallId?: string | null;
-  attemptId?: string | null;
-  round?: number | null;
-  generationId?: string | null;
-  // Trusted host callback only: invoked after tool discovery/schema checks and
-  // before the resolved handler. Neither the quote nor this callback is a model
-  // argument; tool_invoke admits the actual capability once, not its wrapper.
-  beforeBackgroundTool?: (quote: BackgroundToolQuote) => void;
-};
-
-export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef>; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };
+// P01.1：SeenRef/ToolExecContext/ToolExecResult 叶类型正本已迁 capabilities/contracts.ts
+//（字段逐一对照；历史语义注释随迁）。顶部纯 type 重导出保持旧消费者兼容。
 
 const rawToolCallIdRef = { current: null as string | null };
 

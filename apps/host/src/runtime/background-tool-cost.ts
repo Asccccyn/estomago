@@ -1,8 +1,10 @@
 // Host-only billing metadata. It is never added to tool schemas or model output.
 import type { Db } from '../db/connection.ts';
 import { ContractError } from './or-contract.ts';
-
-export type BackgroundToolQuote = { toolName: string; maxCostMicroUsd: number; verifiedFree: boolean };
+// P01.1：BackgroundToolQuote 叶类型正本迁至 capabilities/contracts.ts；此处重导出为过渡兼容
+//（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
+import type { BackgroundToolQuote } from '../capabilities/contracts.ts';
+export type { BackgroundToolQuote };
 export const BACKGROUND_TOOL_PRICES_KEY = 'background_tool_prices';
 
 // These entries are based on the actual current handlers, not names such as
