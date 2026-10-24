@@ -1296,7 +1296,7 @@ export class TurnSupervisor {
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
       messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }
@@ -2194,7 +2194,8 @@ export class TurnSupervisor {
     // F-J-39：追赶投影与评审路径同源（catchupEntries 单一实现）
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
     // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence }).blocks }) as unknown as OrMessage);
+    const catchupContinuation = this.windowHasTool(window.id, 'transcript_read');
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史

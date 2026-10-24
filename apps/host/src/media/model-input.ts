@@ -61,7 +61,10 @@ export function sliceByByteBudget(text: string, offsetChars: number, budgetBytes
   return { pageText, nextOffset: end, done: end >= chars.length };
 }
 
+// R3″b（2026-10-24）：续读可用性默认 false——能力未经窗口核实时不宣传（诚实默认）；
+// 生产装配（supervisor）一律显式传入 windowHasTool 实值，默认只影响无窗口上下文的直接调用。
 export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  const withDefaults = { transcriptContinuationAvailable: false, ...opts };
   const isCurrentInput = opts.isCurrentInput === true;
   const textOnly = opts.textOnly === true;
   const hearing = opts.hearing?.available === true;
@@ -82,7 +85,7 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       if (a.derived_text && a.derived_text.trim().length > 0) {
         const sourceLine = `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]`;
         const tailLine = hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : '';
-        if (opts.transcriptContinuationAvailable !== false) {
+        if (withDefaults.transcriptContinuationAvailable === true) {
           const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
           const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（audio_ref="${audioRef}"，无 cursor 从头，翻页传上页 next_cursor）]`;
           blocks.push({ type: 'text', text: `${sourceLine}\n${sliced.pageText}${moreHint}${tailLine}` });

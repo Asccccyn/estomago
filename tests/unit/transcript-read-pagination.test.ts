@@ -41,7 +41,7 @@ test('投影分页：10k 字转写首页 ≤8192B、提示续读、全文不整�
   try {
     const text = '窗'.repeat(10000);
     const a = await f.createWithTranscript(text);
-    const proj = projectRevisionBlocks('', [{ asset_id: a.id, presentation: 'voice', caption: null, derived_text: text, derived_source: 'siren:transcribe' }], { isCurrentInput: true, hearing: { available: true } });
+    const proj = projectRevisionBlocks('', [{ asset_id: a.id, presentation: 'voice', caption: null, derived_text: text, derived_source: 'siren:transcribe' }], { isCurrentInput: true, hearing: { available: true }, transcriptContinuationAvailable: true });
     const block = proj.blocks[0] as { type: string; text: string };
     assert.equal(block.type, 'text');
     const bytes = Buffer.byteLength(block.text, 'utf8');
