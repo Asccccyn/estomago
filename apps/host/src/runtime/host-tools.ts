@@ -71,10 +71,64 @@ export async function refreshMoodCategories(client: MariposaClient): Promise<boo
   return false;
 }
 
-export function buildHostTools(): HostToolSpec[] {
-  // 词表变更（refreshMoodCategories）会置空缓存——枚举随正本走
-  if (hostToolsCache) return hostToolsCache;
-  hostToolsCache = [
+// —— P01.3：目录构建输入按域分组（定义接缝）——
+// 每域一个 spec 工厂；装配顺序=tool-ownership.json baselineOrder（48 项，不重排），
+// JSON 属性/description/默认词表一字不改（等价基线 tests/golden/tool-catalog-baseline.json 守护）。
+// 后续卡片按域把工厂物理迁往 modules/<域>/definitions.ts；本文件保留装配与缓存。
+
+const BASELINE_TOOL_ORDER: readonly string[] = [
+  'memory_hold',
+  'memory_recall',
+  'memory_recall_next',
+  'memory_read_full',
+  'conversation_read',
+  'memory_i_read',
+  'plans_read',
+  'memory_i_write',
+  'plans_write',
+  'memory_open',
+  'memory_correct',
+  'deletion_review',
+  'episode_list',
+  'episode_apply',
+  'episode_get',
+  'content_post_create',
+  'content_comment_create',
+  'content_posts_list',
+  'creation_save_artifact',
+  'wake_manage',
+  'background_complete',
+  'chat_send_text',
+  'media_import',
+  'chat_send_attachment',
+  'call_control',
+  'oido_analyze',
+  'media_search',
+  'oido_get',
+  'transcript_read',
+  'oido_capabilities',
+  'oido_view',
+  'oido_find',
+  'oido_compare',
+  'identity_milestone_write',
+  'wishstar_write_star',
+  'wishstar_hidden_stars',
+  'wishstar_special_dates',
+  'wishstar_start_session',
+  'wishstar_confirm_session',
+  'wishstar_take_star',
+  'wishstar_finish_session',
+  'wishstar_request_star',
+  'wishstar_respond_request',
+  'wishstar_offer_star',
+  'wishstar_list_offers',
+  'wishstar_accept_offer',
+  'wishstar_notifications',
+  'context_review_complete',
+];
+
+function memoryDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -117,7 +171,7 @@ export function buildHostTools(): HostToolSpec[] {
         required: ['original_title', 'categories', 'text', 'creation_mode'],
         additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -144,7 +198,7 @@ export function buildHostTools(): HostToolSpec[] {
         required: ['query'],
         additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -164,7 +218,7 @@ export function buildHostTools(): HostToolSpec[] {
         required: ['result_set_id'],
         additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -184,32 +238,7 @@ export function buildHostTools(): HostToolSpec[] {
         required: ['memory_ref'],
         additionalProperties: false,
       },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      // WP4（MANUAL_HANDOFF_JUDGE_SWITCH_V1 §7.2，2026-10-08）：主模型只读
-      // 原文回读——已知消息/范围的直接展开，不经判断器；房间由宿主派生
-      //（模型不能自填别的房间）；不含 UI 思考/草稿/system/tool；只读无副作用
-      //（不推进 hold 书签、不制造气泡、不触发明开续期）
-      name: 'conversation_read',
-      description: '读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。',
-      parameters: {
-        type: 'object',
-        properties: {
-          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [N]）：读它前后各若干条' },
-          revision: { type: 'integer', minimum: 1, description: '可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）' },
-          before: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之前读几条（默认 5）' },
-          after: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之后读几条（默认 5）' },
-          from_sequence: { type: 'integer', minimum: 1, description: '范围模式：起始序号（含）' },
-          to_sequence: { type: 'integer', minimum: 1, description: '范围模式：结束序号（含）' },
-          limit: { type: 'integer', minimum: 1, maximum: 50, description: '单页最多条数（默认 20）' },
-          cursor: { type: 'object', description: '续页游标（上一页返回的 next_cursor 原样传入）' },
-        },
-        additionalProperties: false,
-      },
-    },
+    }
   },
   {
     type: 'function',
@@ -227,7 +256,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: [], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -244,7 +273,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: [], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -268,7 +297,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -289,7 +318,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -313,7 +342,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -355,7 +384,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -375,7 +404,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -391,7 +420,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: [], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -417,7 +446,7 @@ export function buildHostTools(): HostToolSpec[] {
         required: ['action', 'reason_code'],
         additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -431,8 +460,74 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['episode_id'], additionalProperties: false,
       },
-    },
+    }
   },
+  ];
+}
+
+function conversationDefinitions(): HostToolSpec[] {
+  return [
+  {
+    type: 'function',
+    function: {
+      // WP4（MANUAL_HANDOFF_JUDGE_SWITCH_V1 §7.2，2026-10-08）：主模型只读
+      // 原文回读——已知消息/范围的直接展开，不经判断器；房间由宿主派生
+      //（模型不能自填别的房间）；不含 UI 思考/草稿/system/tool；只读无副作用
+      //（不推进 hold 书签、不制造气泡、不触发明开续期）
+      name: 'conversation_read',
+      description: '读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。',
+      parameters: {
+        type: 'object',
+        properties: {
+          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [N]）：读它前后各若干条' },
+          revision: { type: 'integer', minimum: 1, description: '可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）' },
+          before: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之前读几条（默认 5）' },
+          after: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之后读几条（默认 5）' },
+          from_sequence: { type: 'integer', minimum: 1, description: '范围模式：起始序号（含）' },
+          to_sequence: { type: 'integer', minimum: 1, description: '范围模式：结束序号（含）' },
+          limit: { type: 'integer', minimum: 1, maximum: 50, description: '单页最多条数（默认 20）' },
+          cursor: { type: 'object', description: '续页游标（上一页返回的 next_cursor 原样传入）' },
+        },
+        additionalProperties: false,
+      },
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chat_send_text',
+      description: '以char身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。',
+      parameters: {
+        type: 'object',
+        properties: {
+          text: { type: 'string', minLength: 1, maxLength: 8000 },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
+        },
+        required: ['text', 'idempotency_key'], additionalProperties: false,
+      },
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'chat_send_attachment',
+      description: '以char当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
+      parameters: {
+        type: 'object',
+        properties: {
+          asset_id: { type: 'string', minLength: 1, maxLength: 128 },
+          presentation: { type: 'string', enum: ['image', 'sticker', 'voice'] },
+          content: { type: 'string', maxLength: 4000 },
+        },
+        required: ['asset_id', 'presentation'], additionalProperties: false,
+      },
+    }
+  },
+  ];
+}
+
+function contentDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -449,7 +544,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['body', 'idempotency_key'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -465,7 +560,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['post_id', 'body', 'idempotency_key'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -481,7 +576,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -497,8 +592,13 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['format', 'content', 'client_operation_id'], additionalProperties: false,
       },
-    },
+    }
   },
+  ];
+}
+
+function wakeDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -519,7 +619,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['operation'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -533,23 +633,13 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['outcome'], additionalProperties: false,
       },
-    },
+    }
   },
-  {
-    type: 'function',
-    function: {
-      name: 'chat_send_text',
-      description: '以char身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。',
-      parameters: {
-        type: 'object',
-        properties: {
-          text: { type: 'string', minLength: 1, maxLength: 8000 },
-          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
-        },
-        required: ['text', 'idempotency_key'], additionalProperties: false,
-      },
-    },
-  },
+  ];
+}
+
+function mediaDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -562,24 +652,28 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['source_url'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
     function: {
-      name: 'chat_send_attachment',
-      description: '以char当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
+      name: 'media_search',
+      description: '按中文语义在她发过的图片里找候选（如"那张水獭的图"）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。',
       parameters: {
         type: 'object',
         properties: {
-          asset_id: { type: 'string', minLength: 1, maxLength: 128 },
-          presentation: { type: 'string', enum: ['image', 'sticker', 'voice'] },
-          content: { type: 'string', maxLength: 4000 },
+          query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
+          limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
         },
-        required: ['asset_id', 'presentation'], additionalProperties: false,
+        required: ['query'], additionalProperties: false,
       },
-    },
+    }
   },
+  ];
+}
+
+function voiceDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -593,8 +687,30 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['action'], additionalProperties: false,
       },
-    },
+    }
   },
+  {
+    type: 'function',
+    function: {
+      // R3′（2026-10-23）：长转写稳定续读——cursor 绑定 (asset, offset, 总字数)，
+      // 读取时按当前会话+活资产+可信转写复验（E10 同门），源变更如实报不静默重读
+      name: 'transcript_read',
+      description: '读取语音消息转写的下一页（长转写分页续读）。audio_ref 如 "est:<asset_id>"；首页可不带 cursor（从头读）；翻页带上页 next_cursor。源被删除或转写版本变化时如实报错，不静默重读。',
+      parameters: {
+        type: 'object',
+        properties: {
+          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
+          cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
+        },
+        required: ['audio_ref'], additionalProperties: false,
+      },
+    }
+  },
+  ];
+}
+
+function oidoDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -612,22 +728,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['audio_ref'], additionalProperties: false,
       },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'media_search',
-      description: '按中文语义在她发过的图片里找候选（如"那张水獭的图"）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
-          limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
-        },
-        required: ['query'], additionalProperties: false,
-      },
-    },
+    }
   },
   {
     type: 'function',
@@ -643,24 +744,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['analysis_id'], additionalProperties: false,
       },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      // R3′（2026-10-23）：长转写稳定续读——cursor 绑定 (asset, offset, 总字数)，
-      // 读取时按当前会话+活资产+可信转写复验（E10 同门），源变更如实报不静默重读
-      name: 'transcript_read',
-      description: '读取语音消息转写的下一页（长转写分页续读）。audio_ref 如 "est:<asset_id>"；首页可不带 cursor（从头读）；翻页带上页 next_cursor。源被删除或转写版本变化时如实报错，不静默重读。',
-      parameters: {
-        type: 'object',
-        properties: {
-          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
-          cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
-        },
-        required: ['audio_ref'], additionalProperties: false,
-      },
-    },
+    }
   },
   {
     type: 'function',
@@ -669,7 +753,7 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'oido_capabilities',
       description: '查看 oído 声学分析服务当前能力状态（各分面开关）。仅诊断用。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
   {
     type: 'function',
@@ -684,7 +768,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['analysis_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -702,7 +786,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['audio_ref', 'query'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -717,8 +801,13 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['left', 'right'], additionalProperties: false,
       },
-    },
+    }
   },
+  ];
+}
+
+function identityDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -740,8 +829,13 @@ export function buildHostTools(): HostToolSpec[] {
           { required: ['text', 'change_reason', 'idempotency_key'] },
         ],
       },
-    },
+    }
   },
+  ];
+}
+
+function wishstarDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -759,7 +853,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['content', 'visibility', 'idempotency_key'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -767,7 +861,7 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'wishstar_hidden_stars',
       description: '看自己私人瓶子里的星（只有你可见的那些）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
   {
     type: 'function',
@@ -775,7 +869,7 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'wishstar_special_dates',
       description: '查看你们的纪念日和自定义特殊日期（含 id——发起拆星仪式要用 special_date_id 绑定具体日期）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
   {
     type: 'function',
@@ -789,7 +883,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['special_date_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -801,7 +895,7 @@ export function buildHostTools(): HostToolSpec[] {
         properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
         required: ['session_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -813,7 +907,7 @@ export function buildHostTools(): HostToolSpec[] {
         properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
         required: ['session_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -825,7 +919,7 @@ export function buildHostTools(): HostToolSpec[] {
         properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
         required: ['session_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -833,7 +927,7 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'wishstar_request_star',
       description: '请求宿主用户打开一颗她藏起来的星（她回应前你看不到内容）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
   {
     type: 'function',
@@ -849,7 +943,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['request_id', 'decision'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -864,7 +958,7 @@ export function buildHostTools(): HostToolSpec[] {
         },
         required: ['star_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -872,7 +966,7 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'wishstar_list_offers',
       description: '看收到的星（她递给你的、待收下的）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
   {
     type: 'function',
@@ -884,7 +978,7 @@ export function buildHostTools(): HostToolSpec[] {
         properties: { offer_id: { type: 'string', minLength: 1, maxLength: 64 } },
         required: ['offer_id'], additionalProperties: false,
       },
-    },
+    }
   },
   {
     type: 'function',
@@ -892,8 +986,13 @@ export function buildHostTools(): HostToolSpec[] {
       name: 'wishstar_notifications',
       description: '看许愿星的通知（谁写了星/递了星/发起仪式等动态）。',
       parameters: { type: 'object', properties: {}, additionalProperties: false },
-    },
+    }
   },
+  ];
+}
+
+function contextReviewDefinitions(): HostToolSpec[] {
+  return [
   {
     type: 'function',
     function: {
@@ -911,6 +1010,40 @@ export function buildHostTools(): HostToolSpec[] {
     },
   },
   ];
+}
+
+const DEFINITION_SEGMENTS: ReadonlyArray<() => HostToolSpec[]> = [
+  memoryDefinitions,
+  conversationDefinitions,
+  contentDefinitions,
+  wakeDefinitions,
+  mediaDefinitions,
+  voiceDefinitions,
+  oidoDefinitions,
+  identityDefinitions,
+  wishstarDefinitions,
+  contextReviewDefinitions,
+];
+
+export function buildHostTools(): HostToolSpec[] {
+  // 词表变更（refreshMoodCategories）会置空缓存——枚举随正本走
+  if (hostToolsCache) return hostToolsCache;
+  const byName = new Map<string, HostToolSpec>();
+  for (const segment of DEFINITION_SEGMENTS) {
+    for (const spec of segment()) {
+      if (byName.has(spec.function.name)) throw new Error(`TOOL_DEFINITION_DUPLICATE:${spec.function.name}`);
+      byName.set(spec.function.name, spec);
+    }
+  }
+  const assembled: HostToolSpec[] = [];
+  for (const name of BASELINE_TOOL_ORDER) {
+    const spec = byName.get(name);
+    if (!spec) throw new Error(`TOOL_DEFINITION_MISSING:${name}`);
+    assembled.push(spec);
+    byName.delete(name);
+  }
+  if (byName.size > 0) throw new Error(`TOOL_DEFINITION_UNREGISTERED:${[...byName.keys()].sort().join(',')}`);
+  hostToolsCache = assembled;
   return hostToolsCache;
 }
 
