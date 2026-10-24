@@ -31,9 +31,9 @@ test('重复名/缺件/定义名不符/顺序非法一律拒绝', () => {
   const r = new CapabilityRegistry();
   r.register(makeDescriptor());
   assert.throws(() => r.register(makeDescriptor()), /CAPABILITY_ALREADY_REGISTERED/);
-  assert.throws(() => r.register(makeDescriptor({ run: undefined as never })), /CAPABILITY_INCOMPLETE/);
-  assert.throws(() => r.register(makeDescriptor({ definition: { type: 'function', function: { name: 'other', description: 'd', parameters: {} } } })), /CAPABILITY_DEFINITION_MISMATCH/);
-  assert.throws(() => r.register(makeDescriptor({ baselineOrder: 0 })), /CAPABILITY_ORDER_INVALID/);
+  assert.throws(() => r.register(makeDescriptor({ id: 'incomplete_tool', definition: { type: 'function', function: { name: 'incomplete_tool', description: 'd', parameters: {} } }, run: undefined as never })), /CAPABILITY_INCOMPLETE/);
+  assert.throws(() => r.register(makeDescriptor({ id: 'mismatch_tool', definition: { type: 'function', function: { name: 'other', description: 'd', parameters: {} } } })), /CAPABILITY_DEFINITION_MISMATCH/);
+  assert.throws(() => r.register(makeDescriptor({ id: 'order_tool', definition: { type: 'function', function: { name: 'order_tool', description: 'd', parameters: {} } }, baselineOrder: 0 })), /CAPABILITY_ORDER_INVALID/);
   assert.throws(() => r.register(makeDescriptor({ id: '' })), /CAPABILITY_ID_INVALID/);
   assert.equal(r.size, 1, '失败注册不产生半状态');
 });
