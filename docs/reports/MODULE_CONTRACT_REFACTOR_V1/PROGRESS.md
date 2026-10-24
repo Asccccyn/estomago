@@ -19,5 +19,6 @@
 | P04.2-4 | c8013ac | memory 域 14 工具+projection 正本+mood-vocab+hold-contract；resolveQuoteRefs/recoverUnknownEffects 窄委托；测试夹具实例反射装配（76 处自动接线） | typecheck 0；memory 网 20/20（session-snapshot golden 逐字） | 412f023 | DONE |
 | P04.5-10 | 412f023 | wishstar(13)/content(4)/wake(2)/media(2)/identity(1)/context-review(1)；BootstrapPort；plans_write/deletion_review memoryOnly=false 校正；外层投影与全局桥退役 | typecheck 0；跨域净 15/15+11/11 | 3203d59 | DONE |
 | P04 收尾 | 3203d59 | MIGRATION_MATRIX 48 行全填；A13/A14 证据（hold-quote/来源核证/recall/三层详情/episodes 离线合同）；PROGRESS/RESUME 更新 | 见 ACCEPTANCE_RESULTS | 见git log | P04 DONE；下一卡 P05 |
+| P05 | P04 收尾 | messages/lifecycle.ts（通用事实+inTx/afterCommit+旧形适配）；context/contributions.ts（两类贡献叶合同，现行方法名沿 04 §F）；application/message-lifecycle.ts（浮现+活动锚点装配）；MessageService 六调用点发事实（firstAcceptance 语义）；supervisor surfacing 依赖叶类型化；app-context 绑定 bindMessageLifecycle | typecheck 0；surfacing-core/events/seam/openrouter+joint-audit-surfacing+frontend-lifecycle+session-snapshot+message-retry 10/10；A15/A16/A17=PASS | 见git log | P05 DONE；下一卡 P06 |
 
 只记可复核事实。不记录私有推理、凭据、聊天正文、完整请求。

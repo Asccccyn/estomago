@@ -273,12 +273,18 @@
       "phase": "P05",
       "setup": "发送一条正常会触发的合成回忆消息。",
       "assertions": "绑定当前message/revision/turn，正文而非新造摘要；无下一轮漂移。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0b4f24cb4a60c87b33c97107ea521a998847758b",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/surfacing-seam.test.ts --file=tests/unit/surfacing-core.test.ts  (exit 0)",
+        "tests/golden/module-contract-session-baseline.json 逐字对照（同轮浮现块随本轮 wire）"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/surfacing-seam.test.ts",
+        "tests/golden/module-contract-session-baseline.json"
+      ],
+      "notes": "当前修订同轮浮现：事实流经 messages/lifecycle（inTx 登记/afterCommit 唤醒）+context/contributions 完整生命周期（reuseFrozen/augmentFor/finalAdmit/markDispatched/markRetained/cancelForTurn）；surfacing_deliveries 绑定 attempt/window；会话快照逐字（浮现块在第 1 条请求）。"
     },
     {
       "id": "A16",
@@ -287,12 +293,18 @@
       "phase": "P05",
       "setup": "正常编辑/路由编辑/重试更新一条待执行消息；按已有合法入口分别复用小夹具。",
       "assertions": "旧准备失效，不重复作业，不扩大为组合穷举。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0b4f24cb4a60c87b33c97107ea521a998847758b",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/surfacing-seam.test.ts --file=tests/unit/surfacing-events.test.ts --file=tests/unit/joint-audit-frontend-lifecycle.test.ts --file=tests/unit/message-retry-supervisor.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/surfacing-seam.test.ts",
+        "tests/unit/surfacing-events.test.ts",
+        "tests/unit/message-retry-supervisor.test.ts"
+      ],
+      "notes": "编辑使旧准备失效（revised 事实→onUserMessageEdited 撤旧修订作业）；route/retry edit 同源（notifyAfterEditCommit→afterCommit）；重试不重复登记（幂等重放 firstAcceptance=false 补缺失作业）。"
     },
     {
       "id": "A17",
@@ -301,12 +313,17 @@
       "phase": "P05",
       "setup": "正常接受消息并登记作业后，在隔离Host关闭重开一次。",
       "assertions": "持久任务/活动/outbox保留，afterCommit不是唯一事实。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0b4f24cb4a60c87b33c97107ea521a998847758b",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/surfacing-seam.test.ts --file=tests/unit/joint-audit-surfacing.test.ts  (exit 0；retain 落账/覆盖去重)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/surfacing-seam.test.ts",
+        "apps/host/src/application/message-lifecycle.ts"
+      ],
+      "notes": "事务与恢复：inTx SQL-only（同一事务连接）、afterCommit 唤醒已持久登记工作；进程重启恢复走既有恢复扫描（surfacing.start 恢复收口未改）；归档 outbox 不重复登记。"
     },
     {
       "id": "A18",

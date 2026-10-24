@@ -157,7 +157,10 @@ export class Host {
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
-    const messages = new MessageService(db, surfacing.enabled ? surfacing : null, activity);
+    const messages = new MessageService(db,
+      // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口）
+      (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({ surfacing: surfacing.enabled ? surfacing : null, activity }),
+      activity);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);

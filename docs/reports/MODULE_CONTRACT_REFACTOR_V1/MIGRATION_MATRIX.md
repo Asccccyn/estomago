@@ -74,7 +74,17 @@
 | wishstar_notifications（47，owner=wishstar） | host-tools 旧分支（849b1d5） | modules/wishstar/service.ts wishstarTool('wishstar_notifications') →registry→executor | 定义正本=modules/<域>/module.ts；投影=owner（memory 域走 projectMemoryToolResult，其余显式声明沿现行）；quote=可信配置上界（quoteBackgroundTool）；memoryOnly=false | 真实 Host 定义/invoke（会话快照+各域测试） | 旧分支/allowlist 名已删（3203d59） | tool-catalog-golden sha256 恒定 + 域测试 |
 | context_review_complete（48，owner=context-review） | host-tools 旧分支（849b1d5） | modules/context-review/service.ts reviewComplete →registry→executor | 定义正本=modules/<域>/module.ts；投影=owner（memory 域走 projectMemoryToolResult，其余显式声明沿现行）；quote=可信配置上界（quoteBackgroundTool）；memoryOnly=true | 真实 Host 定义/invoke（会话快照+各域测试） | 旧分支/allowlist 名已删（3203d59） | tool-catalog-golden sha256 恒定 + 域测试 |
 
-另列消息accepted/revised/published、afterCommit、context各钩子、背景executor、程序事实入口、HTTP域路由、worker启停（P05-P07 填）。
+## 消息生命周期与上下文接缝（P05）
+
+| 接缝 | 旧位置 | 新owner/入口 | 行为保持 |
+|---|---|---|---|
+| 消息事实（accepted/revised/published） | messages/service.ts 直调 SurfacingMessageHooks 具体名（4+2+1 处） | messages/lifecycle.ts（事实+inTransaction/afterCommit 叶合同）→ application/message-lifecycle.bindMessageLifecycle 装配浮现消费者 | 事实字段=消息ID/修订/序号/hash/时间/firstAcceptance；幂等重放 firstAcceptance=false（补缺失作业不当新真实活动）；route/retry edit 同源（notifyAfterEditCommit→afterCommit） |
+| afterCommit | 同上（3 处） | lifecycle.afterCommit(conversationId) | worker 唤醒不进事务；可重复；业务作业幂等 |
+| 活动锚点（正式发布 L 记账） | MessageService 第三构造参数 noteRealPublication 端口 | 保持原端口（application 装配传入同一 activity）——发布同事务记账次序不变 | published 事实不经旁路（行为等价红线） |
+| 同轮浮现贡献（before-turn） | supervisor 内联结构类型 | context/contributions.ts BeforeTurnContributor（叶）：reuseFrozen/augmentFor/finalAdmit/markDispatched/markRetained/cancelForTurn 完整生命周期 | supervisor 不 import 浮现业务类型；宿主控角色/位置/预算/最终发包；编辑/停止/换窗失效语义在浮现域 |
+| 开窗资料（window-open） | supervisor windowBootstrap 直用 tools.mariposaClient() | BootstrapPort（P04.5，supervisor deps.bootstrap） | 分页/失败规则/部分加载政策逐字；过渡回退 tools 客户端（P07 收口移除） |
+
+另列消息accepted/revised/published、afterCommit、context各钩子、背景executor、程序事实入口、HTTP域路由、worker启停（P06/P07 填）。
 
 ## 临时重导出/兼容层登记（D24：迁移矩阵必须登记消费者与删除批次）
 

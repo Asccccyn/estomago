@@ -99,17 +99,10 @@ export type SupervisorDeps = {
   /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
   now?: () => number;
   // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
-  // 未注入=零变化；supervisor 只持薄接口，策略全在 memory-surfacing/service.ts。
-  surfacing?: {
-    augmentFor(input: import('../memory-surfacing/service.ts').AugmentInput): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
-    reuseFrozen(attemptId: string): import('../memory-surfacing/service.ts').AugmentResult | null;
-    finalAdmit?(r: import('../memory-surfacing/service.ts').AugmentResult, input: {
-      conversationId: string; windowId: string; messageId: string; revision: number;
-    }): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
-    cancelForTurn?(turnId: string): void;
-    markDispatched?(attemptId: string): void;
-    markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
-  };
+  // 未注入=零变化；P05.5/6：类型=context/contributions 叶接口（BeforeTurnContributor 完整
+  // 生命周期：prepare/reuseFrozen/finalAdmit/markDispatched/markRetained/cancelForTurn）；
+  // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
+  surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
