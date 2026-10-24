@@ -141,33 +141,6 @@ test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不�
   ctx.db.close();
 });
 
-test('F06：预算裁剪留新丢旧；未实际携带的消息不进评审范围', async () => {
-  const log: PayloadLog = [];
-  // 近期预算压到 ~12 token（30 字符）：旧消息（长）被裁、新消息（短）必进
-  const t = loggingTransport(log, (_p, hasTool) => {
-    if (!hasTool) {
-      const last = log[log.length - 1]!;
-      const msgs = last.messages as Array<{ role: string; content: unknown }>;
-      void msgs;
-    }
-    return hasTool ? textBody('g2', 'ok') : textBody('g1', '回复');
-  });
-  const root = tempRoot('rm2-f06-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { soft_limit_tokens: 1800 } } }); // 2026-10-08 晚间：静默不换窗——容量触发
-  await say(ctx, '这条旧消息非常长非常长非常长非常长非常长非常长', 'old1', T0);
-  const win1 = ctx.windows.activeWindow('c1')!;
-  await say(ctx, `新消息很长以触发容量换窗${'内容填充。'.repeat(2200)}`, 'new1', at(8)); // 2026-10-08：8h 本身不再触发——软线压低后容量触发（范围应只含实际携带的）
-  // 初始轨迹 manifest：旧长消息被预算裁掉、不在已见清单
-  const traj1 = ctx.trajectory.forWindow(win1.id)!;
-  const manifestIds = traj1.manifest.map((m) => m.seq);
-  assert.ok(!manifestIds.includes(1) || traj1.messages.some((m) => JSON.stringify(m.content).includes('旧消息')), '裁剪与清单一致');
-  // 换窗后评审发生过（8h 触发），且范围不含从未携带的消息版本
-  const review = ctx.db.prepare('SELECT range_keys_json FROM rotation_reviews ORDER BY created_at DESC LIMIT 1').get() as { range_keys_json: string };
-  const rangeKeys = JSON.parse(review.range_keys_json) as string[];
-  assert.ok(rangeKeys.every((k) => traj1.manifest.some((m) => `${m.id}@${m.revision}` === k)), '范围 ⊆ 实际已见清单（不登记未携带消息）');
-  ctx.db.close();
-});
-
 test('F13：续请求保留已发布正文与 opaque reasoning 协议继续态', async () => {
   const log: PayloadLog = [];
   const t = loggingTransport(log, (_p, hasTool) => (hasTool

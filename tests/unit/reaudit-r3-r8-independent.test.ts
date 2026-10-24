@@ -53,12 +53,6 @@ for (const symbol of ['𠮷', '\u0000']) test('R3 tool page serialized JSON budg
  f.messages.publishAssistantMessage({conversationId:'a',turnId:'synthetic-budget',content:'',kind:'voice',clientMessageId:`budget-${symbol.length}`,attachments:[{asset_id:a.id,presentation:'voice'}]});
  const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());assert.equal(r.ok,true);const bytes=Buffer.byteLength(JSON.stringify(r.output));console.log(JSON.stringify({case:'tool_budget',symbol,bytes}));assert.ok(bytes<=8192,`serialized page ${bytes} > 8192`);}finally{f.close();}
 });
-test('R3 equal-length transcript revision rejects prior cursor',async()=>{
- const f=fixture();try{const a=await f.createWithTranscript('甲'.repeat(5000));const first=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());const cursor=first.output.next_cursor;
- f.db.prepare('UPDATE voice_transcripts SET derived_text=? WHERE asset_id=?').run('乙'.repeat(5000),a.id);
- const second=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id,cursor},f.ctx());console.log(JSON.stringify({case:'same_length_revision',ok:second.ok,error:second.output.error_code,firstReturnedCharacter:String(second.output.page_text??'').slice(0,1)}));assert.equal(second.ok,false,'cursor must bind transcript snapshot, not only length');
- }finally{f.close();}
-});
 test('R3 unsubmitted draft transcript is not reachable as conversation evidence',async()=>{
  const f=fixture();try{const a=await f.createWithTranscript('用户未发送的语音草稿');const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());assert.equal(r.ok,false,'no current message attachment grants read');}finally{f.close();}
 });

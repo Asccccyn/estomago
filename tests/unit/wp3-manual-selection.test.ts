@@ -291,6 +291,21 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   const traj = ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(newWin.id) as { messages_json: string };
   assert.ok(traj.messages_json.includes('很久以前的早餐对话内容'), '新窗轨迹含所选历史正文（服务端按真实修订装配）');
   assert.ok(!traj.messages_json.includes('今天聊点新的'), '未选中的旧窗近期原话不再自动携带');
+  // R04 合并（原 remediation-batch2/batch5 F06 退役）：①新窗 manifest 与库内消息/实际装载正文一一对应；
+  // ②容量触发的换窗评审范围 ⊆ 旧窗实际已见清单（不登记未携带消息）
+  const newTraj = new WindowTrajectoryService(ctx.db).forWindow(newWin.id)!;
+  const newTrajText = JSON.stringify(newTraj.messages);
+  const dbRows = ctx.db.prepare('SELECT m.id, m.current_revision, m.sequence, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.conversation_id = ?').all('c1') as Array<{ id: string; current_revision: number; sequence: number; content: string }>;
+  for (const entry of newTraj.manifest!) {
+    const row = dbRows.find((r) => r.id === entry.id && r.current_revision === entry.revision && r.sequence === entry.seq);
+    assert.ok(row, `清单条目 ${entry.id} 能对上库内消息`);
+    assert.ok(newTrajText.includes(row!.content), `清单条目 ${entry.id} 的正文确实在轨迹中`);
+  }
+  const review = ctx.db.prepare('SELECT range_keys_json FROM rotation_reviews ORDER BY created_at DESC LIMIT 1').get() as { range_keys_json: string } | undefined;
+  assert.ok(review, '容量触发产生了换窗评审');
+  const oldTraj = new WindowTrajectoryService(ctx.db).forWindow(win1.id)!;
+  const rangeKeys = JSON.parse(review.range_keys_json) as string[];
+  assert.ok(rangeKeys.every((k) => oldTraj.manifest!.some((m) => `${m.id}@${m.revision}` === k)), '评审范围 ⊆ 实际已见清单（不登记未携带消息）');
   // 未选的旧窗消息仍在库（原文保留）
   const kept = ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE id = ?").get(s1.message.id) as { n: number };
   assert.equal(kept.n, 1, '未选历史原文不被删除');

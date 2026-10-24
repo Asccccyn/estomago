@@ -152,27 +152,6 @@ test('F05：容量换窗评审占用房间串行链，chat 排队等待', async 
   ctx.db.close();
 });
 
-test('F06：预算裁剪后 manifest 与实际装载正文一一对应（正文含 B 不含 A ⇒ 清单含 B 不含 A）', async () => {
-  const log: Array<Record<string, unknown>> = [];
-  const t = orT(() => '', log);
-  const root = tempRoot('r5b-');
-  // 近期预算 ~4 token（10 字符）：旧消息很长被裁，新消息短必进
-  const ctx = compose(root, t, mariposaOk); // WP5：12k 键已退役；首窗初始轨迹本就无既往历史
-  await say(ctx, '旧消息A内容很长很长很长很长很长', 'o1', T0);
-  const win1 = ctx.windows.activeWindow('c1')!;
-  const traj = ctx.trajectory.forWindow(win1.id)!;
-  const trajText = JSON.stringify(traj.messages);
-  assert.ok(trajText.includes('旧消息A') || trajText.length < 10, '裁剪语义成立（长旧消息不进初始轨迹）或轨迹极小');
-  // 关键断言：manifest 的每个 ID 都能在轨迹正文中找到对应消息（按正文回查）
-  const dbRows = ctx.db.prepare('SELECT m.id, m.current_revision, m.sequence, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.conversation_id = ?').all('c1') as Array<{ id: string; current_revision: number; sequence: number; content: string }>;
-  for (const entry of traj.manifest!) {
-    const row = dbRows.find((r) => r.id === entry.id && r.current_revision === entry.revision && r.sequence === entry.seq);
-    assert.ok(row, `清单条目 ${entry.id} 能对上库内消息`);
-    assert.ok(trajText.includes(row.content), `清单条目 ${entry.id} 的正文确实在轨迹中（F06 错配源已修）`);
-  }
-  ctx.db.close();
-});
-
 test('F23：冻结批恢复未决 → 同流后续批（含新批）停发；恢复按来源顺序', async () => {
   const calls: string[] = [];
   let aNotReady = true; // A 消息持续 NOT_READY，直至第三次 drain 放行
