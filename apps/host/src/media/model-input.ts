@@ -22,10 +22,8 @@ export type RevisionAttachment = { asset_id: string; presentation: string; capti
  *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
  *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
  *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
-/** R3′（2026-10-23）：转写首页字数上界（旧口径，保留兼容既有引用）。
- *  R3″（2026-10-24，RE-08）：分页按**实际紧凑 JSON UTF-8 字节**预算切页——4 字节汉字/
+/** R3″（2026-10-24，RE-08）：分页按**实际紧凑 JSON UTF-8 字节**预算切页——4 字节汉字/
  *  转义字符不再凭字符数破 8192B 门；包装与游标一并计入。 */
-export const TRANSCRIPT_PAGE_CHARS = 2400;
 export const TRANSCRIPT_PAGE_BUDGET_BYTES = 8192;
 
 /** JSON 字符串转义后的 UTF-8 字节数（与 JSON.stringify 单段输出一致：控制字符 \u00XX 转六字符、

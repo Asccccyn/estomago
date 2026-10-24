@@ -14,7 +14,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-import { projectRevisionBlocks, TRANSCRIPT_PAGE_CHARS } from '../../apps/host/src/media/model-input.ts';
+import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 function fixture() {
@@ -74,7 +74,6 @@ test('续读读尽：首页+翻页拼回全文逐字相等；游标元数据如�
     assert.equal(collected, text, '拼回全文逐字相等');
   } finally { f.close(); }
 });
-function out_total(_f: unknown): number { return 5; }
 
 test('源变更：转写内容变化后旧游标拒读（TRANSCRIPT_SOURCE_CHANGED）', async () => {
   const f = fixture();

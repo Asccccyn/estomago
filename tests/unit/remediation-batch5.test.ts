@@ -163,7 +163,6 @@ test('F06：预算裁剪后 manifest 与实际装载正文一一对应（正文�
   const traj = ctx.trajectory.forWindow(win1.id)!;
   const trajText = JSON.stringify(traj.messages);
   assert.ok(trajText.includes('旧消息A') || trajText.length < 10, '裁剪语义成立（长旧消息不进初始轨迹）或轨迹极小');
-  assert.ok(traj.manifest!.every((m) => trajText.includes(m.id) || true), '占位');
   // 关键断言：manifest 的每个 ID 都能在轨迹正文中找到对应消息（按正文回查）
   const dbRows = ctx.db.prepare('SELECT m.id, m.current_revision, m.sequence, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.conversation_id = ?').all('c1') as Array<{ id: string; current_revision: number; sequence: number; content: string }>;
   for (const entry of traj.manifest!) {

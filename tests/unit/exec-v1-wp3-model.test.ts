@@ -244,7 +244,6 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；容�
   const vMsg = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: 's2', attachments: [{ asset_id: voice.id, presentation: 'voice' }] });
   // validateItems：sticker/voice 不再被拒（旧缺陷修复点）
   const v = ctx.selections.validateItems('c1', [{ message_id: vMsg.message.id }], 999);
-  assert.equal((v as { ok: boolean }).ok !== false || true, true);
   if ((v as { ok: boolean }).ok) {
     assert.equal((v as { items: unknown[] }).items.length, 1, '语音消息可选');
   } else {

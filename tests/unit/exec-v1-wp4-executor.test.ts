@@ -312,7 +312,7 @@ test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文�
   // C-07：正式主动消息进入轨迹（下一请求可见——catchup/manifest）
   const win = ctx.db.prepare("SELECT id FROM windows WHERE conversation_id='c1' AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string };
   const traj = ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string };
-  assert.ok(traj.messages_json.includes('自主活动里跟你说一声') || true, '轨迹含 host 事件链与发布');
+  assert.ok(traj.messages_json.includes('自主活动里跟你说一声'), '轨迹含 host 事件链与发布');
   // once 任务完成后终结
   const taskRow = ctx.db.prepare('SELECT enabled, control_reason FROM background_tasks WHERE id = ?').get(autoTask) as { enabled: number; control_reason: string };
   assert.equal(taskRow.enabled, 0);
