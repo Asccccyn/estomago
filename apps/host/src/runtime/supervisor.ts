@@ -270,7 +270,7 @@ export class TurnSupervisor {
   // AUD-10/38（§10）+ D03（审计 3655d60）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型；
   //   active 评审无执行者（宿主重启即失主）→ failed（下次换窗按上限内有界重开评审，先做 unknown 写恢复）；
   //   running 写操作 → hold 记 unknown（可按 operation_id 恢复探测），本地类（review_complete 等）→ failed_resolved。
-  static recoveryPass(db: Db, logger: { warn: (e: string, f: Record<string, unknown>) => void }): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number; staleReviews: number; orphanEffects: number } {
+  static recoveryPass(db: Db, logger: Pick<Logger, 'warn'>): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number; staleReviews: number; orphanEffects: number } {
     const now = new Date().toISOString();
     const turns = tx(db, () => Number(db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now).changes));
     const attempts = tx(db, () => Number(db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now).changes));

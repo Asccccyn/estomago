@@ -358,8 +358,14 @@ export class Host {
     });
     const addr = this.server.address();
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.opts.port;
+    // AUD-10（2026-10-24 接线修复）：崩溃清残必须先于重派——running 悬挂 turns/attempts/
+    // streaming/PREPARING 窗/孤儿票据 owner 落确定终态，waiting_route_gate 无票释放回
+    // pending 后正好被下方 recoverSchedule 接管。此前 recoveryPass 仅被测试直接调用，
+    // 生产启动从未执行（AUD-10 验收实际未生效——F25 同款"测试绿但未接线"模式）。
+    const recovered = TurnSupervisor.recoveryPass(this.db, this.logger);
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
     const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
+    void recovered; // 清残计数经 recovery_pass warn 日志留痕（RECOVERY_HOST_RESTART）
     // 启动恢复同步：崩溃遗留的 pending/unknown_outcome 按稳定 op 重放（未启用时 no-op）
     void this.archiveSync.drainOnce().catch((err) => {
       this.logger.warn('archive_sync_startup_failed', { code: stableErrorCode(err) });

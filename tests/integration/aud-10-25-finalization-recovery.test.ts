@@ -161,3 +161,34 @@ test('AUD-05 附：route signal 后 fence 生效——迟到气泡/思考不发�
   assert.equal(ticket.n, 1);
   ctx.db.close();
 });
+
+// 2026-10-24 接线修复验收：recoveryPass 此前仅被上面两例直接调用（方法绿≠生产生效，
+// F25 同款模式）。本例锁真 Host.start 启动序列——崩溃残留必须随宿主启动被清残。
+test('AUD-10 接线：真 Host.start 启动即清残 running 悬挂（先清残后重派）', async () => {
+  const root = tempRoot('aud10c-');
+  writeApprovedIdentity(root);
+  const { Host } = await import('../../apps/host/src/app-context.ts');
+  const host = await Host.create({ stateRoot: root, logDir: path.join(root, 'logs'), bind: '127.0.0.1', port: 0,
+    config: buildConfig({ ...readyRuntimePatch(), deployment: { port: 0 }, runtime: { ...readyRuntimePatch().runtime, provider: 'mock' } }) });
+  // 预置崩溃残留：running turn/attempt + streaming 思考块 + waiting_route_gate（无票据，应释放）
+  const msg = host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '残留', clientMessageId: 'aud10c' });
+  const now = new Date().toISOString();
+  host.db.prepare("UPDATE turns SET state='running' WHERE id=?").run(msg.turnId);
+  host.db.prepare("UPDATE attempts SET state='running' WHERE turn_id=?").run(msg.turnId);
+  host.db.prepare("INSERT INTO reasoning_blocks(id, conversation_id, turn_id, attempt_id, sdk_message_id, block_index, origin, visibility, state, created_at, updated_at) VALUES (?,?,?,?,?,'0','stream','summary','streaming',?,?)")
+    .run(genId('rbl'), 'primary', msg.turnId, msg.attemptId, 'orphan2', now, now);
+  const otherTurn = host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '等票', clientMessageId: 'aud10c-w' });
+  host.db.prepare("UPDATE attempts SET state='waiting_route_gate', blocked_reason='WAITING_ROUTE_GATE:x' WHERE id=?").run(otherTurn.attemptId);
+  try {
+    await host.start();
+    assert.equal((host.db.prepare('SELECT state FROM turns WHERE id=?').get(msg.turnId) as { state: string }).state, 'failed', '启动清残：running turn 落 failed');
+    assert.equal((host.db.prepare('SELECT blocked_reason FROM attempts WHERE id=?').get(msg.attemptId) as { blocked_reason: string }).blocked_reason, 'RECOVERY_HOST_RESTART');
+    assert.equal((host.db.prepare('SELECT state FROM reasoning_blocks WHERE attempt_id=?').get(msg.attemptId) as { state: string }).state, 'failed');
+    // 无票据 waiting 释放：不再悬挂 waiting_route_gate（终态由 recoverSchedule 重派链决定，
+    // 其语义另有 AUD-05 验收——此处只锁清残这一步）
+    assert.notEqual((host.db.prepare('SELECT state FROM attempts WHERE id=?').get(otherTurn.attemptId) as { state: string }).state, 'waiting_route_gate', '无票据 waiting 不再悬挂');
+  } finally {
+    await host.stop().catch(() => {});
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
