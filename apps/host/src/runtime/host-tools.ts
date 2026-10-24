@@ -266,11 +266,6 @@ export function validateToolArgs(name: string, args: Record<string, unknown>, fr
 // P01.1：SeenRef/ToolExecContext/ToolExecResult 叶类型正本已迁 capabilities/contracts.ts
 //（字段逐一对照；历史语义注释随迁）。顶部纯 type 重导出保持旧消费者兼容。
 
-// 旧路径过渡期仍需的全局 tool_call_id 桥（memory 迁出后仅剩 wishstar/content/wake/media/
-// identity/background_complete/reviewComplete 校验段使用；P04 收尾批迁完即删）。
-const rawToolCallIdRef = { current: null as string | null };
-function rawToolCallIdOf(_ctx: ToolExecContext): string | null { return rawToolCallIdRef.current; }
-
 export class HostToolExecutor {
   private db: Db;
   private tz: string | null;
