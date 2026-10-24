@@ -176,7 +176,7 @@ export class TurnSupervisor {
         // 结构化错误码透传到 attempt（此前一律 RUNNER_CRASHED，测试与排障分不清类型）
         const raw = String((err as Error).message ?? err);
         const contractCode = /^(WIRE_TRAJECTORY_DIVERGED|WIRE_HISTORY_SHORTENED|HISTORY_CHANGED|HISTORY_SHORTENED|PREFIX_PROFILE_CHANGED|DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW)/.exec(raw)?.[1];
-        this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), ...(contractCode ? { contract_code: contractCode } : {}) });
+        this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), raw: String((err as Error).message ?? err).slice(0,180), ...(contractCode ? { contract_code: contractCode } : {}) });
         this.failTurnQuietly(turnId, contractCode ?? 'RUNNER_CRASHED');
       } finally {
         this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
@@ -642,7 +642,7 @@ export class TurnSupervisor {
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
       if (capacityNow !== null) {
-        const estNow = Math.ceil(JSON.stringify({ messages: envelope.messages, tools: envelope.tools }).length / (this.drv()?.charsPerToken ?? 2.5));
+        const estNow = this.estimateRequestTokens(envelope.messages, o.windowId); // 裁定②：与 rotateIfNeeded 同一口径
         const planNow = rotationPlan({
           currentInput: estNow, nextInput: estNow, capacity: capacityNow,
           maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
@@ -1327,6 +1327,12 @@ export class TurnSupervisor {
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
   // R2（2026-10-23，E08）：每窗冻结的 reasoning 继续态政策（schema 36；详见 ds-replay-policy.ts）
   private readonly reasoningPolicyCache = new Map<string, ReasoningReplayPolicy>();
+  /** 她 1024 裁定（接缝②）：容量按**实际发送载荷**计——消息轨迹 + 冻结工具目录（含 B 段
+   *  tools/initial）同一份口径，rotateIfNeeded 预测与工具循环硬门共用本估测，不再各拼一套。 */
+  private estimateRequestTokens(messages: unknown[], windowId: string): number {
+    return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
+  }
+
   private reasoningPolicyOf(windowId: string): ReasoningReplayPolicy {
     let policy = this.reasoningPolicyCache.get(windowId);
     if (!policy) {
@@ -1463,12 +1469,11 @@ export class TurnSupervisor {
     // 审计 F25：估算只用实际发送集合——轨迹正本（无轨迹的新窗首轮回退库内近期，此时二者一致）。
     // 被拒/未发送的历史大消息不得污染当前工作集（否则短输入被持续 CAPACITY_BLOCKED_HARD）。
     const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
-    const sentChars = trajForEstimate
-      ? trajForEstimate.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0)
-      : dialogue.reduce((s, m) => s + m.content.length, 0);
-    // F-J-33：估算含 I——无轨迹回退路径此前漏计 iText（轨迹路径略保守高估，方向安全不动）
-    const systemChars = (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const oldWindowEstimate = Math.ceil((sentChars + systemChars) / (dv?.charsPerToken ?? 1.5)); // 旧窗自身工作集
+    // 她 1024 裁定②：工作集=实际发送载荷（轨迹消息+冻结工具目录，与工具循环硬门同一口径）
+    const trajMessagesForEstimate = trajForEstimate ? trajForEstimate.messages : dialogue;
+    // F-J-33：无轨迹回退路径补 system 材料（轨迹路径 system 段已在 messages 内）
+    const systemChars = trajForEstimate ? 0 : (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
+    const oldWindowEstimate = this.estimateRequestTokens(trajMessagesForEstimate, o.window.id) + Math.ceil(systemChars / (dv?.charsPerToken ?? 1.5)); // 旧窗自身工作集
     const lastActual = (d.db.prepare(
       `SELECT u.input_tokens FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
        WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
@@ -2422,15 +2427,14 @@ export class TurnSupervisor {
               if (wC !== tC) throw new Error(`WIRE_TRAJECTORY_DIVERGED:content@${i}`);
             }
             if (w.role === 'assistant') {
+              // 她 1024 裁定（接缝①）：协议历史正本全保留、统一完整回传——"旧窗剥除"规则废止。
+              // 继续态核对改为无条件：wire 有↔轨迹有必须一致（丢=被改写拒发；多=wire 没发过轨迹
+              // 却有→同样 diverged）。不再有"轨迹存在继续态即拒发"的 legacy 分支。
+              void dsPolicy;
               const wireHas = typeof w.reasoning_content === 'string' && w.reasoning_content.length > 0;
               const trajHas = typeof t.reasoning_content === 'string' && t.reasoning_content.length > 0;
-              if (dsPolicy === 'ds_tools_all_turns_v1') {
-                if (wireHas !== trajHas) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning@${i}`);
-                if (wireHas && w.reasoning_content !== t.reasoning_content) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning_text@${i}`);
-              } else if (trajHas) {
-                // legacy：跨轮轨迹不得携带继续态（D01 剥除必须一致执行；wire 同轮有、轨迹无=正常）
-                throw new Error(`WIRE_TRAJECTORY_DIVERGED:legacy_reasoning_leak@${i}`);
-              }
+              if (wireHas !== trajHas) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning@${i}`);
+              if (wireHas && w.reasoning_content !== t.reasoning_content) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning_text@${i}`);
             }
           }
         }
@@ -2863,7 +2867,7 @@ export class TurnSupervisor {
     const now = new Date().toISOString();
     try {
       tx(this.d.db, () => {
-        const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state IN ('running')").get(turnId) as { id: string } | undefined;
+        const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state IN ('running','pending')").get(turnId) as { id: string } | undefined;
         // RE-03：pending（排队期被取消，从未获得执行权）同样落确定终态
         this.d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ? AND state IN ('running','pending')").run(now, turnId);
         if (att) {

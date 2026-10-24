@@ -1,7 +1,8 @@
 // R2（2026-10-23，E08/DS 新型号协议适配）：每窗冻结 reasoning 继续态政策。
 // 政策：官方直连 deepseek-flash/v4-pro 的新窗 = ds_tools_all_turns_v1（最终 assistant 与
 // 工具 assistant 的 reasoning_content 全部随轨迹保留、下一用户轮回传——当前官方 tools 合同）；
-// 旧窗/deepseek-chat/兼容代理 = legacy_turn_only（D01 跨轮剥除，原断言原样保留）。
+// 她 1024 裁定：协议历史正本全保留、统一完整回传；旧窗剥除规则废止（政策字段仅作窗审计记录，
+// 不再驱动守卫/剥除）。
 // 守卫：DS 跨轮以**上一笔已完成回合实发 wire** 为独立证据核对轨迹前缀（role/长度/继续态），
 // 不再比较两份同源派生；legacy 剥除按政策核验一致执行，新政策下 wire 有而轨迹无=拒发。
 import { test } from 'node:test';
@@ -132,41 +133,53 @@ test('新政策端到端：工具轮+最终回复的继续态全保留；下一�
   ctx.db.close();
 });
 
-// 整合（2026-10-24，接缝暂停待她裁）：原仓 3aa0164 verbatim 轨迹 × R2 政策剥除合并后，
-// 本场景（deepseek-chat legacy 窗 + 带推理最终轮）行为随轮次时序不稳定（同代码两次运行
-// 轨迹含/不含继续态相反）。单边均绿、组合无稳定语义——暂停断言，待她裁（1019 R2 政策窗
-// vs 原仓生产 verbatim 谁为准）。裁定后按裁定重写；两版断言在 git 666e3d3/b2530ce 各自历史。
-test('D01 保留：deepseek-chat 旧窗仍跨轮剥除（legacy 政策，原断言语义不变）', { skip: '整合接缝待裁：verbatim×政策剥除交互不稳定（见上注）' }, async () => {
-  const root = tempRoot('r2-legacy-');
+// 她 1024 裁定（接缝①落地）：协议历史正本全保留、统一完整回传；"旧窗剥除"规则废止。
+// 另：本场景 deepseek-chat（非 thinking 型号）的 fake transport 此前伪造了 reasoning_content——
+// 真实端点不产生继续态，测试数据须与真实数据隔离对齐，旧"冲突"是假象（10×复跑行为确定）。
+test('全保留基线：deepseek-chat（无继续态型号）正常四场景——工具续轮/普通续聊/重复运行/轨迹续读', async () => {
+  const root = tempRoot('r2-keepall-');
   const payloads: Array<Record<string, unknown>> = [];
   let gen = 0;
+  // 对齐真实 deepseek-chat 能力：不产 reasoning_content；工具轮（memory_hold）+最终回复+普通续聊
   const transport: OrTransport = async (payload) => {
     payloads.push(structuredClone(payload));
     gen += 1;
     const hasToolResult = (payload.messages as Array<{ role: string }>).some((m) => m.role === 'tool');
-    if (!hasToolResult && payloads.length <= 2) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolRound(`g${gen}`)) };
-    if (hasToolResult) return { status: 200, headers: new Map<string, string>(), body: frameStream(finalWithReasoning(`g${gen}`, '记好了')) };
+    if (!hasToolResult && payloads.length <= 2) return { status: 200, headers: new Map<string, string>(), body: frameStream(toolRound(`g${gen}`).split('\n\n').filter((x) => !x.includes('reasoning_content')).join('\n\n') + '\n\n') };
+    if (hasToolResult) return { status: 200, headers: new Map<string, string>(), body: frameStream(sse({ id: `g${gen}`, choices: [{ delta: { content: '记好了' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE) };
     return { status: 200, headers: new Map<string, string>(), body: frameStream(sse({ id: `g${gen}`, choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE) };
   };
   const ctx = composeSup(root, transport, 'deepseek-chat');
-  const t1 = say(ctx, '记一件事', 'r1');
-  await ctx.supervisor.waitIdle();
-  assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(t1.attemptId) as { state: string }).state, 'completed');
-  const win = ctx.windows.activeWindow('c1')!;
-  assert.equal(
-    (ctx.db.prepare('SELECT reasoning_replay_policy FROM windows WHERE id = ?').get(win.id) as { reasoning_replay_policy: string | null }).reasoning_replay_policy,
-    null, '旧型号窗=legacy（NULL，不写新政策）');
-  // 整合（2026-10-24，接缝暂停待她裁）：合并后实测行为=legacy 窗轨迹不保留最终 assistant
-  // 继续态（与 1019 R2 断言值一致；但原仓 verbatim 语义的精确边界——工具轮 vs 最终轮——
-  // 未被任何原仓测试锁定）。断言按合并树实测锁定；1019 版与裁定讨论见 git 666e3d3。
-  assert.equal(JSON.stringify(ctx.trajectory.forWindow(win.id)!.messages).includes('reasoning_content'), false, '整合实测：legacy 轨迹不含继续态（待裁接缝）');
-  const before = payloads.length;
-  say(ctx, '再聊一句', 'r2');
-  await ctx.supervisor.waitIdle();
-  const later = JSON.stringify(payloads.slice(before));
-  assert.equal(later.includes('reasoning_content'), false, '整合实测：跨轮不回传（待裁接缝）');
-  ctx.db.close();
+  try {
+    // 场景 A：工具续轮（首轮 hold→最终回复），无继续态型号轨迹自然无继续态
+    const t1 = say(ctx, '记一件事', 'r1');
+    await ctx.supervisor.waitIdle();
+    assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(t1.attemptId) as { state: string }).state, 'completed');
+    const win = ctx.windows.activeWindow('c1')!;
+    assert.equal(JSON.stringify(ctx.trajectory.forWindow(win.id)!.messages).includes('reasoning_content'), false, '无继续态型号：轨迹无继续态（对齐真实能力）');
+    // 场景 B：普通续聊——上一轮全量前缀原样在下一请求（含工具轮 assistant+工具结果）
+    const before = payloads.length;
+    say(ctx, '再聊一句', 'r2');
+    await ctx.supervisor.waitIdle();
+    const later = payloads.slice(before);
+    assert.ok(later.length >= 1, '续聊发出');
+    const laterStr = JSON.stringify(later);
+    assert.ok(laterStr.includes('memory_hold') && laterStr.includes('记好了') && laterStr.includes('记一件事'), '历史正本（工具轮/工具结果/旧输入）全量随请求');
+    // 场景 C：重复运行幂等——同窗再续一轮，轨迹只追加不改写（append-only 由守卫+断言双证）
+    const trajBefore = JSON.stringify(ctx.trajectory.forWindow(win.id)!.messages);
+    say(ctx, '第三句', 'r3');
+    await ctx.supervisor.waitIdle();
+    const trajAfter = JSON.stringify(ctx.trajectory.forWindow(win.id)!.messages);
+    assert.ok(trajAfter.startsWith(trajBefore.slice(0, -1)) || trajAfter.includes(trajBefore.slice(1, -1)), '轨迹追加不改写');
+    // 场景 D：轨迹续读（恢复视角）——重读 forWindow 后内容与库内一致（进程恢复消费同一正本）
+    const reread = JSON.stringify(ctx.trajectory.forWindow(win.id)!.messages);
+    assert.equal(reread, trajAfter, '重读一致');
+  } finally {
+    await ctx.supervisor.stopAll();
+    ctx.db.close();
+  }
 });
+
 
 test('wire 守卫：新政策下轨迹被篡改丢失继续态 → 下一轮拒发（WIRE_TRAJECTORY_DIVERGED）', async () => {
   const root = tempRoot('r2-guard-');

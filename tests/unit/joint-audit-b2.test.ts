@@ -47,7 +47,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 2400 } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);

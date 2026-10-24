@@ -206,8 +206,18 @@ export class RoutingService {
           },
         });
       });
-    } catch {
-      return { ok: false, status: 409, code: 'ROUTE_CONSUME_CONFLICT', reason: '并发消费冲突（事务回滚，票据仍可用）' };
+    } catch (err) {
+      // 她 1024 裁定③：事务内异常按真实原因分型——编辑资格拒绝/修订过期是确定性拒绝（400 系），
+      // 票据状态竞态才是真并发冲突（409）。事务已回滚：票据仍 pending、无修订/attempt/事件落地。
+      const msg = String((err as Error).message ?? err);
+      const errCode = (err as { code?: string }).code;
+      if (errCode === 'MESSAGE_ALREADY_DISPATCHED') {
+        return { ok: false, status: 422, code: 'ROUTE_EDIT_REJECTED', reason: '消息已进入模型请求或回合已完成，不可再编辑' };
+      }
+      if (/REVISION_CONFLICT|STALE_REVISION/.test(msg)) {
+        return { ok: false, status: 409, code: 'ROUTE_EDIT_REVISION_STALE', reason: '输入修订已过期（并发编辑），请刷新后重试' };
+      }
+      return { ok: false, status: 409, code: 'ROUTE_CONSUME_CONFLICT', reason: `并发消费冲突（事务回滚，票据仍可用）：${msg.slice(0, 80)}` };
     }
     if (editRevision !== null) this.messages.notifyAfterEditCommit();
     // 提交后广播（失败不影响已提交事实；durable 事件可重放）

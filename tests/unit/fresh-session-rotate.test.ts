@@ -39,9 +39,9 @@ function compose(root: string, runner: AgentRunner) {
   return { db, config, paths, messages, routing, windows, supervisor };
 }
 
-// 整合（2026-10-24，接缝暂停待查）：合并树下路由票据首次 waitIdle 即被消费（ROUTE_CONSUME_CONFLICT），
-// 单边均绿——疑似 D2 冻结目录改变票据消费时机。暂停待查；恢复=删除本行 skip。
-test('route-edit 重跑：不 resume 旧 session；完成后窗口改绑新 session', { skip: '整合接缝待查：票据消费时机组合差异（见上注）' }, async () => {
+// 她 1024 裁定③落地：票据对**第二条未派发、依法可编辑的输入**消费（不违已发送不可改规则）；
+// 原"编辑已完成消息"场景保留为拒绝测试；事务回滚后票据/修订/attempt 全部不变。
+test('route-edit 重跑：不 resume 旧 session；完成后窗口改绑新 session', async () => {
   const seenResume: Array<string | null> = [];
   const runner: AgentRunner = {
     kind: 'mock', interruptSupport: 'claimed',
@@ -52,26 +52,48 @@ test('route-edit 重跑：不 resume 旧 session；完成后窗口改绑新 sess
   };
   const root = tempRoot('fs-');
   const ctx = compose(root, runner);
+  // 第一轮：建立 session-1（这轮完成后消息已冻结，不可再编辑——留作拒绝场景）
   const t1 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第一轮', clientMessageId: 'fs1' });
   ctx.supervisor.enqueue(t1.turnId);
   await ctx.supervisor.waitIdle();
   const win1 = ctx.windows.activeWindow('c1')!;
   assert.equal(win1.sdk_session_id, 'session-1', '首轮绑定');
-  // 路由票据 → edit 消费 → 新 attempt（fresh_session=1）
-  const msg = ctx.messages.getMessage(t1.message.id)!;
-  const row = ctx.routing.createPending({ conversationId: 'c1', turnId: t1.turnId, attemptId: t1.attemptId, inputHash: msg.revision.content_hash, targetModel: null, evidenceCode: 'TEST', messageId: msg.id, inputRevision: msg.current_revision });
+  // —— 拒绝场景（原夹具非法前提保留为测试）：对已完成消息建票据后 edit → 422 ROUTE_EDIT_REJECTED，
+  //    且事务回滚=票据仍 pending、无新修订/attempt
+  const msg1 = ctx.messages.getMessage(t1.message.id)!;
+  const rowDone = ctx.routing.createPending({ conversationId: 'c1', turnId: t1.turnId, attemptId: t1.attemptId, inputHash: msg1.revision.content_hash, targetModel: null, evidenceCode: 'TEST', messageId: msg1.id, inputRevision: msg1.current_revision });
+  const rejected = ctx.routing.validateAndConsume(rowDone.id, { choice: 'edit', content: '非法编辑已完成消息' });
+  assert.equal(rejected.ok, false, '已完成消息的 edit 必须拒绝');
+  if (!rejected.ok) assert.equal(rejected.code, 'ROUTE_EDIT_REJECTED', `真实原因（得到 ${rejected.code}/${rejected.reason}）——不再伪装成消费冲突`);
+  const rowDoneAfter = ctx.routing.get(rowDone.id)!;
+  assert.equal((rowDoneAfter as unknown as { state: string }).state, 'pending', '事务回滚：票据仍 pending');
+  const rev1After = (ctx.db.prepare('SELECT current_revision FROM messages WHERE id=?').get(msg1.id) as { current_revision: number }).current_revision;
+  assert.equal(rev1After, msg1.current_revision, '事务回滚：消息修订不变');
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM attempts WHERE turn_id=?").get(t1.turnId) as { n: number }).n, 1, '事务回滚：无新 attempt');
+  // 拒绝场景的票据会残留 pending 占会话 gate（产品流由路由层过期收口；测试显式作废避免污染合法场景）
+  ctx.db.prepare("UPDATE route_decisions SET state='expired' WHERE id=?").run(rowDone.id);
+  // —— 合法场景（裁定③夹具）：第二条**未派发**输入（pending turn 从未进模型请求=未冻结）
+  const t2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第二轮原始内容', clientMessageId: 'fs2' });
+  // 不 enqueue——保持未派发；直接建票据并消费 edit
+  const msg2 = ctx.messages.getMessage(t2.message.id)!;
+  const row = ctx.routing.createPending({ conversationId: 'c1', turnId: t2.turnId, attemptId: t2.attemptId, inputHash: msg2.revision.content_hash, targetModel: null, evidenceCode: 'TEST', messageId: msg2.id, inputRevision: msg2.current_revision });
   const consumed = ctx.routing.validateAndConsume(row.id, { choice: 'edit', content: '修订后输入' });
-  assert.ok(consumed.ok);
+  assert.ok(consumed.ok, JSON.stringify(consumed.ok === false ? consumed : {}));
+  // 消费一次性：重复提交不得再造一份
+  const again = ctx.routing.validateAndConsume(row.id, { choice: 'edit', content: '再来一次' });
+  assert.equal(again.ok, false);
+  if (!again.ok) assert.equal(again.code, 'ROUTE_ALREADY_RESOLVED', '重复提交=已解决，不重复落地');
+  // 编辑轮重跑（fresh_session）→ 不 resume 旧 session
   ctx.supervisor.requeueConversationQueuedTurns('c1');
   await ctx.supervisor.waitIdle();
-  assert.deepEqual(seenResume, [null, null], '首轮无 resume；fresh_session 重跑也不 resume 旧 session');
+  assert.ok(seenResume.length >= 2 && seenResume.slice(0, 2).every((r) => r === null), `首轮与编辑重跑零 resume（actual=${JSON.stringify(seenResume)}）`);
   const winAfter = ctx.windows.get(win1.id)!;
-  assert.equal(winAfter.sdk_session_id, 'session-2', 'fresh_session 完成后窗口改绑新 session（旧 session 弃用）');
-  // 下一轮（普通）应 resume 新 session
+  assert.ok(/^session-\d+$/.test(winAfter.sdk_session_id ?? '') && winAfter.sdk_session_id !== 'session-1', `重跑后窗口改绑新 session（得到 ${winAfter.sdk_session_id}）`);
+  // 下一轮（普通）resume 改绑后的新 session
   const t3 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第三轮', clientMessageId: 'fs3' });
   ctx.supervisor.enqueue(t3.turnId);
   await ctx.supervisor.waitIdle();
-  assert.equal(seenResume[2], 'session-2', '后续轮 resume 改绑后的新 session');
+  assert.equal(seenResume.at(-1), winAfter.sdk_session_id, '后续轮 resume 改绑后的新 session');
   ctx.db.close();
 });
 

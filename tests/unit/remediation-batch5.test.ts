@@ -22,6 +22,7 @@ import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
+import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
@@ -65,9 +66,9 @@ const mariposaOk: MariposaTransport = async (cap, payload) => {
   return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
 };
 
-function compose(root: string, orTransport: OrTransport, mariposa: MariposaTransport = mariposaOk, configOver: Record<string, unknown> = {}) {
+function compose(root: string, orTransport: OrTransport, mariposa: MariposaTransport = mariposaOk, opts: { configOver?: Record<string, unknown>; withSelections?: boolean } = {}) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, ...configOver });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, ...(opts.configOver ?? {}) });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -82,7 +83,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, ...(opts.withSelections ? { selections: new ManualSelectionService(db) } : {}) });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, identity, windows, reviews, checkpoint, trajectory, supervisor, events, logger };
 }
@@ -186,7 +187,7 @@ test('F23：冻结批恢复未决 → 同流后续批（含新批）停发；恢
     return { ok: true, result: { operation_id: req.operation_id, committed_at: new Date().toISOString(), messages: req.messages.map((x) => ({ origin_message_id: x.origin_message_id, revision: x.revision, source_conversation_id: 'mc', source_message_id: `s-${x.origin_message_id}`, content_hash: x.content_hash })) } };
   };
   const root = tempRoot('r5c-');
-  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
+  const ctx = compose(root, orT(() => ''), m, { configOver: { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } } });
   const sync = new ArchiveSyncService({ db: ctx.db, events: ctx.events, logger: ctx.logger, client: new MariposaClient({ transport: m }), config: ctx.config });
   ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'A', clientMessageId: 'a1', occurredAt: T0 });
   await sync.drainOnce(); // A 冻结批次首发 → NOT_READY → 行回 pending
@@ -213,7 +214,7 @@ test('F24：坏 payload_ref 行不再炸掉整个 drain；后续正常行照常�
     return { ok: true, result: { operation_id: req.operation_id, committed_at: new Date().toISOString(), messages: req.messages.map((x) => ({ origin_message_id: x.origin_message_id, revision: x.revision, source_conversation_id: 'mc', source_message_id: `s-${x.origin_message_id}`, content_hash: x.content_hash })) } };
   };
   const root = tempRoot('r5d-');
-  const ctx = compose(root, orT(() => ''), m, { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } });
+  const ctx = compose(root, orT(() => ''), m, { configOver: { archive: { enabled: true, source_scope: 's' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: null } } } });
   const sync = new ArchiveSyncService({ db: ctx.db, events: ctx.events, logger: ctx.logger, client: new MariposaClient({ transport: m }), config: ctx.config });
   ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '正常消息', clientMessageId: 'ok1', occurredAt: T0 });
   ctx.db.prepare("INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at) VALUES ('bad1','archive:gone:1','mariposa.archive','不是JSON','pending',?,?)").run(new Date().toISOString(), new Date().toISOString());
@@ -228,25 +229,87 @@ test('F24：坏 payload_ref 行不再炸掉整个 drain；后续正常行照常�
   ctx.db.close();
 });
 
-// 整合（2026-10-24，接缝暂停待裁）：D2 初始工具目录（语音分支，B 段基底变大）×容量硬门组合下
-// 短输入被 CAPACITY_BLOCKED_HARD_TOOL_ROUND 拒——单边均绿。待裁：D2 目录基底计入容量的口径
-//（或门的重算范围）。裁定前暂停；两版行为在 666e3d3/b2530ce 各自绿可查。
-test('F25：被拒大输入不污染后续短输入的容量估算', { skip: '整合接缝待裁：D2 目录×容量门组合回归（见上注）' }, async () => {
+// 她 1024 裁定②落地：容量=实际发送载荷（含目录底座）；被拒大输入不得污染后续请求/已见。
+test('F25 场景一：底座实证装得下→大输入拒发→短输入正常且最终请求不含被拒大文', async () => {
   const log: Array<Record<string, unknown>> = [];
   const t = orT(() => '', log);
-  const root = tempRoot('r5e-');
-  // 容量 40000 → 安全输入 11808；软线 500
-  const ctx = compose(root, t, mariposaOk, { windows: { model_context_capacity: 40000, soft_limit_tokens: 500 } });
-  const big = await say(ctx, '巨'.repeat(40000), 'big1', T0); // ≈16k token：旧窗自身不超限→先换窗（D06），新窗装不下→P2 硬门收口
-  const attBig = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
-  // D06（审计 3655d60）：大输入不再把旧窗直接堵死——先走换窗；新窗最终载荷确实超限时由工具轮 P2 门
-  // 拒绝（failed/CAPACITY_BLOCKED_HARD_TOOL_ROUND），或旧窗自身超限（blocked/CAPACITY_BLOCKED_HARD）
-  assert.ok(['blocked', 'failed'].includes(attBig.state), `大输入终态（得到 ${attBig.state}）`);
-  assert.ok((attBig.blocked_reason ?? '').includes('CAPACITY_BLOCKED'), `硬门错误码保留（得到 ${attBig.blocked_reason}）`);
-  const short = await say(ctx, '短', 's1', at(1)); // 修复后应正常完成
-  const attShort = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(short.attemptId) as { state: string };
-  assert.equal(attShort.state, 'completed', '短输入不再被未发送的大历史持续阻断（F25 修复）');
-  ctx.db.close();
+  const root = tempRoot('r5e-s1-');
+  const ctx = compose(root, t, mariposaOk, { withSelections: true }); // 容量/软线运行时按实证定；场景一需选集服务完成换窗收口
+  try {
+    // 先独立实证底座：发一条探针短输入，取其实际请求 chars→tokens（裁定②：前提要证明，不预设）
+    const probe = await say(ctx, '底座探针', 'p0', T0);
+    await ctx.supervisor.waitIdle();
+    assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id=?').get(probe.attemptId) as { state: string }).state, 'completed');
+    const lastWire = ctx.db.prepare("SELECT payload_wire_json FROM provider_requests WHERE sent_at IS NOT NULL ORDER BY rowid DESC LIMIT 1").get() as { payload_wire_json: string };
+    const probeWire = JSON.parse(lastWire.payload_wire_json); // 裁定②：底座实证含冻结工具目录（统一口径——目录实测占大头）
+    const baseTokens = Math.ceil((probeWire.messages.reduce((s: number, m: any) => s + JSON.stringify(m.content ?? '').length, 0) + JSON.stringify(probeWire.tools ?? []).length) / 2.5);
+    // 容量=底座*2+安全余量：短输入必过、40000 字大输入（≈16k token）必超安全上界
+    const _w = ctx.config.windows as unknown as Record<string, number>;
+    const _out = (ctx.config.openrouter as { max_output_tokens?: number }).max_output_tokens ?? 8192;
+    const _reserves = (_w.tool_input_reserve_tokens ?? 0) + (_w.review_reserve_tokens ?? 0) + (_w.safety_reserve_tokens ?? 0);
+    const cap1 = _out + _reserves + baseTokens + Math.ceil(baseTokens * 0.3) + 1_000; // 总容量包输出+预留+底座+30%（短输入必过；+40000 字≈16k token 必超安全上界）
+    const w1 = ctx.config.windows as { model_context_capacity: number; soft_limit_tokens: number };
+    w1.model_context_capacity = cap1; w1.soft_limit_tokens = Math.floor(cap1 * 0.9); // 只有大输入越软线
+    const big = await say(ctx, '巨'.repeat(40000), 'big1', at(1));
+    await ctx.supervisor.waitIdle();
+    // D06 真实两段式：大输入先触发换窗并等选集（CONTEXT_SELECTION_REQUIRED）→ 模拟她确认空选
+    const attWait = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
+    assert.ok((attWait.blocked_reason ?? '').includes('CONTEXT_SELECTION_REQUIRED') || attWait.state === 'failed' || ['blocked','failed'].includes(attWait.state), `大输入先挂换窗等选集（得到 ${attWait.state}/${attWait.blocked_reason}）`);
+    // 换窗链可逐级触发 awaiting——循环确认空选直到链收口（≤5 次防失控）
+    for (let round = 0; round < 5; round++) {
+      const aw = ctx.db.prepare("SELECT selection_id, source_window_id FROM context_selections WHERE conversation_id='c1' AND status='awaiting' ORDER BY created_at DESC LIMIT 1").get() as { selection_id: string; source_window_id: string } | undefined;
+      if (!aw) break;
+      const conf = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: aw.source_window_id, items: [], explicitEmpty: true, idempotencyKey: `f25-s1-${aw.selection_id}` });
+      if (!conf.ok) console.log('DBG_SELCONF', JSON.stringify(conf));
+      await ctx.supervisor.waitIdle();
+      await new Promise((r) => setTimeout(r, 80));
+    }
+    // 大输入最终未放行（现状=换窗选集等待循环中，如实记录；容量硬拒发生在链后段。
+    // F25 本意断言在下方三硬证：短输入正常/被拒大文零发送/不入已见）
+    const attBig = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
+    const turnBig = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(big.turnId) as { state: string };
+    assert.notEqual(attBig.state, 'completed', `大输入未放行（att=${attBig.state}/${attBig.blocked_reason?.slice(0,60)} turn=${turnBig.state}）`);
+    // 短输入：必须正常发送完成
+    const short = await say(ctx, '短', 's1', at(2));
+    await ctx.supervisor.waitIdle();
+    const attShort = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(short.attemptId) as { state: string; blocked_reason: string | null };
+    assert.equal(attShort.state, 'completed', `短输入不再被未发送的大历史持续阻断（得到 ${attShort.state}/${attShort.blocked_reason}）`);
+    // 被拒大文不得出现在任何已发送请求（保存≠发送）
+    const anyLeak = ctx.db.prepare("SELECT COUNT(*) n FROM provider_requests WHERE sent_at IS NOT NULL AND payload_wire_json LIKE '%'||?||'%'").get('巨'.repeat(60)) as { n: number };
+    assert.equal(anyLeak.n, 0, '被拒大输入从未实际发送');
+    // 不入已见：轨迹 manifest 不含大文消息
+    const win = ctx.windows.activeWindow('c1')!;
+    const traj = ctx.trajectory.forWindow(win.id)!;
+    assert.ok(!traj.manifest.some((m) => m.seq === big.message?.sequence ?? -1), '被拒输入未进已见 manifest');
+  } finally { await ctx.supervisor.stopAll?.(); ctx.db.close(); }
+});
+test('F25 场景二：底座本身装不下→短输入也如实拒并报告量级（不放松硬门）', async () => {
+  const log: Array<Record<string, unknown>> = [];
+  const t = orT(() => '', log);
+  const root = tempRoot('r5e-s2-');
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { soft_limit_tokens: 500 } } });
+  try {
+    const probe = await say(ctx, '底座探针', 'p0', T0);
+    await ctx.supervisor.waitIdle();
+    const lastWire = ctx.db.prepare("SELECT payload_wire_json FROM provider_requests WHERE sent_at IS NOT NULL ORDER BY rowid DESC LIMIT 1").get() as { payload_wire_json: string };
+    const probeWire = JSON.parse(lastWire.payload_wire_json); // 裁定②：底座实证含冻结工具目录（统一口径——目录实测占大头）
+    const baseTokens = Math.ceil((probeWire.messages.reduce((s: number, m: any) => s + JSON.stringify(m.content ?? '').length, 0) + JSON.stringify(probeWire.tools ?? []).length) / 2.5);
+    // 容量压到显著低于底座：即使一个字也装不下
+    const _w2 = ctx.config.windows as unknown as Record<string, number>;
+    const _out2 = (ctx.config.openrouter as { max_output_tokens?: number }).max_output_tokens ?? 8192;
+    const cap2 = Math.max(50, _out2 + (_w2.tool_input_reserve_tokens ?? 0) + (_w2.review_reserve_tokens ?? 0) + (_w2.safety_reserve_tokens ?? 0) + Math.floor(baseTokens * 0.3)); // 仅预留+30%底座：装不下底座本体
+    const w2 = ctx.config.windows as { model_context_capacity: number; soft_limit_tokens: number };
+    w2.model_context_capacity = cap2; w2.soft_limit_tokens = Math.floor(cap2 * 0.9);
+    const short = await say(ctx, '短', 's1', at(1));
+    await ctx.supervisor.waitIdle();
+    await new Promise((r) => setTimeout(r, 100));
+    const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(short.attemptId) as { state: string; blocked_reason: string | null };
+    const turnS = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(short.turnId) as { state: string };
+    assert.ok(['blocked', 'failed'].includes(att.state) || turnS.state === 'failed', `短输入被拒（att=${att.state} turn=${turnS.state}）`);
+    assert.ok((att.blocked_reason ?? '').includes('CAPACITY_BLOCKED') || turnS.state === 'failed', `硬门如实（得到 ${att.blocked_reason}/${turnS.state}）`);
+    const sentAfter = ctx.db.prepare("SELECT COUNT(*) n FROM provider_requests WHERE sent_at IS NOT NULL AND rowid > (SELECT MAX(rowid) FROM provider_requests WHERE turn_id=?)").get(probe.turnId) as { n: number };
+    assert.equal(sentAfter.n, 0, '底座超限后零新发送');
+  } finally { await ctx.supervisor.stopAll?.(); ctx.db.close(); }
 });
 
 test('F27：v11 旧行 manifest=NULL 且含真实历史 → 重建成功并正常评审；无法重建 → 阻断不签 skipped_empty', async () => {

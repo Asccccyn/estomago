@@ -82,7 +82,9 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
 
 function compose(root: string, orTransport: OrTransport, mariposa: MariposaTransport, configOver: Record<string, unknown> = {}) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 1500 }, ...configOver });
+  // 裁定②（2026-10-24）：容量口径统一含冻结工具目录（deferred 目录实测底座 ≈12.5k token）——
+  // 软线从旧"正文 1500"改为"底座+1500"（原相对位置不变：首轮不触发，第二轮长消息≈+3.2k token 触发）
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 14_000 }, ...configOver });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);

@@ -142,7 +142,7 @@ test('T1：明确空选换窗后新窗 payload 不含旧原文；同窗失败回
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t1-');
   const transport = dsTransport(seen);
-  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
+  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } });
   // 先建窗（空房首条自动建窗）
   const s1 = await say(ctx, '旧窗的第一句话', 'm1', T0);
   assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(s1.attemptId) as { state: string }).state, 'completed');
@@ -196,7 +196,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
       throw new Error('wp7-trajectory-write-boom');
     }
   }
-  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
+  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;
@@ -223,7 +223,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
 test('T2b：正常换窗成功返回时初始轨迹已存在（无需下一轮懒初始化）', async () => {
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t2b-');
-  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
+  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } });
   await say(ctx, '旧窗原话', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;
@@ -343,7 +343,7 @@ test('RRA-016/WP07-T2 拆分：bootstrap 503=明确未取得资料且不阻塞�
     if (cap === 'bootstrap.get') return { ok: false, code: 'HTTP_503', httpStatus: 503 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } });
+  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;

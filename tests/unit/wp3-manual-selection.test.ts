@@ -226,7 +226,7 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp3-int-');
   // 软线调小：第二条消息即触发换窗（走容量路径；warning_tokens 已退役不再配置）
-  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 2600 /* 2026-10-17 输出协议行加入 systemPrompt 后放宽边界余量；触发语义不变 */ } } as never);
+  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } } as never);
   // H13 正例：真全新空房 → 首条消息自动建窗（不要求选集）
   // 历史在其后种行（模拟更早已归档的存量原文进入本房间）
   const s1 = await say(ctx, '今天聊点新的', 'm1', T0);

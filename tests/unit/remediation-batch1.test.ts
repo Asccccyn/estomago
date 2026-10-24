@@ -77,7 +77,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
     integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
-    windows: { soft_limit_tokens: 1500 },
+    windows: { soft_limit_tokens: 1500 + 12_500 },
     ...configOver,
   });
   const paths = buildPaths(root);

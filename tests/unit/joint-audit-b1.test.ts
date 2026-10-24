@@ -70,7 +70,7 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
 test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 失败 → 容量触发换窗不再被 ROTATION_RANGE_INVALID 阻断', async () => {
   const root = tempRoot('jab1-lock-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 2200 } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
