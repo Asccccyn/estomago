@@ -1,6 +1,107 @@
 {
   "policy": "07_真实使用测试政策.md",
-  "entries": [],
+  "entries": [
+    {
+      "path": "tests/unit/tool-discovery.test.ts",
+      "testNames": ["new windows advertise three fixed entry points; definitions never grow the tools prefix", "old windows recover exactly sent tools including empty toolset, never replace cached prefix", "define then sent proof before invoke; no direct/forged/cross-room invocation; compact hold preserves receipt", "catalog does not expose schemas and invoke cannot inject reserved args", "new-window default is deferred; explicit legacy remains a compatibility option"],
+      "category": "NORMAL+ESSENTIAL_BOUNDARY",
+      "reachableSetup": "真实 MessageService 建 c1/w1 + submitUserMessageWithTurn 正常建轮；Mariposa fake transport",
+      "normalUserAction": "发消息、tool_define/tool_invoke、跨房间引用尝试",
+      "risk": "冻结前缀被改写/伪造已见/跨房调用",
+      "decision": "SELECTED",
+      "evidence": "P01.1/P01.3 运行 5/5 通过（run-tests --file，退出码 0）"
+    },
+    {
+      "path": "tests/unit/tool-discovery-supervisor.test.ts",
+      "testNames": ["deepseek: deferred discovery→definition→invocation preserves tools prefix", "openrouter: deferred discovery→definition→invocation preserves tools prefix"],
+      "category": "NORMAL",
+      "reachableSetup": "真实 TurnSupervisor + fake OR/DS runner transport + fake mariposa",
+      "normalUserAction": "发消息触发 catalog→define→invoke 链",
+      "risk": "工具前缀/缓存被改写",
+      "decision": "SELECTED",
+      "evidence": "P01.3/P01.4 运行通过（退出码 0）"
+    },
+    {
+      "path": "tests/unit/tool-initial-visible.test.ts",
+      "testNames": ["清单与渲染：默认=她 1022 首批（里程碑整版+条目化一起）；文本含 definition_id 与完整参数", "invoke 旁路：初始工具的定义随窗请求真实发出→免 define 直接 invoke；旧窗（无注入）仍走旧门", "空工具清单：显式配置 [] → 无 tools/initial 段（renderInitialVisibleText=null）"],
+      "category": "NORMAL+ESSENTIAL_BOUNDARY",
+      "reachableSetup": "真实 IdentityService + HostToolExecutor；provider_requests 已发送请求为已见证据",
+      "normalUserAction": "新窗直接 invoke 初始工具；旧窗同参数 invoke",
+      "risk": "未注入窗绕过 define 门（零回退被破坏）",
+      "decision": "SELECTED",
+      "evidence": "P01.1/P01.4 运行 3/3 通过（退出码 0）；P01.4 改传显式快照后仍通过"
+    },
+    {
+      "path": "tests/unit/model-wire-measurement.test.ts",
+      "testNames": ["capture actual executor output serialized exactly as supervisor tool content"],
+      "category": "NORMAL",
+      "reachableSetup": "真实 HostToolExecutor + fake Mariposa transport 回真实业务形状",
+      "normalUserAction": "模型调用 5 个读取类工具",
+      "risk": "模型投影（瘦身 JSON）语义漂移",
+      "decision": "SELECTED",
+      "evidence": "P01.1/P01.3 运行通过（退出码 0）"
+    },
+    {
+      "path": "tests/unit/model-results.test.ts",
+      "testNames": ["episode read retains observed CAS revision and anchors, not audit fields", "pagination retains exact cursor, including required timestamp inside opaque cursor", "records remain addressable for revision and revoke; punctuation is content", "recall preserves distinct evidence, zero results and uncertainty without diagnostics", "actual event date survives unknown confidence, event body unchanged"],
+      "category": "NORMAL",
+      "reachableSetup": "纯投影函数输入输出（政策 §1 允许）",
+      "normalUserAction": "不适用（纯函数）",
+      "risk": "ref/cursor/逐字正文被投影删掉（D19）",
+      "decision": "SELECTED",
+      "evidence": "P01 收尾回归 6/6 文件通过（退出码 0）"
+    },
+    {
+      "path": "tests/unit/audit-d-fixes.test.ts",
+      "testNames": ["（15 个；P01 相关=validateToolArgs 码点长度/必填/心情枚举门等）"],
+      "category": "NORMAL+ESSENTIAL_BOUNDARY",
+      "reachableSetup": "真实 HostToolExecutor + validateToolArgs 直调（纯校验面）",
+      "normalUserAction": "模型提交参数（emoji 标题/缺必填）",
+      "risk": "长度口径/必填门漂移",
+      "decision": "SELECTED",
+      "evidence": "P01.2 运行通过（4 文件 0 失败，退出码 0）"
+    },
+    {
+      "path": "tests/unit/wishstar-integration.test.ts",
+      "testNames": ["（5 个；P01 相关=validateToolArgs wishstar 形状校验）"],
+      "category": "NORMAL",
+      "reachableSetup": "真实 executor + fake wishstar forward",
+      "normalUserAction": "wishstar_write_star 参数提交",
+      "risk": "参数校验面漂移",
+      "decision": "SELECTED",
+      "evidence": "P01.2 运行通过（退出码 0）；完整行为面留 P04 复验"
+    },
+    {
+      "path": "tests/unit/wp7-cross-contract.test.ts",
+      "testNames": ["（3 个；P01 相关=全工具 required 校验扫描）"],
+      "category": "NORMAL",
+      "reachableSetup": "buildHostTools 全量 + validateToolArgs",
+      "normalUserAction": "不适用（合同扫描）",
+      "risk": "required/additionalProperties 漂移",
+      "decision": "SELECTED",
+      "evidence": "P01.2 运行通过（退出码 0）"
+    },
+    {
+      "path": "tests/unit/tool-catalog-golden.test.ts",
+      "testNames": ["工具目录与 849b1d5 基线逐字节一致（名称/顺序/schema/description/默认词表）"],
+      "category": "ESSENTIAL_BOUNDARY",
+      "reachableSetup": "新增：golden 于 849b1d5 纯净代码采集（tests/golden/tool-catalog-baseline.json）",
+      "normalUserAction": "不适用（等价基线）",
+      "risk": "目录/顺序/schema/definitionId 漂移（06 号红线）",
+      "decision": "SELECTED",
+      "evidence": "P01.3 起每次结构变更后运行，sha256 770e9fef… 恒定"
+    },
+    {
+      "path": "tests/unit/module-contract-session-snapshot.test.ts",
+      "testNames": ["合成正常会话 wire 与 P01 基线逐字一致（工具目录/已见定义/同轮浮现/已发布语音投影）"],
+      "category": "NORMAL+ESSENTIAL_BOUNDARY",
+      "reachableSetup": "新增：真实装配（P01.5）——见 helpers/module-contract-session.ts；golden=tests/golden/module-contract-session-baseline.json",
+      "normalUserAction": "回忆消息/普通消息/真实发送语音；catalog→define→invoke",
+      "risk": "wire/同轮浮现/语音投影/已见定义漂移（06 号红线）",
+      "decision": "SELECTED",
+      "evidence": "P01.5 连续两次运行逐字节一致（退出码 0）"
+    }
+  ],
   "entryShape": {
     "path": "tests/unit/example.test.ts",
     "testNames": [],
@@ -10,5 +111,6 @@
     "risk": "",
     "decision": "NOT_SELECTED",
     "evidence": ""
-  }
+  },
+  "pendingClassificationNote": "curated-test-candidates.json 其余候选按对应卡（P03-P08）施工时分类；未分类不运行。"
 }
