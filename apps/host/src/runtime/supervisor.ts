@@ -1,7 +1,6 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
-import { resolveReasoningReplayPolicy, storedReasoningReplayPolicy, type ReasoningReplayPolicy } from './ds-replay-policy.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -1325,22 +1324,12 @@ export class TurnSupervisor {
   }
 
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
-  // R2（2026-10-23，E08）：每窗冻结的 reasoning 继续态政策（schema 36；详见 ds-replay-policy.ts）
-  private readonly reasoningPolicyCache = new Map<string, ReasoningReplayPolicy>();
   /** 她 1024 裁定（接缝②）：容量按**实际发送载荷**计——消息轨迹 + 冻结工具目录（含 B 段
    *  tools/initial）同一份口径，rotateIfNeeded 预测与工具循环硬门共用本估测，不再各拼一套。 */
   private estimateRequestTokens(messages: unknown[], windowId: string): number {
     return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
   }
 
-  private reasoningPolicyOf(windowId: string): ReasoningReplayPolicy {
-    let policy = this.reasoningPolicyCache.get(windowId);
-    if (!policy) {
-      policy = storedReasoningReplayPolicy(this.d.db.prepare('SELECT reasoning_replay_policy FROM windows WHERE id = ?').get(windowId) as { reasoning_replay_policy?: string | null } | undefined);
-      this.reasoningPolicyCache.set(windowId, policy);
-    }
-    return policy;
-  }
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
@@ -1734,7 +1723,7 @@ export class TurnSupervisor {
     // 要么全成要么全回滚）
     const latestGate = this.d.identity.evaluateGate(this.d.db, { driver: this.drv()?.kind ?? 'claude-agent-sdk' });
     if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(this.d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(this.d.config), o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
-    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory, ...(resolveReasoningReplayPolicy({ provider: this.d.config.runtime.provider, deepseek: this.d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
+    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
     // pending 键上的 bootstrap 缓存迁移到真实窗 id（同窗不重复拉）
@@ -1939,7 +1928,7 @@ export class TurnSupervisor {
           try {
             const latestGate = d.identity.evaluateGate(d.db, { driver: dv?.kind ?? 'claude-agent-sdk' });
             if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
-            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
+            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
             rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
             // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
             // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
@@ -2099,7 +2088,7 @@ export class TurnSupervisor {
           return;
         }
       }
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -2387,7 +2376,6 @@ export class TurnSupervisor {
         if (wireMsgs) {
           const trajSide = [...orTraj.messages, ...catchupMessages] as Array<Record<string, unknown>>;
           if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_HISTORY_SHORTENED:${wireMsgs.length}>${trajSide.length}`);
-          const dsPolicy = this.reasoningPolicyOf(window.id);
           // RE-10（2026-10-24 返修）：完整前缀核对——role 之外，content（含旧 user 正文）、
           // tool_calls 参数、tool_call_id、name 等逐字段比对（上轮反例：已发送 user 内容被改写
           // 成 CORRUPTED…仍照发）。两侧按 DS 发送同态归一：块数组拍平为文本（镜像
@@ -2412,7 +2400,7 @@ export class TurnSupervisor {
           const comparable = (m: Record<string, unknown>): Record<string, unknown> => {
             const out: Record<string, unknown> = {};
             for (const [k, v] of Object.entries(m)) {
-              if (k === 'cache_control' || k === 'reasoning_content') continue; // 缓存标记随轮次变化；继续态按政策单独核对
+              if (k === 'cache_control' || k === 'reasoning_content') continue; // 缓存标记随轮次变化；reasoning 继续态在 assistant 分支无条件单独核对
               out[k] = k === 'content' ? flatten(v) : v;
             }
             return out;
@@ -2430,7 +2418,6 @@ export class TurnSupervisor {
               // 她 1024 裁定（接缝①）：协议历史正本全保留、统一完整回传——"旧窗剥除"规则废止。
               // 继续态核对改为无条件：wire 有↔轨迹有必须一致（丢=被改写拒发；多=wire 没发过轨迹
               // 却有→同样 diverged）。不再有"轨迹存在继续态即拒发"的 legacy 分支。
-              void dsPolicy;
               const wireHas = typeof w.reasoning_content === 'string' && w.reasoning_content.length > 0;
               const trajHas = typeof t.reasoning_content === 'string' && t.reasoning_content.length > 0;
               if (wireHas !== trajHas) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning@${i}`);

@@ -1,10 +1,7 @@
-// R2（2026-10-23，E08/DS 新型号协议适配）：每窗冻结 reasoning 继续态政策。
-// 政策：官方直连 deepseek-flash/v4-pro 的新窗 = ds_tools_all_turns_v1（最终 assistant 与
-// 工具 assistant 的 reasoning_content 全部随轨迹保留、下一用户轮回传——当前官方 tools 合同）；
-// 她 1024 裁定：协议历史正本全保留、统一完整回传；旧窗剥除规则废止（政策字段仅作窗审计记录，
-// 不再驱动守卫/剥除）。
+// DS 跨轮 reasoning 继续态：实际 wire 行为回归（R01 减法后本文件不再测政策解析——
+// 每窗双政策层已按她 1024 裁定退役，协议历史正本全保留、统一完整回传，守卫无条件）。
 // 守卫：DS 跨轮以**上一笔已完成回合实发 wire** 为独立证据核对轨迹前缀（role/长度/继续态），
-// 不再比较两份同源派生；legacy 剥除按政策核验一致执行，新政策下 wire 有而轨迹无=拒发。
+// wire 有而轨迹无（或反之）= 拒发。migration36 的 reasoning_replay_policy 列按裁定保留空闲。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -33,7 +30,6 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { resolveReasoningReplayPolicy } from '../../apps/host/src/runtime/ds-replay-policy.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1', 'Use the isolated npm test runner');
 const enc = new TextEncoder();
@@ -83,17 +79,7 @@ const say = (ctx: ReturnType<typeof composeSup>, text: string, id: string) => {
   return sub;
 };
 
-test('政策解析矩阵：仅官方直连 flash/v4-pro 新政策；chat/代理/未知/非 DS 一律 legacy', () => {
-  const f = (provider: string, model: string | null, base_url: string) => resolveReasoningReplayPolicy({ provider, deepseek: { base_url, model } });
-  assert.equal(f('deepseek', 'deepseek-flash', 'https://api.deepseek.com'), 'ds_tools_all_turns_v1');
-  assert.equal(f('deepseek', 'deepseek-v4-pro', 'https://api.deepseek.com/'), 'ds_tools_all_turns_v1');
-  assert.equal(f('deepseek', 'deepseek-chat', 'https://api.deepseek.com'), 'legacy_turn_only', '旧型号维持 D01');
-  assert.equal(f('deepseek', 'deepseek-flash', 'https://api.example.com/v1'), 'legacy_turn_only', '兼容代理不推断');
-  assert.equal(f('deepseek', null as unknown as string, 'https://api.deepseek.com'), 'legacy_turn_only');
-  assert.equal(f('openrouter', 'deepseek-flash', 'https://api.deepseek.com'), 'legacy_turn_only');
-});
-
-test('新政策端到端：工具轮+最终回复的继续态全保留；下一用户轮实发回传（E08 修复）', async () => {
+test('DS 工具轮+最终回复的继续态全保留；下一用户轮实发回传（E08 修复）', async () => {
   const root = tempRoot('r2-new-');
   const payloads: Array<Record<string, unknown>> = [];
   let gen = 0;
@@ -113,9 +99,6 @@ test('新政策端到端：工具轮+最终回复的继续态全保留；下一�
   await ctx.supervisor.waitIdle();
   assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(t1.attemptId) as { state: string }).state, 'completed');
   const win = ctx.windows.activeWindow('c1')!;
-  assert.equal(
-    (ctx.db.prepare('SELECT reasoning_replay_policy FROM windows WHERE id = ?').get(win.id) as { reasoning_replay_policy: string | null }).reasoning_replay_policy,
-    'ds_tools_all_turns_v1', '官方直连 flash 新窗冻结新政策');
   const traj = ctx.trajectory.forWindow(win.id)!;
   const trajJson = JSON.stringify(traj.messages);
   assert.ok(trajJson.includes('思考片段甲乙') || trajJson.includes('"思考片段甲"'), '工具 assistant 继续态保留在轨迹');
@@ -204,7 +187,6 @@ test('wire 守卫：新政策下轨迹被篡改丢失继续态 → 下一轮拒�
     return m;
   });
   ctx.db.prepare('UPDATE window_trajectories SET messages_json = ? WHERE window_id = ?').run(JSON.stringify(tampered), win.id);
-  (ctx.supervisor as unknown as { reasoningPolicyCache: Map<string, string> }).reasoningPolicyCache.clear();
   const beforeTamper = dispatchCount;
   const t2 = say(ctx, '再聊一句', 'r2');
   await ctx.supervisor.waitIdle();

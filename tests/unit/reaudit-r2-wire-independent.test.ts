@@ -1,9 +1,6 @@
-// R2（2026-10-23，E08/DS 新型号协议适配）：每窗冻结 reasoning 继续态政策。
-// 政策：官方直连 deepseek-flash/v4-pro 的新窗 = ds_tools_all_turns_v1（最终 assistant 与
-// 工具 assistant 的 reasoning_content 全部随轨迹保留、下一用户轮回传——当前官方 tools 合同）；
-// 旧窗/deepseek-chat/兼容代理 = legacy_turn_only（D01 跨轮剥除，原断言原样保留）。
-// 守卫：DS 跨轮以**上一笔已完成回合实发 wire** 为独立证据核对轨迹前缀（role/长度/继续态），
-// 不再比较两份同源派生；legacy 剥除按政策核验一致执行，新政策下 wire 有而轨迹无=拒发。
+// R2 独立 wire 守卫回归（R01 减法后：每窗双政策层退役，本文件只保留实际 wire 行为）。
+// 守卫：DS 跨轮以**上一笔已完成回合实发 wire** 为独立证据核对轨迹前缀——
+// 已发送 user 正文被改写即拒发（WIRE_HISTORY_SHORTENED/WIRE_TRAJECTORY_DIVERGED）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -32,7 +29,6 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { resolveReasoningReplayPolicy } from '../../apps/host/src/runtime/ds-replay-policy.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1', 'Use the isolated npm test runner');
 const enc = new TextEncoder();

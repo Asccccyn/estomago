@@ -84,16 +84,13 @@ export class WindowManager {
 
   // 创建并尝试激活新窗：NEW → PREPARING(+receipt) → READY → [tx 原子切换] ACTIVE | BLOCKED
   // WP3：selectionId 给出时，选集消费与激活同一事务（E07 原子提交）
-  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null; reasoningPolicy?: 'ds_tools_all_turns_v1' }): { window: WindowRow; blockedReason: string | null } {
+  createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { window: WindowRow; blockedReason: string | null } {
     const id = genId('win');
     const now = new Date().toISOString();
     tx(this.db, () => {
       this.db
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'NEW', ?, ?)")
         .run(id, o.conversationId, now, now);
-      // R2（2026-10-23）：随窗冻结 reasoning 继续态政策（schema 36）；仅显式传新政策时写，
-      // 旧窗/未传=NULL=legacy，不因升级被当前配置重标
-      if (o.reasoningPolicy) this.db.prepare('UPDATE windows SET reasoning_replay_policy = ? WHERE id = ?').run(o.reasoningPolicy, id);
     });
     this.setStatus(id, 'PREPARING');
     // Receipt：即使 blocked 也留证据；写失败本身 → candidate 终态 BLOCKED（AUD-38，不悬挂 PREPARING）
@@ -152,7 +149,7 @@ export class WindowManager {
   // 不依赖可选 HTTP callback；HTTP 与直接服务调用无法绕过
   // WP3（E07）：selectionId 给出时，选集消费（consumed+target_window_id）
   // 与窗口指针切换同一事务——新窗未就绪则选集不被消费，失败整体回滚
-  rotate(o: { expectedWindowId?: string; conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null; reasoningPolicy?: 'ds_tools_all_turns_v1' }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
+  rotate(o: { expectedWindowId?: string; conversationId: string; gate: GateResult; maxSequence: number; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { ok: true; window: WindowRow } | { ok: false; reason: string } {
     const current = this.activeWindow(o.conversationId);
     if (!current) return { ok: false, reason: '无当前活动窗口' };
     if (o.expectedWindowId && current.id !== o.expectedWindowId) return { ok: false, reason: 'ROTATION_SUPERSEDED' };
@@ -175,8 +172,6 @@ export class WindowManager {
       this.db
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'PREPARING', ?, ?)")
         .run(candidateId, o.conversationId, now, now);
-      // R2（2026-10-23）：换窗同样随窗冻结政策（同 createWindow）
-      if (o.reasoningPolicy) this.db.prepare('UPDATE windows SET reasoning_replay_policy = ? WHERE id = ?').run(o.reasoningPolicy, candidateId);
     });
     let handoffPath: string;
     try {
