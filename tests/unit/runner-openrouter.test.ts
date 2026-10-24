@@ -298,7 +298,7 @@ test('previousPayload：前缀改写被 P2 断言拦截', async () => {
   const prev = buildOrPayload({ model: MODEL, sessionId: 'es-fixed-session', messages: [{ role: 'user', content: [{ type: 'text', text: '旧正文' }] }] });
   const result = await runOnce(transport, [], { previousPayload: prev });
   assert.equal(result.outcome, 'error');
-  assert.equal(result.errorCode, 'HISTORY_CHANGED:0');
+  assert.equal(result.errorCode, 'WIRE_TRAJECTORY_DIVERGED:content@0');
 });
 
 test('选择门：型号/凭据缺失如实 blocked；不猜默认型号', () => {

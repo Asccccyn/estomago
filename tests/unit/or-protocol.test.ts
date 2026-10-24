@@ -62,9 +62,9 @@ test('assertAppendOnly：历史只追加、profile 段不变；缓存标记差�
   assert.equal(assertAppendOnly(base, grown), true);
   // 历史被改写 → 拒绝
   const mutated = buildOrPayload({ model: MODEL, sessionId: 'es-1', messages: [msg('a'), msg('B'), msg('c')], tools: [{ function: { name: 't' } }] });
-  assert.throws(() => assertAppendOnly(base, mutated), /HISTORY_CHANGED/);
+  assert.throws(() => assertAppendOnly(base, mutated), /WIRE_TRAJECTORY_DIVERGED:content/);
   // 历史变短 → 拒绝
-  assert.throws(() => assertAppendOnly(grown, base), /HISTORY_SHORTENED/);
+  assert.throws(() => assertAppendOnly(grown, base), /WIRE_TRAJECTORY_DIVERGED:shortened/);
   // 模型/工具变化 → 前缀 profile 变化
   const modelChanged = buildOrPayload({ model: 'anthropic/claude-test-2', sessionId: 'es-1', messages: [msg('a'), msg('b')] });
   assert.throws(() => assertAppendOnly(base, modelChanged), /PREFIX_PROFILE_CHANGED:model/);

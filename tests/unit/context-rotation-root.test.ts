@@ -342,7 +342,7 @@ test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampe
   assert.ok(assertAppendOnly(old, next));
   assert.equal(next.messages[0]!.content, old.messages[0]!.content);
   next.messages[0]!.content = 'rewritten history';
-  assert.throws(() => assertAppendOnly(old, next), /HISTORY_CHANGED/);
+  assert.throws(() => assertAppendOnly(old, next), /WIRE_TRAJECTORY_DIVERGED:content/);
 });
 
 test('R18: SDK cannot silently consume a nonempty role-preserving selection', async () => {

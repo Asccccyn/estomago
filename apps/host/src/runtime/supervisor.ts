@@ -174,7 +174,7 @@ export class TurnSupervisor {
         // 整合（2026-10-24）：合同化守卫（wire 锚/append-only/政策窗）在主流程 throw 的
         // 结构化错误码透传到 attempt（此前一律 RUNNER_CRASHED，测试与排障分不清类型）
         const raw = String((err as Error).message ?? err);
-        const contractCode = /^(WIRE_TRAJECTORY_DIVERGED|WIRE_HISTORY_SHORTENED|HISTORY_CHANGED|HISTORY_SHORTENED|PREFIX_PROFILE_CHANGED|DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW)/.exec(raw)?.[1];
+        const contractCode = /^(WIRE_TRAJECTORY_DIVERGED|WIRE_HISTORY_SHORTENED|HISTORY_CHANGED|HISTORY_SHORTENED|PREFIX_PROFILE_CHANGED|DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW)/.exec(raw)?.[1]; // 旧码=历史 DB 行兼容（2026-10-24 起篡改统一 WIRE_TRAJECTORY_DIVERGED）
         this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), raw: String((err as Error).message ?? err).slice(0,180), ...(contractCode ? { contract_code: contractCode } : {}) });
         this.failTurnQuietly(turnId, contractCode ?? 'RUNNER_CRASHED');
       } finally {
@@ -2375,7 +2375,7 @@ export class TurnSupervisor {
         try { const parsed = JSON.parse(wireRow.payload_wire_json) as { messages?: unknown }; if (Array.isArray(parsed.messages)) wireMsgs = parsed.messages as Array<Record<string, unknown>>; } catch { wireMsgs = null; }
         if (wireMsgs) {
           const trajSide = [...orTraj.messages, ...catchupMessages] as Array<Record<string, unknown>>;
-          if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_HISTORY_SHORTENED:${wireMsgs.length}>${trajSide.length}`);
+          if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_TRAJECTORY_DIVERGED:shortened@wire${wireMsgs.length}>traj${trajSide.length}`);
           // RE-10（2026-10-24 返修）：完整前缀核对——role 之外，content（含旧 user 正文）、
           // tool_calls 参数、tool_call_id、name 等逐字段比对（上轮反例：已发送 user 内容被改写
           // 成 CORRUPTED…仍照发）。两侧按 DS 发送同态归一：块数组拍平为文本（镜像

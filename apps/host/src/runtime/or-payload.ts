@@ -143,9 +143,12 @@ export function assertAppendOnly(previous: Record<string, unknown>, current: Rec
   }
   const pm = p.messages as OrMessage[];
   const cm = c.messages as OrMessage[];
-  requireThat(cm.length >= pm.length, 'HISTORY_SHORTENED');
+  // 她 2026-10-24 裁定④：历史篡改故障语义与组装期 wire 守卫统一为
+  // WIRE_TRAJECTORY_DIVERGED（shortened/content@i）——检查位置由调用层
+  // 日志与抛点区分；PREFIX_PROFILE_CHANGED 是独立不变式（profile 段），保留原名
+  requireThat(cm.length >= pm.length, 'WIRE_TRAJECTORY_DIVERGED:shortened');
   for (let i = 0; i < pm.length; i++) {
-    requireThat(JSON.stringify(pm[i]) === JSON.stringify(cm[i]), `HISTORY_CHANGED:${i}`);
+    requireThat(JSON.stringify(pm[i]) === JSON.stringify(cm[i]), `WIRE_TRAJECTORY_DIVERGED:content@${i}`);
   }
   return true;
 }
