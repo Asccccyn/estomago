@@ -46,8 +46,12 @@ for (const symbol of ['𠮷', '\u0000']) test('R3 model projection budget for '+
  assert.ok(projectionBytes<=8192, `serialized projection ${projectionBytes} > 8192`);
  }finally{f.close();}
 });
+// 她 1024 裁定：3/4 原夹具未发布消息（与 6/7 草稿拒绝互斥）——测试问题在夹具不在产品；
+// 改为合法源（发布当前修订语音附件）后断言原样：预算分页在合法源上成立。
 for (const symbol of ['𠮷', '\u0000']) test('R3 tool page serialized JSON budget for '+JSON.stringify(symbol),async()=>{
- const f=fixture();try{const a=await f.createWithTranscript(symbol.repeat(3000));const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());assert.equal(r.ok,true);const bytes=Buffer.byteLength(JSON.stringify(r.output));console.log(JSON.stringify({case:'tool_budget',symbol,bytes}));assert.ok(bytes<=8192,`serialized page ${bytes} > 8192`);}finally{f.close();}
+ const f=fixture();try{const a=await f.createWithTranscript(symbol.repeat(3000));
+ f.messages.publishAssistantMessage({conversationId:'a',turnId:'synthetic-budget',content:'',kind:'voice',clientMessageId:`budget-${symbol.length}`,attachments:[{asset_id:a.id,presentation:'voice'}]});
+ const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());assert.equal(r.ok,true);const bytes=Buffer.byteLength(JSON.stringify(r.output));console.log(JSON.stringify({case:'tool_budget',symbol,bytes}));assert.ok(bytes<=8192,`serialized page ${bytes} > 8192`);}finally{f.close();}
 });
 test('R3 equal-length transcript revision rejects prior cursor',async()=>{
  const f=fixture();try{const a=await f.createWithTranscript('甲'.repeat(5000));const first=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());const cursor=first.output.next_cursor;

@@ -581,7 +581,7 @@ export function buildHostTools(): HostToolSpec[] {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请（取消后自然地跟她说一两句，比如改约）' },
+          action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel', 'accept_call', 'decline_call'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（拒绝后在同一回复里对她说一句为什么/改约——她会看到）' },
           ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
         },
         required: ['action'], additionalProperties: false,
@@ -1064,7 +1064,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null; supervisorRef?: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null; supervisorRef?: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -1097,9 +1097,9 @@ export class HostToolExecutor {
   private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
   private sirenCall: import('../integrations/siren/adapter.ts').SirenAdapter | null;
   /** 拒接/取消留言调度（2026-10-24）：程序事实轮入口（可选注入；未注入=取消不触发说话轮，如实降级） */
-  private supervisorRef: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null = null;
+  private supervisorRef: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null = null;
   /** app-context 后置注入（tools 先于 supervisor 构造） */
-  setSupervisorRef(s: { submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): unknown } | null): void { this.supervisorRef = s; }
+  setSupervisorRef(s: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null): void { this.supervisorRef = s; }
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
@@ -1391,19 +1391,52 @@ export class HostToolExecutor {
   /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，
    *  不铺细碎工具）。invite=当前会话创建 Siren 来电邀请（服务端过期；拒接≠未接）；
    *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
-  private async callControl(args: { action: 'invite' | 'status' | 'end' | 'cancel'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.sirenCall || this.sirenCall.status !== 'available') return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
+  private async callControl(args: { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    // 她→他的接/拒只动本地 dial_requests（decline）/或自带 Siren 不可达的如实分支（accept）——
+    // 不设全局 Siren 门；他→她的 invite/status/cancel/end 仍需 Siren 邀请服务
+    if (args.action !== 'accept_call' && args.action !== 'decline_call' && (!this.sirenCall || this.sirenCall.status !== 'available')) {
+      return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
+    }
     try {
       if (args.action === 'invite') {
-        const invite = await this.sirenCall.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
+        const invite = await this.sirenCall!.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
         if (!invite) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
         return { ok: true, output: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
       }
+      if (args.action === 'accept_call' || args.action === 'decline_call') {
+        const req = this.db.prepare("SELECT * FROM dial_requests WHERE conversation_id=? AND state='pending' ORDER BY created_at DESC LIMIT 1").get(ctx.roomId) as { id: string } | undefined;
+        if (!req) return { ok: false, output: { error_code: 'NO_PENDING_DIAL', detail: '没有等待中的通话请求（可能已过期或已处理）' } };
+        if (args.action === 'decline_call') {
+          this.db.prepare("UPDATE dial_requests SET state='declined', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), req.id);
+          return { ok: true, output: { request_id: req.id, state: 'declined', note: '已拒绝。她那边会显示你没接；你现在回复里说的话她会看到——说一句为什么或改约。' } };
+        }
+        // accept_call：est 建 Siren 通话，连接信息挂到请求上（前端轮询取走）
+        const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
+        if (!sirenBase) return { ok: false, output: { error_code: 'SIREN_UNCONFIGURED', detail: 'Siren 通话服务未配置（无法接听）' } };
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
+        if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
+        let sirenRes: Response;
+        try {
+          sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: ctx.roomId }), signal: AbortSignal.timeout(5000) });
+        } catch {
+          return { ok: false, output: { error_code: 'SIREN_UNREACHABLE', detail: '通话服务不可达，稍后可再试 accept_call' } };
+        }
+        if (!sirenRes.ok) return { ok: false, output: { error_code: 'SIREN_CALL_FAILED', detail: `建呼失败（${sirenRes.status}）` } };
+        const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string };
+        if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
+          return { ok: false, output: { error_code: 'SIREN_CONTRACT_INVALID' } };
+        }
+        const upd = this.db.prepare("UPDATE dial_requests SET state='accepted', ws_url=?, call_token=?, call_id=?, updated_at=? WHERE id=? AND state='pending'").run(created.ws_url, created.token, created.call_id, new Date().toISOString(), req.id);
+        if (upd.changes === 0) return { ok: false, output: { error_code: 'DIAL_SUPERSEDED', detail: '她已取消或请求已过期' } };
+        this.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(created.call_id, ctx.roomId, new Date().toISOString());
+        return { ok: true, output: { request_id: req.id, state: 'accepted', call_id: created.call_id, note: '已接听；她那边的电话面板马上会接通，正常和她说话即可。' } };
+      }
       if (args.action === 'cancel') {
-        const st = await this.sirenCall.listInvites(ctx.roomId);
+        const st = await this.sirenCall!.listInvites(ctx.roomId);
         const active = st?.active as { invite_id?: string } | null | undefined;
         if (!st || !active || typeof active.invite_id !== 'string') return { ok: false, output: { error_code: 'NO_PENDING_INVITE', detail: '没有待取消的邀请（可能已过期或已被处理）' } };
-        const out = await this.sirenCall.cancelInvite(active.invite_id);
+        const out = await this.sirenCall!.cancelInvite(active.invite_id);
         if ((out?.['state'] as string | undefined) !== 'cancelled') return { ok: false, output: { error_code: 'SIREN_INVITE_TRANSITION_FAILED', detail: `终态=${String(out?.['state'] ?? 'unknown')}` } };
         // 拒接留言调度②（2026-10-24）：他取消 → 附带说话轮（说明/改约落本会话）
         this.supervisorRef?.submitProgramFactTurn(ctx.roomId, 'invite_cancelled',
@@ -1416,11 +1449,11 @@ export class HostToolExecutor {
         // est 的 voice_calls 终态由前端面板挂断/收口链处理（本动作不伪造已结束）
         const row = this.db.prepare("SELECT call_id FROM voice_calls WHERE conversation_id=? AND state='active' ORDER BY started_at DESC LIMIT 1").get(ctx.roomId) as { call_id: string } | undefined;
         if (!row) return { ok: false, output: { error_code: 'NO_ACTIVE_CALL', detail: '当前没有进行中的通话' } };
-        const out = await this.sirenCall.requestHangup(row.call_id);
+        const out = await this.sirenCall!.requestHangup(row.call_id);
         if (!out) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
         return { ok: true, output: { call_id: row.call_id, accepted: out.accepted, note: '结束意图已接受：等最后一段说完（约15秒窗口），她开口则取消；不是立即挂断' } };
       }
-      const list = await this.sirenCall.listInvites(ctx.roomId);
+      const list = await this.sirenCall!.listInvites(ctx.roomId);
       if (!list) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
       return { ok: true, output: { active: list.active, recent: list.recent.slice(0, 3) } };
     } catch (err) {

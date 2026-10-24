@@ -178,7 +178,7 @@ export class TurnSupervisor {
   /** 拒接/取消留言调度（2026-10-24）：程序事实轮——宿主注入事实（她拒接了你的来电/你取消了自己的来电），
    *  不是用户发言（不写 messages）；走同一串行链与正常发布链，char的回应落本会话。
    *  dedupe_key（invite+action）幂等：前端重试/重复触发只跑一轮。 */
-  submitProgramFactTurn(conversationId: string, kind: 'invite_declined' | 'invite_cancelled', factText: string, dedupeKey: string): { turnId: string } | { deduplicated: true } {
+  submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): { turnId: string } | { deduplicated: true } {
     const d = this.d;
     const existing = d.db.prepare('SELECT turn_id FROM program_fact_turns WHERE dedupe_key = ?').get(dedupeKey) as { turn_id: string } | undefined;
     if (existing) return { deduplicated: true };

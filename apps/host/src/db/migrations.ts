@@ -1281,4 +1281,18 @@ CREATE TABLE program_fact_turns(
  created_at TEXT NOT NULL
 );
 ` });
+// 41（2026-10-24，她发起通话·char可拒）：dial_requests——她→他方向的通话请求
+//（区别于 Siren 邀请=他→她来电）。pending→accepted(带连接)|declined|cancelled|expired；
+// 惰性过期（GET current 判定）；declined 时他的话=拒绝轮正文自然落会话。
+MIGRATIONS.push({ version: 41, name: 'dial_requests', sql: `
+CREATE TABLE dial_requests(
+ id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('pending','accepted','declined','cancelled','expired')),
+ ttl_ms INTEGER NOT NULL,
+ ws_url TEXT, call_token TEXT, call_id TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

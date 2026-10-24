@@ -17,36 +17,56 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
   const clientRef = useRef<CallClient | null>(null);
   const callIdRef = useRef<string | null>(null);
 
+  // 她→他通话请求（2026-10-24）：先请char接/拒，再按状态走
   useEffect(() => {
     let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let dialId: string | null = null;
+    const cleanupDial = (): void => { if (dialId) void fetch(`/api/v1/calls/dial/${encodeURIComponent(dialId)}`, { method: 'DELETE' }); };
+    const connectCall = (wsUrl: string, token: string, callId: string): void => {
+      callIdRef.current = callId;
+      const client = new CallClient(wsUrl, token, {
+        onState: (s) => { if (s === 'ended') setPhase('ended'); else if (s !== 'connecting') setPhase('active'); },
+        onPartial: (t) => setSubtitle(t),
+        onFinal: (t) => { setTranscript((prev) => [...prev.slice(-8), `她：${t}`]); setSubtitle(''); },
+        onReply: (t) => { setTranscript((prev) => [...prev.slice(-8), `他：${t}`]); },
+        onNotice: (t) => setSubtitle(t),
+        onError: (m) => { setError(m); setPhase('error'); },
+        onMicLevel: (rms) => setMicLevel(Math.min(1, rms * 12)),
+      });
+      clientRef.current = client;
+      void client.connect();
+    };
+    const poll = async (): Promise<void> => {
+      if (cancelled) return;
+      try {
+        const res = await fetch('/api/v1/calls/dial/current', { cache: 'no-store' });
+        const cur = await res.json() as { state?: string; ws_url?: string; token?: string; call_id?: string; request_id?: string };
+        if (cancelled) return;
+        if (cur.request_id) dialId = cur.request_id;
+        if (cur.state === 'accepted' && cur.ws_url && cur.token && cur.call_id) { dialId = null; connectCall(cur.ws_url, cur.token, cur.call_id); return; }
+        if (cur.state === 'declined') { setPhase('ended'); setError('他没有接——他说的话在聊天里'); setTimeout(onExit, 1600); return; }
+        if (cur.state === 'expired') { setPhase('ended'); setError('他没有应答'); setTimeout(onExit, 1600); return; }
+        pollTimer = setTimeout(() => void poll(), 1500);
+      } catch { pollTimer = setTimeout(() => void poll(), 2000); }
+    };
     void (async () => {
       setPhase('connecting');
       try {
-        const res = await fetch('/api/v1/calls', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversation_id: conversationId }),
-        });
-        if (!res.ok) throw new Error(`建呼失败（${res.status}）`);
-        const created = await res.json() as { call_id: string; ws_url: string; token: string };
+        const res = await fetch('/api/v1/calls/dial', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const created = await res.json() as { request_id?: string; state?: string; ws_url?: string; token?: string; call_id?: string };
         if (cancelled) return;
-        callIdRef.current = created.call_id;
-        const client = new CallClient(created.ws_url, created.token, {
-          onState: (s) => { if (s === 'ended') setPhase('ended'); else if (s !== 'connecting') setPhase('active'); },
-          onPartial: (t) => setSubtitle(t),
-          onFinal: (t) => { setTranscript((prev) => [...prev.slice(-8), `她：${t}`]); setSubtitle(''); },
-          onReply: (t) => { setTranscript((prev) => [...prev.slice(-8), `他：${t}`]); },
-          onNotice: (t) => setSubtitle(t),
-          onError: (m) => { setError(m); setPhase('error'); },
-          onMicLevel: (rms) => setMicLevel(Math.min(1, rms * 12)),
-        });
-        clientRef.current = client;
-        await client.connect();
+        if (created.state === 'accepted' && created.ws_url) { connectCall(created.ws_url, created.token!, created.call_id!); return; }
+        if (created.request_id) dialId = created.request_id;
+        void poll(); // 等char接/拒
       } catch (err) {
         if (!cancelled) { setError(String((err as Error).message ?? err)); setPhase('error'); }
       }
     })();
     return () => {
       cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      cleanupDial(); // 等待中关闭面板=取消请求（他 accept 时会得到 DIAL_SUPERSEDED）
       void clientRef.current?.hangup();
       if (callIdRef.current) void fetch(`/api/v1/calls/${encodeURIComponent(callIdRef.current)}`, { method: 'DELETE' });
     };
@@ -55,6 +75,7 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
   const hangup = (): void => {
     void clientRef.current?.hangup();
     if (callIdRef.current) void fetch(`/api/v1/calls/${encodeURIComponent(callIdRef.current)}`, { method: 'DELETE' });
+    else void fetch('/api/v1/calls/dial/current', { cache: 'no-store' }).then((r) => r.json()).then((c: { request_id?: string }) => { if (c.request_id) void fetch(`/api/v1/calls/dial/${encodeURIComponent(c.request_id)}`, { method: 'DELETE' }); }).catch(() => undefined);
     setPhase('ended');
     setTimeout(onExit, 500);
   };
@@ -69,7 +90,7 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-between bg-[#141310] px-6 py-10 text-[#f5f2ea]">
       <div className="mt-6 text-center">
-        <div className="text-[15px] opacity-70">{phase === 'connecting' ? '正在接通…' : phase === 'active' ? '通话中' : phase === 'ended' ? '已结束' : '连接失败'}</div>
+        <div className="text-[15px] opacity-70">{phase === 'connecting' ? '正在叫char…（他可以接听或拒绝）' : phase === 'active' ? '通话中' : phase === 'ended' ? '已结束' : '连接失败'}</div>
         {error && <div className="mt-2 max-w-sm text-[13px] text-[#e08d6d]">{error}</div>}
       </div>
       <div className="flex w-full max-w-md flex-1 flex-col justify-end gap-1 overflow-hidden pb-6">
