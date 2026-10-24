@@ -1,0 +1,14 @@
+{
+  "policy": "07_真实使用测试政策.md",
+  "entries": [],
+  "entryShape": {
+    "path": "tests/unit/example.test.ts",
+    "testNames": [],
+    "category": "NEEDS_CLASSIFICATION",
+    "reachableSetup": "",
+    "normalUserAction": "",
+    "risk": "",
+    "decision": "NOT_SELECTED",
+    "evidence": ""
+  }
+}

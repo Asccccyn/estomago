@@ -1,0 +1,204 @@
+{
+  "packageVersion": "1.0",
+  "format": "execution-specification-not-applied-patch",
+  "entrypoint": "00_给GLM53Flash_从这里开始.md",
+  "productTestsExecuted": false,
+  "files": [
+    {
+      "path": "00_给GLM53Flash_从这里开始.md",
+      "bytes": 5532
+    },
+    {
+      "path": "01_不可改动的裁定.md",
+      "bytes": 7643
+    },
+    {
+      "path": "02_本机基线与定位.md",
+      "bytes": 6174
+    },
+    {
+      "path": "03_目标结构与依赖方向.md",
+      "bytes": 5750
+    },
+    {
+      "path": "04_接口合同与执行算法.md",
+      "bytes": 8716
+    },
+    {
+      "path": "05_组合调用与所有权.md",
+      "bytes": 6014
+    },
+    {
+      "path": "06_缓存与上下文保真.md",
+      "bytes": 2908
+    },
+    {
+      "path": "07_真实使用测试政策.md",
+      "bytes": 6026
+    },
+    {
+      "path": "08_验收与交付.md",
+      "bytes": 3714
+    },
+    {
+      "path": "09_集成与发布候选.md",
+      "bytes": 2956
+    },
+    {
+      "path": "README.md",
+      "bytes": 1887
+    },
+    {
+      "path": "contracts/acceptance.json",
+      "bytes": 14027
+    },
+    {
+      "path": "contracts/change-scope.json",
+      "bytes": 4827
+    },
+    {
+      "path": "contracts/curated-test-candidates.json",
+      "bytes": 6948
+    },
+    {
+      "path": "contracts/reference-contracts.ts",
+      "bytes": 5790
+    },
+    {
+      "path": "contracts/tool-ownership.json",
+      "bytes": 19314
+    },
+    {
+      "path": "evidence/PACK_SELF_CHECK.json",
+      "bytes": 17819
+    },
+    {
+      "path": "evidence/PACK_SELF_CHECK.md",
+      "bytes": 784
+    },
+    {
+      "path": "reference/来源与Luna说明.md",
+      "bytes": 2041
+    },
+    {
+      "path": "reference/第一条能力_oido_get_逐步迁移.md",
+      "bytes": 4653
+    },
+    {
+      "path": "review/00_共同复核规则.md",
+      "bytes": 1521
+    },
+    {
+      "path": "review/01_GLM53复核.md",
+      "bytes": 1558
+    },
+    {
+      "path": "review/02_Astra复核.md",
+      "bytes": 1911
+    },
+    {
+      "path": "review/03_Codex审计限制.md",
+      "bytes": 1353
+    },
+    {
+      "path": "scripts/README.md",
+      "bytes": 2385
+    },
+    {
+      "path": "scripts/check_boundaries.mjs",
+      "bytes": 6660
+    },
+    {
+      "path": "scripts/check_change_scope.py",
+      "bytes": 2160
+    },
+    {
+      "path": "scripts/preflight.py",
+      "bytes": 4260
+    },
+    {
+      "path": "scripts/validate_delivery.py",
+      "bytes": 2989
+    },
+    {
+      "path": "templates/BASELINE.md",
+      "bytes": 286
+    },
+    {
+      "path": "templates/BLOCKERS.md",
+      "bytes": 302
+    },
+    {
+      "path": "templates/GLM_DELIVERY.md",
+      "bytes": 557
+    },
+    {
+      "path": "templates/MIGRATION_MATRIX.md",
+      "bytes": 409
+    },
+    {
+      "path": "templates/PROGRESS.md",
+      "bytes": 280
+    },
+    {
+      "path": "templates/RESUME.md",
+      "bytes": 322
+    },
+    {
+      "path": "templates/REVIEW_FINDINGS.md",
+      "bytes": 321
+    },
+    {
+      "path": "templates/TEST_INVENTORY.json",
+      "bytes": 313
+    },
+    {
+      "path": "workcards/INDEX.md",
+      "bytes": 1161
+    },
+    {
+      "path": "workcards/P00_基线与隔离.md",
+      "bytes": 2593
+    },
+    {
+      "path": "workcards/P01_叶类型与等价基线.md",
+      "bytes": 2508
+    },
+    {
+      "path": "workcards/P02_注册表接入第一条真实能力.md",
+      "bytes": 2999
+    },
+    {
+      "path": "workcards/P03_语音深听与跨模块组合.md",
+      "bytes": 3180
+    },
+    {
+      "path": "workcards/P04_记忆与其他工具按域迁移.md",
+      "bytes": 3614
+    },
+    {
+      "path": "workcards/P05_消息生命周期与同轮上下文.md",
+      "bytes": 2843
+    },
+    {
+      "path": "workcards/P06_唤醒保温与统一执行边界.md",
+      "bytes": 2678
+    },
+    {
+      "path": "workcards/P07_HTTP装配与模块启停.md",
+      "bytes": 2185
+    },
+    {
+      "path": "workcards/P08_真实场景与扩展演练.md",
+      "bytes": 2054
+    },
+    {
+      "path": "workcards/P09_旧接线退役与防回退.md",
+      "bytes": 2048
+    },
+    {
+      "path": "workcards/P10_冻结交付与双人复核.md",
+      "bytes": 1655
+    }
+  ]
+}

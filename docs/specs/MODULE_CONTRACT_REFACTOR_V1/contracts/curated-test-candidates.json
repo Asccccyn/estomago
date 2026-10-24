@@ -1,0 +1,243 @@
+{
+  "warning": "仅文件导航。必须逐项分类再运行；未审不能当白名单。全仓无选择器npm test不在默认范围。",
+  "candidates": [
+    {
+      "path": "tests/unit/tool-discovery.test.ts",
+      "suggestedPhase": "P01",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/tool-discovery-supervisor.test.ts",
+      "suggestedPhase": "P01",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/tool-initial-visible.test.ts",
+      "suggestedPhase": "P01",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/model-wire-measurement.test.ts",
+      "suggestedPhase": "P01",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/voice-hearing.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/voice-transcription.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/voice-ingress-ndjson.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/joint-voice-audit.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/oido-facade-four-tools.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/oido-delete-propagation.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/reaudit-facade-lifecycle.test.ts",
+      "suggestedPhase": "P03",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/hold-quote.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/wp2-recall-next.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/recall-projection.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/recall-date-scope.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/mariposa-archive-sync.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/review-r05-episode-tools.test.ts",
+      "suggestedPhase": "P04",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/surfacing-core.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/surfacing-events.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/surfacing-seam.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/surfacing-openrouter.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/joint-audit-surfacing.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/joint-audit-frontend-lifecycle.test.ts",
+      "suggestedPhase": "P05",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/wake-keepwarm.test.ts",
+      "suggestedPhase": "P06",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/keepwarm-sleep.test.ts",
+      "suggestedPhase": "P06",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/full-audit-wake.test.ts",
+      "suggestedPhase": "P06",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/full-audit-wake-wire.test.ts",
+      "suggestedPhase": "P06",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/full-audit-tool-budget.test.ts",
+      "suggestedPhase": "P06",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/joint-audit-media-lifecycle.test.ts",
+      "suggestedPhase": "P07",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/tool-lifecycle.test.ts",
+      "suggestedPhase": "P07",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/or-cache.test.ts",
+      "suggestedPhase": "P08",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/or-rotation.test.ts",
+      "suggestedPhase": "P08",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/context-rotation-root.test.ts",
+      "suggestedPhase": "P08",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    },
+    {
+      "path": "tests/unit/wp7-selection-state-machine.test.ts",
+      "suggestedPhase": "P08",
+      "classification": "NEEDS_CLASSIFICATION",
+      "selectedTestNames": [],
+      "reason": null
+    }
+  ]
+}
