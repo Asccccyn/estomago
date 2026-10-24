@@ -10,8 +10,9 @@ import { buildPaths } from '../apps/host/src/config/paths.ts';
 import { CapabilityRegistry } from '../apps/host/src/capabilities/registry.ts';
 import { registerOidoCapabilities } from '../apps/host/src/modules/oido/module.ts';
 import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repository.ts';
-import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module.ts';
+import { registerMemoryCapabilities } from '../apps/host/src/modules/memory/module.ts';
 import { registerConversationCapabilities } from '../apps/host/src/modules/conversation/module.ts';
+import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -106,26 +107,39 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// P03：测试装配镜像生产——已迁能力注册表（oído+voice 域）。旧测试夹具构造执行器后调用本助手
-// 接线，断言不变；生产由 app-context 完成同一登记。sirenCall/programFacts 可选（通话用例夹具传）。
+// P03/P04：测试装配镜像生产——已迁能力注册表（oído/memory/conversation/voice 域）。
+// 依赖从执行器实例反射读取（生产装配的同一份依赖）；调用点传入的 opts 仅覆盖
+// oído/sirenCall/programFacts，其余字段忽略（不要求调用方重复收集依赖表达式）。
 export function wireOidoCapabilitiesForTest(
   executor: object,
-  deps: { db: Db; oido: unknown; media?: unknown; sirenCall?: unknown; programFacts?: unknown; messages?: unknown; events?: unknown; archiveSync?: unknown },
+  opts: { oido?: unknown; sirenCall?: unknown; programFacts?: unknown } = {},
 ): void {
+  const e = executor as Record<string, unknown>;
+  const db = e.db as Db;
   const registry = new CapabilityRegistry();
+  const oido = (opts.oido !== undefined ? opts.oido : e.oido) ?? null;
   registerOidoCapabilities(registry, {
-    db: deps.db, oido: deps.oido as never, sources: new OidoSourceRepository(deps.db),
-    audio: (deps.media ?? null) as never,
-    artifacts: (deps.media ?? null) as never,
+    db, oido: oido as never, sources: new OidoSourceRepository(db),
+    audio: (e.media ?? null) as never,
+    artifacts: (e.media ?? null) as never,
   });
-  if (deps.sirenCall !== undefined || deps.programFacts !== undefined) {
+  const memoryService = registerMemoryCapabilities(registry, {
+    db, tz: (e.tz ?? null) as string | null, mariposa: (e.mariposa ?? null) as never,
+    surfaceDetailClient: (e.surfaceDetailClient ?? null) as never,
+    reviews: e.reviews as never, checkpoint: e.checkpoint as never,
+    archiveSync: (e.archiveSync ?? null) as never,
+  });
+  registerConversationCapabilities(registry, {
+    db, tz: (e.tz ?? null) as string | null, messages: (e.messages ?? null) as never,
+    media: (e.media ?? null) as never, events: (e.events ?? null) as never,
+    archiveSync: (e.archiveSync ?? null) as never,
+  });
+  const sirenCall = opts.sirenCall !== undefined ? opts.sirenCall : e.sirenCall;
+  if (sirenCall !== undefined || opts.programFacts !== undefined) {
     registerVoiceCapabilities(registry, {
-      db: deps.db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
+      db, sirenCall: (sirenCall ?? null) as never, programFacts: (opts.programFacts ?? null) as never,
     });
   }
-  registerConversationCapabilities(registry, {
-    db: deps.db, messages: (deps.messages ?? null) as never, media: (deps.media ?? null) as never,
-    events: (deps.events ?? null) as never, archiveSync: (deps.archiveSync ?? null) as never,
-  });
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
+  (executor as { setMemoryRecovery(s: unknown): void }).setMemoryRecovery(memoryService);
 }

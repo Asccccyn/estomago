@@ -9,7 +9,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -32,7 +32,8 @@ function makeTools(calls: ForwardCall[], respond: (c: ForwardCall) => { status: 
       return respond(call);
     },
   };
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), wishstar });
+  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), wishstar })
+  wireOidoCapabilitiesForTest(tools, {});;
   return { tools, db };
 }
 
@@ -88,7 +89,8 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
   const db2 = openDatabase(path.join(root2, 'data'));
   migrate(db2, sha256Hex);
   try {
-    const bare = new HostToolExecutor({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) });
+    const bare = new HostToolExecutor({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) })
+  wireOidoCapabilitiesForTest(bare, {});;
     const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k', __tool_call_id: 'c' }, CTX as never);
     assert.equal((out2.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
   } finally { db2.close(); }

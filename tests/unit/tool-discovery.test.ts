@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {makeDb} from '../helpers.ts';
+import {makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import {buildConfig} from '../../apps/host/src/config/schema.ts';
 import {MessageService} from '../../apps/host/src/messages/service.ts';
 import {HostToolExecutor,buildHostTools} from '../../apps/host/src/runtime/host-tools.ts';
@@ -17,7 +17,8 @@ function fixture(t:any){
  const sub=messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成输入',clientMessageId:'fixture'});
  const calls:any[]=[];
  const mariposa=new MariposaClient({transport:async(cap,payload)=>{calls.push({cap,payload});return {ok:true,result:{operation_id:payload.operation_id,memory_id:'m1',version:1,binding_ids:[],committed_at:'2026-10-21T12:00:00Z'}}}});
- const executor=new HostToolExecutor({db,mariposa,reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)});
+ const executor=new HostToolExecutor({db,mariposa,reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
+  wireOidoCapabilitiesForTest(executor, {});;
  const ctx={roomId:'c1',windowId:'w1',turnId:sub.turnId,requestId:'req1',purpose:'chat' as const,activeReviewId:null,seenSequence:sub.message.sequence,seenMessages:[]};
  const persist=(tools:any[],messages:any[]=[])=>db.prepare("INSERT OR REPLACE INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,sent_at,created_at) VALUES ('req1','w1',?,?,'chat','[]',?,'now','now')").run(sub.attemptId,sub.turnId,JSON.stringify({tools,messages}));
  return {db,executor,ctx,calls,persist};

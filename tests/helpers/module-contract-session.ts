@@ -113,6 +113,9 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  // P04：装配镜像生产——已迁域接 registry（依赖由执行器实例反射读取）
+  const { wireOidoCapabilitiesForTest } = await import('../helpers.ts');
+  wireOidoCapabilitiesForTest(tools, {});
   const trajectory = new WindowTrajectoryService(db);
   const media = new MediaService(db, path.join(root, 'media'), config);
   const transport: OrTransport = async (payload) => {

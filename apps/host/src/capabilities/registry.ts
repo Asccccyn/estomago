@@ -33,11 +33,27 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   readonly toModel: (value: O, input: I) => Record<string, unknown>;
 };
 
+/** 注册表内存储的类型擦除形态：parse 产出后按条目自身合同流转，跨条目互不调用；
+ *  类型安全由条目声明处的泛型（CapabilityDescriptor<I,O>）承担，擦除仅在注册表边界。 */
+type ErasedDescriptor = {
+  readonly id: string;
+  readonly owner: string;
+  readonly baselineOrder: number;
+  readonly definition: HostToolSpec;
+  readonly memoryOnlyAllowed: boolean;
+  readonly label: string;
+  readonly silent: boolean;
+  readonly quote: (db: Db) => BackgroundToolQuote;
+  readonly parse: (rawArgs: Record<string, unknown>, frozenSpec: HostToolSpec) => CapabilityParseResult<any>;
+  readonly run: (input: any, ctx: ToolExecContext) => Promise<CapabilityOutcome<any>>;
+  readonly toModel: (value: any, input: any) => Record<string, unknown>;
+};
+
 export class CapabilityRegistry {
-  private caps = new Map<string, CapabilityDescriptor>();
+  private caps = new Map<string, ErasedDescriptor>();
 
   /** 显式登记；重复名/缺件/定义名不符/顺序非法一律拒绝（fail-fast，不静默）。 */
-  register(descriptor: CapabilityDescriptor): void {
+  register(descriptor: CapabilityDescriptor<any, any>): void {
     const id = descriptor?.id;
     if (typeof id !== 'string' || id.length === 0) throw new Error('CAPABILITY_ID_INVALID');
     if (this.caps.has(id)) throw new Error(`CAPABILITY_ALREADY_REGISTERED:${id}`);
@@ -53,7 +69,7 @@ export class CapabilityRegistry {
     if (typeof descriptor.memoryOnlyAllowed !== 'boolean' || typeof descriptor.silent !== 'boolean') {
       throw new Error(`CAPABILITY_FLAG_INVALID:${id}`);
     }
-    this.caps.set(id, descriptor as CapabilityDescriptor);
+    this.caps.set(id, descriptor);
   }
 
   has(id: string): boolean {
@@ -61,12 +77,12 @@ export class CapabilityRegistry {
   }
 
   /** 显式缺失拒绝：未登记返回 null，由调用方沿现行"未迁移集合"路由，不得回退旧实现。 */
-  get(id: string): CapabilityDescriptor | null {
+  get(id: string): ErasedDescriptor | null {
     return this.caps.get(id) ?? null;
   }
 
   /** 架构检查/装配清单用：按 baselineOrder 确定性枚举。 */
-  listByBaselineOrder(): CapabilityDescriptor[] {
+  listByBaselineOrder(): ErasedDescriptor[] {
     return [...this.caps.values()].sort((a, b) => a.baselineOrder - b.baselineOrder);
   }
 

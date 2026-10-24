@@ -10,7 +10,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -25,7 +25,8 @@ function makeTools(mariposa: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   return { tools, db };
 }
 

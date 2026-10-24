@@ -30,7 +30,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -69,7 +69,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages, tools: payload.tools?.map((t: { function: { name: string } }) => t.function.name) ?? [] });

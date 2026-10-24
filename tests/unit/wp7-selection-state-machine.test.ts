@@ -38,7 +38,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'deepseek-chat';
@@ -90,7 +90,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mc = mariposa ? new MariposaClient({ transport: mariposa }) : null;
-  const tools = new HostToolExecutor({ db, mariposa: mc ?? new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: mc ?? new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');
@@ -120,7 +121,8 @@ function compose2(root: string, transport: OrTransport, TrajClass: new (db: Retu
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');

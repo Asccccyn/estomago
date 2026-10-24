@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {makeDb} from '../helpers.ts';
+import {makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import {HostToolExecutor} from '../../apps/host/src/runtime/host-tools.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
@@ -19,7 +19,8 @@ const cases=[
 test('capture actual executor output serialized exactly as supervisor tool content',async t=>{
  const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true})});
  let fixture:any={};
- const executor=new HostToolExecutor({db,mariposa:new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}),reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)});
+ const executor=new HostToolExecutor({db,mariposa:new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}),reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
+  wireOidoCapabilitiesForTest(executor, {});;
  const records=[];
  for(const c of cases){fixture=c.data;const result=await executor.execute(c.name,{...c.args,__tool_call_id:c.name},ctx);assert.equal(result.ok,true);
   const content=JSON.stringify(result.output);records.push({tool:c.name,content,bytes:Buffer.byteLength(content,'utf8')});}

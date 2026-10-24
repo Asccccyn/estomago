@@ -33,7 +33,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -102,7 +102,8 @@ function compose(root: string, transport: OrTransport, log: Array<Record<string,
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint, events });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint, events })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push(JSON.parse(JSON.stringify(payload)) as Record<string, unknown>);

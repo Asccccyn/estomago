@@ -14,7 +14,7 @@ import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot } from '../helpers.ts';
+import { tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const CTX = { roomId: 'room-live', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' } as const;
 
@@ -31,7 +31,9 @@ function tools(log: Call[], result: Record<string, unknown> | { ok: false; code:
     }
     return { ok: true, result };
   };
-  return new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  wireOidoCapabilitiesForTest(tools, {});
+  return tools;
 }
 
 test('R05：episode_apply 过白名单，宿主派生 operation_id/scope_id（模型不能自编）', async () => {

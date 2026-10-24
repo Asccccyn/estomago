@@ -33,7 +33,7 @@ import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-traj
 import { buildPreRotateReviewMessage } from '../../apps/host/src/context/review-prompts.ts';
 import { assertAppendOnly } from '../../apps/host/src/runtime/or-payload.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -59,7 +59,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     const msgs = payload.messages as Array<{ role: string; content: unknown }>;
@@ -194,7 +195,8 @@ test('F-J-38：retrospective + mood_tags 在宿主预拒（不落服务端）', 
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const reviews = new RotationReviewService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   const out = await tools.execute('memory_hold', { __tool_call_id: 'c38', original_title: '补记心情', categories: ['daily'], text: 'x', creation_mode: 'retrospective', memory_date: '2026-09-01', mood_tags: ['开心'] }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r38' });
   assert.equal(out.ok, false, '补记+当时心情=整单拒');
   assert.equal(out.output.error_code, 'HOLD_MOOD_WINDOW_REQUIRED');

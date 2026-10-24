@@ -12,7 +12,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { contextFingerprint } from '../../apps/host/src/identity/service.ts';
 import { RuntimeSettingsService, REASONING_EFFORTS } from '../../apps/host/src/runtime/runtime-settings.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 function makeDb(root: string) {
   writeApprovedIdentity(root);
@@ -130,7 +130,8 @@ function composeRt(root, seen) {
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const runner = new DeepSeekRunner({ retryMax: 0 }, async () => { gen++; seen.push('deepseek'); return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '好的')) }; });

@@ -26,7 +26,7 @@ import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-traj
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { planBoundaries, tailBoundaryOf } from '../../apps/host/src/runtime/cache-plan.ts';
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -63,7 +63,8 @@ function compose(root: string, orTransport: OrTransport) {
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: true, result: {} }) }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: true, result: {} }) }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });

@@ -29,7 +29,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -61,7 +61,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', prompt: JSON.stringify((payload.messages as Array<{ role: string }>)[0]) .slice(0, 80), sysLen: JSON.stringify(payload.messages[0]).length, full: payload.messages });
@@ -142,7 +143,8 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
     if (cap === 'memory.recall.start') { calls.push(payload); return { ok: true, result: recallResult }; }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   const out = await tools.execute('memory_recall', { __tool_call_id: 'call-r1', query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
   assert.equal(calls.length, 1);
@@ -173,7 +175,8 @@ test('G-J-01：5xx→OUTCOME_UNKNOWN；参数门拒缺 query；白名单外工�
     if (cap === 'memory.recall.start') return { ok: false, code: 'HTTP_502', httpStatus: 502 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   const out = await tools.execute('memory_recall', { __tool_call_id: 'c9', query: 'x' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' });
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_OUTCOME_UNKNOWN', '结果不明不当失败');

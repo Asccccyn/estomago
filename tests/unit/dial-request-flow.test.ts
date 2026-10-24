@@ -61,7 +61,8 @@ function compose(root: string, transport: OrTransport) {
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
-  const tools = new HostToolExecutor({ db, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   wireOidoCapabilitiesForTest(tools, { db, oido: null, programFacts: supervisor });

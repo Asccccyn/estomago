@@ -14,7 +14,7 @@ import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 99, seenMessages: [], requestId: 'req-rra14' } as const;
 
@@ -29,7 +29,8 @@ function makeExecutor(root: string) {
     mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }),
     reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db),
-  });
+  })
+  wireOidoCapabilitiesForTest(executor, {});;
   return { executor, db };
 }
 

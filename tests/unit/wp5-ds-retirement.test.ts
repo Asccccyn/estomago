@@ -33,7 +33,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -113,7 +113,8 @@ test('D03：源码零残留——digest 模块已删、supervisor 无 digest 依
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const runner = new DeepSeekRunner({ retryMax: 0 }, async () => { gen++; return { status: 200, headers: new Map(), body: frameStream(textBody(`d3-${gen}`, '好的')) }; });

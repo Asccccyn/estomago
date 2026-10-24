@@ -26,7 +26,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const initialInput = 'synthetic-failed-input';
 const editedInput = 'synthetic-edited-input\nsecond line';
@@ -47,7 +47,8 @@ function fixture() {
     bootstrapCalls++;
     return { ok: true, result: { snapshot_id: 'synthetic-snapshot', state_hash: 'synthetic-hash', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: 'synthetic-bootstrap', note: '' } } };
   } });
-  const tools = new HostToolExecutor({ db, mariposa, reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa, reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload));

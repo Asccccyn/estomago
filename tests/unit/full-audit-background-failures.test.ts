@@ -36,7 +36,7 @@ import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -61,7 +61,8 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, events });
+  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, events })
+  wireOidoCapabilitiesForTest(tools, {});;
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);

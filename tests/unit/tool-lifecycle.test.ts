@@ -14,7 +14,7 @@ import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { tempRoot, writeApprovedIdentity, readyRuntimePatch, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const HOLD_ARGS = { original_title: '生命周期回归', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' };
 
@@ -31,7 +31,8 @@ function setup(transport: MariposaTransport) {
     db, mariposa: new MariposaClient({ transport }),
     reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db),
     events,
-  });
+  })
+  wireOidoCapabilitiesForTest(tools, {});;
   const toolEvents = () => (db.prepare(
     "SELECT kind, payload_ref FROM runtime_stream_events WHERE kind='turn.tool' ORDER BY sequence",
   ).all() as Array<{ kind: string; payload_ref: string }>)

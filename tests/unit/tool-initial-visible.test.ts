@@ -9,7 +9,7 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { tempRoot, makePaths, writeApprovedIdentity, makeDb } from '../helpers.ts';
+import { tempRoot, makePaths, writeApprovedIdentity, makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
@@ -57,7 +57,8 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   const m = JSON.parse(fs.readFileSync(mp, 'utf8')) as Record<string, unknown>;
   m.approved_source_ref = 'longterm-milestones-v1.md'; m.identity_version = 'longterm-milestones-v1'; m.approved_source_hash = sha256Hex('条目一\n\n条目二');
   fs.writeFileSync(mp, JSON.stringify(m, null, 2));
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
+  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
+  wireOidoCapabilitiesForTest(tools, {});;
 
   // 新窗：冻结 deferred 工具集 + 首个"已发送"请求携带 B 段注入文本（含 definition_id）
   db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());

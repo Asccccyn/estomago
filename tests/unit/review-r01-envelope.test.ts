@@ -20,7 +20,7 @@ import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const foundBody = readFileSync(path.join(here, '../fixtures/mariposa/recall-start-found.body.json'), 'utf8');
@@ -43,7 +43,8 @@ function toolsWithHttpBody(bodyFor: (cap: string) => string | null): HostToolExe
     return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   const client = new MariposaClient({ baseUrl: 'http://127.0.0.1:19990', credentialEnv: null });
-  const tools = new HostToolExecutor({ db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   return new Proxy(tools, {
     get(target, prop, receiver) {
       if (prop === 'close') { globalThis.fetch = originalFetch; db.close(); return () => {}; }

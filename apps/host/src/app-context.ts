@@ -235,11 +235,16 @@ export class Host {
     // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
     const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
+    // P04.2-4：memory 域（14 工具；同一服务实例供换窗评审恢复窄委托）
+    const memoryService = (await import('./modules/memory/module.ts')).registerMemoryCapabilities(capabilityRegistry, {
+      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync,
+    });
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
     });
     const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
     tools.setCapabilityRegistry(capabilityRegistry);
+    tools.setMemoryRecovery(memoryService);
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测

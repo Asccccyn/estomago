@@ -32,7 +32,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { selectReviewRange, type ManifestEntry } from '../../apps/host/src/context/review-policy.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -82,7 +82,8 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   // 脚本：turn1 文本成功；turn2 首轮 hold 工具调用、次轮（带工具结果）500 失败；turn3（新窗）文本成功
   let gen = 0;
@@ -146,7 +147,8 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews, checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews, checkpoint: new HoldCheckpointService(db) })
+  wireOidoCapabilitiesForTest(tools, {});;
   const out = await tools.execute('memory_hold', {
     __tool_call_id: 'call-j54',
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',

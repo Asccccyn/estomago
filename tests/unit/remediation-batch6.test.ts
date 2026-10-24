@@ -15,7 +15,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
-import { writeApprovedIdentity, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const T0 = '2026-10-01T08:00:00+08:00';
 type EffectRow = { id: string; state: string; operation_id: string | null; seen_sequence: number | null };
@@ -45,7 +45,8 @@ test('F08：损坏的 status 响应（200 无回执无 completed）保持 unknow
     };
     const reviews = new RotationReviewService(db);
     const checkpoint = new HoldCheckpointService(db);
-    const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: m }), reviews, checkpoint });
+    const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: m }), reviews, checkpoint })
+  wireOidoCapabilitiesForTest(tools, {});;
     // 直接落一个 unknown hold 效果（模拟聊天中 503）
     const effId = reviews.openEffect({ reviewId: null, turnId: null, windowId: 'win_x', kind: 'hold', operationId: 'op-1', toolCallId: 'tc', seenSequence: 3 });
     reviews.settleEffect(effId, 'unknown', false, null);
