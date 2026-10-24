@@ -15,13 +15,10 @@ if (!guard.ok) {
 }
 
 const REPO = path.resolve(import.meta.dirname, '..');
-const PROD_ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
 const PER_FILE_TIMEOUT_MS = 60_000;
 
-if (process.env.ESTOMAGO_HOME && path.resolve(process.env.ESTOMAGO_HOME) === PROD_ROOT) {
-  console.error(`[test] ESTOMAGO_HOME 指向生产根（${PROD_ROOT}），拒绝运行测试。`);
-  process.exit(2);
-}
+// 生产根/凭据保护唯一入口是 guardCheck（test-guard.mjs）——本文件不再重复同一条件检查；
+// verify-mariposa-bootstrap.py 等独立调用方也直接跑 test-guard.mjs。
 
 const groups = process.argv.includes('--integration')
   ? ['integration']
