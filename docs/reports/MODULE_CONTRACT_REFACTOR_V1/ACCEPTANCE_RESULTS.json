@@ -11,12 +11,16 @@
       "phase": "P02",
       "setup": "真实Host fixture启窗并调用已迁oido_get，前置通过发布与分析合法建立。",
       "assertions": "new handler=1；旧handler=0；同定义同结果。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "330413cf119f3a1500995e94f0af844798cb53a0",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-get-registry-host-wiring.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/oido-get-registry-host-wiring.test.ts"
+      ],
+      "notes": "真实Host+真实模型回合（fake仅 oído HTTP/mariposa transport）：她真实发语音→oido_analyze 经真实 define/invoke（旧路径）建绑定→oido_get 经真实 define/invoke 走 registry 新handler=1；旧handler已删（oidoGet 私有方法不存在）；定义唯一来源（define输出/冻结目录/模块正本同 definitionId）；同结果（wire=oidoModelView(OVERVIEW)）；通话内放行（D39）；前台不查背景报价（D40）；abort→CANCELLED。未调用真实oído服务。"
     },
     {
       "id": "A02",
