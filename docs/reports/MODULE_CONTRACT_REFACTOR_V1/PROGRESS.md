@@ -24,3 +24,6 @@
 | P07 | P06 提交 | 可验证范围：真实 Host HTTP 集成（records/snapshot/history/mock-turn 4/4）+启停/健康/ops 5/5；启停 owner 核对（oído 生命周期/surfacing/scheduler）；app-context 无 Siren 建呼/多步业务（P03 已抽 adapter）；BLOCKERS 登记 P07.1/2 逐域提取未做 | A23/A24=PASS；零前端改动 | 见git log | P07 部分完成（结构收尾登记 BLOCKERS）；下一卡 P08/P09 |
 
 只记可复核事实。不记录私有推理、凭据、聊天正文、完整请求。
+
+| P09 | P07 提交 | 防回退检查：check_boundaries cycles=0、violations 5→1（余=bootstrap-pages 过渡，BLOCKERS 登记）；无 legacyFallback；supervisor 类型级业务导入叶化（BootstrapPort/Augment/wishstar 结构面）；JA-E07/recall-projection 桩与导入适配 | typecheck 0；supervisor 网 5/5；最终 41/41 | 见git log | DONE（过渡项见 BLOCKERS） |
+| P10 | P09 提交 | 冻结候选：validate_delivery formatValid=true；GLM_DELIVERY/TEST_EVIDENCE 写毕；41 文件最终回归 41/41；独立复核指令就绪（review/01、02） | validate_delivery exit 0；41/41 | 见git log | 实施者交付完毕；GLM5.3 与 Astra 独立复核待执行 |
