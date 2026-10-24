@@ -1,6 +1,7 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
+import { resolveReasoningReplayPolicy, storedReasoningReplayPolicy, type ReasoningReplayPolicy } from './ds-replay-policy.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -35,7 +36,7 @@ import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
-import { buildOrPayload, type OrMessage } from './or-payload.ts';
+import { buildOrPayload, withoutCacheMarkers, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
@@ -160,14 +161,45 @@ export class TurnSupervisor {
     const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
     if (!conv) return;
     this.runSerialized(conv.conversation_id, async () => {
+      if (this.cancelledBeforeRun.delete(turnId)) {
+        // RE-03：排队期已 stop——不派发，落确定终态（订阅者可见失败收口）
+        this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
+        this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
+        this.voiceTaps.delete(turnId);
+        return;
+      }
       try {
         await this.runTurn(turnId);
       } catch (err) {
         // AUD-10：链条内崩溃不留悬挂——该 turn 落 failed 终态
-        this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err) });
-        this.failTurnQuietly(turnId, 'RUNNER_CRASHED');
+        // 整合（2026-10-24）：合同化守卫（wire 锚/append-only/政策窗）在主流程 throw 的
+        // 结构化错误码透传到 attempt（此前一律 RUNNER_CRASHED，测试与排障分不清类型）
+        const raw = String((err as Error).message ?? err);
+        const contractCode = /^(WIRE_TRAJECTORY_DIVERGED|WIRE_HISTORY_SHORTENED|HISTORY_CHANGED|HISTORY_SHORTENED|PREFIX_PROFILE_CHANGED|DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW)/.exec(raw)?.[1];
+        this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), ...(contractCode ? { contract_code: contractCode } : {}) });
+        this.failTurnQuietly(turnId, contractCode ?? 'RUNNER_CRASHED');
+      } finally {
+        this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
       }
     });
+  }
+
+  /** 拒接/取消留言调度（2026-10-24）：程序事实轮——宿主注入事实（她拒接了你的来电/你取消了自己的来电），
+   *  不是用户发言（不写 messages）；走同一串行链与正常发布链，char的回应落本会话。
+   *  dedupe_key（invite+action）幂等：前端重试/重复触发只跑一轮。 */
+  submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): { turnId: string } | { deduplicated: true } {
+    const d = this.d;
+    const existing = d.db.prepare('SELECT turn_id FROM program_fact_turns WHERE dedupe_key = ?').get(dedupeKey) as { turn_id: string } | undefined;
+    if (existing) return { deduplicated: true };
+    const turnId = genId('turn');
+    const nowIso = new Date().toISOString();
+    tx(d.db, () => {
+      d.db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'program_fact', 'pending', NULL, ?)").run(turnId, conversationId, nowIso);
+      d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,NULL,'pending')").run(genId('att'), turnId);
+      d.db.prepare('INSERT INTO program_fact_turns(turn_id, dedupe_key, kind, fact_text, created_at) VALUES (?,?,?,?,?)').run(turnId, dedupeKey, kind, factText, nowIso);
+    });
+    this.enqueue(turnId);
+    return { turnId };
   }
 
   /** 审计 F05：房间唯一串行链的通用入口——turn、自动评审、手动换窗共用同一互斥；
@@ -186,9 +218,30 @@ export class TurnSupervisor {
     await Promise.all([...this.chains.values()]);
   }
 
+  /** RE-03（2026-10-24 返修）：排队取消登记——尚未获得串行链的 turn 被 stop 时记录，
+   *  链到达时不再派发（上轮反例：断开的排队电话轮在前序释放后仍派发模型） */
+  private cancelledBeforeRun = new Set<string>();
+
+  /** RE-02（2026-10-24 返修）：语音正文抽头——同一生成流（publishText 的真实新增 tail，
+   *  与聊天落库同源）逐段供给 voice ingress；不经公共事件总线（不进 SSE/UI 面）。
+   *  取消后代际内不再供给（与 publishSegments 同一 fence）。 */
+  private voiceTaps = new Map<string, (text: string) => void>();
+  registerVoiceTap(turnId: string, onTap: (text: string) => void): () => void {
+    this.voiceTaps.set(turnId, onTap);
+    return () => { this.voiceTaps.delete(turnId); };
+  }
+
   stop(turnId: string): { stopped: boolean; generation: number | null } {
     const run = this.active.get(turnId);
-    if (!run) return { stopped: false, generation: null };
+    if (!run) {
+      // 排队中（无活动代）：登记取消；链到达即拒发。若 turn 已完成/从未入队，无害空集。
+      const queued = this.d.db.prepare("SELECT 1 FROM turns WHERE id = ? AND state IN ('queued','running','pending')").get(turnId);
+      if (queued) {
+        this.cancelledBeforeRun.add(turnId);
+        return { stopped: true, generation: null };
+      }
+      return { stopped: false, generation: null };
+    }
     this.d.surfacing?.cancelForTurn?.(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
@@ -471,7 +524,7 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
@@ -517,6 +570,9 @@ export class TurnSupervisor {
     seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：实际装载视野（引用核对）
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
     onDispatch?: (info: { attemptIndex: number; generationId: string | null; payloadJson: string; prqId: string }) => void; // F17：每次真实发送逐笔留证
+    /** 整合（2026-10-24）：本轮懒初始化重建过轨迹=合法新基线——wire 锚 append-only 比对豁免
+     *  （与既有 RE-10 wire 守卫豁免同裁定；保温批 wire 锚与轨迹重建场景单边绿、组合炸，此处弥合） */
+    trajectoryRebuiltThisTurn?: boolean;
     inputBinding?: { messageId: string; revision: number };
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
@@ -675,7 +731,8 @@ export class TurnSupervisor {
         }
       };
       let previousPayload = prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null;
-      if (round === 0 && prevEnvelope) {
+      // 整合（2026-10-24）：轨迹本轮重建（懒初始化）=合法新基线——旧 wire 锚不再可比，豁免
+      if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn) {
         const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
           JOIN turns t ON t.id=p.turn_id LEFT JOIN background_runs b ON b.id=p.background_run_id
           WHERE p.window_id=? AND p.outcome='completed' AND p.sent_at IS NOT NULL
@@ -781,6 +838,7 @@ export class TurnSupervisor {
         let exec: ToolExecResult;
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {
+          signal: o.controller.signal, // 语音分支：取消传播（电话/检索取消链）
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
@@ -817,7 +875,15 @@ export class TurnSupervisor {
             });
           }
         }
-        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify(exec.output) } as unknown as OrMessage] };
+        // RE-05（2026-10-24）：工具结果携带内部图引用（如 oido_view 测量图）且当前型号
+        // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
+        // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
+        // 图未随正文携带，模型不得声称已看图）
+        const modelSupportsImages = visionSupportCached(envelope.model) === true;
+        const imageBlocks = modelSupportsImages && exec.imageRefs && exec.imageRefs.length > 0
+          ? exec.imageRefs.map((id) => ({ type: 'asset_image', asset_id: id, projection_version: 'v1' as const }))
+          : [];
+        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, ...(imageBlocks.length > 0 ? { content: [{ type: 'text', text: JSON.stringify(exec.output) }, ...imageBlocks] } : { content: JSON.stringify(exec.output) }) } as unknown as OrMessage] };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
@@ -836,6 +902,16 @@ export class TurnSupervisor {
     const model = this.d.settings.effectiveOrModel(config.openrouter.model);
     if (model === config.openrouter.model) return config;
     return { ...config, openrouter: { ...config.openrouter, model } };
+  }
+
+  /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
+   *  （旧窗无 transcript_read=如实受限提示，不宣传不存在的读取能力）。无冻结目录=旧窗，保守 false。 */
+  private windowHasTool(windowId: string | null | undefined, name: string): boolean {
+    if (!windowId) return false;
+    const set = storedToolset(this.d.db, windowId);
+    if (!set) return false;
+    const names = [...(Array.isArray(set.tools) ? set.tools : []), ...(Array.isArray((set as unknown as { catalog?: unknown }).catalog) ? (set as unknown as { catalog: unknown[] }).catalog : [])] as Array<{ function?: { name?: string } } | null | undefined>;
+    return names.some((t) => t?.function?.name === name);
   }
 
   /** WAKE_KEEPWARM_V1：后台执行位重检的统一时钟（测试可虚拟推进）。 */
@@ -1249,6 +1325,16 @@ export class TurnSupervisor {
   }
 
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
+  // R2（2026-10-23，E08）：每窗冻结的 reasoning 继续态政策（schema 36；详见 ds-replay-policy.ts）
+  private readonly reasoningPolicyCache = new Map<string, ReasoningReplayPolicy>();
+  private reasoningPolicyOf(windowId: string): ReasoningReplayPolicy {
+    let policy = this.reasoningPolicyCache.get(windowId);
+    if (!policy) {
+      policy = storedReasoningReplayPolicy(this.d.db.prepare('SELECT reasoning_replay_policy FROM windows WHERE id = ?').get(windowId) as { reasoning_replay_policy?: string | null } | undefined);
+      this.reasoningPolicyCache.set(windowId, policy);
+    }
+    return policy;
+  }
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
@@ -1320,7 +1406,7 @@ export class TurnSupervisor {
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
       messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }
@@ -1329,7 +1415,7 @@ export class TurnSupervisor {
     const tailSeq = o.tailMessage?.id
       ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
       : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1643,7 +1729,7 @@ export class TurnSupervisor {
     // 要么全成要么全回滚）
     const latestGate = this.d.identity.evaluateGate(this.d.db, { driver: this.drv()?.kind ?? 'claude-agent-sdk' });
     if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(this.d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(this.d.config), o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
-    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory });
+    const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory, ...(resolveReasoningReplayPolicy({ provider: this.d.config.runtime.provider, deepseek: this.d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
     // pending 键上的 bootstrap 缓存迁移到真实窗 id（同窗不重复拉）
@@ -1848,7 +1934,7 @@ export class TurnSupervisor {
           try {
             const latestGate = d.identity.evaluateGate(d.db, { driver: dv?.kind ?? 'claude-agent-sdk' });
             if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
-            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
+            const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
             rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
             // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
             // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
@@ -2008,7 +2094,7 @@ export class TurnSupervisor {
           return;
         }
       }
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null, ...(resolveReasoningReplayPolicy({ provider: d.config.runtime.provider, deepseek: d.config.deepseek }) === 'ds_tools_all_turns_v1' ? { reasoningPolicy: 'ds_tools_all_turns_v1' as const } : {}) });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -2057,6 +2143,7 @@ export class TurnSupervisor {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'STOPPED_DURING_PREP:准备阶段已取消——迟到资料不派发模型，输入已保存', 'blocked');
       return true;
     };
+    let trajInitializedThisTurn = false; // RE-10：懒初始化重建的轨迹=合法新基线，wire 守卫跳过
     if (dv && d.trajectory) {
       if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
       const trajExists = d.trajectory.forWindow(window.id) !== null;
@@ -2066,6 +2153,7 @@ export class TurnSupervisor {
         return;
       }
       if (!trajExists) {
+        trajInitializedThisTurn = true;
         // WP3：新窗历史装配只经人工选集（forTargetWindow 命中=消费过选集的
         // 新窗，严格按引用装配；空选=不带历史）。无选集命中的窗（真全新
         // 首窗/升级兼容期）维持旧自动回退——由 WP5 随 DS/12k 一并退役。
@@ -2193,9 +2281,13 @@ export class TurnSupervisor {
       },
       {},
     );
-    const prompt = assembledContext.segments
-      .map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`)
-      .join('\n\n');
+    // 程序事实轮（拒接/取消留言调度）：空尾 + program_fact_turns 有行 → 事实块追加为尾部
+    // 宿主注入（[program_fact] 前缀，同 time_context 先例——不是用户发言，不写 messages）
+    const programFact = inputMessage ? null : (d.db.prepare('SELECT fact_text, kind FROM program_fact_turns WHERE turn_id = ?').get(turnId) as { fact_text: string; kind: string } | undefined ?? null);
+    const prompt = [
+      ...assembledContext.segments.map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`),
+      ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
+    ].join('\n\n');
     // SDK has no host tool bridge; automatic surfacing remains unsupported.
     const sdkPrompt = prompt;
     const inputHash = effective.hash || sha256Hex(effective.content);
@@ -2216,7 +2308,8 @@ export class TurnSupervisor {
     // F-J-39：追赶投影与评审路径同源（catchupEntries 单一实现）
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
     // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence }).blocks }) as unknown as OrMessage);
+    const catchupContinuation = this.windowHasTool(window.id, 'transcript_read');
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史
@@ -2237,7 +2330,7 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id) });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
@@ -2274,6 +2367,75 @@ export class TurnSupervisor {
     const { reasoning: _prevReasoning, ...orPrevParams } = orEnvelope !== null ? orEnvelope : ({} as OrRequestEnvelope);
     void _prevReasoning;
     const orPreviousPayloadEnvelope: OrRequestEnvelope | null = orTraj && orEnvelope !== null ? { ...(orPrevParams as OrRequestEnvelope), tools: this.windowTools(window.id), messages: [...orTraj.messages, ...catchupMessages] } : null;
+    // R2（2026-10-23，E08）：DS 跨用户轮 wire 守卫——上一笔**实际派发**记录（provider_requests 的
+    // wire_v1 存储投影）与本次将发出的轨迹前缀逐位核对 role/长度/继续态。此前守卫从（可能已剥除
+    // 的）轨迹重建 previous，两份同源派生=结构性失明（审计真实复现：6→7 请求旧 assistant 的
+    // reasoning_content 被剥而无人发现）。不通过忽略 reasoning_content 键让断言通过——legacy 的
+    // 跨轮剥除是 D01 有意变换，按政策核验其被一致执行；新政策下 wire 有而轨迹无=直接拒发。
+    if (dv?.kind === 'deepseek' && orTraj && !trajInitializedThisTurn) {
+      // 只比已完成回合的最后一笔实发 wire：失败回合的工具 assistant 在 wire 里而轨迹/追赶投影
+      // 不含它，拿它当前缀基准会假阳性（位置性错位）。已完成回合的 traj 基底==该回合末请求消息。
+      const wireRow = d.db.prepare("SELECT pr.payload_wire_json FROM provider_requests pr JOIN turns t ON t.id = pr.turn_id WHERE pr.window_id = ? AND pr.purpose = 'chat' AND pr.sent_at IS NOT NULL AND pr.outcome IS NOT 'SUPERSEDED_BY_RETRY' AND t.state = 'completed' ORDER BY pr.sent_at DESC, pr.rowid DESC LIMIT 1").get(window.id) as { payload_wire_json: string | null } | undefined;
+      if (wireRow?.payload_wire_json) {
+        let wireMsgs: Array<Record<string, unknown>> | null = null;
+        try { const parsed = JSON.parse(wireRow.payload_wire_json) as { messages?: unknown }; if (Array.isArray(parsed.messages)) wireMsgs = parsed.messages as Array<Record<string, unknown>>; } catch { wireMsgs = null; }
+        if (wireMsgs) {
+          const trajSide = [...orTraj.messages, ...catchupMessages] as Array<Record<string, unknown>>;
+          if (wireMsgs.length > trajSide.length) throw new Error(`WIRE_HISTORY_SHORTENED:${wireMsgs.length}>${trajSide.length}`);
+          const dsPolicy = this.reasoningPolicyOf(window.id);
+          // RE-10（2026-10-24 返修）：完整前缀核对——role 之外，content（含旧 user 正文）、
+          // tool_calls 参数、tool_call_id、name 等逐字段比对（上轮反例：已发送 user 内容被改写
+          // 成 CORRUPTED…仍照发）。两侧按 DS 发送同态归一：块数组拍平为文本（镜像
+          // buildDeepSeekPayload），图块（traj=asset_image 引用 / wire=image 物化+存储脱敏）
+          // 统一占位——字节身份由资产不可变性与存储指纹另行保障；键序无关（canonical 序列化）。
+          const wireNorm = withoutCacheMarkers({ messages: wireMsgs }).messages as Array<Record<string, unknown>>;
+          const flatten = (content: unknown): unknown => {
+            if (!Array.isArray(content)) return content ?? null;
+            return content.map((b) => {
+              const blk = b as Record<string, unknown> | null;
+              if (blk && (blk.type === 'asset_image' || blk.type === 'image')) return '\u0000IMG\u0000';
+              return typeof blk?.text === 'string' ? blk.text : '';
+            }).join('');
+          };
+          const canon = (v: unknown): string => {
+            if (v === null || typeof v !== 'object') return JSON.stringify(v) ?? 'null';
+            if (Array.isArray(v)) return `[${v.map(canon).join(',')}]`;
+            const o = v as Record<string, unknown>;
+            const keys = Object.keys(o).sort();
+            return `{${keys.map((k) => `${JSON.stringify(k)}:${canon(o[k])}`).join(',')}}`;
+          };
+          const comparable = (m: Record<string, unknown>): Record<string, unknown> => {
+            const out: Record<string, unknown> = {};
+            for (const [k, v] of Object.entries(m)) {
+              if (k === 'cache_control' || k === 'reasoning_content') continue; // 缓存标记随轮次变化；继续态按政策单独核对
+              out[k] = k === 'content' ? flatten(v) : v;
+            }
+            return out;
+          };
+          for (let i = 0; i < wireMsgs.length; i++) {
+            const w = wireNorm[i]!, t = trajSide[i]!;
+            if (w.role !== t.role) throw new Error(`WIRE_TRAJECTORY_DIVERGED:role@${i}`);
+            // system 段逐请求合法可变（time_context 等），不属于不可变历史——只比对
+            // user/assistant/tool 消息（守卫职责=已发送历史正文/工具轨迹不被改写）
+            if (w.role !== 'system') {
+              const wC = canon(comparable(w)), tC = canon(comparable(t));
+              if (wC !== tC) throw new Error(`WIRE_TRAJECTORY_DIVERGED:content@${i}`);
+            }
+            if (w.role === 'assistant') {
+              const wireHas = typeof w.reasoning_content === 'string' && w.reasoning_content.length > 0;
+              const trajHas = typeof t.reasoning_content === 'string' && t.reasoning_content.length > 0;
+              if (dsPolicy === 'ds_tools_all_turns_v1') {
+                if (wireHas !== trajHas) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning@${i}`);
+                if (wireHas && w.reasoning_content !== t.reasoning_content) throw new Error(`WIRE_TRAJECTORY_DIVERGED:reasoning_text@${i}`);
+              } else if (trajHas) {
+                // legacy：跨轮轨迹不得携带继续态（D01 剥除必须一致执行；wire 同轮有、轨迹无=正常）
+                throw new Error(`WIRE_TRAJECTORY_DIVERGED:legacy_reasoning_leak@${i}`);
+              }
+            }
+          }
+        }
+      }
+    }
     // F14：书签视野=发起请求实际看见的位置——本轮输入已进入 payload，序号=输入序号（不再减一）
     const orSeenHighWater = inputMessage ? inputMessage.sequence : 0;
     // D13（审计 3655d60）：本请求**实际装载**的 (消息,修订) 视野——引用核对只认这份清单
@@ -2296,6 +2458,9 @@ export class TurnSupervisor {
       const tail = text.slice(prev.length);
       if (tail.length === 0) return;
       publishedByKey.set(key, text);
+      // RE-02（2026-10-24）：语音抽头与聊天落库同源（同一真实新增 tail，provider 速度）；
+      // 取消后代际内不供给（与下方 publishSegments 的 fence 一致）
+      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail);
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
@@ -2540,6 +2705,7 @@ export class TurnSupervisor {
         ...(inputMessage ? { inputBinding: { messageId: inputMessage.id, revision: effective.revision } } : {}),
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
+        trajectoryRebuiltThisTurn: trajInitializedThisTurn,
         onEvent: handleEvent, seenSequence: orSeenHighWater,
         seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions, // D13：流式发布即时入视野
         previousEnvelope: orPreviousPayloadEnvelope,
@@ -2698,7 +2864,8 @@ export class TurnSupervisor {
     try {
       tx(this.d.db, () => {
         const att = this.d.db.prepare("SELECT id FROM attempts WHERE turn_id = ? AND state IN ('running')").get(turnId) as { id: string } | undefined;
-        this.d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ? AND state IN ('running')").run(now, turnId);
+        // RE-03：pending（排队期被取消，从未获得执行权）同样落确定终态
+        this.d.db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE id = ? AND state IN ('running','pending')").run(now, turnId);
         if (att) {
           this.d.db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = ?, completed_at = ? WHERE id = ?").run(code, now, att.id);
           this.d.db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE attempt_id = ? AND state = 'streaming'").run(now, att.id);

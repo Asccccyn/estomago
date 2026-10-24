@@ -82,7 +82,9 @@ function fixture(workerUrl: string | null) {
   const uploadImage = (n: number, fill = 1) => media.saveBuffer({ bytes: png(n, fill), purpose: 'chat_image', operationId: `img-${n}-${fill}`, createdBy: 'qiaosheng', origin: 'upload' });
   const publish = (conversationId: string, assetId: string, cmid: string) =>
     messages.publishAssistantMessage({ conversationId, turnId: 't1', content: '', kind: 'text', clientMessageId: cmid, attachments: [{ asset_id: assetId, presentation: 'image' }] });
-  return { root, db, config, media, messages, index, tools, uploadImage, publish, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
+  // R8′（2026-10-23）：mediaSearch 不再前台补索引——测试先经后台同一路径预索引
+  const preIndex = async (...assetIds: string[]) => { for (const id of assetIds) await index.indexImage(id); };
+  return { root, db, config, media, messages, index, tools, uploadImage, publish, preIndex, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
 const ctxBase = { roomId: 'primary', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r1' };
@@ -95,6 +97,7 @@ test('M01: 中文找图——同会话候选可返回、无关查询 no_match、
     const a2 = await f.uploadImage(200, 2); // 狗图（fill 2 → slot2）
     f.publish('primary', a1.id, 'm1');
     f.publish('other', a2.id, 'm2'); // 另一会话的狗图：权限门外
+    await f.preIndex(a1.id); // 只索引本会话图（另一会话图保持未索引，权限门外）
     const r = await f.tools.execute('media_search', { query: '找那张猫猫的图' }, ctxBase);
     assert.equal(r.ok, true, JSON.stringify(r.output));
     assert.equal(r.output['state'], 'candidates');
@@ -115,6 +118,7 @@ test('删除失效：资产非 ready 立即从候选消失（读路径权限门�
   try {
     const a1 = await f.uploadImage(100, 1);
     f.publish('primary', a1.id, 'm1');
+    await f.preIndex(a1.id);
     const r0 = await f.tools.execute('media_search', { query: '猫猫' }, ctxBase);
     assert.equal(r0.output['state'], 'candidates');
     f.db.prepare("UPDATE media_assets SET state = 'missing' WHERE id = ?").run(a1.id);
@@ -133,6 +137,7 @@ test('M02: namespace 不混库——异指纹索引行不参与查询', async ()
     // 手工塞一条异 namespace 行（模拟旧版本向量残留）
     const vec = Buffer.from(new Float32Array(768).buffer as ArrayBuffer);
     f.db.prepare("INSERT INTO media_embedding_index (asset_id, modality, namespace, vector, content_sha256, created_at) VALUES (?, 'image', 'old_namespace_v0', ?, 'x', datetime('now'))").run(a1.id, vec);
+    await f.preIndex(a1.id); // R8′：预索引走当前 namespace（检索不再前台补）
     const r = await f.tools.execute('media_search', { query: '猫猫' }, ctxBase);
     const items = r.output['items'] as Array<{ asset_ref: string }>;
     assert.ok(items.length >= 1); // 命中来自当前 namespace 的真索引
@@ -175,6 +180,7 @@ test('预算：media_candidates 投影 ≤4096 字节（10 条上限）', async 
       const a = await f.uploadImage(100 + i, 1);
       f.publish('primary', a.id, `m${i}`);
     }
+    await f.preIndex(...(f.db.prepare("SELECT asset_id FROM message_attachments").all() as Array<{ asset_id: string }>).map((x) => x.asset_id));
     const r = await f.tools.execute('media_search', { query: '猫猫', limit: 10 }, ctxBase);
     const items = r.output['items'] as unknown[];
     assert.equal(items.length, 10);

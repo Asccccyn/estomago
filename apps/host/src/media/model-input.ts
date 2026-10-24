@@ -22,7 +22,49 @@ export type RevisionAttachment = { asset_id: string; presentation: string; capti
  *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
  *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
  *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null> } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+/** R3′（2026-10-23）：转写首页字数上界（旧口径，保留兼容既有引用）。
+ *  R3″（2026-10-24，RE-08）：分页按**实际紧凑 JSON UTF-8 字节**预算切页——4 字节汉字/
+ *  转义字符不再凭字符数破 8192B 门；包装与游标一并计入。 */
+export const TRANSCRIPT_PAGE_CHARS = 2400;
+export const TRANSCRIPT_PAGE_BUDGET_BYTES = 8192;
+
+/** JSON 字符串转义后的 UTF-8 字节数（与 JSON.stringify 单段输出一致：控制字符 \u00XX 转六字符、
+ *  引号反斜杠双写、其余按原字符 UTF-8 字节数；DEL 不转义）。 */
+export function jsonEscapedByteLength(text: string): number {
+  let n = 0;
+  for (const ch of text) {
+    const c = ch.codePointAt(0)!;
+    if (c < 0x20) n += 6; // \uXXXX
+    else if (ch === '"' || ch === '\\') n += 2;
+    else n += Buffer.byteLength(ch, 'utf8');
+  }
+  return n;
+}
+
+/** 按字节预算从 offsetChars 起切一页：页文本序列化字节 + overhead ≤ budget。
+ *  确定性：同文本同 offset 同预算 → 同页（游标可复现）。 */
+export function sliceByByteBudget(text: string, offsetChars: number, budgetBytes: number, overheadBytes: number): { pageText: string; nextOffset: number; done: boolean } {
+  const chars = [...text];
+  if (offsetChars >= chars.length) return { pageText: '', nextOffset: offsetChars, done: true };
+  const room = Math.max(0, budgetBytes - overheadBytes);
+  let used = 0;
+  let end = offsetChars;
+  for (; end < chars.length; end++) {
+    const ch = chars[end]!;
+    const c = ch.codePointAt(0)!;
+    const cost = c < 0x20 ? 6 : (ch === '"' || ch === '\\') ? 2 : Buffer.byteLength(ch, 'utf8');
+    if (used + cost > room) break;
+    used += cost;
+  }
+  if (end === offsetChars) return { pageText: '', nextOffset: offsetChars, done: false }; // 预算耗尽无进展——调用方按超限如实报
+  const pageText = chars.slice(offsetChars, end).join('');
+  return { pageText, nextOffset: end, done: end >= chars.length };
+}
+
+// R3″b（2026-10-24）：续读可用性默认 false——能力未经窗口核实时不宣传（诚实默认）；
+// 生产装配（supervisor）一律显式传入 windowHasTool 实值，默认只影响无窗口上下文的直接调用。
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  const withDefaults = { transcriptContinuationAvailable: false, ...opts };
   const isCurrentInput = opts.isCurrentInput === true;
   const textOnly = opts.textOnly === true;
   const hearing = opts.hearing?.available === true;
@@ -37,11 +79,24 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       const durText = typeof durMs === 'number' ? `${Math.round(durMs)}ms` : '时长未知';
       // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
       // 转写只在投影里出现一次（不进 message.content/attachment 双份）。
+      // R3′（2026-10-23）：长转写分页；R3″（2026-10-24，RE-08）：按序列化字节切首页——
+      // 4 字节/转义字符同样受 8192B 预算约束；续读提示只在本窗工具确有 transcript_read 时
+      // 给出（旧冻结窗无此工具=如实受限提示，不宣传不存在的读取能力、不静默丢正文）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        blocks.push({ type: 'text', text: `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]\n${a.derived_text}${hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 需要听语气时调用 oido_analyze(audio_ref="${audioRef}")——转写不含语气]` : ''}` });
+        const sourceLine = `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]`;
+        const tailLine = hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : '';
+        if (withDefaults.transcriptContinuationAvailable === true) {
+          const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
+          const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（audio_ref="${audioRef}"，无 cursor 从头，翻页传上页 next_cursor）]`;
+          blocks.push({ type: 'text', text: `${sourceLine}\n${sliced.pageText}${moreHint}${tailLine}` });
+        } else {
+          const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
+          const limitedHint = sliced.done ? '' : `\n[转写超一页；本窗工具不含续读能力——剩余部分需换新窗后读取，本窗未携带]`;
+          blocks.push({ type: 'text', text: `${sourceLine}\n${sliced.pageText}${limitedHint}${tailLine}` });
+        }
       } else if (isCurrentInput === true && hearing) {
         // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
-        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n她刚发来一条语音，文字转写还没就绪。需要听她的语气时调用 oido_analyze(audio_ref="${audioRef}") 获取声音证据（停顿/语速/音高等可核对观察）；在取得证据前不要猜测语音内容。` });
+        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n仅有原声；需声音证据时用 oido_analyze，取得证据前不推断内容或语气。` });
       } else if (isCurrentInput === true) {
         hasVoiceWithoutTranscript = true; // 当前输入无转写且无听觉能力→不空输入唤起模型（门阻断）
       } else {

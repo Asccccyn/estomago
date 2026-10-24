@@ -99,7 +99,7 @@ for(const provider of ['deepseek','openrouter'] as const) test(provider+': defer
   if(n===1)body=call('tool_catalog',{});
   else if(n===2){const catalog=JSON.parse((payload.messages.at(-1) as any).content);assert.ok(!JSON.stringify(catalog).includes('parameters'));body=call('tool_define',{name:'memory_hold'});}
   else if(n===3){const definition=JSON.parse((payload.messages.at(-1) as any).content);assert.equal(definition.name,'memory_hold');body=call('tool_invoke',{name:'memory_hold',definition_id:definition.definition_id,arguments:args});}
-  else {if(n===4)assert.deepEqual(JSON.parse((payload.messages.at(-1) as any).content),{saved:true,memory_id:'m1'});body=textBody('g'+n,'回复');}
+  else {if(n===4)assert.deepEqual(JSON.parse((payload.messages.at(-1) as any).content),{saved:true,memory_id:'m1',source_status:'unbound'});/*R1′(1023):60c6998 无 source_ranges 时如实 source_status:'unbound'*/body=textBody('g'+n,'回复');}
   return {status:200,headers:new Map(),body:frameStream(body)};
  };
  const mariposa:MariposaTransport=async(cap,payload)=>{

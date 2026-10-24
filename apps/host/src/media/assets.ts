@@ -9,18 +9,21 @@ import net from 'node:net';
 import dns from 'node:dns';
 import https from 'node:https';
 import type { Db } from '../db/connection.ts';
+import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 
-export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work';
+export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
 
 // 用途 → 格式白名单（§5.1：两套小名单；不是按扩展名信任）
 const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
   chat_image: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
   chat_sticker: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
-  chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4'],
+  chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
   creation_icon: ['image/svg+xml', 'image/png', 'image/webp'],
   creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp'],
+  // derived_view（2026-10-24，RE-05）：oído 测量图等宿主派生图工件（origin=generated+origin_service 标来源）
+  derived_view: ['image/png'],
 };
 
 // 魔数/文件头校验：不按扩展名或 Content-Type 冒充（§7.5、MEDIA-02）
@@ -28,6 +31,8 @@ export function sniffMime(bytes: Uint8Array): string | null {
   const b = bytes;
   if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  // 协议②（2026-10-24）：通话原声（Siren PCM16→WAV）；RIFF 容器第 8-11 字节为 WAVE
+  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45) return 'audio/wav';
   if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
   if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
   if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'audio/webm'; // EBML（webm 音频容器）
@@ -74,6 +79,7 @@ export class MediaService {
     if (purpose === 'chat_image' || purpose === 'chat_sticker') return m.max_image_bytes;
     if (purpose === 'chat_voice') return m.max_audio_bytes;
     if (purpose === 'creation_icon' || purpose === 'creation_work') return Math.max(m.max_code_artifact_bytes, m.max_video_bytes, m.max_image_bytes);
+    if (purpose === 'derived_view') return m.max_image_bytes;
     return 0;
   }
 
@@ -260,6 +266,22 @@ export class MediaService {
     const byMsg = (this.db.prepare('SELECT COUNT(*) n FROM message_attachments WHERE asset_id = ?').get(assetId) as { n: number }).n;
     const byRef = (this.db.prepare("SELECT COUNT(*) n FROM asset_external_refs WHERE asset_id = ? AND state IN ('protected','committed')").get(assetId) as { n: number }).n;
     return { referenced: byMsg > 0 || byRef > 0, by_message_revisions: byMsg, by_external_refs: byRef };
+  }
+
+  /** R6′（2026-10-23，她批 R6P 方案）：源资产删除原语——state→missing（引用守卫外的显式删除）。
+   *  若该语音有 oído 导入回执，同事务写删除传播意图（远端物理清理由独立重试循环收口，
+   *  404=已删幂等成功；失败退避下跳再试；重启恢复=表即状态）。解除单条分析引用不删数据
+   *  ——那只是删 oido_source_bindings 行（撤权不毁原声，其他会话可共享同一远端资产）。 */
+  markAssetMissing(assetId: string): void {
+    const now = new Date().toISOString();
+    tx(this.db, () => {
+      this.db.prepare("UPDATE media_assets SET state = 'missing', updated_at = ? WHERE id = ?").run(now, assetId);
+      const receipt = this.db.prepare('SELECT oido_audio_id FROM oido_ingest_receipts WHERE est_asset_id = ?').get(assetId) as { oido_audio_id: string } | undefined;
+      if (receipt) {
+        this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
+          ON CONFLICT(est_asset_id) DO UPDATE SET updated_at=excluded.updated_at`).run(assetId, receipt.oido_audio_id, now, now);
+      }
+    });
   }
 
   /** 消息附件绑定：按 (message, revision, position) 固定；新修订复制沿用（§3.3 编辑保留原附件）。 */

@@ -1191,4 +1191,108 @@ export function schemaVersion(db: Db): number {
   return row.v;
 }
 
+// Local authorization receipts; no analysis facts or user content are copied here.
+MIGRATIONS.push({ version: 35, name: 'oido_source_bindings', sql: `
+CREATE TABLE oido_source_bindings(
+ analysis_id TEXT NOT NULL, conversation_id TEXT NOT NULL, asset_id TEXT NOT NULL,
+ content_sha256 TEXT NOT NULL,
+ PRIMARY KEY(analysis_id, conversation_id)
+);
+CREATE INDEX idx_oido_source_asset ON oido_source_bindings(asset_id);
+` });
+
+// R2（2026-10-23，E08/DS 新型号协议适配）：每窗冻结的 reasoning 继续态回传政策。
+// NULL = legacy_turn_only（旧 D01：跨用户轮剥除，deepseek-chat/代理/旧窗默认）；
+// 'ds_tools_all_turns_v1' = 仅官方直连 deepseek-flash/v4-pro 的新窗（带 tools 的后续请求
+// 按当前官方合同回传全部轮次 assistant 的 reasoning_content，含最终无工具回复）。
+// additive 列：旧窗 NULL 不回填、不因升级被重标。
+MIGRATIONS.push({ version: 36, name: 'windows_reasoning_replay_policy', sql: `
+ALTER TABLE windows ADD COLUMN reasoning_replay_policy TEXT;
+` });
+
+// R6′（2026-10-23，她批 R6P 方案）：oído 导入定位与删除传播意图。
+//  - oido_ingest_receipts：est asset ↔ oído audio_id 持久映射（此前 host-tools 调
+//    ingestVoice 后丢弃回执，删除传播无从定位远端副本）
+//  - oido_delete_intents：est 源删除 → 远端物理清理的 outbox 式重试意图
+//    （成功/404=删除行；失败退避下跳再试；重启恢复=表即状态）
+MIGRATIONS.push({ version: 37, name: 'oido_ingest_and_delete_intents', sql: `
+CREATE TABLE oido_ingest_receipts(
+ est_asset_id TEXT PRIMARY KEY,
+ content_sha256 TEXT NOT NULL,
+ oido_audio_id TEXT NOT NULL,
+ deduplicated INTEGER NOT NULL,
+ ingested_at TEXT NOT NULL
+);
+CREATE TABLE oido_delete_intents(
+ est_asset_id TEXT PRIMARY KEY,
+ oido_audio_id TEXT NOT NULL,
+ attempts INTEGER NOT NULL DEFAULT 0,
+ last_error TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+` });
+// 36（2026-10-24，RE-05）：oído 测量图派生工件——PNG 字节落本地媒体资产（derived_view 用途），
+// 本表记 analysis+range → asset 映射；UI 二进制路由与宿主原生图物化共用。base64 不入模型 JSON。
+MIGRATIONS.push({ version: 38, name: 'oido_view_artifacts', sql: `
+CREATE TABLE oido_view_artifacts(
+ analysis_id TEXT NOT NULL,
+ range_json TEXT NOT NULL,
+ asset_id TEXT NOT NULL,
+ content_sha256 TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ PRIMARY KEY(analysis_id, range_json)
+);
+CREATE INDEX IF NOT EXISTS idx_oido_view_asset ON oido_view_artifacts(asset_id);
+` });
+// 39（2026-10-24，B2 电话核心 P0）：通话生命周期与电话轮幂等接纳。
+//  - voice_calls：Siren 通话↔est 会话绑定（active 期间该会话模型工具走 memory_only 策略）；
+//  - voice_stream_turns：(call_id, turn_key) 幂等接纳——同键同文=重放终态回执；同键异文=409。
+MIGRATIONS.push({ version: 39, name: 'voice_calls_and_stream_turns', sql: `
+CREATE TABLE voice_calls(
+ call_id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('active','ended')),
+ started_at TEXT NOT NULL,
+ ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_voice_calls_conv ON voice_calls(conversation_id, state);
+CREATE TABLE voice_stream_turns(
+ call_id TEXT NOT NULL,
+ turn_key TEXT NOT NULL,
+ conversation_id TEXT NOT NULL,
+ text_sha256 TEXT NOT NULL,
+ est_turn_id TEXT,
+ state TEXT NOT NULL CHECK (state IN ('admitted','running','completed','failed','cancelled')),
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(call_id, turn_key)
+);
+` });
+// 40（2026-10-24，拒接/取消留言调度）：程序事实轮——宿主注入的事实（她拒接/他取消来电），
+// 非用户发言（不进 messages 表）；turn=input_message_id NULL 的空尾轮，事实文本存本表，
+// runTurn 组装时以 [program_fact] 块注入 prompt。dedupe_key（invite+action）幂等：重试不重建轮。
+MIGRATIONS.push({ version: 40, name: 'program_fact_turns', sql: `
+CREATE TABLE program_fact_turns(
+ turn_id TEXT PRIMARY KEY,
+ dedupe_key TEXT NOT NULL UNIQUE,
+ kind TEXT NOT NULL,
+ fact_text TEXT NOT NULL,
+ created_at TEXT NOT NULL
+);
+` });
+// 41（2026-10-24，她发起通话·char可拒）：dial_requests——她→他方向的通话请求
+//（区别于 Siren 邀请=他→她来电）。pending→accepted(带连接)|declined|cancelled|expired；
+// 惰性过期（GET current 判定）；declined 时他的话=拒绝轮正文自然落会话。
+MIGRATIONS.push({ version: 41, name: 'dial_requests', sql: `
+CREATE TABLE dial_requests(
+ id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ state TEXT NOT NULL CHECK (state IN ('pending','accepted','declined','cancelled','expired')),
+ ttl_ms INTEGER NOT NULL,
+ ws_url TEXT, call_token TEXT, call_id TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
+);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

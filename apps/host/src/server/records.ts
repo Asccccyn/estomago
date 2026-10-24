@@ -48,8 +48,10 @@ export function buildRecordSnapshot(d: {
   let estimated: number | null = null;
   let quality = 'unknown';
   if (trajRow) {
-    const msgs = JSON.parse(trajRow.messages_json) as Array<{ content: unknown }>;
-    const chars = msgs.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length), 0);
+    // R2（2026-10-23）：ds_tools_all_turns_v1 窗口的轨迹含协议继续态 reasoning_content——
+    // 粗估须计入其长度（协议输入量是真实成本；展示口径仍标 rough/estimated）
+    const msgs = JSON.parse(trajRow.messages_json) as Array<{ content: unknown; reasoning_content?: unknown }>;
+    const chars = msgs.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content ?? '').length) + (typeof m.reasoning_content === 'string' ? m.reasoning_content.length : 0), 0);
     estimated = Math.ceil(chars / charsPerToken);
     quality = 'rough';
   }

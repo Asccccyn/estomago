@@ -6,6 +6,8 @@ import { IntegrationControls } from './IntegrationControls'
 import { BackgroundControls } from './BackgroundControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
+import { CallPanel } from './CallPanel'
+import { CallInvites } from './CallInvites'
 import { SurfacedMemories } from './SurfacedMemories'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
@@ -108,8 +110,100 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
   )
 }
 
+// V06 深听逐字谱（2026-10-24）：按页读 prosody_page（每页≤32音节），带 next_cursor 续读。
+// 只展示可测声学量（半音/中音域参照）——不做情绪解读；每音节≤5 F0 点按合同渲染。
+function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element | null {
+  const [pages, setPages] = useState<Array<{ syllable: string; tone: string | null; f0: number[]; startS: number }[]>>([])
+  const [cursor, setCursor] = useState<string | undefined>(undefined)
+  const [loading, setLoading] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { setPages([]); setCursor(undefined); setDone(false); setError(null) }, [analysisId])
+  const loadMore = async (): Promise<void> => {
+    if (loading || done) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId) + '/prosody' + (cursor ? '?cursor=' + encodeURIComponent(cursor) : ''))
+      if (!res.ok) { const b = await res.json().catch(() => ({})) as Record<string, any>; setError(String(b['error_code'] ?? b['detail'] ?? '不可用')); setDone(true); return }
+      const body = await res.json() as Record<string, any>
+      const syllables = (body['syllables'] ?? []) as Array<Record<string, any>>
+      setPages((prev) => [...prev, syllables.map((x) => ({
+        syllable: String(x['text'] ?? '?'),
+        tone: x['tone'] == null ? null : String(x['tone']),
+        f0: (Array.isArray(x['f0_st']) ? x['f0_st'] : []).map(Number),
+        startS: Number(x['start_s'] ?? 0),
+      }))])
+      if (typeof body['next_cursor'] === 'string' && body['next_cursor']) setCursor(body['next_cursor'])
+      else { setCursor(undefined); setDone(true) }
+    } catch { setError('请求失败'); setDone(true) } finally { setLoading(false) }
+  }
+  if (error && pages.length === 0) return <p className="text-[11px] text-[#a05a4a]">逐字谱：{error}</p>
+  if (pages.length === 0 && !loading && !done) {
+    return (
+      <button onClick={() => void loadMore()} className="self-start rounded-full bg-white/60 px-2.5 py-0.5 text-[11px] text-[#5e5d59]">看逐字谱</button>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        {pages.flat().map((sy, i) => (
+          <span key={i} className="flex w-8 flex-col items-center rounded-lg bg-white/70 py-1" title={`${sy.startS.toFixed(2)}s${sy.tone ? ' · 本调 ' + sy.tone : ''}`}>
+            <span className="text-[13px] leading-none">{sy.syllable}</span>
+            <span className="mt-0.5 flex h-6 w-6 items-end justify-center gap-[1px]">
+              {sy.f0.slice(0, 5).map((v, j) => (
+                <span key={j} className="w-[3px] rounded-full bg-[#c96442]" style={{ height: `${Math.max(3, Math.min(24, 6 + (v + 12)))}px`, opacity: 0.45 + (j / Math.max(1, sy.f0.length - 1)) * 0.55 }} />
+              ))}
+            </span>
+          </span>
+        ))}
+      </div>
+      {!done && <button disabled={loading} onClick={() => void loadMore()} className="self-start rounded-full bg-white/60 px-2.5 py-0.5 text-[11px] text-[#5e5d59] disabled:opacity-50">{loading ? '读取中…' : '下一页'}</button>}
+      {error && pages.length > 0 && <p className="text-[11px] text-[#a05a4a]">续读：{error}</p>}
+    </div>
+  )
+}
+
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
-function VoiceBar({ dur, text, ai, src }: { dur?: number; text: string; ai?: boolean; src?: string }) {
+function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string }) {
+  // RE-15（2026-10-24 返修）：深听 UI 状态隔离——queued/409 不再显示成成功空卡；
+  // 概览响应绑定发起时的 asset（消息修订换 v2 后，迟到的 v1 响应作废不挂新源）；
+  // 收起再展开复用已有分析（查询），不重复发起新分析；卸载中止在途请求。
+  const [listen, setListen] = useState<{ state: 'idle' | 'loading' | 'pending' | 'error' | 'ok'; analysisId?: string; overview?: Record<string, any>; error?: string }>({ state: 'idle' })
+  const listenAsset = useRef<string | undefined>(undefined) // 当前 listen 状态归属的 asset
+  const analysisCache = useRef<{ assetId: string; analysisId: string } | null>(null) // 该气泡已有分析（收起不丢）
+  const aliveRef = useRef(true)
+  useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false } }, [])
+  const fetchOverview = async (analysisId: string, forAsset: string): Promise<void> => {
+    const res = await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId))
+    if (!aliveRef.current || forAsset !== assetId) return // 迟到/换源作废
+    if (res.status === 409) { setListen({ state: 'pending', analysisId }); return } // 未就绪=待定，不是成功
+    if (!res.ok) { const body = await res.json().catch(() => ({})) as Record<string, any>; setListen({ state: 'error', error: String(body['detail'] ?? body['code'] ?? '深听不可用') }); return }
+    const ov = await res.json() as Record<string, any>
+    if (!aliveRef.current || forAsset !== assetId) return
+    setListen({ state: 'ok', analysisId, overview: ov })
+  }
+  const startListen = async () => {
+    if (!assetId || listen.state === 'loading') return
+    if (listen.state === 'ok' || listen.state === 'pending') { setListen({ state: 'idle' }); return }
+    // 已有该资产的分析：展开=查询既有结果，不重新发起（查询与明确重新分析分开）
+    if (analysisCache.current && analysisCache.current.assetId === assetId) {
+      setListen({ state: 'loading' })
+      try { await fetchOverview(analysisCache.current.analysisId, assetId) } catch { if (aliveRef.current) setListen({ state: 'error', error: '深听查询失败' }) }
+      return
+    }
+    const forAsset = assetId
+    listenAsset.current = forAsset
+    setListen({ state: 'loading' })
+    try {
+      const res = await fetch('/api/v1/oido/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ audio_ref: 'est:' + assetId }) })
+      const body = await res.json() as Record<string, any>
+      if (!aliveRef.current || forAsset !== assetId) return
+      const analysisId = body['analysis_id'] as string | undefined
+      if (!res.ok || !analysisId) { setListen({ state: 'error', error: String(body['detail'] ?? body['error_code'] ?? '深听不可用') }); return }
+      analysisCache.current = { assetId, analysisId }
+      await fetchOverview(analysisId, forAsset)
+    } catch (e) { if (aliveRef.current) setListen({ state: 'error', error: '深听请求失败' }) }
+  }
   const [play, setPlay] = useState(false)
   const [t, setT] = useState(0)
   const [duration, setDuration] = useState<number | null>(dur ?? null)
@@ -151,6 +245,29 @@ function VoiceBar({ dur, text, ai, src }: { dur?: number; text: string; ai?: boo
       <p className={`max-w-full break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${ai ? 'pl-1' : 'pr-1 text-right'}`}>
         {text.slice(0, shown)}{shown < text.length && <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-[#8a8780] align-middle" />}
       </p>
+    )}
+    {assetId && (
+      <div className={`flex max-w-full flex-col gap-1 ${ai ? 'items-start' : 'items-end'}`}>
+        <button onClick={() => void startListen()} className="shrink-0 rounded-full bg-[#f0ede5] px-3 py-1 text-[12px] text-[#5e5d59]">
+          {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : listen.state === 'pending' ? '收起（分析中）' : '深听'}
+        </button>
+        {listen.state === 'error' && <p className="max-w-72 break-words text-[12px] text-[#a05a4a]">深听不可用：{listen.error}</p>}
+        {listen.state === 'pending' && <p className="max-w-72 text-[12px] text-[#8a8780]">分析进行中——稍后点"深听"查询结果（未就绪不当作成功）</p>}
+        {listen.state === 'ok' && listen.analysisId && (
+          <div className="flex max-w-80 flex-col gap-1.5 rounded-2xl bg-[#f0ede5] p-2.5">
+            <img src={'/api/v1/oido/analyses/' + encodeURIComponent(listen.analysisId) + '/image'} alt="深听测量图" className="w-full rounded-xl bg-white" onError={(e) => { e.currentTarget.style.display = 'none' }} />
+            <ul className="flex flex-col gap-0.5 text-[12px] leading-[1.5] text-[#5e5d59]">
+              {(Array.isArray(listen.overview?.['observations']) ? listen.overview!['observations'] : []).slice(0, 6).map((o: Record<string, any>, i: number) => (
+                <li key={i}>{String(o['kind'] ?? '观察')}：{o['value'] == null ? String(o['reason'] ?? '不可用') : `${o['value']}${o['unit'] ? ' ' + o['unit'] : ''}（${String(o['quality'] ?? '')}）`}</li>
+              ))}
+            </ul>
+            {Array.isArray(listen.overview?.['limits']) && listen.overview!['limits'].length > 0 && (
+              <p className="text-[11px] leading-[1.4] text-[#8a8780]">限制：{listen.overview!['limits'].map(String).join('；')}</p>
+            )}
+            <ProsodyPages analysisId={listen.analysisId} />
+          </div>
+        )}
+      </div>
     )}
     </div>
   )
@@ -199,7 +316,8 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
 
 function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
   if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
-  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} />
+  const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
+  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} />
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />
@@ -212,6 +330,20 @@ export default function App() {
   const { client, state, rec, recSecs, recPaused, startRec, stopRec, pauseRec, onPick, copy } = useEstomago()
   // JOINT-VOICE（04）：录音前暂停本应用全部语音播放——不把char外放录进去
   const previewAudio = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => {
+    const stopPreview = () => {
+      const audio = previewAudio.current
+      if (audio) { audio.pause(); audio.removeAttribute('src'); audio.load(); previewAudio.current = null }
+    }
+    window.addEventListener('pagehide', stopPreview)
+    return () => { stopPreview(); window.removeEventListener('pagehide', stopPreview) }
+  }, [])
+  useEffect(() => {
+    const audio = previewAudio.current
+    if (audio && !state.attachments.some(a => a.assetId === audio.dataset.assetId)) {
+      audio.pause(); audio.removeAttribute('src'); audio.load(); previewAudio.current = null
+    }
+  }, [state.attachments])
   const pauseAllVoice = () => {
     document.querySelectorAll('audio').forEach(el => el.pause())
     previewAudio.current?.pause()
@@ -235,6 +367,7 @@ export default function App() {
   const [plus, setPlus] = useState(false)
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
+  const [callOpen, setCallOpen] = useState(false)
   const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
@@ -328,7 +461,7 @@ export default function App() {
               disabled={editing !== null || state.selectionMode} onPick={jumpToDate} />
             <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
               onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
-            <IconBtn title="电话" onClick={() => client.notify('实时语音通话暂未接入')}><Phone size={18} /></IconBtn>
+            <IconBtn title="电话" onClick={() => setCallOpen(true)}><Phone size={18} /></IconBtn>
             <div className="relative">
               <IconBtn title="更多" onClick={() => setMore(!more)}><MoreHorizontal size={18} /></IconBtn>
               {more && (
@@ -566,6 +699,8 @@ export default function App() {
       </footer>
       {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
+      <CallInvites onAccept={() => setCallOpen(true)} />
+      {callOpen && <CallPanel conversationId="primary" onExit={() => setCallOpen(false)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
         onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}

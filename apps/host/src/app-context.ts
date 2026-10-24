@@ -36,6 +36,8 @@ import { MediaService } from './media/assets.ts';
 import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
+import { runMediaBackfillTick } from './media/index/backfill.ts';
+import { retryOneOidoDelete } from './integrations/oido/delete-retry.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -68,6 +70,14 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  /** R8′（2026-10-23）：媒体索引后台补全——独立定时器/单飞门/批次中止（不经调度器与会话串行链） */
+  private mediaBackfillTimer: ReturnType<typeof setInterval> | null = null;
+  private mediaBackfillTicking = false;
+  private mediaBackfillAbort: AbortController | null = null;
+  private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
+  private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
+  private oidoDeleteTimer: ReturnType<typeof setInterval> | null = null;
+  private oidoDeleteAbort: AbortController | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
@@ -98,6 +108,8 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
+    this.oidoRef = deps.oido ?? null;
     this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
@@ -214,7 +226,12 @@ export class Host {
     const mediaIndex = opts.config.media_embedding.base_url
       ? new (await import('./media/index/service.ts')).MediaIndexService(db, media, new (await import('./media/index/service.ts')).MediaEmbedWorkerClient(opts.config.media_embedding))
       : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex });
+    // 协议①②（2026-10-24）：Siren 通话面适配器（邀请/接听/拒接/原声取回；loopback 内部凭据）
+    const sirenCallCfg = opts.config.integrations.siren;
+    const sirenCall = sirenCallCfg.base_url && sirenCallCfg.credential_ref && process.env[sirenCallCfg.credential_ref]
+      ? new (await import('./integrations/siren/adapter.ts')).SirenAdapter(sirenCallCfg.base_url, process.env[sirenCallCfg.credential_ref]!)
+      : null;
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
@@ -244,6 +261,9 @@ export class Host {
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
     });
+    // 拒接/取消留言调度（2026-10-24）：call_control(cancel) 的说话轮入口（tools 先于
+    // supervisor 构造，这里补引用；不注入=取消不触发说话轮，如实降级）
+    (tools as unknown as { setSupervisorRef: (s: unknown) => void }).setSupervisorRef?.(supervisor);
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
@@ -302,6 +322,10 @@ export class Host {
       media,
       bgSettings,
       scheduler,
+      mediaIndex: mediaIndex ?? undefined,
+      oido: oido ?? undefined,
+      sirenCall: sirenCall ?? undefined,
+      tools,
       bgExecutorReady,
       taskService,
       activity,
@@ -342,12 +366,39 @@ export class Host {
     });
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
+    // R8′（2026-10-23）：媒体索引后台补全——独立任务边界（不经调度器/会话串行链：
+    // scheduler 的模型执行经 enqueueBackground 进 runSerialized，搬进去只是换入口排队）。
+    // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
+    this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
+    this.mediaBackfillTimer.unref?.();
+    // R6′：oído 删除传播重试——独立定时器（≤1 条/跳，指数退避；表即状态，重启恢复）
+    this.oidoDeleteTimer = setInterval(() => {
+      if (!this.oidoRef) return;
+      this.oidoDeleteAbort = this.oidoDeleteAbort ?? new AbortController();
+      void retryOneOidoDelete(this.db, this.oidoRef, this.oidoDeleteAbort.signal).catch(() => {});
+    }, 30_000);
+    this.oidoDeleteTimer.unref?.();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
   }
 
+  /** R8′（2026-10-23）：后台补索引一跳——单飞+独立中止（逻辑在 media/index/backfill.ts） */
+  private async mediaBackfillTick(): Promise<void> {
+    if (this.mediaBackfillTicking) return;
+    const mediaIndex = this.mediaIndexRef;
+    if (!mediaIndex) return;
+    this.mediaBackfillTicking = true;
+    this.mediaBackfillAbort = new AbortController();
+    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal); }
+    finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
+  }
+
   async stop(): Promise<void> {
+    if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
+    this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
+    if (this.oidoDeleteTimer) { clearInterval(this.oidoDeleteTimer); this.oidoDeleteTimer = null; }
+    this.oidoDeleteAbort?.abort(); // R6′：停删除传播重试
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代

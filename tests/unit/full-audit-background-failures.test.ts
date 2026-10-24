@@ -196,7 +196,10 @@ for(const extraDrift of [false,true])test(`FA-F05 legacy DS stripped reasoning i
  ctx.db.prepare('UPDATE window_trajectories SET messages_json=? WHERE window_id=?').run(JSON.stringify(legacy),win);
  const sub=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'next after upgrade',clientMessageId:'new'});ctx.supervisor.enqueue(sub.turnId);await ctx.supervisor.waitIdle();
  const attempt=ctx.db.prepare('SELECT state,blocked_reason FROM attempts WHERE id=?').get(sub.attemptId)as any;
- assert.equal(n,2);assert.equal(attempt.state,'failed');assert.match(attempt.blocked_reason,extraDrift?/HISTORY_CHANGED/:/DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW/);
+ // 整合（2026-10-24）：她 D3 批的政策窗（ds_tools_all_turns_v1，schema36）下，"轨迹被剥继续态"
+ // 从特定 DS_PROTOCOL 升级为 wire 守卫 WIRE_TRAJECTORY_DIVERGED:reasoning——零派发+轨迹不动
+ // 语义不变，接受两种码（原仓无政策表时恒为前者）
+ assert.equal(n,2);assert.equal(attempt.state,'failed');assert.match(attempt.blocked_reason,extraDrift?/HISTORY_CHANGED|WIRE_TRAJECTORY_DIVERGED/:/DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW|WIRE_TRAJECTORY_DIVERGED(:reasoning)?/);
  assert.deepEqual(ctx.trajectory.forWindow(win)!.messages,legacy);
 });
 

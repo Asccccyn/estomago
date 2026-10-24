@@ -19,7 +19,6 @@ const MIN_SCORE = 0.0; // fake/真实后端统一：非相似（≤0 相似度�
 
 export class MediaEmbedWorkerClient {
   readonly baseUrl: string;
-  private fingerprintCache: { fp: string; at: number } | null = null;
 
   constructor(cfg: EmbedWorkerConfig) {
     this.baseUrl = (cfg.base_url ?? 'http://127.0.0.1:8792').replace(/\/$/, '');
@@ -29,36 +28,45 @@ export class MediaEmbedWorkerClient {
 
   private readonly token: string | null;
 
-  async health(timeoutMs = 2500): Promise<{ ok: boolean; backend?: string; fingerprint?: string }> {
+  async health(timeoutMs = 2500, signal?: AbortSignal): Promise<{ ok: boolean; backend?: string; fingerprint?: string }> {
+    signal?.throwIfAborted();
     try {
-      const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+      const res = await fetch(`${this.baseUrl}/health`, { redirect: 'error', signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return { ok: false };
       return await res.json() as { ok: boolean; backend: string; fingerprint: string };
     } catch {
+      signal?.throwIfAborted();
       return { ok: false };
     }
   }
 
-  async embed(items: Array<{ id: string; modality: 'text' | 'image'; bytes: Buffer }>): Promise<{ fingerprint: string; vectors: Map<string, Float32Array> }> {
+  async embed(items: Array<{ id: string; modality: 'text' | 'image'; bytes: Buffer }>, signal?: AbortSignal): Promise<{ fingerprint: string; vectors: Map<string, Float32Array> }> {
+    signal?.throwIfAborted();
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/embed`, {
-        method: 'POST',
+        redirect: 'error', method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
         body: JSON.stringify({ items: items.map((i) => ({ id: i.id, modality: i.modality, data_b64: i.bytes.toString('base64') })) }),
-        signal: AbortSignal.timeout(60_000),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),
       });
     } catch {
+      signal?.throwIfAborted();
       throw new Error('MEDIA_WORKER_UNAVAILABLE');
     }
     if (!res.ok) throw new Error(`MEDIA_WORKER_${res.status}`);
     const body = await res.json() as { fingerprint: string; vectors: Array<{ id: string; vector_b64: string; dims: number }> };
-    if (body.fingerprint === undefined) throw new Error('MEDIA_WORKER_BAD_RESPONSE');
+    signal?.throwIfAborted();
+    if (typeof body.fingerprint !== 'string' || !body.fingerprint || !Array.isArray(body.vectors) || body.vectors.length !== items.length) throw new Error('MEDIA_WORKER_BAD_RESPONSE');
+    if (process.env['ESTOMAGO_TEST_MODE'] !== '1' && /fake/i.test(body.fingerprint)) throw new Error('MEDIA_WORKER_TEST_BACKEND');
     const out = new Map<string, Float32Array>();
     for (const v of body.vectors) {
       if (v.dims !== DIMS) throw new Error(`MEDIA_WORKER_DIMS_${v.dims}`);
       const buf = Buffer.from(v.vector_b64, 'base64');
-      out.set(v.id, new Float32Array(buf.buffer, buf.byteOffset, DIMS));
+      if (buf.length !== DIMS * 4 || out.has(v.id) || !items.some(i => i.id === v.id)) throw new Error('MEDIA_WORKER_BAD_RESPONSE');
+      const vector = Float32Array.from({ length: DIMS }, (_, i) => buf.readFloatLE(i * 4));
+      if (!vector.every(Number.isFinite) || !vector.some(x => x !== 0)) throw new Error('MEDIA_WORKER_BAD_RESPONSE');
+      out.set(v.id, vector);
     }
     return { fingerprint: body.fingerprint, vectors: out };
   }
@@ -87,12 +95,16 @@ export class MediaIndexService {
   }
 
   /** 图片资产入索引（幂等：同资产同 namespace 覆盖；sha 变化=重编）。 */
-  async indexImage(assetId: string): Promise<{ indexed: true } | { indexed: false; reason: string }> {
+  async indexImage(assetId: string, signal?: AbortSignal): Promise<{ indexed: true } | { indexed: false; reason: string }> {
+    signal?.throwIfAborted();
     if (!this.worker) return { indexed: false, reason: 'MEDIA_WORKER_UNCONFIGURED' };
-    const row = this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
+    const row = this.db.prepare("SELECT content_sha256 FROM media_assets WHERE id = ? AND state = 'available'").get(assetId) as { content_sha256: string } | undefined;
     if (!row) return { indexed: false, reason: 'ASSET_NOT_FOUND' };
     const { bytes } = this.media.readContent(assetId);
-    const { fingerprint, vectors } = await this.worker.embed([{ id: assetId, modality: 'image', bytes }]);
+    const { fingerprint, vectors } = await this.worker.embed([{ id: assetId, modality: 'image', bytes }], signal);
+    signal?.throwIfAborted();
+    const current = this.db.prepare("SELECT content_sha256 FROM media_assets WHERE id = ? AND state = 'available'").get(assetId) as { content_sha256: string } | undefined;
+    if (!current || current.content_sha256 !== row.content_sha256) return { indexed: false, reason: 'ASSET_CHANGED_OR_UNAVAILABLE' };
     const vec = vectors.get(assetId);
     if (!vec) return { indexed: false, reason: 'MEDIA_WORKER_NO_VECTOR' };
     this.db.prepare(
@@ -105,20 +117,22 @@ export class MediaIndexService {
 
   /** 中文文字找图（M01）：候选=namespace 内图片索引 ×（活资产 + 本会话消息绑定）权限门。
    *  top_k 默认 3 最大 10；无足够相似= no_match 如实返回（不硬选 top1）。 */
-  async searchImagesByRoom(query: string, roomId: string, topK = DEFAULT_TOP_K): Promise<MediaCandidates> {
+  async searchImagesByRoom(query: string, roomId: string, topK = DEFAULT_TOP_K, signal?: AbortSignal): Promise<MediaCandidates> {
+    signal?.throwIfAborted();
     if (!this.worker) throw new Error('MEDIA_WORKER_UNCONFIGURED');
     const k = Math.max(1, Math.min(MAX_TOP_K, topK));
     const qBytes = Buffer.from(query, 'utf8');
-    const { fingerprint, vectors } = await this.worker.embed([{ id: 'query', modality: 'text', bytes: qBytes }]);
+    const { fingerprint, vectors } = await this.worker.embed([{ id: 'query', modality: 'text', bytes: qBytes }], signal);
+    signal?.throwIfAborted();
     const qvec = vectors.get('query');
     if (!qvec) throw new Error('MEDIA_WORKER_NO_VECTOR');
     // 读路径权限门（07 删除失效）：join 活资产 + 当前会话消息绑定；tombstone/撤权立即消失
     const rows = this.db.prepare(
       `SELECT e.asset_id, e.vector FROM media_embedding_index e
        WHERE e.namespace = ? AND e.modality = 'image'
-         AND EXISTS (SELECT 1 FROM media_assets a WHERE a.id = e.asset_id AND a.state = 'available')
+         AND EXISTS (SELECT 1 FROM media_assets a WHERE a.id = e.asset_id AND a.state = 'available' AND a.content_sha256 = e.content_sha256)
          AND EXISTS (
-           SELECT 1 FROM message_attachments ma JOIN messages m ON m.id = ma.message_id
+           SELECT 1 FROM message_attachments ma JOIN messages m ON m.id = ma.message_id AND m.current_revision = ma.revision
            WHERE ma.asset_id = e.asset_id AND m.conversation_id = ?
          )`,
     ).all(fingerprint, roomId) as Array<{ asset_id: string; vector: Buffer }>;
@@ -143,21 +157,38 @@ export class MediaIndexService {
   }
 
   /** 当前 worker 指纹（health 取；不可达=null）。 */
-  async workerFingerprint(): Promise<string | null> {
+  async workerFingerprint(signal?: AbortSignal): Promise<string | null> {
     if (!this.worker) return null;
-    const h = await this.worker.health();
+    const h = await this.worker.health(2500, signal);
+    if (h.backend === 'fake' && process.env['ESTOMAGO_TEST_MODE'] !== '1') return null;
     return h.ok && h.fingerprint ? h.fingerprint : null;
   }
 
   /** 索引覆盖面（诊断/后台补索引用；不是检索路径）。
    *  namespace 给定时只认当前指纹缺行——异版本残留行不算"已索引"（M02）。 */
+  /** R8′（2026-10-23）：有待索引图片的房间清单（后台补索引循环用；非检索路径）。
+   *  独立任务边界：本循环不经 BackgroundScheduler/enqueueBackground（那会进同会话
+   *  runSerialized 串行链——前台阻塞只是换了入口）；纯本地 worker HTTP 调用，无模型执行。 */
+  roomsWithUnindexedImages(namespace?: string): string[] {
+    const notIndexed = namespace
+      ? 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256 AND e.namespace = ?)'
+      : 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256)';
+    return (this.db.prepare(
+      `SELECT DISTINCT m.conversation_id FROM message_attachments ma
+       JOIN messages m ON m.id = ma.message_id AND m.current_revision = ma.revision
+       JOIN media_assets a ON a.id = ma.asset_id
+       WHERE ma.presentation IN ('image','sticker') AND a.state = 'available'
+         ${notIndexed}`,
+    ).all(...(namespace ? [namespace] : [])) as Array<{ conversation_id: string }>).map((r) => r.conversation_id);
+  }
+
   unindexedImagesInRoom(roomId: string, namespace?: string): string[] {
     const notIndexed = namespace
-      ? 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.namespace = ?)'
-      : 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id)';
+      ? 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256 AND e.namespace = ?)'
+      : 'AND NOT EXISTS (SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ma.asset_id AND e.content_sha256 = a.content_sha256)';
     return (this.db.prepare(
       `SELECT DISTINCT ma.asset_id FROM message_attachments ma
-       JOIN messages m ON m.id = ma.message_id
+       JOIN messages m ON m.id = ma.message_id AND m.current_revision = ma.revision
        JOIN media_assets a ON a.id = ma.asset_id
        WHERE m.conversation_id = ? AND ma.presentation IN ('image','sticker') AND a.state = 'available'
          ${notIndexed}`,

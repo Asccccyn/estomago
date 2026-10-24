@@ -201,7 +201,9 @@ test('F14：成功 hold 的书签视野包含当前输入（首条消息 → see
   const log: PayloadLog = [];
   const t = loggingTransport(log, (_p, hasTool) => (hasTool ? textBody('g2', '记好了') : toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' })));
   const root = tempRoot('rm2-f14-');
-  const ctx = compose(root, t, mariposaOk);
+  // 整合（2026-10-24）：config 默认 tool_schema_mode=deferred + D2 新窗冻结初始目录后，
+  // 直调 memory_hold 的老场景须显式声明 legacy 世界（测试意图=hold 书签语义，与协议模式无关）
+  const ctx = compose(root, t, mariposaOk, { configOver: { runtime: { tool_schema_mode: 'legacy' } } });
   await say(ctx, '第一条就记', 'b1', T0);
   const win = ctx.windows.activeWindow('c1')!;
   const cp = ctx.checkpoint.forWindow(win.id);
