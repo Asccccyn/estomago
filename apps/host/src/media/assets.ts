@@ -19,7 +19,7 @@ export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'crea
 const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
   chat_image: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
   chat_sticker: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
-  chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4'],
+  chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
   creation_icon: ['image/svg+xml', 'image/png', 'image/webp'],
   creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp'],
   // derived_view（2026-10-24，RE-05）：oído 测量图等宿主派生图工件（origin=generated+origin_service 标来源）
@@ -31,6 +31,8 @@ export function sniffMime(bytes: Uint8Array): string | null {
   const b = bytes;
   if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
   if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  // 协议②（2026-10-24）：通话原声（Siren PCM16→WAV）；RIFF 容器第 8-11 字节为 WAVE
+  if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45) return 'audio/wav';
   if (b.length >= 6 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x38) return 'image/gif';
   if (b.length >= 12 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return 'image/webp';
   if (b.length >= 4 && b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return 'audio/webm'; // EBML（webm 音频容器）

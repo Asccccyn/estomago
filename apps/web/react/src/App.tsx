@@ -7,6 +7,7 @@ import { BackgroundControls } from './BackgroundControls'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
+import { CallInvites } from './CallInvites'
 import { SurfacedMemories } from './SurfacedMemories'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
@@ -644,6 +645,7 @@ export default function App() {
       </footer>
       {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
+      <CallInvites onAccept={() => setCallOpen(true)} />
       {callOpen && <CallPanel conversationId="primary" onExit={() => setCallOpen(false)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}

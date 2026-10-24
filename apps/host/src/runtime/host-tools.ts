@@ -576,6 +576,21 @@ export function buildHostTools(): HostToolSpec[] {
   {
     type: 'function',
     function: {
+      name: 'call_control',
+      description: '通话控制（协议①2026-10-24）：action=invite 给当前会话的她发出来电邀请（她页面会显示来电；她可以接听或拒接——拒接就是拒接，不自动补打）。邀请过期由服务端管理；她没接≠她拒绝。action=status 查询当前邀请状态。普通聊天与通话内均可用于接通相关控制；不能用于其他业务动作。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['invite', 'status'], description: 'invite=发起来电邀请；status=查询当前邀请' },
+          ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
+        },
+        required: ['action'], additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'oido_analyze',
       description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。她明确要你听语气、或转写不足以判断她的状态时调用。audio_ref 形如 est:<asset_id>（语音消息投影里带）。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
       parameters: {
@@ -1049,7 +1064,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -1065,6 +1080,7 @@ export class HostToolExecutor {
     this.wishstar = deps.wishstar ?? null;
     this.taskService = deps.taskService ?? null;
     this.oido = deps.oido ?? null;
+    this.sirenCall = deps.sirenCall ?? null;
     this.mediaIndex = deps.mediaIndex ?? null;
   }
 
@@ -1078,6 +1094,7 @@ export class HostToolExecutor {
   private taskService: import('./background-task-service.ts').BackgroundTaskService | null;
   /** JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；未配置=工具如实拒绝） */
   private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
+  private sirenCall: import('../integrations/siren/adapter.ts').SirenAdapter | null;
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
   /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
@@ -1086,7 +1103,7 @@ export class HostToolExecutor {
     memory_hold: '写记忆', memory_recall: '查记忆', memory_recall_next: '翻查记忆', conversation_read: '读聊天原文',
     memory_i_read: '读 I', memory_i_write: '写 I', memory_open: '打开记忆桶', memory_correct: '订正记忆', deletion_review: '处理删除评审',
     episode_list: '查事件', episode_get: '看事件', episode_apply: '更新事件', plans_read: '读计划', plans_write: '写计划',
-    media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', oido_analyze: '深听语音', oido_get: '读声音证据', media_search: '找图', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
+    call_control: '通话控制', media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', oido_analyze: '深听语音', oido_get: '读声音证据', media_search: '找图', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
     content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
     identity_milestone_write: '更新长期记忆里程碑',
     wishstar_write_star: '往许愿星写了一颗星', wishstar_hidden_stars: '看自己的私人瓶子',
@@ -1364,6 +1381,25 @@ export class HostToolExecutor {
     this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
       ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id, updated_at=excluded.updated_at`)
       .run(estAssetId, oidoAudioId, now, now);
+  }
+
+  /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，
+   *  不铺细碎工具）。invite=当前会话创建 Siren 来电邀请（服务端过期；拒接≠未接）；
+   *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
+  private async callControl(args: { action: 'invite' | 'status'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.sirenCall || this.sirenCall.status !== 'available') return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
+    try {
+      if (args.action === 'invite') {
+        const invite = await this.sirenCall.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
+        if (!invite) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
+        return { ok: true, output: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
+      }
+      const list = await this.sirenCall.listInvites(ctx.roomId);
+      if (!list) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
+      return { ok: true, output: { active: list.active, recent: list.recent.slice(0, 3) } };
+    } catch (err) {
+      return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 40) || 'SIREN_CALL_FAILED' } };
+    }
   }
 
   private async oidoAnalyze(args: { audio_ref: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -1703,12 +1739,13 @@ export class HostToolExecutor {
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
       }
     }
-    if (name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'oido_get' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
     if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
     if (rawToolCallIdRef.current !== null) checked.value.__tool_call_id = rawToolCallIdRef.current;
+    if (name === 'call_control') return await this.callControl(checked.value as { action: 'invite' | 'status'; ttl_seconds?: number }, ctx);
     if (name === 'memory_hold') return this.memoryHold(checked.value, ctx);
     if (name === 'memory_recall') return this.memoryRecall(checked.value, ctx);
     if (name === 'memory_recall_next') return this.memoryRecallNext(checked.value, ctx);

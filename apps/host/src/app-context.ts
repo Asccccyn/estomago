@@ -226,7 +226,12 @@ export class Host {
     const mediaIndex = opts.config.media_embedding.base_url
       ? new (await import('./media/index/service.ts')).MediaIndexService(db, media, new (await import('./media/index/service.ts')).MediaEmbedWorkerClient(opts.config.media_embedding))
       : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex });
+    // 协议①②（2026-10-24）：Siren 通话面适配器（邀请/接听/拒接/原声取回；loopback 内部凭据）
+    const sirenCallCfg = opts.config.integrations.siren;
+    const sirenCall = sirenCallCfg.base_url && sirenCallCfg.credential_ref && process.env[sirenCallCfg.credential_ref]
+      ? new (await import('./integrations/siren/adapter.ts')).SirenAdapter(sirenCallCfg.base_url, process.env[sirenCallCfg.credential_ref]!)
+      : null;
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
@@ -322,6 +327,7 @@ export class Host {
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
       oido: oido ?? undefined,
+      sirenCall: sirenCall ?? undefined,
       tools,
       bgExecutorReady,
       taskService,

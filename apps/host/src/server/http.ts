@@ -69,6 +69,7 @@ export type RequestDeps = {
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
+  sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter; // 协议①②（2026-10-24）：邀请/接听/拒接/通话原声
   tools?: import('../runtime/host-tools.ts').HostToolExecutor; // R5：深听 UI 端点（会话绑定同门）
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
   taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
@@ -1187,6 +1188,28 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, 200, { call_id: callId, state: 'ended' });
     }
 
+    // —— 协议①（2026-10-24）：来电邀请前端面（owner）——est 代理 Siren（内部凭据不进前端）。
+    //    来电横幅/未接卡片的数据源；接听→前端再走既有 /api/v1/calls 建通话；拒接直接落终态。
+    if (route === 'GET /api/v1/calls/invites') {
+      if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
+      try {
+        const list = await d.sirenCall.listInvites('primary');
+        return json(res, 200, list ?? { active: null, recent: [] });
+      } catch (err) {
+        return json(res, 502, { error: { code: 'siren_invite_query_failed', message: String((err as Error).message ?? err).slice(0, 120) } });
+      }
+    }
+    const inviteAction = /^POST \/api\/v1\/calls\/invites\/([^/]+)\/(accept|decline)$/.exec(route);
+    if (inviteAction) {
+      if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
+      try {
+        const out = await d.sirenCall.transitionInvite(decodeURIComponent(inviteAction[1]!), inviteAction[2] === 'accept' ? 'accept' : 'decline');
+        return json(res, 200, out ?? {});
+      } catch (err) {
+        return json(res, 502, { error: { code: 'siren_invite_transition_failed', message: String((err as Error).message ?? err).slice(0, 120) } });
+      }
+    }
+
     // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
     if (route === 'POST /api/v1/token-estimates') {
       const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);
@@ -1527,6 +1550,23 @@ function json(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/** 协议②（2026-10-24）：oído 快证据——宿主受信导入+短等待分析，取最多一条可靠观察。
+ *  ready 就返回（≤N 字符）；未就绪/无证据= null（不拖电话、不回写历史、不猜情绪）。 */
+async function quickVoiceObservation(d: RequestDeps, a: { assetId: string; bytes: Uint8Array; sha256: string; mime: string; transcript: string }): Promise<string | null> {
+  const receipt = await d.oido!.ingestVoice({ assetId: a.assetId, bytes: Buffer.from(a.bytes), sha256: a.sha256, mime: a.mime, transcript: { text: a.transcript, source: 'siren:call' }, timeoutMs: 6000 });
+  d.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
+    .run(a.assetId, a.sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString());
+  const result = await d.oido!.analyze({ assetId: a.assetId, waitMs: 600, idempotencyKey: `es-call-${a.assetId}`, timeoutMs: 4000 }).catch(() => null);
+  if (!result || (result.state !== 'ready' && result.state !== 'partial')) return null;
+  const observations = (result as { observations?: Array<Record<string, unknown>> }).observations;
+  if (!Array.isArray(observations) || observations.length === 0) return null;
+  const first = observations[0]!;
+  const kind = String(first['kind'] ?? '观察');
+  const value = first['value'] == null ? String(first['reason'] ?? '不可用') : `${first['value']}${first['unit'] ? ' ' + first['unit'] : ''}`;
+  const text = `${kind}：${value}`.slice(0, 120);
+  return text;
+}
+
 // ── R4（2026-10-23）：voice ingress——Siren CoreBridge 的同窗电话入口（NDJSON）──────────
 // 合同（Siren packages/core-bridge/src/http-core-bridge.ts，逐字段对齐）：
 //   POST /v1/chat/stream，content-type application/x-ndjson，body=单 JSON 对象
@@ -1548,7 +1588,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   if (!token || !token.trim()) return ndjsonError(503, 'voice ingress not configured');
   const authz = String(req.headers.authorization ?? '');
   if (authz !== `Bearer ${token}`) return ndjsonError(401, 'unauthorized');
-  let input: { conversation_id?: unknown; call_id?: unknown; turn_id?: unknown; modality?: unknown; text?: unknown; interrupted_turn?: unknown };
+  let input: { conversation_id?: unknown; call_id?: unknown; turn_id?: unknown; modality?: unknown; text?: unknown; interrupted_turn?: unknown; audio_ref?: unknown };
   try {
     input = (await readJson(req, d, 256 * 1024)) as typeof input;
   } catch (err) {
@@ -1591,11 +1631,47 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
     return ndjsonError(422, 'interrupted_turn must be an object');
   }
 
+  // —— 协议②（2026-10-24）：本轮用户原声——Siren 已按 audio_ref=siren:<asset_id> 落资产，
+  //    est 取回字节存本地 chat_voice 资产并绑定为该消息附件（oído 快证据/按需深听可用）。
+  //    失败不阻断通话（如实降级为纯文字轮）；快证据有界等待（≤600ms，未就绪不拖电话）。
+  const audioRef = typeof input.audio_ref === 'string' && /^siren:[A-Za-z0-9_-]{1,128}$/.test(input.audio_ref) ? input.audio_ref.slice('siren:'.length) : null;
+  let attachment: { asset_id: string; presentation: 'voice' } | null = null;
+  let transcriptText: string | null = null;
+  if (audioRef && d.media && d.sirenCall) {
+    try {
+      const audio = await d.sirenCall.fetchVoiceAssetAudio(audioRef, { timeoutMs: 8000 });
+      if (audio) {
+        const asset = await d.media.saveBuffer({
+          bytes: audio.bytes, purpose: 'chat_voice',
+          operationId: `siren-call:${callId}:${turnKey}`,
+          createdBy: 'siren-bridge', origin: 'import', originService: 'siren', originRef: audioRef,
+        });
+        transcriptText = input.text;
+        d.db.prepare("INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,content_sha256,state,derived_text,derived_source,duration_ms,created_at,updated_at) VALUES (?,?,?,?,'ready',?,?,NULL,?,?) ON CONFLICT(asset_id) DO UPDATE SET derived_text=excluded.derived_text,updated_at=excluded.updated_at")
+          .run(asset.id, conversationId, `siren:${callId}:${turnKey}`, asset.content_sha256, transcriptText, 'siren:call', new Date().toISOString(), new Date().toISOString());
+        // 快证据（A14 语义：宿主消费，非模型工具轮）：有界等待；未就绪=不带，不回写不拖电话
+        if (d.oido?.configured) {
+          try {
+            const obs = await quickVoiceObservation(d, { assetId: asset.id, bytes: audio.bytes, sha256: asset.content_sha256, mime: audio.mime, transcript: input.text });
+            if (obs) {
+              const marked = `\n[声音观察（oído 快证据，非转写）：${obs}]`;
+              d.db.prepare('UPDATE voice_transcripts SET derived_text=? WHERE asset_id=?').run(transcriptText + marked, asset.id);
+              transcriptText = transcriptText + marked;
+            }
+          } catch { /* 快证据失败=不带（如实缺省） */ }
+        }
+        d.media.validateForSend([{ asset_id: asset.id, presentation: 'voice' }]); // §5.2：附件先全量校验再入事务
+        attachment = { asset_id: asset.id, presentation: 'voice' };
+      }
+    } catch { /* 原声取回失败=纯文字轮（如实降级） */ }
+  }
+
   const sub = d.messages.submitUserMessageWithTurn({
     conversationId: conversationId,
-    content: input.text,
+    content: attachment ? '' : input.text,
     clientMessageId: `voice:${callId}:${turnKey}`,
     occurredAt: new Date().toISOString(),
+    ...(attachment ? { attachments: [attachment] } : {}),
   });
   d.db.prepare("UPDATE voice_stream_turns SET est_turn_id=?, state='running', updated_at=? WHERE call_id=? AND turn_key=?")
     .run(sub.turnId, new Date().toISOString(), callId, turnKey);

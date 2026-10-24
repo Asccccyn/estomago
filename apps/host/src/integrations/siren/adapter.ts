@@ -82,4 +82,70 @@ export class SirenAdapter {
     if (!res.ok) return null;
     return await res.json() as Record<string, unknown>;
   }
+  // —— 协议①（2026-10-24）：来电邀请（est 认证授权→Siren 创建/查询/接听/拒接）——
+
+  /** POST /v1/invites——创建来电邀请（expires_at 服务端权威；est 拨号动作的下游）。 */
+  async createInvite(conversationId: string, opts: { ttlSeconds?: number; signal?: AbortSignal } = {}): Promise<{ inviteId: string; expiresAt: number } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/invites`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: conversationId, ...(opts.ttlSeconds ? { ttl_seconds: opts.ttlSeconds } : {}) }),
+        redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(8000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (!res.ok) throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_INVITE_FAILED');
+    const data = await res.json() as { invite_id?: unknown; expires_at?: unknown };
+    if (typeof data.invite_id !== 'string' || typeof data.expires_at !== 'number') throw new SirenTranscriptionError('SIREN_RESPONSE_INVALID', true);
+    return { inviteId: data.invite_id, expiresAt: data.expires_at };
+  }
+
+  /** GET /v1/conversations/:id/invites——卡片投影数据源（active+近期终态）。 */
+  async listInvites(conversationId: string, opts: { signal?: AbortSignal } = {}): Promise<{ active: Record<string, unknown> | null; recent: Array<Record<string, unknown>> } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/conversations/${encodeURIComponent(conversationId)}/invites`, {
+        headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(6000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_INVITE_QUERY_FAILED');
+    const data = await res.json() as { active?: unknown; recent?: unknown };
+    return { active: (data.active ?? null) as Record<string, unknown> | null, recent: Array.isArray(data.recent) ? data.recent as Array<Record<string, unknown>> : [] };
+  }
+
+  /** POST /v1/invites/:id/accept|decline——接听/拒接（幂等；与过期竞态服务端单终态）。 */
+  async transitionInvite(inviteId: string, action: 'accept' | 'decline', opts: { signal?: AbortSignal } = {}): Promise<Record<string, unknown> | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/invites/${encodeURIComponent(inviteId)}/${action}`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(6000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (!res.ok) throw new SirenTranscriptionError(res.status === 404 ? 'SIREN_INVITE_NOT_FOUND' : 'SIREN_INVITE_TRANSITION_FAILED');
+    return await res.json() as Record<string, unknown>;
+  }
+
+  // —— 协议②（2026-10-24）：通话用户原声取回（服务间只读；绑 est 消息供 oído）——
+
+  /** GET /v1/voice-assets/:id/audio——按 CoreTurnInput.audio_ref=siren:<id> 取回 WAV 字节。 */
+  async fetchVoiceAssetAudio(assetId: string, opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<{ bytes: Uint8Array; mime: string } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice-assets/${encodeURIComponent(assetId)}/audio`, {
+        headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 10000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (res.status === 404) return null;
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_AUDIO_FETCH_FAILED');
+    return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') ?? 'audio/wav' };
+  }
 }
