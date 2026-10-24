@@ -84,7 +84,16 @@
 | 同轮浮现贡献（before-turn） | supervisor 内联结构类型 | context/contributions.ts BeforeTurnContributor（叶）：reuseFrozen/augmentFor/finalAdmit/markDispatched/markRetained/cancelForTurn 完整生命周期 | supervisor 不 import 浮现业务类型；宿主控角色/位置/预算/最终发包；编辑/停止/换窗失效语义在浮现域 |
 | 开窗资料（window-open） | supervisor windowBootstrap 直用 tools.mariposaClient() | BootstrapPort（P04.5，supervisor deps.bootstrap） | 分页/失败规则/部分加载政策逐字；过渡回退 tools 客户端（P07 收口移除） |
 
-另列消息accepted/revised/published、afterCommit、context各钩子、背景executor、程序事实入口、HTTP域路由、worker启停（P06/P07 填）。
+## 背景执行与统一执行边界（P06）
+
+| 接缝 | 旧位置 | 新owner/入口 | 行为保持 |
+|---|---|---|---|
+| 后台 executeRun 用例 | app-context 内联闭包 | application/background-execution.ts createBackgroundExecution（依赖=设置/提醒发布/单会话执行入口/逐派发记录） | 逐字迁移；价格校验与预占每实际派发一次；scheduler 构造期经 schedulerRef 惰性转发 |
+| 工具循环→能力执行 | runOrToolLoop 调 d.tools.execute（P02 起即通用 registry） | 不变（通用能力接口；无 BackgroundToolExecutor） | purpose 枚举属宿主公共运行合同（P06.2 不删） |
+| 程序事实入口 | （P03 已迁）窄 ProgramFactsPort | capabilities/contracts.ts | 提交即返回；消息/事实身份不混淆 |
+| Host.start 顺序 | recoveryPass→recoverSchedule→workers | 未改（无模块 start 钩子绕行） | P06.8 核对通过 |
+
+另列消息accepted/revised/published、afterCommit、context各钩子、背景executor、程序事实入口、HTTP域路由、worker启停（P07 填）。
 
 ## 临时重导出/兼容层登记（D24：迁移矩阵必须登记消费者与删除批次）
 

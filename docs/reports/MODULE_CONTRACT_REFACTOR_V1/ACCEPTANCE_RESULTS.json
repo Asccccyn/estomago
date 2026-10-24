@@ -332,12 +332,17 @@
       "phase": "P06",
       "setup": "正常预约，推进测试时钟到到期，模型fake返回一项真实记忆工具调用。",
       "assertions": "统一当前窗口/执行器/预算/发布；不是后台工具拷贝。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "b513e6c5b687aa523cef9340c9a78f2bfc9ff30c",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts --file=tests/unit/full-audit-wake.test.ts --file=tests/unit/full-audit-wake-wire.test.ts --file=tests/unit/keepwarm-sleep.test.ts --file=tests/unit/full-audit-tool-budget.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/wake-keepwarm.test.ts",
+        "tests/unit/exec-v1-wp4-executor.test.ts"
+      ],
+      "notes": "预约→到期→模型调用工具（chat_send_text/wake 工具链）经同一 registry 路径正式发布；CW-08 自醒单次发布、内部终答不发布。"
     },
     {
       "id": "A19",
@@ -346,12 +351,16 @@
       "phase": "P06",
       "setup": "正常保温时机，模型fake只回1。",
       "assertions": "维护回执正确，聊天/原文不多一条假发言。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "b513e6c5b687aa523cef9340c9a78f2bfc9ff30c",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts --file=tests/unit/full-audit-wake.test.ts --file=tests/unit/full-audit-wake-wire.test.ts --file=tests/unit/keepwarm-sleep.test.ts --file=tests/unit/full-audit-tool-budget.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/exec-v1-wp4-executor.test.ts"
+      ],
+      "notes": "纯保温回执（noop/\"1\"）不发布入聊天；K-11 心跳发言目标按正式发布时间。"
     },
     {
       "id": "A20",
@@ -360,12 +369,16 @@
       "phase": "P06",
       "setup": "正常保温回合调用获准工具或产生非1实际内容。",
       "assertions": "不被旧零工具/单请求规则封锁，按既有轨迹/发布语义处理。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "b513e6c5b687aa523cef9340c9a78f2bfc9ff30c",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts --file=tests/unit/full-audit-wake.test.ts --file=tests/unit/full-audit-wake-wire.test.ts --file=tests/unit/keepwarm-sleep.test.ts --file=tests/unit/full-audit-tool-budget.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/wake-keepwarm.test.ts"
+      ],
+      "notes": "心跳/唤醒做实质工具行为仍正确（C-02/K-12：工具调用→续轮→retained）。"
     },
     {
       "id": "A21",
@@ -374,12 +387,18 @@
       "phase": "P06",
       "setup": "背景回合正常开始，关闭开关或预算不满足时进入下一步。",
       "assertions": "后续未派发步骤停止；已发生费用不假退款；实际能力只准入一次。 非背景普通工具不因新接口强加背景报价门。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "b513e6c5b687aa523cef9340c9a78f2bfc9ff30c",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts --file=tests/unit/full-audit-wake.test.ts --file=tests/unit/full-audit-wake-wire.test.ts --file=tests/unit/keepwarm-sleep.test.ts --file=tests/unit/full-audit-tool-budget.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/full-audit-tool-budget.test.ts",
+        "tests/unit/keepwarm-sleep.test.ts",
+        "apps/host/src/application/background-execution.ts"
+      ],
+      "notes": "开关关闭/停止使后续步骤停（KIND_DISABLED/BUDGET_NOT_CONFIGURED）；费用一次预占/结算（F-T04 免费结算、报价元数据不进模型）；睡眠窗口/让位沿现行位置。"
     },
     {
       "id": "A22",
@@ -388,12 +407,17 @@
       "phase": "P06",
       "setup": "call_control取消/拒接路径产生一条现有程序事实轮。",
       "assertions": "只返回接受回执；同队列后继轮正常执行，非伪用户消息。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "b513e6c5b687aa523cef9340c9a78f2bfc9ff30c",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts --file=tests/unit/full-audit-wake.test.ts --file=tests/unit/full-audit-wake-wire.test.ts --file=tests/unit/keepwarm-sleep.test.ts --file=tests/unit/full-audit-tool-budget.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/dial-request-flow.test.ts",
+        "apps/host/src/capabilities/contracts.ts"
+      ],
+      "notes": "程序事实窄端口（P03）：提交即返回不等待后继轮；拒接/取消回合幂等；普通聊天连续性（dial-request-flow 全绿）。"
     },
     {
       "id": "A23",

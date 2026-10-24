@@ -301,31 +301,11 @@ export class Host {
     // 会话串行链（03 统一执行入口——chatBusy 用户在场门已删，排队与让位在执行位内处理）。
     const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
-      executor: {
-        async executeRun(input: Parameters<import('./runtime/background-scheduler.ts').BackgroundExecutor['executeRun']>[0]): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }> {
-          if (input.kind === 'reminder') {
-            // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
-            const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
-            const msg = await supervisor.enqueueBackground(input.conversationId, () => Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` })));
-            events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
-            return { outcome: 'completed', result_code: 'delivered' };
-          }
-          return supervisor.enqueueBackground(input.conversationId, () => {
-            // Recheck after acquiring the conversation's execution slot.
-            // Price validation and reservation occur once at every actual dispatch.
-            const kind = input.kind as 'autonomous' | 'keepwarm';
-            const es = bgSettings.effective();
-            if (!es[kind].enabled) return Promise.resolve({ outcome: 'noop' as const, result_code: kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' });
-            if (es[kind].daily_cost_cap_usd === null) return Promise.resolve({ outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' });
-            return supervisor.runBackgroundTurn({
-              kind, runId: input.runId, conversationId: input.conversationId, payload: input.payload,
-              isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
-              recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, ...info, capabilityName: info.capabilityName ?? null }),
-              maxModelRequests: es.autonomous.max_model_requests_per_run,
-            });
-          });
-        },
-      },
+      executor: (await import('./application/background-execution.ts')).createBackgroundExecution({
+        messages, events, bgSettings, supervisor,
+        // 构造期 scheduler 尚未就绪——经 schedulerRef 惰性转发（调用发生在 tick 之后）
+        scheduler: { recordDispatchStart: (...args: Parameters<BackgroundScheduler['recordDispatchStart']>) => schedulerRef!.recordDispatchStart(...args) },
+      }),
     });
     schedulerRef = scheduler;
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
