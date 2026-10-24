@@ -35,7 +35,7 @@ import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { oidoModelView } from '../../apps/host/src/integrations/oido/model-view.ts';
 import { CapabilityRegistry } from '../../apps/host/src/capabilities/registry.ts';
-import { oidoGetCapability, OIDO_GET_DEFINITION } from '../../apps/host/src/modules/oido/module.ts';
+import { oidoGetCapability, oidoAnalyzeCapability, OIDO_GET_DEFINITION } from '../../apps/host/src/modules/oido/module.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 const CREDENTIAL = 'ESTOMAGO_TEST_OIDO_CREDENTIAL';
@@ -93,6 +93,8 @@ test('A01/P02.7: 真实 Host 经 tool_define/invoke 调用已迁 oido_get——�
   const origRun = descriptor.run;
   descriptor.run = async (input, ctx) => { newHandlerCalls++; return origRun(input, ctx); };
   registry.register(descriptor);
+  // 生产装配自 P03 起同时登记 oido_analyze（尚未迁入的其余 oído 工具走旧路径）
+  registry.register(oidoAnalyzeCapability({ db, oido, sources: new ((await import('../../apps/host/src/modules/oido/source-repository.ts')).OidoSourceRepository)(db), audio: media }));
 
   const mariposa: MariposaTransport = async (cap) => {
     if (cap === 'bootstrap.get') return { ok: true, result: { snapshot_id: 'snap_t1', state_hash: 'h1', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: '', note: '' } } };

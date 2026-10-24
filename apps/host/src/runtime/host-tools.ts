@@ -25,7 +25,7 @@ import { executeMemoryReadFull } from '../memory-surfacing/detail-tool.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { quoteBackgroundTool } from './background-tool-cost.ts';
-import { OIDO_GET_DEFINITION } from '../modules/oido/module.ts';
+import { OIDO_GET_DEFINITION, OIDO_ANALYZE_DEFINITION } from '../modules/oido/module.ts';
 import { ContractError } from './or-contract.ts';
 // P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
@@ -714,25 +714,7 @@ function voiceDefinitions(): HostToolSpec[] {
 
 function oidoDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'oido_analyze',
-      description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。她明确要你听语气、或转写不足以判断她的状态时调用。audio_ref 形如 est:<asset_id>（语音消息投影里带）。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
-      parameters: {
-        type: 'object',
-        properties: {
-          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音引用（est:asset_id，投影中给出）' },
-          range_ms: {
-            type: 'array', minItems: 2, maxItems: 2,
-            items: { type: 'integer', minimum: 0 },
-            description: '可选：只听 [start,end) 毫秒区间',
-          },
-        },
-        required: ['audio_ref'], additionalProperties: false,
-      },
-    }
-  },
+  OIDO_ANALYZE_DEFINITION,  // P03.1a：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
   // P02.5：oido_get 定义唯一正本已迁 modules/oido/module.ts（逐字搬迁；此处只读同源，不双注册）
   OIDO_GET_DEFINITION,
   {
@@ -1512,59 +1494,6 @@ export class HostToolExecutor {
     }
   }
 
-  private async oidoAnalyze(args: { audio_ref: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.oido || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入（能力缺口，如实拒绝）' } };
-    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
-    if (!m) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'audio_ref 必须形如 est:<asset_id>' } };
-    const assetId = m[1];
-    // 会话可达性：资产必须绑定本会话某条消息（她发的或char发的语音都算）
-    const bound = this.oidoSourceAllowed(assetId,ctx.roomId);
-    if (!bound) return { ok: false, output: { error_code: 'ASSET_NOT_IN_ROOM', detail: '该语音不属于当前会话' } };
-    try {
-      const { bytes, mime } = this.media.readContent(assetId);
-      const row = this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
-      if (!row) return { ok: false, output: { error_code: 'ASSET_NOT_FOUND' } };
-      const vt = this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND conversation_id = ? AND content_sha256 = ? AND state = 'ready'").get(assetId, ctx.roomId, row.content_sha256) as { derived_text: string; derived_source: string } | undefined;
-      const transcript = vt?.derived_text ? { text: vt.derived_text, source: vt.derived_source ?? 'siren:transcribe' } : null;
-      ctx.signal?.throwIfAborted();
-      const receipt = await this.oido.ingestVoice({ assetId, bytes, sha256: row.content_sha256, mime, transcript, signal:ctx.signal });
-      // R6′（2026-10-23）：导入回执持久化——est asset ↔ oído audio_id 映射（此前被丢弃，
-      // 删除传播无从定位远端副本；幂等 upsert，deduplicated 指向既有资产时如实更新）
-      this.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
-        .run(assetId, row.content_sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString());
-      ctx.signal?.throwIfAborted();
-      // RE-12a（2026-10-24 返修）：导入后复验——源在导入期间被删除/撤权时，回执已落（远端
-      // 副本真实存在），必须登记删除意图（outbox 重试可定位）再如实拒绝；不静默留下无主副本
-      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)){
-        this.recordOidoDeleteIntent(assetId, receipt.audioId);
-        return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM',detail:'导入期间源已删除/撤权；远端副本已登记删除意图，稍后自动清理'}};
-      }
-      // RE-11（2026-10-24 返修）：操作幂等键=（turn,request,tool_call）——同轮同一工具调用
-      // 重试同键（服务端幂等去重）；同一请求内不同 tool_call 各自独立（上轮反例：同 request
-      // 两次 oido_analyze 共用一个键，接真实 oído 即 409）。旧执行路径无 tool_call_id 时
-      // 保留 (turn,request) 形态（legacy 直调，一次只有一个调用在跑）
-      const toolCallId = ctx.toolCallId ?? (typeof (args as Record<string, unknown>).__tool_call_id === 'string' ? String((args as Record<string, unknown>).__tool_call_id) : null);
-      const idemKey = toolCallId ? `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}:${toolCallId}` : `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`;
-      const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal:ctx.signal }).catch((err: Error) => {
-        if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
-          throw new Error('OIDO_CONTRACT_CHANGED');
-        }
-        throw err;
-      });
-      ctx.signal?.throwIfAborted();
-      if(!this.oidoSourceAllowed(assetId,ctx.roomId,row.content_sha256)) return {ok:false,output:{error_code:'ASSET_NOT_IN_ROOM'}};
-      const output=oidoModelView(result as unknown as Record<string,unknown>);
-      this.db.prepare('INSERT OR REPLACE INTO oido_source_bindings(analysis_id,conversation_id,asset_id,content_sha256) VALUES (?,?,?,?)').run(String(output.analysis_id),ctx.roomId,assetId,row.content_sha256);
-      return { ok: true, output };
-    } catch (err) {
-      if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
-      const msg = String((err as Error).message ?? err);
-      if (msg.startsWith('OIDO_UNAVAILABLE')) return { ok: false, output: { error_code: 'OIDO_UNAVAILABLE', detail: 'oído 服务当前不可达；稍后可用 oido_analyze 重试' } };
-      if (msg.startsWith('OIDO_CONTRACT_CHANGED')) return { ok: false, output: { error_code: 'OIDO_CONTRACT_CHANGED', detail: '分析合同已变更（版本升级）；请重新发起 oido_analyze（新键新分析）' } };
-      return { ok: false, output: { error_code: msg.slice(0, 40) || 'OIDO_FAILED', detail: msg.slice(0, 200) } };
-    }
-  }
-
   /** JOINT-VOICE-20261022（07）：中文找图——先补齐本会话未索引图片（有界），再查候选。
    *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
   private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -1849,7 +1778,7 @@ export class HostToolExecutor {
         isVoiceCallActive: (roomId: string) => this.voiceCallActive(roomId),
       });
     }
-    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'oido_analyze' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'transcript_read' && name !== 'oido_capabilities' && name !== 'oido_view' && name !== 'oido_find' && name !== 'oido_compare' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
@@ -1880,7 +1809,6 @@ export class HostToolExecutor {
     if (name === 'wake_manage') return this.wakeManage(checked.value as Record<string, unknown>, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
-    if (name === 'oido_analyze') return await this.oidoAnalyze(checked.value as { audio_ref: string; range_ms?: [number, number] }, ctx);
     if (name === 'transcript_read') return this.transcriptRead(checked.value as { audio_ref: string; cursor?: string }, ctx);
     if (name === 'oido_capabilities') return await this.oidoCapabilities(ctx);
     if (name === 'oido_view') return await this.oidoView(checked.value as { analysis_id: string; range_ms?: [number, number] }, ctx);

@@ -1,5 +1,6 @@
 // R5（2026-10-23）：oído 六工具 façade 补齐——capabilities/view/find/compare（会话绑定同门）。
 import { test } from 'node:test';
+import { wireOidoCapabilitiesForTest } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -29,6 +30,7 @@ function fixture() {
     compare: async (a: Record<string, unknown>) => { calls.push({ compare: a }); return { metrics: [], limits: [], baseline_comparison: { state: 'unavailable' } }; },
   };
   const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: adapter as never });
+  wireOidoCapabilitiesForTest(tools, { db, oido: adapter, media });
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r5' });
   const create = async () => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'q', origin: 'upload' });

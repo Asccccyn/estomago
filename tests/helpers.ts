@@ -7,6 +7,9 @@ import { openDatabase, type Db } from '../apps/host/src/db/connection.ts';
 import { migrate } from '../apps/host/src/db/migrations.ts';
 import { sha256Hex, genId } from '../apps/host/src/util/id.ts';
 import { buildPaths } from '../apps/host/src/config/paths.ts';
+import { CapabilityRegistry } from '../apps/host/src/capabilities/registry.ts';
+import { registerOidoCapabilities } from '../apps/host/src/modules/oido/module.ts';
+import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repository.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -99,4 +102,18 @@ export function readyRuntimePatch(sdkVersion?: string): Record<string, unknown> 
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// P03：测试装配镜像生产——已迁能力注册表（oído 域）。旧测试夹具构造执行器后调用本助手接线，
+// 断言不变；生产由 app-context 完成同一登记。
+export function wireOidoCapabilitiesForTest(
+  executor: { setCapabilityRegistry(r: { register(d: never): void }): void } | object,
+  deps: { db: Db; oido: unknown; media?: unknown },
+): void {
+  const registry = new CapabilityRegistry();
+  registerOidoCapabilities(registry, {
+    db: deps.db, oido: deps.oido as never, sources: new OidoSourceRepository(deps.db),
+    audio: (deps.media ?? null) as never,
+  });
+  (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
 }

@@ -30,4 +30,41 @@ export class OidoSourceRepository {
         AND msg.conversation_id=? LIMIT 1`).get(assetId, roomId) as { content_sha256: string } | undefined;
     return Boolean(row && (sha === undefined || sha === row.content_sha256));
   }
+
+  /** 资产内容 hash（analyze/find/compare 的 sha 门用）。 */
+  assetSha(assetId: string): string | undefined {
+    return (this.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(assetId) as { content_sha256: string } | undefined)?.content_sha256;
+  }
+
+  /** 可信转写（analyze 的 ingest 附件；P03.2 收进接入仓库——保留现行 SQL 条件） */
+  readyTranscript(assetId: string, roomId: string, sha: string): { derived_text: string; derived_source: string } | undefined {
+    return this.db.prepare("SELECT derived_text, derived_source FROM voice_transcripts WHERE asset_id = ? AND conversation_id = ? AND content_sha256 = ? AND state = 'ready'")
+      .get(assetId, roomId, sha) as { derived_text: string; derived_source: string } | undefined;
+  }
+
+  /** R6′：导入回执持久化——est asset ↔ oído audio_id 映射（幂等 upsert，deduplicated 指向既有资产时如实更新） */
+  recordIngestReceipt(estAssetId: string, contentSha256: string, oidoAudioId: string, deduplicated: boolean): void {
+    this.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
+      .run(estAssetId, contentSha256, oidoAudioId, deduplicated ? 1 : 0, new Date().toISOString());
+  }
+
+  /** RE-12：远端删除意图登记——markAssetMissing 与迟到导入回执共用同一入口（幂等 upsert）。 */
+  recordDeleteIntent(estAssetId: string, oidoAudioId: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
+      ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id, updated_at=excluded.updated_at`)
+      .run(estAssetId, oidoAudioId, now, now);
+  }
+
+  /** RE-05（view）：测量图工件登记（analysis+range 幂等；UI 经宿主二进制路由读取）。 */
+  saveViewArtifact(analysisId: string, rangeKey: string, assetId: string, contentSha256: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO oido_view_artifacts(analysis_id,range_json,asset_id,content_sha256,created_at) VALUES (?,?,?,?,?)')
+      .run(analysisId, rangeKey, assetId, contentSha256, new Date().toISOString());
+  }
+
+  /** R5：分析↔源绑定落库（analyze 交付前建立）。 */
+  bindAnalysis(analysisId: string, roomId: string, assetId: string, contentSha256: string): void {
+    this.db.prepare('INSERT OR REPLACE INTO oido_source_bindings(analysis_id,conversation_id,asset_id,content_sha256) VALUES (?,?,?,?)')
+      .run(analysisId, roomId, assetId, contentSha256);
+  }
 }

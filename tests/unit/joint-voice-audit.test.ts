@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { wireOidoCapabilitiesForTest } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -22,6 +23,7 @@ function fixture() {
  const output:any={analysis_id:'analysis_synthetic',revision:1,state:'ready',range_ms:[0,1000],observations:[{kind:'pause',range_ms:[0,10],value:0,unit:'ms',quality:'measured'},{kind:'pitch',range_ms:[0,1000],value:null,unit:'semitone',quality:'unavailable',reason:'unvoiced'}],limits:[],trace_id:'internal_trace',job_id:'internal_job',provider:{request_id:'private_request'},transcript:'duplicated transcript'};
  const adapter:any={ingestVoice:async()=>({audioId:'audio_synthetic',deduplicated:false}),analyze:async()=>structuredClone(output),getOverview:async()=>{gets++;return structuredClone(output)},getProsodyPage:async()=>{gets++;return {analysis_id:'analysis_synthetic',revision:1,syllables:[],next_cursor:'next'}}};
  const tools=new HostToolExecutor({db,media,messages,mariposa:null,reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db),oido:adapter});
+ wireOidoCapabilitiesForTest(tools, { db, oido: adapter, media });
  const ctx=(roomId='a'):ToolExecContext=>({roomId,windowId:'w',turnId:null,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[],requestId:'audit_synthetic'});
  const create=async()=>{const asset=await media.saveBuffer({bytes:Uint8Array.from([0x1a,0x45,0xdf,0xa3,0x02,0]),purpose:'chat_voice',operationId:'synthetic-upload',createdBy:'qiaosheng',origin:'upload'});messages.publishAssistantMessage({conversationId:'a',turnId:'t',content:'',kind:'voice',clientMessageId:'synthetic-message',attachments:[{asset_id:asset.id,presentation:'voice'}]});return asset;};
  return {root,db,media,messages,tools,ctx,create,output,gets:()=>gets,close(){db.close();fs.rmSync(root,{recursive:true,force:true});}};

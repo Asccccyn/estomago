@@ -32,9 +32,11 @@ export async function executeRegisteredCapability<I, O>(
   if (ctx.turnId && host.isVoiceCallActive(ctx.roomId) && !descriptor.memoryOnlyAllowed) {
     return { ok: false, output: { error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' } };
   }
-  // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用；正本=请求窗口冻结 spec
-  if (!frozenSpec) return { ok: false, output: { error_code: 'TOOL_NOT_IN_WINDOW' } };
-  const checked = descriptor.parse(rawArgs, frozenSpec);
+  // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用。
+  // 正本=请求窗口冻结 spec；模型调用恒有窗（discovery 提供）。无窗的宿主内部直调
+  // 沿旧行为等价回退=条目定义（与当前目录同一 JSON；validateToolArgs 旧回退同源）。
+  const spec = frozenSpec ?? descriptor.definition;
+  const checked = descriptor.parse(rawArgs, spec);
   if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
   // 宿主内部标识随校验后的参数透传（等价于旧 rawToolCallIdRef 单一读取；P04+ 全面去全局）
   const toolCallId = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
