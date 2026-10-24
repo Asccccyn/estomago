@@ -46,3 +46,9 @@ export type BackgroundToolQuote = { toolName: string; maxCostMicroUsd: number; v
 export type CapabilityOutcome<O> =
   | { ok: true; value: O; seenAdditions?: ReadonlyArray<SeenRef>; imageRefs?: string[] }
   | { ok: false; error: Record<string, unknown> };
+
+// P03.6：程序事实窄端口（04 §G）——只接受并持久化/安排同一执行链，返回接受回执；
+// 不等待后继回合完成，不把整个 Supervisor 交给模块。当前单队列仍是唯一执行者。
+export type ProgramFactsPort = {
+  submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown;
+};

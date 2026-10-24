@@ -26,6 +26,7 @@ import type { RotationReviewService } from '../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../memory/hold-checkpoint.ts';
 import { quoteBackgroundTool } from './background-tool-cost.ts';
 import { OIDO_GET_DEFINITION, OIDO_ANALYZE_DEFINITION, OIDO_CAPABILITIES_DEFINITION, OIDO_VIEW_DEFINITION, OIDO_FIND_DEFINITION, OIDO_COMPARE_DEFINITION } from '../modules/oido/module.ts';
+import { TRANSCRIPT_READ_DEFINITION, CALL_CONTROL_DEFINITION } from '../modules/voice/module.ts';
 import { ContractError } from './or-contract.ts';
 // P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
@@ -677,38 +678,8 @@ function mediaDefinitions(): HostToolSpec[] {
 
 function voiceDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'call_control',
-      description: '通话控制（协议①2026-10-24）：action=invite 给当前会话的她发出来电邀请（她页面会显示来电；她可以接听或拒接——拒接就是拒接，不自动补打）。邀请过期由服务端管理；她没接≠她拒绝。action=status 查询当前邀请状态。普通聊天与通话内均可用于接通相关控制；不能用于其他业务动作。',
-      parameters: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel', 'accept_call', 'decline_call'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（拒绝后在同一回复里对她说一句为什么/改约——她会看到）' },
-          ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
-        },
-        required: ['action'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      // R3′（2026-10-23）：长转写稳定续读——cursor 绑定 (asset, offset, 总字数)，
-      // 读取时按当前会话+活资产+可信转写复验（E10 同门），源变更如实报不静默重读
-      name: 'transcript_read',
-      description: '读取语音消息转写的下一页（长转写分页续读）。audio_ref 如 "est:<asset_id>"；首页可不带 cursor（从头读）；翻页带上页 next_cursor。源被删除或转写版本变化时如实报错，不静默重读。',
-      parameters: {
-        type: 'object',
-        properties: {
-          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
-          cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
-        },
-        required: ['audio_ref'], additionalProperties: false,
-      },
-    }
-  },
+  CALL_CONTROL_DEFINITION,  // P03.4/5：唯一正本已迁 modules/voice/module.ts（逐字搬迁，此处只读同源）,
+  TRANSCRIPT_READ_DEFINITION,  // P03.4/5：唯一正本已迁 modules/voice/module.ts（逐字搬迁，此处只读同源）,
   ];
 }
 
@@ -1040,7 +1011,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null; supervisorRef?: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -1057,7 +1028,6 @@ export class HostToolExecutor {
     this.taskService = deps.taskService ?? null;
     this.oido = deps.oido ?? null;
     this.sirenCall = deps.sirenCall ?? null;
-    this.supervisorRef = deps.supervisorRef ?? null;
     this.mediaIndex = deps.mediaIndex ?? null;
   }
 
@@ -1072,10 +1042,6 @@ export class HostToolExecutor {
   /** JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；未配置=工具如实拒绝） */
   private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
   private sirenCall: import('../integrations/siren/adapter.ts').SirenAdapter | null;
-  /** 拒接/取消留言调度（2026-10-24）：程序事实轮入口（可选注入；未注入=取消不触发说话轮，如实降级） */
-  private supervisorRef: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null = null;
-  /** app-context 后置注入（tools 先于 supervisor 构造） */
-  setSupervisorRef(s: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null): void { this.supervisorRef = s; }
   /** P02.6：已迁能力注册表（未注入=全部走旧路径，装配前零变化） */
   private capabilityRegistry: CapabilityRegistry | null = null;
   /** P02.6：装配根注入已迁能力注册表（显式创建，非自动发现）。 */
@@ -1339,91 +1305,13 @@ export class HostToolExecutor {
     'plans_read', 'context_review_complete',
     'tool_catalog', 'tool_define', 'tool_invoke', 'call_control',
   ]);
-  /** 通话激活（voice_calls active）——模型工具调用门与目录过滤的同一事实源 */
   private voiceCallActive(roomId: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(roomId));
-  }
-
-  private recordOidoDeleteIntent(estAssetId: string, oidoAudioId: string): void {
-    const now = new Date().toISOString();
-    this.db.prepare(`INSERT INTO oido_delete_intents(est_asset_id,oido_audio_id,attempts,last_error,created_at,updated_at) VALUES (?,?,0,NULL,?,?)
-      ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id, updated_at=excluded.updated_at`)
-      .run(estAssetId, oidoAudioId, now, now);
   }
 
   /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，
    *  不铺细碎工具）。invite=当前会话创建 Siren 来电邀请（服务端过期；拒接≠未接）；
    *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
-  private async callControl(args: { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    // 她→他的接/拒只动本地 dial_requests（decline）/或自带 Siren 不可达的如实分支（accept）——
-    // 不设全局 Siren 门；他→她的 invite/status/cancel/end 仍需 Siren 邀请服务
-    if (args.action !== 'accept_call' && args.action !== 'decline_call' && (!this.sirenCall || this.sirenCall.status !== 'available')) {
-      return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
-    }
-    try {
-      if (args.action === 'invite') {
-        const invite = await this.sirenCall!.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
-        if (!invite) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
-        return { ok: true, output: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
-      }
-      if (args.action === 'accept_call' || args.action === 'decline_call') {
-        const req = this.db.prepare("SELECT * FROM dial_requests WHERE conversation_id=? AND state='pending' ORDER BY created_at DESC LIMIT 1").get(ctx.roomId) as { id: string } | undefined;
-        if (!req) return { ok: false, output: { error_code: 'NO_PENDING_DIAL', detail: '没有等待中的通话请求（可能已过期或已处理）' } };
-        if (args.action === 'decline_call') {
-          this.db.prepare("UPDATE dial_requests SET state='declined', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), req.id);
-          return { ok: true, output: { request_id: req.id, state: 'declined', note: '已拒绝。她那边会显示你没接；你现在回复里说的话她会看到——说一句为什么或改约。' } };
-        }
-        // accept_call：est 建 Siren 通话，连接信息挂到请求上（前端轮询取走）
-        const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
-        if (!sirenBase) return { ok: false, output: { error_code: 'SIREN_UNCONFIGURED', detail: 'Siren 通话服务未配置（无法接听）' } };
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
-        if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
-        let sirenRes: Response;
-        try {
-          sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: ctx.roomId }), signal: AbortSignal.timeout(5000) });
-        } catch {
-          return { ok: false, output: { error_code: 'SIREN_UNREACHABLE', detail: '通话服务不可达，稍后可再试 accept_call' } };
-        }
-        if (!sirenRes.ok) return { ok: false, output: { error_code: 'SIREN_CALL_FAILED', detail: `建呼失败（${sirenRes.status}）` } };
-        const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string };
-        if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
-          return { ok: false, output: { error_code: 'SIREN_CONTRACT_INVALID' } };
-        }
-        const upd = this.db.prepare("UPDATE dial_requests SET state='accepted', ws_url=?, call_token=?, call_id=?, updated_at=? WHERE id=? AND state='pending'").run(created.ws_url, created.token, created.call_id, new Date().toISOString(), req.id);
-        if (upd.changes === 0) return { ok: false, output: { error_code: 'DIAL_SUPERSEDED', detail: '她已取消或请求已过期' } };
-        this.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(created.call_id, ctx.roomId, new Date().toISOString());
-        return { ok: true, output: { request_id: req.id, state: 'accepted', call_id: created.call_id, note: '已接听；她那边的电话面板马上会接通，正常和她说话即可。' } };
-      }
-      if (args.action === 'cancel') {
-        const st = await this.sirenCall!.listInvites(ctx.roomId);
-        const active = st?.active as { invite_id?: string } | null | undefined;
-        if (!st || !active || typeof active.invite_id !== 'string') return { ok: false, output: { error_code: 'NO_PENDING_INVITE', detail: '没有待取消的邀请（可能已过期或已被处理）' } };
-        const out = await this.sirenCall!.cancelInvite(active.invite_id);
-        if ((out?.['state'] as string | undefined) !== 'cancelled') return { ok: false, output: { error_code: 'SIREN_INVITE_TRANSITION_FAILED', detail: `终态=${String(out?.['state'] ?? 'unknown')}` } };
-        // 拒接留言调度②（2026-10-24）：他取消 → 附带说话轮（说明/改约落本会话）
-        this.supervisorRef?.submitProgramFactTurn(ctx.roomId, 'invite_cancelled',
-          `你于刚刚取消了自己发起的来电（她还没接听）。自然地跟她说一两句——说明原因或改约时间，落在本会话。`,
-          `invite:${active.invite_id}:cancelled`);
-        return { ok: true, output: { invite_id: active.invite_id, state: 'cancelled', note: '邀请已取消；接下来你说的每句话都会正常发到会话里' } };
-      }
-      if (args.action === 'end') {
-        // A11：模型提出挂断——找本会话 active 通话，转 Siren 柔性挂断（立即回执）。
-        // est 的 voice_calls 终态由前端面板挂断/收口链处理（本动作不伪造已结束）
-        const row = this.db.prepare("SELECT call_id FROM voice_calls WHERE conversation_id=? AND state='active' ORDER BY started_at DESC LIMIT 1").get(ctx.roomId) as { call_id: string } | undefined;
-        if (!row) return { ok: false, output: { error_code: 'NO_ACTIVE_CALL', detail: '当前没有进行中的通话' } };
-        const out = await this.sirenCall!.requestHangup(row.call_id);
-        if (!out) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
-        return { ok: true, output: { call_id: row.call_id, accepted: out.accepted, note: '结束意图已接受：等最后一段说完（约15秒窗口），她开口则取消；不是立即挂断' } };
-      }
-      const list = await this.sirenCall!.listInvites(ctx.roomId);
-      if (!list) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
-      return { ok: true, output: { active: list.active, recent: list.recent.slice(0, 3) } };
-    } catch (err) {
-      return { ok: false, output: { error_code: String((err as Error).message ?? err).slice(0, 40) || 'SIREN_CALL_FAILED' } };
-    }
-  }
-
   /** JOINT-VOICE-20261022（07）：中文找图——先补齐本会话未索引图片（有界），再查候选。
    *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
   private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -1460,46 +1348,6 @@ export class HostToolExecutor {
   //     不再凭 2400 字符假定破 8192B 门。
   //  ③ 快照游标：cursor 绑定转写内容身份（derived_text 的 sha256）+ 总字数——等长改写
   //     （甲→乙）也能检出旧游标失效（音频 hash 只代表资产身份，不代表转写版本）。
-  private transcriptRead(args: { audio_ref: string; cursor?: string }, ctx: ToolExecContext): ToolExecResult {
-    const assetId = args.audio_ref.slice('est:'.length);
-    const row = this.db.prepare(
-      `SELECT t.derived_text, a.content_sha256 FROM voice_transcripts t
-       JOIN media_assets a ON a.id = t.asset_id
-       WHERE t.asset_id = ? AND t.conversation_id = ? AND t.state = 'ready' AND t.content_sha256 = a.content_sha256 AND a.state = 'available'
-         AND EXISTS (SELECT 1 FROM message_attachments ma JOIN messages msg ON msg.id = ma.message_id AND msg.current_revision = ma.revision
-                     WHERE ma.asset_id = a.id AND ma.presentation = 'voice' AND msg.conversation_id = ?)`,
-    ).get(assetId, ctx.roomId, ctx.roomId) as { derived_text: string; content_sha256: string } | undefined;
-    if (!row) return { ok: false, output: { error_code: 'TRANSCRIPT_NOT_FOUND', message: '本会话无此语音的可信转写（未就绪/已删除/不在本会话/未作为已发送消息附件）' } };
-    const chars = [...row.derived_text];
-    const transcriptSha = sha256Hex(row.derived_text);
-    let offset = 0;
-    if (args.cursor) {
-      let parsed: { a?: string; o?: number; n?: number; h?: string };
-      try { parsed = JSON.parse(Buffer.from(args.cursor, 'base64url').toString('utf8')) as typeof parsed; } catch { return { ok: false, output: { error_code: 'TRANSCRIPT_CURSOR_INVALID' } }; }
-      const o = parsed.o;
-      if (parsed.a !== assetId || !Number.isInteger(o) || o === undefined || o < 0 || o > chars.length || parsed.n !== chars.length || parsed.h !== transcriptSha) {
-        return { ok: false, output: { error_code: 'TRANSCRIPT_SOURCE_CHANGED', message: '转写与游标不一致（转写版本变化或游标过期）——请重读首页' } };
-      }
-      offset = o;
-    }
-    // 包装开销：audio_ref/page/total_pages/next_cursor(h=64hex) 等字段序列化上界（实测 <640B，取保守值）
-    const WRAPPER_BUDGET = 700;
-    const sliced = sliceByByteBudget(row.derived_text, offset, TRANSCRIPT_PAGE_BUDGET_BYTES, WRAPPER_BUDGET);
-    if (sliced.pageText === '' && !sliced.done) return { ok: false, output: { error_code: 'TRANSCRIPT_PAGE_OVER_BUDGET', message: '单页预算内无进展（异常输入）' } };
-    const done = sliced.done;
-    return {
-      ok: true,
-      output: {
-        audio_ref: args.audio_ref,
-        page_text: sliced.pageText,
-        page_chars: [...sliced.pageText].length,
-        total_chars: chars.length,
-        byte_budget: TRANSCRIPT_PAGE_BUDGET_BYTES,
-        ...(done ? {} : { next_cursor: Buffer.from(JSON.stringify({ a: assetId, o: sliced.nextOffset, n: chars.length, h: transcriptSha }), 'utf8').toString('base64url') }),
-      },
-    };
-  }
-
   /** R5（2026-10-23）：oído 六工具 façade 补齐——capabilities/view/find/compare。
    *  view/find/compare 与 get 同门：analysis/源必须绑定当前会话（oidoSourceAllowed），
    *  前后复验；view 的原生图块直送主模型尚未接通（如实声明，图供界面）。 */
@@ -1572,9 +1420,10 @@ export class HostToolExecutor {
     if (Object.keys(args).some(k=>!allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
     if (name === 'tool_catalog') {
       this.admitBackgroundTool(name, ctx); // 保温批（3aa0164）：后台工具准入记账
-      // A04：通话内**新生成**的 catalog 只列记忆与必要通话控制；冻结目录/历史结果不变
+      // A04/D39：通话内**新生成**的 catalog 只列记忆与必要通话控制；冻结目录/历史结果不变。
+      // 资格判定统一为"已迁能力查条目元数据 + 未迁名查现行清单"（迁移期共存；P09 收口后只剩元数据）。
       const listing = this.voiceCallActive(ctx.roomId) && ctx.turnId
-        ? set.catalog.filter(t=>HostToolExecutor.MEMORY_ONLY_TOOLS.has(t.function.name))
+        ? set.catalog.filter(t => this.isMemoryOnlyAllowed(t.function.name))
         : set.catalog;
       return {ok:true,output:{tools:listing.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
     }
@@ -1590,6 +1439,14 @@ export class HostToolExecutor {
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return deny('TOOL_ARG_TYPE');
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, {...args.arguments as Record<string,unknown>,__tool_call_id:args.__tool_call_id},ctx,spec);
+  }
+
+  /** D39：通话 memory_only 资格统一判定——已迁能力读条目元数据（capabilities/registry），
+   *  未迁名沿现行 MEMORY_ONLY_TOOLS 清单；两者对同一名称结论一致（迁移期共存，集合不相交）。 */
+  private isMemoryOnlyAllowed(name: string): boolean {
+    const d = this.capabilityRegistry?.get(name);
+    if (d) return d.memoryOnlyAllowed;
+    return HostToolExecutor.MEMORY_ONLY_TOOLS.has(name);
   }
 
   private admitBackgroundTool(name: string, ctx: ToolExecContext): void {
@@ -1615,14 +1472,13 @@ export class HostToolExecutor {
         isVoiceCallActive: (roomId: string) => this.voiceCallActive(roomId),
       });
     }
-    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'transcript_read' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
+    if (name !== 'call_control' && name !== 'memory_hold' && name !== 'context_review_complete' && name !== 'memory_recall' && name !== 'memory_recall_next' && name !== 'conversation_read' && name !== 'memory_open' && name !== 'memory_correct' && name !== 'deletion_review' && name !== 'episode_list' && name !== 'episode_get' && name !== 'episode_apply' && name !== 'memory_i_read' && name !== 'memory_i_write' && name !== 'plans_read' && name !== 'plans_write' && name !== 'media_import' && name !== 'chat_send_attachment' && name !== 'media_search' && name !== 'background_complete' && name !== 'chat_send_text' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && name !== 'memory_read_full' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
     rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
     const checked = validateToolArgs(name, rawArgs, frozenSpec);
     if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
     if (rawToolCallIdRef.current !== null) checked.value.__tool_call_id = rawToolCallIdRef.current;
     this.admitBackgroundTool(name, ctx); // 保温批：后台工具准入记账
-    if (name === 'call_control') return await this.callControl(checked.value as { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number }, ctx);
     if (name === 'memory_hold') return this.memoryHold(checked.value, ctx);
     if (name === 'memory_recall') return this.memoryRecall(checked.value, ctx);
     if (name === 'memory_recall_next') return this.memoryRecallNext(checked.value, ctx);
@@ -1646,7 +1502,6 @@ export class HostToolExecutor {
     if (name === 'wake_manage') return this.wakeManage(checked.value as Record<string, unknown>, ctx);
     if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
     if (name === 'chat_send_attachment') return await this.chatSendAttachment(checked.value as { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx);
-    if (name === 'transcript_read') return this.transcriptRead(checked.value as { audio_ref: string; cursor?: string }, ctx);
     if (name === 'media_search') return await this.mediaSearch(checked.value as { query: string; limit?: number }, ctx);
     if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
     if (name === 'memory_read_full') return await this.memoryReadFull(checked.value as { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx);

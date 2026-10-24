@@ -10,6 +10,7 @@ import { buildPaths } from '../apps/host/src/config/paths.ts';
 import { CapabilityRegistry } from '../apps/host/src/capabilities/registry.ts';
 import { registerOidoCapabilities } from '../apps/host/src/modules/oido/module.ts';
 import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repository.ts';
+import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -104,11 +105,11 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// P03：测试装配镜像生产——已迁能力注册表（oído 域）。旧测试夹具构造执行器后调用本助手接线，
-// 断言不变；生产由 app-context 完成同一登记。
+// P03：测试装配镜像生产——已迁能力注册表（oído+voice 域）。旧测试夹具构造执行器后调用本助手
+// 接线，断言不变；生产由 app-context 完成同一登记。sirenCall/programFacts 可选（通话用例夹具传）。
 export function wireOidoCapabilitiesForTest(
-  executor: { setCapabilityRegistry(r: { register(d: never): void }): void } | object,
-  deps: { db: Db; oido: unknown; media?: unknown },
+  executor: object,
+  deps: { db: Db; oido: unknown; media?: unknown; sirenCall?: unknown; programFacts?: unknown },
 ): void {
   const registry = new CapabilityRegistry();
   registerOidoCapabilities(registry, {
@@ -116,5 +117,10 @@ export function wireOidoCapabilitiesForTest(
     audio: (deps.media ?? null) as never,
     artifacts: (deps.media ?? null) as never,
   });
+  if (deps.sirenCall !== undefined || deps.programFacts !== undefined) {
+    registerVoiceCapabilities(registry, {
+      db: deps.db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
+    });
+  }
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
 }

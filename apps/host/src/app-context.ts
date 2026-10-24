@@ -11,6 +11,7 @@ import { sha256Hex } from './util/id.ts';
 import { Logger } from './observability/logging.ts';
 import { stableErrorCode } from './observability/errors.ts';
 import { EventService } from './events/service.ts';
+import { createOidoDeleteRetryLifecycle } from './modules/oido/lifecycle.ts';
 import { MessageService } from './messages/service.ts';
 import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
@@ -37,7 +38,6 @@ import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { runMediaBackfillTick } from './media/index/backfill.ts';
-import { retryOneOidoDelete } from './integrations/oido/delete-retry.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -76,8 +76,8 @@ export class Host {
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
   private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
-  private oidoDeleteTimer: ReturnType<typeof setInterval> | null = null;
-  private oidoDeleteAbort: AbortController | null = null;
+  /** P03.8：oído 接入模块生命周期（删除传播重试 timer 的 start/stop 包装；行为逐字保持） */
+  private oidoLifecycle: import('./modules/oido/lifecycle.ts').OidoModuleLifecycle | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
@@ -110,6 +110,7 @@ export class Host {
     this.scheduler = deps.scheduler ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
     this.oidoRef = deps.oido ?? null;
+    this.oidoLifecycle = createOidoDeleteRetryLifecycle(deps.db, () => this.oidoRef);
     this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
@@ -268,9 +269,11 @@ export class Host {
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
     });
-    // 拒接/取消留言调度（2026-10-24）：call_control(cancel) 的说话轮入口（tools 先于
-    // supervisor 构造，这里补引用；不注入=取消不触发说话轮，如实降级）
-    (tools as unknown as { setSupervisorRef: (s: unknown) => void }).setSupervisorRef?.(supervisor);
+    // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
+    // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）
+    (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
+      db, sirenCall, programFacts: supervisor,
+    });
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
@@ -384,13 +387,8 @@ export class Host {
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
     this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
     this.mediaBackfillTimer.unref?.();
-    // R6′：oído 删除传播重试——独立定时器（≤1 条/跳，指数退避；表即状态，重启恢复）
-    this.oidoDeleteTimer = setInterval(() => {
-      if (!this.oidoRef) return;
-      this.oidoDeleteAbort = this.oidoDeleteAbort ?? new AbortController();
-      void retryOneOidoDelete(this.db, this.oidoRef, this.oidoDeleteAbort.signal).catch(() => {});
-    }, 30_000);
-    this.oidoDeleteTimer.unref?.();
+    // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
+    this.oidoLifecycle?.start();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
@@ -410,8 +408,7 @@ export class Host {
   async stop(): Promise<void> {
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
-    if (this.oidoDeleteTimer) { clearInterval(this.oidoDeleteTimer); this.oidoDeleteTimer = null; }
-    this.oidoDeleteAbort?.abort(); // R6′：停删除传播重试
+    this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代

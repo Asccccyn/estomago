@@ -28,7 +28,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { handleRequest } from '../../apps/host/src/server/http.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -64,7 +64,7 @@ function compose(root: string, transport: OrTransport) {
   const tools = new HostToolExecutor({ db, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
-  tools.setSupervisorRef(supervisor);
+  wireOidoCapabilitiesForTest(tools, { db, oido: null, programFacts: supervisor });
   const deps = { config, db, events, messages, supervisor, paths, logger: new Logger(path.join(root, 'logs')), auth: { isAuthorized: () => true, verifyToken: () => true, originAllowed: () => true } } as never;
   const call = async (route: string, method = 'GET', body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
     const res = new FakeRes();
