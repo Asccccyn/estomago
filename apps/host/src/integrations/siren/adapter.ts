@@ -1,10 +1,10 @@
 // ESTOMAGO_CHAT_EXEC_V1 §03.8.1（WP7）：Siren 语音适配器——真实 HTTP 调用。
-// 端点：POST /v1/voice/transcribe（multipart）+ POST /v1/voice/synthesize（JSON）。
+// 端点：POST /v1/voice/transcribe（multipart）+ 协议①通话/邀请族（R11 减法后：
+// synthesize/getVoiceMessage 无 est 消费者已退役；Siren 公开服务能力不受影响）。
 // 认证：Bearer SIREN_INTERNAL_TOKEN（loopback 直连，不经 OAuth）。
 // 端口：默认 8790（SIREN_PORT 环境变量）。
 
 export type SirenTranscribeResult = { text: string; language: string | null; durationMs: number | null; voiceMessageId: string | null } | null;
-export type SirenSynthesizeResult = { audio: Uint8Array; mimeType: string } | null;
 
 export class SirenTranscriptionError extends Error {
   readonly code: string;
@@ -57,31 +57,6 @@ export class SirenAdapter {
     };
   }
 
-  /** POST /v1/voice/synthesize——JSON→音频字节。 */
-  async synthesize(text: string, opts: { voiceProfile?: string } = {}): Promise<SirenSynthesizeResult> {
-    if (this.status === 'not_configured') return null;
-    const res = await fetch(`${this.baseUrl}/v1/voice/synthesize`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, ...(opts.voiceProfile ? { voice_profile: opts.voiceProfile } : {}) }),
-      signal: AbortSignal.timeout(60000),
-    });
-    if (!res.ok) return null;
-    const audio = new Uint8Array(await res.arrayBuffer());
-    const mimeType = res.headers.get('content-type') ?? 'audio/mpeg';
-    return { audio, mimeType };
-  }
-
-  /** GET /v1/voice/messages/:id——按 ID 读语音消息记录。 */
-  async getVoiceMessage(id: string): Promise<Record<string, unknown> | null> {
-    if (this.status === 'not_configured') return null;
-    const res = await fetch(`${this.baseUrl}/v1/voice/messages/${encodeURIComponent(id)}`, {
-      headers: { 'Authorization': `Bearer ${this.token}` },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) return null;
-    return await res.json() as Record<string, unknown>;
-  }
   // —— 协议①（2026-10-24）：来电邀请（est 认证授权→Siren 创建/查询/接听/拒接）——
 
   /** POST /v1/invites——创建来电邀请（expires_at 服务端权威；est 拨号动作的下游）。 */

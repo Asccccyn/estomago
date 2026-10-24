@@ -284,18 +284,6 @@ export class MediaService {
     });
   }
 
-  /** 消息附件绑定：按 (message, revision, position) 固定；新修订复制沿用（§3.3 编辑保留原附件）。 */
-  bindMessageAttachments(messageId: string, revision: number, attachments: Array<{ asset_id: string; presentation: 'image' | 'sticker' | 'voice'; caption?: string | null }>): void {
-    const nowIso = new Date().toISOString();
-    for (let i = 0; i < attachments.length; i++) {
-      const a = attachments[i]!;
-      this.db.prepare(
-        `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
-         VALUES (?,?,?,?,?,?,NULL,NULL,?)`,
-      ).run(messageId, revision, i, a.asset_id, a.presentation, a.caption ?? null, nowIso);
-    }
-  }
-
   listMessageAttachments(messageId: string, revision: number): Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }> {
     return this.db.prepare('SELECT asset_id, presentation, caption, derived_text, derived_source FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position').all(messageId, revision) as Array<{ asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null }>;
   }
