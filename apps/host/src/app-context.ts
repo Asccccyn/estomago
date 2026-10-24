@@ -235,7 +235,7 @@ export class Host {
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
     const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
-      db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media,
+      db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
     });
     const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
     tools.setCapabilityRegistry(capabilityRegistry);

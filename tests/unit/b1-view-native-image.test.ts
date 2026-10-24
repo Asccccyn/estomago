@@ -31,7 +31,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { setVisionSupportForTests, clearVisionSupportCache } from '../../apps/host/src/media/model-input.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -55,11 +55,13 @@ function compose(root: string, transport: OrTransport) {
   const routing = new RoutingService(db, new EventService(db), messages);
   const windows = new WindowManager(db, new EventService(db), identity, paths.handoffsDir, config);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: {
+  const oidoAdapter = {
     configured: true,
     capabilities: async () => ({ ok: true }),
     getView: async (id: string) => ({ mime: 'image/png', pngBase64: PNG.toString('base64'), metadata: { analysis_id: id } }),
-  } as never });
+  };
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: oidoAdapter as never });
+  wireOidoCapabilitiesForTest(tools, { db, oido: oidoAdapter, media });
   const supervisor = new TurnSupervisor({ db, config, messages, events: new EventService(db), identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, new EventService(db)), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db), media, oidoHearing: true });
   return { db, config, messages, supervisor, media, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }

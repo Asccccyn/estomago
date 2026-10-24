@@ -114,6 +114,7 @@ export function wireOidoCapabilitiesForTest(
   registerOidoCapabilities(registry, {
     db: deps.db, oido: deps.oido as never, sources: new OidoSourceRepository(deps.db),
     audio: (deps.media ?? null) as never,
+    artifacts: (deps.media ?? null) as never,
   });
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
 }

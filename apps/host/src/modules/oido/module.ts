@@ -33,6 +33,71 @@ export const OIDO_ANALYZE_DEFINITION: HostToolSpec = {
     }
   };
 
+/** oido_capabilities 定义唯一正本（原 host-tools oidoDefinitions 内该块逐字搬迁）。 */
+export const OIDO_CAPABILITIES_DEFINITION: HostToolSpec = {
+    type: 'function',
+    function: {
+      // R5（2026-10-23）：补齐 oído 六工具 façade（此前仅 analyze/get）
+      name: 'oido_capabilities',
+      description: '查看 oído 声学分析服务当前能力状态（各分面开关）。仅诊断用。',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    }
+  };
+
+/** oido_view 定义唯一正本（原 host-tools oidoDefinitions 内该块逐字搬迁）。 */
+export const OIDO_VIEW_DEFINITION: HostToolSpec = {
+    type: 'function',
+    function: {
+      name: 'oido_view',
+      description: '读取深听结果的测量图（波形+基频 PNG）。返回 base64 图与元数据；原生图块直送主模型的运输路径尚未接通（如实声明），图主要供界面展示。',
+      parameters: {
+        type: 'object',
+        properties: {
+          analysis_id: { type: 'string', minLength: 1, maxLength: 128 },
+          range_ms: { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2 },
+        },
+        required: ['analysis_id'], additionalProperties: false,
+      },
+    }
+  };
+
+/** oido_find 定义唯一正本（原 host-tools oidoDefinitions 内该块逐字搬迁）。 */
+export const OIDO_FIND_DEFINITION: HostToolSpec = {
+    type: 'function',
+    function: {
+      name: 'oido_find',
+      description: '在已分析的语音转写文字里找匹配片段（转写文字匹配，不是音频语义检索）。返回区间毫秒与命中文本；未对齐/无转写如实报。',
+      parameters: {
+        type: 'object',
+        properties: {
+          audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$' },
+          query: { type: 'string', minLength: 1, maxLength: 200 },
+          mode: { type: 'string', enum: ['substring', 'fuzzy'] },
+          limit: { type: 'integer', minimum: 1, maximum: 10 },
+          cursor: { type: 'string', minLength: 8, maxLength: 200 },
+        },
+        required: ['audio_ref', 'query'], additionalProperties: false,
+      },
+    }
+  };
+
+/** oido_compare 定义唯一正本（原 host-tools oidoDefinitions 内该块逐字搬迁）。 */
+export const OIDO_COMPARE_DEFINITION: HostToolSpec = {
+    type: 'function',
+    function: {
+      name: 'oido_compare',
+      description: '对比两次深听分析的声学测量（音高/时长等）。无已批准个人基线时明确 unavailable，不做"比平时"类判断。',
+      parameters: {
+        type: 'object',
+        properties: {
+          left: { type: 'object', properties: { audio_ref: { type: 'string' } }, required: ['audio_ref'], additionalProperties: false },
+          right: { type: 'object', properties: { audio_ref: { type: 'string' } }, required: ['audio_ref'], additionalProperties: false },
+        },
+        required: ['left', 'right'], additionalProperties: false,
+      },
+    }
+  };
+
 /** oido_get 定义唯一正本（原 host-tools oidoDefinitions 内该块逐字搬迁；属性顺序不变）。 */
 export const OIDO_GET_DEFINITION: HostToolSpec = {
   type: 'function',
@@ -51,7 +116,7 @@ export const OIDO_GET_DEFINITION: HostToolSpec = {
   },
 };
 
-export type OidoModuleDeps = { db: Db; oido: OidoAdapter | null; sources: OidoSourceRepository; audio?: import('./service.ts').AudioContentReader | null };
+export type OidoModuleDeps = { db: Db; oido: OidoAdapter | null; sources: OidoSourceRepository; audio?: import('./service.ts').AudioContentReader | null; artifacts?: import('./service.ts').ArtifactSaver | null };
 
 /** oido_get 能力条目（P02 只此一项；id/baselineOrder/owner 按 tool-ownership.json）。 */
 export function oidoGetCapability(deps: OidoModuleDeps): CapabilityDescriptor<OidoGetInput, OidoGetEvidence> {
@@ -90,9 +155,49 @@ export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescripto
   };
 }
 
-/** 装配入口：把 oído 已迁能力登记进 registry（app-context 调用；本批=oido_get+oido_analyze）。
+/** 轻量 oído 工具通用条目（capabilities/view/find/compare）：定义/校验/费用/资格逐项声明；
+ *  投影=透传（这四项的模型面形状由 service 直接构造，现行无 model-results 分支）。 */
+function oidoSimpleCapability<I extends Record<string, unknown>>(o: {
+  id: string; baselineOrder: number; definition: HostToolSpec; memoryOnlyAllowed: boolean;
+  run: (input: I, ctx: import('../../capabilities/contracts.ts').ToolExecContext) => Promise<import('../../capabilities/contracts.ts').CapabilityOutcome<Record<string, unknown>>>;
+}, deps: OidoModuleDeps): CapabilityDescriptor<I, Record<string, unknown>> {
+  const service = new OidoHearingService(deps);
+  void service;
+  return {
+    id: o.id,
+    owner: 'oido',
+    baselineOrder: o.baselineOrder,
+    definition: o.definition,
+    memoryOnlyAllowed: o.memoryOnlyAllowed,
+    label: o.id,
+    silent: false,
+    quote: (db) => quoteBackgroundTool(db, o.id),
+    parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: I } | { ok: false; code: string; detail: string },
+    run: o.run,
+    toModel: (value) => value,
+  };
+}
+
+/** 装配入口：把 oído 已迁能力登记进 registry（app-context 调用）。
  *  参数为注册表的最小结构面（register），避免装配依赖整个 registry 类。 */
 export function registerOidoCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: OidoModuleDeps): void {
   registry.register(oidoGetCapability(deps));
   registry.register(oidoAnalyzeCapability(deps));
+  const service = new OidoHearingService(deps);
+  registry.register(oidoSimpleCapability({
+    id: 'oido_capabilities', baselineOrder: 30, definition: OIDO_CAPABILITIES_DEFINITION, memoryOnlyAllowed: true,
+    run: (_input: Record<string, unknown>, ctx) => service.capabilities(ctx),
+  }, deps));
+  registry.register(oidoSimpleCapability({
+    id: 'oido_view', baselineOrder: 31, definition: OIDO_VIEW_DEFINITION, memoryOnlyAllowed: false,
+    run: (input: { analysis_id: string; range_ms?: [number, number] }, ctx) => service.view(input, ctx),
+  }, deps));
+  registry.register(oidoSimpleCapability({
+    id: 'oido_find', baselineOrder: 32, definition: OIDO_FIND_DEFINITION, memoryOnlyAllowed: false,
+    run: (input: { audio_ref: string; query: string; mode?: string; limit?: number; cursor?: string }, ctx) => service.find(input, ctx),
+  }, deps));
+  registry.register(oidoSimpleCapability({
+    id: 'oido_compare', baselineOrder: 33, definition: OIDO_COMPARE_DEFINITION, memoryOnlyAllowed: false,
+    run: (input: { left: { audio_ref: string }; right: { audio_ref: string } }, ctx) => service.compare(input, ctx),
+  }, deps));
 }

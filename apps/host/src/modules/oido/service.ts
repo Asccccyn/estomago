@@ -19,18 +19,24 @@ export type OidoAnalysisResult = { view: Record<string, unknown> };
 
 /** 受信音频内容读面（MediaService 的窄投影；不给模块整个 MediaService 写权限——P03.2）。 */
 export type AudioContentReader = { readContent(assetId: string): { bytes: Buffer; mime: string } };
+/** view 测量图工件落盘（原 saveBuffer 调用面；派生工件幂等键由调用方给）。 */
+export type ArtifactSaver = {
+  saveBuffer(opts: { bytes: Uint8Array; purpose: import('../../media/assets.ts').IngestPurpose; operationId: string; createdBy: string; origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null }): Promise<{ id: string; content_sha256: string; byte_size: number }>;
+};
 
 export class OidoHearingService {
   private readonly db: Db;
   private readonly oido: OidoAdapter | null;
   private readonly sources: OidoSourceRepository;
   private readonly audio: AudioContentReader | null;
+  private readonly artifacts: ArtifactSaver | null;
 
-  constructor(deps: { db: Db; oido: OidoAdapter | null; sources: OidoSourceRepository; audio?: AudioContentReader | null }) {
+  constructor(deps: { db: Db; oido: OidoAdapter | null; sources: OidoSourceRepository; audio?: AudioContentReader | null; artifacts?: ArtifactSaver | null }) {
     this.db = deps.db;
     this.oido = deps.oido;
     this.sources = deps.sources;
     this.audio = deps.audio ?? null;
+    this.artifacts = deps.artifacts ?? null;
   }
 
   /** 读深听结果（概览/逐字谱分页）——原 HostToolExecutor.oidoGet 逐字迁移。 */
@@ -108,6 +114,103 @@ export class OidoHearingService {
       if (msg.startsWith('OIDO_UNAVAILABLE')) return { ok: false, error: { error_code: 'OIDO_UNAVAILABLE', detail: 'oído 服务当前不可达；稍后可用 oido_analyze 重试' } };
       if (msg.startsWith('OIDO_CONTRACT_CHANGED')) return { ok: false, error: { error_code: 'OIDO_CONTRACT_CHANGED', detail: '分析合同已变更（版本升级）；请重新发起 oido_analyze（新键新分析）' } };
       return { ok: false, error: { error_code: msg.slice(0, 40) || 'OIDO_FAILED', detail: msg.slice(0, 200) } };
+    }
+  }
+
+  /** R5：能力探测（轻量通话允许）。原 HostToolExecutor.oidoCapabilities 逐字迁移。 */
+  async capabilities(_ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
+    if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入' } };
+    try {
+      const caps = await this.oido.capabilities();
+      return { ok: true, value: caps as unknown as Record<string, unknown> };
+    } catch { return { ok: false, error: { error_code: 'OIDO_UNAVAILABLE' } }; }
+  }
+
+  /** R5/RE-05：view——测量图字节落为本地派生工件，模型面只带最小引用与限制。
+   *  原 HostToolExecutor.oidoView 逐字迁移（前后 oidoAnalysisAllowed 复验、imageRefs 通道）。 */
+  async view(args: { analysis_id: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
+    if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const allowed = (): boolean => {
+      const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
+      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256));
+    };
+    if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听' } };
+    try {
+      ctx.signal?.throwIfAborted();
+      const view = await this.oido.getView(args.analysis_id, args.range_ms, ctx.signal);
+      ctx.signal?.throwIfAborted();
+      if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM' } };
+      // RE-05（2026-10-24 返修）：图与正文分路——PNG base64 不再进普通工具 JSON。
+      // 字节落为本地派生工件（幂等键=analysis+range，同图复用），模型面只带最小引用与限制；
+      // UI 经宿主二进制路由读取（GET /api/v1/oido/views/<id>）；支持图的宿主在发送边界按
+      // 型号图像能力把原图作为原生块随工具结果物化（不支持时如实声明"未随正文携带"）。
+      const rangeKey = args.range_ms ? `${args.range_ms[0]},${args.range_ms[1]}` : 'full';
+      let artifactAssetId: string | null = null;
+      if (this.artifacts) {
+        const asset = await this.artifacts.saveBuffer({
+          bytes: Uint8Array.from(Buffer.from(view.pngBase64, 'base64')),
+          purpose: 'derived_view', operationId: `oido-view-${args.analysis_id}:${rangeKey}`,
+          createdBy: 'host', origin: 'generated', originService: 'oido', originRef: args.analysis_id,
+        });
+        this.sources.saveViewArtifact(args.analysis_id, rangeKey, asset.id, asset.content_sha256);
+        artifactAssetId = asset.id;
+      }
+      const out: Record<string, unknown> = {
+        analysis_id: args.analysis_id,
+        ...(args.range_ms ? { range_ms: args.range_ms } : {}),
+        image: artifactAssetId !== null
+          ? { view: 'ui_only', ui_ref: `/api/v1/oido/views/${encodeURIComponent(args.analysis_id)}${args.range_ms ? `?range_ms=${args.range_ms[0]},${args.range_ms[1]}` : ''}`, mime: view.mime, note: '测量图已存为界面资产，未随工具正文携带；当前型号/通道未携带原图时不得声称已看图，结论以 oido_get 的数值证据为准' }
+          : { view: 'unavailable', note: '宿主未配置媒体服务，图未保存；不得声称已看图' },
+      };
+      return { ok: true, value: out, ...(artifactAssetId !== null ? { imageRefs: [artifactAssetId] } : {}) };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED' } };
+      return { ok: false, error: { error_code: String((err as Error).message ?? err).slice(0, 40) || 'OIDO_FAILED' } };
+    }
+  }
+
+  /** R5/RE-06：find——交付前复验（迟到结果不交付撤权后证据）。原 oidoFind 逐字迁移。 */
+  async find(args: { audio_ref: string; query: string; mode?: string; limit?: number; cursor?: string }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
+    if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
+    if (!m) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID' } };
+    const assetId = m[1]!;
+    const sha = this.sources.assetSha(assetId);
+    if (!sha || !this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM' } };
+    try {
+      const result = await this.oido.find({ audioRef: args.audio_ref, query: args.query, mode: args.mode, limit: args.limit, cursor: args.cursor, signal: ctx.signal });
+      // RE-06（2026-10-24 返修）：交付前复验——远端读取期间源被删除/撤权（等长改写亦换 sha）
+      // 的迟到结果不交付（上轮反例：await 后直接 ok:true 交付撤权后证据）
+      if (!this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
+      return { ok: true, value: result as unknown as Record<string, unknown> };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED' } };
+      return { ok: false, error: { error_code: String((err as Error).message ?? err).slice(0, 60) || 'OIDO_FAILED' } };
+    }
+  }
+
+  /** R5/RE-06：compare——双侧同门+交付前双侧复验。原 oidoCompare 逐字迁移。 */
+  async compare(args: { left: { audio_ref: string }; right: { audio_ref: string } }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
+    if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    const shas: Array<[string, string]> = [];
+    for (const side of [args.left, args.right]) {
+      const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(side.audio_ref ?? '');
+      if (!m) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID' } };
+      const assetId = m[1]!;
+      const sha = this.sources.assetSha(assetId);
+      if (!sha || !this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM' } };
+      shas.push([assetId, sha]);
+    }
+    try {
+      const result = await this.oido.compare({ left: { audio_ref: args.left.audio_ref }, right: { audio_ref: args.right.audio_ref }, signal: ctx.signal });
+      // RE-06：同 find——迟到交付前双侧复验
+      for (const [assetId, sha] of shas) {
+        if (!this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
+      }
+      return { ok: true, value: result as unknown as Record<string, unknown> };
+    } catch (err) {
+      if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED' } };
+      return { ok: false, error: { error_code: String((err as Error).message ?? err).slice(0, 60) || 'OIDO_FAILED' } };
     }
   }
 }
