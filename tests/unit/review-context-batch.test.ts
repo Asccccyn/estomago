@@ -176,3 +176,50 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   assert.equal(half.ok, false, '续查参数必须成对');
   db.close();
 });
+
+// 否定续查（2026-10-24 她裁·reject 接入）："不对，不是这个——排除它再找"。
+// est 此前只有 refine（把条件说得更具体）；reject 是结构性排除（M 侧 session_local
+// 标记，后续检索确定性排除），不依赖检索器理解否定句。生产流水证据：五动作零使用、
+// est 无等价物——本批把 reject 语义接进现有 memory_recall（不加新工具）。
+test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查身份早失败；resource_ref 通道可用', async () => {
+  const root = tempRoot('rcb-rej-');
+  writeApprovedIdentity(root);
+  buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
+  const db = openDatabase(path.join(root, 'data'));
+  migrate(db, sha256Hex);
+  const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
+  const refinePacket = {
+    recall_session_id: 'rs_9', revision: 2, search_status: 'FOUND',
+    judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
+    candidates: [{ memory_id: '00002' }],
+    continuation: { continue_request_ref: 'cont_next', for_revision: 2 },
+  };
+  const mariposa: MariposaTransport = async (cap, payload) => {
+    calls.push({ cap, payload: payload as Record<string, unknown> });
+    return { ok: true, result: cap === 'memory.recall.reject' ? { rejected: { candidate_ref: 'cand_1' }, session_id: 'rs_9', revision: 2 } : refinePacket };
+  };
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't9', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
+  // ① 缺续查身份 → 早失败（不静默忽略、不冒充全新检索）
+  const early = await tools.execute('memory_recall', { __tool_call_id: 'rj0', query: '再找', reject_candidate_ref: 'cand_1' }, CTX);
+  assert.equal(early.ok, false);
+  assert.equal((early.output as { error_code: string }).error_code, 'TOOL_ARG_REQUIRED');
+  assert.equal(calls.length, 0, '早失败零外发');
+  // ② 否定续查：先 reject（candidate_ref 通道）后 refine，顺序与身份如实
+  const out = await tools.execute('memory_recall', { __tool_call_id: 'rj1', query: '不是海边那次，再找找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'cand_1' }, CTX);
+  assert.equal(out.ok, true);
+  assert.equal(calls[0]!.cap, 'memory.recall.reject', '先排除');
+  const rej = calls[0]!.payload as Record<string, unknown>;
+  assert.equal(rej.session_id, 'rs_9');
+  assert.equal(rej.candidate_ref, 'cand_1');
+  assert.equal(rej.reject_target, 'candidate');
+  assert.ok(String(rej.operation_id).startsWith('es-rej-'), 'operation_id 幂等身份由宿主派生');
+  assert.equal(calls[1]!.cap, 'memory.recall.refine', '排除后按新条件续查（同会话）');
+  assert.equal((calls[1]!.payload as Record<string, unknown>).session_id, 'rs_9');
+  // ③ memory: 前缀 → resource_ref 通道（M 侧支持反查会话候选）
+  await tools.execute('memory_recall', { __tool_call_id: 'rj2', query: '再找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'memory:00001' }, CTX);
+  const rej2 = calls[2]!.payload as Record<string, unknown>;
+  assert.equal(rej2.resource_ref, 'memory:00001', '资源引用走 resource_ref 通道');
+  assert.equal(rej2.candidate_ref, undefined);
+  db.close();
+});

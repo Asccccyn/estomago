@@ -327,6 +327,21 @@ export class MariposaClient {
     });
   }
 
+  /** 否定反馈（2026-10-24 她裁·reject 接入）：会话内结构性排除候选——
+   *  M 侧 session_local 标记（P1-01 收据原子），后续 refine 检索确定性
+   *  排除之；不修改全局记忆。candidateRef/resourceRef 二选一（M 侧支持
+   *  只给 resource_ref 反查会话候选）。operation_id 幂等，重试安全。 */
+  async recallReject(args: { sessionId: string; candidateRef?: string; resourceRef?: string; operationId: string; conversationScope?: string }): Promise<MariposaCallResult> {
+    return this.transport('memory.recall.reject', {
+      session_id: args.sessionId,
+      ...(args.candidateRef ? { candidate_ref: args.candidateRef } : {}),
+      ...(args.resourceRef ? { resource_ref: args.resourceRef } : {}),
+      reject_target: 'candidate',
+      operation_id: args.operationId,
+      ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+    });
+  }
+
   /** 找话第二批（2026-10-10）：Round2 原文深搜——M 的独立入口
    *  （S13 门服务端核验：reason 闭集+Round1 完成回执+政策纪元一致）。
    *  operationId 由宿主派生（同 tool_call 重试同幂等身份）。 */

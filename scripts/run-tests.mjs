@@ -73,6 +73,8 @@ function runOne(file) {
         LANG: process.env.LANG,
         ESTOMAGO_TEST_MODE: '1',
         ESTOMAGO_HOME: fs.mkdtempSync(path.join(os.tmpdir(), 'estomago-test-home-')),
+        // 显式 opt-in 透传（envelope golden 重建开关——非凭据，仅 '1' 精确匹配）
+        ...(process.env.ESTOMAGO_UPDATE_GOLDEN === '1' ? { ESTOMAGO_UPDATE_GOLDEN: '1' } : {}),
       },
     });
     const timer = setTimeout(() => {

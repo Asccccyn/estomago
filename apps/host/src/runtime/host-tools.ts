@@ -131,6 +131,7 @@ export function buildHostTools(): HostToolSpec[] {
           lexical_terms: { type: 'array', items: { type: 'string', minLength: 1 }, description: '可选：关键词（如["中秋","月亮"]）——需要精确命中时补充；不给则走语义通道' },
           refine_session_id: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的 recall_session_id（同一召回会话内收窄/换角度）' },
           refine_continue_ref: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的续查引用（与 refine_session_id 成对）' },
+          reject_candidate_ref: { type: 'string', minLength: 1, maxLength: 256, description: '否定续查时填：要排除的候选引用（上一轮结果里的 candidate_ref 或 memory:xxx 资源引用）。先在该会话内结构性排除此候选，再按新 query 续查（必须同时带 refine_session_id/refine_continue_ref/channel）。用于"不对，不是这个——排除它再找"；不要把否定写进 query 文本代替此参数' },
           deep_search: { type: 'boolean', description: '原文深搜（Round2）：找话/召回证据不足、上一轮提示"原话证据不足可深搜"时用——对已授权来源原文做第二轮深查。必须带 refine_session_id 与 deep_reason；服务端核验首轮完成与理由真实性，不可用时如实返回' },
           deep_reason: { type: 'string', enum: ['EVIDENCE_INSUFFICIENT', 'VERBATIM_REQUIRED_NOT_MET', 'SOURCE_DISAMBIGUATION_NEEDED', 'NO_DELIVERABLE_CANDIDATE', 'EXPLICIT_REJECT_AFTER_DELIVERY'], description: '深搜理由（服务端闭集核验）：EVIDENCE_INSUFFICIENT=证据不足（最常用）；VERBATIM_REQUIRED_NOT_MET=需要逐字原话未满足；SOURCE_DISAMBIGUATION_NEEDED=来源需要消歧；NO_DELIVERABLE_CANDIDATE=无可交付候选；EXPLICIT_REJECT_AFTER_DELIVERY=交付后被明确否定' },
           date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '查询涉及明确日期/日期段时必填（与 date_to 成对）：按记忆桶的事件日期直接收窄候选，比语义匹配可靠得多。如查"9月25到27日"填 2026-09-25 / 2026-09-27' },
@@ -2129,6 +2130,11 @@ export class HostToolExecutor {
     if ((refineSession || refineRef) && !(refineSession && refineRef) && args.deep_search !== true) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '续查须同时带 refine_session_id 与 refine_continue_ref' } };
     }
+    // 否定续查前置校验：reject 作用于既有会话（排除后按新 query 续查），
+    // 无续查身份时早失败（不静默忽略、不冒充全新检索）
+    if (typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 && !(refineSession && refineRef)) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '否定续查（reject_candidate_ref）必须同时带 refine_session_id 与 refine_continue_ref——先排除该候选，再按新 query 在同一会话续查', request_ref: requestRef } };
+    }
     const lexical = Array.isArray(args.lexical_terms) ? (args.lexical_terms as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
     // 找话第一批（2026-10-10，她排期/林石见复核）：查询目标显式化。
     // 首轮省略=查事件（旧行为不变）；**续查必须明确携带**——M 对省略
@@ -2171,6 +2177,31 @@ export class HostToolExecutor {
     let r: Awaited<ReturnType<MariposaClient['recallStart']>> | Awaited<ReturnType<MariposaClient['recallRefine']>>;
     try {
       if (refineSession && refineRef) {
+        // 否定续查（2026-10-24 她裁·reject 接入）：先在会话内结构性排除指定候选
+        //（M 侧 session_local 标记，后续检索确定性排除），再按新条件 refine。
+        // 与把否定写进 query 文本的区别：结构化排除是确定性的，不依赖检索器
+        // 理解"不是海边"。operation_id 幂等（M 侧 P1-01 收据原子）——重试安全。
+        const rejectRef = typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 ? args.reject_candidate_ref : '';
+        if (rejectRef) {
+          const isResourceRef = rejectRef.startsWith('memory:');
+          const rejOp = `es-rej-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}:reject`).slice(0, 36)}`;
+          let rej: Awaited<ReturnType<MariposaClient['recallReject']>>;
+          try {
+            rej = await this.mariposa.recallReject({
+              sessionId: refineSession,
+              ...(isResourceRef ? { resourceRef: rejectRef } : { candidateRef: rejectRef }),
+              operationId: rejOp,
+              conversationScope: ctx.roomId,
+            });
+          } catch {
+            return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: refineRef || requestRef } };
+          }
+          if (!rej.ok) {
+            const rejUnknown = rej.code.startsWith('HTTP_5') || rej.code === 'HTTP_429' || rej.code.startsWith('TRANSPORT');
+            const rejMsg = (rej as { message?: string }).message;
+            return { ok: false, output: { error_code: rejUnknown ? 'RECALL_OUTCOME_UNKNOWN' : `RECALL_${rej.code}`, request_ref: requestRef, ...(rejMsg ? { message: rejMsg } : {}) } };
+          }
+        }
         r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}) });
       } else {
         r = await this.mariposa.recallStart({
