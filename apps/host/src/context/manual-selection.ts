@@ -8,7 +8,8 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
-import { CONSERVATIVE_IMAGE_TOKENS } from '../media/model-input.ts';
+import { projectRevisionBlocks } from '../media/model-input.ts';
+import { selectionGuides } from './selection-projection.ts';
 
 export type SelectionItem = {
   message_id: string;
@@ -17,7 +18,6 @@ export type SelectionItem = {
   speaker: 'owner' | 'assistant';
   content_hash: string;
   content_chars: number;
-  image_count?: number; // EXEC_V1 §03.6.1：该修订图片/表情数（容量保守估算用）
 };
 
 export type RotationCause = 'manual' | 'capacity' | 'identity_change' | 'initial';
@@ -62,7 +62,6 @@ type ItemRow = {
   kind: string;
   revision: number;
   content_hash: string;
-  image_count?: number;
   content_chars: number;
 };
 
@@ -161,8 +160,7 @@ export class ManualSelectionService {
       seen.add(it.message_id);
       const row = this.db.prepare(
         `SELECT m.id, m.sequence, m.speaker, m.current_revision, m.published_at, m.kind,
-                r.revision, r.content_hash, LENGTH(r.content) AS content_chars,
-                (SELECT COUNT(*) FROM message_attachments ma WHERE ma.message_id = m.id AND ma.revision = r.revision AND ma.presentation IN ('image','sticker')) AS image_count
+                r.revision, r.content_hash, LENGTH(r.content) AS content_chars
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
          WHERE m.id = ? AND m.conversation_id = ?`,
       ).get(it.message_id, conversationId) as ItemRow | undefined;
@@ -183,7 +181,7 @@ export class ManualSelectionService {
         conflicts.push({ message_id: it.message_id, expected_revision: wantRev, current_revision: row.current_revision });
         continue;
       }
-      valid.push({ message_id: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content_hash: row.content_hash, content_chars: row.content_chars, image_count: (row as ItemRow & { image_count?: number }).image_count ?? 0 });
+      valid.push({ message_id: row.id, revision: row.current_revision, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', content_hash: row.content_hash, content_chars: row.content_chars });
     }
     if (unknown.length > 0) return { ok: false, error: { code: 'CONTEXT_SELECTION_UNKNOWN_MESSAGE', message_ids: unknown } };
     if (forbidden.length > 0) return { ok: false, error: { code: 'CONTEXT_SELECTION_FORBIDDEN_KIND', message_ids: forbidden } };
@@ -204,13 +202,22 @@ export class ManualSelectionService {
   }
 
   /** 粗估 token（§6.2：选集+A/B 系统段+待回答输入；未知 tokenizer 标 rough；
-   *  预计装下仍由请求级容量终检兜底）。 */
+   *  预计装下仍由请求级容量终检兜底）。
+   *  R05（2026-10-24 根因修复）：历史选集现行合同是 textOnly 投影（正文+图片占位+
+   *  caption+可信转写首页，不产视觉块）——估算与发送同源：直接消费同一投影器
+   *  projectRevisionBlocks 与同一 guides 生成，不再维护第二个近似模型；
+   *  历史图片按占位文本如实计费，不再加每张 1600 的虚假视觉成本（旧链会把
+   *  纯文本装得下的选集错误拒绝）。当前输入的真实视觉计量不受影响（§8 estimator/
+   *  视觉门各自独立）。旧持久选集 items_json 含 image_count 键时自然忽略。 */
   estimateTokens(items: SelectionItem[], est: EstimateContext): number {
-    const selectedChars = items.reduce((s, it) => s + it.content_chars, 0);
-    // EXEC_V1 §03.6.1：媒体成本进容量估算——图片按保守 token 计（未核实计量方式，标 rough），
-    // 不把 Base64 字符数当 token（§8 estiamtor 同源常量）
-    const imageTokens = items.reduce((s, it) => s + (it as { image_count?: number }).image_count! * CONSERVATIVE_IMAGE_TOKENS, 0);
-    return Math.ceil((selectedChars + est.systemChars + est.tailInputChars) / est.charsPerToken) + imageTokens;
+    const loaded = this.loadContents(items).loaded;
+    let chars = est.systemChars + est.tailInputChars;
+    for (const m of loaded) {
+      const proj = projectRevisionBlocks(m.content, m.attachments.map((a) => ({ ...a, presentation: a.presentation as 'image' | 'sticker' | 'voice' })), { textOnly: true });
+      for (const b of proj.blocks) if (b.type === 'text') chars += b.text.length;
+    }
+    for (const guide of selectionGuides(loaded).values()) chars += guide.length;
+    return Math.ceil(chars / est.charsPerToken);
   }
 
   /** preview：只读核验（不写库、不跑模型、不 hold、不换窗）。 */

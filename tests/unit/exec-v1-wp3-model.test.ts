@@ -234,7 +234,7 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   assert.equal((r4.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
 });
 
-test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；容量含图片保守成本', async () => {
+test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估算与 textOnly 投影同源（R05）', async () => {
   const root = tempRoot('wp3-m2-sel-');
   const transport: OrTransport = async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) });
   const ctx = compose(root, transport);
@@ -253,11 +253,23 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；容�
   const loaded = ctx.selections.loadContents([{ message_id: vMsg.message.id, revision: 1, sequence: vMsg.message.sequence, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 1 }]);
   assert.equal(loaded.loaded[0]!.attachments.length, 1);
   assert.equal(loaded.loaded[0]!.attachments[0]!.asset_id, voice.id);
-  // 容量估算：一张图 +1600（保守工程值），两张图 +3200
-  const est1 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 100, image_count: 1 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
-  const est2 = ctx.selections.estimateTokens([{ message_id: 'm', revision: 1, sequence: 1, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 100, image_count: 2 }], { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
-  assert.equal(est1, Math.ceil(100 / 2.5) + 1600);
-  assert.equal(est2, Math.ceil(100 / 2.5) + 3200);
+  // R05（2026-10-24）：估算与发送同源——历史图片按 textOnly 占位文本计费。
+  // 临界实例：5 张贴纸（实际投影=5 段占位文本）估算必须由真实文本预算决定，
+  // 旧链会加 5×1600=8000 token 把纯文本装得下的选集错误拒绝。
+  for (let i = 0; i < 4; i++) {
+    ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: `s3-${i}`, attachments: [{ asset_id: sticker.id, presentation: 'sticker' }] });
+  }
+  const imgItems = (ctx.db.prepare("SELECT m.id, m.sequence FROM messages m WHERE m.conversation_id='c1' AND m.id != ? ORDER BY m.sequence").all(vMsg.message.id) as Array<{ id: string; sequence: number }>)
+    .map((r) => ctx.selections.validateItems('c1', [{ message_id: r.id }], 999))
+    .flatMap((x) => (x.ok ? x.items : []));
+  assert.equal(imgItems.length, 5, '五条贴纸历史可选');
+  const est = ctx.selections.estimateTokens(imgItems, { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
+  assert.ok(est < 100, `5 张历史图片的 textOnly 估算按占位文本计（实际 ${est}；旧口径会 ≥8000）`);
+  // 临界边界：容量上限放在文本预算与旧 1600/图口径之间——新口径必须 fits
+  const pv = ctx.selections.preview({ conversationId: 'c1', sourceWindowId: 'csel-src-x', expectedWindowRevision: 0, items: imgItems.map((it) => ({ message_id: it.message_id })), cutoffSequence: 999, estimate: { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 }, capacityBoundTokens: est + 1599 });
+  assert.equal((pv as { ok: boolean; result?: { fits: boolean; estimated_tokens: number } }).ok, true);
+  assert.equal((pv as { result: { fits: boolean; estimated_tokens: number } }).result.fits, true, '文本装得下就不能被图片虚拟成本拒绝（旧口径 5×1600=8000 必拒）');
+  assert.equal((pv as { result: { estimated_tokens: number } }).result.estimated_tokens, est);
 });
 
 test('MEDIA-07（她 2026-10-18 裁定：多选只带文本）——textOnly 投影：图片占位不产视觉块、caption/语音转写保留、非 textOnly 行为不变', () => {

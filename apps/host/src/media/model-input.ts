@@ -264,5 +264,6 @@ export async function refreshVisionSupport(baseUrl: string, model: string): Prom
   }
 }
 
-/** 容量保守控制（§6.1）：未核实计量方式时每张未知图按保守 token 计（工程默认，非用户批准值）。 */
-export const CONSERVATIVE_IMAGE_TOKENS = 1600;
+// R05（2026-10-24）：CONSERVATIVE_IMAGE_TOKENS=1600 已随选集图片成本链退役——
+// 历史选集 textOnly 投影按占位文本计费；当前输入计量由 §8 estimator（图片标
+// unknown）与视觉能力门独立承担，本模块不再导出无消费者的保守常量。
