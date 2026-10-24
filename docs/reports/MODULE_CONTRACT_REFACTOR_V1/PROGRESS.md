@@ -15,5 +15,9 @@
 | P03.1b-e | f1cb897 | service capabilities/view/find/compare；四条目+定义正本；旧分支/方法/授权助手删除；artifacts 窄端口 | typecheck 0；10/10（含 b1-view-native-image 原生图块物化） | cb08af2 | DONE |
 | P03.4-8 | cb08af2 | modules/voice（transcript-service/call-service/module）；SirenAdapter.createCallFromInternalEnv；ProgramFactsPort；oido 生命周期（删除重试 timer）；isMemoryOnlyAllowed 统一判定 | typecheck 0；P03 全网 18/18 | 本卡提交 | DONE |
 | P03 收尾 | （同上） | ACCEPTANCE A02/A04-A09/A11=PASS；MIGRATION_MATRIX 八行填毕；TEST_INVENTORY 增 P03 分类 | A02/A04-A09/A11 证据登记 | 见git log | P03 DONE；下一卡 P04 |
+| P04.1 | 8070051 | conversation 域（3 工具）+通用域能力工厂 capabilities/domain-factory | typecheck 0；wp4-executor/wake-keepwarm/full-audit-tool-budget 等 6/6 | c8013ac | DONE |
+| P04.2-4 | c8013ac | memory 域 14 工具+projection 正本+mood-vocab+hold-contract；resolveQuoteRefs/recoverUnknownEffects 窄委托；测试夹具实例反射装配（76 处自动接线） | typecheck 0；memory 网 20/20（session-snapshot golden 逐字） | 412f023 | DONE |
+| P04.5-10 | 412f023 | wishstar(13)/content(4)/wake(2)/media(2)/identity(1)/context-review(1)；BootstrapPort；plans_write/deletion_review memoryOnly=false 校正；外层投影与全局桥退役 | typecheck 0；跨域净 15/15+11/11 | 3203d59 | DONE |
+| P04 收尾 | 3203d59 | MIGRATION_MATRIX 48 行全填；A13/A14 证据（hold-quote/来源核证/recall/三层详情/episodes 离线合同）；PROGRESS/RESUME 更新 | 见 ACCEPTANCE_RESULTS | 见git log | P04 DONE；下一卡 P05 |
 
 只记可复核事实。不记录私有推理、凭据、聊天正文、完整请求。

@@ -229,12 +229,20 @@
       "phase": "P04",
       "setup": "正常聊天已发送视野里选择引语/完整来源，调用hold。",
       "assertions": "逐字/码点/消息修订/来源回执与原合同一致。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "3203d591db08ed1228c52b78f6f259fe58bd629b",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/hold-quote.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/event-source-range.test.ts --file=tests/unit/quote-seen-scope.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/hold-quote.test.ts",
+        "tests/unit/event-source-range.test.ts",
+        "tests/unit/quote-seen-scope.test.ts",
+        "apps/host/src/modules/memory/service.ts"
+      ],
+      "notes": "记忆写入/来源绑定/引语逐字核对（码点口径）/receipt 核验/未知写结果恢复全部经真实入口（memory 域 registry 路径）；夹具经实例反射装配镜像生产。"
     },
     {
       "id": "A14",
@@ -243,12 +251,20 @@
       "phase": "P04",
       "setup": "正常recall→否定续查或翻页→memory/relations/source读取。",
       "assertions": "目标/固定结果集/ref/独立凭据/继续参数保持。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "3203d591db08ed1228c52b78f6f259fe58bd629b",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/recall-projection.test.ts --file=tests/unit/wp2-recall-next.test.ts --file=tests/unit/wp2-words-channel.test.ts --file=tests/unit/recall-date-scope.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/wp4-open-recollect-keep.test.ts --file=tests/unit/wp5-correct-deletion.test.ts --file=tests/unit/review-r05-episode-tools.test.ts --file=tests/unit/wp3-i-plans-read.test.ts --file=tests/unit/wp3-i-plans-write.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/recall-projection.test.ts",
+        "tests/unit/wp2-recall-next.test.ts",
+        "tests/unit/wp4-open-recollect-keep.test.ts",
+        "apps/host/src/modules/memory/projection.ts"
+      ],
+      "notes": "召回/否定续查/三层详情（memory_read_full 独立 surface 凭据）/I 读写/plans/episode/open/recollect/keep/correct/deletion 全链经真实入口；投影键序与白名单逐字（projection 正本随 owner）。"
     },
     {
       "id": "A15",
