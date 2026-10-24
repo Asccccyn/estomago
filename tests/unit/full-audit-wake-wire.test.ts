@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
@@ -45,6 +45,7 @@ for (const provider of ['deepseek', 'openrouter'] as const) test(`${provider} F-
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db), checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews, checkpoint, taskService: tasks, messages });
+  wireOidoCapabilitiesForTest(tools, { db, oido: null, sirenCall: null });
   const payloads: Record<string, unknown>[] = [];
   const visible: Record<string, Record<string, unknown>> = {};
   let definitionId = '', taskId = '', revision = 1;

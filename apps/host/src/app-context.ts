@@ -274,6 +274,10 @@ export class Host {
     (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
       db, sirenCall, programFacts: supervisor,
     });
+    // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
+    (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
+      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync,
+    });
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一

@@ -11,6 +11,7 @@ import { CapabilityRegistry } from '../apps/host/src/capabilities/registry.ts';
 import { registerOidoCapabilities } from '../apps/host/src/modules/oido/module.ts';
 import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repository.ts';
 import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module.ts';
+import { registerConversationCapabilities } from '../apps/host/src/modules/conversation/module.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -109,7 +110,7 @@ export function sleep(ms: number): Promise<void> {
 // 接线，断言不变；生产由 app-context 完成同一登记。sirenCall/programFacts 可选（通话用例夹具传）。
 export function wireOidoCapabilitiesForTest(
   executor: object,
-  deps: { db: Db; oido: unknown; media?: unknown; sirenCall?: unknown; programFacts?: unknown },
+  deps: { db: Db; oido: unknown; media?: unknown; sirenCall?: unknown; programFacts?: unknown; messages?: unknown; events?: unknown; archiveSync?: unknown },
 ): void {
   const registry = new CapabilityRegistry();
   registerOidoCapabilities(registry, {
@@ -122,5 +123,9 @@ export function wireOidoCapabilitiesForTest(
       db: deps.db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
     });
   }
+  registerConversationCapabilities(registry, {
+    db: deps.db, messages: (deps.messages ?? null) as never, media: (deps.media ?? null) as never,
+    events: (deps.events ?? null) as never, archiveSync: (deps.archiveSync ?? null) as never,
+  });
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
 }

@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
@@ -44,6 +44,7 @@ async function fixture(t: TestContext) {
   const taskService = new BackgroundTaskService(db, settings, () => now);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, events, taskService,
     wishstar: { async forward() { externalCalls++; return { status: 200, body: { dates: [] } }; } } });
+  wireOidoCapabilitiesForTest(tools, { db, oido: null, messages, events, sirenCall: null });
   const payloads: Record<string, unknown>[] = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload)); round++;
