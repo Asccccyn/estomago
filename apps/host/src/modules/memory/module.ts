@@ -421,7 +421,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     toModel: (value, input) => projectMemoryToolResult('memory_i_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'plans_write', baselineOrder: 9, definition: PLANSWRITE_DEFINITION, memoryOnlyAllowed: true, label: '写计划',
+    id: 'plans_write', baselineOrder: 9, definition: PLANSWRITE_DEFINITION, memoryOnlyAllowed: false, label: '写计划',
     run: (input: Record<string, unknown>, ctx) => svc.plansWrite(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('plans_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
@@ -436,7 +436,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     toModel: (value, input) => projectMemoryToolResult('memory_correct', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'deletion_review', baselineOrder: 12, definition: DELETIONREVIEW_DEFINITION, memoryOnlyAllowed: true, label: '处理删除评审',
+    id: 'deletion_review', baselineOrder: 12, definition: DELETIONREVIEW_DEFINITION, memoryOnlyAllowed: false, label: '处理删除评审',
     run: (input: Record<string, unknown>, ctx) => svc.deletionReview(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('deletion_review', input as Record<string, unknown>, value as Record<string, unknown>),
   }));

@@ -88,7 +88,12 @@ test('R07：执行失败=result ok:false+error_code 如实（0 假成功）', as
 test('R07：执行器抛错=error 阶段+原样上抛（不吞不改）', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    (tools as unknown as { memoryHold: () => Promise<never> }).memoryHold = async () => { throw new Error('boom-生命周期'); };
+    // P04：handler 已归 memory 域条目——抛错注入改经 registry 条目 run 包装（意图不变：handler 抛错=error 阶段+原样上抛）
+    const reg = (tools as unknown as { getCapabilityRegistry(): { get(id: string): { run: unknown } | null } }).getCapabilityRegistry()!;
+    const holdDescriptor = reg.get('memory_hold')! as { run: (i: unknown, c: unknown) => Promise<never> };
+    const origRun = holdDescriptor.run;
+    holdDescriptor.run = async () => { throw new Error('boom-生命周期'); };
+    void origRun;
     await assert.rejects(
       tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-x' }, {
         roomId: 'c1', windowId: 'w1', turnId: 'turn-x', purpose: 'chat', activeReviewId: null,

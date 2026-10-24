@@ -82,6 +82,9 @@ export type SupervisorDeps = {
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
+  // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
+  // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
+  bootstrap?: Pick<import('../integrations/mariposa/client.ts').MariposaClient, 'bootstrapGet' | 'bootstrapNext' | 'bootstrapValidate'> | null;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
@@ -1014,7 +1017,9 @@ export class TurnSupervisor {
     let t = this.bootstrapByWindow.get(windowId);
     if (t !== undefined) return t;
     const d = this.d;
-    const mc = d.tools?.mariposaClient() ?? null;
+    // P04.5：窄端口（只读原语；不含 hold/记忆写面）。过渡期回退 tools 客户端——
+    // 生产装配已显式绑定 d.bootstrap；未迁移夹具经回退保持原行为（P07 收口后移除回退）。
+    const mc = d.bootstrap ?? d.tools?.mariposaClient() ?? null;
     if (!mc) return null; // 未接线：如实无 B
     const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
     const startedAt = performance.now();

@@ -13,6 +13,12 @@ import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repos
 import { registerMemoryCapabilities } from '../apps/host/src/modules/memory/module.ts';
 import { registerConversationCapabilities } from '../apps/host/src/modules/conversation/module.ts';
 import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module.ts';
+import { registerWishstarCapabilities as registerWishstarCapabilitiesInstance } from '../apps/host/src/modules/wishstar/module.ts';
+import { registerContentCapabilities as registerContentCapabilitiesInstance } from '../apps/host/src/modules/content/module.ts';
+import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '../apps/host/src/modules/wake/module.ts';
+import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
+import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
+import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -134,6 +140,12 @@ export function wireOidoCapabilitiesForTest(
     media: (e.media ?? null) as never, events: (e.events ?? null) as never,
     archiveSync: (e.archiveSync ?? null) as never,
   });
+  registerWishstarCapabilitiesInstance(registry, { wishstar: (e.wishstar ?? null) as never });
+  registerContentCapabilitiesInstance(registry, { contentClient: (e.contentClient ?? null) as never, media: (e.media ?? null) as never });
+  registerWakeCapabilitiesInstance(registry, { db, taskService: (e.taskService ?? null) as never });
+  registerMediaCapabilitiesInstance(registry, { media: (e.media ?? null) as never, mediaIndex: (e.mediaIndex ?? null) as never });
+  registerIdentityCapabilitiesInstance(registry, { db, identity: (e.identity ?? null) as never });
+  registerContextReviewCapabilitiesInstance(registry, { db, reviews: e.reviews as never, checkpoint: e.checkpoint as never });
   const sirenCall = opts.sirenCall !== undefined ? opts.sirenCall : e.sirenCall;
   if (sirenCall !== undefined || opts.programFacts !== undefined) {
     registerVoiceCapabilities(registry, {

@@ -30,6 +30,12 @@ import { TRANSCRIPT_READ_DEFINITION, CALL_CONTROL_DEFINITION } from '../modules/
 import { CONVERSATIONREAD_DEFINITION, CHATSENDTEXT_DEFINITION, CHATSENDATTACHMENT_DEFINITION } from '../modules/conversation/module.ts';
 import { MEMORYHOLD_DEFINITION, MEMORYRECALL_DEFINITION, MEMORYRECALLNEXT_DEFINITION, MEMORYREADFULL_DEFINITION, MEMORYIREAD_DEFINITION, PLANSREAD_DEFINITION, MEMORYIWRITE_DEFINITION, PLANSWRITE_DEFINITION, MEMORYOPEN_DEFINITION, MEMORYCORRECT_DEFINITION, DELETIONREVIEW_DEFINITION, EPISODELIST_DEFINITION, EPISODEAPPLY_DEFINITION, EPISODEGET_DEFINITION } from '../modules/memory/module.ts';
 import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../modules/memory/hold-contract.ts';
+import { WISHSTARWRITESTAR_DEFINITION, WISHSTARHIDDENSTARS_DEFINITION, WISHSTARSPECIALDATES_DEFINITION, WISHSTARSTARTSESSION_DEFINITION, WISHSTARCONFIRMSESSION_DEFINITION, WISHSTARTAKESTAR_DEFINITION, WISHSTARFINISHSESSION_DEFINITION, WISHSTARREQUESTSTAR_DEFINITION, WISHSTARRESPONDREQUEST_DEFINITION, WISHSTAROFFERSTAR_DEFINITION, WISHSTARLISTOFFERS_DEFINITION, WISHSTARACCEPTOFFER_DEFINITION, WISHSTARNOTIFICATIONS_DEFINITION } from '../modules/wishstar/module.ts';
+import { CONTENTPOSTCREATE_DEFINITION, CONTENTCOMMENTCREATE_DEFINITION, CONTENTPOSTSLIST_DEFINITION, CREATIONSAVEARTIFACT_DEFINITION } from '../modules/content/module.ts';
+import { WAKEMANAGE_DEFINITION, BACKGROUNDCOMPLETE_DEFINITION } from '../modules/wake/module.ts';
+import { MEDIAIMPORT_DEFINITION, MEDIASEARCH_DEFINITION } from '../modules/media/module.ts';
+import { IDENTITYMILESTONEWRITE_DEFINITION } from '../modules/identity/module.ts';
+import { CONTEXTREVIEWCOMPLETE_DEFINITION } from '../modules/context-review/module.ts';
 import { currentMoodCategories } from '../modules/memory/mood-vocab.ts';
 export { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../modules/memory/hold-contract.ts';
 import { currentMoodCategories as _currentMoodCategories } from '../modules/memory/mood-vocab.ts';
@@ -140,147 +146,24 @@ function conversationDefinitions(): HostToolSpec[] {
 
 function contentDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'content_post_create',
-      description: '以char身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。',
-      parameters: {
-        type: 'object',
-        properties: {
-          presentation: { type: 'string', enum: ['post', 'letter'] },
-          title: { type: 'string', maxLength: 200 },
-          body: { type: 'string', maxLength: 40000 },
-          asset_ids: { type: 'array', items: { type: 'string' }, maxItems: 8 },
-          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
-        },
-        required: ['body', 'idempotency_key'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'content_comment_create',
-      description: '对私密朋友圈帖子添加评论。',
-      parameters: {
-        type: 'object',
-        properties: {
-          post_id: { type: 'string', minLength: 1, maxLength: 128 },
-          body: { type: 'string', minLength: 1, maxLength: 10000 },
-          idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
-        },
-        required: ['post_id', 'body', 'idempotency_key'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'content_posts_list',
-      description: '列出私密朋友圈帖子（分页）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          cursor: { type: 'string' },
-          limit: { type: 'number' },
-          presentation: { type: 'string', enum: ['post', 'letter'] },
-        },
-        additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'creation_save_artifact',
-      description: '保存char写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。',
-      parameters: {
-        type: 'object',
-        properties: {
-          format: { type: 'string', enum: ['svg', 'html'] },
-          content: { type: 'string', minLength: 1, maxLength: 262144 },
-          client_operation_id: { type: 'string', minLength: 1, maxLength: 128 },
-        },
-        required: ['format', 'content', 'client_operation_id'], additionalProperties: false,
-      },
-    }
-  },
+  CONTENTPOSTCREATE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  CONTENTCOMMENTCREATE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  CONTENTPOSTSLIST_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  CREATIONSAVEARTIFACT_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
 function wakeDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'wake_manage',
-      description: '给自己预约未来的自主唤醒（一次性；可有多个并存任务）。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
-      parameters: {
-        type: 'object',
-        properties: {
-          operation: { type: 'string', enum: ['schedule', 'list', 'update', 'cancel'] },
-          operation_id: { type: 'string', minLength: 1, maxLength: 128, description: '写操作的幂等键：同键同参数重试返回原回执' },
-          note: { type: 'string', minLength: 1, maxLength: 8000, description: '留给未来自己的话（到期原样递送给自己，不直接发给宿主用户）' },
-          at: { type: 'string', description: '目标时间（RFC3339，必须带 Z 或 ±hh:mm 时区）' },
-          delay_seconds: { type: 'integer', minimum: 1, description: '从现在起的秒数（首次受理时解析为绝对时间）' },
-          task_id: { type: 'string', minLength: 1, maxLength: 64 },
-          expected_revision: { type: 'integer', minimum: 1 },
-          cursor: { type: 'string' },
-          limit: { type: 'integer', minimum: 1, maximum: 100 },
-        },
-        required: ['operation'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'background_complete',
-      description: '结束本次自主活动/心跳。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。自主活动与心跳回合均可用。',
-      parameters: {
-        type: 'object',
-        properties: {
-          outcome: { type: 'string', enum: ['done', 'noop'] },
-        },
-        required: ['outcome'], additionalProperties: false,
-      },
-    }
-  },
+  WAKEMANAGE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  BACKGROUNDCOMPLETE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
 function mediaDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'media_import',
-      description: '把一个外部图片 URL 持久导入为本站资产（返回 asset_id/实际类型/大小）。链接只是导入来源；导入后用 asset_id 发送或建立内容引用。仅 https 公网图片。',
-      parameters: {
-        type: 'object',
-        properties: {
-          source_url: { type: 'string', minLength: 8, maxLength: 2048 },
-        },
-        required: ['source_url'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'media_search',
-      description: '按中文语义在她发过的图片里找候选（如"那张水獭的图"）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
-          limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
-        },
-        required: ['query'], additionalProperties: false,
-      },
-    }
-  },
+  MEDIAIMPORT_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  MEDIASEARCH_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
@@ -305,207 +188,31 @@ function oidoDefinitions(): HostToolSpec[] {
 
 function identityDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'identity_milestone_write',
-      description: '维护你的《长期记忆里程碑》——一份完整文档，随开窗全文注入。内容一行一条（1.2.3.4. 依次编号，一个换行一条）。operation：read=读当前全文（带行号）；add=末尾加一条（text=一行内容）；revise=改第 item 条；remove=删第 item 条；write=整版替换（text=完整新版全文，通常不需要）。旧版本自动留档、她可回滚；当前窗口继续用旧版，下一扇新窗自动带新版。每次修改说明 change_reason。',
-      parameters: {
-        type: 'object',
-        properties: {
-          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '缺省=write（整版替换，会覆盖全部现有条目——常规修改请用 add/revise/remove 单条操作，不覆盖其他条目）' },
-          text: { type: 'string', minLength: 1, maxLength: 65536, description: 'write=完整新版正文；add/revise=该条目新正文' },
-          confirm_overwrite: { type: 'boolean', description: '仅 write：新正文未保留既有内容行时必须显式带 true（防误删她写的内容）；带 false/缺省将被拒绝并说明丢了哪些' },
-          item: { type: 'integer', minimum: 1, description: 'revise/remove 的目标条目序号（read 结果里带）' },
-          change_reason: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明这次更新了什么（进审计记录，她可见）' },
-          idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一版' },
-        },
-        required: [], additionalProperties: false,
-        anyOf: [
-          { required: ['operation'] },
-          { required: ['text', 'change_reason', 'idempotency_key'] },
-        ],
-      },
-    }
-  },
+  IDENTITYMILESTONEWRITE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
 function wishstarDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_write_star',
-      description: '往许愿星（你们的许愿星系统）写一颗星。visible=写进"我们的瓶子"（两人可见）；hidden=先藏进自己的私人瓶子（打开前只有你看得见）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          content: { type: 'string', minLength: 1, maxLength: 5000, description: '星星内容（想许的愿/想记的话）' },
-          visibility: { type: 'string', enum: ['visible', 'hidden'], description: 'visible=我们的瓶子；hidden=自己的私人瓶' },
-          mood_type: { type: 'string', maxLength: 20, description: '可选：星星的心情境况' },
-          mood_text: { type: 'string', maxLength: 200, description: '可选：写星时的一句话心情' },
-          note: { type: 'string', maxLength: 500, description: '可选：附注' },
-          idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一颗' },
-        },
-        required: ['content', 'visibility', 'idempotency_key'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_hidden_stars',
-      description: '看自己私人瓶子里的星（只有你可见的那些）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_special_dates',
-      description: '查看你们的纪念日和自定义特殊日期（含 id——发起拆星仪式要用 special_date_id 绑定具体日期）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_start_session',
-      description: '邀请宿主用户开启一轮共同拆星（纪念日仪式）。必须带 special_date_id；纪念日只能在当天发起，双方额度按当天 0 点冻结；确认前不打开任何星。',
-      parameters: {
-        type: 'object',
-        properties: {
-          special_date_id: { type: 'string', minLength: 1, maxLength: 64, description: '绑定的特殊日期 id（wishstar_special_dates 查）' },
-        },
-        required: ['special_date_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_confirm_session',
-      description: '确认参与拆星仪式（对方发起后你这边确认；双方确认后才能开始拆星）。',
-      parameters: {
-        type: 'object',
-        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
-        required: ['session_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_take_star',
-      description: '在拆星仪式中拆开下一颗星（双方轮流）。',
-      parameters: {
-        type: 'object',
-        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
-        required: ['session_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_finish_session',
-      description: '完成本轮拆星仪式。',
-      parameters: {
-        type: 'object',
-        properties: { session_id: { type: 'string', minLength: 1, maxLength: 64 } },
-        required: ['session_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_request_star',
-      description: '请求宿主用户打开一颗她藏起来的星（她回应前你看不到内容）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_respond_request',
-      description: '回应对方的开星请求：give=打开（可指定给哪一颗，缺省服务端选）；not_now=这次先不给。',
-      parameters: {
-        type: 'object',
-        properties: {
-          request_id: { type: 'string', minLength: 1, maxLength: 64 },
-          decision: { type: 'string', enum: ['give', 'not_now'] },
-          star_id: { type: 'string', maxLength: 64, description: '可选：give 时指定给哪一颗' },
-        },
-        required: ['request_id', 'decision'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_offer_star',
-      description: '把自己的一颗星递给宿主用户（可捎一句话）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          star_id: { type: 'string', minLength: 1, maxLength: 64 },
-          message: { type: 'string', maxLength: 300, description: '可选：递星时捎的一句话' },
-        },
-        required: ['star_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_list_offers',
-      description: '看收到的星（她递给你的、待收下的）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_accept_offer',
-      description: '收下她递来的一颗星。',
-      parameters: {
-        type: 'object',
-        properties: { offer_id: { type: 'string', minLength: 1, maxLength: 64 } },
-        required: ['offer_id'], additionalProperties: false,
-      },
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'wishstar_notifications',
-      description: '看许愿星的通知（谁写了星/递了星/发起仪式等动态）。',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
-    }
-  },
+  WISHSTARWRITESTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARHIDDENSTARS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARSPECIALDATES_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARSTARTSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARCONFIRMSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARTAKESTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARFINISHSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARREQUESTSTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARRESPONDREQUEST_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTAROFFERSTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARLISTOFFERS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARACCEPTOFFER_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
+  WISHSTARNOTIFICATIONS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
 function contextReviewDefinitions(): HostToolSpec[] {
   return [
-  {
-    type: 'function',
-    function: {
-      name: 'context_review_complete',
-      description: '完成当前活跃的换窗前记忆检查。decision=no_new_hold（本次没有新增 hold 且无未决写操作）或 holds_completed（本次已有核实的成功 hold）。',
-      parameters: {
-        type: 'object',
-        properties: {
-          review_id: { type: 'string', minLength: 1, maxLength: 256 },
-          decision: { type: 'string', enum: ['no_new_hold', 'holds_completed'] },
-        },
-        required: ['review_id', 'decision'],
-        additionalProperties: false,
-      },
-    },
-  },
+  CONTEXTREVIEWCOMPLETE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
   ];
 }
 
@@ -609,6 +316,8 @@ export class HostToolExecutor {
   private capabilityRegistry: CapabilityRegistry | null = null;
   /** P02.6：装配根注入已迁能力注册表（显式创建，非自动发现）。 */
   setCapabilityRegistry(r: CapabilityRegistry | null): void { this.capabilityRegistry = r; }
+  /** 架构检查/测试注入面：只读当前注册表快照（不授予执行权）。 */
+  getCapabilityRegistry(): CapabilityRegistry | null { return this.capabilityRegistry; }
 
   /** P04：换窗评审的未知写结果恢复——窄委托 memory 域服务（P06 收口执行边界）。 */
   private memoryRecovery: { recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> } | null = null;
@@ -650,199 +359,23 @@ export class HostToolExecutor {
   }
 
   /** EXEC_V1 §06.4.3（WP5）：模型工具调 content——actor 从受控执行上下文派生为 jiaming。 */
-  private async contentPostCreate(args: { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
-    const { contentForward } = await import('../integrations/content/client.ts');
-    const r = await contentForward(this.contentClient, {
-      method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
-      body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
-      headers: { 'Idempotency-Key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
-    });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
-    return { ok: false, output: { error_code: 'CONTENT_POST_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
-  }
-
-  private async contentCommentCreate(args: { post_id: string; body: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    const { contentForward } = await import('../integrations/content/client.ts');
-    const r = await contentForward(this.contentClient, {
-      method: 'POST', path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`, actor: 'jiaming',
-      body: { body: args.body },
-      headers: { 'Idempotency-Key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
-    });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
-    return { ok: false, output: { error_code: 'CONTENT_COMMENT_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
-  }
-
-  private async contentPostsList(args: { cursor?: string; limit?: number; presentation?: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    const { contentForward } = await import('../integrations/content/client.ts');
-    const params = new URLSearchParams();
-    if (args.cursor) params.set('cursor', args.cursor);
-    if (args.limit && args.limit > 0 && args.limit <= 100) params.set('limit', String(args.limit));
-    if (args.presentation) params.set('presentation', args.presentation);
-    const r = await contentForward(this.contentClient, { method: 'GET', path: `/api/v1/content/posts?${params}`, actor: 'jiaming' });
-    return { ok: r.status === 200, output: r.body as Record<string, unknown> };
-  }
-
   /** §03.6.3（MEDIA-09/CREATION-03）：保存 SVG/HTML 小作品→持久资产。不执行代码；宿主无 eval/shell。 */
-  private async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    const mime = args.format === 'svg' ? 'image/svg+xml' : 'text/html';
-    // 内容安全检查：SVG 不允许 <script>；HTML 允许内联脚本（在沙箱 iframe 内执行——宿主不执行）
-    if (args.format === 'svg' && /<script/i.test(args.content)) {
-      return { ok: false, output: { error_code: 'SVG_SCRIPT_FORBIDDEN', detail: 'SVG 图标不允许内嵌脚本（HTML 作品请用 format=html 走沙箱预览）' } };
-    }
-    const opKey = `tool-creation:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.client_operation_id}`;
-    try {
-      const a = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
-      return { ok: true, output: { asset_id: a.id, mime_type: mime, byte_size: a.byte_size, saved: true } };
-    } catch (err) {
-      return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
-    }
-  }
-
   /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（2026-10-22）：结束后台回合——noop 是成功结果
    *  （§6.2），无产出不构成失败。自主唤醒与心跳回合均可用（C-13：心跳经 tool_invoke
    *  调用结束工具→正确收口，不再多发一轮无用模型请求）。 */
-  private backgroundComplete(args: { outcome: 'done' | 'noop' }, ctx: ToolExecContext): ToolExecResult {
-    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅后台回合（自主唤醒/心跳）可用' } };
-    if (ctx.backgroundRunId) {
-      this.db.prepare("UPDATE background_runs SET result_code = ?, updated_at = ? WHERE id = ?").run(`complete:${args.outcome}`, new Date().toISOString(), ctx.backgroundRunId);
-    }
-    return { ok: true, output: { completed: true, outcome: args.outcome } };
-  }
-
   /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（05）：后台正式公开发言——心跳与自主共用；
    *  复用正式发布链（幂等键派生；重试只发一次）。普通最终回复不自动发布（E03）。 */
   /** WAKE_KEEPWARM_V1 §04：wake_manage——char自主预约的唯一工具面。
    *  conversation/actor 取可信 ToolExecContext（schema 不接受注入，W-19）；
    *  schedule/update 受自主开关门（SELF_WAKE_DISABLED）；list/cancel 关闭时仍可用。 */
-  private wakeManage(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
-    if (!this.taskService) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '预约服务未装配（能力缺口，如实拒绝）' } };
-    const op = args.operation;
-    const convId = ctx.roomId;
-    const err = (code: string, detail?: string): ToolExecResult => ({ ok: false, output: { error_code: code, ...(detail ? { detail } : {}) } });
-    if (op === 'schedule') {
-      const r = this.taskService.schedule({
-        actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''),
-        note: args.note as string, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, createdBy: 'jiaming',
-      });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
-      return { ok: true, output: { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision } };
-    }
-    if (op === 'list') {
-      const r = this.taskService.list({ actorId: 'jiaming', conversationId: convId, cursor: args.cursor, limit: args.limit, selfScheduledOnly: true });
-      if (!r.ok) return err(r.code, r.detail ?? '');
-      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, ...(t.note_preview ? { note_preview: t.note_preview } : {}) })), ...(r.next_cursor ? { next_cursor: r.next_cursor } : {}) } };
-    }
-    if (op === 'update') {
-      const r = this.taskService.update({
-        actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''),
-        expectedRevision: Number(args.expected_revision ?? 0), note: args.note ?? undefined, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, selfScheduledOnly: true,
-      });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
-      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, scheduled_at: r.task.scheduled_at } };
-    }
-    if (op === 'cancel') {
-      const r = this.taskService.cancel({ actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''), expectedRevision: Number(args.expected_revision ?? 0), selfScheduledOnly: true });
-      if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };
-      return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, cancelled: true } };
-    }
-    return err('WAKE_REQUEST_INVALID', `未知操作：${String(op)}`);
-  }
-
   /** EXEC_V1 §03.6.3：外部图片持久导入（幂等键由 turn+请求稳定派生，模型不可指定他人操作）。 */
-  private async mediaImport(args: { source_url: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '媒体服务未装配' } };
-    const operationId = `tool-media-import:${ctx.turnId ?? 'noturn'}:${ctx.requestId}`;
-    try {
-      const a = await this.media.importFromUrl({ sourceUrl: args.source_url, operationId, createdBy: 'jiaming' });
-      return { ok: true, output: { asset_id: a.id, mime_type: a.mime_type, byte_size: a.byte_size, imported: true } };
-    } catch (err) {
-      const code = (err as { code?: string }).code ?? 'ASSET_IMPORT_FAILED';
-      return { ok: false, output: { error_code: code, retryable: code === 'ASSET_IMPORT_FAILED' } };
-    }
-  }
-
   /** 她批准 2026-10-17：char接入许愿星（superposition）全能力面。
    *  HTTP 转发（Bearer=jiaming 身份，操作归他名下）；幂等键由 turn+request 派生（模型不能自编）；
    *  写操作回执瘦身（不回显正文）；错误如实上抛状态码。 */
-  private async wishstarTool(name: string, args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.wishstar) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '许愿星未接入（能力缺口，如实拒绝）' } };
-    const idem = typeof args.idempotency_key === 'string' ? args.idempotency_key : '';
-    const opKey = `ws:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${idem || 'ro'}`;
-    const calls: Record<string, { method: 'GET' | 'POST'; path: string; body?: Record<string, unknown>; write: boolean }> = {
-      wishstar_write_star: { method: 'POST', path: '/api/stars', body: { content: args.content, visibility: args.visibility, ...(args.mood_type ? { mood_type: args.mood_type } : {}), ...(args.mood_text ? { mood_text: args.mood_text } : {}), ...(args.note ? { note: args.note } : {}) }, write: true },
-      wishstar_hidden_stars: { method: 'GET', path: '/api/stars/hidden/mine', write: false },
-      wishstar_special_dates: { method: 'GET', path: '/api/special-dates', write: false },
-      wishstar_start_session: { method: 'POST', path: '/api/sessions', body: { special_date_id: args.special_date_id }, write: true },
-      wishstar_confirm_session: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/confirm`, write: true },
-      wishstar_take_star: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/take-next`, write: true },
-      wishstar_finish_session: { method: 'POST', path: `/api/sessions/${encodeURIComponent(String(args.session_id))}/finish`, write: true },
-      wishstar_request_star: { method: 'POST', path: '/api/requests', write: true },
-      wishstar_respond_request: { method: 'POST', path: `/api/requests/${encodeURIComponent(String(args.request_id))}/respond`, body: { decision: args.decision, ...(args.star_id ? { star_id: args.star_id } : {}) }, write: true },
-      wishstar_offer_star: { method: 'POST', path: '/api/offers', body: { star_id: args.star_id, ...(args.message ? { message: args.message } : {}) }, write: true },
-      wishstar_list_offers: { method: 'GET', path: '/api/offers', write: false },
-      wishstar_accept_offer: { method: 'POST', path: `/api/offers/${encodeURIComponent(String(args.offer_id))}/accept`, write: true },
-      wishstar_notifications: { method: 'GET', path: '/api/notifications', write: false },
-    };
-    const call = calls[name];
-    if (!call) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
-    const r = await this.wishstar.forward(call.method, call.path, call.body, call.write ? opKey : undefined);
-    if (r.status === 0 || r.status === 503) return { ok: false, output: { error_code: 'WISHSTAR_UNAVAILABLE', detail: String((r.body as { detail?: string }).detail ?? '许愿星服务不可用') } };
-    if (r.status >= 400) return { ok: false, output: { error_code: `WISHSTAR_${r.status}`, detail: JSON.stringify(r.body).slice(0, 300) } };
-    const out = call.write
-      ? Object.fromEntries(Object.entries(r.body).filter(([k]) => ['id', 'star_id', 'session_id', 'status', 'state', 'request_id', 'offer_id'].includes(k)))
-      : r.body;
-    return { ok: true, output: out };
-  }
-
   /** 她授权 2026-10-17：char自维护长期记忆里程碑。写新版+manifest I 槽原子更新+审计；
    *  幂等键查 audit_events（同键重试只写一版）；I 槽不参与指纹——当前窗继续旧冻结副本，
    *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。
    *  2026-10-22 她要求：条目化——read（带序号）/add/revise/remove（IdentityService 条目操作）。 */
-  private identityMilestoneWrite(args: { operation?: string; text?: string; item?: number; change_reason?: string; idempotency_key?: string }, ctx: ToolExecContext): ToolExecResult {
-    if (!this.identity) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '身份服务未装配' } };
-    const op = args.operation === 'read' || args.operation === 'add' || args.operation === 'revise' || args.operation === 'remove' ? args.operation : 'write';
-    if (op === 'read') {
-      try {
-        const r = this.identity.readMilestone();
-        const entries = IdentityServiceStatic.entryLines(r.text);
-        // 1.2.3.4. 连续条号（=revise/remove 的 item 口径）；原文物理行号不外显
-        return { ok: true, output: { version: r.version, entries: entries.length, text: entries.map((e, i) => `${i + 1}. ${e.line}`).join('\n') } };
-      } catch (err) {
-        return { ok: false, output: { error_code: 'MILESTONE_READ_FAILED', detail: String((err as Error).message).slice(0, 200) } };
-      }
-    }
-    // 写类操作：change_reason/idempotency_key 必填；text 按 op 分（write/add/revise 必带，remove 不带）
-    const needText = op === 'write' || op === 'add' || op === 'revise';
-    if (typeof args.change_reason !== 'string' || args.change_reason.length === 0 || typeof args.idempotency_key !== 'string' || args.idempotency_key.length === 0) {
-      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: '写操作必须带 change_reason 与 idempotency_key' } };
-    }
-    if (needText && (typeof args.text !== 'string' || args.text.length === 0)) {
-      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: `${op} 必须带 text` } };
-    }
-    const idemKey = `milestone:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
-    const prior = this.db.prepare("SELECT scope, result FROM audit_events WHERE who = 'jiaming' AND what = 'identity_milestone_write' AND detail_ref = ? ORDER BY created_at DESC LIMIT 1").get(idemKey) as { scope: string | null; result: string } | undefined;
-    if (prior) return { ok: true, output: { saved: true, version: prior.scope ?? null, duplicate: true } };
-    let written: { file: string; version: string; hash: string; byteSize: number; entries?: number };
-    try {
-      if (op === 'write') {
-        written = this.identity.updateMilestone(args.text!);
-      } else {
-        const r = this.identity.applyMilestoneEntryOp(op, op === 'add' ? null : (typeof args.item === 'number' ? args.item : 0), op === 'remove' ? null : args.text ?? null);
-        written = { file: r.file, version: r.version, hash: r.hash, byteSize: r.byteSize, entries: r.entries };
-      }
-    } catch (err) {
-      return { ok: false, output: { error_code: 'MILESTONE_WRITE_FAILED', detail: String((err as Error).message).slice(0, 200) } };
-    }
-    this.db.prepare('INSERT INTO audit_events(id, who, what, scope, result, detail_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-      `aud_${sha256Hex(idemKey + written.version).slice(0, 24)}`, 'jiaming', 'identity_milestone_write', written.version, `ok:${op}:${written.byteSize}B:${args.change_reason.slice(0, 200)}`, idemKey, new Date().toISOString(),
-    );
-    return { ok: true, output: { saved: true, operation: op, version: written.version, file: written.file, byte_size: written.byteSize, ...(written.entries !== undefined ? { entries: written.entries } : {}), effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版' } };
-  }
-
   /** EXEC_V1 §03.6.3：正式发布附件消息（复用 MessageService/发布链/归档 outbox；幂等=派生 client_message_id）。 */
   /** JOINT-VOICE-20261022（04 按需深听）：宿主完成权限核验与受信本地导入后转发 oído。
    *  模型只能引用当前会话可达的语音资产（audio_ref=est:<asset_id>）；跨会话/未绑定
@@ -865,31 +398,6 @@ export class HostToolExecutor {
    *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
   /** JOINT-VOICE-20261022（07）：中文找图——先补齐本会话未索引图片（有界），再查候选。
    *  权限门在查询 join（活资产+会话绑定）；worker 故障=能力 unavailable，不拖聊天/电话。 */
-  private async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
-    // Propagate host cancellation. A new short deadline would discard slow image results
-    // while the non-preemptible worker still encodes them; background indexing remains open.
-    const signal=ctx.signal;
-    try {
-      signal?.throwIfAborted();
-      const fingerprint=await this.mediaIndex.workerFingerprint(signal);
-      signal?.throwIfAborted();
-      if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
-      // R8′（2026-10-23）：检索路径不再前台补索引——此前工具内顺序 await ≤200 图，
-      // 长期占住同会话串行链；补索引移至 app-context 独立循环（media/index/backfill.ts，
-      // ≤5 图/跳）。检索不完整与 no_match 分开如实报：pending>0 = coverage:'incomplete'。
-      const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
-      signal?.throwIfAborted();
-      const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal);
-      signal?.throwIfAborted();
-      const out:Record<string,unknown>={...result};
-      if(pending.length>0){out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';}
-      return {ok:true,output:out};
-    }catch {
-      return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':'MEDIA_WORKER_UNAVAILABLE'}};
-    }
-  }
-
   /** JOINT-VOICE-20261022：读深听结果（概览/逐字谱分页）。 */
   // R3″（2026-10-24，RE-07/08/09 返修）：三道边界——
   //  ① 源权限：转写必须挂在**本会话当前修订的已发布消息附件**上（voice presentation）；
@@ -951,15 +459,8 @@ export class HostToolExecutor {
         payload: { ...identity(), phase: 'result', ok: Boolean(result.ok), error_code: (result.output as { error_code?: string }).error_code ?? null },
       });
     }
-    // P02.6：已迁能力的成功/失败投影在 registry 执行外壳内完成唯一一次；
-    // 外层投影只作用于尚未迁移集合（同名不双投影）。tool_invoke 的真实能力名沿现行解析。
-    const effectiveName = name === 'tool_invoke' ? String(rawArgs.name ?? '') : name;
-    const migrated = this.capabilityRegistry !== null && this.capabilityRegistry.has(effectiveName);
-    if (result.ok && !migrated) {
-      const effectiveArgs = name === 'tool_invoke' ? (rawArgs.arguments as Record<string, unknown> ?? {}) : rawArgs;
-      result = { ...result, output: modelResult(effectiveName, effectiveArgs, result.output as Record<string, unknown>) };
-    }
-    if (!result.ok && !migrated) result = { ...result, output: modelFailure(result.output as Record<string, unknown>) };
+    // P04 收尾：全部 48 静态业务工具已迁 registry——成功/失败投影在执行外壳内完成唯一一次；
+    // 外层不再有第二投影点（model-results.ts 仅余通用失败映射，由外壳调用）。
     return result;
   }
 
@@ -1023,24 +524,8 @@ export class HostToolExecutor {
         isVoiceCallActive: (roomId: string) => this.voiceCallActive(roomId),
       });
     }
-    if (name !== 'call_control' && name !== 'context_review_complete' && name !== 'media_import' && name !== 'media_search' && name !== 'background_complete' && name !== 'wake_manage' && name !== 'content_post_create' && name !== 'content_comment_create' && name !== 'content_posts_list' && name !== 'creation_save_artifact' && name !== 'identity_milestone_write' && !name.startsWith('wishstar_')) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
-    // 审计 A051：参数完整校验后才执行（§8.2）——schema 拒绝不产生副作用
-    rawToolCallIdRef.current = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
-    const checked = validateToolArgs(name, rawArgs, frozenSpec);
-    if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
-    if (rawToolCallIdRef.current !== null) checked.value.__tool_call_id = rawToolCallIdRef.current;
-    this.admitBackgroundTool(name, ctx); // 保温批：后台工具准入记账
-    if (name === 'content_post_create') return await this.contentPostCreate(checked.value as { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx);
-    if (name === 'content_comment_create') return await this.contentCommentCreate(checked.value as { post_id: string; body: string; idempotency_key: string }, ctx);
-    if (name === 'content_posts_list') return await this.contentPostsList(checked.value as { cursor?: string; limit?: number; presentation?: string }, ctx);
-    if (name === 'creation_save_artifact') return await this.creationSaveArtifact(checked.value as { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx);
-    if (name === 'background_complete') return this.backgroundComplete(checked.value as { outcome: 'done' | 'noop' }, ctx);
-    if (name === 'wake_manage') return this.wakeManage(checked.value as Record<string, unknown>, ctx);
-    if (name === 'media_import') return await this.mediaImport(checked.value as { source_url: string }, ctx);
-    if (name === 'media_search') return await this.mediaSearch(checked.value as { query: string; limit?: number }, ctx);
-    if (name === 'identity_milestone_write') return this.identityMilestoneWrite(checked.value as { text: string; change_reason: string; idempotency_key: string }, ctx);
-    if (name.startsWith('wishstar_')) return await this.wishstarTool(name, checked.value as Record<string, unknown>, ctx);
-    return this.reviewComplete(checked.value, ctx);
+    // P04 收尾：48 静态业务工具全部经 registry 执行（唯一生产路径；未接线=原 allowlist 拒绝语义）
+    return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
   }
 
   /** EST_MARIPOSA_AUTO_SURFACING_V1（docs/05）：已见 ref 门+E 侧 ref→
@@ -1105,20 +590,5 @@ export class HostToolExecutor {
   /** 审计 F08：换窗评审前的有界恢复探测——按原 operation_id 查 hold.status；
    *  有真实回执 → 落 committed + 迟到书签（只补原窗口记录）；completed=false（服务端明确
    *  无提交证据）→ failed_resolved（不是没发生，是可判定的未提交）；查询失败 → 保持 unknown。 */
-  private reviewComplete(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
-    const reviewId = typeof args.review_id === 'string' ? args.review_id : '';
-    const decision = args.decision === 'no_new_hold' || args.decision === 'holds_completed' ? args.decision : null;
-    if (!reviewId || !decision) return { ok: false, output: { error_code: 'REVIEW_ARGS_INVALID' } };
-    if (!ctx.activeReviewId || ctx.activeReviewId !== reviewId) {
-      return { ok: false, output: { error_code: 'REVIEW_NOT_ACTIVE', error: '没有活跃的换窗检查（原文仿写不生效）' } };
-    }
-    const r = this.reviews.complete(reviewId, { review_id: reviewId, decision }, {
-      purpose: 'pre_rotate_review', roomId: ctx.roomId, epochId: ctx.windowId,
-      epochRevision: this.reviews.get(reviewId)?.epochRevision ?? -1,
-    });
-    if (!r.ok) return { ok: false, output: { error_code: r.code, error: '宿主核验未通过（真实收据/未决写操作检查）' } };
-    const effectId = this.reviews.openEffect({ reviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'review_complete', operationId: null, toolCallId: `${reviewId}:${decision}`, seenSequence: ctx.seenSequence });
-    this.reviews.settleEffect(effectId, 'committed', true, null);
-    return { ok: true, output: { review_id: reviewId, decision, memory_ids: r.review.memoryIds ?? [] } };
-  }
+
 }

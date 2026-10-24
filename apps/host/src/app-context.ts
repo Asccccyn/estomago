@@ -245,6 +245,14 @@ export class Host {
     const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
     tools.setCapabilityRegistry(capabilityRegistry);
     tools.setMemoryRecovery(memoryService);
+    // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
+    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
+    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media });
+    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
+    (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { media, mediaIndex });
+    (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
+    (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
+    tools.setMemoryRecovery(memoryService);
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
@@ -273,6 +281,7 @@ export class Host {
       activity,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
+      bootstrap: modelMariposaClient,
     });
     // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
     // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）
