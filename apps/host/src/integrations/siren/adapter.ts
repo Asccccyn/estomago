@@ -132,6 +132,23 @@ export class SirenAdapter {
     return await res.json() as Record<string, unknown>;
   }
 
+  /** A11（2026-10-24）：POST /v1/calls/:id/hangup-request——模型提出挂断（立即回执；
+   *  真正结束由 Siren drain→linger 决定，她开口可取消）。 */
+  async requestHangup(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ accepted: boolean } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/calls/${encodeURIComponent(callId)}/hangup-request`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ?? AbortSignal.timeout(5000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (res.status === 404) return { accepted: false };
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_HANGUP_REQUEST_FAILED');
+    const data = await res.json() as { accepted?: unknown };
+    return { accepted: data.accepted === true };
+  }
+
   // —— 协议②（2026-10-24）：通话用户原声取回（服务间只读；绑 est 消息供 oído）——
 
   /** GET /v1/voice-assets/:id/audio——按 CoreTurnInput.audio_ref=siren:<id> 取回 WAV 字节。 */

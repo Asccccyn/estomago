@@ -581,7 +581,7 @@ export function buildHostTools(): HostToolSpec[] {
       parameters: {
         type: 'object',
         properties: {
-          action: { type: 'string', enum: ['invite', 'status'], description: 'invite=发起来电邀请；status=查询当前邀请' },
+          action: { type: 'string', enum: ['invite', 'status', 'end'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）' },
           ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
         },
         required: ['action'], additionalProperties: false,
@@ -1386,13 +1386,22 @@ export class HostToolExecutor {
   /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，
    *  不铺细碎工具）。invite=当前会话创建 Siren 来电邀请（服务端过期；拒接≠未接）；
    *  status=查询当前邀请。勿扰/禁拨号在 Siren 服务端执行（本批未加开关=不设静默拦截）。 */
-  private async callControl(args: { action: 'invite' | 'status'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  private async callControl(args: { action: 'invite' | 'status' | 'end'; ttl_seconds?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.sirenCall || this.sirenCall.status !== 'available') return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'Siren 通话服务未接入（能力缺口，如实拒绝）' } };
     try {
       if (args.action === 'invite') {
         const invite = await this.sirenCall.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
         if (!invite) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
         return { ok: true, output: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
+      }
+      if (args.action === 'end') {
+        // A11：模型提出挂断——找本会话 active 通话，转 Siren 柔性挂断（立即回执）。
+        // est 的 voice_calls 终态由前端面板挂断/收口链处理（本动作不伪造已结束）
+        const row = this.db.prepare("SELECT call_id FROM voice_calls WHERE conversation_id=? AND state='active' ORDER BY started_at DESC LIMIT 1").get(ctx.roomId) as { call_id: string } | undefined;
+        if (!row) return { ok: false, output: { error_code: 'NO_ACTIVE_CALL', detail: '当前没有进行中的通话' } };
+        const out = await this.sirenCall.requestHangup(row.call_id);
+        if (!out) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
+        return { ok: true, output: { call_id: row.call_id, accepted: out.accepted, note: '结束意图已接受：等最后一段说完（约15秒窗口），她开口则取消；不是立即挂断' } };
       }
       const list = await this.sirenCall.listInvites(ctx.roomId);
       if (!list) return { ok: false, output: { error_code: 'SIREN_NOT_CONFIGURED' } };
