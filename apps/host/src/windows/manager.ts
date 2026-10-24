@@ -87,6 +87,9 @@ export class WindowManager {
   createWindow(o: { conversationId: string; gate: GateResult; assembledOptions?: Record<string, unknown> | null; selectionId?: string; initialTrajectory?: { messages: import('../runtime/or-payload.ts').OrMessage[]; manifest: import('../context/review-policy.ts').ManifestEntry[] } | null }): { window: WindowRow; blockedReason: string | null } {
     const id = genId('win');
     const now = new Date().toISOString();
+    // F25 教训（2026-10-24）：selectionId 给出而选集服务未接线=装配漂移——
+    // 静默跳过消费会让 confirmed 永不 consumed、恢复链重复要求选集。fail fast。
+    if (o.selectionId && !this.selections) throw new Error('WINDOW_SELECTIONS_NOT_WIRED:selectionId 已给出但 WindowManager 未注入选集服务（对照 app-context 装配）');
     tx(this.db, () => {
       this.db
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'NEW', ?, ?)")
@@ -168,6 +171,8 @@ export class WindowManager {
     // —— prepare：candidate + receipt + handoff（旧窗仍是 ACTIVE）——
     const candidateId = genId('win');
     const now = new Date().toISOString();
+    // F25 教训（2026-10-24）：同 createWindow——selectionId 给出而服务未接线=装配漂移，fail fast
+    if (o.selectionId && !this.selections) throw new Error('WINDOW_SELECTIONS_NOT_WIRED:selectionId 已给出但 WindowManager 未注入选集服务（对照 app-context 装配）');
     tx(this.db, () => {
       this.db
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'PREPARING', ?, ?)")

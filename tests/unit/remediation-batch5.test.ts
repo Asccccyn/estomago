@@ -77,13 +77,18 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  // F25 根因修复（2026-10-24）：WindowManager 必须与生产装配（app-context）同样
+  // 注入 selections/trajectory——此前测试不注入，选集消费静默不执行（confirmed 永不
+  // consumed、target 恒空），恢复的大输入在每个新窗重复触发 awaiting（无限循环确认），
+  // 旧测试用"循环确认≤5 次"掩盖了这条与生产漂移的夹具链。
+  const trajectory = new WindowTrajectoryService(db);
+  const selections = opts.withSelections ? new ManualSelectionService(db) : null;
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections ?? undefined, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
-  const trajectory = new WindowTrajectoryService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, ...(opts.withSelections ? { selections: new ManualSelectionService(db) } : {}) });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, ...(selections ? { selections } : {}) });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, identity, windows, reviews, checkpoint, trajectory, supervisor, events, logger };
 }
@@ -233,20 +238,26 @@ test('F25 场景一：底座实证装得下→大输入拒发→短输入正常�
     // D06 真实两段式：大输入先触发换窗并等选集（CONTEXT_SELECTION_REQUIRED）→ 模拟她确认空选
     const attWait = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
     assert.ok((attWait.blocked_reason ?? '').includes('CONTEXT_SELECTION_REQUIRED') || attWait.state === 'failed' || ['blocked','failed'].includes(attWait.state), `大输入先挂换窗等选集（得到 ${attWait.state}/${attWait.blocked_reason}）`);
-    // 换窗链可逐级触发 awaiting——循环确认空选直到链收口（≤5 次防失控）
-    for (let round = 0; round < 5; round++) {
-      const aw = ctx.db.prepare("SELECT selection_id, source_window_id FROM context_selections WHERE conversation_id='c1' AND status='awaiting' ORDER BY created_at DESC LIMIT 1").get() as { selection_id: string; source_window_id: string } | undefined;
-      if (!aw) break;
-      const conf = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: aw.source_window_id, items: [], explicitEmpty: true, idempotencyKey: `f25-s1-${aw.selection_id}` });
-      if (!conf.ok) console.log('DBG_SELCONF', JSON.stringify(conf));
-      await ctx.supervisor.waitIdle();
-      await new Promise((r) => setTimeout(r, 80));
-    }
-    // 大输入最终未放行（现状=换窗选集等待循环中，如实记录；容量硬拒发生在链后段。
-    // F25 本意断言在下方三硬证：短输入正常/被拒大文零发送/不入已见）
+    // R13/F25 根因修复后（2026-10-24）：一次空选确认即收口——选集被切换事务消费
+    //（consumed+target），恢复的大输入经"刚准备好的目标窗不重复旋转"守卫直达请求级
+    // 硬门，得到明确容量拒绝。不再存在"重复要求空选"的循环（旧夹具缺 selections
+    // 注入时 confirmed 永不 consumed，会在每个新窗重复 awaiting）。
+    const aw = ctx.db.prepare("SELECT selection_id, source_window_id FROM context_selections WHERE conversation_id='c1' AND status='awaiting' ORDER BY created_at DESC LIMIT 1").get() as { selection_id: string; source_window_id: string } | undefined;
+    assert.ok(aw, '存在待确认选集');
+    const conf = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: aw.source_window_id, items: [], explicitEmpty: true, idempotencyKey: `f25-s1-${aw.selection_id}` });
+    assert.ok(conf.ok, `空选确认成功（${JSON.stringify(conf).slice(0, 160)}）`);
+    await ctx.supervisor.waitIdle();
+    await new Promise((r) => setTimeout(r, 80));
+    // 大输入：一次确认后明确容量拒绝（绝不再要求选集）
     const attBig = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(big.attemptId) as { state: string; blocked_reason: string | null };
     const turnBig = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(big.turnId) as { state: string };
-    assert.notEqual(attBig.state, 'completed', `大输入未放行（att=${attBig.state}/${attBig.blocked_reason?.slice(0,60)} turn=${turnBig.state}）`);
+    assert.equal(attBig.state, 'failed', `一次确认后明确容量拒绝（att=${attBig.state}/${attBig.blocked_reason?.slice(0,60)} turn=${turnBig.state}）`);
+    assert.ok((attBig.blocked_reason ?? '').includes('CAPACITY_BLOCKED'), `拒绝原因如实为容量硬门（得到 ${attBig.blocked_reason?.slice(0, 80)}）`);
+    const consumedSel = ctx.db.prepare("SELECT status, target_window_id FROM context_selections WHERE selection_id = ?").get(aw.selection_id) as { status: string; target_window_id: string | null };
+    assert.equal(consumedSel.status, 'consumed', '选集已消费并绑定目标窗');
+    assert.ok(consumedSel.target_window_id, 'target_window_id 已落');
+    const awaitingAfter = ctx.db.prepare("SELECT COUNT(*) n FROM context_selections WHERE conversation_id='c1' AND status='awaiting'").get() as { n: number };
+    assert.equal(awaitingAfter.n, 0, '不再重复要求选集');
     // 短输入：必须正常发送完成
     const short = await say(ctx, '短', 's1', at(2));
     await ctx.supervisor.waitIdle();
