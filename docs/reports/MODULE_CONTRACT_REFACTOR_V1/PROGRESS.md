@@ -11,5 +11,9 @@
 | P02.1+2 | 26f2bc0 | capabilities/registry.ts（显式登记/重复名拒绝/baselineOrder 枚举）；capabilities/executor.ts（取消→memory_only 门→冻结schema校验→背景准入→handler→唯一投影）；contracts.ts 增 CapabilityOutcome | typecheck 0；capability-registry 2/2 | 见git log | DONE |
 | P02.3-6 | （同上） | modules/oido/source-repository.ts（SQL 逐字）；modules/oido/service.ts（getEvidence 九步逐字）；modules/oido/module.ts（oido_get 条目，OIDO_GET_DEFINITION 唯一正本）；host-tools 路由+旧分支/方法删除；app-context 装配 | typecheck 0；tool-catalog-golden+8 项回归 8/8（定义搬迁逐字等价） | 见git log | DONE |
 | P02.7 | （同上） | tests/unit/oido-get-registry-host-wiring.test.ts（A01 离线合同：真实回合 define/invoke 两链、新handler=1旧handler=0、同定义同结果、D39/D40/CANCELLED） | 12/12 定向回归通过；A01→PASS（ACCEPTANCE_RESULTS.json） | 见git log | P02 DONE；下一卡 P03 |
+| P03.1a+2+3 | 04ae4af | modules/oido：analyzeVoice（九步组合用例逐字）+仓库扩展（receipt/intent/sha/transcript/bind/view-artifact）；oido_analyze 条目；旧分支/方法删除；夹具接 registry | typecheck 0；7/7（voice-hearing/reaudit/joint-voice/facade/oido-delete/wiring/golden） | f1cb897 | DONE |
+| P03.1b-e | f1cb897 | service capabilities/view/find/compare；四条目+定义正本；旧分支/方法/授权助手删除；artifacts 窄端口 | typecheck 0；10/10（含 b1-view-native-image 原生图块物化） | cb08af2 | DONE |
+| P03.4-8 | cb08af2 | modules/voice（transcript-service/call-service/module）；SirenAdapter.createCallFromInternalEnv；ProgramFactsPort；oido 生命周期（删除重试 timer）；isMemoryOnlyAllowed 统一判定 | typecheck 0；P03 全网 18/18 | 本卡提交 | DONE |
+| P03 收尾 | （同上） | ACCEPTANCE A02/A04-A09/A11=PASS；MIGRATION_MATRIX 八行填毕；TEST_INVENTORY 增 P03 分类 | A02/A04-A09/A11 证据登记 | 见git log | P03 DONE；下一卡 P04 |
 
 只记可复核事实。不记录私有推理、凭据、聊天正文、完整请求。

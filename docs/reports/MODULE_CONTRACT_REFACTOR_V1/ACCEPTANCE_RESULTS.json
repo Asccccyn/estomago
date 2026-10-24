@@ -29,12 +29,18 @@
       "phase": "P01",
       "setup": "普通新窗catalog→define→invoke。",
       "assertions": "名称/顺序/schema JSON/definition ID/已见要求与基线一致。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/tool-catalog-golden.test.ts  (exit 0，多次)",
+        "golden 采集点=849b1d5 纯净代码（sha256 770e9fef…）"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/golden/tool-catalog-baseline.json",
+        "tests/unit/tool-catalog-golden.test.ts"
+      ],
+      "notes": "catalog/define/invoke 同源冻结定义：48 定义+deferred 三入口+definitionId 逐字节与 849b1d5 一致；P01-P03 六次结构重组（叶类型/域工厂/六工具定义搬迁）后 golden 恒定。"
     },
     {
       "id": "A03",
@@ -57,12 +63,19 @@
       "phase": "P03",
       "setup": "用户上传合成语音、可选转写、发送，再oido_analyze/get。",
       "assertions": "权限/素材/ingest/analyze/绑定/模型投影端到端正确。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-hearing.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-get-registry-host-wiring.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/voice-hearing.test.ts",
+        "tests/unit/oido-get-registry-host-wiring.test.ts",
+        "apps/host/src/modules/oido/service.ts"
+      ],
+      "notes": "已发布语音→analyze（ingest→receipt→绑定→模型投影）与 get（绑定→overview/prosody）端到端经真实入口（真实 define/invoke 回合），oído HTTP 为边界 fake。oido_analyze/get 已迁 modules/oido，旧分支删除。"
     },
     {
       "id": "A05",
@@ -71,12 +84,16 @@
       "phase": "P03",
       "setup": "正常上传与准备转写，但尚未点击发送。",
       "assertions": "模型transcript_read拒绝；不把用户准备动作当发布。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-hearing.test.ts  (exit 0；O11 未发送/跨房拒读用例)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/voice-hearing.test.ts"
+      ],
+      "notes": "未发送草稿/非 voice presentation/已撤权资产拒读（transcript/analyze 同门，SQL 逐字保留）。"
     },
     {
       "id": "A06",
@@ -85,12 +102,17 @@
       "phase": "P03",
       "setup": "发送语音时无可信转写但当前窗获准听觉能力可用。",
       "assertions": "沿现行允许/阻断条件；不新增强制转写或强制深听。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-hearing.test.ts  (exit 0；V06 无转写可听→结构化引用)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/voice-hearing.test.ts",
+        "tests/unit/module-contract-session-snapshot.test.ts"
+      ],
+      "notes": "无转写现行允许路径保持：analyze 不要求先转写；会话快照采集\"转写未就绪\"投影（audio_ref+时长未知）。"
     },
     {
       "id": "A07",
@@ -99,12 +121,18 @@
       "phase": "P03",
       "setup": "两个正常建立会话，尝试用另一会话音频ref。",
       "assertions": "有限一例拒绝；不泄露正文/分析。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-hearing.test.ts  (exit 0；O11 跨会话资产拒绝)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-facade-four-tools.test.ts  (exit 0；view/find/compare 跨会话拒)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/voice-hearing.test.ts",
+        "tests/unit/oido-facade-four-tools.test.ts"
+      ],
+      "notes": "他房间资产/未绑定 analysis 拒绝（ASSET_NOT_IN_ROOM/ANALYSIS_NOT_IN_ROOM），六个 oído 工具同一接入仓库判定。"
     },
     {
       "id": "A08",
@@ -113,12 +141,18 @@
       "phase": "P03",
       "setup": "正常已发布源启动分析后点停止一次。",
       "assertions": "取消传播，后续交付不发生；已完成副作用如实保留。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-get-registry-host-wiring.test.ts  (exit 0；abort→CANCELLED)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/reaudit-facade-lifecycle.test.ts  (exit 0；REV-E07 迟到结果不交付)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/oido-get-registry-host-wiring.test.ts",
+        "tests/unit/reaudit-facade-lifecycle.test.ts"
+      ],
+      "notes": "一次 stop 阻止后续交付：signal 前置检查+HTTP 后复检+取消映射 CANCELLED；view/find/compare 交付前复验保持。"
     },
     {
       "id": "A09",
@@ -127,12 +161,16 @@
       "phase": "P03",
       "setup": "正常ingest成功，analyze边界fake超时一次。",
       "assertions": "未知状态保留，回执复用，不从头重复副作用。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/reaudit-facade-lifecycle.test.ts  (exit 0；REV-E08 幂等键分键/REV-E09 迟到导入登记删除意图)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/reaudit-facade-lifecycle.test.ts"
+      ],
+      "notes": "一次已成功 ingest 后 analyze 失败/未知：ingest 回执与删除意图已落库（不重做已成功副作用、不伪装整体失败）；(turn,request,tool_call) 幂等键分键保持。"
     },
     {
       "id": "A10",
@@ -155,12 +193,20 @@
       "phase": "P03",
       "setup": "正常通话入站一次，通过同一模型输出抽头。",
       "assertions": "文本/语音同源，不增第二模型调用；保持流协议。 通话memory_only保持轻量oído可用/重型拒绝；发现与执行同政策，wire目录不变。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "0c1d542c4040d017ad83db943a7893d578db8698",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/a11-hangup-control.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/dial-request-flow.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-ingress-ndjson.test.ts  (exit 0)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/a11-hangup-control.test.ts",
+        "tests/unit/dial-request-flow.test.ts",
+        "tests/unit/voice-ingress-ndjson.test.ts"
+      ],
+      "notes": "call_control 迁 voice 域（end/accept/decline/程序事实窄端口）；实时语音入口/NDJSON 协议未改，voiceTap 同源文本路径测试零改动通过。"
     },
     {
       "id": "A12",
