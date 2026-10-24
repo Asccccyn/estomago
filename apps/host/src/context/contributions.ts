@@ -30,3 +30,8 @@ export interface WindowOpenContributor {
   /** 沿既有开窗快照/分页/权限合同（BootstrapPort 取资料；不是每轮拉取）。 */
   snapshot(windowId: string, signal?: AbortSignal): Promise<string | null>;
 }
+
+// P09 防回退：supervisor 只经本叶引用贡献相关类型（不 import 业务 client/service）。
+export type BootstrapPort = Pick<import('../integrations/mariposa/client.ts').MariposaClient, 'bootstrapGet' | 'bootstrapNext' | 'bootstrapValidate'>;
+export type { AugmentInput, AugmentResult } from '../memory-surfacing/service.ts';
+export { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';

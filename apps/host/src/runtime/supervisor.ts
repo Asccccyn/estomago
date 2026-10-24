@@ -1,6 +1,6 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
-import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contributions.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -48,7 +48,7 @@ import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sd
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex, genId } from '../util/id.ts';
 import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
-import type { WishstarClient } from '../integrations/wishstar/client.ts';
+// P09：wishstar 依赖收窄为结构面（仅开窗临近纪念日提醒所需 upcoming）
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
@@ -75,7 +75,7 @@ export type SupervisorDeps = {
   windows: WindowManager;
   logger: Logger;
   archiveSync?: { drainOnce(): Promise<unknown> }; // 助手消息正式发布后触发原文同步（未启用时不注入）
-  wishstar?: Pick<WishstarClient, 'upcoming'> | null; // 许愿星（开窗临近纪念日提醒；未注入则无此行）
+  wishstar?: { upcoming(days: number, signal?: AbortSignal): Promise<{ items: Array<{ name: string; date: string; days_until: number }> } | null> } | null; // 许愿星只读结构面（临近纪念日提醒；不 import 业务 client）
   tools?: HostToolExecutor; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
@@ -84,7 +84,7 @@ export type SupervisorDeps = {
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
-  bootstrap?: Pick<import('../integrations/mariposa/client.ts').MariposaClient, 'bootstrapGet' | 'bootstrapNext' | 'bootstrapValidate'> | null;
+  bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
@@ -1245,7 +1245,7 @@ export class TurnSupervisor {
         // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
         if (d.wishstar) {
           try {
-            const upcoming = await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime);
+            const upcoming = (await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime)) ?? { items: [] };
             for (const it of upcoming.items ?? []) {
               seg.push(`[临近纪念日：${it.name}（${it.days_until === 0 ? '就是今天' : `还有 ${it.days_until} 天`}）——来自许愿星]`);
             }
@@ -2252,7 +2252,7 @@ export class TurnSupervisor {
     // 接受时起绝对总预算）+ 尝试级冻结注入块。source/target 均为本
     // 消息当前修订；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
-    let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
+    let surfacingAugment: import('../context/contributions.ts').AugmentResult | null = null;
     if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
         const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
