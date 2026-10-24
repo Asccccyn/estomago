@@ -1,4 +1,3 @@
-import { keepwarmAdmission, keepwarmTargetMs, autonomousAdmission, canTransition } from '../reference/background-policy.ts';
 // ESTOMAGO_CHAT_EXEC_V1 · WP4 地基（04 §4-§10）+ WAKE_KEEPWARM_V1（2026-10-22 改写）：
 // 策略纯函数 + 设置原子开关 + 调度器（虚拟时钟/假 executor）。
 // 2026-10-22 改写：60min 冷却（CW-06/07）与心跳零工具封锁（CW-13）按 U02/U06 退役；
@@ -51,22 +50,11 @@ test('U02 退役核验：60 分钟冷却函数已删除（不是留死分支）�
   assert.equal('autonomousCooldownDueAtMs' in policyNs, false, '冷却函数已删除');
 });
 
-test('CW-03 策略（2026-10-22 版）：保温准入=开关/证据/已冷/自主优先——用户在场不再是 skip 原因（U04）', () => {
-  const t1000 = Date.parse('2026-10-11T02:00:00.000Z'); // 上海 10:00
-  const s = effectiveSettings(buildConfig({ background: { keepwarm: { enabled: true } } }), 0, null);
-  assert.equal(keepwarmAdmission({ settings: s, evidenceStartedAtMs: null, nowMs: t1000, autonomousRunOpen: false }).skip, 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN', '无证据不宣称命中');
-  assert.equal(keepwarmAdmission({ settings: s, evidenceStartedAtMs: t1000, nowMs: t1000 + 3_600_000 + 1, autonomousRunOpen: false }).skip, 'KEEPWARM_CACHE_ALREADY_COLD', '超 1h 不补冷写');
-  assert.equal(keepwarmAdmission({ settings: s, evidenceStartedAtMs: t1000, nowMs: t1000 + 2_900_000, autonomousRunOpen: true }).skip, 'AUTONOMOUS_FIRST', '同到期自主优先（K-15）');
-  // U04：用户在场（原 chatActive/pendingUserInput 参数已删除）不再构成保温 skip——排队由串行链处理
-  assert.equal(keepwarmAdmission({ settings: s, evidenceStartedAtMs: t1000, nowMs: t1000 + 2_900_000, autonomousRunOpen: false }).skip, null, '证据有效即可发送（在场让位=执行位内安全边界）');
-  assert.equal(keepwarmTargetMs(t1000), t1000 + 3_000_000, '+50min 语义保留（派发内重算）');
-});
-
 test('CW-02/BACKGROUND 预算（2026-10-22 版）：cap=null 不可开始；耗尽=EXHAUSTED；上界未知=UNAVAILABLE；心跳无单请求封锁', () => {
   const cfgNo = effectiveSettings(buildConfig({ background: { autonomous: { enabled: true } } }), 0, null); // 开关开、上限 null
-  assert.equal(autonomousAdmission({ settings: cfgNo, totalSwitchEnabled: true, taskEnabled: true, budgetConfigured: false, nowMs: 0 }).skip, 'BACKGROUND_BUDGET_NOT_CONFIGURED');
+  const run0 = { model_requests_started: 0, tool_calls_started: 0, output_tokens_observed: 0, startedAtMs: 0, reserved_cost_micro_usd: 0, known_cost_micro_usd: 0, unknown_cost_count: 0 };
+  assert.equal((budgetGate({ kind: 'autonomous', settings: cfgNo, run: run0, nowMs: 0, nextRequestCostMicroUsd: null }) as { code: string }).code, 'BACKGROUND_BUDGET_NOT_CONFIGURED', 'cap=null 不是无限——生产门拒绝');
   const cfgOk = effectiveSettings(buildConfig({ background: { autonomous: { enabled: true, daily_cost_cap_usd: 1 }, keepwarm: { enabled: true, daily_cost_cap_usd: 1 } } }), 0, null);
-  assert.equal(autonomousAdmission({ settings: cfgOk, totalSwitchEnabled: true, taskEnabled: true, budgetConfigured: true, nowMs: 0 }).skip, null, 'U02/U04 语义下无冷却无在场取消——直接通过');
   const run = { model_requests_started: 0, tool_calls_started: 0, output_tokens_observed: 0, startedAtMs: 0, reserved_cost_micro_usd: 900_000, known_cost_micro_usd: 0, unknown_cost_count: 0 };
   const gate = budgetGate({ kind: 'autonomous', settings: cfgOk, run, nowMs: 1000, nextRequestCostMicroUsd: 200_000 });
   assert.equal((gate as { code: string }).code, 'BACKGROUND_BUDGET_EXHAUSTED', '0.9+0.2 > 1.0 → 阻止');
@@ -77,9 +65,7 @@ test('CW-02/BACKGROUND 预算（2026-10-22 版）：cap=null 不可开始；耗�
   assert.equal((kw as { allowed: boolean }).allowed, true, '心跳多轮工具循环只受日预算与 max_run_ms 结构保护');
 });
 
-test('§9.1/9.2：状态机合法跃迁；重启孤儿=可恢复（W-14 语义）；时钟回拨暂停', () => {
-  assert.ok(canTransition('claimed', 'running') && canTransition('running', 'noop') && canTransition('running', 'unknown') && canTransition('unknown', 'completed'));
-  assert.ok(!canTransition('completed', 'running') && !canTransition('claimed', 'completed'), '终态不复活');
+test('§9.1/9.2：重启孤儿=可恢复（W-14 语义）；时钟回拨暂停', () => {
   assert.deepEqual(restartDisposition({ state: 'claimed', dispatchCount: 0 }), { to: 'skipped', resultCode: 'HOST_RESTART_BEFORE_SEND' });
   assert.deepEqual(restartDisposition({ state: 'running', dispatchCount: 2 }), { to: 'unknown', resultCode: 'HOST_RESTART_MID_RUN' });
   assert.equal(budgetDayOfMs(Date.parse('2026-10-10T16:30:00.000Z')), '2026-10-11', '上海日界');

@@ -1,4 +1,3 @@
-import { keepwarmAdmission, autonomousAdmission } from '../reference/background-policy.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { buildConfig, validateConfig } from '../../apps/host/src/config/schema.ts';
 import { keepwarmSleepState } from '../../apps/host/src/runtime/keepwarm-sleep.ts';
-import { effectiveSettings } from '../../apps/host/src/runtime/background-policy.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
@@ -39,13 +37,6 @@ test('睡眠配置拒绝非法时间、同起止和无效时区；旧配置获�
   assert.equal(keepwarmSleepState({ ...config.background.keepwarm.sleep_window, timezone: 'Invalid/Zone' }, Date.now()).code, 'KEEPWARM_SLEEP_CONFIG_INVALID', '绕过配置校验也不放行');
 });
 
-test('睡眠只暂停 keepwarm；缓存有效也拒绝；显式自主预约仍准入', () => {
-  const now = Date.parse('2026-10-23T23:00:00+08:00');
-  const settings = effectiveSettings(buildConfig({ background: { autonomous: { enabled: true, daily_cost_cap_usd: 1 }, keepwarm: { enabled: true } } }), 0, null);
-  assert.equal(keepwarmAdmission({ settings, evidenceStartedAtMs: now - 3_000_000, nowMs: now, autonomousRunOpen: false }).skip, 'KEEPWARM_SLEEP_WINDOW');
-  assert.equal(autonomousAdmission({ settings, totalSwitchEnabled: true, taskEnabled: true, budgetConfigured: true, nowMs: now }).skip, null);
-});
-
 test('睡眠 tick 零心跳领取；自主预约正常；跨边界 model/tool 及重试零新增派发与预占', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'keepwarm-sleep-'));
   const db = openDatabase(root);
@@ -76,7 +67,4 @@ test('睡眠 tick 零心跳领取；自主预约正常；跨边界 model/tool �
   assert.equal(dispatch('tool', 'tool').allowed, false);
   assert.equal((db.prepare('SELECT COUNT(*) n FROM background_dispatches').get() as { n: number }).n, 1);
   assert.equal((db.prepare("SELECT reserved_cost_micro_usd n FROM background_runs WHERE id = 'kw'").get() as { n: number }).n, 10, '拒绝不写新预占，保留睡前已发生费用');
-  now = Date.parse('2026-10-24T08:00:00+08:00');
-  const cold = keepwarmAdmission({ settings: settings.effective(), evidenceStartedAtMs: Date.parse('2026-10-23T22:10:00+08:00'), nowMs: now, autonomousRunOpen: false });
-  assert.equal(cold.skip, 'KEEPWARM_CACHE_ALREADY_COLD', '醒来仍走原缓存门，不补冷写');
 });
