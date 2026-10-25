@@ -57,6 +57,20 @@ ESTOMAGO_HOME=$(mktemp -d /tmp/estomago-test-home.XXXXXX) /opt/homebrew/bin/node
 - 证据：`evidence/ds-smoke-live-20261025.json`（key 不落任何文件/日志——已检查产物）。
 - 前置修复：ds-smoke fake 模型参数补必填 creation_mode（脚本过时——基线 4dfa709 即必填；非产品回归）。dry-run 先行通过后才跑 live。
 
+## P07 收官（2026-10-25 第三轮）
+
+七批全部完成：routes/ 十三模块（voice-call/content/background/conversations/oido-ui/runtime-settings/context-selection/calendar/assets/dial/system/events/voice-stream）；http.ts 1874→364 行（认证门+Origin 门+health+静态+入口委托+链尾 404）。全部逐字搬迁+精确路由表委托（未列出子路径照走 404）。提交链 7dfdcb9→e3f6492→0ad841a；每批定向通过；收官全量 **188/188 exit 0**。提取脚本三次拍平事故（readlines/split 混用、贪婪正则）均当场从 HEAD 重提修复并录入教训。
+
+## 真实集成冒烟第二轮：本机 loopback 真实服务（用户授权非 OR 凭据）
+
+命令：`source <secrets env>; unset OPENROUTER_API_KEY; ESTOMAGO_REAL_SMOKE=1 node scripts/real-integration-smoke.mjs` → **REAL_SMOKE_PASS，退出码 0**。
+
+- Mariposa（127.0.0.1:18780）：bootstrap.get ok（profile=estomago）+心情词表 7 类——经 MariposaClient，42ms。
+- oído ASR（127.0.0.1:8791）：真实合成语音（say+afconvert，126KB WAV）ingest→analyze：state=partial、1 观测——经 OidoAdapter，1133ms。（先前的 8 字节假头只能过合同门、真分析后端拒——换真语音后通过。）
+- embedding worker（127.0.0.1:8792）：仓内真实 PNG+真实中文文本→embeddinggemma-2 双模态 768 维向量——经 MediaEmbedWorkerClient，362ms。（截断假 PNG 会被真实后端断连——教训已记。）
+- Siren（127.0.0.1:8790）：ECONNREFUSED——服务当前未运行；只读探测、绝不建呼（防真实电话）。如实登记未验证。
+- 凭据纪律：OR key 在 mariposa.env 中存在但运行前显式 unset，全程未用；所有 token 经 env 名间接引用，证据 JSON 已扫描零泄露。
+
 ## 覆盖与限制（如实）
 
 - 29/29 验收项 PASS 的证据种类均为 OFFLINE_CONTRACT（见 ACCEPTANCE_RESULTS.json）。

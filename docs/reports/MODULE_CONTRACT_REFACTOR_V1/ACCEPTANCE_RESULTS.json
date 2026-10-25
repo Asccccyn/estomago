@@ -589,7 +589,7 @@
       "id": "LIVE-01",
       "title": "真实收费模型/ASR/TTS/embedding",
       "status": "PARTIAL_EXECUTED",
-      "notes": "DS 真实付费冒烟已执行（2026-10-25 用户授权 DS key）：SMOKE_PASS，三步 completed，memory_hold 真实工具往返 committed，书签推进，工具续轮，缓存命中 5 请求；deepseek-chat 直连 api.deepseek.com，不经 OpenRouter（OR key 全程未用）。证据=evidence/ds-smoke-live-20261025.json。仍未执行：真实 Opus/OR、ASR/TTS/embedding、真实 Mariposa/oído/Siren 调用。"
+      "notes": "真实集成两轮已执行（2026-10-25 用户授权非 OR 凭据；OR key 全程未用）：(1) DS 官方真实模型冒烟 SMOKE_PASS（三步 completed、memory_hold 真实工具往返 committed、书签推进、缓存命中；evidence/ds-smoke-live-20261025.json）；(2) 本机 loopback 真实服务 REAL_SMOKE_PASS（evidence/real-integration-smoke-20261025.json）——Mariposa bootstrap.get+心情词表（7 类）、oído ASR 真合成语音 ingest→analyze（state=partial、1 观测）、embedding worker 真图+真文（embeddinggemma-2 768 维双模态）——全部经重构后 est 代码路径（MariposaClient/OidoAdapter/MediaEmbedWorkerClient）。Siren：服务当前未运行（ECONNREFUSED 只读探测；不建呼防真实电话）——未验证。仍未执行：真实 Opus/OR（用户自行在生产切机时跑）。"
     },
     {
       "id": "PROD-01",
