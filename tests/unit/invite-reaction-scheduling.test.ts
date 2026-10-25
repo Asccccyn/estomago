@@ -66,7 +66,7 @@ function compose(root: string, transport: OrTransport, siren: typeof fetch, invi
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', siren);
   const tools = new HostToolExecutor({ db, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   tools.setSupervisorRef(supervisor);

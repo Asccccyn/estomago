@@ -71,7 +71,7 @@ function compose(root: string, holdArgs: Record<string, unknown>, mariposa: Mari
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const transport: OrTransport = async (payload) => {
@@ -228,7 +228,7 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: recordingMariposa(calls) }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   let phase = 0; // 0=第一轮纯文本；1=此后走 hold 脚本

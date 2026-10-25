@@ -98,7 +98,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, orTransport);
   const trajectory = new WindowTrajectoryService(db); // 生产恒接线——原测试缺线，此前靠 12k 回退掩盖
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

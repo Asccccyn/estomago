@@ -72,7 +72,7 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const paths = makePaths(root);
   const svc = new IdentityService(buildConfig({}), paths);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const args = { text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' };
   const r1 = await tools.execute('identity_milestone_write', { ...args, __tool_call_id: 'call-1' }, ctx);
@@ -102,7 +102,7 @@ test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async (
   const { db } = makeDb(root);
   const svc = new IdentityService(buildConfig({}), makePaths(root));
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const bad = await tools.execute('identity_milestone_write', { text: 'x', idempotency_key: 'k', __tool_call_id: 'c' }, ctx);
   assert.equal(bad.ok, false);
@@ -120,7 +120,7 @@ test('行级条目化（她 1022 裁定：一行一条 1.2.3.4.；新增=加一�
   const paths = makePaths(root);
   const db = makeDb(root).db;
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const ctx = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-m' };
   // 初始版=生产 v1 形态：一行一条，无空行
   const w0 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x0', operation: 'write', text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);

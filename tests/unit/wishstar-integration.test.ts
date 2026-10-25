@@ -33,7 +33,7 @@ function makeTools(calls: ForwardCall[], respond: (c: ForwardCall) => { status: 
     },
   };
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), wishstar })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   return { tools, db };
 }
 
@@ -90,7 +90,7 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
   migrate(db2, sha256Hex);
   try {
     const bare = new HostToolExecutor({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) })
-  wireOidoCapabilitiesForTest(bare, {});;
+  wireOidoCapabilitiesForTest(bare, {  });;
     const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k', __tool_call_id: 'c' }, CTX as never);
     assert.equal((out2.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
   } finally { db2.close(); }

@@ -20,7 +20,7 @@ test('capture actual executor output serialized exactly as supervisor tool conte
  const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true})});
  let fixture:any={};
  const executor=new HostToolExecutor({db,mariposa:new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}),reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
-  wireOidoCapabilitiesForTest(executor, {});;
+  wireOidoCapabilitiesForTest(executor, {  });;
  const records=[];
  for(const c of cases){fixture=c.data;const result=await executor.execute(c.name,{...c.args,__tool_call_id:c.name},ctx);assert.equal(result.ok,true);
   const content=JSON.stringify(result.output);records.push({tool:c.name,content,bytes:Buffer.byteLength(content,'utf8')});}

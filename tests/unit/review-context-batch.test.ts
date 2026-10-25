@@ -68,7 +68,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages });
@@ -158,7 +158,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   };
   const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '上次聊中秋看月亮' }, CTX);
   let plan = (calls[0]!.payload as { query_plan: Record<string, unknown> }).query_plan;
@@ -205,7 +205,7 @@ test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查
   };
   const mariposa_wire_3 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_3, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't9', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   // ① 缺续查身份 → 早失败（不静默忽略、不冒充全新检索）
   const early = await tools.execute('memory_recall', { __tool_call_id: 'rj0', query: '再找', reject_candidate_ref: 'cand_1' }, CTX);

@@ -83,7 +83,7 @@ test('D19：16 个 emoji（16 码点/32 UTF-16 单位）的标题合法通过参
 async function execHold(ctx: { db: ReturnType<typeof openDatabase> }, calls: HoldCall[], args: Record<string, unknown>, seen: Array<{ id: string; revision: number }>, resultOverride?: () => Record<string, unknown>) {
   const reviews = new RotationReviewService(ctx.db);
   const tools = new HostToolExecutor({ db: ctx.db, mariposa: new MariposaClient({ transport: recordingMariposa(calls, resultOverride) }), reviews, checkpoint: new HoldCheckpointService(ctx.db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(, {  });;
   return { out: await tools.execute('memory_hold', { ...args, __tool_call_id: 'call-1' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: seen, requestId: 'req-1' }), effects: reviews };
 }
 
@@ -216,7 +216,7 @@ function composeSup(root: string, transport: OrTransport, configOver: Record<str
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

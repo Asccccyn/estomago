@@ -245,7 +245,7 @@ export class Host {
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
     });
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
+    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, mediaIndex, sirenCall });
     tools.setCapabilityRegistry(capabilityRegistry);
     tools.setMemoryRecovery(memoryService);
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）

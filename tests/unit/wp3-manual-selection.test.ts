@@ -79,7 +79,7 @@ function compose(root: string, transport: OrTransport, configOver: Record<string
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposaOk });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposaOk }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

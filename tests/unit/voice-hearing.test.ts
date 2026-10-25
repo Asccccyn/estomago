@@ -153,8 +153,8 @@ function executorFixture(transportCalls: Array<{ url: string; body?: string }>) 
   }) as typeof fetch;
   const reviews = new RotationReviewService(f.db);
   const checkpoint = new HoldCheckpointService(f.db);
-  const tools = new HostToolExecutor({ db: f.db, mariposa: null, reviews, checkpoint, media: f.media, messages: f.messages, oido: adapter });
-  wireOidoCapabilitiesForTest(tools, { db: f.db, oido: adapter, media: f.media });
+  const tools = new HostToolExecutor({ db: f.db, mariposa: null, reviews, checkpoint, media: f.media, messages: f.messages});
+  wireOidoCapabilitiesForTest(tools, { oido: adapter });
   const publish = (conversationId: string, assetId: string, clientMessageId: string) =>
     f.messages.publishAssistantMessage({ conversationId, turnId: 't1', content: '', kind: 'voice', clientMessageId, attachments: [{ asset_id: assetId, presentation: 'voice' }] });
   return { f, tools, publish, restore() { (globalThis as { fetch?: typeof fetch }).fetch = origFetch; } };

@@ -276,7 +276,7 @@ export class HostToolExecutor {
   private archiveSync: { drainOnce(): Promise<unknown> } | null;
   private lastMoodVocabRefreshAt = 0;
 
-  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; oido?: import('../integrations/oido/adapter.ts').OidoAdapter | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null }) {
+  constructor(deps: { db: Db; tz?: string | null; mariposa: MariposaClient | null; surfaceDetailClient?: MariposaClient | null; reviews: RotationReviewService; checkpoint: HoldCheckpointService; archiveSync?: { drainOnce(): Promise<unknown> } | null; media?: import('../media/assets.ts').MediaService | null; messages?: import('../messages/service.ts').MessageService | null; contentClient?: import('../integrations/content/client.ts').ContentClient | null; identity?: import('../identity/service.ts').IdentityService | null; events?: import('../events/service.ts').EventService | null; wishstar?: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null; taskService?: import('./background-task-service.ts').BackgroundTaskService | null; mediaIndex?: import('../media/index/service.ts').MediaIndexService | null; sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter | null }) {
     this.db = deps.db;
     this.tz = deps.tz ?? null;
     this.mariposa = deps.mariposa;
@@ -291,7 +291,6 @@ export class HostToolExecutor {
     this.events = deps.events ?? null;
     this.wishstar = deps.wishstar ?? null;
     this.taskService = deps.taskService ?? null;
-    this.oido = deps.oido ?? null;
     this.sirenCall = deps.sirenCall ?? null;
     this.mediaIndex = deps.mediaIndex ?? null;
   }
@@ -304,8 +303,6 @@ export class HostToolExecutor {
   private wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
   /** WAKE_KEEPWARM_V1（04）：wake_manage 与 HTTP 管理面共用的预约正本（未注入=工具如实拒绝） */
   private taskService: import('./background-task-service.ts').BackgroundTaskService | null;
-  /** JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；未配置=工具如实拒绝） */
-  private oido: import('../integrations/oido/adapter.ts').OidoAdapter | null;
   private sirenCall: import('../integrations/siren/adapter.ts').SirenAdapter | null;
   /** P02.6：已迁能力注册表（未注入=全部走旧路径，装配前零变化） */
   private capabilityRegistry: CapabilityRegistry | null = null;

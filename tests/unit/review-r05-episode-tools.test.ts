@@ -32,7 +32,7 @@ function tools(log: Call[], result: Record<string, unknown> | { ok: false; code:
     return { ok: true, result };
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  wireOidoCapabilitiesForTest(tools, {});
+  wireOidoCapabilitiesForTest(tools, {  });
   return tools;
 }
 

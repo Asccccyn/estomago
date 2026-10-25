@@ -66,7 +66,7 @@ function composeSup(root: string, transport: OrTransport, model: string, baseUrl
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

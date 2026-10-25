@@ -92,7 +92,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const mc = mariposa ? new MariposaClient({ transport: mariposa }) : null;
   const mariposa_wire_1 = mc ?? new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
      db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
@@ -125,7 +125,7 @@ function compose2(root: string, transport: OrTransport, TrajClass: new (db: Retu
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_2 = new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_2, // S18：显式 BootstrapPort
      db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });

@@ -23,8 +23,8 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('a'); messages.ensureConversation('b');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never })
-  wireOidoCapabilitiesForTest(tools, {});;
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)})
+  wireOidoCapabilitiesForTest(tools, {  });;
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r3p' });
   const createWithTranscript = async (text: string) => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'qiaosheng', origin: 'upload' });

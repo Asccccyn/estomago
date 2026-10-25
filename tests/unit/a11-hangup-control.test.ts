@@ -26,7 +26,7 @@ test('A11 call_control(end)：active 通话→Siren 柔性挂断端点立即回�
   }) as unknown as typeof fetch;
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', transport);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall });
-  wireOidoCapabilitiesForTest(tools, { db, oido: null, sirenCall });
+  wireOidoCapabilitiesForTest( db, oido: null, sirenCall , {  });
   const ctx = (): ToolExecContext => ({ roomId: 'c1', windowId: 'w', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'a11' });
   try {
     // 无 active 通话：如实拒绝

@@ -32,7 +32,7 @@ function setup(transport: MariposaTransport) {
     reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db),
     events,
   })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const toolEvents = () => (db.prepare(
     "SELECT kind, payload_ref FROM runtime_stream_events WHERE kind='turn.tool' ORDER BY sequence",
   ).all() as Array<{ kind: string; payload_ref: string }>)

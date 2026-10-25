@@ -70,7 +70,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages, tools: payload.tools?.map((t: { function: { name: string } }) => t.function.name) ?? [] });

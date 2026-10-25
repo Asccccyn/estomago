@@ -132,7 +132,7 @@ function composeRt(root, seen) {
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const runner = new DeepSeekRunner({ retryMax: 0 }, async () => { gen++; seen.push('deepseek'); return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '好的')) }; });

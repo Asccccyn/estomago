@@ -44,7 +44,7 @@ async function fixture(t: TestContext) {
   const taskService = new BackgroundTaskService(db, settings, () => now);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, events, taskService,
     wishstar: { async forward() { externalCalls++; return { status: 200, body: { dates: [] } }; } } });
-  wireOidoCapabilitiesForTest(tools, { db, oido: null, messages, events, sirenCall: null });
+  wireOidoCapabilitiesForTest(tools, { oido: null, sirenCall: null });
   const payloads: Record<string, unknown>[] = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload)); round++;

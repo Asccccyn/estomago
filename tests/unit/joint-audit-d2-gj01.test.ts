@@ -62,7 +62,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', prompt: JSON.stringify((payload.messages as Array<{ role: string }>)[0]) .slice(0, 80), sysLen: JSON.stringify(payload.messages[0]).length, full: payload.messages });
@@ -145,7 +145,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const out = await tools.execute('memory_recall', { __tool_call_id: 'call-r1', query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
   assert.equal(calls.length, 1);
@@ -177,7 +177,7 @@ test('G-J-01：5xx→OUTCOME_UNKNOWN；参数门拒缺 query；白名单外工�
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const out = await tools.execute('memory_recall', { __tool_call_id: 'c9', query: 'x' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' });
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_OUTCOME_UNKNOWN', '结果不明不当失败');

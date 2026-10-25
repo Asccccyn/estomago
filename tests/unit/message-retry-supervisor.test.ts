@@ -48,7 +48,7 @@ function fixture() {
     return { ok: true, result: { snapshot_id: 'synthetic-snapshot', state_hash: 'synthetic-hash', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: 'synthetic-bootstrap', note: '' } } };
   } });
   const tools = new HostToolExecutor({ db, mariposa, reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload));

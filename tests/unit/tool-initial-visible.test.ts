@@ -58,7 +58,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   m.approved_source_ref = 'longterm-milestones-v1.md'; m.identity_version = 'longterm-milestones-v1'; m.approved_source_hash = sha256Hex('条目一\n\n条目二');
   fs.writeFileSync(mp, JSON.stringify(m, null, 2));
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
 
   // 新窗：冻结 deferred 工具集 + 首个"已发送"请求携带 B 段注入文本（含 definition_id）
   db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());

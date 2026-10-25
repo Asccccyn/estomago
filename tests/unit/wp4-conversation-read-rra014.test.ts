@@ -30,7 +30,7 @@ function makeExecutor(root: string) {
     reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db),
   })
-  wireOidoCapabilitiesForTest(executor, {});;
+  wireOidoCapabilitiesForTest(executor, {  });;
   return { executor, db };
 }
 

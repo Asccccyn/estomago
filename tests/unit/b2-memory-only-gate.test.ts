@@ -24,8 +24,8 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('c1');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never })
-  wireOidoCapabilitiesForTest(tools, {});;
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)})
+  wireOidoCapabilitiesForTest(tools, {  });;
   const ctx = (over: Partial<ToolExecContext> = {}): ToolExecContext => ({ roomId: 'c1', windowId: 'w1', turnId: 'turn-model-1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'b2m', ...over });
   // deferred 冻结窗：含记忆工具与业务工具
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w1','c1','ACTIVE','2026-10-24','2026-10-24')").run();

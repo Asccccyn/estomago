@@ -44,7 +44,7 @@ function toolsWithHttpBody(bodyFor: (cap: string) => string | null): HostToolExe
   }) as typeof fetch;
   const client = new MariposaClient({ baseUrl: 'http://127.0.0.1:19990', credentialEnv: null });
   const tools = new HostToolExecutor({ db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   return new Proxy(tools, {
     get(target, prop, receiver) {
       if (prop === 'close') { globalThis.fetch = originalFetch; db.close(); return () => {}; }

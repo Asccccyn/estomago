@@ -103,7 +103,7 @@ function compose(root: string, transport: OrTransport, log: Array<Record<string,
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint, events })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push(JSON.parse(JSON.stringify(payload)) as Record<string, unknown>);

@@ -60,8 +60,8 @@ function compose(root: string, transport: OrTransport) {
     capabilities: async () => ({ ok: true }),
     getView: async (id: string) => ({ mime: 'image/png', pngBase64: PNG.toString('base64'), metadata: { analysis_id: id } }),
   };
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: oidoAdapter as never });
-  wireOidoCapabilitiesForTest(tools, { db, oido: oidoAdapter, media });
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)});
+  wireOidoCapabilitiesForTest(tools, { oido: oidoAdapter });
   const supervisor = new TurnSupervisor({ db, config, messages, events: new EventService(db), identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, new EventService(db)), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db), media, oidoHearing: true });
   return { db, config, messages, supervisor, media, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }

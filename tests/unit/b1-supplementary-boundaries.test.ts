@@ -25,8 +25,8 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('a');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never });
-  wireOidoCapabilitiesForTest(tools, { db, oido: null, media, sirenCall: null });
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)});
+  wireOidoCapabilitiesForTest(tools, { oido: null, sirenCall: null });
   const ctx = (): ToolExecContext => ({ roomId: 'a', windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'b1sup' });
   // 合法源：上传语音→转写 ready→发布为当前修订消息附件（RE-07 授权边界）
   const createPublishedWithTranscript = async (text: string) => {

@@ -59,7 +59,7 @@ function makeExecutor(root: string, mariposa?: MariposaTransport) {
     reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db),
   })
-  wireOidoCapabilitiesForTest(executor, {});;
+  wireOidoCapabilitiesForTest(executor, {  });;
   return { executor, db };
 }
 
@@ -251,7 +251,7 @@ function composeWp4(root: string, transport: OrTransport) {
   };
   const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

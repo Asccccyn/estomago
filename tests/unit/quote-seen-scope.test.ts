@@ -20,7 +20,7 @@ function fixture(t: TestContext) {
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const messages = new MessageService(db);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   // Exercise the resolver without invoking the external memory service.
   const verifier = tools as unknown as { resolveQuoteRefs(roomId: string, seen: readonly Seen[], refs: Ref[]): Result };
   let serial = 0;

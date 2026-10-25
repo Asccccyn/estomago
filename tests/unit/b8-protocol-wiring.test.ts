@@ -99,7 +99,7 @@ function compose(root: string, transport: OrTransport, sirenTransport: typeof fe
   const media = new MediaService(db, paths.mediaDir, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 'fake-token', sirenTransport);
   const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory, media });
   const oido = opts.oido as never;
@@ -186,7 +186,7 @@ test('协议① call_control：invite 经 SirenAdapter 创建；未配置如实�
     assert.equal(recent[0]!.state, 'expired');
     // 未配置：SirenAdapter status=not_configured → 集成缺口如实拒绝
     const noSiren = new HostToolExecutor({ db: ctx.db, mariposa: null, reviews: new RotationReviewService(ctx.db), checkpoint: new HoldCheckpointService(ctx.db), sirenCall: new SirenAdapter(null, null) })
-  wireOidoCapabilitiesForTest(noSiren, {});;
+  wireOidoCapabilitiesForTest(noSiren, {  });;
     const r = await noSiren.execute('call_control', { action: 'invite' }, ctl());
     assert.equal(r.ok, false);
     assert.equal((r.output as Record<string, unknown>)['error_code'], 'INTEGRATION_UNCONFIGURED');

@@ -36,8 +36,8 @@ function fixture() {
   const oidoForwarder = new Proxy({} as Record<string | symbol, unknown>, {
     get: (_t, k) => { const t = oidoTarget.current as Record<string, unknown> | null; const v = t?.[k as string]; return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(t) : v; },
   });
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: adapter as never });
-  wireOidoCapabilitiesForTest(tools, { db, oido: oidoForwarder, media });
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)});
+  wireOidoCapabilitiesForTest(tools, { oido: oidoForwarder });
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r5' });
   const create = async () => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'q', origin: 'upload' });

@@ -29,8 +29,8 @@ function fixture() {
     find: async (a: Record<string, unknown>) => { calls.push({ find: a }); return { state: 'candidates', items: [{ range_ms: [0, 500], match: '嗯' }] }; },
     compare: async (a: Record<string, unknown>) => { calls.push({ compare: a }); return { metrics: [], limits: [], baseline_comparison: { state: 'unavailable' } }; },
   };
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: adapter as never });
-  wireOidoCapabilitiesForTest(tools, { db, oido: adapter, media });
+  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)});
+  wireOidoCapabilitiesForTest(tools, { oido: adapter });
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r5' });
   const create = async () => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'q', origin: 'upload' });

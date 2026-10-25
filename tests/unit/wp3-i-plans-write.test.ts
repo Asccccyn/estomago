@@ -25,7 +25,7 @@ function makeTools(mariposa: MariposaTransport) {
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
   return { tools, db };
 }
 

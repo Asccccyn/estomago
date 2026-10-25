@@ -18,7 +18,7 @@ function fixture(t:any){
  const calls:any[]=[];
  const client=new MariposaClient({transport:async(cap,payload)=>{calls.push({cap,payload});return {ok:true,result:{operation_id:payload.operation_id,memory_id:'m1',version:1,binding_ids:(payload.event_source_ranges as unknown[] ?? []).map((_,i)=>`bind${i}`),committed_at:'2026-10-21T12:00:00Z'}}}});
  const tools=new HostToolExecutor({db,mariposa:client,reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
-  wireOidoCapabilitiesForTest(tools, {});;
+  wireOidoCapabilitiesForTest(tools, {  });;
  const ctx={roomId:'c1',windowId:'new-window',turnId:null,requestId:'event-request',purpose:'chat' as const,activeReviewId:null,seenSequence:3,seenMessages:rows.map(r=>({id:r.id,revision:1}))};
  const args={original_title:'事件',categories:['daily'],text:'事件正文',creation_mode:'contemporaneous',source_ranges:[{start_seq:1,end_seq:3}]};
  return {db,rows,calls,tools,ctx,args};

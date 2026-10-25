@@ -45,7 +45,7 @@ for (const provider of ['deepseek', 'openrouter'] as const) test(`${provider} F-
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db), checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews, checkpoint, taskService: tasks, messages });
-  wireOidoCapabilitiesForTest(tools, { db, oido: null, sirenCall: null });
+  wireOidoCapabilitiesForTest(tools, { oido: null, sirenCall: null });
   const payloads: Record<string, unknown>[] = [];
   const visible: Record<string, Record<string, unknown>> = {};
   let definitionId = '', taskId = '', revision = 1;
