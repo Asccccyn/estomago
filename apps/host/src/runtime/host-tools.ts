@@ -28,7 +28,7 @@ import { quoteBackgroundTool } from './background-tool-cost.ts';
 import { OIDO_GET_DEFINITION, OIDO_ANALYZE_DEFINITION, OIDO_CAPABILITIES_DEFINITION, OIDO_VIEW_DEFINITION, OIDO_FIND_DEFINITION, OIDO_COMPARE_DEFINITION } from '../modules/oido/module.ts';
 import { TRANSCRIPT_READ_DEFINITION, CALL_CONTROL_DEFINITION } from '../modules/voice/module.ts';
 import { CONVERSATIONREAD_DEFINITION, CHATSENDTEXT_DEFINITION, CHATSENDATTACHMENT_DEFINITION } from '../modules/conversation/module.ts';
-import { MEMORYHOLD_DEFINITION, MEMORYRECALL_DEFINITION, MEMORYRECALLNEXT_DEFINITION, MEMORYREADFULL_DEFINITION, MEMORYIREAD_DEFINITION, PLANSREAD_DEFINITION, MEMORYIWRITE_DEFINITION, PLANSWRITE_DEFINITION, MEMORYOPEN_DEFINITION, MEMORYCORRECT_DEFINITION, DELETIONREVIEW_DEFINITION, EPISODELIST_DEFINITION, EPISODEAPPLY_DEFINITION, EPISODEGET_DEFINITION } from '../modules/memory/module.ts';
+import { memoryHoldDefinition, MEMORYRECALL_DEFINITION, MEMORYRECALLNEXT_DEFINITION, MEMORYREADFULL_DEFINITION, MEMORYIREAD_DEFINITION, PLANSREAD_DEFINITION, MEMORYIWRITE_DEFINITION, PLANSWRITE_DEFINITION, MEMORYOPEN_DEFINITION, MEMORYCORRECT_DEFINITION, DELETIONREVIEW_DEFINITION, EPISODELIST_DEFINITION, EPISODEAPPLY_DEFINITION, EPISODEGET_DEFINITION } from '../modules/memory/module.ts';
 import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../modules/memory/hold-contract.ts';
 import { WISHSTARWRITESTAR_DEFINITION, WISHSTARHIDDENSTARS_DEFINITION, WISHSTARSPECIALDATES_DEFINITION, WISHSTARSTARTSESSION_DEFINITION, WISHSTARCONFIRMSESSION_DEFINITION, WISHSTARTAKESTAR_DEFINITION, WISHSTARFINISHSESSION_DEFINITION, WISHSTARREQUESTSTAR_DEFINITION, WISHSTARRESPONDREQUEST_DEFINITION, WISHSTAROFFERSTAR_DEFINITION, WISHSTARLISTOFFERS_DEFINITION, WISHSTARACCEPTOFFER_DEFINITION, WISHSTARNOTIFICATIONS_DEFINITION } from '../modules/wishstar/module.ts';
 import { CONTENTPOSTCREATE_DEFINITION, CONTENTCOMMENTCREATE_DEFINITION, CONTENTPOSTSLIST_DEFINITION, CREATIONSAVEARTIFACT_DEFINITION } from '../modules/content/module.ts';
@@ -38,14 +38,11 @@ import { IDENTITYMILESTONEWRITE_DEFINITION } from '../modules/identity/module.ts
 import { CONTEXTREVIEWCOMPLETE_DEFINITION } from '../modules/context-review/module.ts';
 import { currentMoodCategories } from '../modules/memory/mood-vocab.ts';
 export { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../modules/memory/hold-contract.ts';
-import { currentMoodCategories as _currentMoodCategories } from '../modules/memory/mood-vocab.ts';
-void _currentMoodCategories;
+import { setMoodCategoriesChangedCallback } from '../modules/memory/mood-vocab.ts';
 
-// 词表变更回调：memory 域拉到新词表 → 本目录缓存失效（枚举随正本走）
-void (async () => {
-  const { setMoodCategoriesChangedCallback } = await import('../modules/memory/mood-vocab.ts');
-  setMoodCategoriesChangedCallback(() => { hostToolsCache = null; });
-})();
+// 词表变更回调：memory 域拉到新词表 → 本目录缓存失效（枚举随正本走）。
+// 静态注册（mood-vocab 为叶，无环）；动态注册在测试时序下可能晚于首次刷新。
+setMoodCategoriesChangedCallback(() => { hostToolsCache = null; });
 import { ContractError } from './or-contract.ts';
 // P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
@@ -117,7 +114,7 @@ const BASELINE_TOOL_ORDER: readonly string[] = [
 
 function memoryDefinitions(): HostToolSpec[] {
   return [
-  MEMORYHOLD_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
+  memoryHoldDefinition(),  // P04：唯一正本已迁 modules/memory/module.ts（词表随每次构建）,
   MEMORYRECALL_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
   MEMORYRECALLNEXT_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
   MEMORYREADFULL_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,

@@ -10,8 +10,10 @@ import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_
 import { currentMoodCategories } from './mood-vocab.ts';
 import { MemoryToolsService } from './service.ts';
 
-/** memory_hold 定义唯一正本（原 host-tools 域工厂内该块逐字搬迁）。 */
-export const MEMORYHOLD_DEFINITION: HostToolSpec = {
+/** memory_hold 定义工厂（唯一正本；P04.5：词表枚举随 currentMoodCategories() 每次构建，
+ *  已冻结窗口仍读数据库原 spec 不受影响——04 §J definition() 口径）。 */
+export function memoryHoldDefinition(): HostToolSpec {
+  return {
     type: 'function',
     function: {
       name: 'memory_hold',
@@ -54,7 +56,8 @@ export const MEMORYHOLD_DEFINITION: HostToolSpec = {
         additionalProperties: false,
       },
     }
-  };
+  }
+}
 
 /** memory_recall 定义唯一正本（原 host-tools 域工厂内该块逐字搬迁）。 */
 export const MEMORYRECALL_DEFINITION: HostToolSpec = {
@@ -386,7 +389,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   const svc = service ?? new MemoryToolsService(deps);
   void svc;
   registry.register(toolCapability({
-    id: 'memory_hold', baselineOrder: 1, definition: MEMORYHOLD_DEFINITION, memoryOnlyAllowed: true, label: '写记忆',
+    id: 'memory_hold', baselineOrder: 1, definition: memoryHoldDefinition(), memoryOnlyAllowed: true, label: '写记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryHold(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_hold', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
