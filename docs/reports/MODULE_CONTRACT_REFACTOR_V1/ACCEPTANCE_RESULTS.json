@@ -185,12 +185,18 @@
       "phase": "P08",
       "setup": "禁用/断开oído，同时正常发送纯文本。",
       "assertions": "深听明确不可用，纯文本正常；不全宿主启动失败。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2e0d2bd1018e265bfc04a1e89c7ca984dc479534",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-substitution-isolation-drill.test.ts  (exit 0；演练B② absent 形态)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/voice-hearing.test.ts  (exit 0；V07 无听觉能力阻断语义)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/oido-substitution-isolation-drill.test.ts",
+        "tests/unit/voice-hearing.test.ts"
+      ],
+      "notes": "可选能力隔离：oído 未注入——oído 工具如实 INTEGRATION_UNCONFIGURED，conversation_read 经同一 registry 正常返回会话内容（普通文字路径不受影响）；V07 阻断语义保持。"
     },
     {
       "id": "A11",
@@ -221,12 +227,19 @@
       "phase": "P03",
       "setup": "普通电话轮排队或播放时停止一次。",
       "assertions": "取消后旧代不继续发布/播放，排队已取消轮不派发。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2e0d2bd1018e265bfc04a1e89c7ca984dc479534",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/call-stop-queued-turn.test.ts  (exit 0)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/exec-v1-wp4-executor.test.ts  (exit 0；stopRun 后 blocked.allowed=false、零派发排队 run 失效)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/call-stop-queued-turn.test.ts",
+        "tests/unit/exec-v1-wp4-executor.test.ts",
+        "tests/unit/wake-keepwarm.test.ts"
+      ],
+      "notes": "电话停止与排队：POST /v1/calls 立册 active→通话内 memory_only 门生效；DELETE /v1/calls/:id 收口(ended、幂等)→资格随终态失效；已取消的排队 run 零派发（stopRun 后 blocked.allowed=false；W-10/W-11 零派发排队 run 失效）；挂断意图（a11）不伪造已结束。"
     },
     {
       "id": "A13",
