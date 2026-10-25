@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../helpers.ts';
+import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../../apps/host/src/modules/memory/hold-contract.ts';
 
 const MARIPOSA_REPO = process.env.MARIPOSA_REPO ?? '/Users/owner/Projects/mariposa';
 const schemasPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/input_schemas.py');
@@ -63,7 +63,7 @@ test('F-J-13：estómago hold 副本与 mariposa 现行 schema 一致（枚举/�
   const servicePy = fs.readFileSync(path.join(MARIPOSA_REPO, 'backend/mariposa/memory/service.py'), 'utf8');
   const mtm = servicePy.match(/MOOD_TAGS_MAX\s*=\s*(\d+)/);
   assert.ok(mtm, 'MOOD_TAGS_MAX 可解析（memory/service.py 单一事实源）');
-  const hostToolsSrc = fs.readFileSync(new URL('../../apps/host/src/runtime/host-tools.ts', import.meta.url), 'utf8');
+  const hostToolsSrc = fs.readFileSync(new URL('../../apps/host/src/modules/memory/module.ts', import.meta.url), 'utf8');
   const etm = hostToolsSrc.match(/mood_tags[\s\S]{0,120}?maxItems'?:?\s*(\d+)/) ?? hostToolsSrc.match(/mood_tags[\s\S]{0,160}?maxItems[^0-9]*(\d+)/);
   assert.ok(etm, 'estómago mood_tags maxItems 可解析');
   assert.equal(Number(etm[1]), Number(mtm[1]), 'mood tags 上限两端一致（mariposa=_MOOD_TAGS_MAX）');
@@ -94,7 +94,7 @@ test('F-J-13：our_words source_ref 合同=source_msg: 前缀（两端）', { sk
   assert.ok(ourWords.includes('source_msg:'), 'mariposa our_words 仍要求 source_msg: 前缀');
   // estómago 侧：host-tools 发送侧带前缀（F-J-01 修复的防回归锚——直接断言源码形态，
   // 因为前缀拼接在私有函数内，单测形状断言已在 hold-quote.test.ts 覆盖发送值）
-  const hostTools = fs.readFileSync(new URL('../../apps/host/src/runtime/host-tools.ts', import.meta.url), 'utf8');
+  const hostTools = fs.readFileSync(new URL('../../apps/host/src/modules/memory/service.ts', import.meta.url), 'utf8');
   assert.ok(hostTools.includes('source_ref: `source_msg:${receipt.source_message_id}`'), 'estómago 发送侧仍使用 source_msg:<收据 id>（F-J-01 防回归）');
 });
 

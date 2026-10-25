@@ -3,16 +3,22 @@
 // 显式装配；使用消息服务既有同连接事务（inTx SQL-only、不 await、不 HTTP）。
 // 归档 outbox 是消息服务自身的正本行为，不在此重复登记；不新建中央 event-inbox 表。
 import type { MessageLifecycleFact, MessageLifecycleHooks } from '../messages/lifecycle.ts';
-import type { SurfacingMessageHooks } from '../messages/service.ts';
+import type { SurfacingService } from '../memory-surfacing/service.ts';
 
 export type MessageLifecycleConsumers = {
-  /** 浮现域（ SurfacingService 结构面：登记/撤销/提交后唤醒）。 */
-  surfacing: SurfacingMessageHooks | null;
+  /** 浮现域（登记/撤销/提交后唤醒）。 */
+  surfacing: Pick<SurfacingService, 'onUserMessageAccepted' | 'onUserMessageEdited' | 'afterCommit'> | null;
   /** 活动锚点（wake-activity：正式发布的真实活动记账）。 */
   activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
 };
 
 export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): MessageLifecycleHooks {
+  // 装配形状守卫：误传裸 SurfacingService（而非 {surfacing, activity} 包装）时钩子会
+  // 静默空转——在绑定时刻大声失败，而不是让浮现作业登记悄悄消失。
+  const shape = consumers as { surfacing?: unknown; activity?: unknown; onUserMessageAccepted?: unknown };
+  if (shape.surfacing === undefined && shape.activity === undefined) {
+    throw new Error('LIFECYCLE_CONSUMERS_SHAPE_INVALID: 传 { surfacing, activity } 包装对象，不是裸 SurfacingService');
+  }
   return {
     inTransaction(fact: Readonly<MessageLifecycleFact>): void {
       if (fact.kind === 'accepted') {

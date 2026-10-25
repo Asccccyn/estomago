@@ -1,6 +1,7 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
+import { oidoHearingAvailable as voiceHearingPort } from '../application/voice-hearing-port.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -112,12 +113,6 @@ export type SupervisorDeps = {
  *  旧窗目录冻结（A05 合同：不动态膨胀破缓存）没有 oido 工具——此时引导调用会
  *  TOOL_NOT_IN_WINDOW，误导模型；退回阻断语义（转写未就绪明确报错）更诚实。
  *  无冻结记录的新窗=当前目录（buildHostTools 含 oido_analyze）。 */
-export function oidoHearingAvailable(db: import('../db/connection.ts').Db, configured: boolean, windowId: string | null | undefined): boolean {
-  if (!configured || !windowId) return false;
-  const set = storedToolset(db, windowId);
-  if (set && !set.catalog.some((tool) => tool.function.name === 'oido_analyze')) return false;
-  return true;
-}
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
 const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
@@ -1418,7 +1413,7 @@ export class TurnSupervisor {
     const tailSeq = o.tailMessage?.id
       ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
       : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -2332,7 +2327,7 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment

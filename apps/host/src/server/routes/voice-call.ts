@@ -1,7 +1,8 @@
 // server/routes/voice-call.ts（P07.1 第一批）：通话生命周期路由（专用 token 面）。
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序/响应与错误码逐字保持（A23 同一领域服务面）。
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { json, readJson, type RequestDeps } from '../http.ts';
+import { json, readJson } from '../http-leaf.ts';
+import type { RequestDeps } from '../http.ts';
 
 /** B2（2026-10-24）：通话生命周期（专用 token 面）——POST /v1/calls 立册 active（memory_only 生效），
  *  DELETE /v1/calls/:id 挂断收口（幂等）。Siren CallSession 建立即调；未显式调用时首个电话轮自动立册。 */

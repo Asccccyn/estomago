@@ -3,7 +3,7 @@
 // turn+attempt+turn_id 回填+幂等判定；commit 后才进 executor 队列。
 // 幂等自愈：同 key 重试不只查 message，还校验并补齐缺失 side effects（turn/attempt/outbox）。
 import type { Db } from '../db/connection.ts';
-import { lifecycleFromLegacySurfacing, isLegacySurfacingHooks, type MessageLifecycleHooks } from './lifecycle.ts';
+import type { MessageLifecycleHooks } from './lifecycle.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind, type MessagePageDto } from '../../../../packages/contracts/src/api.ts';
@@ -19,38 +19,15 @@ export class BlankMessageError extends Error {}
 
 // P05.2：通用生命周期合同在 ./lifecycle.ts（事实+inTx/afterCommit）。本类型保留为
 // 浮现域既有结构面（application/message-lifecycle 与兼容适配消费）；P09 复核命名。
-export type SurfacingMessageHooks = {
-  /** 接受事务内登记（只 SQL 零网络）；幂等（逻辑作业唯一键防重）。 */
-  onUserMessageAccepted(o: { conversationId: string; messageId: string; revision: number; sequence: number; content: string; contentHash: string; occurredAt: string | null }): void;
-  /** 编辑事务内：撤销旧修订作业（未错过目标轮的可建新作业——上层判断）。 */
-  onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void;
-  /** 事务提交后唤醒独立 worker（不进 MessageService 事务）。 */
-  afterCommit(): void;
-};
-
-/** P05.2 过渡视图（P09 删）：通用钩子 → 旧 SurfacingMessageHooks 形状（残余调用点继续可达）。 */
-function legacyCompatView(l: MessageLifecycleHooks | null): SurfacingMessageHooks | null {
-  if (!l) return null;
-  return {
-    onUserMessageAccepted: (o) => l.inTransaction({ kind: 'accepted', ...o, firstAcceptance: true }),
-    onUserMessageEdited: (o) => l.inTransaction({ kind: 'revised', ...o, revision: 0 }),
-    afterCommit: () => l.afterCommit(''),
-  };
-}
 
 export class MessageService {
   private db: Db;
-  /** P05.2：通用生命周期钩子（旧 SurfacingMessageHooks 实参经 lifecycleFromLegacySurfacing 归一）。 */
   private lifecycle: MessageLifecycleHooks | null;
-  private surfacing: SurfacingMessageHooks | null; // 兼容过渡引用（P09 删；现行同批调用点仍直接可达）
   /** WAKE_KEEPWARM_V1 §05（2026-10-22）：真实活动锚点投影——正式发布事务内更新 L；
    *  未注入（旧测试/最小装配）=零变化。 */
   private activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
-  constructor(db: Db, surfacing: SurfacingMessageHooks | MessageLifecycleHooks | null = null, activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null = null) {
-    // P05.2：旧具体名实参自动适配通用事实流（行为逐字；P09 复核该兼容层）
-    const normalized = surfacing && isLegacySurfacingHooks(surfacing) ? lifecycleFromLegacySurfacing(surfacing) : (surfacing as MessageLifecycleHooks | null);
-    this.lifecycle = normalized;
-    this.surfacing = legacyCompatView(normalized);
+  constructor(db: Db, lifecycle: MessageLifecycleHooks | null = null, activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null = null) {
+    this.lifecycle = lifecycle;
     this.db = db;
     this.activity = activity;
   }
@@ -282,7 +259,7 @@ export class MessageService {
       contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at, firstAcceptance: false });
   }
 
-  notifyAfterEditCommit(): void { this.surfacing?.afterCommit(); }
+  notifyAfterEditCommit(): void { this.lifecycle?.afterCommit(''); } // S17b 批次5：通用 afterCommit 通知
 
   // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
   publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[]; events?: EventService | null }): MessageDto {

@@ -37,7 +37,7 @@ const { RoutingService } = await import('../apps/host/src/routing/service.ts');
 const { WindowManager } = await import('../apps/host/src/windows/manager.ts');
 const { TurnSupervisor } = await import('../apps/host/src/runtime/supervisor.ts');
 const { DeepSeekRunner, deepSeekSelection } = await import('../apps/host/src/runtime/runner-deepseek.ts');
-const { HostToolExecutor } = await import('../apps/host/src/runtime/host-tools.ts');
+const { assembleTestTools } = await import('../tests/helpers.ts');
 const { RotationReviewService } = await import('../apps/host/src/context/rotation-review.ts');
 const { HoldCheckpointService } = await import('../apps/host/src/memory/hold-checkpoint.ts');
 const { WindowTrajectoryService } = await import('../apps/host/src/runtime/window-trajectory.ts');
@@ -78,7 +78,7 @@ const mariposaFake = async (cap, payload) => {
   }
   return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
 };
-const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaFake }), reviews, checkpoint });
+const { tools } = assembleTestTools({ db, mariposa: new MariposaClient({ transport: mariposaFake }), reviews, checkpoint });
 const trajectory = new WindowTrajectoryService(db);
 
 // 字段自检：DS 请求绝不携带 OR 专属字段或 Anthropic 式缓存标记（审计 P1-1；真/假 transport 共用）

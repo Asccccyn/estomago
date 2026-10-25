@@ -127,7 +127,6 @@ test('g：mariposa base_url 非 loopback http 拒绝；loopback http 放行', as
 // ---------------------------------------------------- consumption a/b/c/d/e
 
 test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首页缺 pagination → ENVELOPE_INVALID', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
@@ -169,7 +168,6 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
 });
 
 test('bc：conversation_read 中文整条真字节预算；跳过行续页可达', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
@@ -323,7 +321,6 @@ test('B15：migrate(db, h, 17) 应用到 17 为止（迁移数组按版本升序
 // ------------------------------------------- RRA-014 回读交付前沿
 
 test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');

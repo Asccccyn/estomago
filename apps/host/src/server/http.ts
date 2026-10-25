@@ -1418,7 +1418,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     }
 
     return json(res, 404, { error: { code: 'not_found', message: `未知路由：${route}` } });
-  } catch (err) {
+  } catch (err: unknown) {
     // AUD-28：日志只记稳定错误码 + 路由，不落原始异常文本
     // F-J-44：客户端请求体错误（超限/坏 JSON）按 4xx 语义返回，不混入 500
     if (err instanceof ClientBodyError) {
@@ -1572,15 +1572,6 @@ function serveStatic(res: ServerResponse, pathname: string): void {
   }
 }
 
-class ClientBodyError extends Error {
-  readonly status: number;
-  readonly code: string;
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.status = status;
-    this.code = code;
-  }
-}
 
 /** §03.5.1：二进制上传不走 readJson——流式限量读原始字节。 */
 async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
@@ -1594,23 +1585,6 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
   return Buffer.concat(chunks);
 }
 
-export async function readJson(req: IncomingMessage, d: RequestDeps, maxBytes = 5 * 1024 * 1024): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > maxBytes) throw new ClientBodyError(413, 'payload_too_large', `请求体超过上限`);
-    chunks.push(chunk as Buffer);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    // F-J-44（联合审计 2026-10-06）：坏 JSON 是客户端错误（400），不是 500——
-    // 此前 SyntaxError 落进外层 catch 污染 500 口径
-    throw new ClientBodyError(400, 'invalid_json', '请求体不是合法 JSON');
-  }
-}
 
 /** WP3（2026-10-08）：选集条目解析——只取 message_id/revision/content_hash
  *  三个受控字段（前端正文不进模型，服务端从真实修订读取）；坏条目剔除。 */
@@ -1629,10 +1603,6 @@ function parseSelectionItems(raw: unknown): Array<{ message_id: string; revision
   return out;
 }
 
-export function json(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(body));
-}
 
 /** 协议②（2026-10-24）：oído 快证据——宿主受信导入+短等待分析，取最多一条可靠观察。
  *  ready 就返回（≤N 字符）；未就绪/无证据= null（不拖电话、不回写历史、不猜情绪）。 */
@@ -1898,6 +1868,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
 // P07.1 第一批：voice/call 路由组迁 server/routes/voice-call.ts（响应/认证/路径逐字保持；
 // 本处转发 shim 保持既有 import 位置兼容调用点，P09 复核收口）。
 import { handleVoiceCallLifecycle } from './routes/voice-call.ts';
+import { json, readJson, ClientBodyError } from './http-leaf.ts';
 export { handleVoiceCallLifecycle };
 void handleVoiceCallLifecycle;
 

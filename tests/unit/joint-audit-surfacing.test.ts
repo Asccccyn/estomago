@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {makeDb, pollUntil } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
+import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { extractHypotheses } from '../../apps/host/src/memory-surfacing/trigger.ts';
 import { estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
@@ -37,7 +38,7 @@ function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise
   const client = new MariposaClient({ transport });
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
-  const messages = new MessageService(db, svc); messages.ensureConversation('c1');
+  const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null })); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
   const augment = (sub: ReturnType<typeof say>, attemptId = 'a2') => svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: sub.turnId, attemptId,

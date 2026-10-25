@@ -8,7 +8,7 @@ import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { ContentServer } from '../../apps/content/src/service.ts';
 import { contentForward } from '../../apps/host/src/integrations/content/client.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';

@@ -31,7 +31,6 @@ test('A12: 挂断收口后排队通话回合的 memory_only 资格随 voice_call
   const { migrate } = await import('../../apps/host/src/db/migrations.ts');
   const { sha256Hex } = await import('../../apps/host/src/util/id.ts');
   const { buildConfig } = await import('../../apps/host/src/config/schema.ts');
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { wireOidoCapabilitiesForTest } = await import('../helpers.ts');
   const { makeDb } = await import('../helpers.ts');
   process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'a12-token';

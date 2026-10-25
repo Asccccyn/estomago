@@ -26,7 +26,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -65,10 +65,10 @@ function compose(root: string, transport: OrTransport, siren: typeof fetch, invi
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', siren);
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall });
-  // S17b 批次2：voice 模块 ProgramFactsPort 绑定真实 Supervisor（call_control cancel → 程序事实）
-  // supervisor 尚未构造——经 let 惰性绑定（构造完成后赋值）
+  // voice 模块 ProgramFactsPort 绑定真实 Supervisor（call_control cancel → 程序事实）；
+  // supervisor 尚未构造——经惰性绑定（构造完成后赋值）
   let supervisorRef: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null = null;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall, programFacts: { submitProgramFactTurn: (...a: Parameters<{ submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown }>) => supervisorRef!.submitProgramFactTurn(...a) } });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   supervisorRef = supervisor;
