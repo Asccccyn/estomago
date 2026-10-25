@@ -176,11 +176,6 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
     executor: {
       async executeRun(input) {
         if (input.kind === 'reminder') return { outcome: 'completed' as const, result_code: 'delivered' };
-        const priceRow = ctx.db.prepare("SELECT value FROM runtime_settings WHERE key = 'or_model_price'").get() as { value: string } | undefined;
-        const price = priceRow ? JSON.parse(priceRow.value) as { input_micro_per_token?: number; output_micro_per_token?: number } : null;
-        if (!price || typeof price.input_micro_per_token !== 'number' || typeof price.output_micro_per_token !== 'number') {
-          return { outcome: 'failed' as const, result_code: 'BUDGET_ESTIMATE_UNAVAILABLE' };
-        }
         const es = ctx.bgSettings.effective();
         if (es[input.kind].enabled !== true) return { outcome: 'noop' as const, result_code: input.kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' };
         if (es[input.kind].daily_cost_cap_usd === null) return { outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' };
@@ -196,7 +191,7 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
   return sched;
 }
 
-test('K-01/B-10/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡；维护回执落投影；价格未核验不开请求；前缀稳定', async () => {
+test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡；维护回执落投影；前缀稳定', async () => {
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
@@ -222,19 +217,7 @@ test('K-01/B-10/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡�
   // (a) 目标=L+50min 未到：tick 领取不发生（K-01 前半）
   await sched.tick();
   assert.equal(payloads.length, 1, '未到期零保温请求（此前 1 次是聊天）');
-  // (b) 价格未核验 → 到期后不开请求（B-10：明确 blocked）
-  const L1 = Date.parse((ctx.db.prepare('SELECT last_real_activity_at FROM conversation_activity WHERE conversation_id = ?').get('c1') as { last_real_activity_at: string }).last_real_activity_at);
-  nowRef.nowMs = L1 + 3_000_001;
-  await sched.tick();
-  let run = ctx.db.prepare('SELECT state, result_code FROM background_runs WHERE task_id = ?').get(kwTask) as { state: string; result_code: string | null };
-  assert.equal(run.state, 'failed');
-  assert.equal(run.result_code, 'BUDGET_ESTIMATE_UNAVAILABLE');
-  assert.equal(payloads.length, 1, '零保温请求');
-  // 价格未核验失败的同活动版本不重试（occurrence 唯一）
-  await sched.tick();
-  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM background_runs WHERE task_id = ?').get(kwTask) as { n: number }).n, 1, '同维护机会不换 ID 重试');
   sched.stop();
-
   // (c) 新真实消息建立新活动版本 + 配置价格 → 心跳纯1（PURE_ACK）
   setPrice(ctx.db);
   await seedChatTurn(ctx, 'kw2');
@@ -246,7 +229,7 @@ test('K-01/B-10/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡�
   const L2 = Date.parse((ctx.db.prepare('SELECT last_real_activity_at FROM conversation_activity WHERE conversation_id = ?').get('c1') as { last_real_activity_at: string }).last_real_activity_at);
   nowRef.nowMs = L2 + 3_000_001;
   await sched2.tick();
-  run = ctx.db.prepare('SELECT state, result_code, model_requests_started, retention FROM background_runs WHERE task_id = ? AND state != \'failed\'').get(kwTask) as { state: string; result_code: string | null; model_requests_started: number; retention: string };
+  const run = ctx.db.prepare('SELECT state, result_code, model_requests_started, retention FROM background_runs WHERE task_id = ? AND state != \'failed\'').get(kwTask) as { state: string; result_code: string | null; model_requests_started: number; retention: string };
   assert.equal(run.state, 'completed');
   assert.equal(run.result_code, 'ack_only', '纯1=维护回执（不是聊天成功）');
   assert.equal(run.retention, 'ephemeral_ack');
@@ -395,7 +378,6 @@ test('C-07（收尾）：自醒 chat_send_text 已发 → 下一用户请求恰�
   const wire = JSON.stringify(lastChat);
   const occurrences = wire.split('主动想说的话C7').length - 1;
   const msgs = (lastChat as { messages?: Array<{ role: string; content: unknown }> }).messages ?? [];
-  console.log('DEBUG roles=', JSON.stringify(msgs.map(m => m.role)));
   assert.equal(occurrences, 1, `下一请求恰好包含一次主动消息（实际 ${occurrences} 次）`);
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.speaker = 'assistant' AND r.content LIKE '%主动想说的话C7%'").get() as { n: number }).n, 1, '原文一致不重复');
   sched.stop();

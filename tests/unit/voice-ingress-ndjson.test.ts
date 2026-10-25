@@ -128,9 +128,8 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
     await done.catch(() => {});
     assert.equal(res.status, 200, 'NDJSON 200');
     const evRows = ctx.db.prepare('SELECT kind, turn_id FROM runtime_stream_events ORDER BY sequence').all() as Array<{kind:string;turn_id:string|null}>;
-    console.log('EVENTS:', JSON.stringify(evRows));
     const mpRow = ctx.db.prepare("SELECT payload_ref FROM runtime_stream_events WHERE kind='message.published' LIMIT 1").get() as { payload_ref: string };
-    console.log('MP:', mpRow?.payload_ref?.slice(0, 300));
+    
     const deltas = lines.filter((l) => l.includes('"type":"delta"'));
     assert.ok(deltas.length >= 1 && deltas.some((l) => l.includes('电话回复正文')), `lines=${JSON.stringify(lines)} status=${res.status}`);
     assert.ok(lines.some((l) => l.includes('"type":"done"')), 'done 终态');

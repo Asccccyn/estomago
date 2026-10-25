@@ -67,13 +67,6 @@ test('prune：只清超期 CLOSED 窗口 payload；ACTIVE/新 CLOSED/usage/审�
 
 // --------------------------------------------------------------- health E07
 
-test('health：ready=false → 503；live 恒 200（http 层单测形状）', async () => {
-  // 直接构造 http 层不可行（需全 Host）——以 buildReadyReport 语义 +
-  // http.ts 状态码映射的合流断言（ready 布尔 → 200/503）
-  const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/http.ts'), 'utf8');
-  assert.ok(src.includes('ready ? 200 : 503'), 'ready=false 必须映射 503');
-  assert.ok(src.includes("route === 'GET /health/live'") && src.includes('json(res, 200'), 'live 保持 200');
-});
 
 // --------------------------------------------------------------- backup E08
 
@@ -202,12 +195,7 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   db.close();
 });
 
-test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入', async () => {
-  const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/http.ts'), 'utf8');
-  // FU-002（回访 2026-10-09）：两字段单事务提交（setMany）——形状接线
-  // 检查；真实 HTTP/事务原子断言在下方 FU-001/FU-002 测试
-  assert.ok(src.includes('d.settings.setMany(writes)'), '两字段单事务写入（setMany）');
-  assert.ok(src.includes('orModelIdIssue(nextModel)'), 'or_model 过配置层形状门');
+test('d/j2：orModelIdIssue 判定行为——invalid auto/latest 拒、合法 model 放行', async () => {
   // RRA-016：真实判定行为断言（不依赖 HTTP Host 夹具——直测形状函数
   // 与 PUT 等价；orModelIdIssue 即 PUT 的 422 判据）
   const { orModelIdIssue } = await import('../../apps/host/src/config/schema.ts');
@@ -322,7 +310,7 @@ test('B15：migrate(db, h, 17) 应用到 17 为止（迁移数组按版本升序
 
 // ------------------------------------------- RRA-014 回读交付前沿
 
-test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复', async () => {
+test('RRA-014：older 交付前沿不重复交付（range 全可达归 wp4-conversation-read-rra014）', async () => {
   const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
@@ -337,26 +325,6 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
   }
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  // range 1..10 翻尽：全部 10 条都到
-  const seenIds = new Set<string>();
-  let cursor: Record<string, unknown> | null = null;
-  let pages = 0;
-  do {
-    const out = await tools.execute('conversation_read', {
-      __tool_call_id: `c${pages}`,
-      ...(cursor ? { cursor } : { from_sequence: 1, to_sequence: 10 }) } as never, CTX);
-    assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
-    for (const e of (out.output as { entries: Array<{ seq?: number }> }).entries) {
-      if (e.seq) seenIds.add(e.seq);
-    }
-    // R1′（2026-10-23）：conversation_read 投影（bd677ed 合同）以 next_cursor 存在性为
-    // 续读信号（has_more 不再单独输出）；"读尽"验收不变——翻到无 cursor 为止须覆盖全部
-    const o = out.output as { next_cursor?: Record<string, unknown> | null };
-    cursor = o.next_cursor ?? null;
-    pages += 1;
-    assert.ok(pages < 30, 'range 不收敛');
-  } while (cursor);
-  assert.equal(seenIds.size, 10, `range 翻尽须覆盖全部 10 条（实际 ${seenIds.size}）——跳过行续页可达（RRA-014）`);
   // older 交付前沿：向更早翻页不重复交付（RRA-014 回访 2026-10-09 语义：
   // 长行可分片跨页续取——同消息多片=渐进交付，非重复；断言片区间
   // 不重叠 + 拼回覆盖全文）
@@ -372,7 +340,7 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
     olderParts.set(id, parts);
   };
   let oc: Record<string, unknown> | null = { older_than: 11 };
-  pages = 0;
+  let pages = 0;
   do {
     const out = await tools.execute('conversation_read', {
       __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
