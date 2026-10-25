@@ -10,7 +10,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { MediaService, MediaError, sniffMime, isPublicIp } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
-import { writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 
 // —— 最小 PNG（1x1）与魔数素材 ——

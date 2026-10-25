@@ -4,7 +4,7 @@
 // 不得漂移（06 号文档：definitionId 以原序列化为依据；不得先排序 properties）。
 // 本测试只对照，不提供重录开关；golden 更新必须由复核者对照 849b1d5 diff 逐字决定。
 import { test } from 'node:test';
-import { fullToolCatalog } from '../helpers.ts';
+import {fullToolCatalog } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';

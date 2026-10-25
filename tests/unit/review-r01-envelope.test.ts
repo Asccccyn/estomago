@@ -8,6 +8,7 @@
 //    的原始形状）：修复前 estómago 把它默认成"空候选+成功"（FOUND 被
 //    吞）；修复后必须大声失败 RECALL_ENVELOPE_INVALID。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
@@ -16,11 +17,9 @@ import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const foundBody = readFileSync(path.join(here, '../fixtures/mariposa/recall-start-found.body.json'), 'utf8');
@@ -43,8 +42,7 @@ function toolsWithHttpBody(bodyFor: (cap: string) => string | null): HostToolExe
     return new Response(body, { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
   const client = new MariposaClient({ baseUrl: 'http://127.0.0.1:19990', credentialEnv: null });
-  const tools = new HostToolExecutor({ db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return new Proxy(tools, {
     get(target, prop, receiver) {
       if (prop === 'close') { globalThis.fetch = originalFetch; db.close(); return () => {}; }

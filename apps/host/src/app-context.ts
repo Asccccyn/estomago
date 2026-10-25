@@ -29,7 +29,7 @@ import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
 import { RotationReviewService } from './context/rotation-review.ts';
 import { ManualSelectionService } from './context/manual-selection.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
-import { HostToolExecutor } from './runtime/host-tools.ts';
+import { ModelToolBridge } from './capabilities/model-bridge.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 import { SystemAlertService } from './observability/system-alerts.ts';
@@ -245,7 +245,7 @@ export class Host {
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
     });
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, mediaIndex, sirenCall });
+    const tools = new ModelToolBridge({ db, events });
     tools.setCapabilityRegistry(capabilityRegistry);
     tools.setMemoryRecovery(memoryService);
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）

@@ -3,7 +3,7 @@
 // 读取路径零事件；恢复/撤销/重复派发各有真实身份。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeDb, pollUntil } from '../helpers.ts';
+import {makeDb, pollUntil } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';

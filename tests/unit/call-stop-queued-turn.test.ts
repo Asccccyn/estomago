@@ -3,6 +3,7 @@
 // 与既有 exec-v1-wp4（stopRun 后无新派发）、a11（挂断意图）互补；本用例锁 HTTP 收口
 // → voice_calls 状态 → 通话资格门三点联动（offline contract）。
 import { test } from 'node:test';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 
@@ -37,8 +38,7 @@ test('A12: 挂断收口后排队通话回合的 memory_only 资格随 voice_call
 
   const { db } = makeDb();
   db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private','2026-10-25T00:00:00Z')").run();
-  const exec = new HostToolExecutor({ db, mariposa: null, reviews: new (await import('../../apps/host/src/context/rotation-review.ts')).RotationReviewService(db), checkpoint: new (await import('../../apps/host/src/memory/hold-checkpoint.ts')).HoldCheckpointService(db) });
-  wireOidoCapabilitiesForTest(exec, { db, oido: null, sirenCall: null });
+  const { tools: exec } = assembleTestTools({ db: db, mariposa: null, reviews: new (await import('../../apps/host/src/context/rotation-review.ts')).RotationReviewService(db), checkpoint: new (await import('../../apps/host/src/memory/hold-checkpoint.ts')).HoldCheckpointService(db) });
   const callCtx = (turnId: string) => ({ roomId: 'c1', windowId: 'w1', turnId, purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'a12' });
 
   // ① 通话立册（active）→ 通话内非记忆业务被门挡

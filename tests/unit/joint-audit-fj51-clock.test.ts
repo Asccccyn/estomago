@@ -10,7 +10,7 @@ import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 test('F-J-51：occurred_at 前跳（+1h）字节保真入库，不被改写', () => {
   const root = tempRoot('fj51a-');

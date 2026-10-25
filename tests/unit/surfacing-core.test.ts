@@ -2,12 +2,12 @@
 // 最新合同：整包一次来源声明、日期+正文+短 ref、同步同轮同修订、幂等
 // （AC025）、无次优补位（AC055 由 M 侧合同+本侧预算跳过共保）。
 import { test } from 'node:test';
+import { pollUntil, tempRoot } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { tempRoot } from '../helpers.ts';
 import { renderAugmentation, memoryRefFor, SURFACE_HOST_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
@@ -196,7 +196,6 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
 
 // ===== 她 2026-10-21 执行稿：编辑生命周期修订失效一致性（验收矩阵）=====
 
-import { pollUntil } from '../helpers.ts';
 
 function editFixture() {
   const root = tempRoot('sfedit-');

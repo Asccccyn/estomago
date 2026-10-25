@@ -1,5 +1,5 @@
 import { test, before, after } from 'node:test';
-import { wireOidoCapabilitiesForTest, fullToolCatalog } from '../helpers.ts';
+import { assembleTestTools, fullToolCatalog } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +12,6 @@ import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { oidoHearingAvailable } from '../../apps/host/src/runtime/supervisor.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -152,8 +151,7 @@ function executorFixture(transportCalls: Array<{ url: string; body?: string }>) 
   }) as typeof fetch;
   const reviews = new RotationReviewService(f.db);
   const checkpoint = new HoldCheckpointService(f.db);
-  const tools = new HostToolExecutor({ db: f.db, mariposa: null, reviews, checkpoint, media: f.media, messages: f.messages});
-  wireOidoCapabilitiesForTest(tools, { oido: adapter });
+  const { tools: tools } = assembleTestTools({ db: f.db, mariposa: null, reviews: reviews, checkpoint: checkpoint, media: f.media, messages: f.messages, oido: adapter });
   const publish = (conversationId: string, assetId: string, clientMessageId: string) =>
     f.messages.publishAssistantMessage({ conversationId, turnId: 't1', content: '', kind: 'voice', clientMessageId, attachments: [{ asset_id: assetId, presentation: 'voice' }] });
   return { f, tools, publish, restore() { (globalThis as { fetch?: typeof fetch }).fetch = origFetch; } };

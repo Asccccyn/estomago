@@ -24,7 +24,7 @@ import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { MockRunner } from '../../apps/host/src/runtime/runner-mock.ts';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
 
 test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT_ROTATION_REQUIRED）', async () => {
   const root = tempRoot('fp-');

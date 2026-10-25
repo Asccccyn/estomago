@@ -27,7 +27,7 @@ function noMood(item: Record<string, unknown>) {
 const callBootstrap = (TurnSupervisor.prototype as unknown as { windowBootstrap: (id: string, signal?: AbortSignal) => Promise<string | null> }).windowBootstrap;
 // R1′ 夹具修复（2026-10-23）：e423220 起 windowBootstrap 经 renderInitialVisibleText(d.db)
 // 读取 runtime_settings——假宿主提供真实迁移 db（只读共享单例，无跨测试写）
-import { makeDb, tempRoot } from '../helpers.ts';
+import {makeDb, tempRoot } from '../helpers.ts';
 const initialToolsDb = makeDb(tempRoot('bp-pages-db-'), { seed: false }).db;
 function hostFor(transport: MariposaTransport) {
   const warnings: unknown[] = [], observed: Record<string,unknown>[] = [], resolved: unknown[][] = [];

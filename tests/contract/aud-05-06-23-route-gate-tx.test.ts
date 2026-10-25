@@ -1,7 +1,7 @@
 // AUD-05/06/23 回归：会话级 gate、票据事务消费、非法 edit 不消耗、过期拒绝、真修订。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tempRoot, makeDb, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {tempRoot, makeDb, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';

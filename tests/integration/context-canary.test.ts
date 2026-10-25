@@ -15,7 +15,7 @@ import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { assembleContext, assertNotConvertible } from '../../apps/host/src/context/assembler.ts';
 import { deepScanCanary } from '../../apps/host/src/context/evidence.ts';
 import { MODEL_CONTEXT_SOURCES } from '../../apps/host/src/context/types.ts';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK, pollUntil, sleep } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK, pollUntil, sleep } from '../helpers.ts';
 
 import { randomBytes } from 'node:crypto';
 const CANARY = `REASONING_CANARY_${randomBytes(6).toString('hex')}`;

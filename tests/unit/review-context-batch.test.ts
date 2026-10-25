@@ -6,6 +6,7 @@
 //      如实披露；B=独立 system 数据块（A/B 显式缓存分界，systemMessageCount>=2）
 //  ③：新窗必拉最新开窗包（不同窗口各自取数，不复用旧窗包）
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -26,12 +27,10 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -67,8 +66,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
-  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: reviews, checkpoint: checkpoint });;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages });
@@ -157,8 +155,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
     return { ok: true, result: packet };
   };
   const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
-  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_2, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   let plan = (calls[0]!.payload as { query_plan: Record<string, unknown> }).query_plan;
@@ -204,8 +201,7 @@ test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查
     return { ok: true, result: cap === 'memory.recall.reject' ? { rejected: { candidate_ref: 'cand_1' }, session_id: 'rs_9', revision: 2 } : refinePacket };
   };
   const mariposa_wire_3 = new MariposaClient({ transport: mariposa });
-  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_3, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_3, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't9', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   // ① 缺续查身份 → 早失败（不静默忽略、不冒充全新检索）
   const early = await tools.execute('memory_recall', { query: '再找', reject_candidate_ref: 'cand_1' }, CTX);

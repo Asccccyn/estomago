@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { buildTimeContext, modelTimeContextText } from '../../apps/host/src/time/context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';

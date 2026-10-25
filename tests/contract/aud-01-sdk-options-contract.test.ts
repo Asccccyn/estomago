@@ -7,7 +7,7 @@ import { buildSdkOptions } from '../../apps/host/src/runtime/build-options.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 
 test('query() 收到的参数：顶层仅 prompt+options；全部关键字段在 options 内（0.3.283 契约）', async () => {
   const root = (makeDb()).root;

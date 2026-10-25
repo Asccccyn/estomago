@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK, seedProbes } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK, seedProbes } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 

@@ -1,5 +1,5 @@
 import { test, before, after } from 'node:test';
-import { wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -12,7 +12,6 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MediaEmbedWorkerClient, MediaIndexService } from '../../apps/host/src/media/index/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 
@@ -78,8 +77,7 @@ function fixture(workerUrl: string | null) {
   messages.ensureConversation('other');
   const worker = workerUrl ? new MediaEmbedWorkerClient({ base_url: workerUrl }) : null;
   const index = new MediaIndexService(db, media, worker);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media, messages, mediaIndex: workerUrl ? index : null })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages, mediaIndex: workerUrl ? index : null });
   const png = (n: number, fill = 1) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(n, fill)]);
   const uploadImage = (n: number, fill = 1) => media.saveBuffer({ bytes: png(n, fill), purpose: 'chat_image', operationId: `img-${n}-${fill}`, createdBy: 'qiaosheng', origin: 'upload' });
   const publish = (conversationId: string, assetId: string, cmid: string) =>

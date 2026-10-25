@@ -4,6 +4,7 @@
 //  - G-J-01：memory_recall 工具——模型按需查；request_ref 宿主派生幂等；
 //    失败分类（unknown 不当失败）；结果数据注记
 import { test } from 'node:test';
+import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -24,12 +25,10 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import {HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest, fullToolCatalog, validateToolArgs } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -61,8 +60,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', prompt: JSON.stringify((payload.messages as Array<{ role: string }>)[0]) .slice(0, 80), sysLen: JSON.stringify(payload.messages[0]).length, full: payload.messages });
@@ -144,9 +142,8 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
     if (cap === 'memory.recall.start') { calls.push(payload); return { ok: true, result: recallResult }; }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
-  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1', toolCallId: 'call-r1' });
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
   assert.equal(calls.length, 1);
   const p0 = calls[0]!;
@@ -160,7 +157,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
   assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('cont_abc'), '续查引用透传');
   // 重试同 ref
-  await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
+  await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1', toolCallId: 'call-r1' });
   assert.equal(calls.length, 2);
   assert.equal((calls[1]!.request_ref as string), (calls[0]!.request_ref as string), '同 tool_call 重试同 ref（服务端按 request_ref 幂等）');
   db.close();
@@ -176,8 +173,7 @@ test('G-J-01：5xx→OUTCOME_UNKNOWN；参数门拒缺 query；白名单外工�
     if (cap === 'memory.recall.start') return { ok: false, code: 'HTTP_502', httpStatus: 502 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_recall', { query: 'x' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' });
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_OUTCOME_UNKNOWN', '结果不明不当失败');

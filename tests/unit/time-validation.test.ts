@@ -9,7 +9,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { validateAbsoluteIso } from '../../apps/host/src/util/time.ts';
 import { buildTimeContext } from '../../apps/host/src/time/context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 test('验证器：合法值通过（闰日/偏移/毫秒）；非法值逐项拒绝', () => {
   for (const good of ['2026-01-01T00:00:00Z', '2024-02-29T12:00:00+08:00', '2026-12-31T23:59:59.123-05:00']) {

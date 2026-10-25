@@ -5,16 +5,15 @@
 // 验收（复审原文）：真实主模型工具调度边界执行 start→pause/continue→close
 // →correct；宿主稳定 operation_id（同调用重试同 op）；续页接通。
 import { test } from 'node:test';
+import { assembleTestTools, tempRoot, validateToolArgs } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
 
 const CTX = { roomId: 'room-live', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1', toolCallId: 'call-e1' } as const;
 
@@ -31,8 +30,7 @@ function tools(log: Call[], result: Record<string, unknown> | { ok: false; code:
     }
     return { ok: true, result };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  wireOidoCapabilitiesForTest(tools, {  });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return tools;
 }
 

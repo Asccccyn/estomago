@@ -1,6 +1,7 @@
 // I/计划写入批（2026-10-10 她排期"继续"）：char维护自己的 I 与计划。
 // 验收：三 I 写动作+四计划写动作各自路由正确 M 能力；CAS/必填缺失明确
 // 拒；M 冲突码如实上抛不吞；create/update 带宿主派生幂等 operation_id。
+import { assembleTestTools, hostToolNames, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -9,8 +10,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
-import { HostToolExecutor, hostToolNames } from '../../apps/host/src/runtime/host-tools.ts';
+import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
@@ -24,8 +24,7 @@ function makeTools(mariposa: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { tools, db };
 }
 

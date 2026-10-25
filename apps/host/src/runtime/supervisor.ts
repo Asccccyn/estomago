@@ -40,7 +40,7 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
-import { type HostToolExecutor } from './host-tools.ts';
+import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
 import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
@@ -77,7 +77,7 @@ export type SupervisorDeps = {
   logger: Logger;
   archiveSync?: { drainOnce(): Promise<unknown> }; // 助手消息正式发布后触发原文同步（未启用时不注入）
   wishstar?: { upcoming(days: number, signal?: AbortSignal): Promise<{ items: Array<{ name: string; date: string; days_until: number }> } | null> } | null; // 许愿星只读结构面（临近纪念日提醒；不 import 业务 client）
-  tools?: HostToolExecutor; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
+  tools?: ModelToolBridge; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）

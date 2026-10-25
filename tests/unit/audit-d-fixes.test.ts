@@ -1,6 +1,7 @@
 // Codex 审计 3655d60（28 项）修复回归：锁 D01/D02/D03/D12/D13/D15/D16/D17/D18/D19/D20/D22/D23/D25。
 // 全部离线（假 transport/假 fetch stub），零网络零凭据。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -21,14 +22,12 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (o: unknown): string => `data: ${JSON.stringify(o)}\n\n`;
@@ -82,8 +81,7 @@ test('D19：16 个 emoji（16 码点/32 UTF-16 单位）的标题合法通过参
 // —— 执行器级：D15/D17/D13/D16 ——
 async function execHold(ctx: { db: ReturnType<typeof openDatabase> }, calls: HoldCall[], args: Record<string, unknown>, seen: Array<{ id: string; revision: number }>, resultOverride?: () => Record<string, unknown>) {
   const reviews = new RotationReviewService(ctx.db);
-  const tools = new HostToolExecutor({ db: ctx.db, mariposa: new MariposaClient({ transport: recordingMariposa(calls, resultOverride) }), reviews, checkpoint: new HoldCheckpointService(ctx.db) })
-  wireOidoCapabilitiesForTest(tools, {});;
+  const { tools: tools } = assembleTestTools({ db: ctx.db, mariposa: new MariposaClient({ transport: recordingMariposa(calls, resultOverride) }), reviews: reviews, checkpoint: new HoldCheckpointService(ctx.db) });
   return { out: await tools.execute('memory_hold', { ...args }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: seen, requestId: 'req-1', toolCallId: 'call-1' }), effects: reviews };
 }
 
@@ -215,8 +213,7 @@ function composeSup(root: string, transport: OrTransport, configOver: Record<str
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {});;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

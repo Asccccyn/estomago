@@ -23,7 +23,7 @@ import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/
 import { OrStreamAccumulator } from '../../apps/host/src/runtime/or-sse.ts';
 import type { OrRunRequest } from '../../apps/host/src/runtime/runner.ts';
 import type { SdkNormalizedEvent } from '../../packages/contracts/src/sdk-events.ts';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const frame = (delta: Record<string, unknown>): string => `data: ${JSON.stringify({ id: 'gen-thinking-fixture', choices: [{ delta }] })}\n\n`;

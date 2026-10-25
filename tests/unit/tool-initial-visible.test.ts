@@ -1,6 +1,7 @@
 // 她 1022 指令：初始可读工具（首批=identity_milestone_write，原本整版 write 与新增
 // 条目化一起）——定义随 B 段注入；新窗直接 invoke 免 define 三跳；旧窗零回退。
 import { test } from 'node:test';
+import { assembleTestTools, fullToolCatalog, makeDb, makePaths, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
@@ -9,9 +10,7 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { tempRoot, makePaths, writeApprovedIdentity, makeDb, wireOidoCapabilitiesForTest, fullToolCatalog } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { buildDeferredTools, definitionId, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
@@ -56,8 +55,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   const m = JSON.parse(fs.readFileSync(mp, 'utf8')) as Record<string, unknown>;
   m.approved_source_ref = 'longterm-milestones-v1.md'; m.identity_version = 'longterm-milestones-v1'; m.approved_source_hash = sha256Hex('条目一\n\n条目二');
   fs.writeFileSync(mp, JSON.stringify(m, null, 2));
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
 
   // 新窗：冻结 deferred 工具集 + 首个"已发送"请求携带 B 段注入文本（含 definition_id）
   db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
@@ -80,7 +78,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
 
   const ctxNew = { roomId: 'c1', windowId: winNew, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r1' };
   const direct = await tools.execute('tool_invoke', {
-    toolCallId: 'c1', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
+    name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
     arguments: { operation: 'read' },
   }, ctxNew);
   assert.equal(direct.ok, true, '新窗直接 invoke 成功（免 define 三跳）');
@@ -94,7 +92,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   void realSpec;
   const ctxOld = { ...ctxNew, windowId: winOld };
   const refused = await tools.execute('tool_invoke', {
-    toolCallId: 'c2', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
+    name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
     arguments: { operation: 'read' },
   }, ctxOld);
   assert.equal(refused.ok, false, '旧窗无注入=仍走 catalog→define 旧门');

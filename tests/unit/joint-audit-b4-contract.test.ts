@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../../apps/host/src/runtime/host-tools.ts';
+import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../helpers.ts';
 
 const MARIPOSA_REPO = process.env.MARIPOSA_REPO ?? '/Users/owner/Projects/mariposa';
 const schemasPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/input_schemas.py');

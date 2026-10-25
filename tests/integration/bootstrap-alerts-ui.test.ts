@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch, pollUntil } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch, pollUntil } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts';

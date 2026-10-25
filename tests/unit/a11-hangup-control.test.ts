@@ -1,6 +1,6 @@
 // A11 est 侧（2026-10-24）：call_control(end)——模型提出挂断当前通话（柔性，立即回执）。
 import { test } from 'node:test';
-import { wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,8 +25,7 @@ test('A11 call_control(end)：active 通话→Siren 柔性挂断端点立即回�
     return Response.json({}, { status: 404 });
   }) as unknown as typeof fetch;
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', transport);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall });
-  wireOidoCapabilitiesForTest(tools, { sirenCall });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall: sirenCall });
   const ctx = (): ToolExecContext => ({ roomId: 'c1', windowId: 'w', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'a11' });
   try {
     // 无 active 通话：如实拒绝

@@ -3,6 +3,7 @@
 //（漏 1..7 且越过原上界）、range 丢 to_sequence（3..7 读到 12）、锚点被
 // 前邻长文挤掉（所有续页路径到不了它）、控制字符转义后 18479B>16000。
 import test from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -10,11 +11,9 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 99, seenMessages: [], requestId: 'req-rra14' } as const;
 
@@ -24,13 +23,7 @@ function makeExecutor(root: string) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const executor = new HostToolExecutor({
-    db,
-    mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }),
-    reviews: new RotationReviewService(db),
-    checkpoint: new HoldCheckpointService(db),
-  })
-  wireOidoCapabilitiesForTest(executor, {  });;
+  const { tools: executor } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { executor, db };
 }
 

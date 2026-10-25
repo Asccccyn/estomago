@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { SystemAlertService } from '../../apps/host/src/observability/system-alerts.ts';

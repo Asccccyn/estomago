@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 test('实际Host/HTTP/SSE/前端client：模型预约管理→自然15秒调度→正式发言→重连→下一轮', { timeout: 45000 }, async t => {
   const out=tempRoot('audit-product-evidence-');t.after(()=>fs.rmSync(out,{recursive:true,force:true}));

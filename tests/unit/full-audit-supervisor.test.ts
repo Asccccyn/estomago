@@ -1,4 +1,5 @@
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { MessageRetryService } from '../../apps/host/src/messages/retry.ts';
 // ESTOMAGO_CHAT_EXEC_V1 · WP4 收尾 + WAKE_KEEPWARM_V1（2026-10-22 改写）：
 // 后台模型回路执行器整链（04/05/06 §2/§4；K-01/K-12/K-13、C-01/C-02/C-07、B-01/B-10 面）。
@@ -30,13 +31,11 @@ import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-traj
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -61,8 +60,7 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, events })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, events: events });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);

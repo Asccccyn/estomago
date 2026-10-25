@@ -2,6 +2,7 @@
 //  - 开窗注入：临近纪念日只在窗口内出现（快到了才提醒）；失败如实降级不阻塞
 //  - char工具面：HTTP 转发（jiaming 身份）、幂等键派生、写操作回执瘦身、错误如实
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -9,8 +10,6 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 
@@ -32,8 +31,7 @@ function makeTools(calls: ForwardCall[], respond: (c: ForwardCall) => { status: 
       return respond(call);
     },
   };
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), wishstar })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), wishstar: wishstar });
   return { tools, db };
 }
 
@@ -89,8 +87,7 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
   const db2 = openDatabase(path.join(root2, 'data'));
   migrate(db2, sha256Hex);
   try {
-    const bare = new HostToolExecutor({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) })
-  wireOidoCapabilitiesForTest(bare, {  });;
+    const { tools: bare } = assembleTestTools({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) });
     const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k' }, CTX as never);
     assert.equal((out2.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
   } finally { db2.close(); }
@@ -113,10 +110,13 @@ test('开窗注入：临近纪念日出现在 B 文本头段；无临近=无行�
   const initialToolsDb = openDatabase(path.join(tempRoot('ws-initdb-'), 'data'));
   migrate(initialToolsDb, sha256Hex);
   const mkHost = (wishstar: unknown) => ({
+    // windowBootstrap 经 this.toolCatalogSource() 取目录（S17b 批次3）——假 host 提供空目录
+    toolCatalogSource: () => ({ currentCatalog: () => [] }),
     d: {
       // R1′ 夹具修复（2026-10-23）：e423220 起 windowBootstrap 需真实 db 读 runtime_settings
       db: initialToolsDb,
       bootstrap: mariposa, // S18：显式 BootstrapPort
+      toolCatalog: { currentCatalog: () => [] }, // windowBootstrap 渲染 tools/initial 用（空=无该行）
       events: { publish: () => {} },
       alerts: null,
       wishstar,

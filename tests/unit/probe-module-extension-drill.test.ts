@@ -8,6 +8,7 @@
 //  ⑥ 断言真实 probe 返回进入下一模型请求的 tool 内容
 // probe 只拿窄结构端口 PublishedVoiceReader（装配处用 OidoSourceRepository 既有谓词实现）。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -28,7 +29,6 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { CapabilityRegistry } from '../../apps/host/src/capabilities/registry.ts';
 import { storedToolset, freezeWindowTools, definitionId } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
@@ -37,8 +37,6 @@ import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-traj
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { OidoSourceRepository } from '../../apps/host/src/modules/oido/source-repository.ts';
-import { wireOidoCapabilitiesForTest } from '../helpers.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 import { registerProbeModule, PROBE_TOOL_NAME } from '../helpers/probe-module.ts';
 
 const enc = new TextEncoder();
@@ -76,8 +74,8 @@ test('演练A：probe 经正常新窗入口 catalog→define→invoke 全链；�
   const client = new MariposaClient({ transport: mariposa });
 
   // ① 生产模块装配（无 probe）——旧窗先于探针注册创建；registry=生产模块注册表（helper 返回同一实例）
-  const tools = new HostToolExecutor({ db, mariposa: client, reviews, checkpoint, media, messages });
-  const registry = wireOidoCapabilitiesForTest(tools, {});
+  const { tools: tools, registry: registry } = assembleTestTools({ db: db, mariposa: client, reviews: reviews, checkpoint: checkpoint, media: media, messages: messages });
+  // registry 已由 assembleTestTools 构造并注入 tools（同一实例）
 
   const log: Array<{ tools: string[]; full: Array<{ role: string; content: unknown }> }> = [];
   let n = 0;

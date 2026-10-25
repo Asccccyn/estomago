@@ -8,6 +8,7 @@ import { migrate } from '../apps/host/src/db/migrations.ts';
 import { sha256Hex, genId } from '../apps/host/src/util/id.ts';
 import { buildPaths } from '../apps/host/src/config/paths.ts';
 import { CapabilityRegistry } from '../apps/host/src/capabilities/registry.ts';
+import { ModelToolBridge } from '../apps/host/src/capabilities/model-bridge.ts';
 import { registerOidoCapabilities } from '../apps/host/src/modules/oido/module.ts';
 import { OidoSourceRepository } from '../apps/host/src/modules/oido/source-repository.ts';
 import { registerMemoryCapabilities } from '../apps/host/src/modules/memory/module.ts';
@@ -114,48 +115,72 @@ export function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// P03/P04：测试装配镜像生产——已迁能力注册表（oído/memory/conversation/voice 域）。
-// 依赖从执行器实例反射读取（生产装配的同一份依赖）；调用点传入的 opts 仅覆盖
-// oído/sirenCall/programFacts，其余字段忽略（不要求调用方重复收集依赖表达式）。
-export function wireOidoCapabilitiesForTest(
-  executor: object,
-  opts: { oido?: unknown; sirenCall?: unknown; programFacts?: unknown } = {},
-): CapabilityRegistry {
-  const e = executor as Record<string, unknown>;
-  const db = e.db as Db;
+// S17b 批次4：测试装配改为显式依赖——调用真实模块注册函数构造 registry、
+// 构造 ModelToolBridge（模型工具桥），返回 tools/registry/memoryService。
+// 禁止反射执行器私有字段（裁定 §4）。
+export type TestToolDeps = {
+  db: Db;
+  mariposa?: unknown; surfaceDetailClient?: unknown;
+  reviews?: unknown; checkpoint?: unknown; archiveSync?: unknown;
+  media?: unknown; messages?: unknown; events?: unknown;
+  contentClient?: unknown; identity?: unknown; wishstar?: unknown;
+  taskService?: unknown; oido?: unknown; mediaIndex?: unknown;
+  sirenCall?: unknown; programFacts?: unknown; tz?: unknown;
+};
+
+export function assembleTestTools(deps: TestToolDeps): {
+  tools: ModelToolBridge; registry: CapabilityRegistry;
+  memoryService: { recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> };
+} {
+  const db = deps.db;
   const registry = new CapabilityRegistry();
-  const oido = (opts.oido !== undefined ? opts.oido : e.oido) ?? null;
+  const oido = deps.oido ?? null;
   registerOidoCapabilities(registry, {
     db, oido: oido as never, sources: new OidoSourceRepository(db),
-    audio: (e.media ?? null) as never,
-    artifacts: (e.media ?? null) as never,
+    audio: (deps.media ?? null) as never,
+    artifacts: (deps.media ?? null) as never,
   });
   const memoryService = registerMemoryCapabilities(registry, {
-    db, tz: (e.tz ?? null) as string | null, mariposa: (e.mariposa ?? null) as never,
-    surfaceDetailClient: (e.surfaceDetailClient ?? null) as never,
-    reviews: e.reviews as never, checkpoint: e.checkpoint as never,
-    archiveSync: (e.archiveSync ?? null) as never,
+    db, tz: (deps.tz ?? null) as string | null, mariposa: (deps.mariposa ?? null) as never,
+    surfaceDetailClient: (deps.surfaceDetailClient ?? null) as never,
+    reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never,
+    archiveSync: (deps.archiveSync ?? null) as never,
   });
   registerConversationCapabilities(registry, {
-    db, tz: (e.tz ?? null) as string | null, messages: (e.messages ?? null) as never,
-    media: (e.media ?? null) as never, events: (e.events ?? null) as never,
-    archiveSync: (e.archiveSync ?? null) as never,
+    db, tz: (deps.tz ?? null) as string | null, messages: (deps.messages ?? null) as never,
+    media: (deps.media ?? null) as never, events: (deps.events ?? null) as never,
+    archiveSync: (deps.archiveSync ?? null) as never,
   });
-  registerWishstarCapabilitiesInstance(registry, { wishstar: (e.wishstar ?? null) as never });
-  registerContentCapabilitiesInstance(registry, { contentClient: (e.contentClient ?? null) as never, media: (e.media ?? null) as never });
-  registerWakeCapabilitiesInstance(registry, { db, taskService: (e.taskService ?? null) as never });
-  registerMediaCapabilitiesInstance(registry, { media: (e.media ?? null) as never, mediaIndex: (e.mediaIndex ?? null) as never });
-  registerIdentityCapabilitiesInstance(registry, { db, identity: (e.identity ?? null) as never });
-  registerContextReviewCapabilitiesInstance(registry, { db, reviews: e.reviews as never, checkpoint: e.checkpoint as never });
-  const sirenCall = opts.sirenCall !== undefined ? opts.sirenCall : e.sirenCall;
-  if (sirenCall !== undefined || opts.programFacts !== undefined) {
-    registerVoiceCapabilities(registry, {
-      db, sirenCall: (sirenCall ?? null) as never, programFacts: (opts.programFacts ?? null) as never,
-    });
-  }
-  (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
-  (executor as { setMemoryRecovery(s: unknown): void }).setMemoryRecovery(memoryService);
-  return registry; // S17b 批次3：返回同一注册表供测试把 toolCatalog 传给 Supervisor
+  registerWishstarCapabilitiesInstance(registry, { wishstar: (deps.wishstar ?? null) as never });
+  registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never });
+  registerWakeCapabilitiesInstance(registry, { db, taskService: (deps.taskService ?? null) as never });
+  registerMediaCapabilitiesInstance(registry, { media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
+  registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });
+  registerContextReviewCapabilitiesInstance(registry, { db, reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never });
+  // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall/programFacts
+  // 未注入=运行时如实 INTEGRATION_UNCONFIGURED，与生产装配一致）
+  registerVoiceCapabilities(registry, {
+    db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
+  });
+  const tools = new ModelToolBridge({ db, events: (deps.events ?? null) as never });
+  (tools as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
+  (tools as { setMemoryRecovery(s: unknown): void }).setMemoryRecovery(memoryService);
+  return { tools, registry, memoryService };
+}
+
+/** S17b 批次3：测试装配的唯一目录来源（全部生产模块注册后的 currentCatalog）。 */
+export function buildFullTestRegistry(): CapabilityRegistry {
+  return assembleTestTools({ db: {} as Db }).registry;
+}
+
+/** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */
+export function fullToolCatalog(): import('../apps/host/src/capabilities/contracts.ts').HostToolSpec[] {
+  return buildFullTestRegistry().currentCatalog();
+}
+
+/** 旧 hostToolNames 消费者兼容（名称序列与 fullToolCatalog 一致）。 */
+export function hostToolNames(): string[] {
+  return fullToolCatalog().map((t) => t.function.name);
 }
 
 
@@ -170,22 +195,5 @@ export function validateToolArgs(name: string, args: Record<string, unknown>, fr
 
 // S17b 批次3：测试装配的唯一目录来源——显式注册全部生产模块（镜像 app-context 装配顺序），
 // 经 Registry.currentCatalog() 提供 buildHostTools 删除后的目录（探针等测试模块不进默认集合）。
-export function buildFullTestRegistry(): CapabilityRegistry {
-  const registry = new CapabilityRegistry();
-  registerMemoryCapabilities(registry, { db: {} as Db, mariposa: null, reviews: {} as never, checkpoint: {} as never });
-  registerOidoCapabilities(registry, { db: {} as Db, oido: null, sources: new OidoSourceRepository({} as Db) });
-  registerVoiceCapabilities(registry, { db: {} as Db, sirenCall: null, programFacts: null });
-  registerConversationCapabilities(registry, { db: {} as Db });
-  registerWishstarCapabilitiesInstance(registry, { wishstar: null });
-  registerContentCapabilitiesInstance(registry, { contentClient: null });
-  registerWakeCapabilitiesInstance(registry, { db: {} as Db, taskService: null });
-  registerMediaCapabilitiesInstance(registry, { media: null, mediaIndex: null });
-  registerIdentityCapabilitiesInstance(registry, { db: {} as Db, identity: null });
-  registerContextReviewCapabilitiesInstance(registry, { db: {} as Db, reviews: {} as never, checkpoint: {} as never });
-  return registry;
-}
 
 /** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */
-export function fullToolCatalog(): import('../apps/host/src/capabilities/contracts.ts').HostToolSpec[] {
-  return buildFullTestRegistry().currentCatalog();
-}

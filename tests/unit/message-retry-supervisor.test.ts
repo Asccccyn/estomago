@@ -1,6 +1,7 @@
 // Retry integration uses synthetic identity, isolated SQLite and injected transports only.
 // Prefix equality is evidence of reuse eligibility, not a claim of provider cache hits.
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -21,12 +22,10 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const initialInput = 'synthetic-failed-input';
 const editedInput = 'synthetic-edited-input\nsecond line';
@@ -47,8 +46,7 @@ function fixture() {
     bootstrapCalls++;
     return { ok: true, result: { snapshot_id: 'synthetic-snapshot', state_hash: 'synthetic-hash', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: 'synthetic-bootstrap', note: '' } } };
   } });
-  const tools = new HostToolExecutor({ db, mariposa, reviews, checkpoint })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa, reviews: reviews, checkpoint: checkpoint });
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload));

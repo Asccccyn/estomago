@@ -5,7 +5,7 @@
 //  - 词表动态化：refreshMoodCategories 拉正本 → 工具枚举随动；失败保快照。
 // 纯函数/假 transport，零网络零凭据。
 import { test } from 'node:test';
-import { validateToolArgs, fullToolCatalog } from '../helpers.ts';
+import {validateToolArgs, fullToolCatalog } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import { classifyError, MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { currentMoodCategories, refreshMoodCategories } from '../../apps/host/src/modules/memory/mood-vocab.ts';

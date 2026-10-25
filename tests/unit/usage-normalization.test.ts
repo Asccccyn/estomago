@@ -7,7 +7,7 @@ import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 function setup(state: 'completed' | 'failed') {
   const root = tempRoot('usage-');

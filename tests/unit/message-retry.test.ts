@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';

@@ -4,6 +4,7 @@
 //    原生 image 块（wire 捕获、存储侧脱敏）；
 // ② 未核实型号 → 工具消息仅文本（工具 JSON 内如实声明图未携带）。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,13 +26,11 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { setVisionSupportForTests, clearVisionSupportCache } from '../../apps/host/src/media/model-input.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -60,8 +59,7 @@ function compose(root: string, transport: OrTransport) {
     capabilities: async () => ({ ok: true }),
     getView: async (id: string) => ({ mime: 'image/png', pngBase64: PNG.toString('base64'), metadata: { analysis_id: id } }),
   };
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db)});
-  wireOidoCapabilitiesForTest(tools, { oido: oidoAdapter });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages });
   const supervisor = new TurnSupervisor({ db, config, messages, events: new EventService(db), identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, new EventService(db)), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db), media, oidoHearing: true });
   return { db, config, messages, supervisor, media, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }

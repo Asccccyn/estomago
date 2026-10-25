@@ -8,7 +8,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 const NODE = process.execPath;
 const REPO = path.resolve(import.meta.dirname, '../..');

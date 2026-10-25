@@ -1,9 +1,8 @@
 import {test} from 'node:test';
+import { assembleTestTools, makeDb, validateToolArgs } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {makeDb, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
-import {HostToolExecutor} from '../../apps/host/src/runtime/host-tools.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
 import {HoldCheckpointService} from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -19,8 +18,7 @@ const cases=[
 test('capture actual executor output serialized exactly as supervisor tool content',async t=>{
  const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true})});
  let fixture:any={};
- const executor=new HostToolExecutor({db,mariposa:new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}),reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
-  wireOidoCapabilitiesForTest(executor, {  });;
+ const { tools: executor } = assembleTestTools({ db: db, mariposa: new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
  const records=[];
  for(const c of cases){
   // S15：校验入口=helpers.validateToolArgs（条目 definition+通用校验，同注册表执行外壳）

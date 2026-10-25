@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateConfig } from '../../apps/host/src/config/schema.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { buildTimeContext } from '../../apps/host/src/time/context.ts';
 import { TextSegmenter } from '../../apps/host/src/output/segments.ts';

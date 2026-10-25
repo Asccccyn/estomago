@@ -1,9 +1,8 @@
 import {test} from 'node:test';
+import { assembleTestTools, makeDb } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import {MessageService} from '../../apps/host/src/messages/service.ts';
-import {HostToolExecutor} from '../../apps/host/src/runtime/host-tools.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
 import {HoldCheckpointService} from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -17,8 +16,7 @@ function fixture(t:any){
  for(const row of rows) db.prepare(`INSERT INTO source_sync_receipts(id,operation_id,origin_message_id,revision,source_conversation_id,source_message_id,content_hash,created_at) VALUES(?,'seed',?,1,'source-c',?,?,?)`).run(`receipt-${row.id}`,row.id,`source-${row.sequence}`,sha256Hex(row.content),'now');
  const calls:any[]=[];
  const client=new MariposaClient({transport:async(cap,payload)=>{calls.push({cap,payload});return {ok:true,result:{operation_id:payload.operation_id,memory_id:'m1',version:1,binding_ids:(payload.event_source_ranges as unknown[] ?? []).map((_,i)=>`bind${i}`),committed_at:'2026-10-21T12:00:00Z'}}}});
- const tools=new HostToolExecutor({db,mariposa:client,reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
-  wireOidoCapabilitiesForTest(tools, {  });;
+ const { tools: tools } = assembleTestTools({ db: db, mariposa: client, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
  const ctx={roomId:'c1',windowId:'new-window',turnId:null,requestId:'event-request',purpose:'chat' as const,activeReviewId:null,seenSequence:3,seenMessages:rows.map(r=>({id:r.id,revision:1}))};
  const args={original_title:'事件',categories:['daily'],text:'事件正文',creation_mode:'contemporaneous',source_ranges:[{start_seq:1,end_seq:3}]};
  return {db,rows,calls,tools,ctx,args};

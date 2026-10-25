@@ -10,7 +10,7 @@ import { EventService } from '../../apps/host/src/events/service.ts';
 import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { SdkEventNormalizer } from '../../apps/host/src/runtime/sdk-event-normalizer.ts';
 import { fixtureScenario } from '../../packages/test-fixtures/src/sdk-stream.ts';
-import { tempRoot, seedProbes } from '../helpers.ts';
+import {tempRoot, seedProbes } from '../helpers.ts';
 
 function setup() {
   const root = tempRoot();

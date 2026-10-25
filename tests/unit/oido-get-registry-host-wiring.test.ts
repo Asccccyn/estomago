@@ -4,6 +4,7 @@
 // 断言：新 handler=1；旧 handler=0（私有方法已删）；同定义同结果；通话内允许（D39）；
 // 前台普通调用不被背景报价门挡（D40）；取消沿 CANCELLED；定义唯一来源。
 import { test, before, after } from 'node:test';
+import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,7 +25,6 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { storedToolset, freezeWindowTools, definitionId } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -35,7 +35,6 @@ import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { oidoModelView } from '../../apps/host/src/integrations/oido/model-view.ts';
 import { CapabilityRegistry } from '../../apps/host/src/capabilities/registry.ts';
 import { oidoGetCapability, oidoAnalyzeCapability, OIDO_GET_DEFINITION } from '../../apps/host/src/modules/oido/module.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, fullToolCatalog } from '../helpers.ts';
 
 const CREDENTIAL = 'ESTOMAGO_TEST_OIDO_CREDENTIAL';
 const OVERVIEW = { analysis_id: 'run_t1', revision: 1, state: 'ready', range_ms: [0, 1200], observations: [] };
@@ -99,7 +98,7 @@ test('A01/P02.7: 真实 Host 经 tool_define/invoke 调用已迁 oido_get——�
     if (cap === 'bootstrap.get') return { ok: true, result: { snapshot_id: 'snap_t1', state_hash: 'h1', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: '', note: '' } } };
     throw Error('unexpected ' + cap);
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint, media, messages, oido });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint, media: media, messages: messages });
   tools.setCapabilityRegistry(registry);
 
   // 真实模型回合：turn1=普通文本；随后宿主内部分析建绑定；turn2=catalog→define→invoke(oido_get)

@@ -4,6 +4,7 @@
 // 本测试同一套核心装配跑三种形态：真实 OidoAdapter（fake HTTP 边界）/ 合同兼容 FakeOidoAdapter /
 // oído 未注入——只有装配声明不同，模块与核心代码相同。
 import { test } from 'node:test';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,11 +14,9 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
-import { wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 type Mode = 'real' | 'fake' | 'absent';
 
@@ -61,8 +60,7 @@ function makeStack(mode: Mode) {
 
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews, checkpoint, media, messages });
-  wireOidoCapabilitiesForTest(tools, { oido: adapter, media });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: reviews, checkpoint: checkpoint, media: media, messages: messages });
 
   const ctx = () => ({ roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'drill-b' });
   const createVoice = async () => {

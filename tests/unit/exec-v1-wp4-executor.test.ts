@@ -3,6 +3,7 @@
 // 2026-10-22 改写：保温零工具封锁（CW-13）与 128 输出封锁退役——心跳=完整回合；
 // PURE_ACK/SUBSTANTIVE 分流；心跳维护回执经活动投影 CAS；执行走会话串行链。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,13 +29,11 @@ import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-traj
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -59,8 +58,7 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages });
-  wireOidoCapabilitiesForTest(tools, { oido: null, sirenCall: null });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);

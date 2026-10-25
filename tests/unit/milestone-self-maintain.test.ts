@@ -3,12 +3,11 @@
 //    下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）
 //  - identity_milestone_write：新版新文件+旧版留档+manifest 原子更新+幂等+审计
 import { test } from 'node:test';
+import { assembleTestTools, makeDb, makePaths, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { IdentityService, contextFingerprint } from '../../apps/host/src/identity/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
@@ -71,8 +70,7 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const { db } = makeDb(root);
   const paths = makePaths(root);
   const svc = new IdentityService(buildConfig({}), paths);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const args = { text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' };
   const r1 = await tools.execute('identity_milestone_write', { ...args }, ctx);
@@ -101,8 +99,7 @@ test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async (
   seedMilestone(root);
   const { db } = makeDb(root);
   const svc = new IdentityService(buildConfig({}), makePaths(root));
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const bad = await tools.execute('identity_milestone_write', { text: 'x', idempotency_key: 'k' }, ctx);
   assert.equal(bad.ok, false);
@@ -119,8 +116,7 @@ test('行级条目化（她 1022 裁定：一行一条 1.2.3.4.；新增=加一�
   seedMilestone(root);
   const paths = makePaths(root);
   const db = makeDb(root).db;
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) })
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) });
   const ctx = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-m' };
   // 初始版=生产 v1 形态：一行一条，无空行
   const w0 = await tools.execute('identity_milestone_write', { operation: 'write', text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);

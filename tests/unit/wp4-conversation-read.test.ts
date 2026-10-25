@@ -8,6 +8,7 @@
 //  - O07：多次回读零副作用（消息/修订/outbox/书签计数不变）
 //  - O08：无 include_cot 参数（思考不可请求）；协议继续态回归随全套件
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -28,13 +29,11 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -53,13 +52,7 @@ function makeExecutor(root: string, mariposa?: MariposaTransport) {
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) });
-  const executor = new HostToolExecutor({
-    db,
-    mariposa: mariposa_wire_1,
-    reviews: new RotationReviewService(db),
-    checkpoint: new HoldCheckpointService(db),
-  })
-  wireOidoCapabilitiesForTest(executor, {  });;
+  const { tools: executor } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { executor, db };
 }
 
@@ -250,8 +243,7 @@ function composeWp4(root: string, transport: OrTransport) {
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
-  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews, checkpoint });
-  wireOidoCapabilitiesForTest(tools, {  });;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_2, reviews: reviews, checkpoint: checkpoint });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）

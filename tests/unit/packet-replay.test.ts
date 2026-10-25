@@ -20,7 +20,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { SdkEventNormalizer } from '../../apps/host/src/runtime/sdk-event-normalizer.ts';
 import type { AgentRunner } from '../../apps/host/src/runtime/runner.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 const rawPacket = (uuid: string, texts: string[]) => ({
   type: 'assistant' as const,

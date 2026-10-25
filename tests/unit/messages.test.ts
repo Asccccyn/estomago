@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 
 test('多行正文是一条消息：CRLF 规范化为 LF，行序/空行保留，不拆分（含同事务 outbox+turn）', () => {

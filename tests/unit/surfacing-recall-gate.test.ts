@@ -15,7 +15,7 @@ import { detectRecallNeed, extractExplicitDates, extractHypotheses, type RecentR
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { makeDb, tempRoot } from '../helpers.ts';
+import {makeDb, tempRoot } from '../helpers.ts';
 
 type Row = { id: string; category: string; text: string; recentRecall: boolean; expected: boolean; label_source: string };
 

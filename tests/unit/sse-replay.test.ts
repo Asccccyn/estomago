@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 
 test('SSE 事实来源：持久 sequence 严格递增，分页回放不重不漏', () => {
