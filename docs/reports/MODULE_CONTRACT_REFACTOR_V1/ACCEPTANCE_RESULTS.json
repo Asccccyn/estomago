@@ -564,12 +564,18 @@
       "phase": "P10",
       "setup": "候选SHA运行已分类选择集与类型/结构检查。",
       "assertions": "每项命令/退出码/证据种类可追溯，排除原因真实，无生产PASS冒充。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "e5024277ff0c8ed816670352d7f5979f4e77bce4",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=…(49 文件定向选择器)  (exit 0；e5024277ff0c)",
+        "/opt/homebrew/bin/node docs/specs/MODULE_CONTRACT_REFACTOR_V1/scripts/validate_delivery.py --results docs/reports/MODULE_CONTRACT_REFACTOR_V1/ACCEPTANCE_RESULTS.json --evidence-root ."
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/TEST_EVIDENCE.md",
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/ACCEPTANCE_RESULTS.json"
+      ],
+      "notes": "有限回归与证据完整：49 文件定向选择器 49/49 通过（含 A03/A10/A12/A25-A28 新证据）；validate_delivery 格式验证通过；PASS=29/29 全绿（本轮统一冻结提交）。"
     }
   ],
   "outOfScope": [

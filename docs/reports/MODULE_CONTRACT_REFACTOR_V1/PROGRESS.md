@@ -27,3 +27,6 @@
 
 | P09 | P07 提交 | 防回退检查：check_boundaries cycles=0、violations 5→1（余=bootstrap-pages 过渡，BLOCKERS 登记）；无 legacyFallback；supervisor 类型级业务导入叶化（BootstrapPort/Augment/wishstar 结构面）；JA-E07/recall-projection 桩与导入适配 | typecheck 0；supervisor 网 5/5；最终 41/41 | 见git log | DONE（过渡项见 BLOCKERS） |
 | P10 | P09 提交 | 冻结候选：validate_delivery formatValid=true；GLM_DELIVERY/TEST_EVIDENCE 写毕；41 文件最终回归 41/41；独立复核指令就绪（review/01、02） | validate_delivery exit 0；41/41 | 见git log | 实施者交付完毕；GLM5.3 与 Astra 独立复核待执行 |
+| 裁定执行 | A10/A12 补记 | S13 contributions 叶化（传输投影适配层）/S14+S16 oido 字段+冗余键/S15 validateToolArgs 迁测试层（含 mood 词表工厂回归修复）/S18 Bootstrap 回退删除+显式注入 | typecheck 0；各专项网全绿 | 见git log | DONE |
+| 演练+验收 | 同上 | 演练A probe-module（A26/A03）、演练B substitution（A27/A10）、A12 call-stop、P07 第一批 voice-call 路由 | typecheck 0；drill/call-stop/P07网 全绿 | 见git log | DONE |
+| 统一冻结 | 同上 | 49 文件回归 49/49；A29=PASS；29/29 全绿；validate_delivery 通过 | 49/49 exit 0 | e5024277ff0c | 实施者侧交付完毕；独立复核为下一步 |
