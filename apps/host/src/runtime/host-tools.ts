@@ -1,6 +1,6 @@
 import { oidoModelView } from '../integrations/oido/model-view.ts';
 import { sliceByByteBudget, TRANSCRIPT_PAGE_BUDGET_BYTES } from '../media/model-input.ts';
-import { modelResult, modelFailure } from './model-results.ts';
+import { modelFailure } from './model-results.ts'; // 成功投影正本已随域（modules/*/projection）；此处仅通用失败映射
 // 宿主固定工具集（§3.3/§8.2）：开窗即固定 allowlist，不临提醒才改工具集合。
 //  - memory_hold：映射 Mariposa memory.hold（宿主自动化路径必须带 operation_id，§5 生命周期契约）。
 //    operation_id 由宿主从 tool_call 派生（模型不能自编）；无 Mariposa 客户端 → 能力缺口，明确拒绝。

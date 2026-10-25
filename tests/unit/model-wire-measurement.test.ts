@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
+import {makeDb, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
 import {HostToolExecutor} from '../../apps/host/src/runtime/host-tools.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
@@ -22,7 +22,19 @@ test('capture actual executor output serialized exactly as supervisor tool conte
  const executor=new HostToolExecutor({db,mariposa:new MariposaClient({transport:async()=>({ok:true,result:structuredClone(fixture)})}),reviews:new RotationReviewService(db),checkpoint:new HoldCheckpointService(db)})
   wireOidoCapabilitiesForTest(executor, {  });;
  const records=[];
- for(const c of cases){fixture=c.data;const result=await executor.execute(c.name,{...c.args,__tool_call_id:c.name},ctx);assert.equal(result.ok,true);
+ for(const c of cases){
+  // S15：校验入口=helpers.validateToolArgs（条目 definition+通用校验，同注册表执行外壳）
+  const checked = validateToolArgs(c.name, {...c.args,__tool_call_id:c.name});
+  assert.equal(checked.ok, true, c.name+' 参数须过形状门');
+  fixture=c.data;const result=await executor.execute(c.name,checked.value as Record<string,unknown>,ctx);assert.equal(result.ok,true);
   const content=JSON.stringify(result.output);records.push({tool:c.name,content,bytes:Buffer.byteLength(content,'utf8')});}
  console.log('MODEL_WIRE='+JSON.stringify(records));
+ // S17b 批次2③：具体输出断言（不再只 ok+打印）——内部字段不泄漏、正文逐字、CAS/游标保真
+ const byTool=Object.fromEntries(records.map(r=>[r.tool,JSON.parse(r.content)]));
+ assert.deepEqual(byTool['episode_get'],{episode_id:'ep1',label:'合成事件',state:'OPEN',revision:3},'episode 投影保留观测 CAS 修订，剥离 created_by/created_at/updated_at 审计字段与空 source_selections');
+ assert.deepEqual(byTool['plans_read'],{plan_id:'p1',version:2,title:'计划',content:body,state:'active',due_at:'2026-11-01',all_day:false},'plans 投影保留正文与版本，剥离 terminal_revision/terminal_date/forgetting_note');
+ assert.deepEqual(byTool['deletion_review'],{request_id:'d1',memory_id:'m1',human_reason:'重复记录',status:'pending'},'deletion_review 剥离 rejection_reason(null)/submitted_by/日期');
+ assert.deepEqual(byTool['memory_correct'],{relations:[{relation_id:'r1',from_memory:'m1',to_memory:'m2',relation_type:'contradicts',reversed:false}]},'relations 投影保留 reversed 标志，剥离 custom_label(null)/reverse_label(null)/created_by/时间戳');
+ assert.ok(byTool['memory_i_read'].items[0].content===body,'I 正文逐字');
+ assert.ok(!JSON.stringify(records).includes('forgetting_note'),'内部字段不泄漏');
 });

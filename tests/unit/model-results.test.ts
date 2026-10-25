@@ -1,6 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {modelResult,candidates} from '../../apps/host/src/runtime/model-results.ts';
+import { projectMemoryToolResult, candidates } from '../../apps/host/src/modules/memory/projection.ts';
+// 生产成功投影正本：memory/plan/episode 域=modules/memory/projection.projectMemoryToolResult；
+// conversation 域=modules/conversation/projection.projectConversationRead（本文件用例均在 memory 域）。
+const modelResult = (name: string, args: Record<string, unknown>, value: Record<string, unknown>): Record<string, unknown> =>
+  projectMemoryToolResult(name, args, value);
 import {projectSurfacedMemory} from '../../apps/host/src/memory-surfacing/contracts.ts';
 test('episode read retains observed CAS revision and anchors, not audit fields',()=>{
  const before={episode_id:'ep',revision:3,state:'OPEN',label:'完整标签',scope_id:'room',created_at:'now',source_selections:[{members:[{source_message_id:'s',content_hash:'h'}]}]};
