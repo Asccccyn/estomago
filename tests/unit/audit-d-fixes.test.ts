@@ -27,6 +27,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
+import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
@@ -327,9 +328,10 @@ function composeArchive(root: string, transport: MariposaTransport, configOver: 
   const events = new EventService(ctx.db);
   const logger = new Logger(path.join(root, 'logs'));
   const messages = new MessageService(ctx.db);
+  const media = new MediaService(ctx.db, ctx.paths.mediaDir, config);
   const client = new MariposaClient({ transport });
   const sync = new ArchiveSyncService({ db: ctx.db, events, logger, client, config });
-  return { ...ctx, messages, sync };
+  return { ...ctx, messages, sync, media };
 }
 
 test('D12：普通文本归档 published_kind 映射 chat_message（现行 mariposa 契约）', async () => {
@@ -349,6 +351,35 @@ test('D12：普通文本归档 published_kind 映射 chat_message（现行 marip
   assert.equal(seen.length, 1, '批次发出');
   const kinds = (seen[0]!.messages as Array<Record<string, unknown>>).map((m) => m.published_kind);
   assert.ok(kinds.every((k) => k === 'chat_message'), `published_kind 全部映射 chat_message（得到 ${kinds.join(',')}）`);
+  ctx.db.close();
+});
+
+// D5 真覆盖（2026-10-24 测试审计：原 joint-audit-d2-gj01 D5 为 oracle 副本已删）——
+// sticker/voice 的 published_kind 映射此前在真实链路上无人守护，本例经真实
+// drainOnce 载荷断言三分支（text→chat_message 由 D12 守）。
+test('D5：sticker/voice 消息经真实归档链映射 published_kind（非 oracle 副本）', async () => {
+  const root = tempRoot('d5-real-');
+  const seen: Array<Record<string, unknown>> = [];
+  const ctx = composeArchive(root, async (cap, payload) => {
+    if (cap === 'source.ingest') {
+      seen.push(payload as Record<string, unknown>);
+      const ms = (payload.messages as Array<Record<string, unknown>>).map((m) => ({ origin_message_id: m.origin_message_id, revision: m.revision, source_conversation_id: 'sc', source_message_id: `sm-${m.origin_message_id}`, content_hash: m.content_hash }));
+      return { ok: true, result: { operation_id: payload.operation_id, committed_at: new Date().toISOString(), messages: ms, batch_ref: 'b', integrity: 'verified' } };
+    }
+    return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
+  });
+  ctx.messages.ensureConversation('c1');
+  const PNG = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  const OGG = Buffer.concat([Buffer.from('OggS'), Buffer.alloc(64, 1)]);
+  const sticker = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_sticker', operationId: 'op-d5-s', createdBy: 'qiaosheng', origin: 'upload' });
+  const voice = await ctx.media.saveBuffer({ bytes: OGG, purpose: 'chat_voice', operationId: 'op-d5-v', createdBy: 'qiaosheng', origin: 'upload' });
+  ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: 'd5-s', attachments: [{ asset_id: sticker.id, presentation: 'sticker' }] });
+  ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: 'd5-v', attachments: [{ asset_id: voice.id, presentation: 'voice' }] });
+  await ctx.sync.drainOnce();
+  assert.equal(seen.length, 1, '批次发出');
+  const byId = new Map((seen[0]!.messages as Array<Record<string, unknown>>).map((m) => [m.origin_message_id, m.published_kind]));
+  assert.ok([...byId.values()].includes('sticker_message'), `贴纸映射 sticker_message（得到 ${JSON.stringify([...byId])}）`);
+  assert.ok([...byId.values()].includes('voice_message'), `语音映射 voice_message`);
   ctx.db.close();
 });
 

@@ -6,9 +6,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate } from '../../apps/host/src/db/migrations.ts';
-import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
@@ -86,7 +83,7 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
     context_assembler: deepScanCanary(assemblerOut, CANARY),
     identity_receipt: receiptHits,
     archive_outbox: outbox.reduce((n, o) => n + deepScanCanary(o.payload_ref, CANARY), 0),
-    our_words_projection: 0, // our_words/mariposa DTO 未联调（接口层占位）——C 场景 contract 覆盖
+    our_words_projection: 0, // our_words/mariposa DTO 未联调（接口层占位）——归档 DTO 由场景 A 真实 outbox 行承载
     time_context: timeCtx ? deepScanCanary(timeCtx.time_context_json, CANARY) : 0,
     verified_tool_facts: deepScanCanary(host.db.prepare('SELECT kind, payload_ref FROM runtime_stream_events WHERE kind = ?').all('tool.status'), CANARY),
   };
@@ -98,26 +95,4 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
   }
   await host.stop();
 
-  function scanDir(dir: string): number {
-    if (!fs.existsSync(dir)) return 0;
-    let n = 0;
-    for (const f of fs.readdirSync(dir, { recursive: true }) as string[]) {
-      const fp = path.join(dir, f);
-      if (fs.statSync(fp).isFile()) n += fs.readFileSync(fp, 'utf8').includes(CANARY) ? 1 : 0;
-    }
-    return n;
-  }
-});
-
-test('C. Mariposa adapter DTO contract：待发归档 payload 0 命中', () => {
-  const root = tempRoot('canaryc-');
-  const db = openDatabase(path.join(root, 'data'));
-  migrate(db, sha256Hex);
-  // 模拟 outbox 待发 DTO（message_id 引用，无 reasoning 通道）
-  db.prepare("INSERT INTO outbox(id, operation_key, target, payload_ref, state, created_at, updated_at) VALUES ('o1','k1','mariposa.archive',?,'pending',?,?)")
-    .run(JSON.stringify({ message_id: 'msg_x', revision: 1, note: 'synthetic' }), new Date().toISOString(), new Date().toISOString());
-  const rows = db.prepare('SELECT payload_ref FROM outbox').all();
-  assert.equal(rows.reduce((n, r) => n + deepScanCanary(r.payload_ref, CANARY), 0), 0, '归档 DTO 0 命中');
-  // our_words / memory DTO 结构定义中不存在 reasoning 字段（types.ts 隔离）
-  db.close();
 });

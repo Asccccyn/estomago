@@ -197,6 +197,15 @@ test('路由 approve 后再次路由信号：不开新票据，明确失败终�
   assert.equal(tickets, 1, '本 turn 全程恰一张票据（接受→又被路由=终局，不再循环）');
 });
 
+// 2026-10-24 测试审计补真覆盖：原 joint-audit-d2-gj01 D3 为自证式（只查自己夹具）
+// 已删——幽灵房间的 404 守卫（http.ts conversation_not_found）此前零真实覆盖。
+test('幽灵房间 POST → 404 conversation_not_found（不静默建房）', async () => {
+  const res = await api('POST', '/api/v1/conversations/ghost-room/messages', { content: 'x', client_message_id: 'ghost-1' });
+  assert.equal(res.status, 404);
+  const body = (await res.json()) as { error: { code: string } };
+  assert.equal(body.error.code, 'conversation_not_found');
+});
+
 test('停止：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
   process.env.ESTOMAGO_MOCK_SCENARIO = 'slow';
   const { turn_id } = await submit('停止场景', 'int-stop-1');

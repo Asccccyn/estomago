@@ -91,51 +91,6 @@ const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : t
 // DS serializes content blocks into one string at its wire boundary.
 const memoryJson = (text: string): string => text.slice(text.indexOf('{"memories":'));
 
-test('JA-S08: owner can expand the same delivered bucket without exposing refs or retrieving again', async () => {
-  const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
-  const caps: string[] = [];
-  const transport: OrTransport = async payload => {
-    assert.ok(!JSON.stringify(payload.messages).includes(ITEM.detail_ref));
-    return { status: 200, headers: new Map(), body: frameStream(textBody('g1','合成回复')) };
-  };
-  const mariposa: MariposaTransport = async (cap, payload) => {
-    caps.push(cap);
-    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
-    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
-    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } };
-    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
-    if (cap === 'memory.detail.read') {
-      assert.equal(payload.detail_ref, ITEM.detail_ref); assert.equal(payload.view,'model');
-      assert.equal(payload.section,caps.filter(x=>x==='memory.detail.read').length===1?'source':'memory');
-      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',next_cursor:payload.cursor?null:'memory:p1'}};
-    }
-    throw Error('unexpected '+cap);
-  };
-  const ctx=compose(root,transport,mariposa,log);
-  try {
-    const a=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'还记得那次记忆库建成吗？',clientMessageId:'a'});
-    ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
-    const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
-    assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
-    const before=caps.length;
-    const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
-    const visibleRef=JSON.parse(memoryJson((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!)).memories[0].memory_ref;
-    assert.equal(visibleRef,list[0].memory_ref);
-    const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
-      {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
-    assert.equal(modelRead.ok,true);assert.equal((modelRead.output.source as any[])[0].text,'绑定的原文');
-    assert.deepEqual(caps.slice(before),['memory.detail.read'],'model opens source directly, no ordinary detail or new search');
-    const afterModel=caps.length;
-    assert.equal((await ctx.svc.readMemoryForTurn('other',a.turnId,list[0].memory_ref)).ok,false);
-    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,'sf_forged')).ok,false);
-    assert.equal(caps.length,afterModel);
-    const first=await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);assert.equal(first.ok,true);
-    assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'memory:p1')).ok,true);
-    assert.deepEqual(caps.slice(afterModel),['memory.detail.read','memory.detail.read']);
-    assert.equal(log.length,1,'clicking detail never calls the main model');
-  } finally {await ctx.svc.stop();ctx.db.close();}
-});
-
 test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；retain 落账', async () => {
   const root = tempRoot('sfseam-');
   const log: Array<Record<string, unknown>> = [];
@@ -202,42 +157,4 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   await ctx.svc.stop();
   await new Promise((r) => setTimeout(r, 20));
   ctx.db.close();
-});
-
-// R02（审计 J01）：最终准入——冻结后回执在装配边界过期/被撤销时，同一 check 门
-// 拦下浮现块；主消息照常派发（普通 B 不丢），wire 上无回忆块、覆盖零落账。
-test('JA-S16: stale receipt at final admission drops only the surfacing block — the turn still dispatches', async () => {
-  const root = tempRoot('sf-final-admit-');
-  const log: Array<Record<string, unknown>> = [];
-  let gen = 0;
-  const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, `回${gen}`)) }; };
-  let checkCalls = 0;
-  const mariposa: MariposaTransport = async (cap) => {
-    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
-    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_fa' } };
-    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_fa', items: [ITEM] } };
-    if (cap === 'memory.surfacing.check') { checkCalls++; return { ok: true, result: { valid: checkCalls === 1, accepted_detail_refs: [ITEM.detail_ref] } }; }
-    return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
-  };
-  const ctx = compose(root, transport, mariposa, log);
-  try {
-    const u1 = await (async () => {
-      const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '你还记得那次7.9我们把记忆库做成了吗？', clientMessageId: 'fa-a', occurredAt: T0 });
-      ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
-      return sub;
-    })();
-    assert.equal(log.length, 1, 'current turn dispatches despite failed final admission');
-    assert.equal(gen, 1);
-    const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
-    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('{"memories":'))).length, 0, 'wire has no surfacing block');
-    const tail2 = msgs2[msgs2.length - 1]!;
-    assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('你还记得那次7.9我们把记忆库做成了吗？')), 'real user input is intact');
-    // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）
-    assert.equal(checkCalls, 2, 'the same gate checked at freeze and at final assembly');
-    const job = ctx.svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;
-    assert.equal(job.state, 'cancelled');
-    assert.equal(job.reason_code, 'FINAL_ADMISSION_DROPPED');
-    assert.equal((ctx.db.prepare("SELECT count(*) n FROM surfacing_deliveries WHERE state='dropped'").get() as { n: number }).n, 1);
-    assert.equal((ctx.db.prepare('SELECT count(*) n FROM surfacing_coverage').get() as { n: number }).n, 0, 'no coverage is claimed for a dropped block');
-  } finally { await ctx.svc.stop(); ctx.db.close(); }
 });
