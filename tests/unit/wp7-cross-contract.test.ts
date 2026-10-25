@@ -4,7 +4,7 @@
 // 经 E 真 MariposaClient（fake transport 只做管道）→ HostToolExecutor →
 // 验证模型可见层的字段保真。I03：工具面/能力面一致性。
 import { test } from 'node:test';
-import { validateToolArgs } from '../helpers.ts';
+import { validateToolArgs, wireOidoCapabilitiesForTest } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -31,7 +31,9 @@ function makeExecutor(root: string, transport: (cap: string, payload: Record<str
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  return new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  wireOidoCapabilitiesForTest(tools, {});
+  return tools;
 }
 
 test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端保真', async () => {

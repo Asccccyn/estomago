@@ -206,7 +206,7 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db);
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token } })
-  wireOidoCapabilitiesForTest(, {  });;
+  wireOidoCapabilitiesForTest(tools, {});;
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w1', turnId: 'turn-tool-test', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-test' };
   const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1', __tool_call_id: 'tc-model-1' }, ctx);
   assert.equal(r.ok, true);
