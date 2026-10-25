@@ -9,7 +9,7 @@ import { validateToolArgs } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import { classifyError, MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
-import { refreshMoodCategories } from '../../apps/host/src/modules/memory/mood-vocab.ts';
+import { currentMoodCategories, refreshMoodCategories } from '../../apps/host/src/modules/memory/mood-vocab.ts';
 import type { MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 
 test('F：HTTP 状态优先——mariposa 结构化码 RATE_LIMITED + 429 = retry_later（旧实现判 dead）', () => {
