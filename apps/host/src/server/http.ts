@@ -264,33 +264,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     }
 
 
-    // —— EXEC_V1 §03.5.1（WP3/MEDIA-11）：active MIME 隔离预览——CSP sandbox + nosniff ——
-    const sandboxPreview = /^GET \/api\/v1\/assets\/([^/]+)\/preview$/.exec(route);
-    if (sandboxPreview) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      try {
-        const id = decodeURIComponent(sandboxPreview[1]!);
-        const asset = d.media.getAsset(id);
-        // 只有 SVG/HTML 走沙箱路径；普通图片走 content 端点
-        if (asset.mime_type !== 'image/svg+xml' && asset.mime_type !== 'text/html') {
-          return json(res, 400, { error: { code: 'not_active_mime', message: '此资产不需要沙箱预览（走 content 端点）' } });
-        }
-        const { bytes, mime } = d.media.readContent(id);
-        // §03.5.1：不能只靠 iframe sandbox——资产 URL 被直接打开时也不能在 est 主站来源执行
-        res.writeHead(200, {
-          'Content-Type': mime,
-          'Content-Length': String(bytes.length),
-          'X-Content-Type-Options': 'nosniff',
-          'Content-Security-Policy': "sandbox allow-scripts; default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'",
-          'Cache-Control': 'no-store',
-        });
-        res.end(bytes);
-        return;
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
+    // —— 资产组（两段：sandbox 预览 + voice/资产/oido 图）——P07.2 迁 server/routes/assets.ts（逐字）。
+    if (/^GET \/api\/v1\/assets\/([^/]+)\/preview$/.test(route)) {
+      return await handleAssetsRoutes(req, res, d, route, url);
     }
+
 
     // —— 日历读聚合组——P07.2 迁 server/routes/calendar.ts（逐字）。
     if (route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
@@ -315,407 +293,34 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return await handleBackgroundRoutes(req, res, d, route, url);
     }
 
-    if (route === 'GET /api/v1/voice/status') {
-      return json(res, 200, d.voice?.status() ?? { available: false, reason: 'voice_unavailable', verification: 'blocked' });
-    }
-    const voiceTranscribe = /^POST \/api\/v1\/assets\/([^/]+)\/transcribe$/.exec(route);
-    if (voiceTranscribe) {
-      if (!d.voice) return json(res, 503, { error: { code: 'voice_unavailable', message: '语音服务未装配' } });
-      const opKey = String(req.headers['idempotency-key'] ?? '');
-      if (!opKey || opKey.length > 256) return json(res, 400, { error: { code: 'missing_idempotency', message: '需要有效 Idempotency-Key' } });
-      const body = (await readJson(req, d)) as { conversation_id?: unknown } | null;
-      if (!body || typeof body.conversation_id !== 'string' || !body.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
-      try { return json(res, 200, await d.voice.transcribe(decodeURIComponent(voiceTranscribe[1]!), body.conversation_id, opKey)); }
-      catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
+    // —— 资产组后半：voice 状态/转写/assets CRUD/references/oido 图——routes/assets.ts（逐字）。
+    if (route === 'GET /api/v1/voice/status'
+      || /^POST \/api\/v1\/assets\/([^/]+)\/transcribe$/.test(route)
+      || route === 'POST /api/v1/assets' || route === 'POST /api/v1/assets/import'
+      || /^GET \/api\/v1\/assets\/([^/]+)$/.test(route)
+      || /^GET \/api\/v1\/assets\/([^/]+)\/content$/.test(route)
+      || /^POST \/api\/v1\/assets\/([^/]+)\/references$/.test(route)
+      || /^DELETE \/api\/v1\/assets\/([^/]+)\/references\/([^/]+)$/.test(route)
+      || /^DELETE \/api\/v1\/assets\/([^/]+)$/.test(route)
+      || /^GET \/api\/v1\/oido\/views\/([^/]+)$/.test(route)) {
+      return await handleAssetsRoutes(req, res, d, route, url);
     }
 
-    // —— EXEC_V1 §03.5（WP3）：媒体资产 API（Idempotency-Key 必带；二进制上传流式限量）——
-    if (route === 'POST /api/v1/assets') {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const purpose = url.searchParams.get('purpose') ?? '';
-      const validPurposes = ['chat_image', 'chat_sticker', 'chat_voice', 'creation_icon', 'creation_work'];
-      if (!validPurposes.includes(purpose)) return json(res, 400, { error: { code: 'bad_purpose', message: `purpose 必须是 ${validPurposes.join('|')}` } });
-      const opKey = String(req.headers['idempotency-key'] ?? '');
-      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const cap = purpose === 'chat_voice' ? d.config.media.max_audio_bytes
-        : purpose === 'chat_image' || purpose === 'chat_sticker' ? d.config.media.max_image_bytes
-          : Math.max(d.config.media.max_code_artifact_bytes, d.config.media.max_video_bytes);
-      try {
-        const bytes = await readRawBody(req, cap);
-        const asset = await d.media.saveBuffer({ bytes, purpose: purpose as IngestPurpose, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' });
-        return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate });
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
-    if (route === 'POST /api/v1/assets/import') {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const opKey = String(req.headers['idempotency-key'] ?? '');
-      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const body = (await readJson(req, d)) as { source_url?: unknown };
-      if (typeof body.source_url !== 'string' || !body.source_url) return json(res, 400, { error: { code: 'bad_source_url', message: 'source_url 必填' } });
-      try {
-        const asset = await d.media.importFromUrl({ sourceUrl: body.source_url, operationId: `import:${opKey}`, createdBy: 'qiaosheng' });
-        return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state });
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
-    const assetGet = /^GET \/api\/v1\/assets\/([^/]+)$/.exec(route);
-    if (assetGet) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      try {
-        const a = d.media.getAsset(decodeURIComponent(assetGet[1]!));
-        return json(res, 200, { ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content` }); // 相对地址；不返回存储绝对路径/源站凭据
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
-    const assetContent = /^GET \/api\/v1\/assets\/([^/]+)\/content$/.exec(route);
-    if (assetContent) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const id = decodeURIComponent(assetContent[1]!);
-      try {
-        const { bytes, mime } = d.media.readContent(id);
-        const range = String(req.headers.range ?? '');
-        const m = /^bytes=(\d*)-(\d*)$/.exec(range);
-        // 语音播放所需的最小 Range 行为（§5.1）：单区间
-        if (m && (m[1] !== '' || m[2] !== '')) {
-          const start = m[1] === '' ? Math.max(0, bytes.length - Number(m[2] || 0)) : Number(m[1]);
-          const end = m[2] === '' ? bytes.length - 1 : Math.min(bytes.length - 1, Number(m[2]));
-          if (start > end || start >= bytes.length) return json(res, 416, { error: { code: 'range_not_satisfiable', message: '区间越界' } });
-          const slice = bytes.subarray(start, end + 1);
-          const isActiveR = mime === 'image/svg+xml' || mime === 'text/html';
-          const activeHeadersR: Record<string, string> = isActiveR ? {
-            'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
-            'Content-Disposition': 'attachment; filename="asset"',
-          } : {};
-          res.writeHead(206, { 'Content-Type': mime, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeadersR });
-          res.end(slice);
-          return;
-        }
-        // AUD-03 P1 修复：active MIME（SVG/HTML）在 content 端点也加隔离——不只靠 preview 路由
-        const isActiveMime = mime === 'image/svg+xml' || mime === 'text/html';
-        const activeHeaders: Record<string, string> = isActiveMime ? {
-          'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
-          'Content-Disposition': 'attachment; filename="asset"',
-        } : {};
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeaders });
-        res.end(bytes);
-        return;
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
-    const refPost = /^POST \/api\/v1\/assets\/([^/]+)\/references$/.exec(route);
-    if (refPost) {
-      // §03.10.2：受控服务接口——调用方身份由宿主配置映射，不接受浏览器自报 owner_service 扩权
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const opKey = String(req.headers['idempotency-key'] ?? '');
-      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const body = (await readJson(req, d)) as { owner_service?: unknown; owner_type?: unknown; owner_id?: unknown; owner_revision?: unknown };
-      // 允许的内容域（WP5 接线前静态注册；浏览器可用但仅限登记引用，不构成授权扩面）
-      const ALLOWED_OWNERS: Record<string, string[]> = { content: ['album_entry', 'post', 'creation', 'future_note'] };
-      const os = String(body.owner_service ?? '');
-      const ot = String(body.owner_type ?? '');
-      if (!(os in ALLOWED_OWNERS) || !ALLOWED_OWNERS[os]!.includes(ot)) return json(res, 403, { error: { code: 'owner_not_allowed', message: '不允许的引用域' } });
-      if (typeof body.owner_id !== 'string' || !body.owner_id) return json(res, 400, { error: { code: 'bad_owner_id', message: 'owner_id 必填' } });
-      try {
-        const r = d.media.registerReference({ assetId: decodeURIComponent(refPost[1]!), ownerService: os, ownerType: ot, ownerId: body.owner_id, ownerRevision: typeof body.owner_revision === 'number' ? body.owner_revision : null, operationId: `ref:${opKey}` });
-        return json(res, 201, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
-    const refDelete = /^DELETE \/api\/v1\/assets\/([^/]+)\/references\/([^/]+)$/.exec(route);
-    if (refDelete) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const opKey = String(req.headers['idempotency-key'] ?? '');
-      if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-      const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
-      if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '解除引用必须带 If-Match: "<revision>"（请刷新后重试）' } });
-      try {
-        const r = d.media.releaseReference({ referenceId: decodeURIComponent(refDelete[2]!), expectedRevision: Number(ifMatch), operationId: `unref:${opKey}` });
-        return json(res, 200, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
-    }
 
-    // —— RE-12c（2026-10-24）：资产删除正式入口——markAssetMissing 的真实产品消费者。
-    // 守卫：仍被任何消息修订附件或 protected/committed 外部引用的资产拒绝删除（多合法引用
-    // 不误删）；通过→state=missing（本地源停止读取），有 oído 导入回执时同事务写远端删除
-    // 意图，物理清理由既有 outbox 重试（delete-retry.ts）收口；pending≠已删。
-    const assetDelete = /^DELETE \/api\/v1\/assets\/([^/]+)$/.exec(route);
-    if (assetDelete) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const id = decodeURIComponent(assetDelete[1]!);
-      try {
-        d.media.getAsset(id); // 不存在=404
-        const refs = d.media.isAssetReferenced(id);
-        if (refs.referenced) {
-          return json(res, 409, { error: { code: 'asset_referenced', message: `资产仍被引用（消息修订附件 ${refs.by_message_revisions} 条、外部引用 ${refs.by_external_refs} 条）；先解除全部引用再删除`, by_message_revisions: refs.by_message_revisions, by_external_refs: refs.by_external_refs } });
-        }
-        d.media.markAssetMissing(id);
-        return json(res, 200, { asset_id: id, state: 'missing', note: '源已标删；远端派生副本（如有）由删除意图重试清理' });
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
+    // —— 建呼/通话请求/邀请组——P07.2 迁 server/routes/dial.ts（逐字）；精确路由表委托。
+    if (route === 'POST /api/v1/calls/dial' || route === 'GET /api/v1/calls/dial/current'
+      || route === 'POST /api/v1/calls' || route === 'GET /api/v1/calls/invites'
+      || /^DELETE \/api\/v1\/calls\/dial\/([^/]+)$/.test(route)
+      || /^DELETE \/api\/v1\/calls\/([^/]+)$/.test(route)
+      || /^POST \/api\/v1\/calls\/invites\/([^/]+)\/(accept|decline)$/.test(route)) {
+      return await handleDialRoutes(req, res, d, route);
     }
-
-    // —— RE-05（2026-10-24）：oído 测量图二进制路由（UI 消费）——读 oido_view 工具落的本地
-    // 派生工件（oido_view_artifacts → media 资产）；无工件 404 如实（不代理远端、不落 base64）。
-    const oidoViewRoute = /^GET \/api\/v1\/oido\/views\/([^/]+)$/.exec(route);
-    if (oidoViewRoute) {
-      if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-      const analysisId = decodeURIComponent(oidoViewRoute[1]!);
-      const rangeParam = String(url.searchParams.get('range_ms') ?? '');
-      const rangeKey = /^\d+,\d+$/.test(rangeParam) ? rangeParam : 'full';
-      const row = d.db.prepare('SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json=?').get(analysisId, rangeKey) as { asset_id: string } | undefined;
-      if (!row) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件（先由 oido_view 生成）' } });
-      try {
-        const { bytes, mime } = d.media.readContent(row.asset_id);
-        res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
-        res.end(bytes);
-        return;
-      } catch (err) {
-        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-        throw err;
-      }
+    // —— token 预估+系统红点组——P07.2 迁 server/routes/system.ts（逐字）；精确路由表委托。
+    if (route === 'POST /api/v1/token-estimates'
+      || route === 'GET /api/v1/system-alerts/summary' || route === 'GET /api/v1/system-alerts'
+      || route === 'POST /api/v1/system-alerts/read') {
+      return await handleSystemRoutes(req, res, d, route, url);
     }
-
-    // —— B2/RE-04（2026-10-24）：正式前端建呼代理（owner 面）——est 后端持 Siren 内部地址，
-    //    短 call token 只回给本次通话的页面（Siren 内部凭据不进前端）；同键立册 voice_calls
-    //    （memory_only 生效）。挂断：DELETE /api/v1/calls/:callId（est 收口；WS 1000 由面板关闭）。
-    // —— 她→他通话请求（2026-10-24 她要的功能：她发起，char可接可拒）——
-    //     pending → accepted（他接：est 建 Siren 通话，连接信息挂请求上供前端取）
-    //            | declined（他拒：他的话=拒绝轮正文自然落会话）
-    //            | cancelled（她关面板/挂断等待）| expired（惰性判定，轮询时收口）
-    const DIAL_DEFAULT_TTL_MS = 45_000;
-    const dialExpireLazy = (now: number): void => {
-      d.db.prepare("UPDATE dial_requests SET state='expired', updated_at=? WHERE state='pending' AND CAST(strftime('%s',created_at) AS INTEGER)*1000 + ttl_ms < ?")
-        .run(new Date().toISOString(), now);
-    };
-    const dialCurrent = (): Record<string, unknown> | null => {
-      dialExpireLazy(Date.now());
-      const row = d.db.prepare("SELECT * FROM dial_requests WHERE conversation_id='primary' AND state IN ('pending','accepted','declined','expired') ORDER BY created_at DESC LIMIT 1").get() as Record<string, unknown> | undefined;
-      if (!row) return null;
-      return {
-        request_id: row['id'], state: row['state'],
-        ...(row['state'] === 'accepted' ? { ws_url: row['ws_url'], token: row['call_token'], call_id: row['call_id'] } : {}),
-      };
-    };
-    if (route === 'POST /api/v1/calls/dial') {
-      // 已有待处理请求：幂等返回（重复点击不重建）
-      const cur = dialCurrent();
-      if (cur && (cur['state'] === 'pending' || cur['state'] === 'accepted')) return json(res, 200, cur);
-      const id = `dial_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-      const nowIso = new Date().toISOString();
-      d.db.prepare("INSERT INTO dial_requests(id,conversation_id,state,ttl_ms,created_at,updated_at) VALUES (?,'primary','pending',?,?,?)").run(id, DIAL_DEFAULT_TTL_MS, nowIso, nowIso);
-      // 告诉char（程序事实轮，同串行链；他闲着就立刻收到）
-      try {
-        d.supervisor.submitProgramFactTurn('primary', 'incoming_dial',
-          `她刚刚发起语音通话请求（等你接听，约 45 秒内有效）。接听：调用 call_control，action=accept_call。拒绝：调用 call_control，action=decline_call，并在同一回复里自然地对她说一句为什么不方便或改约——她会看到你的话，通话不开始。超时不选即过期。`,
-          `dial:${id}`);
-      } catch { /* 事实轮失败=请求保持 pending 到期（如实降级） */ }
-      return json(res, 200, { request_id: id, state: 'pending', note: '正在等char接听' });
-    }
-    if (route === 'GET /api/v1/calls/dial/current') {
-      return json(res, 200, dialCurrent() ?? { state: 'idle' });
-    }
-    const dialCancel = /^DELETE \/api\/v1\/calls\/dial\/([^/]+)$/.exec(route);
-    if (dialCancel) {
-      d.db.prepare("UPDATE dial_requests SET state='cancelled', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), dialCancel[1]!);
-      return json(res, 200, { request_id: dialCancel[1]!, state: 'cancelled' });
-    }
-
-    if (route === 'POST /api/v1/calls') {
-      const rawBody = (await readJson(req, d, 16 * 1024)) as { conversation_id?: unknown } | null;
-      if (typeof rawBody?.conversation_id !== 'string' || !rawBody.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
-      if (!d.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(rawBody.conversation_id)) return json(res, 404, { error: { code: 'not_found', message: '会话不存在' } });
-      const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
-      if (!sirenBase) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置（能力缺口，如实拒绝）' } });
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
-      if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
-      let sirenRes: Response;
-      try {
-        sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: rawBody.conversation_id }), signal: AbortSignal.timeout(5000) });
-      } catch {
-        return json(res, 502, { error: { code: 'siren_unreachable', message: 'Siren 通话服务不可达（文字聊天不受影响）' } });
-      }
-      if (!sirenRes.ok) {
-        const body = await sirenRes.text().catch(() => '');
-        return json(res, 502, { error: { code: 'siren_call_failed', message: `Siren 建呼失败（${sirenRes.status}）：${body.slice(0, 120)}` } });
-      }
-      const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string; expires_at?: string };
-      if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
-        return json(res, 502, { error: { code: 'siren_contract_invalid', message: 'Siren 建呼回执合同不符' } });
-      }
-      d.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)")
-        .run(created.call_id, rawBody.conversation_id, new Date().toISOString());
-      return json(res, 200, { call_id: created.call_id, ws_url: created.ws_url, token: created.token, ...(typeof created.expires_at === 'string' ? { expires_at: created.expires_at } : {}), memory_only: true });
-    }
-    const estCallEnd = /^DELETE \/api\/v1\/calls\/([^/]+)$/.exec(route);
-    if (estCallEnd) {
-      const callId = decodeURIComponent(estCallEnd[1]!);
-      const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
-      if (!row) return json(res, 404, { error: { code: 'not_found', message: '通话不存在' } });
-      if (row.state === 'active') d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
-      return json(res, 200, { call_id: callId, state: 'ended' });
-    }
-
-    // —— 协议①（2026-10-24）：来电邀请前端面（owner）——est 代理 Siren（内部凭据不进前端）。
-    //    来电横幅/未接卡片的数据源；接听→前端再走既有 /api/v1/calls 建通话；拒接直接落终态。
-    if (route === 'GET /api/v1/calls/invites') {
-      if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
-      try {
-        const list = await d.sirenCall.listInvites('primary');
-        return json(res, 200, list ?? { active: null, recent: [] });
-      } catch (err) {
-        return json(res, 502, { error: { code: 'siren_invite_query_failed', message: String((err as Error).message ?? err).slice(0, 120) } });
-      }
-    }
-    const inviteAction = /^POST \/api\/v1\/calls\/invites\/([^/]+)\/(accept|decline)$/.exec(route);
-    if (inviteAction) {
-      if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
-      try {
-        const out = await d.sirenCall.transitionInvite(decodeURIComponent(inviteAction[1]!), inviteAction[2] === 'accept' ? 'accept' : 'decline');
-        // 拒接留言调度①（2026-10-24）：她拒接 → char反应轮（他说一两句落本会话；
-        // 程序事实注入，不伪造她的话；幂等——重复拒接/重试不重建）
-        if (inviteAction[2] === 'decline' && (out?.['state'] as string | undefined) === 'declined') {
-          try {
-            const hm = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-            d.supervisor.submitProgramFactTurn('primary', 'invite_declined',
-              `她于 ${hm} 拒接了你发起的来电（这是她自己的选择，不是故障）。`,
-              `invite:${inviteAction[1]}:declined`);
-          } catch { /* 反应轮失败不拖垮拒接响应（如实降级：他不说这句） */ }
-        }
-        return json(res, 200, out ?? {});
-      } catch (err) {
-        return json(res, 502, { error: { code: 'siren_invite_transition_failed', message: String((err as Error).message ?? err).slice(0, 120) } });
-      }
-    }
-
-    // —— EXEC_V1 §05.9：token 预估（语义只读：无幂等账本/If-Match；不写 message/turn/rotate）——
-    if (route === 'POST /api/v1/token-estimates') {
-      const rawBody = await readJson(req, d, d.config.token_estimates.max_body_bytes);
-      const body = rawBody as { conversation_id?: unknown; client_draft_revision?: unknown; content?: unknown; attachments?: unknown; include_request_estimate?: unknown };
-      if (typeof body.conversation_id !== 'string' || !body.conversation_id) return json(res, 400, { error: { code: 'bad_conversation', message: 'conversation_id 必填' } });
-      if (typeof body.content !== 'string') return json(res, 400, { error: { code: 'bad_content', message: 'content 必须是字符串' } });
-      const draftRevision = typeof body.client_draft_revision === 'number' ? body.client_draft_revision : typeof body.client_draft_revision === 'string' ? body.client_draft_revision : null;
-      if (draftRevision === null) return json(res, 400, { error: { code: 'bad_draft_revision', message: 'client_draft_revision 必填（防慢响应覆盖新草稿）' } });
-      // 附件元数据（§9：媒体预览只读取 est 已有资产元数据）——asset_id 由服务端查库取真实
-      // mime/byte_size；kind 按资产实际类型推导，不信客户端自报（图片规则未核→未知，不猜）
-      const attachments: AttachmentEstimateMeta[] = [];
-      if (Array.isArray(body.attachments)) {
-        for (const a of body.attachments as Array<Record<string, unknown>>) {
-          if (typeof a?.asset_id === 'string' && a.asset_id) {
-            if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-            try {
-              const asset = d.media.getAsset(a.asset_id);
-              const kind = asset.mime_type.startsWith('image/') && asset.ingest_purpose === 'chat_sticker' ? 'image'
-                : asset.mime_type.startsWith('image/') ? 'image'
-                  : asset.mime_type.startsWith('audio/') ? 'audio'
-                    : asset.mime_type.startsWith('video/') ? 'video'
-                      : 'code_artifact';
-              attachments.push({ kind, fingerprint: asset.content_sha256, bytes: asset.byte_size, known_tokens: null });
-            } catch (err) {
-              if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-              throw err;
-            }
-            continue;
-          }
-          const kind = a?.kind;
-          if (kind !== 'image' && kind !== 'audio' && kind !== 'video' && kind !== 'code_artifact') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].kind 非法' } });
-          if (typeof a.fingerprint !== 'string' || !a.fingerprint) return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].fingerprint 必填' } });
-          const known = typeof a.known_tokens === 'number' && Number.isFinite(a.known_tokens) && a.known_tokens >= 0 ? a.known_tokens : null;
-          attachments.push({ kind, fingerprint: a.fingerprint, bytes: typeof a.bytes === 'number' ? a.bytes : null, known_tokens: known });
-        }
-      }
-      const ec = estimateContextFor(d);
-      // 请求投影（§8.3/§9）：当前活动窗最近一次真实发送 payload 的序列化粗估（含系统/工具/历史），
-      // 加本条草稿；无法无副作用重建（无活动窗=等人工选集 / 窗内尚无已发送投影）→ request 不可用，
-      // message 照给——绝不只把 messages 正文相加冒充完整请求，也不替用户零选。
-      let requestProjection: Parameters<typeof estimateTokens>[0]['requestProjection'] = null;
-      if (body.include_request_estimate === true) {
-        const win = d.windows.activeWindow(body.conversation_id);
-        if (!win) {
-          requestProjection = { tokens: null, unavailable_reason: 'pending_selection' };
-        } else {
-          const winRev = (d.db.prepare('SELECT revision FROM windows WHERE id = ?').get(win.id) as { revision: number } | undefined)?.revision ?? null;
-          const row = d.db.prepare('SELECT payload_json, id FROM provider_requests WHERE window_id = ? AND sent_at IS NOT NULL AND payload_json IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(win.id) as { payload_json: string; id: string } | undefined;
-          if (!row) {
-            requestProjection = { tokens: null, unavailable_reason: 'no_sent_projection', window_id: win.id, window_revision: winRev };
-          } else {
-            const payloadTokens = Math.ceil([...row.payload_json].length / Math.max(ec.charsPerToken, 0.1));
-            const draft = estimateTokens({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments, outputCapTokens: ec.outputCap });
-            requestProjection = {
-              tokens: draft.message_total_tokens === null ? null : payloadTokens + draft.message_total_tokens, // 附件未知 → 请求预估未知，不猜
-              unavailable_reason: draft.message_total_tokens === null ? 'unavailable' : null,
-              window_id: win.id, window_revision: winRev,
-              projection_version: 'last_sent_payload_v1', payload_projection_hash: sha256Hex(row.id),
-            };
-          }
-        }
-      }
-      const estimate = estimateTokens({ model: ec.model, charsPerToken: ec.charsPerToken, content: body.content, attachments, outputCapTokens: ec.outputCap, requestProjection });
-      const modelSnapshotId = sha256Hex(`${ec.model ?? 'null'}|${ec.charsPerToken}|${ESTIMATOR_REVISION}`);
-      const attachmentFingerprint = attachments.length === 0 ? null : sha256Hex(attachments.map((a) => `${a.kind}:${a.fingerprint}:${a.known_tokens ?? 'u'}`).join('|'));
-      return json(res, 200, {
-        client_draft_revision: draftRevision,
-        model_snapshot_id: modelSnapshotId,
-        window_id: estimate.source_window_id,
-        window_revision: estimate.source_window_revision,
-        attachment_fingerprint: attachmentFingerprint,
-        chars_per_token: ec.charsPerToken, // 客户端本地粗估复用同一系数（§7.3 分段气泡显示）
-        projection_version: estimate.projection_version,
-        estimate,
-        stale_after_state_change: true, // 前端只应用同时匹配 draft_revision/model_snapshot/附件指纹的响应
-      });
-    }
-
-    // —— ESTOMAGO_CHAT_EXEC_V1 §05（WP1）：系统异常红点 ——
-    // 快照/summary 只读；read 单调幂等。告警产生与恢复是内部服务接口，
-    // 不向浏览器开放任意 code 创建或自填"已修复"（§5 末段）。
-    if (route === 'GET /api/v1/system-alerts/summary') {
-      if (!d.alerts) return json(res, 200, { unread_anomaly_count: 0, open_count: 0, highest_open_severity: null, snapshot_sequence: d.events.maxSequence(), service: 'not_configured' });
-      return json(res, 200, d.alerts.summary(d.alerts.uiActorId));
-    }
-    if (route === 'GET /api/v1/system-alerts') {
-      if (!d.alerts) return json(res, 200, { items: [], next_cursor: null, has_more: false, unread_anomaly_count: 0, open_count: 0, snapshot_sequence: d.events.maxSequence(), service: 'not_configured' });
-      const lifecycle = url.searchParams.get('lifecycle');
-      return json(res, 200, d.alerts.list({
-        actorId: d.alerts.uiActorId,
-        lifecycle: lifecycle === 'open' || lifecycle === 'resolved' ? lifecycle : 'all',
-        unreadOnly: url.searchParams.get('unread_only') === 'true',
-        limit: Number(url.searchParams.get('limit')) || undefined,
-        cursor: url.searchParams.get('cursor'),
-      }));
-    }
-    if (route === 'POST /api/v1/system-alerts/read') {
-      if (!d.alerts) return json(res, 200, { accepted: 0, service: 'not_configured' });
-      const body = (await readJson(req, d)) as { items?: Array<{ alert_id?: unknown; seen_event_sequence?: unknown }> };
-      const items = Array.isArray(body.items) ? body.items : [];
-      if (items.length > POLICY_CONSTANTS.system_alerts.read_batch_max) {
-        return json(res, 400, { error: { code: 'read_batch_too_large', message: `单次最多 ${POLICY_CONSTANTS.system_alerts.read_batch_max} 条` } });
-      }
-      const accepted = d.alerts.markRead(d.alerts.uiActorId, items
-        .map((it) => ({ alert_id: typeof it?.alert_id === 'string' ? it.alert_id : '', seen_event_sequence: Number(it?.seen_event_sequence) }))
-        .filter((it) => it.alert_id !== '' && Number.isSafeInteger(it.seen_event_sequence) && it.seen_event_sequence >= 0));
-      return json(res, 200, accepted);
-    }
-
     const usageTurn = /^GET \/api\/v1\/turns\/([^/]+)\/usage$/.exec(route);    if (usageTurn) {
       return json(res, 200, d.usage.summaryForTurn(decodeURIComponent(usageTurn[1]!)));
     }
@@ -887,16 +492,6 @@ function serveStatic(res: ServerResponse, pathname: string): void {
 
 
 /** §03.5.1：二进制上传不走 readJson——流式限量读原始字节。 */
-async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > maxBytes) throw new MediaError('ASSET_TOO_LARGE', 413, `超过上限 ${maxBytes} 字节`);
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
-}
 
 
 /** WP3（2026-10-08）：选集条目解析——只取 message_id/revision/content_hash
@@ -1173,6 +768,9 @@ import { handleOidoUiRoutes } from './routes/oido-ui.ts';
 import { handleRuntimeSettingsRoutes } from './routes/runtime-settings.ts';
 import { handleContextSelectionRoutes } from './routes/context-selection.ts';
 import { handleCalendarRoutes } from './routes/calendar.ts';
+import { handleAssetsRoutes } from './routes/assets.ts';
+import { handleDialRoutes } from './routes/dial.ts';
+import { handleSystemRoutes } from './routes/system.ts';
 import { json, readJson, ClientBodyError, estimateContextFor } from './http-leaf.ts';
 export { handleVoiceCallLifecycle };
 void handleVoiceCallLifecycle;
