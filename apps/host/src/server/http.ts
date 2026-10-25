@@ -193,7 +193,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       || /^POST \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)\/retry$/.test(route)
       || /^PUT \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.test(route)
       || /^GET \/api\/v1\/conversations\/([^/]+)\/snapshot$/.test(route)
-      || /^GET \/api\/v1\/conversations\/([^/]+)\/turns\/([^/]+)\/memories(?:\/(.+))?$/.test(route)) {
+      || /^GET \/api\/v1\/conversations\/([^/]+)\/turns\/([^/]+)\/memories(?:\/([^/]+))?$/.test(route)) {
       return await handleConversationRoutes(req, res, d, route, url);
     }
 

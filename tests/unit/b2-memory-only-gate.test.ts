@@ -60,12 +60,16 @@ test('A04 define/invoke/direct execution all gated during call; recovery after h
   try {
     f.startCall();
     const ctx = f.ctx();
-    // define 非记忆工具：define 本身可过（延迟发现机制），但定义后 invoke 被拒；直接执行同样被拒
+    // D39（审计 B1 修复后）：define/invoke/直接执行同一通话资格门——非记忆工具 define 本身拒绝
     const def = await f.tools.execute('tool_define', { name: 'wishstar_list_offers' }, ctx);
-    assert.equal(def.ok, true); // 目录机制开放；执行边界才是能力门
-    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_list_offers', definition_id: (def.output as { definition_id: string }).definition_id, arguments: {} }, ctx);
+    assert.equal(def.ok, false, '非记忆工具 define 在通话内必须拒绝（定义不得进入下一模型请求）');
+    assert.equal((def.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');
+    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_list_offers', definition_id: 'synthetic', arguments: {} }, ctx);
     assert.equal(inv.ok, false);
     assert.equal((inv.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');
+    // 记忆工具 define 在通话内保留（memory_read_full 等仍可发现）
+    const memDef = await f.tools.execute('tool_define', { name: 'conversation_read' }, ctx);
+    assert.equal(memDef.ok, true, '记忆工具 define 不受通话门');
     const direct = await f.tools.execute('media_search', { query: 'x' }, ctx);
     assert.equal(direct.ok, false);
     assert.equal((direct.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');

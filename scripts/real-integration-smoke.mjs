@@ -70,6 +70,7 @@ const REDACT = (o) => JSON.parse(JSON.stringify(o, (k, v) => /token|credential|k
     const res = await adapter.analyze({ assetId, waitMs: 30_000 });
     analysis = 'analysis_id' in res ? res : null;
   } catch (err) { analyzeErr = String(err.message ?? err).slice(0, 160); }
+  const oidoOk = caps?.ok === true && Boolean(ingest?.audioId) && analysis != null && analyzeErr === null;
   record('oido', {
     summary: {
       capabilities_ok: caps?.ok === true,
@@ -81,7 +82,8 @@ const REDACT = (o) => JSON.parse(JSON.stringify(o, (k, v) => /token|credential|k
       latency_ms: Date.now() - t0,
     },
   });
-  if (caps?.ok !== true) process.exitCode = 1;
+  // 审计 B3 修复（2026-10-25）：ingest/analyze 任一失败即 FAIL——不再只按 capabilities 判成功
+  if (!oidoOk) process.exitCode = 1;
 }
 
 // ③ embedding worker（无状态计算：1 图 + 1 文）

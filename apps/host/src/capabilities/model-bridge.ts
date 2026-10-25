@@ -145,6 +145,12 @@ export class ModelToolBridge {
     }
     const spec = set.catalog.find(t=>t.function.name===args.name);
     if (!spec) return deny('TOOL_NOT_IN_ALLOWLIST');
+    // D39（审计 B1 修复，2026-10-25）：catalog/define/invoke/直接执行四处同一通话资格判定——
+    // 通话内非记忆业务工具的 define 也返回 TOOL_UNAVAILABLE_IN_CALL（旧实现只在 invoke/直接执行设门，
+    // 定义本体可完整进入下一模型请求）；already_available 回执同门。
+    if (name === 'tool_define' && this.voiceCallActive(ctx.roomId) && ctx.turnId && !this.isMemoryOnlyAllowed(spec.function.name)) {
+      return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
+    }
     if (name === 'tool_define') {
       this.admitBackgroundTool(name, ctx);
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};

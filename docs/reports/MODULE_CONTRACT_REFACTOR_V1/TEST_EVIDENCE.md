@@ -53,7 +53,7 @@ ESTOMAGO_HOME=$(mktemp -d /tmp/estomago-test-home.XXXXXX) /opt/homebrew/bin/node
 
 - mode=live，model=deepseek-chat，endpoint=https://api.deepseek.com（DS 官方直连，不经 OpenRouter；OR key 全程未读）。
 - 三步全 completed：chat 基线 / 工具往返（memory_hold 经 registry→executor→memory 域真实执行，effects=[hold:committed]）/ append-only 续轮。
-- 不变量：holdVerified=true、bookmarkAdvanced=true、toolRound2=true、cacheObsRequests=5；provider_requests 5 发 5 达。
+- 不变量：holdVerified=true、bookmarkAdvanced=true、toolRound2=true、cacheObsRequests=5（5 次缓存**观测**，其中 4 次正读数——审计 B3 更正：该计数含 0，不得表述为 5 次命中）；provider_requests 5 发 5 达。- 范围澄清（审计 B3 更正）：ds-smoke 的 Mariposa 为 **fake transport 回执**——hold/书签验证的是 est 侧真实工具往返与账本，未写真实记忆库；DS 模型为真实付费调用。
 - 证据：`evidence/ds-smoke-live-20261025.json`（key 不落任何文件/日志——已检查产物）。
 - 前置修复：ds-smoke fake 模型参数补必填 creation_mode（脚本过时——基线 4dfa709 即必填；非产品回归）。dry-run 先行通过后才跑 live。
 
@@ -69,7 +69,21 @@ ESTOMAGO_HOME=$(mktemp -d /tmp/estomago-test-home.XXXXXX) /opt/homebrew/bin/node
 - oído ASR（127.0.0.1:8791）：真实合成语音（say+afconvert，126KB WAV）ingest→analyze：state=partial、1 观测——经 OidoAdapter，1133ms。（先前的 8 字节假头只能过合同门、真分析后端拒——换真语音后通过。）
 - embedding worker（127.0.0.1:8792）：仓内真实 PNG+真实中文文本→embeddinggemma-2 双模态 768 维向量——经 MediaEmbedWorkerClient，362ms。（截断假 PNG 会被真实后端断连——教训已记。）
 - Siren（127.0.0.1:8790）：ECONNREFUSED——服务当前未运行；只读探测、绝不建呼（防真实电话）。如实登记未验证。
+- 范围澄清（审计 B3 更正）：real-integration-smoke 经 est 的 client/adapter 层直调真实服务——证明适配层合同与真实后端兼容；**不是** Host→Registry→正式消息授权的全链验证（全链离线合同由 188 套测试覆盖）。
 - 凭据纪律：OR key 在 mariposa.env 中存在但运行前显式 unset，全程未用；所有 token 经 env 名间接引用，证据 JSON 已扫描零泄露。
+
+## 双审计结果与修复（2026-10-25 第四轮）
+
+两份独立审计（裁决原文见 review-findings/）：
+- **ZCode 会话审计**：Q1-Q10 全 PASS、零 A 级；条件=删两处 `wireOidoCapabilitiesForTest` 死引用（已删）。
+- **Codex 审计**：Q2-Q5/Q7 PASS；**Q1/Q6 FAIL**（A1 路由回归、B1 define 门缺失）+ B2 证据空洞 + B3 判据过松；裁决"先修再合并"。
+
+四项修复（全部落测试）：
+- **A1**：conversations 委托正则 `(.+)`→`([^/]+)`——多段子路径（memories/a/b）回归 404 完整响应。回归=tests/integration/audit-router-and-call-define.test.ts（16 条未列出路由全 404 实测）。
+- **B1**：model-bridge tool_define 分支补通话 memory_only 门（D39 四处同政策补齐；旧版仅 invoke/直接执行设门）。b2-memory-only-gate 期望改为"非记忆 define 拒绝 TOOL_UNAVAILABLE_IN_CALL、记忆 define 保留"；回归=audit-router-and-call-define 第二用例（真实 HTTP+Supervisor，定义结果进入下一模型请求且为拒绝码）。
+- **B2**：codex-voice-preparation-disconnect 换入 Codex 四场景修正版（放行迟到响应、派发/完成分开计数、查 oido_ingest_receipts、补"分析派发中断线"）——生产取消链经独立复现本就正确，修的是仓内测试的证据空洞。
+- **B3**：real-integration-smoke 成功判据收紧（ingest/analyze 任一失败即 FAIL）+ 本文件三处措辞更正（见上）。
+- 顺带：check_boundaries 余 1 项 supervisor→bootstrap-pages 边界违规（Codex C 记录，迁移期已登记项）；bindMessageLifecycle activity 参数未消费=活动锚点实际走 MessageService 发布事务（行为正确，报告此前描述已在 GLM_DELIVERY 注明）。
 
 ## 覆盖与限制（如实）
 

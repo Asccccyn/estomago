@@ -1,3 +1,6 @@
+// 审计 B2 修复（2026-10-25，Codex 独立复审）：取代旧版两场景测试——旧版悬挂 fake（releaseAnalyse
+// 从不释放、计数在等待之后递增）导致"analyses:0"只是完成数而非派发数，且未查 oido_ingest_receipts。
+// 本版：放行全部迟到响应、分别记录派发/完成、查询真实回执，并补"分析派发中断线"第四场景。
 // 一次性只读审计复现：真实 Host/HTTP，只有外部 Siren/oído/DS transport 为 fake。
 // 场景：用户正常电话输入携带原声，在原声取回过程中断开连接。
 // 前置经真实 HTTP 入口建立；不直接写业务表、不替换 handler/registry/supervisor。
@@ -16,7 +19,7 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 
 
-async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-after-ingest') {
+async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-after-ingest' | 'disconnect-before-analysis') {
   const root = tempRoot('codex-phone-prepare-');
   writeApprovedIdentity(root);
   const originalFetch = globalThis.fetch;
@@ -37,6 +40,11 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
   const analyseEntered = new Promise<void>(resolve => { enterAnalyse = resolve; });
   let releaseAnalyse!: () => void;
   const analyseRelease = new Promise<void>(resolve => { releaseAnalyse = resolve; });
+  let analysesDispatched = 0;
+  let enterTranscript!: () => void;
+  const transcriptEntered = new Promise<void>(resolve => { enterTranscript = resolve; });
+  let releaseTranscript!: () => void;
+  const transcriptRelease = new Promise<void>(resolve => { releaseTranscript = resolve; });
   let audioSignal: AbortSignal | null | undefined;
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -50,7 +58,13 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
       ingests++;
       return Response.json({ audio_id: 'aud_audit', deduplicated: false });
     }
+    if (url === 'http://127.0.0.1:47902/v1/audio/aud_audit/transcript') {
+      enterTranscript();
+      if (scenario === 'disconnect-before-analysis') await transcriptRelease;
+      return Response.json({ stored: true });
+    }
     if (url === 'http://127.0.0.1:47902/v1/analyses' && init?.method === 'POST') {
+      analysesDispatched++;
       enterAnalyse();
       if (holdAnalyse) await analyseRelease;
       if (init.signal?.aborted) throw new Error('ABORTED_DURING_ANALYSE'); // 挂起中被取消=不完成
@@ -94,11 +108,16 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
     await audioEntered;
     if (scenario !== 'control') {
       if (scenario === 'disconnect-after-ingest') await analyseEntered; // ingest 已成功（fake 立即返回），analyze 已挂起
+      if (scenario === 'disconnect-before-analysis') await transcriptEntered;
       req.destroy();
       await responseClosed;
     }
     const abortedAtRelease = audioSignal?.aborted ?? false;
     releaseAudio();
+    releaseTranscript();
+    releaseAnalyse();
+    // 放行全部迟到响应，等待真实 handler 的 Promise 链继续处理，不能靠悬挂 fake 得到零计数。
+    await new Promise<void>(resolve => setImmediate(resolve));
     // The provider call, if wrongly enqueued, terminates through the real event stream.
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
@@ -109,7 +128,8 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
     await host.supervisor.waitIdle();
     if (scenario === 'control') await clientDone;
     const result = {
-      scenario, abortedAtRelease, ingests, analyses, modelRequests,
+      scenario, abortedAtRelease, ingests, analyses, analysesDispatched, modelRequests,
+      receipts: host.db.prepare('SELECT est_asset_id,oido_audio_id FROM oido_ingest_receipts').all(),
       messages: host.db.prepare('SELECT speaker, COUNT(*) AS count FROM messages GROUP BY speaker ORDER BY speaker').all(),
       stream: host.db.prepare('SELECT state FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get('audit-call', 'audit-turn'),
       turns: host.db.prepare('SELECT state FROM turns').all(),
@@ -132,6 +152,8 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
     return result;
   } finally {
     releaseAudio();
+    releaseTranscript();
+    releaseAnalyse();
     if (host) await host.stop();
     globalThis.fetch = originalFetch;
     for (const key of ['AUDIT_DS_TOKEN', 'AUDIT_SIREN_TOKEN', 'AUDIT_OIDO_TOKEN', 'ESTOMAGO_VOICE_INGRESS_TOKEN']) delete process.env[key];
@@ -163,6 +185,30 @@ test('disconnect after successful ingest: receipt retained, analyze/model never 
   const result = await runPhone('disconnect-after-ingest');
   assert.equal(result.ingests, 1, 'ingest 已成功（receipt 保留）');
   assert.equal(result.analyses, 0, 'analyze 被取消不得完成');
+  assert.equal(result.analysesDispatched, 1, '这次分析在断线前已经派发，不得把完成数冒充派发数');
+  assert.equal(result.receipts.length, 1, '数据库确实保留导入回执');
+  assert.equal(result.receipts[0].oido_audio_id, 'aud_audit');
   assert.equal(result.modelRequests, 0, 'model request started after actual HTTP disconnect');
   assert.equal(result.stream?.state, 'cancelled');
 });
+
+test('disconnect after ingest before analysis: late receipt persists and no later analysis dispatches', { timeout: 10000 }, async () => {
+  const result = await runPhone('disconnect-before-analysis');
+  assert.equal(result.ingests, 1);
+  assert.equal(result.receipts.length, 1);
+  assert.equal(result.receipts[0].oido_audio_id, 'aud_audit');
+  assert.equal(result.analysesDispatched, 0);
+  assert.equal(result.modelRequests, 0);
+  assert.deepEqual(result.turns, []);
+  assert.deepEqual(result.messages, []);
+  assert.equal(result.stream?.state, 'cancelled');
+});
+// 一次性只读审计复现：真实 Host/HTTP，只有外部 Siren/oído/DS transport 为 fake。
+// 场景：用户正常电话输入携带原声，在原声取回过程中断开连接。
+// 前置经真实 HTTP 入口建立；不直接写业务表、不替换 handler/registry/supervisor。
+// P08 批次1（审计修复复现迁入正式目录，源=一次性审计复现 codex-voice-preparation-disconnect）：
+// 真实 Host/HTTP/数据库，只有外部 Siren/oído/DS transport 为 fake。
+// 场景①control：正常电话输入（音频→ingest→analyze→模型）各一次。
+// 场景②disconnect-audio：取音频期间真实 socket 断开——修复后：父取消贯穿 fetch、ingest/analyze/model 不启动、
+//   接纳记录 cancelled、同键重试返回原终态。
+// 场景③disconnect-after-ingest：ingest 已成功后断开——receipt 保留（副作用如实保留），analyze/model 不完成。

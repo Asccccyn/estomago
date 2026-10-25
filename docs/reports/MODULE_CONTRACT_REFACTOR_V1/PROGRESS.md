@@ -43,4 +43,5 @@
 | P07第四批 | e485e12 | runtime-settings+context-selection(选集/运行态/决议/时间/记录)+calendar 迁 routes/ | 定向 3/3+集成 5/5 exit 0 | 7dfdcb9 | DONE |
 | P07第五+六批 | 7dfdcb9 | assets 组+建呼/邀请组+token预估/系统红点组迁 routes/（提取拍平事故两次，从 HEAD 重提修复） | 定向 8/8 exit 0 | e3f6492 | DONE |
 | P07第七批收官 | e3f6492 | events SSE/turn 组+voice-stream 迁 routes/；http.ts 1874→364 行 | 定向 9/9；全量 188/188 exit 0 | 0ad841a | P07 全部完成 |
-| 真实集成第二轮 | 0ad841a | real-integration-smoke.mjs（本机 loopback 真服务；say 合成真语音/仓内真 PNG） | REAL_SMOKE_PASS exit 0（Mariposa/oído ASR/embedding 真；Siren 服务未运行如实记） | 本笔 | LIVE-01 扩充 ||
+| 真实集成第二轮 | 0ad841a | real-integration-smoke.mjs（本机 loopback 真服务；say 合成真语音/仓内真 PNG） | REAL_SMOKE_PASS exit 0（Mariposa/oído ASR/embedding 真；Siren 服务未运行如实记） | 本笔 | LIVE-01 扩充 |
+| 双审计+修复 | 6587029 | ZCode 全过（条件：删死引用）+Codex A1/B1/B2/B3；四项修复+两个回归测试迁入 | audit-router-and-call-define+b2+电话四场景全过；全量见 TEST_EVIDENCE | 本笔 | 待用户终裁合并 ||
