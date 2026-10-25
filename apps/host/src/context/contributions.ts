@@ -31,7 +31,7 @@ export interface WindowOpenContributor {
   snapshot(windowId: string, signal?: AbortSignal): Promise<string | null>;
 }
 
-// P09 防回退：supervisor 只经本叶引用贡献相关类型（不 import 业务 client/service）。
+// P09 防回退 + S13：supervisor 只经本叶引用贡献相关类型（不 import 业务 client/service）。
+// BootstrapPort/Augment* 为结构叶类型（不依赖业务实现）；传输投影函数移 context/contribution-transport.ts（S13 裁定）。
 export type BootstrapPort = Pick<import('../integrations/mariposa/client.ts').MariposaClient, 'bootstrapGet' | 'bootstrapNext' | 'bootstrapValidate'>;
 export type { AugmentInput, AugmentResult } from '../memory-surfacing/service.ts';
-export { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';

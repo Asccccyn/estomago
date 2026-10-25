@@ -1,6 +1,6 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
-import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contributions.ts';
+import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
