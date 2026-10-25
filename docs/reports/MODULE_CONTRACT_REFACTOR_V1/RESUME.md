@@ -2,7 +2,7 @@
 
 当前工作树/分支：`/Users/owner/Projects/devspace-workspace/worktrees/estomago-module-contract-v1`，分支 `refactor/module-contract-v1`
 当前HEAD/未提交改动：P01 已完成并全部提交（P01 收尾报告为本笔提交内容）；工作树应干净
-当前状态（2026-10-25 审计指令 7 批次后冻结候选）：代码冻结 HEAD=b453cc9f357daa067dc07e76caa33c0622b346ae（本文件所在提交为最终交付提交，只含文档/证据）。全量回归 188/188 文件通过（退出码 0，命令见 TEST_EVIDENCE）；29/29 验收项 PASS（OFFLINE_CONTRACT）；A12 内排队取消与准备阶段断线分开陈述。7 批次内容见 GLM_DELIVERY；runtime/host-tools.ts 与 SurfacingMessageHooks 兼容层已删除；P07 剩余域路由分组仍待后续（BLOCKERS 如实登记）。独立复核（GLM5.3+Astra 同一冻结提交）为唯一下一步；实施者不自行签署独立通过。
+当前状态（2026-10-25 第二轮交付）：第一轮 7 批次冻结=49bd961（代码 b453cc9）；第二轮=6df168b（P07 第二批 content+background）→80fd59f（P07 第三批 conversations+oido-ui，全量 188/188 exit 0）→本笔（DS 真实付费冒烟 SMOKE_PASS——LIVE-01 部分执行，deepseek-chat 直连 DS 官方端点，OR key 未用；ds-smoke 脚本补必填 creation_mode）。P07 剩余组（events/runtime-settings/calendar/assets/dial/token-estimates/system-alerts/turns/voice-status）仍留 http.ts，BLOCKERS 如实登记。独立复核（GLM5.3+Astra）从最新 HEAD 起按 TEST_EVIDENCE 复跑。
 已做验证与证据路径：typecheck 每步 exit 0；双 golden 恒定；A01=PASS（oido-get-registry-host-wiring）；MIGRATION_MATRIX 已填 oido_get 行+重导出登记；TEST_INVENTORY 增 capability-registry 等新测试
 下一步应读的文件和符号：`workcards/P07_HTTP装配与模块启停.md`；锚点 server/http.ts（按域提取处理器）、app-context 启停点、modules/oido/lifecycle（start/stop 已接）
 禁止覆盖的他人改动：源树 `/Users/owner/Projects/devspace-workspace/worktrees/estomago-integration-20261024` 及主 checkout 只读；其 dist 未提交产物不得清理或卷入本分支

@@ -36,4 +36,7 @@
 | 审计批次4 | 21f2725 | 身份只走 ctx（__tool_call_id 全删）+ModelToolBridge 提取+host-tools.ts git rm（19 消费者迁移） | typecheck 0；消费者 14 文件网 exit 0 | 72416b6/2dacbc9/47c8c17 | DONE |
 | 审计批次5 | 2dacbc9 | MessageLifecycleHooks 通用化（兼容层删+形状守卫）+server/http-leaf.ts+voice-call 路由同向叶 | surfacing 6 文件 52 用例+dial exit 0 | 47c8c17 | DONE |
 | 审计批次6 | 47c8c17 | 演练A26/A03 保持+演练A27 补齐（absent 全链+memory 公共只读消费者） | probe drill exit 0 | 036b401 | DONE |
-| 审计批次7 | 036b401 | 统一回归 18 个测试装配过时修复（无生产行为改动）→全量 188/188 exit 0；报告同步+validate_delivery | 188/188 exit 0（见 TEST_EVIDENCE） | b453cc9+本笔 | 实施者侧交付完毕；独立复核为下一步 |
+| 审计批次7 | 036b401 | 统一回归 18 个测试装配过时修复（无生产行为改动）→全量 188/188 exit 0；报告同步+validate_delivery | 188/188 exit 0（见 TEST_EVIDENCE） | b453cc9+本笔 | 实施者侧交付完毕；独立复核为下一步 
+| P07第二批 | 49bd961 | content 薄代理+background 组迁 routes/（精确路由表委托） | 定向 4/4 exit 0 | 6df168b | DONE |
+| P07第三批 | 6df168b | conversations+oido-ui 组迁 routes/；estimateContextFor 下沉 leaf | 定向 7/7+全量 188/188 exit 0 | 80fd59f | DONE（余组登记 BLOCKERS） |
+| DS真实冒烟 | 80fd59f | ds-smoke fake 补必填 creation_mode（脚本过时）；dry-run 后 live | SMOKE_PASS exit 0（hold committed/书签/续轮/缓存） | 本笔 | LIVE-01 部分执行 ||

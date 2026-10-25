@@ -40,6 +40,23 @@ ESTOMAGO_HOME=$(mktemp -d /tmp/estomago-test-home.XXXXXX) /opt/homebrew/bin/node
 - 批次 6（演练收尾）：probe-module-extension-drill 演练A + 演练A27（absent bound:false 进 tool 消息、memory 公共只读消费者恰好一次、正式发布落库）通过（036b401）。
 - 批次 7 前清扫：统一回归暴露 18 个测试装配过时（目录来源/lifecycle 形状/身份 ctx/adapter 接线），全部修复，无生产行为改动（b453cc9）。
 
+## P07 后续批次（2026-10-25 第二轮，用户继续指令后）
+
+- 第二批（6df168b）：content 薄代理+后台 settings/tasks/runs 组迁 server/routes/（content.ts/background.ts；精确路由表委托，未列出子路径照走链尾 404，不被前缀抢占）。
+- 第三批（80fd59f）：会话/消息/浮现视图组（conversations.ts 逐字）+深听 UI 组（oido-ui.ts）迁 routes/；estimateContextFor 下沉 http-leaf（结构化参数，leaf 零反向依赖）。
+- 定向 7/7（message-history/snapshot/mock-turn/records-api/aud-ops/wp4-http/wp5-content）；全量回归 188/188 exit 0。
+- 仍留 http.ts：events SSE、runtime-settings、time/calendar、assets 上传/导入、dial/invites、token-estimates、system-alerts、turns、voice/status+transcribe——P07.2 未尽部分如实登记（BLOCKERS）。
+
+## 真实付费冒烟（用户 2026-10-25 授权 DS key；OR key 未使用）
+
+命令：`ESTOMAGO_DS_SMOKE=1 DEEPSEEK_API_KEY=<环境变量传入> node scripts/ds-smoke.mjs` → **SMOKE_PASS，退出码 0**。
+
+- mode=live，model=deepseek-chat，endpoint=https://api.deepseek.com（DS 官方直连，不经 OpenRouter；OR key 全程未读）。
+- 三步全 completed：chat 基线 / 工具往返（memory_hold 经 registry→executor→memory 域真实执行，effects=[hold:committed]）/ append-only 续轮。
+- 不变量：holdVerified=true、bookmarkAdvanced=true、toolRound2=true、cacheObsRequests=5；provider_requests 5 发 5 达。
+- 证据：`evidence/ds-smoke-live-20261025.json`（key 不落任何文件/日志——已检查产物）。
+- 前置修复：ds-smoke fake 模型参数补必填 creation_mode（脚本过时——基线 4dfa709 即必填；非产品回归）。dry-run 先行通过后才跑 live。
+
 ## 覆盖与限制（如实）
 
 - 29/29 验收项 PASS 的证据种类均为 OFFLINE_CONTRACT（见 ACCEPTANCE_RESULTS.json）。

@@ -1,0 +1,117 @@
+{
+  "mode": "live",
+  "model": "deepseek-chat",
+  "endpoint": "https://api.deepseek.com",
+  "started_at": "2026-10-25T09:46:21.235Z",
+  "steps": [
+    {
+      "name": "chat-baseline",
+      "attempt": {
+        "state": "completed",
+        "blocked_reason": null
+      },
+      "attempt_id": "att_mvnn7u0jef53f90ec6a87a59",
+      "usage": [
+        {
+          "request_id": "prq_mvnn7u0o8t1bc9",
+          "input_tokens": 12087,
+          "output_tokens": 2,
+          "cache_read_input_tokens": 0,
+          "cost_usd": null,
+          "completeness": "complete"
+        }
+      ],
+      "effects": [],
+      "assistantPublished": 1
+    },
+    {
+      "name": "tool-roundtrip",
+      "attempt": {
+        "state": "completed",
+        "blocked_reason": null
+      },
+      "attempt_id": "att_mvnn7x6ve7adf879213627c5",
+      "usage": [
+        {
+          "request_id": "prq_mvnn7x723l6yl6",
+          "input_tokens": 12147,
+          "output_tokens": 169,
+          "cache_read_input_tokens": 11904,
+          "cost_usd": null,
+          "completeness": "complete"
+        },
+        {
+          "request_id": "prq_mvnn7yyg5z3nfh",
+          "input_tokens": 12344,
+          "output_tokens": 171,
+          "cache_read_input_tokens": 12160,
+          "cost_usd": null,
+          "completeness": "complete"
+        },
+        {
+          "request_id": "prq_mvnn80hiogmz6d",
+          "input_tokens": 12550,
+          "output_tokens": 13,
+          "cache_read_input_tokens": 12416,
+          "cost_usd": null,
+          "completeness": "complete"
+        }
+      ],
+      "effects": [
+        {
+          "kind": "hold",
+          "state": "committed"
+        }
+      ],
+      "assistantPublished": 2
+    },
+    {
+      "name": "followup-appendonly",
+      "attempt": {
+        "state": "completed",
+        "blocked_reason": null
+      },
+      "attempt_id": "att_mvnn82ji9969be1fb20d71bc",
+      "usage": [
+        {
+          "request_id": "prq_mvnn82jpjgccbl",
+          "input_tokens": 12616,
+          "output_tokens": 2,
+          "cache_read_input_tokens": 12416,
+          "cost_usd": null,
+          "completeness": "complete"
+        }
+      ],
+      "effects": [],
+      "assistantPublished": 3
+    }
+  ],
+  "final": {
+    "window": {
+      "id": "win_mvnn7u0l6e76e0380d35a445",
+      "status": "ACTIVE"
+    },
+    "checkpoint": {
+      "windowId": "win_mvnn7u0l6e76e0380d35a445",
+      "roomId": "c1",
+      "epochId": "win_mvnn7u0l6e76e0380d35a445",
+      "seenSequence": 3,
+      "requestId": "prq_mvnn7yyg5z3nfh",
+      "receiptId": "es-hold-1b09109eeb765f52c8308fe46e41e18b1229de7c:smoke-29de7c",
+      "memoryId": "smoke-29de7c",
+      "operationId": "es-hold-1b09109eeb765f52c8308fe46e41e18b1229de7c"
+    },
+    "trajectoryMessages": 11,
+    "providerRequests": {
+      "n": 5,
+      "sent": 5
+    }
+  },
+  "invariants": {
+    "holdVerified": true,
+    "bookmarkAdvanced": true,
+    "toolRound2": true,
+    "cacheObsRequests": 5
+  },
+  "verdict": "SMOKE_PASS（三步完成且工具往返/书签不变量成立）"
+}
