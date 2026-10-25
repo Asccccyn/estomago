@@ -1,4 +1,4 @@
 # TEST_EVIDENCE（冻结候选 cd85fc75975ad6d115adfeb19f5c89be8ee840b6）
 
 最终回归：`ESTOMAGO_HOME=$(mktemp -d) /opt/homebrew/bin/node scripts/run-tests.mjs --file=…(41 文件)` → 41/41 通过，退出码 0（候选提交 cd85fc75975ad6d115adfeb19f5c89be8ee840b6）。覆盖验收 ID：A01（oido-get-registry-host-wiring）、A02（tool-catalog-golden sha256 770e9fef… 恒定）、A04-A09（voice-hearing/oido-facade/reaudit/joint-voice/b1*/b2/a11/dial）、A11（a11/dial/voice-ingress-ndjson）、A13-A14（hold-quote/event-source-range/quote-seen-scope/wp2-*/wp3-*/wp4-*/wp5-*/review-r05/recall-*）、A15-A17（surfacing-*/joint-audit-surfacing/message-retry-supervisor+session-snapshot golden 逐字）、A18-A22（wake-keepwarm/exec-v1-wp4-*/full-audit-*/keepwarm-sleep）、A23-A24（integration records/snapshot/history/mock-turn/ops）。
-未运行：A03/A25/A26/A27/A28/A29 对应的独立夹具（见 BLOCKERS）；全量 npm test（政策禁止无选择器运行）。
+未运行=8 项：A03（旧窗口冻结专项场景）、A10（可选能力隔离）、A12（电话停止与排队）、A25（JSON投影对照）、A26/A27（两项扩展演练）、A28（旧接线退役专项证据）、A29（最终统一冻结回归）——【更正：此前误写 6 项、漏列 A10/A12】；全量 npm test（政策禁止无选择器运行）。

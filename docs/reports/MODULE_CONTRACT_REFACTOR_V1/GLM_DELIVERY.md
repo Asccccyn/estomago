@@ -10,7 +10,7 @@
 - 等价基线：tests/golden/tool-catalog-baseline.json（849b1d5 纯净采集，sha256 770e9fef…）+ module-contract-session-baseline.json（真实装配合成会话 wire 逐字）——41 文件定向回归全绿。
 
 ## 测试结论（OFFLINE_CONTRACT；未调用真实 Opus/OR/JEV/ASR/TTS/embedding/Mariposa/oído/Siren）
-冻结候选 41 文件定向回归 41/41 通过（run-tests --file 明确选择器；每文件独立临时 ESTOMAGO_HOME）。分域净见 PROGRESS 表。A01-A02、A04-A09、A11、A13-A24 共 23 项=PASS；A03/A25/A26/A27/A28/A29 状态见 ACCEPTANCE_RESULTS.json。
+冻结候选 41 文件定向回归 41/41 通过（run-tests --file 明确选择器；每文件独立临时 ESTOMAGO_HOME）。分域净见 PROGRESS 表。分域净见 PROGRESS 表。已登记 PASS=21/29（A01、A02、A04-A09、A11、A13-A24）；NOT_EXECUTED=8 项（A03、A10、A12、A25、A26、A27、A28、A29）。【更正：此前本报告误写 23 项 PASS/6 项未执行——汇总算错漏列 A10/A12，JSON 本身无误；实施者复核裁定 2026-10-25 指出】
 
 ## 旧路径退役
 executeInner 唯一路径=registry（P04 收尾提交）；wishstar 前缀通配删除（逐项显式登记）；oido 旧六分支/授权助手删除；MEMORY_ONLY_TOOLS 静态清单保留至 P09 兼容窗口（isMemoryOnlyAllowed 已优先条目元数据）；SurfacingMessageHooks 兼容层与 legacyCompatView 登记于 MIGRATION_MATRIX 待 P09 删。
