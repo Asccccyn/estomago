@@ -1,8 +1,12 @@
-// P08 演练A（A26/A27/A03）：扩展局部化+依赖替换演练。
-// 见 specs 08 §"两项扩展演练"：探针模块（tests/helpers/probe-module.ts）接入真实 registry，
-// 从真实模型入口（catalog→define→invoke）调用它；核心算法（supervisor/消息核心/通用执行器）
-// 零修改——本测试文件+helper 即全部改动面（A26 CHANGE_LOCALITY 证据）。
-// 同时覆盖 A03：同窗已冻结目录不因新模块注册而改变；新能力按政策仅新窗采用。
+// P08 演练A 重做（S17 裁定 §6 / A26·A03）：真实模型扩展场景。
+// 序列（全部经正常入口，无手工 INSERT 窗口/目录）：
+//  ① c1 正常消息 → 旧窗 w1 冻结目录证据（不含 probe——注册发生在其后）
+//  ② 仅在测试装配注册 probe（新模块文件+装配一行，核心零修改）
+//  ③ 旧窗 w1 目录保持原样；旧窗 define probe 沿现行拒绝（零回退）
+//  ④ c2 正常消息 → 新窗 w2 装配目录含 probe（新窗采用）
+//  ⑤ fake 模型实际执行 catalog→define→invoke(probe)
+//  ⑥ 断言真实 probe 返回进入下一模型请求的 tool 内容
+// probe 只拿窄结构端口 PublishedVoiceReader（装配处用 OidoSourceRepository 既有谓词实现）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,16 +30,16 @@ import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { CapabilityRegistry } from '../../apps/host/src/capabilities/registry.ts';
-import { storedToolset, freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
-import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
+import { storedToolset, freezeWindowTools, definitionId } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { OidoSourceRepository } from '../../apps/host/src/modules/oido/source-repository.ts';
 import { wireOidoCapabilitiesForTest } from '../helpers.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { registerProbeModule, PROBE_TOOL_NAME, PROBE_DEFINITION } from '../helpers/probe-module.ts';
+import { registerProbeModule, PROBE_TOOL_NAME } from '../helpers/probe-module.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -46,7 +50,7 @@ const callFrame = (n: number, name: string, args: unknown) =>
   sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE;
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((x) => x.length > 0).map((x) => enc.encode(`${x}\n\n`)));
 
-test('演练A：探针模块经真实入口全链可达（核心零修改）；冻结窗口不因新注册改变（A03）', async () => {
+test('演练A：probe 经正常新窗入口 catalog→define→invoke 全链；旧窗零回退（A26/A03）', async () => {
   const root = tempRoot('probe-drill-');
   writeApprovedIdentity(root);
   const config = buildConfig({
@@ -71,23 +75,21 @@ test('演练A：探针模块经真实入口全链可达（核心零修改）；�
   };
   const client = new MariposaClient({ transport: mariposa });
 
-  // 探针模块注册（测试装配声明——生产 app-context 不含此模块）
-  const registry = new CapabilityRegistry();
-  registerProbeModule(registry, { db });
-
+  // ① 生产模块装配（无 probe）——旧窗先于探针注册创建；registry=生产模块注册表（helper 返回同一实例）
   const tools = new HostToolExecutor({ db, mariposa: client, reviews, checkpoint, media, messages });
-  tools.setCapabilityRegistry(registry);
-  tools.setMemoryRecovery((await import('../../apps/host/src/modules/memory/module.ts')).registerMemoryCapabilities(new CapabilityRegistry(), { db, mariposa: client, reviews, checkpoint }));
+  const registry = wireOidoCapabilitiesForTest(tools, {});
 
   const log: Array<{ tools: string[]; full: Array<{ role: string; content: unknown }> }> = [];
   let n = 0;
-  let assetRef = '';
+  let assetRefC2 = '';
+  let phase = 0; // c2 轮次脚本：0=define,1=invoke,2=收尾
   const transport: OrTransport = async (payload) => {
     n++;
     log.push({ tools: (payload.tools as Array<{ function: { name: string } }>).map((t) => t.function.name), full: payload.messages as Array<{ role: string; content: unknown }> });
     let body: string;
-    if (n === 1) body = textBody('g1', '第一条正文'); // 建窗轮
-    else body = textBody('g' + n, '探针已执行');
+    if (phase === 0 && n >= 2) { phase = 1; body = callFrame(n, 'tool_define', { name: PROBE_TOOL_NAME }); }
+    else if (phase === 1) { phase = 2; console.log('INVOKE_DEBUG', JSON.stringify({ assetRefC2, last: String((payload.messages.at(-1) as any)?.content).slice(0, 80) })); body = callFrame(n, 'tool_invoke', { name: PROBE_TOOL_NAME, definition_id: JSON.parse((payload.messages.at(-1) as { content: string }).content).definition_id, arguments: { audio_ref: assetRefC2 } }); }
+    else body = textBody('g' + n, phase === 2 ? '探针结果已收到' : '正常回复');
     return { status: 200, headers: new Map(), body: frameStream(body) };
   };
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
@@ -96,45 +98,58 @@ test('演练A：探针模块经真实入口全链可达（核心零修改）；�
     runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events),
     usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')),
     tools, reviews, checkpoint, trajectory: new WindowTrajectoryService(db),
-    media, bootstrap: client,
+    media, bootstrap: client, toolCatalog: registry,
   });
   messages.ensureConversation('c1');
   try {
-    // 第一轮（建窗+冻结目录）——此时探针尚未进入冻结目录？探针在注册表中；冻结目录=buildHostTools（不含探针）
-    const t1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '正常第一条', clientMessageId: 'probe-1' });
+    // ① 旧窗 w1（probe 未注册）
+    const t1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '旧窗正常第一条', clientMessageId: 'drill-old' });
     supervisor.enqueue(t1.turnId);
     await supervisor.waitIdle();
-    const winId = windows.activeWindow('c1')!.id;
+    const w1 = windows.activeWindow('c1')!.id;
+    const frozenOld = storedToolset(db, w1)!.catalog.map((t) => t.function.name);
+    assert.ok(!frozenOld.includes(PROBE_TOOL_NAME), '旧窗冻结目录不含后注册探针（目录证据）');
 
-    // A03 证据：同窗已冻结目录不含探针（冻结目录=基线 48 项；探针不进默认工具集合是 08 的要求）
-    const set = storedToolset(db, winId)!;
-    assert.equal(set.catalog.some((t) => t.function.name === PROBE_TOOL_NAME), false, '冻结窗口目录不含探针（旧窗不因新模块改变）');
-    const denied = await tools.execute('tool_define', { name: PROBE_TOOL_NAME }, { roomId: 'c1', windowId: winId, turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-deny' });
-    assert.equal((denied.output as { error_code: string }).error_code, 'TOOL_NOT_IN_ALLOWLIST', '同窗旧目录 define 探针=沿现行拒绝（零回退）');
+    // ② 仅测试装配注册 probe（新模块+装配一行）
+    const sources = new OidoSourceRepository(db);
+    registerProbeModule(registry, {
+      publishedVoiceReader: { isPublishedVoiceInRoom: (assetId, roomId) => sources.sourceAllowed(assetId, roomId) },
+    });
 
-    // 她真实发一条语音（正常入口）→ 探针从真实工具入口（execute=UI/宿主内部合法入口，与模型 tool_invoke 同一 registry 路径）判定
-    const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x21]), purpose: 'chat_voice', operationId: 'probe-voice-upload', createdBy: 'qiaosheng', origin: 'upload' });
-    const voice = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: 'probe-voice', attachments: [{ asset_id: asset.id, presentation: 'voice' }] });
-    supervisor.enqueue(voice.turnId);
+    // ③ 旧窗保持原目录；define probe 沿现行拒绝（零回退）
+    const frozenAfter = storedToolset(db, w1)!.catalog.map((t) => t.function.name);
+    assert.deepEqual(frozenAfter, frozenOld, '注册 probe 后旧窗冻结目录逐项不变');
+    const denied = await tools.execute('tool_define', { name: PROBE_TOOL_NAME }, { roomId: 'c1', windowId: w1, turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'drill-deny' });
+    assert.equal((denied.output as { error_code: string }).error_code, 'TOOL_NOT_IN_ALLOWLIST', '旧窗 define 探针=沿现行拒绝');
+
+    // ④ c2 正常入口 → 新窗 w2 装配目录含 probe；已发布语音（正式发布链，probe 的读面素材）
+    messages.ensureConversation('c2');
+    const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x21]), purpose: 'chat_voice', operationId: 'probe-voice-c2', createdBy: 'qiaosheng', origin: 'upload' });
+    assetRefC2 = `est:${asset.id}`; // 赋值须在 t2 前（同一轮 tool 循环内引用）
+    messages.publishAssistantMessage({ conversationId: 'c2', turnId: 'drill-voice-turn', content: '', kind: 'voice', clientMessageId: 'probe-voice', attachments: [{ asset_id: asset.id, presentation: 'voice' }] });
+    const t2 = messages.submitUserMessageWithTurn({ conversationId: 'c2', content: '检查那条语音', clientMessageId: 'probe-check' });
+    supervisor.enqueue(t2.turnId);
     await supervisor.waitIdle();
-    const win2 = windows.activeWindow('c1')!.id;
-    void win2;
+    const w2 = windows.activeWindow('c2')!.id;
+    const cat2 = storedToolset(db, w2)!.catalog;
+    assert.ok(cat2.some((t) => t.function.name === PROBE_TOOL_NAME), '新窗装配目录含已注册探针（新窗采用）');
 
-    // deferred 窗直调被现行 USE_TOOL_INVOKE 门拒绝（迁移前后一致；探针不在冻结目录）
-    const deferred = await tools.execute(PROBE_TOOL_NAME, { audio_ref: `est:${asset.id}` }, { roomId: 'c1', windowId: winId, turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-deferred' });
-    assert.equal((deferred.output as { error_code: string }).error_code, 'USE_TOOL_INVOKE', 'deferred 窗直调门保持');
+    // ⑤⑥ fake 模型 catalog→define→invoke(probe)；probe 结果进入下一模型请求 tool 内容
+    const t3 = messages.submitUserMessageWithTurn({ conversationId: 'c2', content: '检查那条语音', clientMessageId: 'probe-check' });
+    supervisor.enqueue(t3.turnId);
+    await supervisor.waitIdle();
+    // 请求序列：log0=c1 轮；log1=c2 定义调用；log2=定义结果+invoke 调用；log3=invoke 结果（进入下一模型请求）
+    assert.ok(log.length >= 4, 'catalog→define→invoke→收尾 四请求');
+    const defineOut = JSON.parse((log[2]!.full.at(-1) as { content: string }).content);
+    assert.equal(defineOut.name, PROBE_TOOL_NAME, 'define 输出=探针定义（registry 工厂正本）');
+    assert.equal(defineOut.definition_id, definitionId((await import('../helpers/probe-module.ts')).PROBE_DEFINITION), 'definitionId=探针定义序列化');
+    const invokeRequest = log[3]!.full;
+    const invokeOut = JSON.parse((invokeRequest.at(-1) as { content: string }).content);
+    assert.deepEqual(invokeOut, { bound: true }, 'probe handler 真实执行：已发布语音被窄端口授权读面判定为 bound');
+    // probe 结果已作为 tool 消息进入下一模型请求（⑥）
+    assert.equal((invokeRequest.at(-1) as { role: string }).role, 'tool', 'probe 结果以 tool 消息进入下一模型请求');
 
-    // 宿主/UI 内部入口：legacy 冻结窗上真实执行（与 P02.7 同模式）——registry→parse→admit→handler→投影，核心算法零修改
-    db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w-legacy-probe','c1','ACTIVE',?,?)").run(new Date().toISOString(), new Date().toISOString());
-    // 测试装配声明：legacy 探针窗目录=基线+探针（08：允许测试装配声明；探针不进生产默认集合）
-    freezeWindowTools(db, 'w-legacy-probe', [...buildHostTools(), PROBE_DEFINITION], 'legacy');
-    const direct = await tools.execute(PROBE_TOOL_NAME, { audio_ref: `est:${asset.id}` }, { roomId: 'c1', windowId: 'w-legacy-probe', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-probe' });
-    assert.deepEqual(direct.output, { bound: true }, '探针 handler 真实执行（本地 SQL 只读）');
-    // 未绑定资产（错误引用）→ bound:false 如实
-    const miss = await tools.execute(PROBE_TOOL_NAME, { audio_ref: 'est:nonexistent_asset' }, { roomId: 'c1', windowId: 'w-legacy-probe', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-probe2' });
-    assert.deepEqual(miss.output, { bound: false }, '未绑定资产如实 bound:false');
-
-    console.log(JSON.stringify({ case: 'drillA_probe', tool: PROBE_TOOL_NAME }));
+    console.log(JSON.stringify({ case: 'drillA_redo', w1tools: frozenOld.length, w2HasProbe: true }));
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });

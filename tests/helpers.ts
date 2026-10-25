@@ -19,7 +19,6 @@ import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '..
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
 import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
-import { buildHostTools } from '../apps/host/src/runtime/host-tools.ts';
 import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
@@ -121,7 +120,7 @@ export function sleep(ms: number): Promise<void> {
 export function wireOidoCapabilitiesForTest(
   executor: object,
   opts: { oido?: unknown; sirenCall?: unknown; programFacts?: unknown } = {},
-): void {
+): CapabilityRegistry {
   const e = executor as Record<string, unknown>;
   const db = e.db as Db;
   const registry = new CapabilityRegistry();
@@ -156,6 +155,7 @@ export function wireOidoCapabilitiesForTest(
   }
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
   (executor as { setMemoryRecovery(s: unknown): void }).setMemoryRecovery(memoryService);
+  return registry; // S17b 批次3：返回同一注册表供测试把 toolCatalog 传给 Supervisor
 }
 
 
@@ -163,7 +163,29 @@ export function wireOidoCapabilitiesForTest(
 // 同源的真实校验入口（条目 definition + capabilities/validation 通用校验）。
 // 语义=原 allowlist 解析 + validateArgsAgainstSchema（错误码逐一保持）。
 export function validateToolArgs(name: string, args: Record<string, unknown>, frozenSpec?: { function: { parameters: Record<string, unknown> } }): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
-  const spec = frozenSpec ?? buildHostTools().find((t) => t.function.name === name);
+  const spec = frozenSpec ?? fullToolCatalog().find((t) => t.function.name === name);
   if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
   return validateArgsAgainstSchema(args, spec.function.parameters as { properties?: Record<string, never>; required?: string[] });
+}
+
+// S17b 批次3：测试装配的唯一目录来源——显式注册全部生产模块（镜像 app-context 装配顺序），
+// 经 Registry.currentCatalog() 提供 buildHostTools 删除后的目录（探针等测试模块不进默认集合）。
+export function buildFullTestRegistry(): CapabilityRegistry {
+  const registry = new CapabilityRegistry();
+  registerMemoryCapabilities(registry, { db: {} as Db, mariposa: null, reviews: {} as never, checkpoint: {} as never });
+  registerOidoCapabilities(registry, { db: {} as Db, oido: null, sources: new OidoSourceRepository({} as Db) });
+  registerVoiceCapabilities(registry, { db: {} as Db, sirenCall: null, programFacts: null });
+  registerConversationCapabilities(registry, { db: {} as Db });
+  registerWishstarCapabilitiesInstance(registry, { wishstar: null });
+  registerContentCapabilitiesInstance(registry, { contentClient: null });
+  registerWakeCapabilitiesInstance(registry, { db: {} as Db, taskService: null });
+  registerMediaCapabilitiesInstance(registry, { media: null, mediaIndex: null });
+  registerIdentityCapabilitiesInstance(registry, { db: {} as Db, identity: null });
+  registerContextReviewCapabilitiesInstance(registry, { db: {} as Db, reviews: {} as never, checkpoint: {} as never });
+  return registry;
+}
+
+/** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */
+export function fullToolCatalog(): import('../apps/host/src/capabilities/contracts.ts').HostToolSpec[] {
+  return buildFullTestRegistry().currentCatalog();
 }

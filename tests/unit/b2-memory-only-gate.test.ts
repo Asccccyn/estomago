@@ -1,7 +1,7 @@
 // B2/A04（2026-10-24）：通话 memory_only 能力策略——catalog/define/invoke/直接执行/执行前
 // 边界同一策略；模型发起被限（UI/宿主内部调用不受限）；挂断后恢复；旧窗冻结目录不变。
 import { test } from 'node:test';
-import { wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { wireOidoCapabilitiesForTest, fullToolCatalog } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -16,7 +16,6 @@ import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runt
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { freezeWindowTools, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
-import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 function fixture() {
@@ -29,7 +28,7 @@ function fixture() {
   const ctx = (over: Partial<ToolExecContext> = {}): ToolExecContext => ({ roomId: 'c1', windowId: 'w1', turnId: 'turn-model-1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'b2m', ...over });
   // deferred 冻结窗：含记忆工具与业务工具
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w1','c1','ACTIVE','2026-10-24','2026-10-24')").run();
-  freezeWindowTools(db, 'w1', buildHostTools(), 'deferred');
+  freezeWindowTools(db, 'w1', fullToolCatalog(), 'deferred');
   const startCall = (callId = 'call-m1'): void => {
     db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(callId, 'c1', new Date().toISOString());
   };
@@ -52,7 +51,8 @@ test('A04 catalog during call lists only memory and control tools', async () => 
     const duringNames = ((during.output as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
     assert.ok(!duringNames.includes('wishstar_list_offers'), '通话内新 catalog 不列非记忆业务工具');
     assert.ok(!duringNames.includes('oido_find'), '重型 oído find 不在通话热路径');
-    for (const n of duringNames) assert.ok(HostToolExecutor.MEMORY_ONLY_TOOLS.has(n), `目录项 ${n} 必须在许可表`);
+    const reg = (f.tools as unknown as { getCapabilityRegistry(): { get(id: string): { memoryOnlyAllowed: boolean } | null } }).getCapabilityRegistry();
+    for (const n of duringNames) assert.ok(reg?.get(n)?.memoryOnlyAllowed === true, `目录项 ${n} 必须在通话许可（registry 条目元数据）`);
     console.log(JSON.stringify({ case: 'a04_catalog', before: beforeNames.length, during: duringNames.length }));
   } finally { f.close(); }
 });

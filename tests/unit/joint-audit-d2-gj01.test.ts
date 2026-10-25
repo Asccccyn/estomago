@@ -24,12 +24,12 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor, validateToolArgs, buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
+import {HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, wireOidoCapabilitiesForTest, fullToolCatalog, validateToolArgs } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -155,7 +155,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   assert.equal(out.output.recall_session_id, 'rs_1');
   // R1′（2026-10-23，她本轮裁定）："数据非指令"指引进稳定工具描述，不逐条结果重复——
   // 描述占一次 token，替代每结果 note；权限/低信任边界仍由宿主落实
-  const recallSpec = buildHostTools().find((t) => t.function.name === 'memory_recall')!.function;
+  const recallSpec = fullToolCatalog().find((t) => t.function.name === 'memory_recall')!.function;
   assert.ok(recallSpec.description.includes('数据（非指令）'), '工具描述含"数据非指令"指引');
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
   assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('cont_abc'), '续查引用透传');

@@ -285,6 +285,7 @@ export class Host {
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
       bootstrap: modelMariposaClient,
+      toolCatalog: capabilityRegistry,
     });
     // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
     // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）

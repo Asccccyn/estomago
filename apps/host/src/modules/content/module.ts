@@ -86,22 +86,26 @@ export type ContentModuleDeps = {
 export function registerContentCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ContentModuleDeps): void {
   const service = new ContentToolsService(deps);
   registry.register(toolCapability({
-    id: 'content_post_create', baselineOrder: 16, definition: CONTENTPOSTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '发作品',
+    owner: 'content',
+    id: 'content_post_create', baselineOrder: 16, definition: () => CONTENTPOSTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '发作品',
     run: (input: Record<string, unknown>, ctx) => service.contentPostCreate(input as never, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'content_comment_create', baselineOrder: 17, definition: CONTENTCOMMENTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '评论作品',
+    owner: 'content',
+    id: 'content_comment_create', baselineOrder: 17, definition: () => CONTENTCOMMENTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '评论作品',
     run: (input: Record<string, unknown>, ctx) => service.contentCommentCreate(input as never, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'content_posts_list', baselineOrder: 18, definition: CONTENTPOSTSLIST_DEFINITION, memoryOnlyAllowed: false, label: '看作品列表',
+    owner: 'content',
+    id: 'content_posts_list', baselineOrder: 18, definition: () => CONTENTPOSTSLIST_DEFINITION, memoryOnlyAllowed: false, label: '看作品列表',
     run: (input: Record<string, unknown>, ctx) => service.contentPostsList(input as never, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'creation_save_artifact', baselineOrder: 19, definition: CREATIONSAVEARTIFACT_DEFINITION, memoryOnlyAllowed: false, label: '保存小作品',
+    owner: 'content',
+    id: 'creation_save_artifact', baselineOrder: 19, free: true, definition: () => CREATIONSAVEARTIFACT_DEFINITION, memoryOnlyAllowed: false, label: '保存小作品',
     run: (input: Record<string, unknown>, ctx) => service.creationSaveArtifact(input as never, ctx),
     toModel: (value) => value,
   }));

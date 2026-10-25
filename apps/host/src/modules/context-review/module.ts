@@ -31,7 +31,8 @@ export type ContextReviewModuleDeps = {
 export function registerContextReviewCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ContextReviewModuleDeps): void {
   const service = new ContextReviewService(deps);
   registry.register(toolCapability({
-    id: 'context_review_complete', baselineOrder: 48, definition: CONTEXTREVIEWCOMPLETE_DEFINITION, memoryOnlyAllowed: true, label: 'context_review_complete', silent: true,
+    owner: 'context-review',
+    id: 'context_review_complete', baselineOrder: 48, free: true, definition: () => CONTEXTREVIEWCOMPLETE_DEFINITION, memoryOnlyAllowed: true, label: 'context_review_complete', silent: true,
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.reviewComplete(input as never, ctx)),
     toModel: (value) => value,
   }));

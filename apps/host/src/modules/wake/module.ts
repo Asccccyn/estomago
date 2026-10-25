@@ -52,12 +52,14 @@ export type WakeModuleDeps = {
 export function registerWakeCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: WakeModuleDeps): void {
   const service = new WakeToolsService(deps);
   registry.register(toolCapability({
-    id: 'wake_manage', baselineOrder: 20, definition: WAKEMANAGE_DEFINITION, memoryOnlyAllowed: false, label: '给自己定唤醒', silent: false,
+    owner: 'wake',
+    id: 'wake_manage', baselineOrder: 20, free: true, definition: () => WAKEMANAGE_DEFINITION, memoryOnlyAllowed: false, label: '给自己定唤醒', silent: false,
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.wakeManage(input as never, ctx)),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'background_complete', baselineOrder: 21, definition: BACKGROUNDCOMPLETE_DEFINITION, memoryOnlyAllowed: false, label: '结束自主活动', silent: true,
+    owner: 'wake',
+    id: 'background_complete', baselineOrder: 21, free: true, definition: () => BACKGROUNDCOMPLETE_DEFINITION, memoryOnlyAllowed: false, label: '结束自主活动', silent: true,
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.backgroundComplete(input as never, ctx)),
     toModel: (value) => value,
   }));

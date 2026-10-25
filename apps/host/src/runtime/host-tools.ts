@@ -36,13 +36,9 @@ import { WAKEMANAGE_DEFINITION, BACKGROUNDCOMPLETE_DEFINITION } from '../modules
 import { MEDIAIMPORT_DEFINITION, MEDIASEARCH_DEFINITION } from '../modules/media/module.ts';
 import { IDENTITYMILESTONEWRITE_DEFINITION } from '../modules/identity/module.ts';
 import { CONTEXTREVIEWCOMPLETE_DEFINITION } from '../modules/context-review/module.ts';
-import { currentMoodCategories } from '../modules/memory/mood-vocab.ts';
 export { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../modules/memory/hold-contract.ts';
-import { setMoodCategoriesChangedCallback } from '../modules/memory/mood-vocab.ts';
+import { DISCOVERY_META, isDiscoveryFree } from '../capabilities/model-bridge.ts';
 
-// 词表变更回调：memory 域拉到新词表 → 本目录缓存失效（枚举随正本走）。
-// 静态注册（mood-vocab 为叶，无环）；动态注册在测试时序下可能晚于首次刷新。
-setMoodCategoriesChangedCallback(() => { hostToolsCache = null; });
 import { ContractError } from './or-contract.ts';
 // P01.1：叶类型正本迁至 capabilities/contracts.ts；此处纯 type 重导出为过渡兼容
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
@@ -53,202 +49,10 @@ import { executeRegisteredCapability } from '../capabilities/executor.ts';
 
 // P04.5：心情词表状态与受控刷新已迁 modules/memory/mood-vocab.ts（memory catalog 正本）；
 // 词表变更经装配回调失效本目录缓存（下方注册），宿主不再持有第二份词表状态。
-let hostToolsCache: HostToolSpec[] | null = null;
-void currentMoodCategories;
 
-// —— P01.3：目录构建输入按域分组（定义接缝）——
-// 每域一个 spec 工厂；装配顺序=tool-ownership.json baselineOrder（48 项，不重排），
-// JSON 属性/description/默认词表一字不改（等价基线 tests/golden/tool-catalog-baseline.json 守护）。
-// 后续卡片按域把工厂物理迁往 modules/<域>/definitions.ts；本文件保留装配与缓存。
-
-const BASELINE_TOOL_ORDER: readonly string[] = [
-  'memory_hold',
-  'memory_recall',
-  'memory_recall_next',
-  'memory_read_full',
-  'conversation_read',
-  'memory_i_read',
-  'plans_read',
-  'memory_i_write',
-  'plans_write',
-  'memory_open',
-  'memory_correct',
-  'deletion_review',
-  'episode_list',
-  'episode_apply',
-  'episode_get',
-  'content_post_create',
-  'content_comment_create',
-  'content_posts_list',
-  'creation_save_artifact',
-  'wake_manage',
-  'background_complete',
-  'chat_send_text',
-  'media_import',
-  'chat_send_attachment',
-  'call_control',
-  'oido_analyze',
-  'media_search',
-  'oido_get',
-  'transcript_read',
-  'oido_capabilities',
-  'oido_view',
-  'oido_find',
-  'oido_compare',
-  'identity_milestone_write',
-  'wishstar_write_star',
-  'wishstar_hidden_stars',
-  'wishstar_special_dates',
-  'wishstar_start_session',
-  'wishstar_confirm_session',
-  'wishstar_take_star',
-  'wishstar_finish_session',
-  'wishstar_request_star',
-  'wishstar_respond_request',
-  'wishstar_offer_star',
-  'wishstar_list_offers',
-  'wishstar_accept_offer',
-  'wishstar_notifications',
-  'context_review_complete',
-];
-
-function memoryDefinitions(): HostToolSpec[] {
-  return [
-  memoryHoldDefinition(),  // P04：唯一正本已迁 modules/memory/module.ts（词表随每次构建）,
-  MEMORYRECALL_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYRECALLNEXT_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYREADFULL_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYIREAD_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  PLANSREAD_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYIWRITE_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  PLANSWRITE_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYOPEN_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  MEMORYCORRECT_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  DELETIONREVIEW_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  EPISODELIST_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  EPISODEAPPLY_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  EPISODEGET_DEFINITION,  // P04：唯一正本已迁 modules/memory/module.ts,
-  ];
-}
-
-function conversationDefinitions(): HostToolSpec[] {
-  return [
-  CONVERSATIONREAD_DEFINITION,  // P04.1：唯一正本已迁 modules/conversation/module.ts,
-  CHATSENDTEXT_DEFINITION,  // P04.1：唯一正本已迁 modules/conversation/module.ts,
-  CHATSENDATTACHMENT_DEFINITION,  // P04.1：唯一正本已迁 modules/conversation/module.ts,
-  ];
-}
-
-function contentDefinitions(): HostToolSpec[] {
-  return [
-  CONTENTPOSTCREATE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  CONTENTCOMMENTCREATE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  CONTENTPOSTSLIST_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  CREATIONSAVEARTIFACT_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function wakeDefinitions(): HostToolSpec[] {
-  return [
-  WAKEMANAGE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  BACKGROUNDCOMPLETE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function mediaDefinitions(): HostToolSpec[] {
-  return [
-  MEDIAIMPORT_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  MEDIASEARCH_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function voiceDefinitions(): HostToolSpec[] {
-  return [
-  CALL_CONTROL_DEFINITION,  // P03.4/5：唯一正本已迁 modules/voice/module.ts（逐字搬迁，此处只读同源）,
-  TRANSCRIPT_READ_DEFINITION,  // P03.4/5：唯一正本已迁 modules/voice/module.ts（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function oidoDefinitions(): HostToolSpec[] {
-  return [
-  OIDO_ANALYZE_DEFINITION,  // P03.1a：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
-  // P02.5：oido_get 定义唯一正本已迁 modules/oido/module.ts（逐字搬迁；此处只读同源，不双注册）
-  OIDO_GET_DEFINITION,
-  OIDO_CAPABILITIES_DEFINITION,  // P03.1：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
-  OIDO_VIEW_DEFINITION,  // P03.1：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
-  OIDO_FIND_DEFINITION,  // P03.1：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
-  OIDO_COMPARE_DEFINITION,  // P03.1：唯一正本已迁 modules/oido/module.ts（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function identityDefinitions(): HostToolSpec[] {
-  return [
-  IDENTITYMILESTONEWRITE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function wishstarDefinitions(): HostToolSpec[] {
-  return [
-  WISHSTARWRITESTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARHIDDENSTARS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARSPECIALDATES_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARSTARTSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARCONFIRMSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARTAKESTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARFINISHSESSION_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARREQUESTSTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARRESPONDREQUEST_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTAROFFERSTAR_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARLISTOFFERS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARACCEPTOFFER_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  WISHSTARNOTIFICATIONS_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-function contextReviewDefinitions(): HostToolSpec[] {
-  return [
-  CONTEXTREVIEWCOMPLETE_DEFINITION,  // P04：唯一正本已迁 modules/（逐字搬迁，此处只读同源）,
-  ];
-}
-
-const DEFINITION_SEGMENTS: ReadonlyArray<() => HostToolSpec[]> = [
-  memoryDefinitions,
-  conversationDefinitions,
-  contentDefinitions,
-  wakeDefinitions,
-  mediaDefinitions,
-  voiceDefinitions,
-  oidoDefinitions,
-  identityDefinitions,
-  wishstarDefinitions,
-  contextReviewDefinitions,
-];
-
-export function buildHostTools(): HostToolSpec[] {
-  // 词表变更（refreshMoodCategories）会置空缓存——枚举随正本走
-  if (hostToolsCache) return hostToolsCache;
-  const byName = new Map<string, HostToolSpec>();
-  for (const segment of DEFINITION_SEGMENTS) {
-    for (const spec of segment()) {
-      if (byName.has(spec.function.name)) throw new Error(`TOOL_DEFINITION_DUPLICATE:${spec.function.name}`);
-      byName.set(spec.function.name, spec);
-    }
-  }
-  const assembled: HostToolSpec[] = [];
-  for (const name of BASELINE_TOOL_ORDER) {
-    const spec = byName.get(name);
-    if (!spec) throw new Error(`TOOL_DEFINITION_MISSING:${name}`);
-    assembled.push(spec);
-    byName.delete(name);
-  }
-  if (byName.size > 0) throw new Error(`TOOL_DEFINITION_UNREGISTERED:${[...byName.keys()].sort().join(',')}`);
-  hostToolsCache = assembled;
-  return hostToolsCache;
-}
-
-export function hostToolNames(): string[] {
-  return [...buildHostTools(), ...buildDeferredTools()].map((t) => t.function.name);
-}
+// S17b 批次3：目录装配双正本删除——目录唯一来源=CapabilityRegistry.currentCatalog()
+// （modules/*/module.ts 定义工厂 + baselineOrder）。BASELINE_TOOL_ORDER/域工厂聚合/
+// hostToolsCache/mood 回调全部移除。
 
 
 // P01.1：SeenRef/ToolExecContext/ToolExecResult 叶类型正本已迁 capabilities/contracts.ts
@@ -314,57 +118,6 @@ export class HostToolExecutor {
   }
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private mediaIndex: import('../media/index/service.ts').MediaIndexService | null;
-  /** 工具调用过程展示（她 2026-10-17 要求）：内部协议工具不发事件 */
-  private static readonly SILENT_TOOLS = new Set(['context_review_complete', 'background_complete']);
-  private static readonly TOOL_LABELS: Record<string, string> = {
-    memory_hold: '写记忆', memory_recall: '查记忆', memory_recall_next: '翻查记忆', conversation_read: '读聊天原文',
-    memory_i_read: '读 I', memory_i_write: '写 I', memory_open: '打开记忆桶', memory_correct: '订正记忆', deletion_review: '处理删除评审',
-    episode_list: '查事件', episode_get: '看事件', episode_apply: '更新事件', plans_read: '读计划', plans_write: '写计划',
-    call_control: '通话控制', media_import: '导入图片', chat_send_text: '发消息', chat_send_attachment: '发附件', oido_analyze: '深听语音', oido_get: '读声音证据', media_search: '找图', background_complete: '结束自主活动', wake_manage: '给自己定唤醒',
-    content_post_create: '发作品', content_comment_create: '评论作品', content_posts_list: '看作品列表', creation_save_artifact: '保存小作品',
-    identity_milestone_write: '更新长期记忆里程碑',
-    wishstar_write_star: '往许愿星写了一颗星', wishstar_hidden_stars: '看自己的私人瓶子',
-    wishstar_special_dates: '查特殊日期', wishstar_start_session: '发起拆星仪式',
-    wishstar_confirm_session: '确认拆星仪式', wishstar_finish_session: '完成拆星',
-    wishstar_take_star: '拆开一颗星', wishstar_request_star: '请求开对方的星',
-    wishstar_respond_request: '回应开星请求', wishstar_offer_star: '递一颗星',
-    wishstar_list_offers: '看收到的星', wishstar_accept_offer: '收下递来的星',
-    wishstar_notifications: '看许愿星通知',
-  };
-
-  /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
-   *  能力面由 Mariposa 白名单圈定）。 */
-  /** EXEC_V1 §06.4.3（WP5）：模型工具调 content——actor 从受控执行上下文派生为 jiaming。 */
-  /** §03.6.3（MEDIA-09/CREATION-03）：保存 SVG/HTML 小作品→持久资产。不执行代码；宿主无 eval/shell。 */
-  /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（2026-10-22）：结束后台回合——noop 是成功结果
-   *  （§6.2），无产出不构成失败。自主唤醒与心跳回合均可用（C-13：心跳经 tool_invoke
-   *  调用结束工具→正确收口，不再多发一轮无用模型请求）。 */
-  /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（05）：后台正式公开发言——心跳与自主共用；
-   *  复用正式发布链（幂等键派生；重试只发一次）。普通最终回复不自动发布（E03）。 */
-  /** WAKE_KEEPWARM_V1 §04：wake_manage——char自主预约的唯一工具面。
-   *  conversation/actor 取可信 ToolExecContext（schema 不接受注入，W-19）；
-   *  schedule/update 受自主开关门（SELF_WAKE_DISABLED）；list/cancel 关闭时仍可用。 */
-  /** EXEC_V1 §03.6.3：外部图片持久导入（幂等键由 turn+请求稳定派生，模型不可指定他人操作）。 */
-  /** 她批准 2026-10-17：char接入许愿星（superposition）全能力面。
-   *  HTTP 转发（Bearer=jiaming 身份，操作归他名下）；幂等键由 turn+request 派生（模型不能自编）；
-   *  写操作回执瘦身（不回显正文）；错误如实上抛状态码。 */
-  /** 她授权 2026-10-17：char自维护长期记忆里程碑。写新版+manifest I 槽原子更新+审计；
-   *  幂等键查 audit_events（同键重试只写一版）；I 槽不参与指纹——当前窗继续旧冻结副本，
-   *  下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）。
-   *  2026-10-22 她要求：条目化——read（带序号）/add/revise/remove（IdentityService 条目操作）。 */
-  /** EXEC_V1 §03.6.3：正式发布附件消息（复用 MessageService/发布链/归档 outbox；幂等=派生 client_message_id）。 */
-  /** JOINT-VOICE-20261022（04 按需深听）：宿主完成权限核验与受信本地导入后转发 oído。
-   *  模型只能引用当前会话可达的语音资产（audio_ref=est:<asset_id>）；跨会话/未绑定
-   *  资产一律拒绝——不因"模型报了个 asset_id"就放行（09 授权边界）。 */
-  static readonly MEMORY_ONLY_TOOLS: ReadonlySet<string> = new Set([
-    'memory_recall', 'memory_recall_next', 'memory_open', 'memory_read_full', 'memory_i_read',
-    'memory_correct', 'memory_hold', 'memory_i_write',
-    'episode_apply', 'episode_get', 'episode_list',
-    'conversation_read', 'transcript_read',
-    'oido_analyze', 'oido_get', 'oido_capabilities',
-    'plans_read', 'context_review_complete',
-    'tool_catalog', 'tool_define', 'tool_invoke', 'call_control',
-  ]);
   private voiceCallActive(roomId: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(roomId));
   }
@@ -392,10 +145,15 @@ export class HostToolExecutor {
     // start/result/error 三阶段；执行前后各一次真实回执，0 假成功
     // （ok/error_code 如实来自执行结果）。身份=tool_call_id+turn+attempt+
     // request+generation+round；副作用仍只由执行器（executeInner）拥有。
-    const visible = !HostToolExecutor.SILENT_TOOLS.has(name) && ctx.turnId;
+    // S17b 批次3：事件元数据与资格读 descriptor（业务静态表已删）；discovery 入口读自身元数据
+    const descriptor = this.capabilityRegistry?.get(name) ?? null;
+    const discoveryMeta = descriptor ? null : (DISCOVERY_META[name] ?? null);
+    const silent = descriptor ? descriptor.silent : (discoveryMeta?.silent ?? false);
+    const label = descriptor ? descriptor.label : (discoveryMeta?.label ?? name);
+    const visible = !silent && ctx.turnId;
     const identity = () => ({
       tool: name,
-      label: HostToolExecutor.TOOL_LABELS[name] ?? name,
+      label,
       tool_call_id: ctx.toolCallId ?? (typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null),
       turn_id: ctx.turnId,
       attempt_id: ctx.attemptId ?? null,
@@ -413,7 +171,7 @@ export class HostToolExecutor {
     // 同一策略（effective name 判定）；仅约束模型发起的调用（ctx.turnId 非空），UI/宿主内部调用不受限
     if (ctx.turnId) {
       const effectiveName0 = name === 'tool_invoke' ? String(rawArgs.name ?? '') : name;
-      if (this.voiceCallActive(ctx.roomId) && !HostToolExecutor.MEMORY_ONLY_TOOLS.has(effectiveName0)) {
+      if (this.voiceCallActive(ctx.roomId) && !this.isMemoryOnlyAllowed(effectiveName0)) {
         return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
       }
     }
@@ -469,17 +227,21 @@ export class HostToolExecutor {
     return this.executeInner(spec.function.name, {...args.arguments as Record<string,unknown>,__tool_call_id:args.__tool_call_id},ctx,spec);
   }
 
-  /** D39：通话 memory_only 资格统一判定——已迁能力读条目元数据（capabilities/registry），
-   *  未迁名沿现行 MEMORY_ONLY_TOOLS 清单；两者对同一名称结论一致（迁移期共存，集合不相交）。 */
+  /** D39：通话 memory_only 资格唯一判定——已迁能力读条目元数据；discovery 入口读自身元数据。
+   *  业务静态名单已删（S17b 批次3：单一来源=Registry 条目声明）。 */
   private isMemoryOnlyAllowed(name: string): boolean {
     const d = this.capabilityRegistry?.get(name);
     if (d) return d.memoryOnlyAllowed;
-    return HostToolExecutor.MEMORY_ONLY_TOOLS.has(name);
+    const meta = DISCOVERY_META[name];
+    return meta?.memoryOnlyAllowed ?? false;
   }
 
   private admitBackgroundTool(name: string, ctx: ToolExecContext): void {
     if (ctx.backgroundRunId && !ctx.beforeBackgroundTool) throw new ContractError('BACKGROUND_TOOL_ADMISSION_MISSING');
-    if (ctx.beforeBackgroundTool) ctx.beforeBackgroundTool(quoteBackgroundTool(this.db, name));
+    if (ctx.beforeBackgroundTool) {
+      // S17b 批次3：discovery 入口免费政策属 discovery（model-bridge）；其余走可信配置报价
+      ctx.beforeBackgroundTool(isDiscoveryFree(name) ? { toolName: name, maxCostMicroUsd: 0, verifiedFree: true } : quoteBackgroundTool(this.db, name));
+    }
   }
 
   private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext, frozenSpec?: HostToolSpec): Promise<ToolExecResult> {

@@ -15,8 +15,9 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   readonly owner: string;
   /** host-only 装配顺序（tool-ownership baselineOrder）；不进入工具定义。 */
   readonly baselineOrder: number;
-  /** 定义唯一正本（原 catalog 逐字搬迁；旧窗仍读冻结 spec，本定义仅供新窗目录装配）。 */
-  readonly definition: HostToolSpec;
+  /** 定义工厂（唯一来源；04 §J definition() 口径）：每次目录装配调用，动态词表随正本；
+   *  静态能力返回现有定义常量。旧窗仍读冻结 spec，本工厂仅供新窗目录装配。 */
+  readonly definition: () => HostToolSpec;
   /** D39：已批准的通话 memory_only 资格，按现行清单逐项声明；注册表不自动扩权。 */
   readonly memoryOnlyAllowed: boolean;
   /** turn.tool 事件身份（原 TOOL_LABELS 值）。 */
@@ -39,7 +40,7 @@ type ErasedDescriptor = {
   readonly id: string;
   readonly owner: string;
   readonly baselineOrder: number;
-  readonly definition: HostToolSpec;
+  readonly definition: () => HostToolSpec;
   readonly memoryOnlyAllowed: boolean;
   readonly label: string;
   readonly silent: boolean;
@@ -48,6 +49,11 @@ type ErasedDescriptor = {
   readonly run: (input: any, ctx: ToolExecContext) => Promise<CapabilityOutcome<any>>;
   readonly toModel: (value: any, input: any) => Record<string, unknown>;
 };
+
+export interface CatalogProvider {
+  /** 窄目录接口：按 baselineOrder 排序、逐条目调用定义工厂（Supervisor 消费同一 Registry）。 */
+  currentCatalog(): HostToolSpec[];
+}
 
 export class CapabilityRegistry {
   private caps = new Map<string, ErasedDescriptor>();
@@ -60,7 +66,9 @@ export class CapabilityRegistry {
     for (const key of ['parse', 'run', 'toModel', 'quote'] as const) {
       if (typeof descriptor[key] !== 'function') throw new Error(`CAPABILITY_INCOMPLETE:${id}:${key}`);
     }
-    if (!descriptor.definition || descriptor.definition.function?.name !== id) {
+    let defName: string | undefined;
+    try { defName = descriptor.definition?.().function?.name; } catch { /* 非法工厂按 mismatch 处理 */ }
+    if (typeof descriptor.definition !== 'function' || defName !== id) {
       throw new Error(`CAPABILITY_DEFINITION_MISMATCH:${id}`);
     }
     if (!Number.isInteger(descriptor.baselineOrder) || descriptor.baselineOrder < 1) {
@@ -84,6 +92,12 @@ export class CapabilityRegistry {
   /** 架构检查/装配清单用：按 baselineOrder 确定性枚举。 */
   listByBaselineOrder(): ErasedDescriptor[] {
     return [...this.caps.values()].sort((a, b) => a.baselineOrder - b.baselineOrder);
+  }
+
+  /** S17b 批次3：目录唯一来源——按 baselineOrder 排序、逐条目调用定义工厂。
+   *  不缓存（动态词表随正本）；重复 ID/定义名一致在 register 时已检查。 */
+  currentCatalog(): HostToolSpec[] {
+    return this.listByBaselineOrder().map((d) => d.definition());
   }
 
   get size(): number {

@@ -83,17 +83,20 @@ export type ConversationModuleDeps = {
 export function registerConversationCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ConversationModuleDeps): void {
   const service = new ConversationToolsService(deps);
   registry.register(toolCapability({
-    id: 'conversation_read', baselineOrder: 5, definition: CONVERSATIONREAD_DEFINITION, memoryOnlyAllowed: true, label: '读聊天原文',
+    owner: 'conversation',
+    id: 'conversation_read', baselineOrder: 5, free: true, definition: () => CONVERSATIONREAD_DEFINITION, memoryOnlyAllowed: true, label: '读聊天原文',
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.conversationRead(input, ctx)),
     toModel: (value) => projectConversationRead(value),
   }));
   registry.register(toolCapability({
-    id: 'chat_send_text', baselineOrder: 22, definition: CHATSENDTEXT_DEFINITION, memoryOnlyAllowed: false, label: '发消息',
+    owner: 'conversation',
+    id: 'chat_send_text', baselineOrder: 22, free: true, definition: () => CHATSENDTEXT_DEFINITION, memoryOnlyAllowed: false, label: '发消息',
     run: (input: { text: string; idempotency_key: string }, ctx) => Promise.resolve(service.chatSendText(input, ctx)),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'chat_send_attachment', baselineOrder: 24, definition: CHATSENDATTACHMENT_DEFINITION, memoryOnlyAllowed: false, label: '发附件',
+    owner: 'conversation',
+    id: 'chat_send_attachment', baselineOrder: 24, free: true, definition: () => CHATSENDATTACHMENT_DEFINITION, memoryOnlyAllowed: false, label: '发附件',
     run: (input: { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx) => service.chatSendAttachment(input, ctx),
     toModel: (value) => value,
   }));

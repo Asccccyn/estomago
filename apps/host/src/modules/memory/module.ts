@@ -389,72 +389,86 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   const svc = service ?? new MemoryToolsService(deps);
   void svc;
   registry.register(toolCapability({
-    id: 'memory_hold', baselineOrder: 1, definition: memoryHoldDefinition(), memoryOnlyAllowed: true, label: '写记忆',
+    owner: 'memory',
+    id: 'memory_hold', baselineOrder: 1, definition: memoryHoldDefinition, memoryOnlyAllowed: true, label: '写记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryHold(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_hold', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_recall', baselineOrder: 2, definition: MEMORYRECALL_DEFINITION, memoryOnlyAllowed: true, label: '查记忆',
+    owner: 'memory',
+    id: 'memory_recall', baselineOrder: 2, definition: () => MEMORYRECALL_DEFINITION, memoryOnlyAllowed: true, label: '查记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryRecall(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_recall', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_recall_next', baselineOrder: 3, definition: MEMORYRECALLNEXT_DEFINITION, memoryOnlyAllowed: true, label: '翻查记忆',
+    owner: 'memory',
+    id: 'memory_recall_next', baselineOrder: 3, definition: () => MEMORYRECALLNEXT_DEFINITION, memoryOnlyAllowed: true, label: '翻查记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryRecallNext(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_recall_next', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_read_full', baselineOrder: 4, definition: MEMORYREADFULL_DEFINITION, memoryOnlyAllowed: true, label: 'memory_read_full',
+    owner: 'memory',
+    id: 'memory_read_full', baselineOrder: 4, free: true, definition: () => MEMORYREADFULL_DEFINITION, memoryOnlyAllowed: true, label: 'memory_read_full',
     run: (input: Record<string, unknown>, ctx) => svc.memoryReadFull(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_read_full', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_i_read', baselineOrder: 6, definition: MEMORYIREAD_DEFINITION, memoryOnlyAllowed: true, label: '读 I',
+    owner: 'memory',
+    id: 'memory_i_read', baselineOrder: 6, free: true, definition: () => MEMORYIREAD_DEFINITION, memoryOnlyAllowed: true, label: '读 I',
     run: (input: Record<string, unknown>, ctx) => svc.memoryIRead(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_i_read', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'plans_read', baselineOrder: 7, definition: PLANSREAD_DEFINITION, memoryOnlyAllowed: true, label: '读计划',
+    owner: 'memory',
+    id: 'plans_read', baselineOrder: 7, free: true, definition: () => PLANSREAD_DEFINITION, memoryOnlyAllowed: true, label: '读计划',
     run: (input: Record<string, unknown>, ctx) => svc.plansRead(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('plans_read', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_i_write', baselineOrder: 8, definition: MEMORYIWRITE_DEFINITION, memoryOnlyAllowed: true, label: '写 I',
+    owner: 'memory',
+    id: 'memory_i_write', baselineOrder: 8, definition: () => MEMORYIWRITE_DEFINITION, memoryOnlyAllowed: true, label: '写 I',
     run: (input: Record<string, unknown>, ctx) => svc.memoryIWrite(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_i_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'plans_write', baselineOrder: 9, definition: PLANSWRITE_DEFINITION, memoryOnlyAllowed: false, label: '写计划',
+    owner: 'memory',
+    id: 'plans_write', baselineOrder: 9, definition: () => PLANSWRITE_DEFINITION, memoryOnlyAllowed: false, label: '写计划',
     run: (input: Record<string, unknown>, ctx) => svc.plansWrite(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('plans_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_open', baselineOrder: 10, definition: MEMORYOPEN_DEFINITION, memoryOnlyAllowed: true, label: '打开记忆桶',
+    owner: 'memory',
+    id: 'memory_open', baselineOrder: 10, definition: () => MEMORYOPEN_DEFINITION, memoryOnlyAllowed: true, label: '打开记忆桶',
     run: (input: Record<string, unknown>, ctx) => svc.memoryOpenTool(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_open', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'memory_correct', baselineOrder: 11, definition: MEMORYCORRECT_DEFINITION, memoryOnlyAllowed: true, label: '订正记忆',
+    owner: 'memory',
+    id: 'memory_correct', baselineOrder: 11, definition: () => MEMORYCORRECT_DEFINITION, memoryOnlyAllowed: true, label: '订正记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryCorrect(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_correct', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'deletion_review', baselineOrder: 12, definition: DELETIONREVIEW_DEFINITION, memoryOnlyAllowed: false, label: '处理删除评审',
+    owner: 'memory',
+    id: 'deletion_review', baselineOrder: 12, definition: () => DELETIONREVIEW_DEFINITION, memoryOnlyAllowed: false, label: '处理删除评审',
     run: (input: Record<string, unknown>, ctx) => svc.deletionReview(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('deletion_review', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'episode_list', baselineOrder: 13, definition: EPISODELIST_DEFINITION, memoryOnlyAllowed: true, label: '查事件',
+    owner: 'memory',
+    id: 'episode_list', baselineOrder: 13, definition: () => EPISODELIST_DEFINITION, memoryOnlyAllowed: true, label: '查事件',
     run: (input: Record<string, unknown>, ctx) => svc.episodeList(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('episode_list', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'episode_apply', baselineOrder: 14, definition: EPISODEAPPLY_DEFINITION, memoryOnlyAllowed: true, label: '更新事件',
+    owner: 'memory',
+    id: 'episode_apply', baselineOrder: 14, definition: () => EPISODEAPPLY_DEFINITION, memoryOnlyAllowed: true, label: '更新事件',
     run: (input: Record<string, unknown>, ctx) => svc.episodeApply(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('episode_apply', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
-    id: 'episode_get', baselineOrder: 15, definition: EPISODEGET_DEFINITION, memoryOnlyAllowed: true, label: '看事件',
+    owner: 'memory',
+    id: 'episode_get', baselineOrder: 15, definition: () => EPISODEGET_DEFINITION, memoryOnlyAllowed: true, label: '看事件',
     run: (input: Record<string, unknown>, ctx) => svc.episodeGet(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('episode_get', input as Record<string, unknown>, value as Record<string, unknown>),
   }));

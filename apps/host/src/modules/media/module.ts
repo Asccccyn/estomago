@@ -45,12 +45,14 @@ export type MediaModuleDeps = {
 export function registerMediaCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: MediaModuleDeps): void {
   const service = new MediaToolsService(deps);
   registry.register(toolCapability({
-    id: 'media_import', baselineOrder: 23, definition: MEDIAIMPORT_DEFINITION, memoryOnlyAllowed: false, label: '导入图片',
+    owner: 'media',
+    id: 'media_import', baselineOrder: 23, definition: () => MEDIAIMPORT_DEFINITION, memoryOnlyAllowed: false, label: '导入图片',
     run: (input: { source_url: string }, ctx) => service.mediaImport(input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'media_search', baselineOrder: 27, definition: MEDIASEARCH_DEFINITION, memoryOnlyAllowed: false, label: '找图',
+    owner: 'media',
+    id: 'media_search', baselineOrder: 27, definition: () => MEDIASEARCH_DEFINITION, memoryOnlyAllowed: false, label: '找图',
     run: (input: { query: string; limit?: number }, ctx) => service.mediaSearch(input, ctx),
     toModel: (value) => value,
   }));

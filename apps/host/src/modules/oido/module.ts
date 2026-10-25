@@ -125,7 +125,7 @@ export function oidoGetCapability(deps: OidoModuleDeps): CapabilityDescriptor<Oi
     id: 'oido_get',
     owner: 'oido',
     baselineOrder: 28,
-    definition: OIDO_GET_DEFINITION,
+    definition: () => OIDO_GET_DEFINITION,
     memoryOnlyAllowed: true,
     label: '读声音证据',
     silent: false,
@@ -144,7 +144,7 @@ export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescripto
     id: 'oido_analyze',
     owner: 'oido',
     baselineOrder: 26,
-    definition: OIDO_ANALYZE_DEFINITION,
+    definition: () => OIDO_ANALYZE_DEFINITION,
     memoryOnlyAllowed: true,
     label: '深听语音',
     silent: false,
@@ -158,16 +158,20 @@ export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescripto
 /** 轻量 oído 工具通用条目（capabilities/view/find/compare）：定义/校验/费用/资格逐项声明；
  *  投影=透传（这四项的模型面形状由 service 直接构造，现行无 model-results 分支）。 */
 function oidoSimpleCapability<I extends Record<string, unknown>>(o: {
-  id: string; baselineOrder: number; definition: HostToolSpec; memoryOnlyAllowed: boolean;
+  id: string; baselineOrder: number; definition: HostToolSpec | (() => HostToolSpec); memoryOnlyAllowed: boolean;
   run: (input: I, ctx: import('../../capabilities/contracts.ts').ToolExecContext) => Promise<import('../../capabilities/contracts.ts').CapabilityOutcome<Record<string, unknown>>>;
 }, deps: OidoModuleDeps): CapabilityDescriptor<I, Record<string, unknown>> {
   const service = new OidoHearingService(deps);
   void service;
+  // 惰性保留工厂（不提前执行）；窄化用 cast 表达
+  const defFactory: () => HostToolSpec = typeof o.definition === 'function'
+    ? o.definition
+    : () => o.definition as HostToolSpec;
   return {
     id: o.id,
     owner: 'oido',
     baselineOrder: o.baselineOrder,
-    definition: o.definition,
+    definition: defFactory,
     memoryOnlyAllowed: o.memoryOnlyAllowed,
     label: o.id,
     silent: false,
@@ -185,19 +189,19 @@ export function registerOidoCapabilities(registry: { register(d: CapabilityDescr
   registry.register(oidoAnalyzeCapability(deps));
   const service = new OidoHearingService(deps);
   registry.register(oidoSimpleCapability({
-    id: 'oido_capabilities', baselineOrder: 30, definition: OIDO_CAPABILITIES_DEFINITION, memoryOnlyAllowed: true,
+    id: 'oido_capabilities', baselineOrder: 30, definition: () => OIDO_CAPABILITIES_DEFINITION, memoryOnlyAllowed: true,
     run: (_input: Record<string, unknown>, ctx) => service.capabilities(ctx),
   }, deps));
   registry.register(oidoSimpleCapability({
-    id: 'oido_view', baselineOrder: 31, definition: OIDO_VIEW_DEFINITION, memoryOnlyAllowed: false,
+    id: 'oido_view', baselineOrder: 31, definition: () => OIDO_VIEW_DEFINITION, memoryOnlyAllowed: false,
     run: (input: { analysis_id: string; range_ms?: [number, number] }, ctx) => service.view(input, ctx),
   }, deps));
   registry.register(oidoSimpleCapability({
-    id: 'oido_find', baselineOrder: 32, definition: OIDO_FIND_DEFINITION, memoryOnlyAllowed: false,
+    id: 'oido_find', baselineOrder: 32, definition: () => OIDO_FIND_DEFINITION, memoryOnlyAllowed: false,
     run: (input: { audio_ref: string; query: string; mode?: string; limit?: number; cursor?: string }, ctx) => service.find(input, ctx),
   }, deps));
   registry.register(oidoSimpleCapability({
-    id: 'oido_compare', baselineOrder: 33, definition: OIDO_COMPARE_DEFINITION, memoryOnlyAllowed: false,
+    id: 'oido_compare', baselineOrder: 33, definition: () => OIDO_COMPARE_DEFINITION, memoryOnlyAllowed: false,
     run: (input: { left: { audio_ref: string }; right: { audio_ref: string } }, ctx) => service.compare(input, ctx),
   }, deps));
 }

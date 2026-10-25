@@ -9,14 +9,13 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { tempRoot, makePaths, writeApprovedIdentity, makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { tempRoot, makePaths, writeApprovedIdentity, makeDb, wireOidoCapabilitiesForTest, fullToolCatalog } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { buildDeferredTools, definitionId, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { initialVisibleTools, renderInitialVisibleText, initialDefinitionSeen, DEFAULT_INITIAL_VISIBLE } from '../../apps/host/src/runtime/tool-initial-visible.ts';
-import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 
 function setupDb() {
   const root = tempRoot('tiv-');
@@ -28,7 +27,7 @@ test('清单与渲染：默认=她 1022 首批（里程碑整版+条目化一起
   const { db } = setupDb();
   assert.deepEqual(initialVisibleTools(db), [...DEFAULT_INITIAL_VISIBLE]);
   assert.deepEqual(DEFAULT_INITIAL_VISIBLE, ['identity_milestone_write']);
-  const text = renderInitialVisibleText(db, buildHostTools())!;
+  const text = renderInitialVisibleText(db, fullToolCatalog())!;
   assert.ok(text.includes('[tools/initial'), '段落头');
   const spec = { type: 'function', function: buildDeferredTools()[0]!.function } as never;
   void spec;
@@ -42,7 +41,7 @@ test('清单与渲染：默认=她 1022 首批（里程碑整版+条目化一起
   assert.deepEqual(initialVisibleTools(db), ['memory_i_write']);
   // 空清单=不注入
   db.prepare("UPDATE runtime_settings SET value = '[]' WHERE key = 'tools_initial_visible'").run();
-  assert.equal(renderInitialVisibleText(db, buildHostTools()), null);
+  assert.equal(renderInitialVisibleText(db, fullToolCatalog()), null);
 });
 
 test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define 直接 invoke；旧窗（无注入）仍走旧门', async () => {
@@ -64,12 +63,13 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
   const winNew = 'win-tiv-new';
   db.prepare("INSERT OR IGNORE INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,'c1','ACTIVE',?,?)").run(winNew, new Date().toISOString(), new Date().toISOString());
-  const realSpec = (await import('../../apps/host/src/runtime/host-tools.ts')).buildHostTools().find((t) => t.function.name === 'identity_milestone_write')!;
+  const realSpec = fullToolCatalog().find((t) => t.function.name === 'identity_milestone_write')!;
+  const milestoneSpec = realSpec; // 同一 identity_milestone_write 定义
   const catalog = [realSpec];
   db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
     .run(winNew, 'deferred', JSON.stringify(buildDeferredTools()), JSON.stringify(catalog), new Date().toISOString());
-  const milestoneSpec = (await import('../../apps/host/src/runtime/host-tools.ts')).buildHostTools().find((t) => t.function.name === 'identity_milestone_write')!;
-  const injected = renderInitialVisibleText(db, buildHostTools())!;
+  
+  const injected = renderInitialVisibleText(db, fullToolCatalog())!;
   assert.ok(injected.includes(definitionId(milestoneSpec)), '注入文本含真实 definition_id');
   const fakeRequest = JSON.stringify({ messages: [{ role: 'system', content: [{ type: 'text', text: injected }] }] });
   db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES ('turn-tiv','c1','user_message','completed',?)").run(new Date().toISOString());
@@ -108,6 +108,6 @@ test('空工具清单：显式配置 [] → 无 tools/initial 段（renderInitia
   const { makeDb } = await import('../helpers.ts');
   const { db } = makeDb(tempRoot('tiv-empty-'), { seed: false });
   db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES ('tools_initial_visible','[]','2026-10-23T00:00:00Z')").run();
-  assert.equal(renderInitialVisibleText(db, buildHostTools()), null, '空清单=无注入');
+  assert.equal(renderInitialVisibleText(db, fullToolCatalog()), null, '空清单=无注入');
   db.close();
 });

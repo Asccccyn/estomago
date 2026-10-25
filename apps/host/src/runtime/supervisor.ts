@@ -40,7 +40,8 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
-import { buildHostTools, hostToolNames, type HostToolExecutor } from './host-tools.ts';
+import { type HostToolExecutor } from './host-tools.ts';
+import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
 import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
@@ -85,6 +86,8 @@ export type SupervisorDeps = {
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
   bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
+  // S17b 批次3：窄 catalog 接口——Supervisor 经同一 Registry 消费目录（唯一来源）
+  toolCatalog?: CatalogProvider;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
@@ -1291,7 +1294,7 @@ export class TurnSupervisor {
         // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
         // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
         // P01.4：定义快照由装配方显式传入（tool-initial-visible 不再反向依赖 host-tools）
-        const initialTools = renderInitialVisibleText(d.db, buildHostTools());
+        const initialTools = renderInitialVisibleText(d.db, this.toolCatalogSource().currentCatalog());
         if (initialTools !== null) seg.push(initialTools);
         if (seg.length === 1) {
           // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
@@ -1328,10 +1331,18 @@ export class TurnSupervisor {
     return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
   }
 
+  /** S17b 批次3：目录来源统一为同一 Registry——生产=显式 toolCatalog 依赖；
+   *  直接构造的测试夹具经执行器上的同一注册表回退（BLOCKERS 登记过渡）。 */
+  private toolCatalogSource(): import('../capabilities/registry.ts').CatalogProvider {
+    return this.d.toolCatalog ?? this.d.tools?.getCapabilityRegistry() ?? (() => { throw new Error('TOOL_CATALOG_NOT_WIRED'); })();
+  }
+
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
-      t = freezeWindowTools(this.d.db, windowId, buildHostTools(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
+      // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
+      // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
+      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
       this.frozenToolsByWindow.set(windowId, t);
     }
     return t;
@@ -1418,7 +1429,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? buildHostTools() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
+        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? this.toolCatalogSource().currentCatalog() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,

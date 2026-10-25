@@ -26,7 +26,6 @@ import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { storedToolset, freezeWindowTools, definitionId } from '../../apps/host/src/runtime/tool-discovery.ts';
-import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -36,7 +35,7 @@ import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { oidoModelView } from '../../apps/host/src/integrations/oido/model-view.ts';
 import { CapabilityRegistry } from '../../apps/host/src/capabilities/registry.ts';
 import { oidoGetCapability, oidoAnalyzeCapability, OIDO_GET_DEFINITION } from '../../apps/host/src/modules/oido/module.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { writeApprovedIdentity, readyRuntimePatch, tempRoot, fullToolCatalog } from '../helpers.ts';
 
 const CREDENTIAL = 'ESTOMAGO_TEST_OIDO_CREDENTIAL';
 const OVERVIEW = { analysis_id: 'run_t1', revision: 1, state: 'ready', range_ms: [0, 1200], observations: [] };
@@ -166,7 +165,7 @@ test('A01/P02.7: 真实 Host 经 tool_define/invoke 调用已迁 oido_get——�
 
     // 政策断言在 legacy 冻结窗上执行（直调合法面；与既有 executorFixture 测试同模式）
     db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w-legacy','c1','ACTIVE',?,?)").run(new Date().toISOString(), new Date().toISOString());
-    freezeWindowTools(db, 'w-legacy', buildHostTools(), 'legacy');
+    freezeWindowTools(db, 'w-legacy', fullToolCatalog(), 'legacy');
     const legacyCtx = { roomId: 'c1', windowId: 'w-legacy', turnId: null as string | null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [] as never, requestId: 'req-legacy' };
     // D40：前台普通调用（无背景 run/无报价配置）不被强加背景报价门
     const fg = await tools.execute('oido_get', { analysis_id: 'run_t1' }, { ...legacyCtx, requestId: 'req-fg' });

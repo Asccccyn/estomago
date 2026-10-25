@@ -13,13 +13,18 @@ import type { CapabilityDescriptor } from './registry.ts';
 export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   id: string;
   baselineOrder: number;
-  definition: HostToolSpec;
+  /** 定义或定义工厂（唯一来源；动态词表传工厂）。 */
+  definition: HostToolSpec | (() => HostToolSpec);
+  /** owner 由模块显式提供（S17b 批次3：删除按名前缀猜测）。 */
+  owner: string;
   memoryOnlyAllowed: boolean;
   label: string;
   silent?: boolean;
   run: (input: I, ctx: ToolExecContext) => Promise<CapabilityOutcome<O> | ToolExecResult> | CapabilityOutcome<O> | ToolExecResult;
   /** 唯一模型投影（owner 拥有；输入=内部成功结果，与旧外层 modelResult(effectiveName,args,output) 同输入）。 */
   toModel: (value: O, input: I) => Record<string, unknown>;
+  /** 免费资格声明（模块所有；仅现有已核免费事实，不按名字/只读/本地猜）。 */
+  free?: boolean;
   quote?: (db: Db) => BackgroundToolQuote;
 };
 
@@ -28,15 +33,21 @@ function isCapabilityOutcome<O>(r: CapabilityOutcome<O> | ToolExecResult): r is 
 }
 
 export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleToolCapability<I, O>): CapabilityDescriptor<I, O> {
+  // S17b 批次3裁定：不在注册时提前执行并永久缓存动态定义——工厂原样保留
+  const defFactory: () => HostToolSpec = typeof o.definition === 'function'
+    ? o.definition
+    : () => o.definition as HostToolSpec;
   return {
     id: o.id,
-    owner: o.id.split('_')[0] ?? o.id,
+    owner: o.owner,
     baselineOrder: o.baselineOrder,
-    definition: o.definition,
+    definition: defFactory,
     memoryOnlyAllowed: o.memoryOnlyAllowed,
     label: o.label,
     silent: o.silent ?? false,
-    quote: o.quote ?? ((db) => quoteBackgroundTool(db, o.id)),
+    quote: o.free
+      ? (() => ({ toolName: o.id, maxCostMicroUsd: 0, verifiedFree: true }))
+      : (o.quote ?? ((db) => quoteBackgroundTool(db, o.id))),
     parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: I } | { ok: false; code: string; detail: string },
     run: async (input, ctx) => {
       const r = await o.run(input, ctx);

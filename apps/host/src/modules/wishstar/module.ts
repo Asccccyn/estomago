@@ -189,67 +189,80 @@ export type WishstarModuleDeps = {
 export function registerWishstarCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: WishstarModuleDeps): void {
   const service = new WishstarService(deps);
   registry.register(toolCapability({
-    id: 'wishstar_write_star', baselineOrder: 35, definition: WISHSTARWRITESTAR_DEFINITION, memoryOnlyAllowed: false, label: '往许愿星写了一颗星',
+    owner: 'wishstar',
+    id: 'wishstar_write_star', baselineOrder: 35, definition: () => WISHSTARWRITESTAR_DEFINITION, memoryOnlyAllowed: false, label: '往许愿星写了一颗星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_write_star', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_hidden_stars', baselineOrder: 36, definition: WISHSTARHIDDENSTARS_DEFINITION, memoryOnlyAllowed: false, label: '看自己的私人瓶子',
+    owner: 'wishstar',
+    id: 'wishstar_hidden_stars', baselineOrder: 36, definition: () => WISHSTARHIDDENSTARS_DEFINITION, memoryOnlyAllowed: false, label: '看自己的私人瓶子',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_hidden_stars', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_special_dates', baselineOrder: 37, definition: WISHSTARSPECIALDATES_DEFINITION, memoryOnlyAllowed: false, label: '查特殊日期',
+    owner: 'wishstar',
+    id: 'wishstar_special_dates', baselineOrder: 37, definition: () => WISHSTARSPECIALDATES_DEFINITION, memoryOnlyAllowed: false, label: '查特殊日期',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_special_dates', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_start_session', baselineOrder: 38, definition: WISHSTARSTARTSESSION_DEFINITION, memoryOnlyAllowed: false, label: '发起拆星仪式',
+    owner: 'wishstar',
+    id: 'wishstar_start_session', baselineOrder: 38, definition: () => WISHSTARSTARTSESSION_DEFINITION, memoryOnlyAllowed: false, label: '发起拆星仪式',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_start_session', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_confirm_session', baselineOrder: 39, definition: WISHSTARCONFIRMSESSION_DEFINITION, memoryOnlyAllowed: false, label: '确认拆星仪式',
+    owner: 'wishstar',
+    id: 'wishstar_confirm_session', baselineOrder: 39, definition: () => WISHSTARCONFIRMSESSION_DEFINITION, memoryOnlyAllowed: false, label: '确认拆星仪式',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_confirm_session', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_take_star', baselineOrder: 40, definition: WISHSTARTAKESTAR_DEFINITION, memoryOnlyAllowed: false, label: '拆开一颗星',
+    owner: 'wishstar',
+    id: 'wishstar_take_star', baselineOrder: 40, definition: () => WISHSTARTAKESTAR_DEFINITION, memoryOnlyAllowed: false, label: '拆开一颗星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_take_star', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_finish_session', baselineOrder: 41, definition: WISHSTARFINISHSESSION_DEFINITION, memoryOnlyAllowed: false, label: '完成拆星',
+    owner: 'wishstar',
+    id: 'wishstar_finish_session', baselineOrder: 41, definition: () => WISHSTARFINISHSESSION_DEFINITION, memoryOnlyAllowed: false, label: '完成拆星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_finish_session', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_request_star', baselineOrder: 42, definition: WISHSTARREQUESTSTAR_DEFINITION, memoryOnlyAllowed: false, label: '请求开对方的星',
+    owner: 'wishstar',
+    id: 'wishstar_request_star', baselineOrder: 42, definition: () => WISHSTARREQUESTSTAR_DEFINITION, memoryOnlyAllowed: false, label: '请求开对方的星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_request_star', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_respond_request', baselineOrder: 43, definition: WISHSTARRESPONDREQUEST_DEFINITION, memoryOnlyAllowed: false, label: '回应开星请求',
+    owner: 'wishstar',
+    id: 'wishstar_respond_request', baselineOrder: 43, definition: () => WISHSTARRESPONDREQUEST_DEFINITION, memoryOnlyAllowed: false, label: '回应开星请求',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_respond_request', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_offer_star', baselineOrder: 44, definition: WISHSTAROFFERSTAR_DEFINITION, memoryOnlyAllowed: false, label: '递一颗星',
+    owner: 'wishstar',
+    id: 'wishstar_offer_star', baselineOrder: 44, definition: () => WISHSTAROFFERSTAR_DEFINITION, memoryOnlyAllowed: false, label: '递一颗星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_offer_star', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_list_offers', baselineOrder: 45, definition: WISHSTARLISTOFFERS_DEFINITION, memoryOnlyAllowed: false, label: '看收到的星',
+    owner: 'wishstar',
+    id: 'wishstar_list_offers', baselineOrder: 45, definition: () => WISHSTARLISTOFFERS_DEFINITION, memoryOnlyAllowed: false, label: '看收到的星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_list_offers', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_accept_offer', baselineOrder: 46, definition: WISHSTARACCEPTOFFER_DEFINITION, memoryOnlyAllowed: false, label: '收下递来的星',
+    owner: 'wishstar',
+    id: 'wishstar_accept_offer', baselineOrder: 46, definition: () => WISHSTARACCEPTOFFER_DEFINITION, memoryOnlyAllowed: false, label: '收下递来的星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_accept_offer', input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
-    id: 'wishstar_notifications', baselineOrder: 47, definition: WISHSTARNOTIFICATIONS_DEFINITION, memoryOnlyAllowed: false, label: '看许愿星通知',
+    owner: 'wishstar',
+    id: 'wishstar_notifications', baselineOrder: 47, definition: () => WISHSTARNOTIFICATIONS_DEFINITION, memoryOnlyAllowed: false, label: '看许愿星通知',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_notifications', input, ctx),
     toModel: (value) => value,
   }));

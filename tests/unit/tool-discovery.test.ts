@@ -1,10 +1,10 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {makeDb, wireOidoCapabilitiesForTest } from '../helpers.ts';
+import {makeDb, wireOidoCapabilitiesForTest, fullToolCatalog } from '../helpers.ts';
 import {buildConfig} from '../../apps/host/src/config/schema.ts';
 import {MessageService} from '../../apps/host/src/messages/service.ts';
-import {HostToolExecutor,buildHostTools} from '../../apps/host/src/runtime/host-tools.ts';
+import {HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import {freezeWindowTools,storedToolset,definitionId,buildDeferredTools,effectiveToolName} from '../../apps/host/src/runtime/tool-discovery.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
@@ -25,7 +25,7 @@ function fixture(t:any){
 }
 
 test('new windows advertise three fixed entry points; definitions never grow the tools prefix',t=>{
- const f=fixture(t);const all=buildHostTools();const small=freezeWindowTools(f.db,'w1',all,'deferred');
+ const f=fixture(t);const all=fullToolCatalog();const small=freezeWindowTools(f.db,'w1',all,'deferred');
  assert.deepEqual(small.map(t=>t.function.name),['tool_catalog','tool_define','tool_invoke']);
  assert.ok(JSON.stringify(small).length<JSON.stringify(all).length/5);
  const changed=all.map(t=>({...t,function:{...t.function,description:'changed'}}));
@@ -33,15 +33,15 @@ test('new windows advertise three fixed entry points; definitions never grow the
 });
 
 test('old windows recover exactly sent tools including empty toolset, never replace cached prefix',t=>{
- const f=fixture(t);const old=[buildHostTools()[0]];f.persist(old);
- assert.deepEqual(freezeWindowTools(f.db,'w1',buildHostTools(),'deferred'),old);
+ const f=fixture(t);const old=[fullToolCatalog()[0]];f.persist(old);
+ assert.deepEqual(freezeWindowTools(f.db,'w1',fullToolCatalog(),'deferred'),old);
  assert.equal(storedToolset(f.db,'w1')!.protocol,'legacy');
  f.db.prepare('DELETE FROM window_toolsets').run();f.persist([]);
- assert.deepEqual(freezeWindowTools(f.db,'w1',buildHostTools(),'deferred'),[]);
+ assert.deepEqual(freezeWindowTools(f.db,'w1',fullToolCatalog(),'deferred'),[]);
 });
 
 test('define then sent proof before invoke; no direct/forged/cross-room invocation; compact hold preserves receipt',async t=>{
- const f=fixture(t);const tools=freezeWindowTools(f.db,'w1',buildHostTools(),'deferred');f.persist(tools);
+ const f=fixture(t);const tools=freezeWindowTools(f.db,'w1',fullToolCatalog(),'deferred');f.persist(tools);
  const before=JSON.stringify(tools);
  const args={original_title:'合成',categories:['daily'],text:'合成完整正文',creation_mode:'contemporaneous',date_confidence:'exact'};
  assert.equal((await f.executor.execute('memory_hold',args,f.ctx)).ok,false);
@@ -63,7 +63,7 @@ test('define then sent proof before invoke; no direct/forged/cross-room invocati
 });
 
 test('catalog does not expose schemas and invoke cannot inject reserved args',async t=>{
- const f=fixture(t);freezeWindowTools(f.db,'w1',buildHostTools(),'deferred');
+ const f=fixture(t);freezeWindowTools(f.db,'w1',fullToolCatalog(),'deferred');
  const result=await f.executor.execute('tool_catalog',{},f.ctx);
  assert.ok(Array.isArray(result.output.tools));assert.ok(!JSON.stringify(result.output).includes('parameters'));
  assert.equal(effectiveToolName('tool_invoke','{"name":"context_review_complete"}'),'context_review_complete');
