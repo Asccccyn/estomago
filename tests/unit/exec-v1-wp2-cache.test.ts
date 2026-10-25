@@ -75,7 +75,13 @@ test('CACHE-01：OR 最终发包合同——1h cache_control、禁压缩插件�
   const prev = buildOrPayload({ model: 'anthropic/claude-test-1', sessionId: 'es-test', messages: [{ role: 'user', content: '第一句' }], tools: [], boundaries: [], maxTokens: 512, reasoning: null, providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true });
   const mutated = buildOrPayload({ model: 'anthropic/claude-test-1', sessionId: 'es-test', messages: [{ role: 'user', content: '被改写的第一句' }, { role: 'user', content: '追加' }], tools: [], boundaries: [], maxTokens: 512, reasoning: null, providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true });
   assert.throws(() => assertAppendOnly(prev, mutated));
-  // OR 驱动不加载 Claude Agent SDK（结构性：源文件零 SDK import）
+  // OR 驱动不加载 Claude Agent SDK——**依赖卫生检查**（结构性：源文件零 SDK import）。
+  // 她 2026-10-24 澄清：OR/SDK 只是同一char的不同接入驱动，驱动只做协议/凭据/
+  // 请求响应适配——本断言≠身份映射正确的证明，更不构成"不同渠道=不同身份"的合同。
+  // 身份正本唯一：evaluateGate 对所有 driver 校验同一份批准 manifest（driver 分支
+  // 只切换 SDK 专属传输证据）；人格槽（identity_version/approved_source_hash/I 槽）
+  // 不参与 contextFingerprint——渠道切换只强制技术换窗（fingerprint 含 provider），
+  // 不换人、不换记忆归属。
   const src = fs.readFileSync(path.resolve(import.meta.dirname, '../../apps/host/src/runtime/runner-openrouter.ts'), 'utf8');
   assert.ok(!src.includes('@anthropic-ai'), 'OR 驱动不得 import SDK');
 });
