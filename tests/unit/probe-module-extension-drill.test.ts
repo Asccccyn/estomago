@@ -153,3 +153,91 @@ test('演练A：probe 经正常新窗入口 catalog→define→invoke 全链；�
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+// P08 演练A27：absent（非已发布语音）+ memory 公共只读消费者，全部走正常文字消息→
+// 真实 Supervisor→fake 模型→正式发布；外部仅伪造 Mariposa transport。
+test('演练A27：absent 返回 bound:false 进 tool 消息；memory 公共只读消费者组合成立；轮次正式发布', async () => {
+  const root = tempRoot('probe-absent-');
+  writeApprovedIdentity(root);
+  const config = buildConfig({
+    ...readyRuntimePatch(),
+    runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: 'deferred' },
+    openrouter: { model: 'anthropic/claude-test-1' },
+  } as never);
+  const paths = buildPaths(root);
+  const db = openDatabase(path.join(root, 'data'));
+  migrate(db, sha256Hex);
+  const events = new EventService(db);
+  const media = new MediaService(db, path.join(root, 'media'), config);
+  const messages = new MessageService(db);
+  const identity = new IdentityService(config, paths);
+  const routing = new RoutingService(db, events, messages);
+  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const reviews = new RotationReviewService(db);
+  const checkpoint = new HoldCheckpointService(db);
+  let iGetCalls = 0;
+  const mariposa: MariposaTransport = async (cap) => {
+    if (cap === 'bootstrap.get') return { ok: true, result: { snapshot_id: 's1', state_hash: 'h1', profile: 'estomago', memory_days: { items: [], count: 0 }, plans: { items: [], count: 0 }, i: { content: '', note: '' } } };
+    if (cap === 'i.get') { iGetCalls++; return { ok: true, result: { content: '探针读到的 I 正文', note: '' } }; }
+    throw Error('unexpected ' + cap);
+  };
+  const client = new MariposaClient({ transport: mariposa });
+  const { tools: tools, registry: registry, memoryService } = assembleTestTools({ db: db, mariposa: client, reviews: reviews, checkpoint: checkpoint, media: media, messages: messages });
+  const log: Array<{ tools: string[]; full: Array<{ role: string; content: unknown }> }> = [];
+  let n = 0;
+  let absentRef = '';
+  let stage = 0; // deferred 合同：define→invoke→define→invoke→终文本（D39 顺序）
+  const PROBE_MEMORY_TOOL_NAME = (await import('../helpers/probe-module.ts')).PROBE_MEMORY_TOOL_NAME;
+  const lastContent = (payload: { messages: unknown[] }) => String((payload.messages.at(-1) as { content: unknown })?.content ?? '');
+  const transport: OrTransport = async (payload) => {
+    n++;
+    log.push({ tools: (payload.tools as Array<{ function: { name: string } }>).map((t) => t.function.name), full: payload.messages as Array<{ role: string; content: unknown }> });
+    let body: string;
+    if (stage === 0) { stage = 1; body = callFrame(n, 'tool_define', { name: PROBE_TOOL_NAME }); }
+    else if (stage === 1) { stage = 2; body = callFrame(n, 'tool_invoke', { name: PROBE_TOOL_NAME, definition_id: JSON.parse(lastContent(payload)).definition_id, arguments: { audio_ref: absentRef } }); }
+    else if (stage === 2) { stage = 3; body = callFrame(n, 'tool_define', { name: PROBE_MEMORY_TOOL_NAME }); }
+    else if (stage === 3) { stage = 4; body = callFrame(n, 'tool_invoke', { name: PROBE_MEMORY_TOOL_NAME, definition_id: JSON.parse(lastContent(payload)).definition_id, arguments: {} }); }
+    else body = textBody('g' + n, '两条探针结果都收到了');
+    return { status: 200, headers: new Map(), body: frameStream(body) };
+  };
+  const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
+  const supervisor = new TurnSupervisor({
+    db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
+    runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events),
+    usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')),
+    tools, reviews, checkpoint, trajectory: new WindowTrajectoryService(db),
+    media, bootstrap: client, toolCatalog: registry,
+  });
+  messages.ensureConversation('c-absent');
+  try {
+    // 已保存但未发布到本会话的语音资产（absent：授权读取面应判 false）
+    const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x21]), purpose: 'chat_voice', operationId: 'probe-absent-voice', createdBy: 'qiaosheng', origin: 'upload' });
+    absentRef = `est:${asset.id}`;
+    const sources = new OidoSourceRepository(db);
+    registerProbeModule(registry, { publishedVoiceReader: { isPublishedVoiceInRoom: (assetId, roomId) => sources.sourceAllowed(assetId, roomId) } });
+    const { registerProbeMemoryConsumer } = await import('../helpers/probe-module.ts');
+    registerProbeMemoryConsumer(registry, { memoryPublicRead: { iRead: (args, ctx) => memoryService.memoryIRead(args, ctx) } });
+    // 正常文字消息入口（无任何手工轮次/目录操作）
+    const t = messages.submitUserMessageWithTurn({ conversationId: 'c-absent', content: '查一下那条语音和我的 I', clientMessageId: 'absent-1' });
+    supervisor.enqueue(t.turnId);
+    await supervisor.waitIdle();
+    const turnState = (db.prepare('SELECT state FROM turns WHERE id=?').get(t.turnId) as { state: string }).state;
+    assert.equal(turnState, 'completed', 'absent 轮正常完成（不因 absent 失败）');
+    // 请求序列（deferred 合同）：log0=define probe；log1=invoke absent；log2=define memory；
+    // log3=invoke memory；log4=终文本。invoke 结果以 tool 消息进入下一请求（log2/log4 at(-1)）。
+    assert.ok(log.length >= 5, 'define→invoke→define→invoke→收尾 五请求');
+    assert.equal((log[2]!.full.at(-1) as { role: string }).role, 'tool', 'absent 结果以 tool 消息进入下一模型请求');
+    const absentOut = JSON.parse((log[2]!.full.at(-1) as { content: string }).content);
+    assert.deepEqual(absentOut, { bound: false }, '未发布语音=absent（bound:false 如实返回）');
+    const memOut = JSON.parse((log[4]!.full.at(-1) as { content: string }).content);
+    assert.equal(memOut.content, '探针读到的 I 正文', 'memory 公共只读方法真实返回（memoryIRead→mariposa i.get）');
+    assert.equal(iGetCalls, 1, 'memory 读恰好一次（经公共方法，无旁路复制）');
+    // 正式发布：assistant 消息落在 messages 正本
+    const published = db.prepare("SELECT r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.conversation_id='c-absent' AND m.speaker='assistant' ORDER BY m.sequence DESC LIMIT 1").get() as { content: string };
+    assert.equal(published.content, '两条探针结果都收到了', '正式发布链完成（fake 模型终文本落库）');
+    console.log(JSON.stringify({ case: 'drillA27_absent', turn: turnState, memReads: iGetCalls }));
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
