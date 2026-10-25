@@ -63,20 +63,23 @@ const REDACT = (o) => JSON.parse(JSON.stringify(o, (k, v) => /token|credential|k
   }
   const sha256 = (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex');
   const t0 = Date.now();
-  let ingest = null, analysis = null, analyzeErr = null;
+  let ingest = null, analysis = null, analyzeErr = null; let analysisTicket = null;
   try {
     const assetId = `real-smoke-${Date.now()}`;
     ingest = await adapter.ingestVoice({ assetId, bytes, sha256, mime: 'audio/wav', transcript: null });
     const res = await adapter.analyze({ assetId, waitMs: 30_000 });
-    analysis = 'analysis_id' in res ? res : null;
+    // Codex 复审 B3 收口：票据（queued/running）与结果（ready/partial）都有 analysis_id——
+    // 完成态判定只认 ready/partial；票据如实记录且不计成功（受理≠完成，不轮询不加时）。
+    analysis = 'analysis_id' in res && (res.state === 'ready' || res.state === 'partial') ? res : null;
+    analysisTicket = 'analysis_id' in res && analysis === null ? res : null;
   } catch (err) { analyzeErr = String(err.message ?? err).slice(0, 160); }
-  const oidoOk = caps?.ok === true && Boolean(ingest?.audioId) && analysis != null && analyzeErr === null;
+  const oidoOk = caps?.ok === true && Boolean(ingest?.audioId) && analysis != null && analyzeErr === null; // running/queued 票据→analysis=null→FAIL
   record('oido', {
     summary: {
       capabilities_ok: caps?.ok === true,
       ingest_ok: Boolean(ingest?.audioId),
       ingest_deduplicated: ingest?.deduplicated ?? null,
-      analyze_state: analysis?.state ?? null,
+      analyze_state: analysis?.state ?? analysisTicket?.state ?? null,
       analyze_observations: Array.isArray(analysis?.observations) ? analysis.observations.length : null,
       analyze_error: analyzeErr,
       latency_ms: Date.now() - t0,

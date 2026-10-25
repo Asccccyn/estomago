@@ -79,15 +79,24 @@ ESTOMAGO_HOME=$(mktemp -d /tmp/estomago-test-home.XXXXXX) /opt/homebrew/bin/node
 - **Codex 审计**：Q2-Q5/Q7 PASS；**Q1/Q6 FAIL**（A1 路由回归、B1 define 门缺失）+ B2 证据空洞 + B3 判据过松；裁决"先修再合并"。
 
 四项修复（全部落测试）：
-- **A1**：conversations 委托正则 `(.+)`→`([^/]+)`——多段子路径（memories/a/b）回归 404 完整响应。回归=tests/integration/audit-router-and-call-define.test.ts（16 条未列出路由全 404 实测）。
+- **A1**：conversations 委托正则 `(.+)`→`([^/]+)`——多段子路径（memories/a/b）回归 404 完整响应。回归=tests/integration/audit-router-and-call-define.test.ts（13 条未列出子路径全 404 实测+content 未配置 503 对照——Codex 复审计数更正）。
 - **B1**：model-bridge tool_define 分支补通话 memory_only 门（D39 四处同政策补齐；旧版仅 invoke/直接执行设门）。b2-memory-only-gate 期望改为"非记忆 define 拒绝 TOOL_UNAVAILABLE_IN_CALL、记忆 define 保留"；回归=audit-router-and-call-define 第二用例（真实 HTTP+Supervisor，定义结果进入下一模型请求且为拒绝码）。
 - **B2**：codex-voice-preparation-disconnect 换入 Codex 四场景修正版（放行迟到响应、派发/完成分开计数、查 oido_ingest_receipts、补"分析派发中断线"）——生产取消链经独立复现本就正确，修的是仓内测试的证据空洞。
 - **B3**：real-integration-smoke 成功判据收紧（ingest/analyze 任一失败即 FAIL）+ 本文件三处措辞更正（见上）。
 - 顺带：check_boundaries 余 1 项 supervisor→bootstrap-pages 边界违规（Codex C 记录，迁移期已登记项）；bindMessageLifecycle activity 参数未消费=活动锚点实际走 MessageService 发布事务（行为正确，报告此前描述已在 GLM_DELIVERY 注明）。
 
+## Codex 修复复审（0632d8c）与 B3 终收口
+
+复审原文=review-findings/audit-codex-rereview-0632d8c.md：**A1/B1/B2 关闭**；B3 部分关闭（running 票据仍计成功）+四项报告同步。
+
+本轮收口（本笔提交）：
+- **B3 终收口**：real-integration-smoke 分析完成态只认 `ready|partial`；queued/running 票据如实记录 `analyze_state` 且不计成功（受理≠完成；不轮询不加时——按复审最小收口口径）。离线三对照验证（预载 fake fetch，零真实调用）：partial→exit 0 PASS；HTTP 503→exit 1 FAIL；**running 票据→exit 1 FAIL 且 state 如实上报**（复审指出此前会误 PASS）。
+- 报告同步四项：TEST_EVIDENCE 未执行清单与真实冒烟记录对齐（TTS 未单列执行如实注明）；GLM_DELIVERY 改"29 项验收=离线合同，真实层另列单列 smoke"；A12 排队取消主证据改指 reaudit-entry-boundaries REV-E03（call-stop 为联动佐证）；回归路由计数更正 13 条+content 503 对照（原误写 16）。
+
 ## 覆盖与限制（如实）
 
 - 29/29 验收项 PASS 的证据种类均为 OFFLINE_CONTRACT（见 ACCEPTANCE_RESULTS.json）。
-- A12 两件事分开陈述：**排队电话取消**（call-stop-queued-turn，此前已覆盖）与**准备阶段断线**（本轮批次 1 修复+新集成测试，见上）。
-- NOT_EXECUTED：真实收费模型/ASR/TTS/embedding/Mariposa/oído/Siren 调用（07 §6 第 4 层）；生产部署/真实缓存命中/真实通话延迟。
+- A12 两件事分开陈述：**排队电话取消**（主证据=reaudit-entry-boundaries.test.ts REV-E03 排队取消恢复；call-stop-queued-turn 为通话状态与权限联动佐证——Codex 复审指向更正）与**准备阶段断线**（本轮批次 1 修复+四场景集成测试，见上）。
+- 未执行（更新于 Codex 复审：与上文真实冒烟记录对齐）——**真实 Opus/OR 调用**（OR key 属用户，切生产自测）；**Siren 真实合同**（服务未运行，见上文如实记录）；**生产部署/真实缓存命中/真实通话延迟**。
+- 已单列执行的真实层（本文件上文两节，不在此重复为未执行）：DS 官方付费冒烟、本机 Mariposa/oído ASR/embedding loopback 冒烟——均为**单列 smoke 脚本**证据；专项验收 29 项本体仍为 OFFLINE_CONTRACT（离线回归不调用外部服务）。TTS 未单列执行（oído 冒烟覆盖 ingest→analyze 听析链，未覆盖 TTS）。
 - 未运行：无。本轮为全量 188 文件（含前端 react 渲染测试）。

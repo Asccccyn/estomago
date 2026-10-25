@@ -19,9 +19,9 @@
 - 消息生命周期：messages/lifecycle.ts 通用事实+inTx/afterCommit；application/message-lifecycle 装配浮现消费者（形状守卫）；兼容层零残留。
 - 等价基线：tests/golden/tool-catalog-baseline.json（sha256 770e9fef… 恒定）+ module-contract-session-baseline.json（wire 逐字）双 golden 通过。
 
-## 测试结论（OFFLINE_CONTRACT；未调用真实 Opus/OR/JEV/ASR/TTS/embedding/Mariposa/oído/Siren）
+## 测试结论（29 项验收=OFFLINE_CONTRACT；真实层另列）
 
-全量 188/188 文件通过（退出码 0）；29/29 验收项 PASS（证据均为离线合同，A12 内"排队取消"与"准备阶段断线"两件事分开陈述）。未执行：真实收费/生产部署。
+全量回归 189/189 文件通过（退出码 0，含双审计修复与回归测试）；29/29 验收项 PASS（离线合同，A12 内"排队取消"与"准备阶段断线"分开陈述）。**本批离线回归不调用外部服务**；真实层另有两份单列 smoke 证据（DS 官方付费冒烟 SMOKE_PASS；本机 Mariposa/oído ASR/embedding REAL_SMOKE_PASS——adapter 层直调，见 TEST_EVIDENCE 两节及范围澄清）。未执行：真实 Opus/OR（用户切生产自测）、Siren 真实合同（服务未运行）、生产部署。
 
 ## 无生产操作声明
 
