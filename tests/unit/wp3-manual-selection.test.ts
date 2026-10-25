@@ -74,7 +74,7 @@ function compose(root: string, transport: OrTransport, configOver: Record<string
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const selections = new ManualSelectionService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
+  const windows = new WindowManager(db, events, identity, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });

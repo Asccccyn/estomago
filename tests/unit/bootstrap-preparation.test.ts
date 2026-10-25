@@ -109,7 +109,7 @@ function compose(mariposa: MariposaTransport) {
   const paths = buildPaths(root), db = openDatabase(path.join(root, 'data')); migrate(db, sha256Hex);
   const events = new EventService(db), messages = new MessageService(db), identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages), trajectory = new WindowTrajectoryService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const seen: string[] = [];
   const runner = new DeepSeekRunner({ retryMax: 0 }, async payload => {
     seen.push(JSON.stringify(payload.messages));

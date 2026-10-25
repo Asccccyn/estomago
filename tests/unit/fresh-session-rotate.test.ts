@@ -33,7 +33,7 @@ function compose(root: string, runner: AgentRunner) {
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, routing, windows, supervisor };

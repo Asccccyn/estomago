@@ -210,7 +210,7 @@ function composeSup(root: string, transport: OrTransport, configOver: Record<str
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });
@@ -403,7 +403,7 @@ test('D23：记录快照无 effectiveWarning（WP-03 退役），软线按实际
   const events = new EventService(ctx.db);
   const messages = new MessageService(ctx.db);
   const identity = new IdentityService(config, buildPaths(root));
-  const windows = new WindowManager(ctx.db, events, identity, buildPaths(root).handoffsDir, config);
+  const windows = new WindowManager(ctx.db, events, identity, config);
   const runner = { status: 'ok' as const, runner: new DeepSeekRunner({ retryMax: 0 }, async () => ({ status: 200, headers: new Map(), body: frameStream(textBody('g', 'x')) })) };
   const snap = buildRecordSnapshot({ db: ctx.db, config, windows, runnerSelection: runner }, 'c1', null);
   // 容量 40000 → safeInput=11808 → effectiveSoft=11808（软线收缩正断言保留）

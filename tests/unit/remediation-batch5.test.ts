@@ -83,7 +83,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   // 旧测试用"循环确认≤5 次"掩盖了这条与生产漂移的夹具链。
   const trajectory = new WindowTrajectoryService(db);
   const selections = opts.withSelections ? new ManualSelectionService(db) : null;
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections ?? undefined, trajectory);
+  const windows = new WindowManager(db, events, identity, config, selections ?? undefined, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });

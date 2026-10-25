@@ -60,7 +60,7 @@ function composeSup(root: string, transport: OrTransport, model: string, baseUrl
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });

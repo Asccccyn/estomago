@@ -216,7 +216,7 @@ test('真实 supervisor 保存可读思考及前端投影，区分密文、无�
     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner: new OpenRouterRunner({ providerOnly: ['amazon-bedrock'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport) },
     reasoning, usage: new UsageCollector(db), routing: new RoutingService(db, events, messages),
-    windows: new WindowManager(db, events, identity, paths.handoffsDir, config), logger: new Logger(null),
+    windows: new WindowManager(db, events, identity, config), logger: new Logger(null),
   });
   messages.ensureConversation('c1');
   try {

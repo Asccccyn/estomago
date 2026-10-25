@@ -68,7 +68,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const messages = new MessageService(db, svc);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint });

@@ -30,11 +30,11 @@ export type WindowRow = {
 };
 
 export class WindowManager {
-  constructor(db: Db, events: EventService, identity: IdentityService, handoffsDir: string, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService, trajectory?: WindowTrajectoryService | null) {
+  // handoffsDir 参数已随 handoff.json 退役移除（她 2026-10-24 裁定：交接文件零读者）
+  constructor(db: Db, events: EventService, identity: IdentityService, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService, trajectory?: WindowTrajectoryService | null) {
     this.db = db;
     this.events = events;
     this.identity = identity;
-    this.handoffsDir = handoffsDir;
     // config 可为静态对象或 provider 函数（2026-10-08：运行时 override——
     // 新窗创建时按生效型号/边界存指纹；既有调用方传对象照常工作）
     this.config = typeof config === 'function' ? null : (config ?? null);
@@ -46,7 +46,6 @@ export class WindowManager {
   private db: Db;
   private events: EventService;
   private identity: IdentityService;
-  private handoffsDir: string;
   private config: BoundaryConfigInput | null;
   private configProvider: (() => BoundaryConfigInput) | null;
   private selections: ManualSelectionService | null;
@@ -178,7 +177,6 @@ export class WindowManager {
         .prepare("INSERT INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,?, 'PREPARING', ?, ?)")
         .run(candidateId, o.conversationId, now, now);
     });
-    let handoffPath: string;
     try {
       const fingerprint = contextFingerprint(this.identityConfig(), o.gate.manifest);
       const receipt = this.identity.buildAndStoreReceipt(this.db, {
@@ -187,7 +185,8 @@ export class WindowManager {
         gate: o.gate,
         assembledOptions: o.assembledOptions ?? null,
       });
-      handoffPath = this.writeHandoff(current, o.maxSequence, candidateId);
+      // handoff.json 交接文件已按她 2026-10-24 裁定退役（零读者、契约从未接入）；
+      // receipt 写失败仍整体回滚（prepare_failed 路径不变，AUD-38 不悬挂 PREPARING）
       tx(this.db, () => {
         this.db.prepare('UPDATE windows SET receipt_id = ?, manifest_ref = ?, context_fingerprint = ?, updated_at = ? WHERE id = ?').run(receipt.id, receipt.manifest_ref, fingerprint, new Date().toISOString(), candidateId);
       });
@@ -229,27 +228,6 @@ export class WindowManager {
     }
     this.emitChanged(candidateId, o.conversationId, 'ACTIVE', null);
     return { ok: true, window: this.get(candidateId)! };
-  }
-
-  // 短交接（7.3）：只记录可核验事实；预算未配置时不灌历史；不引用思考摘要（硬规则）
-  private writeHandoff(window: WindowRow, cutoff: number, candidateId: string): string {
-    const dir = path.join(this.handoffsDir, candidateId);
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'handoff.json');
-    const handoff = {
-      window_id: window.id,
-      candidate_window_id: candidateId,
-      conversation_id: window.conversation_id,
-      cutoff_sequence: cutoff,
-      includes_reasoning: false,
-      unanswered_questions: [],
-      unfinished_actions: [],
-      sdk_session_id_of_old_window: window.sdk_session_id,
-      note: 'v0.2.2：交接仅含元信息；正式 Mariposa 开窗包待契约接入（本轮不接）',
-      written_at: new Date().toISOString(),
-    };
-    fs.writeFileSync(file, JSON.stringify(handoff, null, 2));
-    return file;
   }
 
   /** §7：人格/运行边界指纹变化 → 窗口 CONTEXT_STALE，禁止继续 resume 旧 session */

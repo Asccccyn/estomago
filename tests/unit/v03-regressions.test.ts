@@ -36,7 +36,7 @@ test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new MockRunner() }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(null) });
   messages.ensureConversation('c1');
   const t1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第一轮', clientMessageId: 'fp1' });

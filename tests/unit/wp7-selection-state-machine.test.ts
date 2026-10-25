@@ -86,7 +86,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const selections = new ManualSelectionService(db);
   const trajectory = new WindowTrajectoryService(db);
   // WP-07：WindowManager 接线 trajectory（初始轨迹写切换事务）
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections, trajectory);
+  const windows = new WindowManager(db, events, identity, config, selections, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mc = mariposa ? new MariposaClient({ transport: mariposa }) : null;
@@ -117,7 +117,7 @@ function compose2(root: string, transport: OrTransport, TrajClass: new (db: Retu
   const routing = new RoutingService(db, events, messages);
   const selections = new ManualSelectionService(db);
   const trajectory = new TrajClass(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections, trajectory);
+  const windows = new WindowManager(db, events, identity, config, selections, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint });

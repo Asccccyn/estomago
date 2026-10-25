@@ -55,7 +55,7 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const messages = new MessageService(db, null, activity);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const alerts = new SystemAlertService(db, events);
   const media = new MediaService(db, paths.mediaDir, config);
   const trajectory = new WindowTrajectoryService(db);

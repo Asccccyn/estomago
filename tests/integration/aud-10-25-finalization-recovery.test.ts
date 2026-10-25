@@ -36,7 +36,7 @@ function compose(root: string, runner: AgentRunner) {
   const reasoning = new ReasoningService(db, events);
   const usage = new UsageCollector(db);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities, runnerSelection: { status: 'ok', runner }, reasoning, usage, routing, windows, logger });
   messages.ensureConversation('c1');
   return { db, messages, supervisor };

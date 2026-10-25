@@ -36,7 +36,7 @@ async function fixture(t: TestContext) {
   const root = tempRoot('audit-tool-budget-'); writeApprovedIdentity(root); const { db } = makeDb(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: 'legacy' }, openrouter: { model: 'anthropic/claude-test-1' } });
   const paths = buildPaths(root), events = new EventService(db), messages = new MessageService(db), identity = new IdentityService(config, paths);
-  const routing = new RoutingService(db, events, messages), windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const routing = new RoutingService(db, events, messages), windows = new WindowManager(db, events, identity, config);
   const settings = new BackgroundSettingsService(db, config); settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 0.1 } });
   const alerts = new SystemAlertService(db, events);
   let now = Date.now(), externalCalls = 0, round = 0, runNo = 0;

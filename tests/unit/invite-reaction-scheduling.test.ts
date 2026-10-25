@@ -63,7 +63,7 @@ function compose(root: string, transport: OrTransport, siren: typeof fetch, invi
   messages.ensureConversation('primary');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', siren);
   const tools = new HostToolExecutor({ db, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall });
   const trajectory = new WindowTrajectoryService(db);

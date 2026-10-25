@@ -53,7 +53,7 @@ function compose(root: string, transport: OrTransport) {
   messages.ensureConversation('c1');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, new EventService(db), messages);
-  const windows = new WindowManager(db, new EventService(db), identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, new EventService(db), identity, config);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
   const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: {
     configured: true,

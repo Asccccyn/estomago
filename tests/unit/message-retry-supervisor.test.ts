@@ -40,7 +40,7 @@ function fixture() {
   migrate(db, sha256Hex);
   const events = new EventService(db), messages = new MessageService(db), identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages), trajectory = new WindowTrajectoryService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db), checkpoint = new HoldCheckpointService(db);
   let bootstrapCalls = 0;
   const mariposa = new MariposaClient({ transport: async () => {

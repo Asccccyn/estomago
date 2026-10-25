@@ -95,7 +95,7 @@ function compose(root: string, transport: OrTransport, sirenTransport: typeof fe
   messages.ensureConversation('primary'); // 邀请代理端点固定作用于 primary（产品单会话）
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
+  const windows = new WindowManager(db, events, identity, config);
   const media = new MediaService(db, paths.mediaDir, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 'fake-token', sirenTransport);
   const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall });

@@ -13,7 +13,6 @@ export type EstomagoPaths = {
   workspacesDir: string;
   sdkStateDir: string;
   mediaDir: string;
-  handoffsDir: string;
   backupsDir: string;
   runDir: string; // pidfile
 };
@@ -35,7 +34,6 @@ export function buildPaths(stateRoot: string): EstomagoPaths {
     workspacesDir: path.join(stateRoot, 'workspaces'),
     sdkStateDir: path.join(stateRoot, 'sdk-state'),
     mediaDir: path.join(stateRoot, 'media'),
-    handoffsDir: path.join(stateRoot, 'handoffs'),
     backupsDir: path.join(stateRoot, 'backups'),
     runDir: path.join(stateRoot, 'run'),
   };

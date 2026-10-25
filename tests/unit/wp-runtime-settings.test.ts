@@ -127,7 +127,7 @@ function composeRt(root, seen) {
   const routing = new RoutingService(db, events, messages);
   const selections = new ManualSelectionService(db);
   const settings = new RuntimeSettingsService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
+  const windows = new WindowManager(db, events, identity, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint });

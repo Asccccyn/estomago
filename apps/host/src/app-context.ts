@@ -117,7 +117,7 @@ export class Host {
 
   static async create(opts: HostOptions): Promise<Host> {
     const paths = buildPaths(opts.stateRoot);
-    for (const dir of [paths.stateRoot, paths.configDir, paths.identityDir, paths.dataDir, paths.workspacesDir, paths.sdkStateDir, paths.mediaDir, paths.handoffsDir, paths.backupsDir, paths.runDir]) {
+    for (const dir of [paths.stateRoot, paths.configDir, paths.identityDir, paths.dataDir, paths.workspacesDir, paths.sdkStateDir, paths.mediaDir, paths.backupsDir, paths.runDir]) {
       fs.mkdirSync(dir, { recursive: true });
     }
     const logger = new Logger(opts.logDir);
@@ -176,7 +176,7 @@ export class Host {
     const settings = new RuntimeSettingsService(db);
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
-    const windows = new WindowManager(db, events, identity, paths.handoffsDir, () => {
+    const windows = new WindowManager(db, events, identity, () => {
       const effModel = settings.effectiveOrModel(opts.config.openrouter.model);
       return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
     }, selections, trajectory);

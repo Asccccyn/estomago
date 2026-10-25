@@ -60,7 +60,8 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
   const s2 = await (await api('POST', '/api/v1/conversations/primary/messages', { content: 'canary 第二轮', client_message_id: 'c2' })).json();
   await pollUntil(async () => (await (await api('GET', `/api/v1/turns/${s2.turn_id}`)).json()).turn.state === 'completed', 8000);
 
-  // B. 换窗：handoff / bootstrap candidate / identity receipt 0 命中
+  // B. 换窗：bootstrap candidate / identity receipt 0 命中
+  // （handoff 落盘件已退役——她 2026-10-24 裁定；换窗证据正本=receipt+轨迹，canary 不再扫）
   // WP3（2026-10-08 她裁定）：换窗历史只经人工选集——先确认选集（空选，
   // 本测关注 CoT canary 而非历史）再换窗
   const win = host.windows.activeWindow('primary')!;
@@ -69,8 +70,6 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
   const rot = await api('POST', `/api/v1/windows/${win.id}/rotate`, {});
   assert.equal(rot.status, 200);
   await sleep(200);
-  const handoffsDir = path.join(root, 'handoffs');
-  const handoffHits = scanDir(handoffsDir);
   const receipts = host.db.prepare('SELECT desired, assembled, observed, probe FROM bootstrap_receipts').all();
   const receiptHits = receipts.reduce((n, r) => n + deepScanCanary([r.desired, r.assembled, r.observed, r.probe], CANARY), 0);
   const assemblerOut = assembleContext({ conversationId: 'primary', windowId: null, turnId: s2.turn_id, inputMessageId: null, timeContextText: '{}', userInput: { revision: 1, content: 'x' } }, {});
@@ -85,7 +84,6 @@ test('A. 同窗下一轮：canary 在 reasoning store 命中，全部应用层 c
     assistant_and_owner_messages: revisions.reduce((n, r) => n + (String(r.content).includes(CANARY) ? 1 : 0), 0),
     turn_input: deepScanCanary(host.db.prepare('SELECT input_message_id FROM turns').all(), CANARY),
     context_assembler: deepScanCanary(assemblerOut, CANARY),
-    handoff: handoffHits,
     identity_receipt: receiptHits,
     archive_outbox: outbox.reduce((n, o) => n + deepScanCanary(o.payload_ref, CANARY), 0),
     our_words_projection: 0, // our_words/mariposa DTO 未联调（接口层占位）——C 场景 contract 覆盖

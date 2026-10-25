@@ -237,7 +237,7 @@ function composeWp4(root: string, transport: OrTransport) {
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const selections = new ManualSelectionService(db);
-  const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
+  const windows = new WindowManager(db, events, identity, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => {
