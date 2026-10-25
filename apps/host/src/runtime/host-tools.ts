@@ -51,8 +51,6 @@ import { ContractError } from './or-contract.ts';
 //（消费者逐步改指 contracts；删除批次登记在 MIGRATION_MATRIX / P09）。
 import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from '../capabilities/contracts.ts';
 export type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult };
-// P01.2：通用参数形状校验（从 validateToolArgs 提取；业务约束留所属能力）。
-import { validateArgsAgainstSchema, type PropSpec } from '../capabilities/validation.ts';
 import { CapabilityRegistry } from '../capabilities/registry.ts';
 import { executeRegisteredCapability } from '../capabilities/executor.ts';
 
@@ -255,13 +253,6 @@ export function hostToolNames(): string[] {
   return [...buildHostTools(), ...buildDeferredTools()].map((t) => t.function.name);
 }
 
-// P01.2：通用 schema 遍历提取至 capabilities/validation.ts（错误码逐一保持）；
-// 这里只保留 allowlist 解析（工具定义正本仍在宿主冻结目录）并委托通用校验。
-export function validateToolArgs(name: string, args: Record<string, unknown>, frozenSpec?: HostToolSpec): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
-  const spec = frozenSpec ?? buildHostTools().find((t) => t.function.name === name);
-  if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
-  return validateArgsAgainstSchema(args, spec.function.parameters as { properties?: Record<string, PropSpec>; required?: string[] });
-}
 
 // P01.1：SeenRef/ToolExecContext/ToolExecResult 叶类型正本已迁 capabilities/contracts.ts
 //（字段逐一对照；历史语义注释随迁）。顶部纯 type 重导出保持旧消费者兼容。

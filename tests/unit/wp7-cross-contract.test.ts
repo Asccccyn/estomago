@@ -4,6 +4,7 @@
 // 经 E 真 MariposaClient（fake transport 只做管道）→ HostToolExecutor →
 // 验证模型可见层的字段保真。I03：工具面/能力面一致性。
 import { test } from 'node:test';
+import { validateToolArgs } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -14,7 +15,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { HostToolExecutor, validateToolArgs, buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
+import { HostToolExecutor, buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';

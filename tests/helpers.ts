@@ -19,6 +19,8 @@ import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '..
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
 import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
+import { buildHostTools } from '../apps/host/src/runtime/host-tools.ts';
+import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
@@ -154,4 +156,14 @@ export function wireOidoCapabilitiesForTest(
   }
   (executor as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);
   (executor as { setMemoryRecovery(s: unknown): void }).setMemoryRecovery(memoryService);
+}
+
+
+// S15（原 validateToolArgs 迁入测试辅助层）：生产 API 已删——测试改用与注册表执行外壳
+// 同源的真实校验入口（条目 definition + capabilities/validation 通用校验）。
+// 语义=原 allowlist 解析 + validateArgsAgainstSchema（错误码逐一保持）。
+export function validateToolArgs(name: string, args: Record<string, unknown>, frozenSpec?: { function: { parameters: Record<string, unknown> } }): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
+  const spec = frozenSpec ?? buildHostTools().find((t) => t.function.name === name);
+  if (!spec) return { ok: false, code: 'TOOL_NOT_IN_ALLOWLIST', detail: name };
+  return validateArgsAgainstSchema(args, spec.function.parameters as { properties?: Record<string, never>; required?: string[] });
 }
