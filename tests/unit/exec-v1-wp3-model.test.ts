@@ -217,8 +217,8 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const ctx = compose(root, transport);
   const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-tool', createdBy: 'jiaming', origin: 'upload' });
   const ctx1 = ctx.toolCtx();
-  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看', __tool_call_id: 'tc1' }, ctx1);
-  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看', __tool_call_id: 'tc1' }, ctx1);
+  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
+  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
   assert.equal(r1.ok, true);
   assert.equal(r2.ok, true);
   const msgs = ctx.messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 100 }).filter((m) => m.speaker === 'assistant');
@@ -226,11 +226,11 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   assert.equal(sent.length, 1, '同一工具调用重试只发一条');
   assert.equal(sent[0]!.revision.attachments[0]!.asset_id, img.id);
   // 不存在的资产：ASSET_NOT_FOUND
-  const r3 = await ctx.tools.execute('chat_send_attachment', { asset_id: 'asset_none', presentation: 'image', __tool_call_id: 'tc2' }, ctx1);
+  const r3 = await ctx.tools.execute('chat_send_attachment', { asset_id: 'asset_none', presentation: 'image' }, ctx1);
   assert.equal(r3.ok, false);
   assert.equal((r3.output as { error_code: string }).error_code, 'ASSET_NOT_FOUND');
   // media_import：内网地址直接策略拒绝（不发起连接）
-  const r4 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/x.png', __tool_call_id: 'tc3' }, ctx1);
+  const r4 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/x.png' }, ctx1);
   assert.equal(r4.ok, false);
   assert.equal((r4.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
 });

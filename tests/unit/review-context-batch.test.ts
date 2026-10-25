@@ -160,16 +160,16 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
-  await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '上次聊中秋看月亮' }, CTX);
+  await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   let plan = (calls[0]!.payload as { query_plan: Record<string, unknown> }).query_plan;
   assert.equal(plan.semantic_query, '上次聊中秋看月亮', '自然语言显式进语义通道（服务端只认显式值）');
   assert.equal(plan.lexical_terms, undefined, '不带词项=纯语义');
-  await tools.execute('memory_recall', { __tool_call_id: 'c2', query: '中秋', lexical_terms: ['中秋', '月亮'] }, CTX);
+  await tools.execute('memory_recall', { query: '中秋', lexical_terms: ['中秋', '月亮'] }, CTX);
   plan = (calls[1]!.payload as { query_plan: Record<string, unknown> }).query_plan;
   assert.deepEqual(plan.lexical_terms, ['中秋', '月亮'], '模型可补精确词项');
   // 续查：refine 回原 session（不是另起 start）。找话第一批（2026-10-10）
   // 新合同：续查必须显式携带 channel（省略被拒——不静默回落查事件）
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c3', query: '就中秋那天', channel: 'event', refine_session_id: 'rs_1', refine_continue_ref: 'cont_abc' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '就中秋那天', channel: 'event', refine_session_id: 'rs_1', refine_continue_ref: 'cont_abc' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[2]!.cap, 'memory.recall.refine', '续查走 refine');
   const p3 = calls[2]!.payload as Record<string, unknown>;
@@ -177,7 +177,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   assert.equal((p3.query_plan as Record<string, unknown>).request_ref, 'cont_abc', '服务端续查引用透传');
   assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('refine_session_id'), '续查提示如实（不再宣称另起=会话延续）');
   // 只带一半续查参数 → 拒
-  const half = await tools.execute('memory_recall', { __tool_call_id: 'c4', query: 'x', refine_session_id: 'rs_1' }, CTX);
+  const half = await tools.execute('memory_recall', { query: 'x', refine_session_id: 'rs_1' }, CTX);
   assert.equal(half.ok, false, '续查参数必须成对');
   db.close();
 });
@@ -208,12 +208,12 @@ test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查
   wireOidoCapabilitiesForTest(tools, {  });;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't9', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   // ① 缺续查身份 → 早失败（不静默忽略、不冒充全新检索）
-  const early = await tools.execute('memory_recall', { __tool_call_id: 'rj0', query: '再找', reject_candidate_ref: 'cand_1' }, CTX);
+  const early = await tools.execute('memory_recall', { query: '再找', reject_candidate_ref: 'cand_1' }, CTX);
   assert.equal(early.ok, false);
   assert.equal((early.output as { error_code: string }).error_code, 'TOOL_ARG_REQUIRED');
   assert.equal(calls.length, 0, '早失败零外发');
   // ② 否定续查：先 reject（candidate_ref 通道）后 refine，顺序与身份如实
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'rj1', query: '不是海边那次，再找找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'cand_1' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '不是海边那次，再找找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'cand_1' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'memory.recall.reject', '先排除');
   const rej = calls[0]!.payload as Record<string, unknown>;
@@ -224,7 +224,7 @@ test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查
   assert.equal(calls[1]!.cap, 'memory.recall.refine', '排除后按新条件续查（同会话）');
   assert.equal((calls[1]!.payload as Record<string, unknown>).session_id, 'rs_9');
   // ③ memory: 前缀 → resource_ref 通道（M 侧支持反查会话候选）
-  await tools.execute('memory_recall', { __tool_call_id: 'rj2', query: '再找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'memory:00001' }, CTX);
+  await tools.execute('memory_recall', { query: '再找', channel: 'event', refine_session_id: 'rs_9', refine_continue_ref: 'cont_prev', reject_candidate_ref: 'memory:00001' }, CTX);
   const rej2 = calls[2]!.payload as Record<string, unknown>;
   assert.equal(rej2.resource_ref, 'memory:00001', '资源引用走 resource_ref 通道');
   assert.equal(rej2.candidate_ref, undefined);

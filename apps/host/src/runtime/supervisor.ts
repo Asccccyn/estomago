@@ -833,7 +833,6 @@ export class TurnSupervisor {
         } catch {
           args = {}; // 参数非法：执行器会因缺必填字段拒绝（§8.2 输入完整校验后才执行）
         }
-        args.__tool_call_id = t.tool_id;
         let exec: ToolExecResult;
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {

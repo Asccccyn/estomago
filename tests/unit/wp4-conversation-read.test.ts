@@ -211,16 +211,16 @@ test('O06（单元）：片段级已见——已读范围可引用，未读片�
     quotes: [{ seq: 1, from: 1, to: 1 }],
   };
   const okCtx = { ...CTX, seenMessages: [{ id: 'm1', revision: 1, char_start: 0, char_end: readCpEnd }] };
-  const good = await executor.execute('memory_hold', { ...holdArgs, __tool_call_id: 'c1' }, okCtx);
+  const good = await executor.execute('memory_hold', { ...holdArgs }, okCtx);
   assert.equal(good.ok, true, JSON.stringify(good.output).slice(0, 200));
   assert.equal(holdCalls.length, 1, '已读句段可勾选，hold 发出');
   // 未读句段（在后半段）→ QUOTE_REF_RANGE_NOT_SEEN，零副作用
-  const badHold = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1, from: 2, to: 2 }], __tool_call_id: 'c2' }, okCtx);
+  const badHold = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1, from: 2, to: 2 }] }, okCtx);
   assert.equal(badHold.ok, false);
   assert.equal((badHold.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   assert.equal(holdCalls.length, 1, '未读句段不放行——不因同消息其他句段已读而整条放行');
   // 整条勾选（含未读后半）同样不放行
-  const badWhole = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1 }], __tool_call_id: 'c3' }, okCtx);
+  const badWhole = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1 }] }, okCtx);
   assert.equal((badWhole.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   db.close();
 });

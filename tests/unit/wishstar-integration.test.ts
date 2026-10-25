@@ -41,7 +41,7 @@ test('wishstar_write_star：转发形状+幂等键派生+写回执瘦身', async
   const calls: ForwardCall[] = [];
   const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '不该回显的正文', status: 'ok', extra: 'x' } }));
   try {
-    const checked = validateToolArgs('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-1', __tool_call_id: 'c1' });
+    const checked = validateToolArgs('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-1' });
     assert.equal(checked.ok, true);
     const out = await tools.execute('wishstar_write_star', checked.value as Record<string, unknown>, CTX as never);
     assert.equal(out.ok, true);
@@ -58,7 +58,7 @@ test('wishstar_start_session：路径绑定 special_date_id', async () => {
   const calls: ForwardCall[] = [];
   const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'sess_1', status: 'invited' } }));
   try {
-    const out = await tools.execute('wishstar_start_session', { special_date_id: 'sd_79', __tool_call_id: 'c1' }, CTX as never);
+    const out = await tools.execute('wishstar_start_session', { special_date_id: 'sd_79' }, CTX as never);
     assert.equal(out.ok, true);
     assert.equal(calls[0]!.path, '/api/sessions');
     assert.deepEqual(calls[0]!.body, { special_date_id: 'sd_79' });
@@ -69,7 +69,7 @@ test('读工具：GET 无幂等键、原样返回', async () => {
   const calls: ForwardCall[] = [];
   const { tools, db } = makeTools(calls, () => ({ status: 200, body: { items: [{ name: '7.9' }] } }));
   try {
-    const out = await tools.execute('wishstar_special_dates', { __tool_call_id: 'c1' }, CTX as never);
+    const out = await tools.execute('wishstar_special_dates', { }, CTX as never);
     assert.equal(out.ok, true);
     assert.deepEqual(out.output, { items: [{ name: '7.9' }] });
     assert.equal(calls[0]!.method, 'GET');
@@ -80,7 +80,7 @@ test('读工具：GET 无幂等键、原样返回', async () => {
 test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED', async () => {
   const { tools, db } = makeTools([], () => ({ status: 403, body: { detail: '纪念日只能在当天发起' } }));
   try {
-    const out = await tools.execute('wishstar_start_session', { special_date_id: 'sd_x', __tool_call_id: 'c1' }, CTX as never);
+    const out = await tools.execute('wishstar_start_session', { special_date_id: 'sd_x' }, CTX as never);
     assert.equal(out.ok, false);
     assert.equal((out.output as { error_code: string }).error_code, 'WISHSTAR_403');
   } finally { db.close(); }
@@ -91,7 +91,7 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
   try {
     const bare = new HostToolExecutor({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) })
   wireOidoCapabilitiesForTest(bare, {  });;
-    const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k', __tool_call_id: 'c' }, CTX as never);
+    const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k' }, CTX as never);
     assert.equal((out2.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
   } finally { db2.close(); }
 });

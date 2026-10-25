@@ -94,7 +94,7 @@ export class OidoHearingService {
       // RE-11（2026-10-24 返修）：操作幂等键=（turn,request,tool_call）——同轮同一工具调用
       // 重试同键（服务端幂等去重）；同一请求内不同 tool_call 各自独立。旧执行路径无
       // tool_call_id 时保留 (turn,request) 形态（legacy 直调，一次只有一个调用在跑）
-      const toolCallId = ctx.toolCallId ?? (typeof (args as Record<string, unknown>).__tool_call_id === 'string' ? String((args as Record<string, unknown>).__tool_call_id) : null);
+      const toolCallId = ctx.toolCallId ?? null; // S17b 批次4：身份只走可信 ctx
       const idemKey = toolCallId ? `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}:${toolCallId}` : `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`;
       const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal: ctx.signal }).catch((err: Error) => {
         if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {

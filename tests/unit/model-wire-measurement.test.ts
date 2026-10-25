@@ -7,7 +7,7 @@ import {HostToolExecutor} from '../../apps/host/src/runtime/host-tools.ts';
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
 import {HoldCheckpointService} from '../../apps/host/src/memory/hold-checkpoint.ts';
-const ctx={roomId:'c1',windowId:'w1',turnId:'t1',requestId:'req1',purpose:'chat' as const,activeReviewId:null,seenSequence:1,seenMessages:[]};
+const ctx={roomId:'c1',windowId:'w1',turnId:'t1',requestId:'req1',purpose:'chat' as const,activeReviewId:null,seenSequence:1,seenMessages:[],toolCallId:'mw'};
 const body='合成验收正文，逐字保留。\n！！';
 const cases=[
  {name:'episode_get',args:{episode_id:'ep1'},data:{episode_id:'ep1',label:'合成事件',state:'OPEN',revision:3,scope_id:'c1',created_by:'jiaming',created_at:'2026-10-21T00:00:00Z',updated_at:'2026-10-21T00:00:00Z',closed_recorded_at:null,source_selections:[],decision_source_refs:[],terminal_source_ref:null}},
@@ -24,7 +24,7 @@ test('capture actual executor output serialized exactly as supervisor tool conte
  const records=[];
  for(const c of cases){
   // S15：校验入口=helpers.validateToolArgs（条目 definition+通用校验，同注册表执行外壳）
-  const checked = validateToolArgs(c.name, {...c.args,__tool_call_id:c.name});
+  const checked = validateToolArgs(c.name, c.args);
   assert.equal(checked.ok, true, c.name+' 参数须过形状门');
   fixture=c.data;const result=await executor.execute(c.name,checked.value as Record<string,unknown>,ctx);assert.equal(result.ok,true);
   const content=JSON.stringify(result.output);records.push({tool:c.name,content,bytes:Buffer.byteLength(content,'utf8')});}

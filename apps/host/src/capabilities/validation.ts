@@ -18,7 +18,6 @@ export function propMinimumOf(prop: PropSpec): number | undefined {
 export function validateArgsAgainstSchema(args: Record<string, unknown>, schema: SchemaShape): { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) {
-    if (k === '__tool_call_id') continue; // 宿主内部标识，非模型参数
     if (v === undefined) continue; // undefined=字段缺席（JSON 里本不存在该键）
     const prop = schema.properties?.[k];
     if (!prop) return { ok: false, code: 'TOOL_ARG_UNKNOWN', detail: `未知参数 ${k}（additionalProperties:false）` };

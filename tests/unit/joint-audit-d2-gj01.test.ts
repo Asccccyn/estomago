@@ -146,7 +146,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'call-r1', query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
+  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
   assert.equal(calls.length, 1);
   const p0 = calls[0]!;
@@ -160,7 +160,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
   assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('cont_abc'), '续查引用透传');
   // 重试同 ref
-  await tools.execute('memory_recall', { __tool_call_id: 'call-r1', query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
+  await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' });
   assert.equal(calls.length, 2);
   assert.equal((calls[1]!.request_ref as string), (calls[0]!.request_ref as string), '同 tool_call 重试同 ref（服务端按 request_ref 幂等）');
   db.close();
@@ -178,7 +178,7 @@ test('G-J-01：5xx→OUTCOME_UNKNOWN；参数门拒缺 query；白名单外工�
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c9', query: 'x' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' });
+  const out = await tools.execute('memory_recall', { query: 'x' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' });
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_OUTCOME_UNKNOWN', '结果不明不当失败');
   const bad = validateToolArgs('memory_recall', {});

@@ -56,7 +56,7 @@ function toolsWithHttpBody(bodyFor: (cap: string) => string | null): HostToolExe
 test('R01：真实 registry 包（单层信封）→ 候选/session/状态到达主模型输出', async () => {
   const packet = JSON.parse(foundBody).data as Record<string, unknown>;
   const tools = toolsWithHttpBody((cap) => (cap === 'memory.recall.start' ? foundBody : null));
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'call-e1', query: '上次聊中秋看月亮' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   tools.close();
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
   assert.ok(Array.isArray(out.output.candidates) && out.output.candidates.length === (packet.candidates as unknown[]).length,
@@ -73,7 +73,7 @@ test('R01：同 ref 重放（顶层 idempotent_replay）→ 可见结果与首�
   const packet = JSON.parse(foundBody).data as Record<string, unknown>;
   const replayBody = JSON.stringify({ ok: true, data: { ...packet, idempotent_replay: true } });
   const tools = toolsWithHttpBody((cap) => (cap === 'memory.recall.start' ? replayBody : null));
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'call-e2', query: '上次聊中秋看月亮' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   tools.close();
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
   // R1′（2026-10-23）：重放=同请求同结果，宿主管理幂等（R01 业务反例保留为：
@@ -85,7 +85,7 @@ test('R01：同 ref 重放（顶层 idempotent_replay）→ 可见结果与首�
 
 test('R01：冻结版双层信封（反例原始形状）→ 结构化报错，不再空候选装成功', async () => {
   const tools = toolsWithHttpBody((cap) => (cap === 'memory.recall.start' ? legacyDoubleWrapBody : null));
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'call-e3', query: '上次聊中秋看月亮' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   tools.close();
   assert.equal(out.ok, false, '双层信封=形状错误，必须失败');
   assert.equal(out.output.error_code, 'RECALL_ENVELOPE_INVALID');

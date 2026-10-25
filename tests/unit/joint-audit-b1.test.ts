@@ -151,7 +151,7 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews, checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
   const out = await tools.execute('memory_hold', {
-    __tool_call_id: 'call-j54',
+    toolCallId: 'call-j54',
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
     // R1′（2026-10-23）：60c6998 起 F-J-54 绑定核对按事件选集（source_ranges）算；
     // quotes 走我们的话勾选链路（1018 批），不再计入本核对。驱动改为 source_ranges。

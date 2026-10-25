@@ -154,7 +154,7 @@ export class HostToolExecutor {
     const identity = () => ({
       tool: name,
       label,
-      tool_call_id: ctx.toolCallId ?? (typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null),
+      tool_call_id: ctx.toolCallId ?? null, // S17b 批次4：身份只走可信 ctx
       turn_id: ctx.turnId,
       attempt_id: ctx.attemptId ?? null,
       request_id: ctx.requestId,
@@ -202,7 +202,8 @@ export class HostToolExecutor {
     const set = storedToolset(this.db, ctx.windowId);
     const deny = (code: string): ToolExecResult => ({ok:false,output:{error_code:code}});
     if (set?.protocol !== 'deferred') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
-    const allowed = name === 'tool_catalog' ? ['__tool_call_id'] : name === 'tool_define' ? ['name','__tool_call_id'] : ['name','definition_id','arguments','__tool_call_id'];
+    // S17b 批次4：__tool_call_id 不在 wire 协议中——宿主内部身份只走 ctx.toolCallId
+    const allowed = name === 'tool_catalog' ? [] : name === 'tool_define' ? ['name'] : ['name','definition_id','arguments'];
     if (Object.keys(args).some(k=>!allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
     if (name === 'tool_catalog') {
       this.admitBackgroundTool(name, ctx); // 保温批（3aa0164）：后台工具准入记账
@@ -224,7 +225,7 @@ export class HostToolExecutor {
     if (args.definition_id !== definitionId(spec) || (!definitionWasSeen(this.db,ctx,spec) && !initialSeen)) return deny('TOOL_DEFINITION_NOT_SEEN');
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return deny('TOOL_ARG_TYPE');
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
-    return this.executeInner(spec.function.name, {...args.arguments as Record<string,unknown>,__tool_call_id:args.__tool_call_id},ctx,spec);
+    return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);
   }
 
   /** D39：通话 memory_only 资格唯一判定——已迁能力读条目元数据；discovery 入口读自身元数据。

@@ -41,12 +41,12 @@ function fixture() {
 test('A04 catalog during call lists only memory and control tools', async () => {
   const f = fixture();
   try {
-    const before = await f.tools.execute('tool_catalog', { __tool_call_id: 'tc0' }, f.ctx());
+    const before = await f.tools.execute('tool_catalog', { }, f.ctx());
     assert.equal(before.ok, true);
     const beforeNames = ((before.output as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
     assert.ok(beforeNames.includes('wishstar_list_offers'), '非通话目录含业务工具（冻结目录本身不变）');
     f.startCall();
-    const during = await f.tools.execute('tool_catalog', { __tool_call_id: 'tc1' }, f.ctx());
+    const during = await f.tools.execute('tool_catalog', { }, f.ctx());
     assert.equal(during.ok, true);
     const duringNames = ((during.output as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
     assert.ok(!duringNames.includes('wishstar_list_offers'), '通话内新 catalog 不列非记忆业务工具');
@@ -63,9 +63,9 @@ test('A04 define/invoke/direct execution all gated during call; recovery after h
     f.startCall();
     const ctx = f.ctx();
     // define 非记忆工具：define 本身可过（延迟发现机制），但定义后 invoke 被拒；直接执行同样被拒
-    const def = await f.tools.execute('tool_define', { name: 'wishstar_list_offers', __tool_call_id: 'td1' }, ctx);
+    const def = await f.tools.execute('tool_define', { name: 'wishstar_list_offers' }, ctx);
     assert.equal(def.ok, true); // 目录机制开放；执行边界才是能力门
-    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_list_offers', definition_id: (def.output as { definition_id: string }).definition_id, arguments: {}, __tool_call_id: 'ti1' }, ctx);
+    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_list_offers', definition_id: (def.output as { definition_id: string }).definition_id, arguments: {} }, ctx);
     assert.equal(inv.ok, false);
     assert.equal((inv.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');
     const direct = await f.tools.execute('media_search', { query: 'x' }, ctx);

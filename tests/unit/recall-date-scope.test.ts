@@ -47,7 +47,7 @@ test('带 date_from/date_to → query_plan 携带 event_date 收窄', async () =
     return { ok: true, result: {} };
   });
   try {
-    const checked = validateToolArgs('memory_recall', { query: '9月25到27日那几天', date_from: '2026-09-25', date_to: '2026-09-27', __tool_call_id: 'c1' });
+    const checked = validateToolArgs('memory_recall', { query: '9月25到27日那几天', date_from: '2026-09-25', date_to: '2026-09-27' });
     assert.equal(checked.ok, true);
     const out = await tools.execute('memory_recall', checked.value as Record<string, unknown>, CTX as never);
     assert.equal(out.ok, true);
@@ -63,7 +63,7 @@ test('不带日期 → query_plan 无 explicit_constraints（旧行为不变）'
     return { ok: true, result: {} };
   });
   try {
-    await tools.execute('memory_recall', { query: '随便聊聊', __tool_call_id: 'c2' }, CTX as never);
+    await tools.execute('memory_recall', { query: '随便聊聊' }, CTX as never);
     const plan = seenPlan as { explicit_constraints?: unknown };
     assert.equal(plan.explicit_constraints, undefined, '无日期时不得注入空约束');
   } finally { db.close(); }
@@ -72,9 +72,9 @@ test('不带日期 → query_plan 无 explicit_constraints（旧行为不变）'
 test('半区间（只有 date_from）→ 参数拒绝，不产生副作用', async () => {
   const { tools, db } = makeTools(async () => ({ ok: true, result: okPacket }));
   try {
-    const bad = validateToolArgs('memory_recall', { query: 'x', date_from: '2026-09-25', __tool_call_id: 'c3' });
+    const bad = validateToolArgs('memory_recall', { query: 'x', date_from: '2026-09-25' });
     assert.equal(bad.ok, true, 'schema 层两键各自可选');
-    const out = await tools.execute('memory_recall', { query: 'x', date_from: '2026-09-25', __tool_call_id: 'c3' }, CTX as never);
+    const out = await tools.execute('memory_recall', { query: 'x', date_from: '2026-09-25' }, CTX as never);
     assert.equal(out.ok, false);
     assert.equal((out.output as { error_code: string }).error_code, 'TOOL_ARG_REQUIRED');
   } finally { db.close(); }
@@ -87,7 +87,7 @@ test('refine 续查也携带 event_date', async () => {
     return { ok: true, result: {} };
   });
   try {
-    await tools.execute('memory_recall', { query: '还是那三天', channel: 'event', refine_session_id: 'rs_d1', refine_continue_ref: 'ref_d1', date_from: '2026-09-25', date_to: '2026-09-27', __tool_call_id: 'c4' }, CTX as never);
+    await tools.execute('memory_recall', { query: '还是那三天', channel: 'event', refine_session_id: 'rs_d1', refine_continue_ref: 'ref_d1', date_from: '2026-09-25', date_to: '2026-09-27' }, CTX as never);
     const plan = seenPlan as { explicit_constraints?: { event_date?: { from: string; to: string } } };
     assert.deepEqual(plan.explicit_constraints?.event_date, { from: '2026-09-25', to: '2026-09-27' });
   } finally { db.close(); }

@@ -38,8 +38,8 @@ test('词表动态化：refreshMoodCategories 拉到正本 → 枚举/校验随�
   const spec = fullToolCatalog().find((t) => t.function.name === 'memory_hold')!;
   const moodEnum = ((spec.function.parameters as { properties: Record<string, { items?: { enum?: string[] } }> }).properties.mood_tags!.items!.enum);
   assert.deepEqual(moodEnum, ['开心', '爱', '平静'], '工具枚举用当前词表');
-  assert.equal(validateToolArgs('memory_hold', { __tool_call_id: 'tc1', original_title: 't', categories: ['daily'], text: 'x', mood_tags: ['平静'], creation_mode: 'contemporaneous' }).ok, true, '新词可过形状门');
-  assert.equal(validateToolArgs('memory_hold', { __tool_call_id: 'tc1', original_title: 't', categories: ['daily'], text: 'x', mood_tags: ['生气'], creation_mode: 'contemporaneous' }).ok, false, '正本已移除的旧词=形状门拒（域校验仍以服务端为准）');
+  assert.equal(validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', mood_tags: ['平静'], creation_mode: 'contemporaneous' }).ok, true, '新词可过形状门');
+  assert.equal(validateToolArgs('memory_hold', { original_title: 't', categories: ['daily'], text: 'x', mood_tags: ['生气'], creation_mode: 'contemporaneous' }).ok, false, '正本已移除的旧词=形状门拒（域校验仍以服务端为准）');
 
   // mariposa 不可达：transport 抛异常 → 保快照不阻塞
   const downTransport: MariposaTransport = async () => { throw new Error('unreachable'); };

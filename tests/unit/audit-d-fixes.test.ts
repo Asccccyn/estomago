@@ -84,7 +84,7 @@ async function execHold(ctx: { db: ReturnType<typeof openDatabase> }, calls: Hol
   const reviews = new RotationReviewService(ctx.db);
   const tools = new HostToolExecutor({ db: ctx.db, mariposa: new MariposaClient({ transport: recordingMariposa(calls, resultOverride) }), reviews, checkpoint: new HoldCheckpointService(ctx.db) })
   wireOidoCapabilitiesForTest(tools, {});;
-  return { out: await tools.execute('memory_hold', { ...args, __tool_call_id: 'call-1' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: seen, requestId: 'req-1' }), effects: reviews };
+  return { out: await tools.execute('memory_hold', { ...args }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: seen, requestId: 'req-1', toolCallId: 'call-1' }), effects: reviews };
 }
 
 test('D15：只给 mood_tags 时 mood 不带 text 字段（服务端 text 只收 string）', async () => {

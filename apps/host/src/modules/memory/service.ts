@@ -152,7 +152,7 @@ export class MemoryToolsService {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     // P04：全局 rawToolCallIdRef 不再随迁——新路径 tool_call_id 由执行外壳注入 args；
     // 宿主直调无 id 时与旧全局为 null 的行为一致（空串派生）。
-    const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? '');
+    const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
 
     // 词表节流刷新（审计 1005B）：带心情的 hold 前保证枚举/校验与 mariposa
     // 正本对齐——60s 一次，失败保快照不阻塞 hold 本身
@@ -322,7 +322,7 @@ export class MemoryToolsService {
 
   async memoryRecall(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
-    const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? '');
+    const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
     const requestRef = `es-recall-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     // R02（复审 2026-10-07）：续查=refine 回原 session（不是另起 start 冒充
     // 会话延续）；同 tool_call 重试同 request_ref（新调用=新逻辑身份）
@@ -364,7 +364,7 @@ export class MemoryToolsService {
       if (!reason) {
         return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '深搜（deep_search）必须带 deep_reason（闭集枚举，最常用 EVIDENCE_INSUFFICIENT）', request_ref: requestRef } };
       }
-      const opId = `es-r2-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${args.__tool_call_id ?? ''}`).slice(0, 40)}`;
+      const opId = `es-r2-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}`).slice(0, 40)}`;
       let r2: Awaited<ReturnType<MariposaClient['recallRound2']>>;
       try {
         r2 = await this.mariposa.recallRound2({ sessionId: refineSession, reason, operationId: opId, conversationScope: ctx.roomId });
@@ -697,7 +697,7 @@ export class MemoryToolsService {
       }
       return { ok: true, output: { note: '我们的话已更新（原文录入，说话人随出处，审计留痕）。', action, ...(r.result as Record<string, unknown>) } };
     }
-    const opId = `es-cor-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${args.__tool_call_id ?? ''}:${action}`).slice(0, 40)}`;
+    const opId = `es-cor-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}:${action}`).slice(0, 40)}`;
     const ca = args.correction_action === 'remove_wrong_binding' || args.correction_action === 'replace_wrong_binding' ? args.correction_action : '';
     if (action === 'relation' || action === 'word_source' || action === 'binding') {
       if (!ca) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 纠错必须带 correction_action（remove_wrong_binding/replace_wrong_binding）` } };
@@ -766,7 +766,7 @@ export class MemoryToolsService {
       if (action === 'requests') r = await this.mariposa.deletionList({ ...(status ? { status } : {}) });
       else if (action === 'get') r = await this.mariposa.deletionGet(requestId);
       else {
-        const opId = `es-del-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${args.__tool_call_id ?? ''}`).slice(0, 40)}`;
+        const opId = `es-del-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}`).slice(0, 40)}`;
         r = await this.mariposa.deletionDecide({ requestId, decision: decision as 'approve' | 'reject', ...(rejectionReason ? { rejectionReason } : {}), operationId: opId });
       }
     } catch {
@@ -835,7 +835,7 @@ export class MemoryToolsService {
     if (action === 'create' && !title) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'create 必须带 title' } };
     }
-    const opId = `es-pw-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${args.__tool_call_id ?? ''}:${action}`).slice(0, 40)}`;
+    const opId = `es-pw-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}:${action}`).slice(0, 40)}`;
     let r: Awaited<ReturnType<MariposaClient['planCreate'] | MariposaClient['planUpdate'] | MariposaClient['planSetState']>>;
     try {
       if (action === 'create') {
@@ -912,7 +912,7 @@ export class MemoryToolsService {
 
   async episodeApply(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线' } };
-    const toolCallId = String((args as Record<string, unknown>).__tool_call_id ?? '');
+    const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
     const operationId = `es-ep-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const { __tool_call_id: _ignored, operation_id: _modelOp, scope_id: _modelScope, ...modelArgs } = args;
     const payload: Record<string, unknown> = {

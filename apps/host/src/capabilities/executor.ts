@@ -38,9 +38,6 @@ export async function executeRegisteredCapability<I, O>(
   const spec = frozenSpec ?? descriptor.definition();
   const checked = descriptor.parse(rawArgs, spec);
   if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
-  // 宿主内部标识随校验后的参数透传（等价于旧 rawToolCallIdRef 单一读取；P04+ 全面去全局）
-  const toolCallId = typeof rawArgs.__tool_call_id === 'string' ? rawArgs.__tool_call_id : null;
-  if (toolCallId !== null) (checked.value as Record<string, unknown>).__tool_call_id = toolCallId;
   // 背景工具准入记账（照搬 admitBackgroundTool：背景 run 缺准入=合同错误；非背景不查价——D40）
   if (ctx.backgroundRunId && !ctx.beforeBackgroundTool) throw new ContractError('BACKGROUND_TOOL_ADMISSION_MISSING');
   if (ctx.beforeBackgroundTool) ctx.beforeBackgroundTool(descriptor.quote(host.db));

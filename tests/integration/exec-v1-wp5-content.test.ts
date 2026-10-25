@@ -208,18 +208,18 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token } })
   wireOidoCapabilitiesForTest(tools, {});;
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w1', turnId: 'turn-tool-test', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-test' };
-  const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1', __tool_call_id: 'tc-model-1' }, ctx);
+  const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1' }, ctx);
   assert.equal(r.ok, true);
   const post = r.output as { id: string; author: string; presentation: string };
   assert.equal(post.author, 'jiaming', '模型工具派生 jiaming');
   assert.equal(post.presentation, 'letter');
   // 列表
-  const list = await tools.execute('content_posts_list', { limit: 5, __tool_call_id: 'tc-list' }, ctx);
+  const list = await tools.execute('content_posts_list', { limit: 5 }, ctx);
   assert.equal(list.ok, true);
   const items = (list.output as { items: Array<{ id: string; author: string }> }).items;
   assert.ok(items.some((i) => i.id === post.id));
   // 评论
-  const comment = await tools.execute('content_comment_create', { post_id: post.id, body: '自己的评论', idempotency_key: 'mc-1', __tool_call_id: 'tc-mc' }, ctx);
+  const comment = await tools.execute('content_comment_create', { post_id: post.id, body: '自己的评论', idempotency_key: 'mc-1' }, ctx);
   assert.equal(comment.ok, true);
   db.close();
 });

@@ -198,7 +198,7 @@ test('F-J-38：retrospective + mood_tags 在宿主预拒（不落服务端）', 
   const reviews = new RotationReviewService(db);
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const out = await tools.execute('memory_hold', { __tool_call_id: 'c38', original_title: '补记心情', categories: ['daily'], text: 'x', creation_mode: 'retrospective', memory_date: '2026-09-01', mood_tags: ['开心'] }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r38' });
+  const out = await tools.execute('memory_hold', { original_title: '补记心情', categories: ['daily'], text: 'x', creation_mode: 'retrospective', memory_date: '2026-09-01', mood_tags: ['开心'] }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r38' });
   assert.equal(out.ok, false, '补记+当时心情=整单拒');
   assert.equal(out.output.error_code, 'HOLD_MOOD_WINDOW_REQUIRED');
   assert.equal(calls.length, 0, '未发远端（宿主前置拦截省一次调用）');

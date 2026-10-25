@@ -47,7 +47,7 @@ test('define then sent proof before invoke; no direct/forged/cross-room invocati
  assert.equal((await f.executor.execute('memory_hold',args,f.ctx)).ok,false);
  assert.equal((await f.executor.execute('tool_define',{name:'not-real'},f.ctx)).ok,false);
  const defined=await f.executor.execute('tool_define',{name:'memory_hold'},f.ctx);assert.equal(defined.ok,true);
- const invoke={name:'memory_hold',definition_id:defined.output.definition_id,arguments:args,__tool_call_id:'outer-call'};
+ const invoke={name:'memory_hold',definition_id:defined.output.definition_id,arguments:args};
  assert.equal((await f.executor.execute('tool_invoke',invoke,f.ctx)).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
  f.persist(tools,[{role:'user',content:JSON.stringify(defined.output)}]);
  assert.equal((await f.executor.execute('tool_invoke',invoke,f.ctx)).ok,false);

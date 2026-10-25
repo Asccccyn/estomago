@@ -80,7 +80,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
 
   const ctxNew = { roomId: 'c1', windowId: winNew, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r1' };
   const direct = await tools.execute('tool_invoke', {
-    __tool_call_id: 'c1', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
+    toolCallId: 'c1', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
     arguments: { operation: 'read' },
   }, ctxNew);
   assert.equal(direct.ok, true, '新窗直接 invoke 成功（免 define 三跳）');
@@ -94,7 +94,7 @@ test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define
   void realSpec;
   const ctxOld = { ...ctxNew, windowId: winOld };
   const refused = await tools.execute('tool_invoke', {
-    __tool_call_id: 'c2', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
+    toolCallId: 'c2', name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
     arguments: { operation: 'read' },
   }, ctxOld);
   assert.equal(refused.ok, false, '旧窗无注入=仍走 catalog→define 旧门');

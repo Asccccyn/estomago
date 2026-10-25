@@ -146,8 +146,8 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
   };
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: t.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  const out = await tools.execute('memory_recall_next', { __tool_call_id: 'c1', result_set_id: 'rps_x' }, CTX);
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
+  const out = await tools.execute('memory_recall_next', { result_set_id: 'rps_x' }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output));
   // R1′（2026-10-23）：judge_policy_revision/judged_count 属诊断字段，按模型输出合同
   // （bd677ed）不进普通投影；judge 状态以 judgement 等价表达（off=unjudged）
@@ -163,7 +163,7 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
   } });
   const tools2 = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: homeOff.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools2, {  });;
-  const out2 = await tools2.execute('memory_recall', { __tool_call_id: 'c2', query: 'q' }, CTX);
+  const out2 = await tools2.execute('memory_recall', { query: 'q' }, CTX);
   assert.equal(out2.ok, false);
   assert.equal((out2.output as Record<string, unknown>).error_code, 'RECALL_ENVELOPE_INVALID');
   assert.deepEqual((out2.output as Record<string, unknown>).missing_fields, ['pagination'], 'off 首页缺 pagination 如实披露');
@@ -187,8 +187,8 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('m2',1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(zh2, sha256Hex(zh2));
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  const out = await tools.execute('conversation_read', { __tool_call_id: 'c1', around_seq: 1, before: 1, after: 1 }, CTX);
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
+  const out = await tools.execute('conversation_read', { around_seq: 1, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true);
   const blob = Buffer.byteLength(JSON.stringify((out.output as Record<string, unknown>).entries ?? []), 'utf8');
   assert.ok(blob <= 16000 + 2400, `整页出站按真字节有界（实际 ${blob}B）`);
@@ -198,7 +198,7 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   const m1e = entries.find((e) => e.seq === 1) as { fragment?: unknown; text?: string } | undefined;
   assert.ok(m1e, '锚点 m1（seq 1）在首页（预留优先）');
   assert.equal(m1e.fragment, undefined, '5000 字整条交付（≤整页预算）');
-  const fragPage = await tools.execute('conversation_read', { __tool_call_id: 'c2', cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
+  const fragPage = await tools.execute('conversation_read', { cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
   assert.equal(fragPage.ok, true);
   const fragEntries = (fragPage.output as { entries: Array<Record<string, unknown>> }).entries;
   assert.ok(fragEntries.some((e) => e.fragment), '9000 字条目超整页预算在续页分片（真 UTF-8 字节口径）');
@@ -340,14 +340,13 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
   }
   const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {  });;
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
   // range 1..10 翻尽：全部 10 条都到
   const seenIds = new Set<string>();
   let cursor: Record<string, unknown> | null = null;
   let pages = 0;
   do {
     const out = await tools.execute('conversation_read', {
-      __tool_call_id: `c${pages}`,
       ...(cursor ? { cursor } : { from_sequence: 1, to_sequence: 10 }) } as never, CTX);
     assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
     for (const e of (out.output as { entries: Array<{ seq?: number }> }).entries) {
@@ -379,7 +378,7 @@ test('RRA-014：range 尾页跳过行续页可达；older 交付前沿不重复'
   pages = 0;
   do {
     const out = await tools.execute('conversation_read', {
-      __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
+      cursor: oc } as never, CTX);
     assert.equal(out.ok, true);
     for (const e of (out.output as { entries: Array<{ seq?: number; text?: string; fragment?: { start_char?: number; end_char?: number } }> }).entries) {
       if (!e.seq) continue;

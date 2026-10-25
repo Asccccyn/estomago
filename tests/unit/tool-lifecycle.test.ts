@@ -45,7 +45,7 @@ const okMariposa: MariposaTransport = async (_cap, payload) => ({ ok: true, resu
 test('R07：同一身份贯穿 start→result；身份字段完整', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    const out = await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-life-1' }, {
+    const out = await tools.execute('memory_hold', { ...HOLD_ARGS }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-9', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-9',
       toolCallId: 'call-life-1', attemptId: 'att-9', round: 1, generationId: 'gen-9',
@@ -72,7 +72,7 @@ test('R07：同一身份贯穿 start→result；身份字段完整', async () =>
 test('R07：执行失败=result ok:false+error_code 如实（0 假成功）', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    const out = await tools.execute('memory_hold', { bad: 1, __tool_call_id: 'call-bad' }, {
+    const out = await tools.execute('memory_hold', { bad: 1 }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-b', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-b', toolCallId: 'call-bad', attemptId: 'att-b', round: 0, generationId: null,
     });
@@ -95,7 +95,7 @@ test('R07：执行器抛错=error 阶段+原样上抛（不吞不改）', async 
     holdDescriptor.run = async () => { throw new Error('boom-生命周期'); };
     void origRun;
     await assert.rejects(
-      tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-x' }, {
+      tools.execute('memory_hold', { ...HOLD_ARGS }, {
         roomId: 'c1', windowId: 'w1', turnId: 'turn-x', purpose: 'chat', activeReviewId: null,
         seenSequence: 1, seenMessages: [], requestId: 'req-x', toolCallId: 'call-x', attemptId: null, round: null, generationId: null,
       }),
@@ -110,7 +110,7 @@ test('R07：执行器抛错=error 阶段+原样上抛（不吞不改）', async 
 test('R07：SILENT_TOOLS 零事件；重复执行逐次真实回执', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    await tools.execute('context_review_complete', { __tool_call_id: 'quiet-1' }, {
+    await tools.execute('context_review_complete', { }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-q', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-q', toolCallId: 'quiet-1',
     });
@@ -119,8 +119,8 @@ test('R07：SILENT_TOOLS 零事件；重复执行逐次真实回执', async () =
       roomId: 'c1', windowId: 'w1', turnId: 'turn-r', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-r', toolCallId: 'call-repeat', attemptId: 'att-r', round: 2, generationId: 'gen-r',
     };
-    await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-repeat' }, ctx);
-    await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-repeat' }, ctx);
+    await tools.execute('memory_hold', { ...HOLD_ARGS }, ctx);
+    await tools.execute('memory_hold', { ...HOLD_ARGS }, ctx);
     const evs = toolEvents() as Array<{ phase: string; tool_call_id?: string }>;
     assert.equal(evs.length, 4, '两次执行各一对 start/result（迟到/重复不吞回执）');
     assert.ok(evs.every(e => e.tool_call_id === 'call-repeat'));
