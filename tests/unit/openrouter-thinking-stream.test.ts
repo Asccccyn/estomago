@@ -23,7 +23,7 @@ import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/
 import { OrStreamAccumulator } from '../../apps/host/src/runtime/or-sse.ts';
 import type { OrRunRequest } from '../../apps/host/src/runtime/runner.ts';
 import type { SdkNormalizedEvent } from '../../packages/contracts/src/sdk-events.ts';
-import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { buildFullTestRegistry, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const frame = (delta: Record<string, unknown>): string => `data: ${JSON.stringify({ id: 'gen-thinking-fixture', choices: [{ delta }] })}\n\n`;
@@ -216,7 +216,7 @@ test('真实 supervisor 保存可读思考及前端投影，区分密文、无�
     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner: new OpenRouterRunner({ providerOnly: ['amazon-bedrock'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport) },
     reasoning, usage: new UsageCollector(db), routing: new RoutingService(db, events, messages),
-    windows: new WindowManager(db, events, identity, paths.handoffsDir, config), logger: new Logger(null),
+    windows: new WindowManager(db, events, identity, paths.handoffsDir, config), logger: new Logger(null), toolCatalog: buildFullTestRegistry(),
   });
   messages.ensureConversation('c1');
   try {

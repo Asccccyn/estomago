@@ -12,7 +12,7 @@ import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
-import { oidoHearingAvailable } from '../../apps/host/src/runtime/supervisor.ts';
+import { oidoHearingAvailable } from '../../apps/host/src/application/voice-hearing-port.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 

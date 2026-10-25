@@ -12,7 +12,7 @@ import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-function fixture() {
+function fixture(over: { mediaIndex?: Record<string, unknown> } = {}) {
  assert.equal(process.env.ESTOMAGO_TEST_MODE,'1');
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'joint-audit-est-'));
  const db=openDatabase(root);migrate(db,sha256Hex);
@@ -21,7 +21,7 @@ function fixture() {
  let gets=0;
  const output:any={analysis_id:'analysis_synthetic',revision:1,state:'ready',range_ms:[0,1000],observations:[{kind:'pause',range_ms:[0,10],value:0,unit:'ms',quality:'measured'},{kind:'pitch',range_ms:[0,1000],value:null,unit:'semitone',quality:'unavailable',reason:'unvoiced'}],limits:[],trace_id:'internal_trace',job_id:'internal_job',provider:{request_id:'private_request'},transcript:'duplicated transcript'};
  const adapter:any={ingestVoice:async()=>({audioId:'audio_synthetic',deduplicated:false}),analyze:async()=>structuredClone(output),getOverview:async()=>{gets++;return structuredClone(output)},getProsodyPage:async()=>{gets++;return {analysis_id:'analysis_synthetic',revision:1,syllables:[],next_cursor:'next'}}};
- const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages, oido: adapter });
+ const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages, oido: adapter, mediaIndex: (over.mediaIndex ?? null) as never });
  const ctx=(roomId='a'):ToolExecContext=>({roomId,windowId:'w',turnId:null,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[],requestId:'audit_synthetic'});
  const create=async()=>{const asset=await media.saveBuffer({bytes:Uint8Array.from([0x1a,0x45,0xdf,0xa3,0x02,0]),purpose:'chat_voice',operationId:'synthetic-upload',createdBy:'qiaosheng',origin:'upload'});messages.publishAssistantMessage({conversationId:'a',turnId:'t',content:'',kind:'voice',clientMessageId:'synthetic-message',attachments:[{asset_id:asset.id,presentation:'voice'}]});return asset;};
  return {root,db,media,messages,tools,adapter,ctx,create,output,gets:()=>gets,close(){db.close();fs.rmSync(root,{recursive:true,force:true});}};
@@ -32,7 +32,8 @@ test('JA-E03: 进入宿主回执的听觉投影剔除调度与重复正文，保
 test('JA-E04: 非有限测量不可悄悄 JSON 编码为 null',async()=>{const f=fixture();try{const a=await f.create();f.output.observations=[{kind:'pitch',range_ms:[0,1000],value:NaN,unit:'semitone',quality:'measured'}];const r=await f.tools.execute('oido_analyze',{audio_ref:`est:${a.id}`},f.ctx());assert.equal(r.ok,false);}finally{f.close();}});
 test('JA-E05: schema 支持版本必须等于真实迁移最高版',()=>{const f=fixture();try{const row=f.db.prepare('SELECT max(version) AS version FROM schema_migrations').get() as {version:number};assert.equal(SUPPORTED_SCHEMA_VERSION,row.version);}finally{f.close();}});
 test('JA-E06: 结果取回后撤权也不得将迟到证据交给模型',async()=>{const f=fixture();try{const a=await f.create();await f.tools.execute('oido_analyze',{audio_ref:`est:${a.id}`},f.ctx());const original=f.adapter.getOverview;f.adapter.getOverview=async(...args:any[])=>{const r=await original(...args);f.db.prepare("DELETE FROM media_assets WHERE id=?").run(a.id);return r;};const r=await f.tools.execute('oido_get',{analysis_id:'analysis_synthetic'},f.ctx());assert.equal(r.ok,false);}finally{f.close();}});
-test('JA-E07: 中止后图片检索不得返回迟到成功（R8′：检索路径零编码）',async()=>{const f=fixture({mediaIndex:{available:true,workerFingerprint:async()=> 'synthetic-fp',unindexedImagesInRoom:()=>['one','two'],indexImage:async()=>{encoded++;return {indexed:true};},searchImagesByRoom:async()=>{queried++;controller.abort();return {candidates:[{asset_ref:'est:late',score:0.99}]};}}});try{const controller=new AbortController();
+let queried=0,encoded=0;
+test('JA-E07: 中止后图片检索不得返回迟到成功（R8′：检索路径零编码）',async()=>{const controller=new AbortController();const f=fixture({mediaIndex:{available:true,workerFingerprint:async()=> 'synthetic-fp',unindexedImagesInRoom:()=>['one','two'],indexImage:async()=>{encoded++;return {indexed:true};},searchImagesByRoom:async()=>{queried++;controller.abort();return {candidates:[{asset_ref:'est:late',score:0.99}]};}}});try{
 const r=await f.tools.execute('media_search',{query:'合成图'}, {...f.ctx(),signal:controller.signal});assert.equal(r.ok,false);assert.equal((r.output as any).error_code,'CANCELLED');assert.equal(queried,1);assert.equal(encoded,0,'R8′：检索不再前台补索引');}finally{f.close();}});
 for(const [label,change] of [
  ['null measurement cannot be measured or lack a reason',(v:any)=>{v.observations=[{kind:'pitch',range_ms:[0,1],value:null,unit:'ms',quality:'measured'}];}],

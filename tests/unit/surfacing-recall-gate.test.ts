@@ -16,6 +16,7 @@ import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.t
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import {makeDb, tempRoot } from '../helpers.ts';
+import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
 
 type Row = { id: string; category: string; text: string; recentRecall: boolean; expected: boolean; label_source: string };
 
@@ -146,7 +147,7 @@ function compose(root: string) {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2,
   }, null);
-  const messages = new MessageService(db, svc);
+  const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
   const jobsFor = (messageId: string) => (db.prepare('SELECT COUNT(*) n FROM surfacing_jobs WHERE source_message_id=?').get(messageId) as { n: number }).n;
   const archiveRows = () => (db.prepare("SELECT COUNT(*) n FROM outbox WHERE target='mariposa.archive'").get() as { n: number }).n;

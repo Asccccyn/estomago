@@ -6,6 +6,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MessageRetryService, MessageRetryError } from '../../apps/host/src/messages/retry.ts';
+import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
 
 function fixture(t: TestContext, surfaceEnabled?: boolean) {
   const { db, root } = makeDb();
@@ -17,7 +18,7 @@ function fixture(t: TestContext, surfaceEnabled?: boolean) {
       delivery_deadline_ms: 15000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
   // These transaction tests inspect committed jobs without starting a worker.
   if (surfacing) surfacing.afterCommit = () => { wakes++; };
-  const messages = new MessageService(db, surfacing);
+  const messages = new MessageService(db, bindMessageLifecycle({ surfacing, activity: null }));
   messages.ensureConversation('c1');
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w1','c1','ACTIVE','2026-10-19T01:00:00Z','2026-10-19T01:00:00Z')").run();
   db.prepare("UPDATE conversations SET active_window_id='w1' WHERE id='c1'").run();

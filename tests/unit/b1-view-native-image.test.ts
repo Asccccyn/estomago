@@ -59,7 +59,7 @@ function compose(root: string, transport: OrTransport) {
     capabilities: async () => ({ ok: true }),
     getView: async (id: string) => ({ mime: 'image/png', pngBase64: PNG.toString('base64'), metadata: { analysis_id: id } }),
   };
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages, oido: oidoAdapter as never });
   const supervisor = new TurnSupervisor({ db, config, messages, events: new EventService(db), identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, new EventService(db)), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db), media, oidoHearing: true });
   return { db, config, messages, supervisor, media, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }

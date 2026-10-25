@@ -60,7 +60,7 @@ function makeStack(mode: Mode) {
 
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: reviews, checkpoint: checkpoint, media: media, messages: messages });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: reviews, checkpoint: checkpoint, media: media, messages: messages, oido: adapter as never });
 
   const ctx = () => ({ roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'drill-b' });
   const createVoice = async () => {

@@ -24,7 +24,8 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import {assembleTestTools } from '../../helpers.ts';
+import {assembleTestTools } from '../helpers.ts';
+import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -106,7 +107,7 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
     max_packet_bytes: 24576, worker_concurrency: 2,
   }, null);
-  const messages = new MessageService(db, svc);
+  const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
