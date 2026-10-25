@@ -5,9 +5,11 @@
 //  - 词表动态化：refreshMoodCategories 拉正本 → 工具枚举随动；失败保快照。
 // 纯函数/假 transport，零网络零凭据。
 import { test } from 'node:test';
+import { validateToolArgs } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import { classifyError, MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { buildHostTools, currentMoodCategories, refreshMoodCategories, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
+import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
+import { refreshMoodCategories } from '../../apps/host/src/modules/memory/mood-vocab.ts';
 import type { MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 
 test('F：HTTP 状态优先——mariposa 结构化码 RATE_LIMITED + 429 = retry_later（旧实现判 dead）', () => {

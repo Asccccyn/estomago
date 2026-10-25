@@ -10,11 +10,11 @@ import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
+import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot, wireOidoCapabilitiesForTest } from '../helpers.ts';
+import { tempRoot, wireOidoCapabilitiesForTest, validateToolArgs } from '../helpers.ts';
 
 const CTX = { roomId: 'room-live', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1' } as const;
 
