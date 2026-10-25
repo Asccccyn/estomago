@@ -1594,7 +1594,7 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
   return Buffer.concat(chunks);
 }
 
-async function readJson(req: IncomingMessage, d: RequestDeps, maxBytes = 5 * 1024 * 1024): Promise<unknown> {
+export async function readJson(req: IncomingMessage, d: RequestDeps, maxBytes = 5 * 1024 * 1024): Promise<unknown> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -1629,7 +1629,7 @@ function parseSelectionItems(raw: unknown): Array<{ message_id: string; revision
   return out;
 }
 
-function json(res: ServerResponse, status: number, body: unknown): void {
+export function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
 }
@@ -1860,34 +1860,9 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   d.supervisor.enqueue(sub.turnId);
 }
 
-/** B2（2026-10-24）：通话生命周期（专用 token 面）——POST /v1/calls 立册 active（memory_only 生效），
- *  DELETE /v1/calls/:id 挂断收口（幂等）。Siren CallSession 建立即调；未显式调用时首个电话轮自动立册。 */
-export async function handleVoiceCallLifecycle(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string): Promise<void> {
-  const ndjsonError = (status: number, message: string): void => {
-    json(res, status, { error: { code: 'voice_call_error', message } });
-  };
-  const token = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
-  if (!token || !token.trim()) return ndjsonError(503, 'voice ingress not configured');
-  const authz = String(req.headers.authorization ?? '');
-  if (authz !== `Bearer ${token}`) return ndjsonError(401, 'unauthorized');
-  const nowIso = new Date().toISOString();
-  if (route === 'POST /v1/calls') {
-    let body: { call_id?: unknown; conversation_id?: unknown };
-    try { body = (await readJson(req, d, 64 * 1024)) as typeof body; } catch { return ndjsonError(400, 'invalid body'); }
-    const idOk = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 128;
-    if (!idOk(body.call_id) || !idOk(body.conversation_id)) return ndjsonError(422, 'call_id and conversation_id required');
-    if (!d.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(body.conversation_id)) return ndjsonError(404, 'conversation not found');
-    const existing = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(body.call_id) as { state: string } | undefined;
-    if (existing?.state === 'active') return json(res, 200, { call_id: body.call_id, state: 'active' });
-    if (existing?.state === 'ended') return ndjsonError(409, 'call already ended (new call needs a new call_id)');
-    d.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,\'active\',?)".replace("\\'", "'")).run(body.call_id, body.conversation_id, nowIso);
-    return json(res, 200, { call_id: body.call_id, state: 'active', memory_only: true });
-  }
-  const m = /^DELETE \/v1\/calls\/([^/]+)$/.exec(route);
-  const callId = decodeURIComponent(m?.[1] ?? '');
-  const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
-  if (!row) return ndjsonError(404, 'call not found');
-  if (row.state === 'ended') return json(res, 200, { call_id: callId, state: 'ended' });
-  d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(nowIso, callId);
-  return json(res, 200, { call_id: callId, state: 'ended' });
-}
+// P07.1 第一批：voice/call 路由组迁 server/routes/voice-call.ts（响应/认证/路径逐字保持；
+// 本处转发 shim 保持既有 import 位置兼容调用点，P09 复核收口）。
+import { handleVoiceCallLifecycle } from './routes/voice-call.ts';
+export { handleVoiceCallLifecycle };
+void handleVoiceCallLifecycle;
+
