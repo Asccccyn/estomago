@@ -44,6 +44,10 @@ class FakeRes extends Writable {
   headers: Record<string, string> = {};
   lines: string[] = [];
   buffer = '';
+  // 审计修复批次1：真实 response 关闭语义——writableEnded 标记正常终态；closeEvent()
+  // 触发 close 事件供 handler 的取消监听（不再用 req.emit('close') 模拟）
+  writableEnded = false;
+  destroyed = false;
   _write(chunk: Buffer, _enc: string, cb: (e?: Error | null) => void): void {
     this.buffer += chunk.toString('utf8');
     let idx: number;
@@ -56,6 +60,8 @@ class FakeRes extends Writable {
   }
   writeHead(code: number, headers: Record<string, string>): void { this.status = code; this.headers = headers; }
   override write = ((chunk: unknown) => { this._write(Buffer.from(String(chunk)), 'utf8', () => {}); return true; }) as Writable['write'];
+  override end = ((chunk?: unknown) => { if (chunk) this.write(chunk); this.writableEnded = true; return this; }) as Writable['end'];
+  closeEvent(): void { this.destroyed = true; this.emit('close'); }
 }
 
 function compose(root: string, transport: OrTransport) {
@@ -92,7 +98,7 @@ async function helperRound(ctx:ReturnType<typeof compose>, input:any){
  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN='audit-voice';
  const req=REQ(input,{authorization:'Bearer audit-voice'}) as any;const res=new FakeRes();
  await handleVoiceChatStream(req,res as never,ctx.deps);
- return {req,res,close(){req.emit('close');}};
+ return {req,res,close(){res.closeEvent();}}; // 审计批次1：真实 response 关闭语义（非正常关闭=writableEnded=false）
 }
 
 test('REV-E01 real router accepts the dedicated ingress token without owner credential',async()=>{

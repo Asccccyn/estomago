@@ -146,9 +146,10 @@ export class SirenAdapter {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
+      // 审计修复：合并父取消与原超时（原 signal ?? timeout 会丢弃父取消）
       res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice-assets/${encodeURIComponent(assetId)}/audio`, {
         headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
-        signal: opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 10000),
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs ?? 10000)]) : AbortSignal.timeout(opts.timeoutMs ?? 10000),
       });
     } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
     if (res.status === 404) return null;
