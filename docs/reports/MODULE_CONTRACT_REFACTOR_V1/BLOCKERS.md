@@ -7,6 +7,8 @@
 
 ## 未做部分（如实登记，非阻断已验收路径）
 
-- P07.1/P07.2 全量：server/http.ts（1893 行）按域提取到 server/routes/ 的物理搬迁未在本批执行。现有 HTTP 面（路径/method/认证/响应）零改动，与工具面共享同一领域服务（A23 以真实 Host 集成测试验证）；按域拆分属纯结构收尾，建议复核者裁定是否并入下一批。
+- P07.1/P07.2 剩余域路由：server/routes/voice-call.ts（通话生命周期组）已迁（批次5，json/readJson/ClientBodyError 走 server/http-leaf.ts 同向依赖）；memory/context、background、content/wishstar 等其余域路由的物理搬迁仍未执行（本批审计指令明确"P07 其余域路由按后续批次"）。现有 HTTP 面（路径/method/认证/响应）零改动，与工具面共享同一领域服务（A23 以真实 Host 集成测试验证）。
 - P07.6 前端：零改动（apps/web 未触碰；源树两项未提交 dist 产物未卷入）。
-- P08 两项扩展演练（探针模块+transport 替换）未建独立夹具——B 演练的"transport 可替换"已由 voice-hearing/oido 系列 fake-transport 离线合同间接证明；A26/A27 维持 NOT_EXECUTED 待补。
+- （已消除）前次登记的 P08 两项演练缺口：演练A26/A03 与演练A27 已落地（批次6，probe-module-extension-drill 两用例）；B 演练 real/fake/absent 三形态独立夹具已存在（oido-substitution-isolation-drill）。
+- （已消除）前次登记的兼容过渡：runtime/host-tools.ts（批次4 删除）、SurfacingMessageHooks/legacyCompatView（批次5 删除）——MIGRATION_MATRIX 对应行已闭环。
+- 真实收费/生产部署：NOT_EXECUTED（07 §6 第 4 层，需另行授权），非本分支可补。

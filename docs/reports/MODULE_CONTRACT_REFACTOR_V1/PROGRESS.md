@@ -30,3 +30,10 @@
 | 裁定执行 | A10/A12 补记 | S13 contributions 叶化（传输投影适配层）/S14+S16 oido 字段+冗余键/S15 validateToolArgs 迁测试层（含 mood 词表工厂回归修复）/S18 Bootstrap 回退删除+显式注入 | typecheck 0；各专项网全绿 | 见git log | DONE |
 | 演练+验收 | 同上 | 演练A probe-module（A26/A03）、演练B substitution（A27/A10）、A12 call-stop、P07 第一批 voice-call 路由 | typecheck 0；drill/call-stop/P07网 全绿 | 见git log | DONE |
 | 统一冻结 | 同上 | 49 文件回归 49/49；A29=PASS；29/29 全绿；validate_delivery 通过 | 49/49 exit 0 | e5024277ff0c | 实施者侧交付完毕；独立复核为下一步 |
+| 审计批次1 | 4dfa709 | 电话准备阶段取消失效修复（早建取消处理+signal 贯穿+req.close 误判删除）；复现迁入正式测试目录 | 修复前父提交重放 exit 1（evidence/batch1-before-fix-4dfa709.log）；修复后 3 场景 exit 0（evidence/batch1-after-fix-e4d48ba.log） | e4d48ba | DONE |
+| 审计批次2 | e4d48ba | 投影正本唯一化（memory/conversation projection）+model-wire 具体断言+invite ProgramFactsPort | 定向网 exit 0 | 78e3cbf | DONE |
+| 审计批次3 | 78e3cbf | Registry 单一来源（definition 工厂/currentCatalog/删双正本/费用与政策归位） | tool-catalog-golden 恒定；定向网 exit 0 | 21f2725 | DONE |
+| 审计批次4 | 21f2725 | 身份只走 ctx（__tool_call_id 全删）+ModelToolBridge 提取+host-tools.ts git rm（19 消费者迁移） | typecheck 0；消费者 14 文件网 exit 0 | 72416b6/2dacbc9/47c8c17 | DONE |
+| 审计批次5 | 2dacbc9 | MessageLifecycleHooks 通用化（兼容层删+形状守卫）+server/http-leaf.ts+voice-call 路由同向叶 | surfacing 6 文件 52 用例+dial exit 0 | 47c8c17 | DONE |
+| 审计批次6 | 47c8c17 | 演练A26/A03 保持+演练A27 补齐（absent 全链+memory 公共只读消费者） | probe drill exit 0 | 036b401 | DONE |
+| 审计批次7 | 036b401 | 统一回归 18 个测试装配过时修复（无生产行为改动）→全量 188/188 exit 0；报告同步+validate_delivery | 188/188 exit 0（见 TEST_EVIDENCE） | b453cc9+本笔 | 实施者侧交付完毕；独立复核为下一步 |

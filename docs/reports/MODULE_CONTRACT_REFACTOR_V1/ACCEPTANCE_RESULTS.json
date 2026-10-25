@@ -228,18 +228,20 @@
       "setup": "普通电话轮排队或播放时停止一次。",
       "assertions": "取消后旧代不继续发布/播放，排队已取消轮不派发。",
       "status": "PASS",
-      "actualCommit": "2e0d2bd1018e265bfc04a1e89c7ca984dc479534",
+      "actualCommit": "b453cc9f357daa067dc07e76caa33c0622b346ae",
       "commands": [
-        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/call-stop-queued-turn.test.ts  (exit 0)",
-        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/exec-v1-wp4-executor.test.ts  (exit 0；stopRun 后 blocked.allowed=false、零派发排队 run 失效)"
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/call-stop-queued-turn.test.ts --file=tests/unit/exec-v1-wp4-executor.test.ts  (exit 0；排队取消部分)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/integration/codex-voice-preparation-disconnect.test.ts  (exit 0；准备阶段断线部分，批次1 修复)"
       ],
       "evidenceKind": "OFFLINE_CONTRACT",
       "evidencePaths": [
         "tests/unit/call-stop-queued-turn.test.ts",
         "tests/unit/exec-v1-wp4-executor.test.ts",
-        "tests/unit/wake-keepwarm.test.ts"
+        "tests/integration/codex-voice-preparation-disconnect.test.ts",
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/evidence/batch1-before-fix-4dfa709.log",
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/evidence/batch1-after-fix-e4d48ba.log"
       ],
-      "notes": "电话停止与排队：POST /v1/calls 立册 active→通话内 memory_only 门生效；DELETE /v1/calls/:id 收口(ended、幂等)→资格随终态失效；已取消的排队 run 零派发（stopRun 后 blocked.allowed=false；W-10/W-11 零派发排队 run 失效）；挂断意图（a11）不伪造已结束。"
+      "notes": "两个不同场景分开陈述：(1) 排队电话取消——POST /v1/calls 立册 active→通话内 memory_only 门生效；DELETE /v1/calls/:id 收口(ended、幂等)→资格随终态失效；已取消的排队 run 零派发（stopRun 后 blocked.allowed=false）；挂断意图不伪造已结束（call-stop-queued-turn/exec-v1-wp4，此前已覆盖，本轮回归继续通过）。(2) 准备阶段断线（批次1 修复，此前未被任何测试覆盖且真实失效）——原声取回中断开连接：修复前（4dfa709 上重放同一测试，exit 1）ingests:1/analyses:1/modelRequests:1/stream:completed（断线后照跑）；修复后 abortedAtRelease:true、三者全 0、stream:cancelled；ingest 已发场景回执保留、不继续 analyze；同键重试 replayed+prior_state:cancelled。证据=修复前失败日志+修复后通过日志（evidence/ 两文件）。"
     },
     {
       "id": "A13",
@@ -527,15 +529,18 @@
       "setup": "替换兼容fake端口；测试消费者用既有记忆公共读接口。",
       "assertions": "模块内部不改；只证明接缝，不宣称情绪系统已实现。",
       "status": "PASS",
-      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "actualCommit": "b453cc9f357daa067dc07e76caa33c0622b346ae",
       "commands": [
-        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-substitution-isolation-drill.test.ts  (exit 0；real/fake/absent 三形态)"
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-substitution-isolation-drill.test.ts  (exit 0；real/fake/absent 三形态)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/probe-module-extension-drill.test.ts  (exit 0；演练A26 + 演练A27 absent/memory 消费者)"
       ],
       "evidenceKind": "OFFLINE_CONTRACT",
       "evidencePaths": [
-        "tests/unit/oido-substitution-isolation-drill.test.ts"
+        "tests/unit/oido-substitution-isolation-drill.test.ts",
+        "tests/unit/probe-module-extension-drill.test.ts",
+        "tests/helpers/probe-module.ts"
       ],
-      "notes": "依赖替换与未来消费者演练B：合同兼容 fake adapter 替换 transport——voice-hearing 组合（analyze→get→跨会话拒读）语义逐项相同；断开可选能力后 oído 工具如实拒绝、conversation_read 正常。未来情绪只留接缝不建空壳。"
+      "notes": "依赖替换与未来消费者演练B：合同兼容 fake adapter 替换 transport——voice-hearing 组合语义逐项相同；absent 形态 oído 工具如实拒绝、conversation_read 正常。演练A27（本轮补齐）：absent（已保存未发布语音）按 deferred 合同 define→invoke 走正常文字消息→真实 Supervisor→fake 模型，bound:false 如实进 tool 消息、轮次正式发布落库；仅测试消费者 registerProbeMemoryConsumer 经 memory 公共只读方法（memoryIRead）读 I——恰好一次调用、零业务逻辑复制、零直连 DB。不宣称情绪系统已实现。"
     },
     {
       "id": "A28",
@@ -552,10 +557,10 @@
       ],
       "evidenceKind": "OFFLINE_CONTRACT",
       "evidencePaths": [
-        "apps/host/src/runtime/host-tools.ts",
+        "apps/host/src/capabilities/model-bridge.ts",
         "docs/reports/MODULE_CONTRACT_REFACTOR_V1/SELF_REVIEW.md"
       ],
-      "notes": "旧接线退役：48 工具旧分支/allowlist 名单/外层投影/全局 tool_call_id 桥/executor.oido 死字段/validateToolArgs 生产 API/Bootstrap 回退全部删除；无 legacyFallback；同名双注册零；旧窗重建零（golden 恒定）。"
+      "notes": "旧接线退役：48 工具旧分支/allowlist 名单/外层投影/全局 tool_call_id 桥/executor.oido 死字段/validateToolArgs 生产 API/Bootstrap 回退全部删除；无 legacyFallback；同名双注册零；旧窗重建零（golden 恒定）。 runtime/host-tools.ts 已于批次4 git rm（承接正本=capabilities/model-bridge.ts；退役以文件不存在+消费者迁移为证，git log 2dacbc9/47c8c17 可溯）。"
     },
     {
       "id": "A29",
@@ -565,9 +570,10 @@
       "setup": "候选SHA运行已分类选择集与类型/结构检查。",
       "assertions": "每项命令/退出码/证据种类可追溯，排除原因真实，无生产PASS冒充。",
       "status": "PASS",
-      "actualCommit": "e5024277ff0c8ed816670352d7f5979f4e77bce4",
+      "actualCommit": "b453cc9f357daa067dc07e76caa33c0622b346ae",
       "commands": [
-        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=…(49 文件定向选择器)  (exit 0；e5024277ff0c)",
+        "ESTOMAGO_HOME=$(mktemp -d) /opt/homebrew/bin/node scripts/run-tests.mjs  (全量 188 文件，exit 0；数字见 TEST_EVIDENCE.md)",
+        "npm run typecheck  (exit 0)",
         "/opt/homebrew/bin/node docs/specs/MODULE_CONTRACT_REFACTOR_V1/scripts/validate_delivery.py --results docs/reports/MODULE_CONTRACT_REFACTOR_V1/ACCEPTANCE_RESULTS.json --evidence-root ."
       ],
       "evidenceKind": "OFFLINE_CONTRACT",
@@ -575,7 +581,7 @@
         "docs/reports/MODULE_CONTRACT_REFACTOR_V1/TEST_EVIDENCE.md",
         "docs/reports/MODULE_CONTRACT_REFACTOR_V1/ACCEPTANCE_RESULTS.json"
       ],
-      "notes": "有限回归与证据完整：49 文件定向选择器 49/49 通过（含 A03/A10/A12/A25-A28 新证据）；validate_delivery 格式验证通过；PASS=29/29 全绿（本轮统一冻结提交）。"
+      "notes": "有限回归与证据完整：本轮为全量 188 文件（含前端 react 渲染测试；该 4 文件需 apps/web/react node_modules，已安装且不触碰跟踪文件）通过、退出码 0；批次1 修复前失败/修复后通过证据落盘 evidence/；validate_delivery 格式验证通过；PASS=29/29（OFFLINE_CONTRACT）。"
     }
   ],
   "outOfScope": [

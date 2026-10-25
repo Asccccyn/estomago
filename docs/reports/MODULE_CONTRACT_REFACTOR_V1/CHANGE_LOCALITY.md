@@ -26,3 +26,10 @@ supervisor.ts / messages/service.ts / capabilities/executor.ts / http.ts 在该�
 
 若未来要把探针类能力提升为生产能力：模块文件移入 modules/、app-context 装配一行、
 （如需进默认目录）tool-ownership 登记——仍不触碰核心业务分支。
+
+## 演练A27（批次6 补齐）：memory 公共只读消费者
+
+tests/helpers/probe-module.ts 增 MemoryPublicRead 窄端口（单方法签名）+registerProbeMemoryConsumer；
+装配处实现=MemoryToolsService.memoryIRead（memory 公共只读方法，外部仅伪造 Mariposa transport）。
+断言：恰好一次调用、零业务逻辑复制、零直连 DB、absent 语音 bound:false 如实进 tool 消息、轮次正式发布。
+未来消费者模块依赖 memory 的公共面即可组合——不复制授权 SQL/业务分支。
