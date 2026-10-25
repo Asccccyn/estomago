@@ -34,3 +34,27 @@ export async function readJson(req: IncomingMessage, _d?: unknown, maxBytes = 5 
     throw new ClientBodyError(400, 'invalid_json', '请求体不是合法 JSON');
   }
 }
+
+/** 发送前 token 估计的驱动上下文（自 server/http.ts 逐字下沉；P07.2 会话组路由同用）。
+ *  结构化参数（不 import RequestDeps）——保持 leaf 零反向依赖。 */
+export type EstimatorDeps = {
+  runnerSelection: { status: string; runner?: { kind: string } };
+  config: {
+    deepseek: { model: string | null; estimate_chars_per_token: number; max_output_tokens: number | null };
+    openrouter: { model: string | null; estimate_chars_per_token: number; max_output_tokens: number | null };
+    runtime: { model: string | null };
+  };
+  settings?: { effectiveOrModel: (m: string | null) => string | null } | null;
+};
+
+export function estimateContextFor(d: EstimatorDeps): { model: string | null; charsPerToken: number; outputCap: number | null } {
+  const sel = d.runnerSelection;
+  const driver = sel.status === 'ok' ? sel.runner?.kind ?? null : null;
+  if (driver === 'deepseek') return { model: d.config.deepseek.model, charsPerToken: d.config.deepseek.estimate_chars_per_token, outputCap: d.config.deepseek.max_output_tokens };
+  if (driver === 'openrouter') {
+    const eff = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
+    return { model: eff, charsPerToken: d.config.openrouter.estimate_chars_per_token, outputCap: d.config.openrouter.max_output_tokens };
+  }
+  if (driver === 'mock') return { model: 'mock', charsPerToken: 2.5, outputCap: 1024 };
+  return { model: d.config.runtime.model, charsPerToken: 2.5, outputCap: null };
+}
