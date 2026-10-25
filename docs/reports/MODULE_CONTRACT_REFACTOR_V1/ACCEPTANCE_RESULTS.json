@@ -49,12 +49,18 @@
       "phase": "P08",
       "setup": "正常完成第一轮后启用新模块配置，再在同窗发第二条。",
       "assertions": "旧目录和历史不被新注册覆盖；新能力等新窗按政策采用。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/probe-module-extension-drill.test.ts  (exit 0；A03 断言段)",
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/tool-catalog-golden.test.ts --file=tests/unit/tool-discovery.test.ts  (exit 0；冻结前缀恢复)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/probe-module-extension-drill.test.ts",
+        "tests/unit/tool-discovery.test.ts"
+      ],
+      "notes": "旧窗口冻结：正常第一轮后启用新模块配置（探针注册），同窗第二条目录/历史不被新注册覆盖（冻结 catalog 不含探针）；同窗 define 沿现行拒绝（零回退）；新能力按政策新窗采用；freezeWindowTools 恢复语义（tool-discovery.test.ts）恒定。"
     },
     {
       "id": "A04",
@@ -465,12 +471,19 @@
       "phase": "P08",
       "setup": "正常memory/oído/wake调用取得包含内部记账字段的真实本地结果。",
       "assertions": "模型仅见既有必要业务字段；内部回执完整；下一步ref/cursor仍可用。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/model-results.test.ts --file=tests/unit/model-wire-measurement.test.ts  (exit 0)",
+        "tests/golden/module-contract-session-baseline.json 两轮 wire 逐字对照（含各工具模型投影）"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/model-results.test.ts",
+        "tests/unit/model-wire-measurement.test.ts",
+        "tests/golden/module-contract-session-baseline.json"
+      ],
+      "notes": "JSON投影：模型工具 schema/顺序/投影经 P01-P04 结构重组后 golden 逐字节恒定（sha256 770e9fef…）；memory 域投影正本随 owner（键序/白名单不变）；两轮 wire 对照=合成会话快照。"
     },
     {
       "id": "A26",
@@ -479,12 +492,19 @@
       "phase": "P08",
       "setup": "测试装配新增只读探针模块并通过真实Host工具入口调用。",
       "assertions": "无核心算法改动；实际diff证明；探针不进生产目录/默认目录。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/probe-module-extension-drill.test.ts  (exit 0)",
+        "git diff 849b1d5..HEAD -- tests/helpers/probe-module.ts tests/unit/probe-module-extension-drill.test.ts（探针全部改动面）"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/helpers/probe-module.ts",
+        "tests/unit/probe-module-extension-drill.test.ts",
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/CHANGE_LOCALITY.md"
+      ],
+      "notes": "扩展局部化演练A：新只读探针模块接入真实 registry/Host fixture，从真实工具入口全链执行；生产目录零改动（核心算法零修改），改动面=测试装配声明。"
     },
     {
       "id": "A27",
@@ -493,12 +513,16 @@
       "phase": "P08",
       "setup": "替换兼容fake端口；测试消费者用既有记忆公共读接口。",
       "assertions": "模块内部不改；只证明接缝，不宣称情绪系统已实现。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "commands": [
+        "/opt/homebrew/bin/node scripts/run-tests.mjs --file=tests/unit/oido-substitution-isolation-drill.test.ts  (exit 0；real/fake/absent 三形态)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "tests/unit/oido-substitution-isolation-drill.test.ts"
+      ],
+      "notes": "依赖替换与未来消费者演练B：合同兼容 fake adapter 替换 transport——voice-hearing 组合（analyze→get→跨会话拒读）语义逐项相同；断开可选能力后 oído 工具如实拒绝、conversation_read 正常。未来情绪只留接缝不建空壳。"
     },
     {
       "id": "A28",
@@ -507,12 +531,18 @@
       "phase": "P09",
       "setup": "静态检索+真实调用追踪检查所有现行工具与生命周期。",
       "assertions": "同名唯一owner，无legacyFallback，无重复timer，无无头registry。",
-      "status": "NOT_EXECUTED",
-      "actualCommit": null,
-      "commands": [],
-      "evidenceKind": null,
-      "evidencePaths": [],
-      "notes": ""
+      "status": "PASS",
+      "actualCommit": "2b59251f2ba2c978a1c05c3d5c55bd64b54e81c6",
+      "commands": [
+        "git grep legacyFallback（零）；executeInner 唯一路径=registry（P04 收尾提交）；check_boundaries cycles=0",
+        "/opt/homebrew/bin/node docs/specs/MODULE_CONTRACT_REFACTOR_V1/scripts/check_boundaries.mjs --repo <工作树> --mode report  (violations=1=已登记过渡)"
+      ],
+      "evidenceKind": "OFFLINE_CONTRACT",
+      "evidencePaths": [
+        "apps/host/src/runtime/host-tools.ts",
+        "docs/reports/MODULE_CONTRACT_REFACTOR_V1/SELF_REVIEW.md"
+      ],
+      "notes": "旧接线退役：48 工具旧分支/allowlist 名单/外层投影/全局 tool_call_id 桥/executor.oido 死字段/validateToolArgs 生产 API/Bootstrap 回退全部删除；无 legacyFallback；同名双注册零；旧窗重建零（golden 恒定）。"
     },
     {
       "id": "A29",
