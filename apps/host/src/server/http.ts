@@ -247,244 +247,22 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return json(res, result.ok ? 200 : 409, result.ok ? { window: { id: result.windowId } } : { error: { code: 'rotate_blocked', message: result.reason } });
     }
 
-    // —— 2026-10-08 她裁定：聊天窗换模型/推理等级 ——
-    const rtGet = route === 'GET /api/v1/runtime-settings';
-    if (rtGet) {
-      const cfg = d.config.openrouter;
-      const effModel = d.settings ? d.settings.effectiveOrModel(cfg.model) : cfg.model;
-      const effEffort = d.settings ? (d.settings.reasoningEffort() ?? 'default') : 'default';
-      // 档位按当前生效模型的真实支持生成（OR 公开元数据；强制思考模型
-      // 没有 none/minimal——此前静态全表会在这些模型上吃 400）
-      let efforts: string[] | null = null;
-      if (d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter' && effModel) {
-        const meta = await fetchOrModelMeta(cfg.base_url, effModel);
-        efforts = effortsForModel(meta, effModel);
-      }
-      return json(res, 200, {
-        driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
-        or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
-        reasoning_effort: { effective: effEffort, override: d.settings?.reasoningEffort() ?? null, config_default: cfg.reasoning },
-        model_options: cfg.model_options ?? [],
-        effort_options: efforts ?? ['default'],
-        effort_options_verified: efforts !== null,
-        note: '切模型=运行边界变化，下一条消息将等待历史选集确认后换窗；切思考深度=立即生效，不换窗（上下文复用）',
-      });
-    }
-    const rtPut = route === 'PUT /api/v1/runtime-settings';
-    if (rtPut) {
-      if (!d.settings) return json(res, 503, { error: { code: 'unavailable', message: '运行时设置服务未接线' } });
-      const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown };
-      // WP-04（JFA-B05/CX-10/C-016）：两字段全验通过后一次性写入——
-      // 任一失败 422 且零写入（不再逐字段先写先错）；or_model 按配置层
-      // 同款形状门（orModelIdIssue：auto/latest/逗号拼单/未知形态拒）
-      const nextModel: string | null | undefined = body.or_model !== undefined
-        ? (body.or_model === null || body.or_model === ''
-            ? null
-            : typeof body.or_model === 'string' && body.or_model.trim().length > 0 && body.or_model.length <= 128
-              ? body.or_model.trim()
-              : undefined)
-        : undefined;
-      if (body.or_model !== undefined && nextModel === undefined) {
-        return json(res, 422, { error: { code: 'invalid_model', message: 'or_model 必须是非空字符串或 null（回落默认）' } });
-      }
-      if (nextModel !== undefined && nextModel !== null) {
-        const issue = orModelIdIssue(nextModel);
-        if (issue) return json(res, 422, { error: { code: 'invalid_model', message: issue, field: 'or_model' } });
-      }
-      let nextEffort: string | null | undefined = body.reasoning_effort !== undefined
-        ? (body.reasoning_effort === null || body.reasoning_effort === 'default'
-            ? null
-            : ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(body.reasoning_effort as string)
-              ? (body.reasoning_effort as string)
-              : undefined)
-        : undefined;
-      if (body.reasoning_effort !== undefined && nextEffort === undefined) {
-        return json(res, 422, { error: { code: 'invalid_effort', message: 'reasoning_effort 必须是 default|none|minimal|low|medium|high|xhigh|max 或 null' } });
-      }
-      // FU-001（二次回访 2026-10-10）：按合并 patch 后的**真实生效对**
-      // 校验——此前 null/default 清除回落配置默认的组合不经校验：
-      // 模型清空回落 A+low、档位清空回落 B+high 均被 200 落库。候选
-      // 模型=patch ?? override ?? 配置默认；候选档位=patch ?? override
-      // ?? 配置默认 effort（含 model-only 继承）。元数据可及时校验；
-      // 具体模型优先使用官方已核实档位；未知模型元数据不可达时拒绝新设置。
-      const candidateModel = (nextModel !== undefined ? nextModel : d.settings.orModel())
-        ?? d.config.openrouter.model;
-      const defEffort = (d.config.openrouter.reasoning as { effort?: unknown } | null | undefined)?.effort;
-      const defEffortStr = typeof defEffort === 'string' && defEffort !== 'default' ? defEffort : null;
-      const candidateEffort = (nextEffort !== undefined ? nextEffort : d.settings.reasoningEffort()) ?? defEffortStr;
-      if (candidateEffort !== null && candidateModel) {
-        const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
-        if (driver === 'openrouter') {
-          const meta = await fetchOrModelMeta(d.config.openrouter.base_url, candidateModel);
-          const allowed = effortsForModel(meta, candidateModel);
-          if (!allowed) {
-            return json(res, 422, { error: { code: 'effort_unverified', message: '当前模型的思考档位尚未核实，请稍后重试' } });
-          }
-          if (allowed && !allowed.includes(candidateEffort)) {
-            return json(res, 422, { error: { code: 'effort_not_supported', message: `候选生效模型 ${candidateModel} 不支持思考档位 ${candidateEffort}`, supported: allowed } });
-          }
-        }
-      }
-      // FU-002（回访）：全验通过后**单事务**写入（setMany）——此前两字段
-      // 各开事务，第二写失败后第一写已提交（半提交状态）
-      const writes: Array<[string, string | null]> = [];
-      if (nextModel !== undefined) writes.push(['or_model', nextModel]);
-      if (nextEffort !== undefined) writes.push(['reasoning_effort', nextEffort]);
-      d.settings.setMany(writes);
-      const cfg2 = d.config.openrouter;
-      return json(res, 200, {
-        or_model: { effective: d.settings.effectiveOrModel(cfg2.model), override: d.settings.orModel() },
-        reasoning_effort: { effective: d.settings.reasoningEffort() ?? 'default', override: d.settings.reasoningEffort() },
-      });
+    // —— 运行时设置组——P07.2 迁 server/routes/runtime-settings.ts（逐字）。
+    if (route === 'GET /api/v1/runtime-settings' || route === 'PUT /api/v1/runtime-settings') {
+      return await handleRuntimeSettingsRoutes(req, res, d, route);
     }
 
-    // —— WP3（2026-10-08 她裁定）：人工历史选集 ——
 
-    // WP-03（2026-10-09，JFA-009/B02）：当前 awaiting 选集行——无活动窗时
-    // 前端的 fallback 锚（source_window_id 是 preview/confirm 的合法目标，
-    // 含 csel-src-* 哨兵源；无 awaiting 返回 null，真首窗语义不变）
-    const selAwaiting = /^GET \/api\/v1\/conversations\/([^/]+)\/context-selection$/.exec(route);
-    if (selAwaiting) {
-      const conversationId = decodeURIComponent(selAwaiting[1]!);
-      const row = d.selections?.awaitingFor(conversationId) ?? null;
-      return json(res, 200, { selection: row ? { id: row.selection_id, status: row.status, source_window_id: row.source_window_id } : null });
+    // —— 上下文选集/运行态/路由决议/时间/记录组——P07.2 迁 server/routes/context-selection.ts（逐字）。
+    if (route === 'GET /api/v1/time/context'
+      || /^GET \/api\/v1\/conversations\/([^/]+)\/context-selection$/.test(route)
+      || /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.test(route)
+      || /^GET \/api\/v1\/conversations\/([^/]+)\/context-records(?:\/events)?$/.test(route)
+      || /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/(preview|confirm)$/.test(route)
+      || /^POST \/api\/v1\/route-decisions\/([^/]+)$/.test(route)) {
+      return await handleContextSelectionRoutes(req, res, d, route, url);
     }
 
-    // preview（§6.2）：只读核验（引用/修订/hash/发布状态/间隙/粗估）——
-    // 不跑模型、不 hold、不换窗、不写选集
-    const selPreview = /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/preview$/.exec(route);
-    if (selPreview) {
-      const windowId = decodeURIComponent(selPreview[1]!);
-      const body = (await readJson(req, d)) as { conversation_id?: unknown; items?: unknown };
-      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : PRIMARY_CONVERSATION;
-      const items = parseSelectionItems(body.items);
-      const result = d.supervisor.selectionPreview(conversationId, windowId, items);
-      return json(res, result.ok ? 200 : 422, result.ok ? { preview: result.result } : { error: { code: result.error.code, detail: result.error } });
-    }
-
-    // confirm（§6.2/§6.3）：幂等键 + expected_window_revision CAS + explicit_empty；
-    // 有被选集阻断的待回答输入时，确认后自动换窗并以原 input_message_id 恢复
-    const selConfirm = /^POST \/api\/v1\/windows\/([^/]+)\/context-selection\/confirm$/.exec(route);
-    if (selConfirm) {
-      const windowId = decodeURIComponent(selConfirm[1]!);
-      const body = (await readJson(req, d)) as { conversation_id?: unknown; items?: unknown; explicit_empty?: unknown; idempotency_key?: unknown; expected_window_revision?: unknown };
-      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id : PRIMARY_CONVERSATION;
-      const items = parseSelectionItems(body.items);
-      const result = await d.supervisor.selectionConfirm({
-        conversationId,
-        windowId,
-        items,
-        explicitEmpty: body.explicit_empty === true,
-        idempotencyKey: typeof body.idempotency_key === 'string' && body.idempotency_key.length > 0 ? body.idempotency_key : null,
-        expectedWindowRevision: typeof body.expected_window_revision === 'number' && Number.isInteger(body.expected_window_revision) ? body.expected_window_revision : undefined,
-      });
-      return json(res, result.ok ? 200 : 422, result.ok
-        ? { selection: { id: result.selection_id, rotated: result.rotated, window_id: result.windowId, resumed: result.resumed } }
-        : { error: { code: result.error.code, detail: result.error } });
-    }
-
-    const runtime = /^GET \/api\/v1\/conversations\/([^/]+)\/runtime$/.exec(route);
-    if (runtime) {
-      const conversationId = decodeURIComponent(runtime[1]!);
-      const kind = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
-      const gateDriver = kind === 'openrouter' || kind === 'deepseek' ? kind : 'claude-agent-sdk';
-      const gate = d.identity.evaluateGate(d.db, { driver: gateDriver }); // 审计 F29
-      const active = d.windows.activeWindow(conversationId);
-      // ESTOMAGO_OR_SELF_HOLD §6.1：OR/DS 配置状态只报"已配置/未配置"布尔与型号名；凭据值永不回显
-      const orStatus = d.config.runtime.provider === 'openrouter'
-        ? {
-            model: d.config.openrouter.model,
-            model_configured: d.config.openrouter.model !== null,
-            key_env_configured: (() => { const v = process.env[d.config.openrouter.api_key_env]; return typeof v === 'string' && v.length > 0; })(),
-            base_url: d.config.openrouter.base_url,
-          }
-        : null;
-      const dsStatus = d.config.runtime.provider === 'deepseek'
-        ? {
-            model: d.config.deepseek.model,
-            model_configured: d.config.deepseek.model !== null,
-            key_env_configured: (() => { const v = process.env[d.config.deepseek.api_key_env]; return typeof v === 'string' && v.length > 0; })(),
-            base_url: d.config.deepseek.base_url,
-          }
-        : null;
-      return json(res, 200, {
-        conversation_id: conversationId,
-        identity: { state: gate.state, reasons: gate.reasons, manifest_status: gate.manifest?.status ?? null },
-        runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
-        openrouter: orStatus,
-        deepseek: dsStatus,
-        capabilities: d.capabilities.describe(),
-        active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
-        // WP-07（CX-10）：无活动窗时附 awaiting 选集引用——UI 锚定确认
-        // 入口（preview/confirm 以 source_window_id 为目标，含哨兵源）
-        awaiting_selection: active ? null : (() => {
-          const row = d.selections?.awaitingFor(conversationId) ?? null;
-          return row ? { id: row.selection_id, source_window_id: row.source_window_id } : null;
-        })(),
-        thresholds: {
-          status: d.config.windows.threshold_status,
-          model_context_capacity: d.config.windows.model_context_capacity,
-          soft_limit_tokens: d.config.windows.soft_limit_tokens,
-        },
-        reasoning_label: d.config.reasoning.label,
-      });
-    }
-
-    const routeDecision = /^POST \/api\/v1\/route-decisions\/([^/]+)$/.exec(route);
-    if (routeDecision) {
-      const decisionId = decodeURIComponent(routeDecision[1]!);
-      const body = (await readJson(req, d)) as { choice?: string; content?: string };
-      if (body.choice !== 'approve' && body.choice !== 'edit' && body.choice !== 'cancel') {
-        return json(res, 400, { error: { code: 'bad_choice', message: 'choice 必须是 approve/edit/cancel' } });
-      }
-      // 她 2026-10-24 裁定（approve 补完）：三选择统一走 validateAndConsume——
-      // approve=接受路由结果并继续（路由信号时刻不存在完整可放行的回答：正文边流边落库、
-      // 信号后内容被 fence 丢弃；service 层为同 turn 建 fresh_session=0 的新 attempt，
-      // 续用窗口 session，已执行工具不重放）。票据校验（404/409/过期/绑定链）全部由
-      // service 统一承担；续跑再次路由信号由 supervisor 终局守卫（ROUTE_SIGNAL_AFTER_APPROVE）
-      // 收口，不开新票据。
-      const consumed = d.routing.validateAndConsume(decisionId, body.choice === 'edit' ? { choice: 'edit', content: String(body.content ?? '') } : { choice: body.choice });
-      if (!consumed.ok) return json(res, consumed.status, { error: { code: consumed.code, message: consumed.reason } });
-      // 决议完成：重新驱动该房间排队的 turn（AUD-05）
-      d.supervisor.requeueConversationQueuedTurns(consumed.row.conversation_id);
-      if (body.choice === 'edit') {
-        const turn = d.db.prepare('SELECT input_message_id FROM turns WHERE id = ?').get(consumed.turnId) as { input_message_id: string | null };
-        const message = turn?.input_message_id ? d.messages.getMessage(turn.input_message_id) : null;
-        return json(res, 200, { resolved: 'edit', message, attempt_id: consumed.newAttemptId, revision: consumed.editRevision, released_waiting: consumed.releasedWaiting });
-      }
-      if (body.choice === 'approve') {
-        return json(res, 200, { resolved: 'approve', attempt_id: consumed.newAttemptId, released_waiting: consumed.releasedWaiting });
-      }
-      return json(res, 200, { resolved: 'cancel' });
-    }
-
-    if (route === 'GET /api/v1/time/context') {
-      const conversationId = url.searchParams.get('conversation_id') ?? PRIMARY_CONVERSATION;
-      return json(res, 200, buildTimeContext(d.db, { conversationId, config: d.config }));
-    }
-
-    // —— 前台"记录"只读端点（contracts/records-api.md）：GET 严格只读，不触发任何生成/hold/换窗 ——
-    const ctxRecords = /^GET \/api\/v1\/conversations\/([^/]+)\/context-records$/.exec(route);
-    if (ctxRecords) {
-      const conversationId = decodeURIComponent(ctxRecords[1]!);
-      const lastSeq = (d.db.prepare('SELECT MAX(sequence) AS m FROM runtime_stream_events WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m;
-      const snapshot = buildRecordSnapshot(
-        { db: d.db, config: d.config, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
-        conversationId,
-        lastSeq,
-      );
-      return json(res, 200, snapshot);
-    }
-
-    const ctxRecordsEvents = /^GET \/api\/v1\/conversations\/([^/]+)\/context-records\/events$/.exec(route);
-    if (ctxRecordsEvents) {
-      const conversationId = decodeURIComponent(ctxRecordsEvents[1]!);
-      const after = Math.max(0, Number(url.searchParams.get('cursor') ?? '0') || 0);
-      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? '30') || 30));
-      const before = url.searchParams.get('before') !== null ? Number(url.searchParams.get('before')) : null;
-      const mode = before !== null ? 'older' : url.searchParams.get('last') === '1' ? 'recent' : 'forward'; // F21/F26：最近页/向更早/历史正向
-      return json(res, 200, listRecordEvents(d.db, conversationId, after, limit, mode, Number.isFinite(before as number) ? (before as number) : null));
-    }
 
     // —— EXEC_V1 §03.5.1（WP3/MEDIA-11）：active MIME 隔离预览——CSP sandbox + nosniff ——
     const sandboxPreview = /^GET \/api\/v1\/assets\/([^/]+)\/preview$/.exec(route);
@@ -514,44 +292,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       }
     }
 
-    // —— EXEC_V1 §06.7（WP6）：日历读聚合（月概要=计数/标记；日详情=分源分页）——
-    if (route === 'GET /api/v1/calendar/month') {
-      const month = url.searchParams.get('month') ?? '';
-      if (!/^\d{4}-\d{2}$/.test(month)) return json(res, 400, { error: { code: 'bad_month', message: 'month 必须是 YYYY-MM' } });
-      const result = buildCalendarMonth({
-        db: d.db, config: d.config,
-        mariposaReady: false,
-        superpositionReady: false,
-        contentReady: d.contentClient !== null && d.contentClient !== undefined,
-      }, month);
-      if (!result) return json(res, 400, { error: { code: 'bad_month', message: '月份非法' } });
-      return json(res, 200, result);
+    // —— 日历读聚合组——P07.2 迁 server/routes/calendar.ts（逐字）。
+    if (route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
+      return handleCalendarRoutes(req, res, d, route, url);
     }
-    if (route === 'GET /api/v1/calendar/day') {
-      const date = url.searchParams.get('date') ?? '';
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: { code: 'bad_date', message: 'date 必须是 YYYY-MM-DD' } });
-      // 日概要：各来源状态+入口（不返回全部原文）
-      const sources = ['chat', 'memory', 'plans', 'stars', 'reminders', 'future_notes', 'creations'] as const;
-      const summary: Record<string, unknown> = {};
-      for (const src of sources) {
-        const r = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: false, superpositionReady: false, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, src, null, 1);
-        if (r) summary[src] = { status: r.status, has_items: r.items.length > 0 || r.has_more };
-      }
-      return json(res, 200, { date, timezone: 'Asia/Shanghai', sources: summary });
-    }
-    if (route === 'GET /api/v1/calendar/day/items') {
-      const date = url.searchParams.get('date') ?? '';
-      const source = url.searchParams.get('source') ?? '';
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: { code: 'bad_date', message: 'date 必须是 YYYY-MM-DD' } });
-      const validSources = ['chat', 'memory', 'plans', 'stars', 'reminders', 'future_notes', 'creations'];
-      if (!validSources.includes(source)) return json(res, 400, { error: { code: 'bad_source', message: `source 必须是 ${validSources.join('|')}` } });
-      const limit = Number(url.searchParams.get('limit')) || POLICY_CONSTANTS.pagination.default_limit;
-      if (limit < 1 || limit > POLICY_CONSTANTS.pagination.max_limit) return json(res, 400, { error: { code: 'limit_invalid', message: `limit 必须在 1..${POLICY_CONSTANTS.pagination.max_limit}` } });
-      const cursor = url.searchParams.get('cursor');
-      const result = buildCalendarDayItems({ db: d.db, config: d.config, mariposaReady: false, superpositionReady: false, contentReady: Boolean(d.contentClient), contentClient: d.contentClient ?? null }, date, source as CalendarSource, cursor, limit);
-      if (!result) return json(res, 400, { error: { code: 'bad_date', message: '日期非法' } });
-      return json(res, 200, result);
-    }
+
 
     // —— EXEC_V1 §06.4/5（WP5）：content 薄代理——P07.2 迁 server/routes/content.ts（逐字）
     if (url.pathname.startsWith('/api/v1/content/')) {
@@ -1156,21 +901,6 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
 
 /** WP3（2026-10-08）：选集条目解析——只取 message_id/revision/content_hash
  *  三个受控字段（前端正文不进模型，服务端从真实修订读取）；坏条目剔除。 */
-function parseSelectionItems(raw: unknown): Array<{ message_id: string; revision?: number; content_hash?: string }> {
-  if (!Array.isArray(raw)) return [];
-  const out: Array<{ message_id: string; revision?: number; content_hash?: string }> = [];
-  for (const x of raw) {
-    if (!x || typeof x !== 'object') continue;
-    const rec = x as Record<string, unknown>;
-    if (typeof rec.message_id !== 'string' || rec.message_id.length === 0) continue;
-    const item: { message_id: string; revision?: number; content_hash?: string } = { message_id: rec.message_id };
-    if (typeof rec.revision === 'number' && Number.isInteger(rec.revision)) item.revision = rec.revision;
-    if (typeof rec.content_hash === 'string') item.content_hash = rec.content_hash;
-    out.push(item);
-  }
-  return out;
-}
-
 
 /** 协议②（2026-10-24）：oído 快证据——宿主受信导入+短等待分析，取最多一条可靠观察。
  *  ready 就返回（≤N 字符）；未就绪/无证据= null（不拖电话、不回写历史、不猜情绪）。 */
@@ -1440,6 +1170,9 @@ import { handleContentProxy } from './routes/content.ts';
 import { handleBackgroundRoutes } from './routes/background.ts';
 import { handleConversationRoutes } from './routes/conversations.ts';
 import { handleOidoUiRoutes } from './routes/oido-ui.ts';
+import { handleRuntimeSettingsRoutes } from './routes/runtime-settings.ts';
+import { handleContextSelectionRoutes } from './routes/context-selection.ts';
+import { handleCalendarRoutes } from './routes/calendar.ts';
 import { json, readJson, ClientBodyError, estimateContextFor } from './http-leaf.ts';
 export { handleVoiceCallLifecycle };
 void handleVoiceCallLifecycle;

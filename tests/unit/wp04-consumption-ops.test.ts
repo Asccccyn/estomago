@@ -201,7 +201,7 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
 });
 
 test('d/j2：PUT 形状门——invalid auto/latest 422；有效 model 零写入', async () => {
-  const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/http.ts'), 'utf8');
+  const src = fs.readFileSync(path.join(import.meta.dirname, '../../apps/host/src/server/routes/runtime-settings.ts'), 'utf8'); // P07.2：PUT 处理器正本已迁 routes
   // FU-002（回访 2026-10-09）：两字段单事务提交（setMany）——形状接线
   // 检查；真实 HTTP/事务原子断言在下方 FU-001/FU-002 测试
   assert.ok(src.includes('d.settings.setMany(writes)'), '两字段单事务写入（setMany）');
