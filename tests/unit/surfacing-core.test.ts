@@ -2,15 +2,16 @@
 // 最新合同：整包一次来源声明、日期+正文+短 ref、同步同轮同修订、幂等
 // （AC025）、无次优补位（AC055 由 M 侧合同+本侧预算跳过共保）。
 import { test } from 'node:test';
+import { pollUntil, tempRoot } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { tempRoot } from '../helpers.ts';
 import { renderAugmentation, memoryRefFor, SURFACE_HOST_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
+import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import type { SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
@@ -120,7 +121,7 @@ function makeService(root: string, enabled = true) {
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
     max_packet_bytes: 24576, worker_concurrency: 2,
   }, null);
-  const messages = new MessageService(db, enabled ? svc : null);
+  const messages = new MessageService(db, bindSurfacingForTest({ surfacing: enabled ? svc : null, activity: null }));
   messages.ensureConversation('c1');
   return { db, svc, messages, log };
 }
@@ -180,7 +181,7 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   const big: SurfaceItem = { ...ITEM, event_text: '超'.repeat(30000) };
   const { client } = fakeMariposa({ validate: () => ({ status: 'ready', validation_receipt: 'svr_9', items: [big], reason_code: null }) });
   const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2 }, null);
-  const messages = new MessageService(db, svc);
+  const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
   const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得那件大事吗', clientMessageId: 'b1', occurredAt: T0 });
   // 手动推进到 ready（绕过 prepare 脚本）：
@@ -196,7 +197,6 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
 
 // ===== 她 2026-10-21 执行稿：编辑生命周期修订失效一致性（验收矩阵）=====
 
-import { pollUntil } from '../helpers.ts';
 
 function editFixture() {
   const root = tempRoot('sfedit-');
@@ -213,7 +213,7 @@ function editFixture() {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
   }, null);
-  const messages = new MessageService(db, svc);
+  const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
   const RECALL = '你还记得那次7.9我们把记忆库做成了吗？';
   const say = (id: string, content = RECALL) =>

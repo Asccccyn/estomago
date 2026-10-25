@@ -3,7 +3,9 @@
 // 模型无需 catalog→define 三跳即可 tool_invoke。权限/审计/幂等门不变；wire 入口
 // 仍是 3 个；旧窗 B 已冻结不含本段 → 不受影响（零回退）。
 import type { Db } from '../db/connection.ts';
-import { buildHostTools, type HostToolSpec } from './host-tools.ts';
+// P01.4：不再反向 import host-tools（值导入环的明确拆分点）。
+// 只依赖叶类型；工具定义快照由调用方（supervisor 装配根/测试装配）显式传入。
+import type { HostToolSpec } from '../capabilities/contracts.ts';
 import { definitionId } from './tool-discovery.ts';
 
 const SETTINGS_KEY = 'tools_initial_visible';
@@ -24,14 +26,16 @@ export function initialVisibleTools(db: Db): string[] {
 }
 
 /** 注入 B 段的文本：每工具 definition_id + 完整定义（与 tool_define 返回同源）。
- *  模型凭此直接 tool_invoke（definition_id 与宿主校验一致）。 */
-export function renderInitialVisibleText(db: Db): string | null {
+ *  模型凭此直接 tool_invoke（definition_id 与宿主校验一致）。
+ *  P01.4：specs 由调用方传当前宿主目录快照（supervisor 传 buildHostTools()），
+ *  本文件不再反向依赖 host-tools；定义正本与已见判定语义不变。 */
+export function renderInitialVisibleText(db: Db, specs: readonly HostToolSpec[]): string | null {
   const names = initialVisibleTools(db);
   if (names.length === 0) return null;
-  const specs = buildHostTools().filter((t) => names.includes(t.function.name));
-  if (specs.length === 0) return null;
+  const filtered = specs.filter((t) => names.includes(t.function.name));
+  if (filtered.length === 0) return null;
   const lines = ['[tools/initial：以下工具定义已随本窗开窗资料真实注入（无需再 tool_define；可直接 tool_invoke，带各自 definition_id）]'];
-  for (const spec of specs as HostToolSpec[]) {
+  for (const spec of filtered) {
     lines.push(`- ${spec.function.name}（definition_id: ${definitionId(spec)}）`);
     lines.push(`  description: ${spec.function.description}`);
     lines.push(`  parameters: ${JSON.stringify(spec.function.parameters)}`);

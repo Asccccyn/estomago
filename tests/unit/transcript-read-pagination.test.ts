@@ -1,6 +1,7 @@
 // R3′（2026-10-23，她批 R3P 方案）：长转写分页——首页 ≤8192B、续读读尽拼回全文、
 // 源变更/跨会话/已删资产如实拒读（不静默截断、不静默重读新版本）。
 import { test } from 'node:test';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,7 +12,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
@@ -22,7 +23,7 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('a'); messages.ensureConversation('b');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages });
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r3p' });
   const createWithTranscript = async (text: string) => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'qiaosheng', origin: 'upload' });

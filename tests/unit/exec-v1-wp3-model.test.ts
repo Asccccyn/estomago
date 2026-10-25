@@ -22,14 +22,14 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { SystemAlertService } from '../../apps/host/src/observability/system-alerts.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { setVisionSupportForTests, clearVisionSupportCache, materializeEnvelope, redactImageBlocksForStorage, projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -59,9 +59,9 @@ function compose(root: string, transport: OrTransport, openrouterExtra: Record<s
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections });
+  const { tools: tools, registry: registry } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, toolCatalog: registry });
   messages.ensureConversation('c1');
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages });
   const toolCtx = (over: Partial<ToolExecContext> = {}): ToolExecContext => ({ roomId: 'c1', windowId: 'w-test', turnId: 'turn-tool-1', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-1', ...over });
   return { db, config, messages, supervisor, media, alerts, tools, toolCtx, selections };
 }
@@ -216,8 +216,8 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const ctx = compose(root, transport);
   const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-tool', createdBy: 'jiaming', origin: 'upload' });
   const ctx1 = ctx.toolCtx();
-  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看', __tool_call_id: 'tc1' }, ctx1);
-  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看', __tool_call_id: 'tc1' }, ctx1);
+  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
+  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
   assert.equal(r1.ok, true);
   assert.equal(r2.ok, true);
   const msgs = ctx.messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 100 }).filter((m) => m.speaker === 'assistant');
@@ -225,11 +225,11 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   assert.equal(sent.length, 1, '同一工具调用重试只发一条');
   assert.equal(sent[0]!.revision.attachments[0]!.asset_id, img.id);
   // 不存在的资产：ASSET_NOT_FOUND
-  const r3 = await ctx.tools.execute('chat_send_attachment', { asset_id: 'asset_none', presentation: 'image', __tool_call_id: 'tc2' }, ctx1);
+  const r3 = await ctx.tools.execute('chat_send_attachment', { asset_id: 'asset_none', presentation: 'image' }, ctx1);
   assert.equal(r3.ok, false);
   assert.equal((r3.output as { error_code: string }).error_code, 'ASSET_NOT_FOUND');
   // media_import：内网地址直接策略拒绝（不发起连接）
-  const r4 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/x.png', __tool_call_id: 'tc3' }, ctx1);
+  const r4 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/x.png' }, ctx1);
   assert.equal(r4.ok, false);
   assert.equal((r4.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
 });

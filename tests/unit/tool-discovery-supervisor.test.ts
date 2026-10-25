@@ -3,6 +3,7 @@
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
 // block 置于真实 user_input block 之前（docs/04）。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { assertAppendOnly } from '../../apps/host/src/runtime/or-payload.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -24,13 +25,12 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -63,20 +63,21 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
     max_packet_bytes: 24576, worker_concurrency: 2,
   }, null);
-  const messages = new MessageService(db, svc);
+  const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
     log.push({ kind: 'chat', full: payload.messages, tools: payload.tools?.map((t: { function: { name: string } }) => t.function.name) ?? [] });
     return transport(payload);
   };
   const runner = provider==='deepseek' ? new DeepSeekRunner({ retryMax: 0 }, wrapped) : new OpenRouterRunner({providerOnly:['anthropic'],allowFallbacks:false,requireParameters:true,retryMax:0},wrapped);
-  const supervisor = new TurnSupervisor({
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+    
     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events),
     usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')),

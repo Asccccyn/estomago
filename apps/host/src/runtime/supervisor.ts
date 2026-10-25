@@ -1,6 +1,7 @@
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
-import { supportsSurfacingTransport, surfaceTransportMessage } from '../memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
+import { oidoHearingAvailable as voiceHearingPort } from '../application/voice-hearing-port.ts';
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -40,13 +41,16 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
-import { buildHostTools, hostToolNames, type HostToolExecutor, type ToolExecContext, type ToolExecResult } from './host-tools.ts';
+import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
+import type { CatalogProvider } from '../capabilities/registry.ts';
+// P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
+import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex, genId } from '../util/id.ts';
 import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
-import type { WishstarClient } from '../integrations/wishstar/client.ts';
+// P09：wishstar 依赖收窄为结构面（仅开窗临近纪念日提醒所需 upcoming）
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
@@ -54,7 +58,6 @@ import { renderInitialVisibleText } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
-import type { BackgroundToolQuote } from './background-tool-cost.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
@@ -74,13 +77,18 @@ export type SupervisorDeps = {
   windows: WindowManager;
   logger: Logger;
   archiveSync?: { drainOnce(): Promise<unknown> }; // 助手消息正式发布后触发原文同步（未启用时不注入）
-  wishstar?: Pick<WishstarClient, 'upcoming'> | null; // 许愿星（开窗临近纪念日提醒；未注入则无此行）
-  tools?: HostToolExecutor; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
+  wishstar?: { upcoming(days: number, signal?: AbortSignal): Promise<{ items: Array<{ name: string; date: string; days_until: number }> } | null> } | null; // 许愿星只读结构面（临近纪念日提醒；不 import 业务 client）
+  tools?: ModelToolBridge; // OR 工具执行（memory_hold / context_review_complete；未注入则工具循环不可用）
   reviews?: RotationReviewService;
   checkpoint?: HoldCheckpointService;
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
+  // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
+  // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
+  bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
+  // S17b 批次3：窄 catalog 接口——Supervisor 经同一 Registry 消费目录（唯一来源）
+  toolCatalog?: CatalogProvider;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
@@ -95,29 +103,16 @@ export type SupervisorDeps = {
   /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
   now?: () => number;
   // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
-  // 未注入=零变化；supervisor 只持薄接口，策略全在 memory-surfacing/service.ts。
-  surfacing?: {
-    augmentFor(input: import('../memory-surfacing/service.ts').AugmentInput): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
-    reuseFrozen(attemptId: string): import('../memory-surfacing/service.ts').AugmentResult | null;
-    finalAdmit?(r: import('../memory-surfacing/service.ts').AugmentResult, input: {
-      conversationId: string; windowId: string; messageId: string; revision: number;
-    }): Promise<import('../memory-surfacing/service.ts').AugmentResult | null>;
-    cancelForTurn?(turnId: string): void;
-    markDispatched?(attemptId: string): void;
-    markRetained(r: import('../memory-surfacing/service.ts').AugmentResult): void;
-  };
+  // 未注入=零变化；P05.5/6：类型=context/contributions 叶接口（BeforeTurnContributor 完整
+  // 生命周期：prepare/reuseFrozen/finalAdmit/markDispatched/markRetained/cancelForTurn）；
+  // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
+  surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
  *  旧窗目录冻结（A05 合同：不动态膨胀破缓存）没有 oido 工具——此时引导调用会
  *  TOOL_NOT_IN_WINDOW，误导模型；退回阻断语义（转写未就绪明确报错）更诚实。
  *  无冻结记录的新窗=当前目录（buildHostTools 含 oido_analyze）。 */
-export function oidoHearingAvailable(db: import('../db/connection.ts').Db, configured: boolean, windowId: string | null | undefined): boolean {
-  if (!configured || !windowId) return false;
-  const set = storedToolset(db, windowId);
-  if (set && !set.catalog.some((tool) => tool.function.name === 'oido_analyze')) return false;
-  return true;
-}
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
 const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
@@ -833,7 +828,6 @@ export class TurnSupervisor {
         } catch {
           args = {}; // 参数非法：执行器会因缺必填字段拒绝（§8.2 输入完整校验后才执行）
         }
-        args.__tool_call_id = t.tool_id;
         let exec: ToolExecResult;
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {
@@ -1013,7 +1007,7 @@ export class TurnSupervisor {
     let t = this.bootstrapByWindow.get(windowId);
     if (t !== undefined) return t;
     const d = this.d;
-    const mc = d.tools?.mariposaClient() ?? null;
+    const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
     if (!mc) return null; // 未接线：如实无 B
     const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
     const startedAt = performance.now();
@@ -1246,7 +1240,7 @@ export class TurnSupervisor {
         // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
         if (d.wishstar) {
           try {
-            const upcoming = await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime);
+            const upcoming = (await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime)) ?? { items: [] };
             for (const it of upcoming.items ?? []) {
               seg.push(`[临近纪念日：${it.name}（${it.days_until === 0 ? '就是今天' : `还有 ${it.days_until} 天`}）——来自许愿星]`);
             }
@@ -1293,7 +1287,8 @@ export class TurnSupervisor {
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
         // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
         // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
-        const initialTools = renderInitialVisibleText(d.db);
+        // P01.4：定义快照由装配方显式传入（tool-initial-visible 不再反向依赖 host-tools）
+        const initialTools = renderInitialVisibleText(d.db, this.toolCatalogSource().currentCatalog());
         if (initialTools !== null) seg.push(initialTools);
         if (seg.length === 1) {
           // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
@@ -1330,10 +1325,18 @@ export class TurnSupervisor {
     return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
   }
 
+  /** S17b 批次3：目录来源统一为同一 Registry——生产=显式 toolCatalog 依赖；
+   *  直接构造的测试夹具经执行器上的同一注册表回退（BLOCKERS 登记过渡）。 */
+  private toolCatalogSource(): import('../capabilities/registry.ts').CatalogProvider {
+    return this.d.toolCatalog ?? this.d.tools?.getCapabilityRegistry() ?? (() => { throw new Error('TOOL_CATALOG_NOT_WIRED'); })();
+  }
+
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
-      t = freezeWindowTools(this.d.db, windowId, buildHostTools(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
+      // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
+      // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
+      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
       this.frozenToolsByWindow.set(windowId, t);
     }
     return t;
@@ -1410,7 +1413,7 @@ export class TurnSupervisor {
     const tailSeq = o.tailMessage?.id
       ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
       : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1420,7 +1423,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? buildHostTools() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
+        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? this.toolCatalogSource().currentCatalog() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,
@@ -2252,7 +2255,7 @@ export class TurnSupervisor {
     // 接受时起绝对总预算）+ 尝试级冻结注入块。source/target 均为本
     // 消息当前修订；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
-    let surfacingAugment: import('../memory-surfacing/service.ts').AugmentResult | null = null;
+    let surfacingAugment: import('../context/contributions.ts').AugmentResult | null = null;
     if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
         const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
@@ -2324,7 +2327,7 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: oidoHearingAvailable(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment

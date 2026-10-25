@@ -2,13 +2,12 @@
 // 原文——可见性门保留 D13（所见修订号）/O06（片段级已读范围）语义。
 // Synthetic local fixtures only; no model calls or memory writes.
 import { test, type TestContext } from 'node:test';
+import { assembleTestTools, makeDb, tempRoot } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-import { makeDb, tempRoot } from '../helpers.ts';
 
 type Seen = { id: string; revision: number; char_start?: number; char_end?: number };
 type Ref = { seq: number; from?: number; to?: number };
@@ -19,7 +18,7 @@ function fixture(t: TestContext) {
   const { db, root } = makeDb(tempRoot('quote-seen-scope-'), { seed: false });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const messages = new MessageService(db);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   // Exercise the resolver without invoking the external memory service.
   const verifier = tools as unknown as { resolveQuoteRefs(roomId: string, seen: readonly Seen[], refs: Ref[]): Result };
   let serial = 0;

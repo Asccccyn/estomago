@@ -2,7 +2,7 @@
 // 五个零消费字段内部化、matched_by+matched_fields 合并、保留面不丢。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { projectCandidatesForModel } from '../../apps/host/src/runtime/host-tools.ts';
+import { projectCandidatesForModel } from '../../apps/host/src/modules/memory/projection.ts';
 
 const FULL = {
   resource_ref: 'memory:00051@3', channel: 'event', content_version: '3',

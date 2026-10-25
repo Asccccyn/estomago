@@ -22,7 +22,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { FIXED_RUNTIME_FRAGMENT } from '../../apps/host/src/context/fixed-runtime.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { buildFullTestRegistry, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
@@ -42,7 +42,7 @@ function composeOr(root: string, transport: OrTransport) {
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, config);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, toolCatalog: buildFullTestRegistry() });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, identity, routing, windows, supervisor };
 }
@@ -121,7 +121,7 @@ test('指纹：OR 型号变更 → 旧窗 CONTEXT_STALE、attempt 阻断要求�
   assert.notEqual(contextFingerprint(cfg2, manifest as never), contextFingerprint(ctx.config, manifest as never), 'OR 型号参与指纹');
 
   // 用不同 config 的 supervisor 跑第二轮 → 指纹不匹配 → CONTEXT_ROTATION_REQUIRED
-  const supervisor2 = new TurnSupervisor({ db: ctx.db, config: cfg2, messages: ctx.messages, events: new EventService(ctx.db), identity: ctx.identity, capabilities: new CapabilityMatrix(cfg2), runnerSelection: { status: 'ok', runner: new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport) }, reasoning: new ReasoningService(ctx.db, new EventService(ctx.db)), usage: new UsageCollector(ctx.db), routing: ctx.routing, windows: ctx.windows, logger: new Logger(path.join(root, 'logs')) });
+  const supervisor2 = new TurnSupervisor({ db: ctx.db, config: cfg2, messages: ctx.messages, events: new EventService(ctx.db), identity: ctx.identity, capabilities: new CapabilityMatrix(cfg2), runnerSelection: { status: 'ok', runner: new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport) }, reasoning: new ReasoningService(ctx.db, new EventService(ctx.db)), usage: new UsageCollector(ctx.db), routing: ctx.routing, windows: ctx.windows, logger: new Logger(path.join(root, 'logs')), toolCatalog: buildFullTestRegistry() });
   const t2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第二轮', clientMessageId: 'fp2' });
   supervisor2.enqueue(t2.turnId);
   await supervisor2.waitIdle();

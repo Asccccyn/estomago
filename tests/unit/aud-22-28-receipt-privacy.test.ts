@@ -2,7 +2,7 @@
 // AUD-28 回归：日志不落秘密（稳定错误码）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';

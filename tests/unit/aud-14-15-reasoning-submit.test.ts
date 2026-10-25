@@ -9,7 +9,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 test('AUD-14：事件持久失败 → 投影更新一并回滚（原子性）', () => {
   const root = tempRoot();

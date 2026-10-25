@@ -6,6 +6,7 @@
 //  - F-J-01 形状断言见 hold-quote.test.ts（source_msg: 前缀）；真实两端正例见 probes（R01/R02）。
 // 假 OR transport + 假 Mariposa（单测层）；零网络零真实模型。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -26,13 +27,11 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { selectReviewRange, type ManifestEntry } from '../../apps/host/src/context/review-policy.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -82,7 +81,7 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews, checkpoint });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews: reviews, checkpoint: checkpoint });
   const trajectory = new WindowTrajectoryService(db);
   // 脚本：turn1 文本成功；turn2 首轮 hold 工具调用、次轮（带工具结果）500 失败；turn3（新窗）文本成功
   let gen = 0;
@@ -93,7 +92,8 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
     return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) };
   };
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposaOk }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
   messages.ensureConversation('c1');
   const H = 60 * 60 * 1000;
   const T0 = '2026-10-03T08:00:00+08:00';
@@ -146,14 +146,13 @@ async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bin
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews, checkpoint: new HoldCheckpointService(db) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport }), reviews: reviews, checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_hold', {
-    __tool_call_id: 'call-j54',
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
     // R1′（2026-10-23）：60c6998 起 F-J-54 绑定核对按事件选集（source_ranges）算；
     // quotes 走我们的话勾选链路（1018 批），不再计入本核对。驱动改为 source_ranges。
     source_ranges: [{ start_seq: 1, end_seq: 1 }],
-  }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54' });
+  }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54', toolCallId: 'call-j54' });
   return { out, reviews };
 }
 

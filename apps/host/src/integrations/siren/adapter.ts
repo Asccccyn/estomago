@@ -146,13 +146,42 @@ export class SirenAdapter {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
+      // 审计修复：合并父取消与原超时（原 signal ?? timeout 会丢弃父取消）
       res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice-assets/${encodeURIComponent(assetId)}/audio`, {
         headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
-        signal: opts.signal ?? AbortSignal.timeout(opts.timeoutMs ?? 10000),
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs ?? 10000)]) : AbortSignal.timeout(opts.timeoutMs ?? 10000),
       });
     } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
     if (res.status === 404) return null;
     if (!res.ok) throw new SirenTranscriptionError('SIREN_AUDIO_FETCH_FAILED');
     return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') ?? 'audio/wav' };
   }
+}
+
+// —— P03.5：受控建呼工厂（原 callControl.accept_call 内的直接 fetch + 环境变量读取抽出）——
+// URL、认证（可选内部 token）、5s 超时、返回与 unknown 语义逐字保持；配置存在≠服务在线
+//（不可达仍如实 SIREN_UNREACHABLE）。不在通用 executor 读 Siren 配置。
+export type SirenCallCreation =
+  | { ok: true; call_id: string; ws_url: string; token: string }
+  | { ok: false; code: 'SIREN_UNCONFIGURED' | 'SIREN_UNREACHABLE' | 'SIREN_CONTRACT_INVALID' }
+  | { ok: false; code: 'SIREN_CALL_FAILED'; httpStatus: number };
+
+export async function createCallFromInternalEnv(conversationId: string, opts: { signal?: AbortSignal } = {}): Promise<SirenCallCreation> {
+  const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
+  if (!sirenBase) return { ok: false, code: 'SIREN_UNCONFIGURED' };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
+  if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
+  let sirenRes: Response;
+  try {
+    sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: conversationId }), signal: opts.signal ?? AbortSignal.timeout(5000) });
+  } catch {
+    return { ok: false, code: 'SIREN_UNREACHABLE' };
+  }
+  if (!sirenRes.ok) return { ok: false, code: 'SIREN_CALL_FAILED', httpStatus: sirenRes.status };
+  const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string };
+  if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
+    return { ok: false, code: 'SIREN_CONTRACT_INVALID' };
+  }
+  return { ok: true, call_id: created.call_id, ws_url: created.ws_url, token: created.token };
 }

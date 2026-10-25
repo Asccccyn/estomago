@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import path from 'node:path';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { CapabilityMatrix } from '../../apps/host/src/runtime/capabilities.ts';
 import { buildReadyReport } from '../../apps/host/src/observability/health.ts';

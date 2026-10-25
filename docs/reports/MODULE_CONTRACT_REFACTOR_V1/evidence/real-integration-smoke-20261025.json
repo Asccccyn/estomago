@@ -1,0 +1,44 @@
+{
+  "started_at": "2026-10-25T10:44:55.934Z",
+  "mode": "real-loopback-services",
+  "steps": [
+    {
+      "name": "mariposa",
+      "summary": {
+        "configured": true,
+        "bootstrap_ok": true,
+        "profile": "estomago",
+        "snapshot_id_shape": true,
+        "vocab_ok": true,
+        "vocab_categories": 7,
+        "latency_ms": 42
+      }
+    },
+    {
+      "name": "oido",
+      "summary": {
+        "capabilities_ok": true,
+        "ingest_ok": true,
+        "ingest_deduplicated": false,
+        "analyze_state": "partial",
+        "analyze_observations": 1,
+        "analyze_error": null,
+        "latency_ms": 1133
+      }
+    },
+    {
+      "name": "embedding",
+      "summary": {
+        "fingerprint_shape": "google/embeddinggemma-2",
+        "image_dims": 768,
+        "text_dims": 768,
+        "latency_ms": 362
+      }
+    }
+  ],
+  "siren": {
+    "reachable": false,
+    "detail": "ECONNREFUSED",
+    "note": "只读探测；不建呼（防真实电话）。服务未运行=能力当前不可用，非合同验证失败"
+  }
+}

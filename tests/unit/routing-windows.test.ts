@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';

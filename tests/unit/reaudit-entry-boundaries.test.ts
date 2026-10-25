@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import {createServer} from 'node:http';
 import {AuthService} from '../../apps/host/src/auth/tokens.ts';
 import {handleRequest} from '../../apps/host/src/server/http.ts';
@@ -26,12 +27,10 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { handleVoiceChatStream } from '../../apps/host/src/server/http.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -44,6 +43,10 @@ class FakeRes extends Writable {
   headers: Record<string, string> = {};
   lines: string[] = [];
   buffer = '';
+  // 审计修复批次1：真实 response 关闭语义——writableEnded 标记正常终态；closeEvent()
+  // 触发 close 事件供 handler 的取消监听（不再用 req.emit('close') 模拟）
+  writableEnded = false;
+  destroyed = false;
   _write(chunk: Buffer, _enc: string, cb: (e?: Error | null) => void): void {
     this.buffer += chunk.toString('utf8');
     let idx: number;
@@ -56,6 +59,8 @@ class FakeRes extends Writable {
   }
   writeHead(code: number, headers: Record<string, string>): void { this.status = code; this.headers = headers; }
   override write = ((chunk: unknown) => { this._write(Buffer.from(String(chunk)), 'utf8', () => {}); return true; }) as Writable['write'];
+  override end = ((chunk?: unknown) => { if (chunk) this.write(chunk); this.writableEnded = true; return this; }) as Writable['end'];
+  closeEvent(): void { this.destroyed = true; this.emit('close'); }
 }
 
 function compose(root: string, transport: OrTransport) {
@@ -69,8 +74,8 @@ function compose(root: string, transport: OrTransport) {
   messages.ensureConversation('c1');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   const auth=new AuthService(paths);const logger=new Logger(path.join(root,'logs'));
@@ -91,7 +96,7 @@ async function helperRound(ctx:ReturnType<typeof compose>, input:any){
  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN='audit-voice';
  const req=REQ(input,{authorization:'Bearer audit-voice'}) as any;const res=new FakeRes();
  await handleVoiceChatStream(req,res as never,ctx.deps);
- return {req,res,close(){req.emit('close');}};
+ return {req,res,close(){res.closeEvent();}}; // 审计批次1：真实 response 关闭语义（非正常关闭=writableEnded=false）
 }
 
 test('REV-E01 real router accepts the dedicated ingress token without owner credential',async()=>{

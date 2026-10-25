@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';

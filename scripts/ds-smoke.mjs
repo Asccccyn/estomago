@@ -37,7 +37,7 @@ const { RoutingService } = await import('../apps/host/src/routing/service.ts');
 const { WindowManager } = await import('../apps/host/src/windows/manager.ts');
 const { TurnSupervisor } = await import('../apps/host/src/runtime/supervisor.ts');
 const { DeepSeekRunner, deepSeekSelection } = await import('../apps/host/src/runtime/runner-deepseek.ts');
-const { HostToolExecutor } = await import('../apps/host/src/runtime/host-tools.ts');
+const { assembleTestTools } = await import('../tests/helpers.ts');
 const { RotationReviewService } = await import('../apps/host/src/context/rotation-review.ts');
 const { HoldCheckpointService } = await import('../apps/host/src/memory/hold-checkpoint.ts');
 const { WindowTrajectoryService } = await import('../apps/host/src/runtime/window-trajectory.ts');
@@ -78,7 +78,7 @@ const mariposaFake = async (cap, payload) => {
   }
   return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
 };
-const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposaFake }), reviews, checkpoint });
+const { tools } = assembleTestTools({ db, mariposa: new MariposaClient({ transport: mariposaFake }), reviews, checkpoint });
 const trajectory = new WindowTrajectoryService(db);
 
 // 字段自检：DS 请求绝不携带 OR 专属字段或 Anthropic 式缓存标记（审计 P1-1；真/假 transport 共用）
@@ -101,7 +101,7 @@ if (DRY) {
     const text = typeof lastUser?.content === 'string' ? lastUser.content : Array.isArray(lastUser?.content) ? lastUser.content.map((b) => b.text ?? '').join('\n') : '';
     const toolAlreadyRun = payload.messages.some((m) => m.role === 'tool'); // 工具已执行→收口（真模型行为）
     const body = text.includes('请记录') && !toolAlreadyRun
-      ? sse({ id: 'gen-dry', choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-dry', type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify({ original_title: 'DS 冒烟记录', categories: ['daily'], text: '冒烟合成记录' }) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE
+      ? sse({ id: 'gen-dry', choices: [{ delta: { tool_calls: [{ index: 0, id: 'call-dry', type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify({ original_title: 'DS 冒烟记录', categories: ['daily'], text: '冒烟合成记录', creation_mode: 'contemporaneous' }) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) + DONE
       : sse({ id: 'gen-dry', choices: [{ delta: { content: 'dry-run 合成回复' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 42, completion_tokens: 7, prompt_cache_hit_tokens: 24 } }) + DONE;
     return { status: 200, headers: new Map(), body: Readable.from(body.split('\n\n').filter(Boolean).map((s) => enc.encode(s + '\n\n'))) };
   };

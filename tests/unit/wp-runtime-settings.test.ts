@@ -4,6 +4,7 @@
 //  - 换思考深度=逐请求生成参数：立即生效、不换窗（reasoning 已退出指纹）
 //  - override 持久（迁移 19）；null/空=回落 config 默认
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -12,7 +13,6 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { contextFingerprint } from '../../apps/host/src/identity/service.ts';
 import { RuntimeSettingsService, REASONING_EFFORTS } from '../../apps/host/src/runtime/runtime-settings.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 function makeDb(root: string) {
   writeApprovedIdentity(root);
@@ -100,7 +100,6 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -130,11 +129,13 @@ function composeRt(root, seen) {
   const windows = new WindowManager(db, events, identity, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint });
+  const mariposa_wire_1 = new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: reviews, checkpoint: checkpoint });;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const runner = new DeepSeekRunner({ retryMax: 0 }, async () => { gen++; seen.push('deepseek'); return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '好的')) }; });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, settings });
+  const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, settings });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, settings };
 }

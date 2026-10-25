@@ -8,6 +8,7 @@
 //  - O07：多次回读零副作用（消息/修订/outbox/书签计数不变）
 //  - O08：无 include_cot 参数（思考不可请求）；协议继续态回归随全套件
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -28,13 +29,11 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
@@ -52,12 +51,8 @@ function makeExecutor(root: string, mariposa?: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const executor = new HostToolExecutor({
-    db,
-    mariposa: new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) }),
-    reviews: new RotationReviewService(db),
-    checkpoint: new HoldCheckpointService(db),
-  });
+  const mariposa_wire_1 = new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) });
+  const { tools: executor } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { executor, db };
 }
 
@@ -209,16 +204,16 @@ test('O06（单元）：片段级已见——已读范围可引用，未读片�
     quotes: [{ seq: 1, from: 1, to: 1 }],
   };
   const okCtx = { ...CTX, seenMessages: [{ id: 'm1', revision: 1, char_start: 0, char_end: readCpEnd }] };
-  const good = await executor.execute('memory_hold', { ...holdArgs, __tool_call_id: 'c1' }, okCtx);
+  const good = await executor.execute('memory_hold', { ...holdArgs }, okCtx);
   assert.equal(good.ok, true, JSON.stringify(good.output).slice(0, 200));
   assert.equal(holdCalls.length, 1, '已读句段可勾选，hold 发出');
   // 未读句段（在后半段）→ QUOTE_REF_RANGE_NOT_SEEN，零副作用
-  const badHold = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1, from: 2, to: 2 }], __tool_call_id: 'c2' }, okCtx);
+  const badHold = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1, from: 2, to: 2 }] }, okCtx);
   assert.equal(badHold.ok, false);
   assert.equal((badHold.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   assert.equal(holdCalls.length, 1, '未读句段不放行——不因同消息其他句段已读而整条放行');
   // 整条勾选（含未读后半）同样不放行
-  const badWhole = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1 }], __tool_call_id: 'c3' }, okCtx);
+  const badWhole = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1 }] }, okCtx);
   assert.equal((badWhole.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   db.close();
 });
@@ -247,10 +242,12 @@ function composeWp4(root: string, transport: OrTransport) {
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint });
+  const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_2, reviews: reviews, checkpoint: checkpoint });;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, trajectory };
 }

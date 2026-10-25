@@ -20,7 +20,7 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import { buildFullTestRegistry, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const now = '2026-10-15T00:00:00Z';
@@ -119,9 +119,10 @@ function compose(mariposa: MariposaTransport) {
     return { status: 200, headers: new Map(), body: Readable.from([Buffer.from(body)]) };
   });
   const client = new MariposaClient({ transport: mariposa });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows,
-    logger: new Logger(path.join(root, 'logs')), trajectory, tools: { mariposaClient: () => client } as any });
+    logger: new Logger(path.join(root, 'logs')), trajectory, toolCatalog: buildFullTestRegistry() });
   messages.ensureConversation('c1');
   return { db, messages, windows, identity, supervisor, trajectory, seen };
 }

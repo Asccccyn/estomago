@@ -11,6 +11,7 @@ import { sha256Hex } from './util/id.ts';
 import { Logger } from './observability/logging.ts';
 import { stableErrorCode } from './observability/errors.ts';
 import { EventService } from './events/service.ts';
+import { createOidoDeleteRetryLifecycle } from './modules/oido/lifecycle.ts';
 import { MessageService } from './messages/service.ts';
 import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
@@ -28,7 +29,7 @@ import { ArchiveSyncService } from './integrations/mariposa/archive-sync.ts';
 import { RotationReviewService } from './context/rotation-review.ts';
 import { ManualSelectionService } from './context/manual-selection.ts';
 import { HoldCheckpointService } from './memory/hold-checkpoint.ts';
-import { HostToolExecutor } from './runtime/host-tools.ts';
+import { ModelToolBridge } from './capabilities/model-bridge.ts';
 import { WindowTrajectoryService } from './runtime/window-trajectory.ts';
 import { RuntimeSettingsService } from './runtime/runtime-settings.ts';
 import { SystemAlertService } from './observability/system-alerts.ts';
@@ -37,7 +38,6 @@ import { VoiceService } from './media/voice.ts';
 import { BackgroundSettingsService } from './runtime/background-settings.ts';
 import { BackgroundScheduler } from './runtime/background-scheduler.ts';
 import { runMediaBackfillTick } from './media/index/backfill.ts';
-import { retryOneOidoDelete } from './integrations/oido/delete-retry.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
@@ -76,8 +76,8 @@ export class Host {
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
   private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
-  private oidoDeleteTimer: ReturnType<typeof setInterval> | null = null;
-  private oidoDeleteAbort: AbortController | null = null;
+  /** P03.8：oído 接入模块生命周期（删除传播重试 timer 的 start/stop 包装；行为逐字保持） */
+  private oidoLifecycle: import('./modules/oido/lifecycle.ts').OidoModuleLifecycle | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   readonly server: http.Server;
@@ -110,6 +110,7 @@ export class Host {
     this.scheduler = deps.scheduler ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
     this.oidoRef = deps.oido ?? null;
+    this.oidoLifecycle = createOidoDeleteRetryLifecycle(deps.db, () => this.oidoRef);
     this.surfacing = deps.surfacing ?? null;
     this.archiveSync = archiveSync;
     this.server = server;
@@ -156,7 +157,10 @@ export class Host {
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
-    const messages = new MessageService(db, surfacing.enabled ? surfacing : null, activity);
+    const messages = new MessageService(db,
+      // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口）
+      (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({ surfacing: surfacing.enabled ? surfacing : null, activity }),
+      activity);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
@@ -231,7 +235,27 @@ export class Host {
     const sirenCall = sirenCallCfg.base_url && sirenCallCfg.credential_ref && process.env[sirenCallCfg.credential_ref]
       ? new (await import('./integrations/siren/adapter.ts')).SirenAdapter(sirenCallCfg.base_url, process.env[sirenCallCfg.credential_ref]!)
       : null;
-    const tools = new HostToolExecutor({ db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, media, messages, contentClient, identity, events, wishstar, taskService, oido, mediaIndex, sirenCall });
+    // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
+    // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
+    const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
+    // P04.2-4：memory 域（14 工具；同一服务实例供换窗评审恢复窄委托）
+    const memoryService = (await import('./modules/memory/module.ts')).registerMemoryCapabilities(capabilityRegistry, {
+      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync,
+    });
+    (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
+      db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
+    });
+    const tools = new ModelToolBridge({ db, events });
+    tools.setCapabilityRegistry(capabilityRegistry);
+    tools.setMemoryRecovery(memoryService);
+    // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
+    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
+    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media });
+    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
+    (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { media, mediaIndex });
+    (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
+    (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
+    tools.setMemoryRecovery(memoryService);
     const supervisor = new TurnSupervisor({
       wishstar,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
@@ -260,41 +284,29 @@ export class Host {
       activity,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
+      bootstrap: modelMariposaClient,
+      toolCatalog: capabilityRegistry,
     });
-    // 拒接/取消留言调度（2026-10-24）：call_control(cancel) 的说话轮入口（tools 先于
-    // supervisor 构造，这里补引用；不注入=取消不触发说话轮，如实降级）
-    (tools as unknown as { setSupervisorRef: (s: unknown) => void }).setSupervisorRef?.(supervisor);
+    // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
+    // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）
+    (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
+      db, sirenCall, programFacts: supervisor,
+    });
+    // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
+    (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
+      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync,
+    });
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
     // 会话串行链（03 统一执行入口——chatBusy 用户在场门已删，排队与让位在执行位内处理）。
     const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
-      executor: {
-        async executeRun(input: Parameters<import('./runtime/background-scheduler.ts').BackgroundExecutor['executeRun']>[0]): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }> {
-          if (input.kind === 'reminder') {
-            // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
-            const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
-            const msg = await supervisor.enqueueBackground(input.conversationId, () => Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` })));
-            events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
-            return { outcome: 'completed', result_code: 'delivered' };
-          }
-          return supervisor.enqueueBackground(input.conversationId, () => {
-            // Recheck after acquiring the conversation's execution slot.
-            // Price validation and reservation occur once at every actual dispatch.
-            const kind = input.kind as 'autonomous' | 'keepwarm';
-            const es = bgSettings.effective();
-            if (!es[kind].enabled) return Promise.resolve({ outcome: 'noop' as const, result_code: kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' });
-            if (es[kind].daily_cost_cap_usd === null) return Promise.resolve({ outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' });
-            return supervisor.runBackgroundTurn({
-              kind, runId: input.runId, conversationId: input.conversationId, payload: input.payload,
-              isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
-              recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, ...info, capabilityName: info.capabilityName ?? null }),
-              maxModelRequests: es.autonomous.max_model_requests_per_run,
-            });
-          });
-        },
-      },
+      executor: (await import('./application/background-execution.ts')).createBackgroundExecution({
+        messages, events, bgSettings, supervisor,
+        // 构造期 scheduler 尚未就绪——经 schedulerRef 惰性转发（调用发生在 tick 之后）
+        scheduler: { recordDispatchStart: (...args: Parameters<BackgroundScheduler['recordDispatchStart']>) => schedulerRef!.recordDispatchStart(...args) },
+      }),
     });
     schedulerRef = scheduler;
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
@@ -377,13 +389,8 @@ export class Host {
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
     this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
     this.mediaBackfillTimer.unref?.();
-    // R6′：oído 删除传播重试——独立定时器（≤1 条/跳，指数退避；表即状态，重启恢复）
-    this.oidoDeleteTimer = setInterval(() => {
-      if (!this.oidoRef) return;
-      this.oidoDeleteAbort = this.oidoDeleteAbort ?? new AbortController();
-      void retryOneOidoDelete(this.db, this.oidoRef, this.oidoDeleteAbort.signal).catch(() => {});
-    }, 30_000);
-    this.oidoDeleteTimer.unref?.();
+    // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
+    this.oidoLifecycle?.start();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
@@ -403,8 +410,7 @@ export class Host {
   async stop(): Promise<void> {
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
-    if (this.oidoDeleteTimer) { clearInterval(this.oidoDeleteTimer); this.oidoDeleteTimer = null; }
-    this.oidoDeleteAbort?.abort(); // R6′：停删除传播重试
+    this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代

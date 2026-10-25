@@ -8,7 +8,7 @@ import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate, SUPPORTED_SCHEMA_VERSION } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 const has = (db: ReturnType<typeof openDatabase>, t: string) =>
   !!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(t);

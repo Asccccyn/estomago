@@ -1,10 +1,10 @@
 // Fake transports; actual adapters, frozen tool discovery, supervisor and SQL.
 import { test } from 'node:test';
+import { assembleTestTools, makeDb, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
@@ -19,7 +19,6 @@ import { Logger } from '../../apps/host/src/observability/logging.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -44,7 +43,7 @@ for (const provider of ['deepseek', 'openrouter'] as const) test(`${provider} F-
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, config);
   const reviews = new RotationReviewService(db), checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews, checkpoint, taskService: tasks, messages });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: reviews, checkpoint: checkpoint, messages: messages, taskService: tasks });
   const payloads: Record<string, unknown>[] = [];
   const visible: Record<string, Record<string, unknown>> = {};
   let definitionId = '', taskId = '', revision = 1;

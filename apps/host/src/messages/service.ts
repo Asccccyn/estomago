@@ -3,6 +3,7 @@
 // turn+attempt+turn_id 回填+幂等判定；commit 后才进 executor 队列。
 // 幂等自愈：同 key 重试不只查 message，还校验并补齐缺失 side effects（turn/attempt/outbox）。
 import type { Db } from '../db/connection.ts';
+import type { MessageLifecycleHooks } from './lifecycle.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type MessageDto, type MessageKind, type MessagePageDto } from '../../../../packages/contracts/src/api.ts';
@@ -16,24 +17,18 @@ export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: s
 
 export class BlankMessageError extends Error {}
 
-export type SurfacingMessageHooks = {
-  /** 接受事务内登记（只 SQL 零网络）；幂等（逻辑作业唯一键防重）。 */
-  onUserMessageAccepted(o: { conversationId: string; messageId: string; revision: number; sequence: number; content: string; contentHash: string; occurredAt: string | null }): void;
-  /** 编辑事务内：撤销旧修订作业（未错过目标轮的可建新作业——上层判断）。 */
-  onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void;
-  /** 事务提交后唤醒独立 worker（不进 MessageService 事务）。 */
-  afterCommit(): void;
-};
+// P05.2：通用生命周期合同在 ./lifecycle.ts（事实+inTx/afterCommit）。本类型保留为
+// 浮现域既有结构面（application/message-lifecycle 与兼容适配消费）；P09 复核命名。
 
 export class MessageService {
   private db: Db;
-  private surfacing: SurfacingMessageHooks | null;
+  private lifecycle: MessageLifecycleHooks | null;
   /** WAKE_KEEPWARM_V1 §05（2026-10-22）：真实活动锚点投影——正式发布事务内更新 L；
    *  未注入（旧测试/最小装配）=零变化。 */
   private activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
-  constructor(db: Db, surfacing: SurfacingMessageHooks | null = null, activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null = null) {
+  constructor(db: Db, lifecycle: MessageLifecycleHooks | null = null, activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null = null) {
+    this.lifecycle = lifecycle;
     this.db = db;
-    this.surfacing = surfacing;
     this.activity = activity;
   }
 
@@ -127,12 +122,10 @@ export class MessageService {
         }
         const attemptRow = this.db.prepare('SELECT id FROM attempts WHERE turn_id = ? ORDER BY attempt_no LIMIT 1').get(turn.id) as { id: string };
         const dupDto = this.getMessage(dup.id)!;
-        // 幂等重放：作业缺失则补（同逻辑作业唯一键，不增加作业）
-        this.surfacing?.onUserMessageAccepted({
-          conversationId: opts.conversationId, messageId: dup.id, revision: dup.current_revision,
+        // 幂等重放：作业缺失则补（同逻辑作业唯一键，不增加作业）——P05.4：不当新真实活动
+        this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId: dup.id, revision: dup.current_revision,
           sequence: dupDto.sequence, content: dupDto.revision.content, contentHash: dupDto.revision.content_hash,
-          occurredAt: dupDto.revision.occurred_at,
-        });
+          occurredAt: dupDto.revision.occurred_at, firstAcceptance: false });
         return { message: dupDto, duplicate: true, turnId: turn.id, attemptId: attemptRow.id, repaired };
       }
 
@@ -168,19 +161,17 @@ export class MessageService {
         .run(turnId, opts.conversationId, messageId, nowIso);
       this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')").run(attemptId, turnId);
       this.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, messageId);
-      // 自动浮现（2026-10-19）：接受事务内登记作业（SQL only；docs/02 数据入口）
+      // 自动浮现（2026-10-19）：接受事务内登记事实（SQL only；docs/02 数据入口）
       const msgDto = this.getMessage(messageId)!;
-      this.surfacing?.onUserMessageAccepted({
-        conversationId: opts.conversationId, messageId, revision: 1,
+      this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId, revision: 1,
         sequence: seqRow.next, content, contentHash: msgDto.revision.content_hash,
-        occurredAt,
-      });
+        occurredAt, firstAcceptance: true });
       // WAKE_KEEPWARM_V1 §05：真实发布（非幂等重放路径）同事务更新 L 锚点
       this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
       return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };
     });
     // 事务提交后唤醒（worker 网络面绝不进本事务）
-    this.surfacing?.afterCommit();
+    this.lifecycle?.afterCommit(opts.conversationId);
     return result;
   }
 
@@ -218,10 +209,10 @@ export class MessageService {
       }
       this.db.prepare('UPDATE messages SET current_revision = ? WHERE id = ?').run(nextRev, messageId);
       this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
-      // 自动浮现：编辑撤销旧修订作业（docs/02 数据入口）
-      this.surfacing?.onUserMessageEdited({ conversationId: msg.conversation_id, messageId, supersededRevision: msg.current_revision });
+      // 自动浮现：编辑撤销旧修订作业事实（docs/02 数据入口）
+      this.lifecycle?.inTransaction({ kind: 'revised', conversationId: msg.conversation_id, messageId, supersededRevision: msg.current_revision, revision: nextRev });
     });
-    this.surfacing?.afterCommit();
+    this.lifecycle?.afterCommit(msg.conversation_id);
     return this.getMessage(messageId)!;
   }
 
@@ -250,7 +241,7 @@ export class MessageService {
     this.insertOutbox(`archive:${messageId}:${nextRev}`, { message_id: messageId, revision: nextRev }, nowIso);
     if (opts.notifySurfacing || opts.resubmitSurfacing) {
       const msg = this.getMessage(messageId)!;
-      this.surfacing?.onUserMessageEdited({ conversationId: msg.conversation_id, messageId, supersededRevision: row.current_revision });
+      this.lifecycle?.inTransaction({ kind: 'revised', conversationId: msg.conversation_id, messageId, supersededRevision: row.current_revision, revision: nextRev });
       // Only an explicit edit-and-resend registers work for the new revision.
       // The caller's attempt/receipt transaction owns this SQL-only hook;
       // ordinary history edits never replay retrieval or rewrite the trajectory.
@@ -263,14 +254,12 @@ export class MessageService {
   registerResubmittedRevisionInTx(messageId: string): void {
     const msg = this.getMessage(messageId);
     if (!msg || msg.speaker !== 'owner' || msg.current_revision <= 1) return;
-    this.surfacing?.onUserMessageAccepted({
-      conversationId: msg.conversation_id, messageId, revision: msg.current_revision,
+    this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: msg.conversation_id, messageId, revision: msg.current_revision,
       sequence: msg.sequence, content: msg.revision.content,
-      contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at,
-    });
+      contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at, firstAcceptance: false });
   }
 
-  notifyAfterEditCommit(): void { this.surfacing?.afterCommit(); }
+  notifyAfterEditCommit(): void { this.lifecycle?.afterCommit(''); } // S17b 批次5：通用 afterCommit 通知
 
   // 助手气泡正式发布（发布边界才落 message；含归档 outbox）
   publishAssistantMessage(opts: { conversationId: string; turnId: string; content: string; kind?: MessageKind; clientMessageId?: string; attachments?: MessageAttachmentInput[]; events?: EventService | null }): MessageDto {

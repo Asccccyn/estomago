@@ -7,6 +7,7 @@
 // 对应验收：P10（next 仅消费原 result_set；refine 是独立动作）、
 // P12（宿主不代读全页——has_more 只是提示）、J08（政策切换上抛）
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -14,8 +15,6 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { HostToolExecutor, validateToolArgs } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
@@ -29,7 +28,7 @@ function makeTools(mariposa: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { tools, db };
 }
 
@@ -57,7 +56,7 @@ test('WP2：memory_recall 关闭模式首页——pagination/judge 字段穿透�
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'call-1', query: '找搬家' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '找搬家' }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
   const o = out.output as Record<string, unknown>;
   // P01 穿透：10 条全部到达模型可见层（不再 slice(0,20) 之外还有二次裁剪，
@@ -85,7 +84,7 @@ test('WP2：memory_recall_next 只消费冻结结果集——参数原样到达 
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall_next', { __tool_call_id: 'call-2', result_set_id: 'rps_wp2', cursor: 'pgc_next1', session_id: 'rs_wp2' }, CTX);
+  const out = await tools.execute('memory_recall_next', { result_set_id: 'rps_wp2', cursor: 'pgc_next1', session_id: 'rs_wp2' }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
   // P10：只消费原 result_set——没有 start/refine
   assert.deepEqual(caps, ['memory.recall.page']);
@@ -108,7 +107,7 @@ test('WP2：形状门——缺 pagination/judge_mode = RECALL_ENVELOPE_INVALID�
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall_next', { __tool_call_id: 'c', result_set_id: 'rps_wp2' }, CTX);
+  const out = await tools.execute('memory_recall_next', { result_set_id: 'rps_wp2' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_ENVELOPE_INVALID');
   assert.ok((out.output.missing_fields as string[]).includes('pagination'));
@@ -123,7 +122,7 @@ test('WP2：RECALL_POLICY_CHANGED 如实上抛（不自动重查、不混模式�
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall_next', { __tool_call_id: 'c', result_set_id: 'rps_wp2', cursor: 'x' }, CTX);
+  const out = await tools.execute('memory_recall_next', { result_set_id: 'rps_wp2', cursor: 'x' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_POLICY_CHANGED');
   db.close();

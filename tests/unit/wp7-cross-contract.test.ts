@@ -4,6 +4,7 @@
 // 经 E 真 MariposaClient（fake transport 只做管道）→ HostToolExecutor →
 // 验证模型可见层的字段保真。I03：工具面/能力面一致性。
 import { test } from 'node:test';
+import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -13,8 +14,6 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { HostToolExecutor, validateToolArgs, buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
@@ -30,7 +29,8 @@ function makeExecutor(root: string, transport: (cap: string, payload: Record<str
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  return new HostToolExecutor({ db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  return tools;
 }
 
 test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端保真', async () => {
@@ -42,7 +42,7 @@ test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端�
     if (cap === 'memory.recall.page') return { ok: true, result: PACKETS.off_page2 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   });
-  const first = await executor.execute('memory_recall', { __tool_call_id: 'c1', query: '搬家' }, CTX);
+  const first = await executor.execute('memory_recall', { query: '搬家' }, CTX);
   assert.equal(first.ok, true, JSON.stringify(first.output).slice(0, 200));
   const o = first.output as Record<string, unknown>;
   // R1′（1023，模型输出合同 bd677ed）：judge_mode/judgement_status/candidate_total/
@@ -55,7 +55,6 @@ test('I01：真实 M 包经 E 工具层——off 模式页合同字段端到端�
   assert.equal((o.candidates as unknown[]).length, 10);
   // 续页：真实 page 包经 memory_recall_next
   const next = await executor.execute('memory_recall_next', {
-    __tool_call_id: 'c2',
     result_set_id: (o.pagination as Record<string, unknown>).result_set_id as string,
     cursor: (o.pagination as Record<string, unknown>).next_cursor as string,
     session_id: o.recall_session_id as string,
@@ -76,7 +75,7 @@ test('I01：on 模式真实包——有界交付字段保真（judgement_status=
     if (cap === 'memory.recall.start') return { ok: true, result: PACKETS.on_first_page };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   });
-  const out = await executor.execute('memory_recall', { __tool_call_id: 'c', query: '搬家' }, CTX);
+  const out = await executor.execute('memory_recall', { query: '搬家' }, CTX);
   assert.equal(out.ok, true);
   const o = out.output as Record<string, unknown>;
   // R1′（1023）：on+evaluated 属常规完成态——judgement 不输出（无异常即成功）；
@@ -88,7 +87,7 @@ test('I01：on 模式真实包——有界交付字段保真（judgement_status=
 });
 
 test('I03：工具面一致性——conversation_read/memory_recall(_next) 在 allowlist 与 schema；policy 工具不在主模型面', () => {
-  const tools = buildHostTools().map((t) => t.function.name);
+  const tools = fullToolCatalog().map((t) => t.function.name);
   assert.ok(tools.includes('conversation_read'));
   assert.ok(tools.includes('memory_recall'));
   assert.ok(tools.includes('memory_recall_next'));

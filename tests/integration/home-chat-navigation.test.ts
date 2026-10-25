@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { HOME_STATIC_FILES } from '../../apps/host/src/server/home-assets.ts';

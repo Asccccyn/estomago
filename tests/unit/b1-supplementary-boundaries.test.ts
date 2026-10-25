@@ -3,6 +3,7 @@
 // 本文件按 02 批次文档 RE-07 的修复方向（未发送草稿拒绝；当前合法源仍可分页）补
 // **合法源**（已发布消息+当前修订附件）下的版本化断言；原探针保持原样不改。
 import { test } from 'node:test';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -13,7 +14,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
@@ -24,7 +25,7 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('a');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages });
   const ctx = (): ToolExecContext => ({ roomId: 'a', windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'b1sup' });
   // 合法源：上传语音→转写 ready→发布为当前修订消息附件（RE-07 授权边界）
   const createPublishedWithTranscript = async (text: string) => {

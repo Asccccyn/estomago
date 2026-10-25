@@ -20,7 +20,7 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import type { AgentRunner, RunnerRunRequest, RunnerRunResult } from '../../apps/host/src/runtime/runner.ts';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
 
 function compose(root: string, runner: AgentRunner) {
   writeApprovedIdentity(root);

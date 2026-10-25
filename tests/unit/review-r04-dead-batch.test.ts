@@ -20,7 +20,7 @@ import { EventService } from '../../apps/host/src/events/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
 import { MariposaClient, type IngestRequest, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 const REPO = path.resolve(fileURLToPath(import.meta.url), '../../..');
 type Row = Record<string, unknown>;

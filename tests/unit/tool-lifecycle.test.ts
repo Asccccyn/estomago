@@ -2,6 +2,7 @@
 // 三阶段；真实回执（ok/error_code 如实）；SILENT_TOOLS 不发声；重复执行
 // 逐次真实回执，0 假成功。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -10,11 +11,9 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 
 const HOLD_ARGS = { original_title: '生命周期回归', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x' };
 
@@ -27,11 +26,7 @@ function setup(transport: MariposaTransport) {
   migrate(db, sha256Hex);
   db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
   const events = new EventService(db);
-  const tools = new HostToolExecutor({
-    db, mariposa: new MariposaClient({ transport }),
-    reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db),
-    events,
-  });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), events: events });
   const toolEvents = () => (db.prepare(
     "SELECT kind, payload_ref FROM runtime_stream_events WHERE kind='turn.tool' ORDER BY sequence",
   ).all() as Array<{ kind: string; payload_ref: string }>)
@@ -44,7 +39,7 @@ const okMariposa: MariposaTransport = async (_cap, payload) => ({ ok: true, resu
 test('R07：同一身份贯穿 start→result；身份字段完整', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    const out = await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-life-1' }, {
+    const out = await tools.execute('memory_hold', { ...HOLD_ARGS }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-9', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-9',
       toolCallId: 'call-life-1', attemptId: 'att-9', round: 1, generationId: 'gen-9',
@@ -71,7 +66,7 @@ test('R07：同一身份贯穿 start→result；身份字段完整', async () =>
 test('R07：执行失败=result ok:false+error_code 如实（0 假成功）', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    const out = await tools.execute('memory_hold', { bad: 1, __tool_call_id: 'call-bad' }, {
+    const out = await tools.execute('memory_hold', { bad: 1 }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-b', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-b', toolCallId: 'call-bad', attemptId: 'att-b', round: 0, generationId: null,
     });
@@ -87,9 +82,14 @@ test('R07：执行失败=result ok:false+error_code 如实（0 假成功）', as
 test('R07：执行器抛错=error 阶段+原样上抛（不吞不改）', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    (tools as unknown as { memoryHold: () => Promise<never> }).memoryHold = async () => { throw new Error('boom-生命周期'); };
+    // P04：handler 已归 memory 域条目——抛错注入改经 registry 条目 run 包装（意图不变：handler 抛错=error 阶段+原样上抛）
+    const reg = (tools as unknown as { getCapabilityRegistry(): { get(id: string): { run: unknown } | null } }).getCapabilityRegistry()!;
+    const holdDescriptor = reg.get('memory_hold')! as { run: (i: unknown, c: unknown) => Promise<never> };
+    const origRun = holdDescriptor.run;
+    holdDescriptor.run = async () => { throw new Error('boom-生命周期'); };
+    void origRun;
     await assert.rejects(
-      tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-x' }, {
+      tools.execute('memory_hold', { ...HOLD_ARGS }, {
         roomId: 'c1', windowId: 'w1', turnId: 'turn-x', purpose: 'chat', activeReviewId: null,
         seenSequence: 1, seenMessages: [], requestId: 'req-x', toolCallId: 'call-x', attemptId: null, round: null, generationId: null,
       }),
@@ -104,7 +104,7 @@ test('R07：执行器抛错=error 阶段+原样上抛（不吞不改）', async 
 test('R07：SILENT_TOOLS 零事件；重复执行逐次真实回执', async () => {
   const { db, tools, toolEvents } = setup(okMariposa);
   try {
-    await tools.execute('context_review_complete', { __tool_call_id: 'quiet-1' }, {
+    await tools.execute('context_review_complete', { }, {
       roomId: 'c1', windowId: 'w1', turnId: 'turn-q', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-q', toolCallId: 'quiet-1',
     });
@@ -113,8 +113,8 @@ test('R07：SILENT_TOOLS 零事件；重复执行逐次真实回执', async () =
       roomId: 'c1', windowId: 'w1', turnId: 'turn-r', purpose: 'chat', activeReviewId: null,
       seenSequence: 1, seenMessages: [], requestId: 'req-r', toolCallId: 'call-repeat', attemptId: 'att-r', round: 2, generationId: 'gen-r',
     };
-    await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-repeat' }, ctx);
-    await tools.execute('memory_hold', { ...HOLD_ARGS, __tool_call_id: 'call-repeat' }, ctx);
+    await tools.execute('memory_hold', { ...HOLD_ARGS }, ctx);
+    await tools.execute('memory_hold', { ...HOLD_ARGS }, ctx);
     const evs = toolEvents() as Array<{ phase: string; tool_call_id?: string }>;
     assert.equal(evs.length, 4, '两次执行各一对 start/result（迟到/重复不吞回执）');
     assert.ok(evs.every(e => e.tool_call_id === 'call-repeat'));

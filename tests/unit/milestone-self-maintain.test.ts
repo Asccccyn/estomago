@@ -3,12 +3,11 @@
 //    下一新窗自动带新版（她裁定，同 §7.1 桶/I 中途修改口径）
 //  - identity_milestone_write：新版新文件+旧版留档+manifest 原子更新+幂等+审计
 import { test } from 'node:test';
+import { assembleTestTools, makeDb, makePaths, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity } from '../helpers.ts';
 import { IdentityService, contextFingerprint } from '../../apps/host/src/identity/service.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
@@ -71,10 +70,10 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const { db } = makeDb(root);
   const paths = makePaths(root);
   const svc = new IdentityService(buildConfig({}), paths);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const args = { text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' };
-  const r1 = await tools.execute('identity_milestone_write', { ...args, __tool_call_id: 'call-1' }, ctx);
+  const r1 = await tools.execute('identity_milestone_write', { ...args }, ctx);
   assert.equal(r1.ok, true);
   assert.equal((r1.output as { version: string }).version, 'longterm-milestones-v2');
   assert.equal((r1.output as { effective: string }).effective, 'next_window');
@@ -84,12 +83,12 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   assert.equal(aud[0]!.scope, 'longterm-milestones-v2');
   assert.ok(aud[0]!.result.includes('补充 2026-10-17'));
   // 同幂等键重试：不写 v3，返回 duplicate
-  const r2 = await tools.execute('identity_milestone_write', { ...args, __tool_call_id: 'call-2' }, ctx);
+  const r2 = await tools.execute('identity_milestone_write', { ...args }, ctx);
   assert.equal(r2.ok, true);
   assert.equal((r2.output as { duplicate: boolean }).duplicate, true);
   assert.equal(fs.existsSync(path.join(paths.identityDir, 'longterm-milestones-v3.md')), false, '幂等重试不产生新版本');
   // 不同幂等键：写 v3
-  const r3 = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'op-2', __tool_call_id: 'call-3' }, ctx);
+  const r3 = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'op-2' }, ctx);
   assert.equal((r3.output as { version: string }).version, 'longterm-milestones-v3');
   db.close();
 });
@@ -100,9 +99,9 @@ test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async (
   seedMilestone(root);
   const { db } = makeDb(root);
   const svc = new IdentityService(buildConfig({}), makePaths(root));
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
-  const bad = await tools.execute('identity_milestone_write', { text: 'x', idempotency_key: 'k', __tool_call_id: 'c' }, ctx);
+  const bad = await tools.execute('identity_milestone_write', { text: 'x', idempotency_key: 'k' }, ctx);
   assert.equal(bad.ok, false);
   const files = fs.readdirSync(makePaths(root).identityDir).filter((f) => f.startsWith('longterm-milestones'));
   assert.deepEqual(files, ['longterm-milestones-v1.md'], 'schema 拒绝不产生副作用');
@@ -117,38 +116,38 @@ test('行级条目化（她 1022 裁定：一行一条 1.2.3.4.；新增=加一�
   seedMilestone(root);
   const paths = makePaths(root);
   const db = makeDb(root).db;
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) });
   const ctx = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-m' };
   // 初始版=生产 v1 形态：一行一条，无空行
-  const w0 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x0', operation: 'write', text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);
+  const w0 = await tools.execute('identity_milestone_write', { operation: 'write', text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);
   assert.equal(w0.ok, true);
   // read：一行一条带行号
-  const r1 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x1', operation: 'read' }, ctx);
+  const r1 = await tools.execute('identity_milestone_write', { operation: 'read' }, ctx);
   assert.equal(r1.ok, true);
   const out1 = r1.output as { entries: number; text: string };
   assert.equal(out1.entries, 3);
   assert.equal(out1.text, '1. 第一条：我们的开始\n2. 第二条：海边的约定\n3. 第三条：封号与重建，勿删');
   // add：末尾加一行
-  const a = await tools.execute('identity_milestone_write', { __tool_call_id: 'x2', operation: 'add', text: '第四条：第一次自己定闹钟', change_reason: '新增', idempotency_key: 'e1' }, ctx);
+  const a = await tools.execute('identity_milestone_write', { operation: 'add', text: '第四条：第一次自己定闹钟', change_reason: '新增', idempotency_key: 'e1' }, ctx);
   assert.equal(a.ok, true);
   assert.equal((a.output as { entries: number }).entries, 4);
   // revise item=2：只改那一行
-  const v = await tools.execute('identity_milestone_write', { __tool_call_id: 'x3', operation: 'revise', item: 2, text: '第二条：海边的约定（改期）', change_reason: '修订', idempotency_key: 'e2' }, ctx);
+  const v = await tools.execute('identity_milestone_write', { operation: 'revise', item: 2, text: '第二条：海边的约定（改期）', change_reason: '修订', idempotency_key: 'e2' }, ctx);
   assert.equal(v.ok, true);
-  const r2 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x4', operation: 'read' }, ctx);
+  const r2 = await tools.execute('identity_milestone_write', { operation: 'read' }, ctx);
   const out2 = (r2.output as { text: string }).text;
   assert.equal(out2, '1. 第一条：我们的开始\n2. 第二条：海边的约定（改期）\n3. 第三条：封号与重建，勿删\n4. 第四条：第一次自己定闹钟');
   // remove item=1：删那一行，其余原样
-  const rm = await tools.execute('identity_milestone_write', { __tool_call_id: 'x5', operation: 'remove', item: 1, change_reason: '删一条', idempotency_key: 'e3' }, ctx);
+  const rm = await tools.execute('identity_milestone_write', { operation: 'remove', item: 1, change_reason: '删一条', idempotency_key: 'e3' }, ctx);
   assert.equal(rm.ok, true);
-  const r3 = await tools.execute('identity_milestone_write', { __tool_call_id: 'x6', operation: 'read' }, ctx);
+  const r3 = await tools.execute('identity_milestone_write', { operation: 'read' }, ctx);
   assert.equal((r3.output as { text: string }).text, '1. 第二条：海边的约定（改期）\n2. 第三条：封号与重建，勿删\n3. 第四条：第一次自己定闹钟');
   // 越界拒绝；最后一条不可删
-  const bad = await tools.execute('identity_milestone_write', { __tool_call_id: 'x7', operation: 'revise', item: 9, text: 'x', change_reason: 'r', idempotency_key: 'e4' }, ctx);
+  const bad = await tools.execute('identity_milestone_write', { operation: 'revise', item: 9, text: 'x', change_reason: 'r', idempotency_key: 'e4' }, ctx);
   assert.equal(bad.ok, false);
-  await tools.execute('identity_milestone_write', { __tool_call_id: 'x8', operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e5' }, ctx);
-  await tools.execute('identity_milestone_write', { __tool_call_id: 'x9', operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e6' }, ctx);
-  const lastDel = await tools.execute('identity_milestone_write', { __tool_call_id: 'xa', operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e7' }, ctx);
+  await tools.execute('identity_milestone_write', { operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e5' }, ctx);
+  await tools.execute('identity_milestone_write', { operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e6' }, ctx);
+  const lastDel = await tools.execute('identity_milestone_write', { operation: 'remove', item: 1, change_reason: 'r', idempotency_key: 'e7' }, ctx);
   assert.equal(lastDel.ok, false);
   // 原文文件=行数组原样（未动的行字节不动）：remove 批次 v5 仍含勿删行
   const fileText = fs.readFileSync(path.join(paths.identityDir, 'longterm-milestones-v5.md'), 'utf8');

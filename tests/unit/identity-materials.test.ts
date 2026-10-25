@@ -2,7 +2,7 @@
 // 同一份已验证材料（校验=装配）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
 import { IdentityService } from '../../apps/host/src/identity/service.ts';
 import { buildSdkOptions } from '../../apps/host/src/runtime/build-options.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';

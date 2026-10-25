@@ -3,7 +3,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { tempRoot, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch, OBSERVED_SDK } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';

@@ -1,6 +1,7 @@
 // R3′（2026-10-23，她批 R3P 方案）：长转写分页——首页 ≤8192B、续读读尽拼回全文、
 // 源变更/跨会话/已删资产如实拒读（不静默截断、不静默重读新版本）。
 import { test } from 'node:test';
+import {fullToolCatalog, assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,7 +12,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
@@ -22,7 +23,7 @@ function fixture() {
   const db = openDatabase(root); migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db); messages.ensureConversation('a'); messages.ensureConversation('b');
-  const tools = new HostToolExecutor({ db, media, messages, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), oido: null as never });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), media: media, messages: messages });
   const ctx = (roomId = 'a'): ToolExecContext => ({ roomId, windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r3p' });
   const createWithTranscript = async (text: string) => {
     const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, 0x00]), purpose: 'chat_voice', operationId: `op-${Math.random().toString(36).slice(2, 8)}`, createdBy: 'qiaosheng', origin: 'upload' });
@@ -37,7 +38,6 @@ function fixture() {
 
 import { runMediaBackfillTick } from '../../apps/host/src/media/index/backfill.ts';
 import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
-import { buildHostTools } from '../../apps/host/src/runtime/host-tools.ts';
 
 for (const symbol of ['𠮷', '\u0000']) test('R3 model projection budget for '+JSON.stringify(symbol), async()=>{
  const f=fixture();try{const text=symbol.repeat(3000);const a=await f.createWithTranscript(text);
@@ -61,7 +61,7 @@ test('R3 revoked current message revision blocks transcript read',async()=>{
  f.db.prepare('UPDATE messages SET current_revision=2 WHERE id=?').run(m.id);const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());assert.equal(r.ok,false,'old attachment revision cannot grant current read');}finally{f.close();}
 });
 test('R3 old frozen window must not truncate into an unavailable continuation tool',async()=>{
- const f=fixture();try{f.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w','a','ACTIVE','2026-10-23','2026-10-23')").run();freezeWindowTools(f.db,'w',buildHostTools().filter(x=>x.function.name!=='transcript_read'),'legacy');
+ const f=fixture();try{f.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w','a','ACTIVE','2026-10-23','2026-10-23')").run();freezeWindowTools(f.db,'w',fullToolCatalog().filter(x=>x.function.name!=='transcript_read'),'legacy');
  const text='甲'.repeat(5000);const a=await f.createWithTranscript(text);const projected=projectRevisionBlocks('',[{asset_id:a.id,presentation:'voice',caption:null,derived_text:text,derived_source:'siren:transcribe'}],{isCurrentInput:true,hearing:{available:true}});
  const r=await f.tools.execute('transcript_read',{audio_ref:'est:'+a.id},f.ctx());console.log(JSON.stringify({case:'legacy_window',advertisesContinuation:JSON.stringify(projected).includes('transcript_read'),toolOk:r.ok,code:r.output.error_code}));assert.ok(!JSON.stringify(projected).includes('transcript_read')||r.ok,'advertised continuation must be usable under frozen window policy');
  }finally{f.close();}

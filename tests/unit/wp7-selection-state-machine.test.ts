@@ -12,6 +12,7 @@
 //  - T5（CX-08）：confirmed 再确认——同键 200 幂等重放；异键结构化
 //    CONTEXT_SELECTION_ALREADY_CONFIRMED；任何路径不 500。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -32,13 +33,11 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
 const enc = new TextEncoder();
 const MODEL = 'deepseek-chat';
@@ -90,9 +89,11 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mc = mariposa ? new MariposaClient({ transport: mariposa }) : null;
-  const tools = new HostToolExecutor({ db, mariposa: mc ?? new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint });
+  const mariposa_wire_1 = mc ?? new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: reviews, checkpoint: checkpoint });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
+  const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, trajectory };
 }
@@ -120,9 +121,11 @@ function compose2(root: string, transport: OrTransport, TrajClass: new (db: Retu
   const windows = new WindowManager(db, events, identity, config, selections, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews, checkpoint });
+  const mariposa_wire_2 = new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_2, reviews: reviews, checkpoint: checkpoint });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
+  const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_2, // S18：显式 BootstrapPort
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, trajectory };
 }

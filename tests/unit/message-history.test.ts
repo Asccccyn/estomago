@@ -2,7 +2,7 @@ import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { openDatabase, readSnapshot, type Db } from '../../apps/host/src/db/connection.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';

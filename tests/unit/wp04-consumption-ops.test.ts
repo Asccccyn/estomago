@@ -23,7 +23,7 @@ import { buildConfig, validateConfig } from '../../apps/host/src/config/schema.t
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { effortsForModel } from '../../apps/host/src/runtime/runtime-settings.ts';
 import { pruneProviderRequests, pruneEvents } from '../../apps/host/src/runtime/prune.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
 import type { Db } from '../../apps/host/src/db/connection.ts';
 
 function freshDb(root: string): { db: Db; root: string } {
@@ -120,7 +120,6 @@ test('g：mariposa base_url 非 loopback http 拒绝；loopback http 放行', as
 // ---------------------------------------------------- consumption a/b/c/d/e
 
 test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首页缺 pagination → ENVELOPE_INVALID', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
@@ -137,9 +136,9 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
     if (cap === 'memory.recall.page') return { ok: true, result: pagePacket };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: t.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  const out = await tools.execute('memory_recall_next', { __tool_call_id: 'c1', result_set_id: 'rps_x' }, CTX);
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: t.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
+  const out = await tools.execute('memory_recall_next', { result_set_id: 'rps_x' }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output));
   // R1′（2026-10-23）：judge_policy_revision/judged_count 属诊断字段，按模型输出合同
   // （bd677ed）不进普通投影；judge 状态以 judgement 等价表达（off=unjudged）
@@ -153,8 +152,8 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
     recall_session_id: 'rs_10', search_status: 'FOUND', judge_mode: 'off',
     candidates: [],
   } });
-  const tools2 = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: homeOff.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  const out2 = await tools2.execute('memory_recall', { __tool_call_id: 'c2', query: 'q' }, CTX);
+  const { tools: tools2 } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: homeOff.transport as never }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const out2 = await tools2.execute('memory_recall', { query: 'q' }, CTX);
   assert.equal(out2.ok, false);
   assert.equal((out2.output as Record<string, unknown>).error_code, 'RECALL_ENVELOPE_INVALID');
   assert.deepEqual((out2.output as Record<string, unknown>).missing_fields, ['pagination'], 'off 首页缺 pagination 如实披露');
@@ -162,7 +161,6 @@ test('a：memory_recall_next 透传 judge_policy_revision/judged_count；off 首
 });
 
 test('bc：conversation_read 中文整条真字节预算；跳过行续页可达', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
@@ -176,9 +174,9 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   const zh2 = '帘'.repeat(9000);
   db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES ('m2','c1',2,'owner','text',1,'2026-01-01','2026-01-01')").run();
   db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('m2',1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(zh2, sha256Hex(zh2));
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
-  const out = await tools.execute('conversation_read', { __tool_call_id: 'c1', around_seq: 1, before: 1, after: 1 }, CTX);
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
+  const out = await tools.execute('conversation_read', { around_seq: 1, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true);
   const blob = Buffer.byteLength(JSON.stringify((out.output as Record<string, unknown>).entries ?? []), 'utf8');
   assert.ok(blob <= 16000 + 2400, `整页出站按真字节有界（实际 ${blob}B）`);
@@ -188,7 +186,7 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   const m1e = entries.find((e) => e.seq === 1) as { fragment?: unknown; text?: string } | undefined;
   assert.ok(m1e, '锚点 m1（seq 1）在首页（预留优先）');
   assert.equal(m1e.fragment, undefined, '5000 字整条交付（≤整页预算）');
-  const fragPage = await tools.execute('conversation_read', { __tool_call_id: 'c2', cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
+  const fragPage = await tools.execute('conversation_read', { cursor: (out.output as { newer_cursor: Record<string, unknown> }).newer_cursor }, CTX);
   assert.equal(fragPage.ok, true);
   const fragEntries = (fragPage.output as { entries: Array<Record<string, unknown>> }).entries;
   assert.ok(fragEntries.some((e) => e.fragment), '9000 字条目超整页预算在续页分片（真 UTF-8 字节口径）');
@@ -311,7 +309,6 @@ test('B15：migrate(db, h, 17) 应用到 17 为止（迁移数组按版本升序
 // ------------------------------------------- RRA-014 回读交付前沿
 
 test('RRA-014：older 交付前沿不重复交付（range 全可达归 wp4-conversation-read-rra014）', async () => {
-  const { HostToolExecutor } = await import('../../apps/host/src/runtime/host-tools.ts');
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
   const { HoldCheckpointService } = await import('../../apps/host/src/memory/hold-checkpoint.ts');
@@ -323,8 +320,27 @@ test('RRA-014：older 交付前沿不重复交付（range 全可达归 wp4-conve
     db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES (?,?,?,'owner','text',1,'2026-01-01','2026-01-01')").run(`m${i}`, 'c1', i);
     db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(`m${i}`, body, sha256Hex(body));
   }
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
-  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' };
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
+  // range 1..10 翻尽：全部 10 条都到
+  const seenIds = new Set<string>();
+  let cursor: Record<string, unknown> | null = null;
+  let pages = 0;
+  do {
+    const out = await tools.execute('conversation_read', {
+      ...(cursor ? { cursor } : { from_sequence: 1, to_sequence: 10 }) } as never, CTX);
+    assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 200));
+    for (const e of (out.output as { entries: Array<{ seq?: number }> }).entries) {
+      if (e.seq) seenIds.add(e.seq);
+    }
+    // R1′（2026-10-23）：conversation_read 投影（bd677ed 合同）以 next_cursor 存在性为
+    // 续读信号（has_more 不再单独输出）；"读尽"验收不变——翻到无 cursor 为止须覆盖全部
+    const o = out.output as { next_cursor?: Record<string, unknown> | null };
+    cursor = o.next_cursor ?? null;
+    pages += 1;
+    assert.ok(pages < 30, 'range 不收敛');
+  } while (cursor);
+  assert.equal(seenIds.size, 10, `range 翻尽须覆盖全部 10 条（实际 ${seenIds.size}）——跳过行续页可达（RRA-014）`);
   // older 交付前沿：向更早翻页不重复交付（RRA-014 回访 2026-10-09 语义：
   // 长行可分片跨页续取——同消息多片=渐进交付，非重复；断言片区间
   // 不重叠 + 拼回覆盖全文）
@@ -340,10 +356,10 @@ test('RRA-014：older 交付前沿不重复交付（range 全可达归 wp4-conve
     olderParts.set(id, parts);
   };
   let oc: Record<string, unknown> | null = { older_than: 11 };
-  let pages = 0;
+  pages = 0;
   do {
     const out = await tools.execute('conversation_read', {
-      __tool_call_id: `o${pages}`, cursor: oc } as never, CTX);
+      cursor: oc } as never, CTX);
     assert.equal(out.ok, true);
     for (const e of (out.output as { entries: Array<{ seq?: number; text?: string; fragment?: { start_char?: number; end_char?: number } }> }).entries) {
       if (!e.seq) continue;

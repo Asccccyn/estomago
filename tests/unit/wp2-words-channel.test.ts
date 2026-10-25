@@ -4,6 +4,7 @@
 // 则保持 words；④words 通道禁用=如实"不可用"而非"没有找到"；⑤M 的
 // round2_raw 提示不压扁成"改问题续查"。
 import { test } from 'node:test';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -11,8 +12,6 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
-import { writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
-import { HostToolExecutor } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
@@ -26,7 +25,7 @@ function makeTools(mariposa: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   return { tools, db };
 }
 
@@ -47,7 +46,7 @@ test('找话①：省略 channel 的首轮仍走 event（旧行为不变）', as
     return { ok: true, result: { ...wordsPage, candidates: [{ resource_ref: 'memory:1', text: '事件' }] } };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海' }, CTX);
   assert.equal(out.ok, true);
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
   assert.deepEqual(qp.channels, ['event'], '缺省=查事件');
@@ -64,7 +63,7 @@ test('找话②：channel=words 首轮真实走 words 通道、原话候选穿�
     return { ok: true, result: wordsPage };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '当时说的看海那句原话', channel: 'words' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '当时说的看海那句原话', channel: 'words' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'memory.recall.start');
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
@@ -77,7 +76,7 @@ test('找话②：channel=words 首轮真实走 words 通道、原话候选穿�
 test('找话③a：续查不带 channel 被明确拒绝（不静默回落查事件）', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: true, result: wordsPage });
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '换角度', refine_session_id: 'rs_w', refine_continue_ref: 'cont_abc' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '换角度', refine_session_id: 'rs_w', refine_continue_ref: 'cont_abc' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'TOOL_ARG_REQUIRED');
   assert.ok(String(out.output.error).includes('channel'), '错误信息指明要带 channel');
@@ -91,7 +90,7 @@ test('找话③b：带 channel=words 的续查保持 words（关键词不丢目�
     return { ok: true, result: wordsPage };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海 原话', channel: 'words', refine_session_id: 'rs_w', refine_continue_ref: 'cont_abc' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海 原话', channel: 'words', refine_session_id: 'rs_w', refine_continue_ref: 'cont_abc' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'memory.recall.refine');
   const qp = (calls[0]!.payload as { query_plan: { channels: string[] } }).query_plan;
@@ -103,7 +102,7 @@ test('找话③b：带 channel=words 的续查保持 words（关键词不丢目�
 test('找话④：words 通道禁用=如实"不可用"，不包装成"没有找到"', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: false, code: 'WORDS_CHANNEL_DISABLED', httpStatus: 403 });
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海原话', channel: 'words' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_WORDS_CHANNEL_DISABLED');
   assert.ok(String(out.output.message ?? '').includes('未启用'), '明确告知通道关闭');
@@ -117,7 +116,7 @@ test('找话⑤：M 的 round2_raw 提示不被压扁成"改问题续查"', asyn
     result: { ...wordsPage, continuation: { available: true, action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
   });
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海原话', channel: 'words' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words' }, CTX);
   assert.equal(out.ok, true);
   const note = String(out.output.continuation_note ?? '');
   assert.ok(note.includes('原话证据不足'), '如实传达 M 的证据不足提示');
@@ -142,7 +141,7 @@ test('深搜①：deep_search 走 memory.recall.round2 独立入口（session+re
     return { ok: true, result: round2Page };
   };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: '看海原话', channel: 'words', refine_session_id: 'rs_w', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words', refine_session_id: 'rs_w', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'memory.recall.round2', '独立入口（不经 channels 绕）');
   const p = calls[0]!.payload as Record<string, unknown>;
@@ -160,10 +159,10 @@ test('深搜①：deep_search 走 memory.recall.round2 独立入口（session+re
 test('深搜②：缺 session / 缺 reason 明确拒绝', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: true, result: round2Page });
   const { tools, db } = makeTools(mariposa);
-  const a = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: 'x', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  const a = await tools.execute('memory_recall', { query: 'x', deep_search: true, deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
   assert.equal(a.ok, false);
   assert.ok(String(a.output.error).includes('refine_session_id'), '缺会话指明');
-  const b = await tools.execute('memory_recall', { __tool_call_id: 'd2', query: 'x', deep_search: true, refine_session_id: 'rs_w' }, CTX);
+  const b = await tools.execute('memory_recall', { query: 'x', deep_search: true, refine_session_id: 'rs_w' }, CTX);
   assert.equal(b.ok, false);
   assert.ok(String(b.output.error).includes('deep_reason'), '缺理由指明');
   db.close();
@@ -172,7 +171,7 @@ test('深搜②：缺 session / 缺 reason 明确拒绝', async () => {
 test('深搜③：S13 门拒绝如实上抛（含指引），不冒充空结果', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: false, code: 'ROUND2_GATE_DENIED', httpStatus: 403 });
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'd1', query: 'x', deep_search: true, refine_session_id: 'rs_w', deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
+  const out = await tools.execute('memory_recall', { query: 'x', deep_search: true, refine_session_id: 'rs_w', deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_ROUND2_GATE_DENIED');
   assert.ok(String(out.output.message ?? '').includes('门未满足'), '如实告知门核验失败');
@@ -185,7 +184,7 @@ test('深搜④：round2_raw 提示现在指向真实入口（deep_search 参数
     result: { ...wordsPage, continuation: { available: true, action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
   });
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '看海原话', channel: 'words' }, CTX);
+  const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words' }, CTX);
   assert.equal(out.ok, true);
   const note = String(out.output.continuation_note ?? '');
   assert.ok(note.includes('deep_search=true'), '指引真实参数');

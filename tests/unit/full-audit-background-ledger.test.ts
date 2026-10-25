@@ -1,7 +1,7 @@
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { makeDb } from '../helpers.ts';
+import {makeDb } from '../helpers.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from '../../apps/host/src/runtime/background-ledger.ts';

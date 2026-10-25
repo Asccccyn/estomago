@@ -1,0 +1,149 @@
+{
+  "note": "每卡检查base须为该卡起始提交，不是专项总base。这是文件范围提示，不授权改变文件中所有业务。新增必要文件须先在PROGRESS写明确理由，再由复核者审核；不要放宽成apps/**。",
+  "stages": {
+    "P00": [
+      "docs/**"
+    ],
+    "P01": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/runtime/host-tools.ts",
+      "apps/host/src/runtime/tool-discovery.ts",
+      "apps/host/src/runtime/tool-initial-visible.ts",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/runtime/or-payload.ts",
+      "apps/host/src/runtime/background-tool-cost.ts",
+      "apps/host/src/modules/*/catalog.ts"
+    ],
+    "P02": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/modules/oido/**",
+      "apps/host/src/runtime/host-tools.ts",
+      "apps/host/src/runtime/model-results.ts",
+      "apps/host/src/app-context.ts",
+      "apps/host/src/application/module-composition.ts"
+    ],
+    "P03": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/modules/oido/**",
+      "apps/host/src/modules/voice/**",
+      "apps/host/src/application/voice-hearing.ts",
+      "apps/host/src/application/program-facts.ts",
+      "apps/host/src/application/module-composition.ts",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/runtime/host-tools.ts",
+      "apps/host/src/runtime/model-results.ts",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/app-context.ts",
+      "apps/host/src/integrations/oido/**",
+      "apps/host/src/integrations/siren/**",
+      "apps/host/src/media/voice.ts",
+      "apps/host/src/server/http.ts",
+      "apps/host/src/server/routes/**"
+    ],
+    "P04": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/modules/**",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/application/module-composition.ts",
+      "apps/host/src/runtime/host-tools.ts",
+      "apps/host/src/runtime/model-results.ts",
+      "apps/host/src/runtime/background-tool-cost.ts",
+      "apps/host/src/runtime/tool-initial-visible.ts",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/app-context.ts",
+      "apps/host/src/context/contributions.ts"
+    ],
+    "P05": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/messages/**",
+      "apps/host/src/routing/service.ts",
+      "apps/host/src/application/message-lifecycle.ts",
+      "apps/host/src/application/context-contributors.ts",
+      "apps/host/src/application/module-composition.ts",
+      "apps/host/src/context/**",
+      "apps/host/src/memory-surfacing/**",
+      "apps/host/src/modules/memory/**",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/app-context.ts",
+      "apps/host/src/runtime/wake-activity.ts"
+    ],
+    "P06": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/modules/wake/**",
+      "apps/host/src/application/background-execution.ts",
+      "apps/host/src/application/program-facts.ts",
+      "apps/host/src/application/module-composition.ts",
+      "apps/host/src/runtime/background-*.ts",
+      "apps/host/src/runtime/keepwarm-sleep.ts",
+      "apps/host/src/runtime/wake-activity.ts",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/app-context.ts"
+    ],
+    "P07": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/server/**",
+      "apps/host/src/app-context.ts",
+      "apps/host/src/application/**",
+      "apps/host/src/modules/**",
+      "apps/host/src/config/schema.ts",
+      "apps/web/react/src/**",
+      "apps/web/dist/**"
+    ],
+    "P08": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "scripts/check-module-boundaries.mjs"
+    ],
+    "P09": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/host/src/capabilities/**",
+      "apps/host/src/modules/**",
+      "apps/host/src/application/**",
+      "apps/host/src/runtime/host-tools.ts",
+      "apps/host/src/runtime/model-results.ts",
+      "apps/host/src/runtime/background-tool-cost.ts",
+      "apps/host/src/runtime/tool-discovery.ts",
+      "apps/host/src/runtime/tool-initial-visible.ts",
+      "apps/host/src/runtime/supervisor.ts",
+      "apps/host/src/messages/service.ts",
+      "apps/host/src/server/http.ts",
+      "apps/host/src/app-context.ts",
+      "scripts/check-module-boundaries.mjs",
+      "package.json"
+    ],
+    "P10": [
+      "docs/**",
+      "README.md",
+      "tests/**",
+      "apps/web/dist/**"
+    ]
+  },
+  "alwaysForbidden": [
+    ".env",
+    ".env.*",
+    "deploy/**",
+    "config/**",
+    "package-lock.json",
+    "apps/host/src/db/migrations.ts"
+  ]
+}

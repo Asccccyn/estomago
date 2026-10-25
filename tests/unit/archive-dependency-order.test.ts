@@ -12,7 +12,7 @@ import { EventService } from '../../apps/host/src/events/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { ArchiveSyncService, INGEST_BATCH_MAX_MESSAGES } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
 import { MariposaClient, ingestOperationId, type IngestMessage, type IngestRequest, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 function strictServer() {
   const calls: IngestRequest[] = [];

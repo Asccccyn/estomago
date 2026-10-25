@@ -1,5 +1,6 @@
 // A11 est 侧（2026-10-24）：call_control(end)——模型提出挂断当前通话（柔性，立即回执）。
 import { test } from 'node:test';
+import { assembleTestTools } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,7 +8,7 @@ import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
+import { ModelToolBridge, type ToolExecContext } from '../../apps/host/src/capabilities/model-bridge.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { SirenAdapter } from '../../apps/host/src/integrations/siren/adapter.ts';
@@ -24,7 +25,7 @@ test('A11 call_control(end)：active 通话→Siren 柔性挂断端点立即回�
     return Response.json({}, { status: 404 });
   }) as unknown as typeof fetch;
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', transport);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), sirenCall: sirenCall });
   const ctx = (): ToolExecContext => ({ roomId: 'c1', windowId: 'w', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'a11' });
   try {
     // 无 active 通话：如实拒绝

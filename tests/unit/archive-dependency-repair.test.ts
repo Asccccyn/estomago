@@ -13,7 +13,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { ArchiveSyncService, INGEST_BATCH_MAX_BYTES } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
 import { applyArchiveDependencyRepair, planArchiveDependencyRepair } from '../../apps/host/src/integrations/mariposa/archive-repair.ts';
 import { MariposaClient, serverNormalizedBytes, type IngestMessage, type IngestRequest, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { tempRoot } from '../helpers.ts';
+import {tempRoot } from '../helpers.ts';
 
 const keyOf = (message: Pick<IngestMessage, 'origin_message_id' | 'revision'>) => `archive:${message.origin_message_id}:${message.revision}`;
 const ackAll = (req: IngestRequest) => ({

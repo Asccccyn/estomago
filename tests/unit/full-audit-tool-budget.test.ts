@@ -1,11 +1,11 @@
 // Actual Supervisor → HostToolExecutor → scheduler ledger. Both provider and
 // remote service transports are fake; no credentials or external requests.
+import { assembleTestTools, makeDb, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { makeDb, tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
@@ -19,7 +19,6 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { HostToolExecutor, type ToolExecContext } from '../../apps/host/src/runtime/host-tools.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -42,8 +41,7 @@ async function fixture(t: TestContext) {
   let now = Date.now(), externalCalls = 0, round = 0, runNo = 0;
   let mode: 'seed' | 'external' | 'free' = 'seed';
   const taskService = new BackgroundTaskService(db, settings, () => now);
-  const tools = new HostToolExecutor({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, events, taskService,
-    wishstar: { async forward() { externalCalls++; return { status: 200, body: { dates: [] } }; } } });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, events: events, wishstar: { async forward() { externalCalls++; return { status: 200, body: { dates: [] } }; } }, taskService: taskService });
   const payloads: Record<string, unknown>[] = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload)); round++;
