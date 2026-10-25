@@ -58,7 +58,8 @@ function fixture() {
     return { status: 200, headers: new Map(), body: Readable.from([Buffer.from(body)]) };
   };
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
+  const supervisor = new TurnSupervisor({bootstrap: mariposa, // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db),
     routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews, checkpoint, trajectory });
   messages.ensureConversation('c1');

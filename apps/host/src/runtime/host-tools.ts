@@ -349,10 +349,6 @@ export class HostToolExecutor {
 
   /** D2/G-J-01：宿主装配层复用同一客户端（B 点开窗资料；不越权——凭据
    *  能力面由 Mariposa 白名单圈定）。 */
-  mariposaClient(): MariposaClient | null {
-    return this.mariposa;
-  }
-
   /** EXEC_V1 §06.4.3（WP5）：模型工具调 content——actor 从受控执行上下文派生为 jiaming。 */
   /** §03.6.3（MEDIA-09/CREATION-03）：保存 SVG/HTML 小作品→持久资产。不执行代码；宿主无 eval/shell。 */
   /** EXEC_V1 §04.6.2 + WAKE_KEEPWARM_V1（2026-10-22）：结束后台回合——noop 是成功结果

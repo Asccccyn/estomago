@@ -33,7 +33,7 @@ function hostFor(transport: MariposaTransport) {
   const warnings: unknown[] = [], observed: Record<string,unknown>[] = [], resolved: unknown[][] = [];
   const client = new MariposaClient({ transport });
   const alerts = { observe: (input:Record<string,unknown>) => { observed.push(input); return 'synthetic_alert'; }, resolve: (...args:unknown[]) => { resolved.push(args); return true; } };
-  return {host:{d:{db:initialToolsDb,tools:{mariposaClient:()=>client},events:{publish:(_kind:string,event:unknown)=>warnings.push(event)},alerts},bootstrapByWindow:new Map<string,string>()},warnings,observed,resolved};
+  return {host:{d:{db:initialToolsDb,bootstrap:client,events:{publish:(_kind:string,event:unknown)=>warnings.push(event)},alerts},bootstrapByWindow:new Map<string,string>()},warnings,observed,resolved};
 }
 function unavailable(text: string | null) {
   assert.equal(typeof text,'string');

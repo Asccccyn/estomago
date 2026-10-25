@@ -116,7 +116,7 @@ test('开窗注入：临近纪念日出现在 B 文本头段；无临近=无行�
     d: {
       // R1′ 夹具修复（2026-10-23）：e423220 起 windowBootstrap 需真实 db 读 runtime_settings
       db: initialToolsDb,
-      tools: { mariposaClient: () => mariposa },
+      bootstrap: mariposa, // S18：显式 BootstrapPort
       events: { publish: () => {} },
       alerts: null,
       wishstar,

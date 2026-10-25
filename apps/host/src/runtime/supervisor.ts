@@ -1010,9 +1010,7 @@ export class TurnSupervisor {
     let t = this.bootstrapByWindow.get(windowId);
     if (t !== undefined) return t;
     const d = this.d;
-    // P04.5：窄端口（只读原语；不含 hold/记忆写面）。过渡期回退 tools 客户端——
-    // 生产装配已显式绑定 d.bootstrap；未迁移夹具经回退保持原行为（P07 收口后移除回退）。
-    const mc = d.bootstrap ?? d.tools?.mariposaClient() ?? null;
+    const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
     if (!mc) return null; // 未接线：如实无 B
     const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
     const startedAt = performance.now();

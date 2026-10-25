@@ -52,9 +52,10 @@ function makeExecutor(root: string, mariposa?: MariposaTransport) {
   void buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
+  const mariposa_wire_1 = new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) });
   const executor = new HostToolExecutor({
     db,
-    mariposa: new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) }),
+    mariposa: mariposa_wire_1,
     reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db),
   })
@@ -248,11 +249,13 @@ function composeWp4(root: string, transport: OrTransport) {
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
+  const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
+  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews, checkpoint });
   wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, trajectory };
 }

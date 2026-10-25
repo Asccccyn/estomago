@@ -100,7 +100,7 @@ function context(Supervisor: typeof TurnSupervisor = TurnSupervisor) {
   const events = new EventService(db);
   const alerts = new SystemAlertService(db, events);
   const client = new MariposaClient({ baseUrl: base, credentialEnv: 'ESTOMAGO_TEST_MARIPOSA_TOKEN' });
-  const host = new Supervisor({ db, tools: { mariposaClient: () => client }, events, alerts,
+  const host = new Supervisor({ db, bootstrap: client, events, alerts,
     logger: { info() {}, warn() {}, error() {} } } as any) as any;
   const stream = () => db.prepare('SELECT kind,payload_ref FROM runtime_stream_events ORDER BY sequence').all() as Array<{ kind: string; payload_ref: string }>;
   return { host, events, alerts, stream };

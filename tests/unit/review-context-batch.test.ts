@@ -66,7 +66,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews, checkpoint })
+  const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
+  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
   wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   const wrapped: OrTransport = async (payload) => {
@@ -74,7 +75,8 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
     return transport(payload);
   };
   const runner = new DeepSeekRunner({ retryMax: 0 }, wrapped);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
+  const supervisor = new TurnSupervisor({bootstrap: new MariposaClient({ transport: mariposa }), // S18：显式 BootstrapPort（原经 tools.mariposaClient 隐式取得）
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, events };
 }
@@ -154,7 +156,8 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
     calls.push({ cap, payload: payload as Record<string, unknown> });
     return { ok: true, result: packet };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  const mariposa_wire_2 = new MariposaClient({ transport: mariposa });
+  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_2, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {});;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   await tools.execute('memory_recall', { __tool_call_id: 'c1', query: '上次聊中秋看月亮' }, CTX);
@@ -200,7 +203,8 @@ test('recall 否定续查：reject_candidate_ref 先排除后 refine；缺续查
     calls.push({ cap, payload: payload as Record<string, unknown> });
     return { ok: true, result: cap === 'memory.recall.reject' ? { rejected: { candidate_ref: 'cand_1' }, session_id: 'rs_9', revision: 2 } : refinePacket };
   };
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: mariposa }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
+  const mariposa_wire_3 = new MariposaClient({ transport: mariposa });
+  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_3, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) })
   wireOidoCapabilitiesForTest(tools, {});;
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: 't9', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r' } as const;
   // ① 缺续查身份 → 早失败（不静默忽略、不冒充全新检索）

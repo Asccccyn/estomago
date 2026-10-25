@@ -130,12 +130,14 @@ function composeRt(root, seen) {
   const windows = new WindowManager(db, events, identity, paths.handoffsDir, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
-  const tools = new HostToolExecutor({ db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews, checkpoint })
+  const mariposa_wire_1 = new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) });
+  const tools = new HostToolExecutor({ db, mariposa: mariposa_wire_1, reviews, checkpoint });
   wireOidoCapabilitiesForTest(tools, {});;
   const trajectory = new WindowTrajectoryService(db);
   let gen = 0;
   const runner = new DeepSeekRunner({ retryMax: 0 }, async () => { gen++; seen.push('deepseek'); return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '好的')) }; });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, settings });
+  const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, settings });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, settings };
 }
