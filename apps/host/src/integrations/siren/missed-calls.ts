@@ -5,7 +5,7 @@
 // submitProgramFactTurn 串行入口——不新建来电 agent、不加意图轮询器、不设双行为开关。
 // 机会身份 = invite:<id>:missed-opportunity（program_fact_turns UNIQUE）：
 // 重复事件/worker 重启/服务恢复都收敛为同一次；派发结果未知也不盲目重跑。
-// 派发前复核：仍属自然未接、机会未消费、无进行中通话（她已回电/接通=机会失效，不发过时留言）。
+// 入队按邀请时间检查，派发按事实入队时间复核；后续回拨即使已结束也使旧机会失效。
 import type { Db } from '../../db/connection.ts';
 import type { SirenAdapter } from './adapter.ts';
 
@@ -15,13 +15,19 @@ const OPPORTUNITY_FACT = '你的来电邀请她没有接听（已自然过期；
   '你可以在本回复里直接说一段话，或调用 chat_send_voice 给她留一段语音；也完全可以什么都不留。' +
   '说不说、说什么由你决定；不留言就不需要任何说明。';
 
+export function missedCallOpportunityIsCurrent(db: Db, conversationId: string, since: string): boolean {
+  return !db.prepare(`SELECT 1 FROM voice_calls WHERE conversation_id=? AND (state='active' OR started_at>=?)
+    UNION ALL SELECT 1 FROM dial_requests WHERE conversation_id=? AND created_at>=? LIMIT 1`)
+    .get(conversationId, since, conversationId, since);
+}
+
 export async function consumeMissedCallOpportunities(
   db: Db,
   sirenCall: SirenAdapter | null,
   submit: MissedCallSubmit,
   signal?: AbortSignal,
-): Promise<{ considered: number; submitted: number; skipped_busy: number }> {
-  const out = { considered: 0, submitted: 0, skipped_busy: 0 };
+): Promise<{ considered: number; submitted: number; skipped_superseded: number }> {
+  const out = { considered: 0, submitted: 0, skipped_superseded: 0 };
   if (!sirenCall) return out;
   let recent: Array<Record<string, unknown>>;
   try {
@@ -35,12 +41,15 @@ export async function consumeMissedCallOpportunities(
     if (signal?.aborted) break;
     const inviteId = typeof inv['invite_id'] === 'string' ? inv['invite_id'] : null;
     if (!inviteId || inv['state'] !== 'expired') continue;
+    const createdAt = inv['created_at'];
+    if (typeof createdAt !== 'number' || !Number.isFinite(new Date(createdAt).getTime())) continue;
     out.considered++;
     const dedupeKey = `invite:${inviteId}:missed-opportunity`;
     if (db.prepare('SELECT 1 FROM program_fact_turns WHERE dedupe_key=?').get(dedupeKey)) continue; // 机会已消费（幂等）
-    // 派发前复核：她已回电/正在通话（任何 active 通话）=机会失效，不发过时留言
-    const busy = db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id='primary' AND state='active'").get();
-    if (busy) { out.skipped_busy++; continue; }
+    if (!missedCallOpportunityIsCurrent(db, 'primary', new Date(createdAt).toISOString())) {
+      out.skipped_superseded++;
+      continue;
+    }
     submit('invite_missed_opportunity', OPPORTUNITY_FACT, dedupeKey);
     out.submitted++;
   }

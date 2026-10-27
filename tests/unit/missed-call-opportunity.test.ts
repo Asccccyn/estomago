@@ -1,14 +1,14 @@
 // 联合审计 A08 / B5（2026-10-27 执行口径）：自然未接的一次可选留言机会。
 // Siren 真实 expired → est 既有对账周期消费（consumeMissedCallOpportunities）：
 // - 每个 invite 最多一次机会（dedupe=invite:<id>:missed-opportunity，重复事件/重启不重复）；
-// - 派发前复核：她已回电/正在通话=机会失效（skipped_busy）；
+// - 派发前复核：她已回电/正在通话=机会失效（skipped_superseded）；
 // - declined/cancelled 不产生留言机会（拒接不补打、不走未接留言）；
 // - 机会事实轮经 submitProgramFactTurn 串行入口提交；事实文本明确"可以不留言"。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
@@ -29,6 +29,7 @@ import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
+import { handleRequest } from '../../apps/host/src/server/http.ts';
 import { SirenAdapter } from '../../apps/host/src/integrations/siren/adapter.ts';
 import { consumeMissedCallOpportunities } from '../../apps/host/src/integrations/siren/missed-calls.ts';
 import { writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
@@ -63,7 +64,21 @@ function compose(root: string, transport: OrTransport) {
     logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db),
   });
-  return { db, messages, supervisor, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
+  const sirenCall = new SirenAdapter('http://127.0.0.1:1', 'synthetic', (async (url: unknown) => {
+    if (String(url).endsWith('/hangup-request')) return Response.json({ accepted: true });
+    return Response.json({ call_id: 'return-call', ws_url: 'ws://127.0.0.1:9/call', token: 'synthetic' });
+  }) as typeof fetch);
+  const deps = { config, db, events, messages, supervisor, paths: buildPaths(root), sirenCall,
+    logger: new Logger(path.join(root, 'logs')), auth: { isAuthorized: () => true, verifyToken: () => true, originAllowed: () => true } } as never;
+  const call = async (route: string, method: string, body?: unknown) => {
+    let status = 0;
+    const res = new Writable({ write(_chunk, _encoding, done) { done(); } });
+    Object.assign(res, { writeHead(code: number) { status = code; } });
+    const req = Object.assign(Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []), { headers: {}, method, url: route });
+    await handleRequest(req as never, res as never, deps);
+    assert.equal(status, 200);
+  };
+  return { db, messages, supervisor, call, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
 const okTransport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '（这通没接，先不留话。）' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
@@ -101,11 +116,51 @@ test('R05：她已回电/正在通话——机会失效，不发过时留言', a
   const submitted: string[] = [];
   const c = compose(tempRoot('mc-busy-'), okTransport);
   try {
-    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES ('call-busy','primary','active',?)").run(new Date().toISOString());
+    await c.call('/api/v1/calls', 'POST', { conversation_id: 'primary' });
     const siren = sirenWith([{ invite_id: 'inv-exp-2', state: 'expired', expires_at: 1, created_at: 1 }]);
     const r = await consumeMissedCallOpportunities(c.db, siren, (kind, _t, dedupeKey) => { submitted.push(dedupeKey); void kind; });
-    assert.equal(r.skipped_busy, 1);
+    assert.equal(r.skipped_superseded, 1);
     assert.equal(r.submitted, 0);
     assert.deepEqual(submitted, [], '机会失效不提交');
+    await c.call('/api/v1/calls/return-call', 'DELETE');
+    const ended = await consumeMissedCallOpportunities(c.db, siren, (_kind, _text, key) => { submitted.push(key); });
+    assert.equal(ended.submitted, 0, '回拨结束后旧机会仍然失效');
+    assert.deepEqual(submitted, []);
   } finally { await c.supervisor.stopAll(); await pause(30); c.close(); }
+});
+
+for (const callback of ['completed-call', 'dial-request'] as const) test(`未接机会排队后发生 ${callback}：实际派发前作废`, async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(r => { release = r; });
+  let entered!: () => void;
+  const busy = new Promise<void>(r => { entered = r; });
+  const prompts: string[] = [];
+  const c = compose(tempRoot('mc-queued-'), async (payload) => {
+    prompts.push(JSON.stringify(payload.messages));
+    if (prompts.length === 1) { entered(); await gate; }
+    return okTransport(payload);
+  });
+  try {
+    const first = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '在', clientMessageId: 'queue-first' });
+    c.supervisor.enqueue(first.turnId);
+    await busy;
+    const siren = sirenWith([{ invite_id: 'inv-queued', state: 'expired', created_at: Date.now() - 120000, expires_at: Date.now() - 60000 }]);
+    const queued = await consumeMissedCallOpportunities(c.db, siren, (kind, text, key) => { c.supervisor.submitProgramFactTurn('primary', kind, text, key); });
+    assert.equal(queued.submitted, 1, '确实已进入同一串行队列');
+    if (callback === 'completed-call') {
+      await c.call('/api/v1/calls', 'POST', { conversation_id: 'primary' });
+      await c.call('/api/v1/calls/return-call', 'DELETE');
+    } else {
+      await c.call('/api/v1/calls/dial', 'POST', {});
+    }
+    release();
+    await c.supervisor.waitIdle();
+    const attempted = c.db.prepare(`SELECT t.state, a.blocked_reason FROM program_fact_turns p
+      JOIN turns t ON t.id=p.turn_id JOIN attempts a ON a.turn_id=p.turn_id
+      WHERE p.kind='invite_missed_opportunity'`).get() as { state: string; blocked_reason: string };
+    assert.equal(attempted.state, 'failed');
+    assert.match(attempted.blocked_reason, /^MISSED_CALL_OPPORTUNITY_SUPERSEDED:/);
+    assert.ok(prompts.every(p => !p.includes('可选**留言机会')), '没有为旧未接机会请求模型');
+    assert.equal(prompts.length, callback === 'dial-request' ? 2 : 1, '真实回拨请求仍正常交给模型');
+  } finally { release(); await c.supervisor.waitIdle(); await c.supervisor.stopAll(); c.close(); }
 });

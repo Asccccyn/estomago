@@ -125,7 +125,7 @@ export type TestToolDeps = {
   media?: unknown; messages?: unknown; events?: unknown;
   contentClient?: unknown; identity?: unknown; wishstar?: unknown;
   taskService?: unknown; oido?: unknown; mediaIndex?: unknown;
-  sirenCall?: unknown; programFacts?: unknown; tz?: unknown;
+  sirenCall?: unknown; tz?: unknown;
 };
 
 export function assembleTestTools(deps: TestToolDeps): {
@@ -157,10 +157,10 @@ export function assembleTestTools(deps: TestToolDeps): {
   registerMediaCapabilitiesInstance(registry, { media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });
   registerContextReviewCapabilitiesInstance(registry, { db, reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never });
-  // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall/programFacts
+  // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall
   // 未注入=运行时如实 INTEGRATION_UNCONFIGURED，与生产装配一致）
   registerVoiceCapabilities(registry, {
-    db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
+    db, sirenCall: (deps.sirenCall ?? null) as never,
     media: (deps.media ?? null) as never, messages: (deps.messages ?? null) as never,
   });
   const tools = new ModelToolBridge({ db, events: (deps.events ?? null) as never });

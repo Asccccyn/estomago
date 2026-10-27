@@ -37,10 +37,10 @@ assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 /** Siren stub：/v1/voice/synthesize 返回真实 MP3 头字节；计数与失败开关。
  *  A01 恢复场景：drop-persisted=已生成并登记操作资产但响应丢失（socket 摧毁）；
  *  conflict=同键异参 409。资产按 operation_id 可查/可取回字节。 */
-function startSirenStub(): { url: string; stop(): void; synthCalls: number; failSynthesis: boolean; mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict'; clientClosed: Promise<void>; entered: Promise<void> } {
+function startSirenStub(): { url: string; stop(): void; synthCalls: number; failSynthesis: boolean; mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'drop-body-persisted' | 'conflict'; clientClosed: Promise<void>; entered: Promise<void> } {
   let synthCalls = 0;
   let failSynthesis = false;
-  let mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict' = 'normal';
+  let mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'drop-body-persisted' | 'conflict' = 'normal';
   let markClosed!: () => void;
   const clientClosed = new Promise<void>((resolve) => { markClosed = resolve; });
   let markEntered!: () => void;
@@ -59,6 +59,14 @@ function startSirenStub(): { url: string; stop(): void; synthCalls: number; fail
         const opId = typeof body.operation_id === 'string' ? body.operation_id : null;
         if (mode === 'conflict') { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'operation_conflict', differs: ['text'] })); return; }
         if (mode === 'drop-persisted' && opId) { opAssets.set(opId, { id: 'asset-x' }); req.socket.destroy(); return; } // 已生成已持久，响应丢失
+        if (mode === 'drop-body-persisted' && opId) {
+          opAssets.set(opId, { id: 'asset-x' });
+          res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'Content-Length': String(mp3.length) });
+          res.flushHeaders();
+          res.write(mp3.subarray(0, 8));
+          setTimeout(() => res.destroy(), 50);
+          return;
+        }
         if (mode === 'drop') { req.socket.destroy(); return; } // 服务端中途断连：结果不明
         if (failSynthesis) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'provider_failed' })); return; }
         res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'x-siren-format': 'mp3', 'x-siren-duration-ms': '1200', 'x-siren-voice-profile': 'main' });
@@ -82,7 +90,7 @@ function startSirenStub(): { url: string; stop(): void; synthCalls: number; fail
     res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not_found' }));
   });
   server.listen(0, '127.0.0.1');
-  return new Promise((resolve) => { server.on('listening', () => resolve({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, stop: () => { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); server.close(); }, get synthCalls() { return synthCalls; }, set failSynthesis(v: boolean) { failSynthesis = v; }, set mode(v: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict') { mode = v; }, clientClosed, entered })); }) as never;
+  return new Promise((resolve) => { server.on('listening', () => resolve({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, stop: () => { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); server.close(); }, get synthCalls() { return synthCalls; }, set failSynthesis(v: boolean) { failSynthesis = v; }, set mode(v: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'drop-body-persisted' | 'conflict') { mode = v; }, clientClosed, entered })); }) as never;
 }
 
 function compose(root: string, transport: OrTransport, sirenUrl: string) {
@@ -96,7 +104,7 @@ function compose(root: string, transport: OrTransport, sirenUrl: string) {
   messages.ensureConversation('primary');
   const media = new MediaService(db, paths.mediaDir, config);
   const identity = new IdentityService(config, paths);
-  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, media, sirenCall: new SirenAdapter(sirenUrl, 'stub-token'), programFacts: { submitProgramFactTurn: () => undefined } });
+  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, media, sirenCall: new SirenAdapter(sirenUrl, 'stub-token') });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing: new RoutingService(db, events, messages), windows: new WindowManager(db, events, identity, config), logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db) });
   return { db, messages, media, supervisor, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
@@ -190,9 +198,9 @@ test('联合审计 A01：合成结果不明如实报告，不引导立即重复�
   } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
 });
 
-test('联合审计 A01-F02：响应丢失后按操作身份找回已生成资产发布（不重新合成）', async () => {
+for (const mode of ['drop-persisted', 'drop-body-persisted'] as const) test(`响应丢失恢复：${mode} 按同一操作取回资产，不重新合成`, async () => {
   const stub = await startSirenStub();
-  stub.mode = 'drop-persisted'; // Siren 已生成并持久、响应丢失：est 应恢复而非重付
+  stub.mode = mode;
   const c = compose(tempRoot('glm-a01r-'), quietTransport, stub.url);
   try {
     const out = await c.tools.execute('chat_send_voice', { text: '找回这句。' }, ctx());

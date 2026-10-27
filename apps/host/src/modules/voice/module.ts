@@ -6,7 +6,7 @@ import type { SirenAdapter } from '../../integrations/siren/adapter.ts';
 import { quoteBackgroundTool } from '../../runtime/background-tool-cost.ts';
 import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import type { CapabilityDescriptor, } from '../../capabilities/registry.ts';
-import type { HostToolSpec, ProgramFactsPort } from '../../capabilities/contracts.ts';
+import type { HostToolSpec } from '../../capabilities/contracts.ts';
 import { VoiceTranscriptService, type TranscriptReadInput } from './transcript-service.ts';
 import { VoiceSendService } from './voice-send.ts';
 import { VoiceCallService, type CallControlInput } from './call-service.ts';
@@ -39,7 +39,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel', 'accept_call', 'decline_call'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（拒绝后在同一回复里对她说一句为什么/改约——她会看到）' },
+        action: { type: 'string', enum: ['invite', 'status', 'end', 'cancel', 'accept_call', 'decline_call'], description: 'invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（是否解释或改约由你决定，不说也可以）' },
         ttl_seconds: { type: 'integer', minimum: 5, maximum: 3600, description: '可选：邀请有效期秒数（缺省 45）' },
       },
       required: ['action'], additionalProperties: false,
@@ -47,7 +47,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
   },
 };
 
-export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; programFacts?: ProgramFactsPort | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService };
+export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService };
 
 /** chat_send_voice 定义唯一正本（GLM_VOICE_UNIFICATION 04§5.3，A05）：
  *  char主动决定用语音说某句时的唯一出口（P08：不自动朗读文字）。 */
@@ -69,8 +69,7 @@ export const CHAT_SEND_VOICE_DEFINITION: HostToolSpec = {
   },
 };
 
-/** 装配入口：把 voice 域已迁能力登记进 registry（app-context 在 supervisor 就绪后调用——
- *  ProgramFactsPort 绑定当前唯一执行链的窄入口）。 */
+/** 装配 voice 域能力。 */
 export function registerVoiceCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: VoiceModuleDeps & { events?: import('../../events/service.ts').EventService | null }): void {
   const transcripts = new VoiceTranscriptService({ db: deps.db });
   registry.register({

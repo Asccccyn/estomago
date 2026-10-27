@@ -29,15 +29,6 @@ export type CallReplyLinkDeps = {
   logger?: { warn(code: string, fields?: Record<string, unknown>): void; info(code: string, fields?: Record<string, unknown>): void };
 };
 
-type LinkRow = {
-  call_id: string; turn_key: string; conversation_id: string; est_turn_id: string | null;
-  message_id: string | null; revision: number | null; siren_turn_id: string | null;
-  siren_asset_id: string | null; est_asset_id: string | null;
-  completeness: 'complete' | 'partial' | null; sent_audio_ms: number | null;
-  playback_json: string | null; link_state: 'pending' | 'linked' | 'unavailable';
-  observation_registered: number; source_synced_at: string | null;
-};
-
 export class CallReplyLinkService {
   private readonly deps: CallReplyLinkDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -80,18 +71,22 @@ export class CallReplyLinkService {
     await this.work;
   }
 
-  /** 有已完成话轮且链接未落定的通话（含刚结束的）：每跳最多 3 通、每通 1 次 turn-audio 查询。 */
+  /** 已发布助手消息的终态话轮（含打断后的部分回复）：每跳最多 3 通。 */
   private async pullPending(signal: AbortSignal): Promise<void> {
     const { db, sirenCall } = this.deps;
     if (!sirenCall) return;
     const calls = db.prepare(
       `SELECT vc.call_id, vc.state AS call_state, vc.analysis_mode FROM voice_calls vc
        WHERE EXISTS (
-         SELECT 1 FROM voice_stream_turns vst WHERE vst.call_id = vc.call_id AND vst.state = 'completed'
+         SELECT 1 FROM voice_stream_turns vst WHERE vst.call_id = vc.call_id AND vst.state IN ('completed','cancelled','failed')
+           AND EXISTS (SELECT 1 FROM messages m WHERE m.turn_id=vst.est_turn_id AND m.speaker='assistant')
            AND NOT EXISTS (
              SELECT 1 FROM voice_reply_links l WHERE l.call_id = vst.call_id AND l.turn_key = vst.turn_key
                AND (l.link_state = 'unavailable'
-                    OR (l.link_state = 'linked' AND (COALESCE(json_extract(l.playback_json,'$.basis'),'unknown') != 'unknown'
+                    OR (l.link_state = 'linked' AND l.est_asset_id IS NOT NULL
+                        AND EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id=l.message_id
+                          AND ma.revision=l.revision AND ma.asset_id=l.est_asset_id AND ma.presentation='voice')
+                        AND (COALESCE(json_extract(l.playback_json,'$.basis'),'unknown') != 'unknown'
                         OR vc.state != 'active')))
            )
        ) ORDER BY vc.started_at DESC LIMIT 3`,
@@ -106,16 +101,20 @@ export class CallReplyLinkService {
       }
       if (signal.aborted) break;
       const admissions = db.prepare(
-        "SELECT turn_key, est_turn_id FROM voice_stream_turns WHERE call_id=? AND state='completed' ORDER BY created_at",
+        `SELECT turn_key, est_turn_id FROM voice_stream_turns vst WHERE call_id=? AND state IN ('completed','cancelled','failed')
+         AND EXISTS (SELECT 1 FROM messages m WHERE m.turn_id=vst.est_turn_id AND m.speaker='assistant') ORDER BY created_at`,
       ).all(call.call_id) as Array<{ turn_key: string; est_turn_id: string | null }>;
       const byId = new Map(Array.isArray(turns) ? turns.map((t) => [t.turn_id, t]) : []);
       for (const admission of admissions) {
         if (signal.aborted) break;
-        const existing = db.prepare('SELECT link_state, est_asset_id, playback_json FROM voice_reply_links WHERE call_id=? AND turn_key=?')
-          .get(call.call_id, admission.turn_key) as { link_state: string; est_asset_id: string | null; playback_json: string | null } | undefined;
+        const existing = db.prepare(`SELECT link_state, est_asset_id, playback_json,
+          EXISTS (SELECT 1 FROM message_attachments ma WHERE ma.message_id=l.message_id
+            AND ma.revision=l.revision AND ma.asset_id=l.est_asset_id AND ma.presentation='voice') AS has_attachment
+          FROM voice_reply_links l WHERE call_id=? AND turn_key=?`)
+          .get(call.call_id, admission.turn_key) as { link_state: string; est_asset_id: string | null; playback_json: string | null; has_attachment: number } | undefined;
         const media = Array.isArray(turns) ? byId.get(admission.turn_key) : undefined;
         const reply = media?.reply_audio ?? null;
-        if (existing?.link_state === 'linked') {
+        if (existing?.link_state === 'linked' && existing.est_asset_id && existing.has_attachment) {
           // 已链接：播放事实可晚到演进（unknown→drained/reported）——basis 变了才重收敛，
           // 同 basis 不重复拉字节/重复同步
           if (media && reply) {
@@ -152,7 +151,7 @@ export class CallReplyLinkService {
     outcome: string | null,
     existingEstAssetId: string | null = null,
   ): Promise<void> {
-    const { db, media } = this.deps;
+    const { db } = this.deps;
     const now = new Date().toISOString();
     const conv = db.prepare('SELECT conversation_id FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get(callId, admission.turn_key) as { conversation_id: string } | undefined;
     if (!conv) return;
@@ -179,6 +178,7 @@ export class CallReplyLinkService {
         this.deps.logger?.warn('call_reply_import_failed', { call_id: callId, turn_key: admission.turn_key, code: error instanceof Error ? error.name : 'UNKNOWN_ERROR' });
       }
     }
+    let linked = false;
     if (estAssetId && msg && mediaDeps) {
       try {
         mediaDeps.validateForSend([{ asset_id: estAssetId, presentation: 'voice' }]);
@@ -190,14 +190,15 @@ export class CallReplyLinkService {
           db.prepare("INSERT INTO message_attachments(message_id,revision,position,asset_id,presentation,created_at) VALUES (?,?,?,?,'voice',?)")
             .run(msg.id, msg.current_revision, position, estAssetId, now);
         }
+        linked = true;
       } catch (error) {
-        // 附件行失败不阻断链接（links 表仍保有可追踪关联）；下一跳不重复导入（est 资产幂等键）
+        // 保留已导入资产，下次只补附件；未绑定不能推进为 linked。
         this.deps.logger?.warn('call_reply_attachment_failed', { call_id: callId, turn_key: admission.turn_key, code: error instanceof Error ? error.name : 'UNKNOWN_ERROR' });
       }
     }
     db.prepare(
       `INSERT INTO voice_reply_links(call_id,turn_key,conversation_id,est_turn_id,message_id,revision,siren_turn_id,siren_asset_id,est_asset_id,completeness,sent_audio_ms,playback_json,link_state,observation_registered,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'linked',0,?,?)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
        ON CONFLICT(call_id,turn_key) DO UPDATE SET
          message_id=COALESCE(excluded.message_id,voice_reply_links.message_id),
          revision=COALESCE(excluded.revision,voice_reply_links.revision),
@@ -207,11 +208,11 @@ export class CallReplyLinkService {
          completeness=COALESCE(excluded.completeness,voice_reply_links.completeness),
          sent_audio_ms=COALESCE(excluded.sent_audio_ms,voice_reply_links.sent_audio_ms),
          playback_json=excluded.playback_json,
-         link_state='linked', updated_at=excluded.updated_at`,
+         link_state=excluded.link_state, updated_at=excluded.updated_at`,
     ).run(callId, admission.turn_key, conv.conversation_id, admission.est_turn_id, msg?.id ?? null, msg?.current_revision ?? null,
       sirenTurnId, reply.asset_id, estAssetId, reply.completeness, sentAudioMs,
-      JSON.stringify({ ...playback, ...(fillerAudioMs !== null ? { filler_audio_ms: fillerAudioMs } : {}), outcome }), now, now);
-    this.deps.logger?.info('call_reply_linked', { call_id: callId, turn_key: admission.turn_key, message_id: msg?.id ?? null, est_asset_id: estAssetId, completeness: reply.completeness });
+      JSON.stringify({ ...playback, ...(fillerAudioMs !== null ? { filler_audio_ms: fillerAudioMs } : {}), outcome }), linked ? 'linked' : 'pending', now, now);
+    this.deps.logger?.info(linked ? 'call_reply_linked' : 'call_reply_link_pending', { call_id: callId, turn_key: admission.turn_key, message_id: msg?.id ?? null, est_asset_id: estAssetId, completeness: reply.completeness });
   }
 
   private markUnavailable(callId: string, turnKey: string, estTurnId: string | null, reason: string): void {
@@ -277,7 +278,7 @@ export class CallReplyLinkService {
           db.prepare('UPDATE voice_reply_links SET source_media_synced_at=? WHERE call_id=? AND turn_key=?').run(now, row.call_id, row.turn_key);
         }
         if (row.source_call_synced_basis !== basis) {
-          await attachmentsClient.attachmentsSync({
+          const call = await attachmentsClient.attachmentsSync({
             stream_id: streamId, origin_message_id: row.message_id, revision: row.revision, kind: 'call',
             payload: {
               call_id: row.call_id, turn_key: row.turn_key, direction: 'assistant',
@@ -286,6 +287,7 @@ export class CallReplyLinkService {
             },
             operation_id: `att-sync:call:${row.call_id}:${row.turn_key}:${basis}`,
           }, signal);
+          if (!call.ok) continue;
           db.prepare('UPDATE voice_reply_links SET source_call_synced_basis=? WHERE call_id=? AND turn_key=?').run(basis, row.call_id, row.turn_key);
         }
       } catch { /* 网络未知：保持未同步，下一跳同操作键重试 */ }

@@ -69,8 +69,7 @@ function compose(root: string, transport: OrTransport, siren: typeof fetch, invi
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', siren);
-  // B5：voice 模块不再持有 ProgramFactsPort（拒接/取消无附加轮）；装配保持向后兼容入参
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall, programFacts: null });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   return { db, config, messages, supervisor, tools, sirenCall, inviteState, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };

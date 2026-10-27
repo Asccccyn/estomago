@@ -62,6 +62,7 @@ import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 import { storedToolset } from './tool-discovery.ts';
+import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -180,9 +181,7 @@ export class TurnSupervisor {
     });
   }
 
-  /** 拒接/取消留言调度（2026-10-24）：程序事实轮——宿主注入事实（她拒接了你的来电/你取消了自己的来电），
-   *  不是用户发言（不写 messages）；走同一串行链与正常发布链，char的回应落本会话。
-   *  dedupe_key（invite+action）幂等：前端重试/重复触发只跑一轮。 */
+  /** 宿主事实走同一串行链与发布链，不伪造用户消息；dedupe_key 保证同一机会最多一次。 */
   submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): { turnId: string } | { deduplicated: true } {
     const d = this.d;
     const existing = d.db.prepare('SELECT turn_id FROM program_fact_turns WHERE dedupe_key = ?').get(dedupeKey) as { turn_id: string } | undefined;
@@ -196,6 +195,16 @@ export class TurnSupervisor {
     });
     this.enqueue(turnId);
     return { turnId };
+  }
+
+  private admitProgramFact(turnId: string | null, conversationId: string): void {
+    if (!turnId) return;
+    const fact = this.d.db.prepare("SELECT created_at FROM program_fact_turns WHERE turn_id=? AND kind='invite_missed_opportunity'")
+      .get(turnId) as { created_at: string } | undefined;
+    // 邀请到入队的历史已检查；排队、重启恢复和请求重试期间仍可能发生回拨。
+    if (fact && !missedCallOpportunityIsCurrent(this.d.db, conversationId, fact.created_at)) {
+      throw new ContractError('MISSED_CALL_OPPORTUNITY_SUPERSEDED');
+    }
   }
 
   /** 审计 F05：房间唯一串行链的通用入口——turn、自动评审、手动换窗共用同一互斥；
@@ -664,6 +673,7 @@ export class TurnSupervisor {
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
         if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+        if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
         if (o.inputBinding) {
           const current = d.messages.getMessage(o.inputBinding.messageId);
           if (!current || current.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
@@ -2752,6 +2762,7 @@ export class TurnSupervisor {
           runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent,
             onBeforeDispatch: async () => {
               if (runToken.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+              this.admitProgramFact(turnId, turn.conversation_id);
               if (inputMessage) {
                 if (d.messages.getMessage(inputMessage.id)?.current_revision !== effective.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
                 d.voiceObservations?.commitProjection({ messageId: inputMessage.id, revision: effective.revision }, turnId, 'sdk:' + attempt.id, tailProjection.observations);

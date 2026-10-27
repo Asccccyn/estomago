@@ -1,22 +1,19 @@
 // modules/voice/call-service.ts（P03.5/P03.6）：通话控制用例。
 // 原 HostToolExecutor.callControl 逐字迁移；accept_call 的直接 fetch/环境变量读取
 // JV-06（联合审计 2026-10-26）：建呼经注入的 SirenAdapter.createCall（与邀请族同源配置）。
-// 拒接/取消留言调度改走窄 ProgramFactsPort（只提交事实请求，不取得 Supervisor、不等待后继轮）。
 import type { Db } from '../../db/connection.ts';
 import type { SirenAdapter } from '../../integrations/siren/adapter.ts';
-import type { CapabilityOutcome, ProgramFactsPort, ToolExecContext } from '../../capabilities/contracts.ts';
+import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 
 export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number };
 
 export class VoiceCallService {
   private readonly db: Db;
   private readonly sirenCall: SirenAdapter | null;
-  private readonly programFacts: ProgramFactsPort | null;
 
-  constructor(deps: { db: Db; sirenCall: SirenAdapter | null; programFacts?: ProgramFactsPort | null }) {
+  constructor(deps: { db: Db; sirenCall: SirenAdapter | null }) {
     this.db = deps.db;
     this.sirenCall = deps.sirenCall;
-    this.programFacts = deps.programFacts ?? null;
   }
 
   /** 协议①（2026-10-24）：通话控制。逐字迁移（含备注文案与错误码）。 */

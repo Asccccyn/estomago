@@ -320,10 +320,9 @@ export class Host {
       bootstrap: modelMariposaClient,
       toolCatalog: capabilityRegistry,
     });
-    // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
-    // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）
+    // voice 域能力与同一消息/媒体服务装配。
     (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
-      db, sirenCall, programFacts: supervisor, media, messages, events,
+      db, sirenCall, media, messages, events,
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
@@ -464,7 +463,7 @@ export class Host {
       .then(({ consumeMissedCallOpportunities }) => consumeMissedCallOpportunities(this.db, sirenRef,
         (kind, factText, dedupeKey) => { this.supervisor.submitProgramFactTurn('primary', kind, factText, dedupeKey); },
         this.callReconcileAbort.signal))
-      .then(r => { if (r.submitted > 0 || r.skipped_busy > 0) this.logger.info('missed_call_opportunities', { ...r }); })
+      .then(r => { if (r.submitted > 0 || r.skipped_superseded > 0) this.logger.info('missed_call_opportunities', { ...r }); })
       .catch(error => this.logger.warn('voice_calls_reconcile_failed', { code: stableErrorCode(error) }))
       .finally(() => { this.callReconcileWork = null; });
   }

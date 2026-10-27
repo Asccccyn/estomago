@@ -228,7 +228,10 @@ export class SirenAdapter {
       if (res.status === 409) throw new SirenTranscriptionError('SIREN_OPERATION_CONFLICT');
       throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
     }
-    const bytes = new Uint8Array(await res.arrayBuffer());
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
     return {
       bytes,
       mime: res.headers.get('content-type') ?? 'audio/mpeg',

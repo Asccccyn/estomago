@@ -13,7 +13,7 @@ import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.t
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 
-test('A04 联合链：通话回复音频→确切助手消息→记录反查；挂断回执不冒充媒体已停', { timeout: 20000 }, async () => {
+for (const interrupted of [false, true]) test(`A04 联合链：${interrupted ? '客户端断开后的部分回复' : '完成回复'}仍绑定正式助手消息`, { timeout: 20000 }, async () => {
   const root = tempRoot('a04-link-');
   writeApprovedIdentity(root);
   const originalFetch = globalThis.fetch;
@@ -38,8 +38,8 @@ test('A04 联合链：通话回复音频→确切助手消息→记录反查；�
       calls.turnAudio++;
       return Response.json({
         schema_version: 1, call_id: 'a04-call',
-        turns: [{ turn_id: 'a04-turn', turn_index: 1, outcome: 'completed', user_audio: { asset_id: 'sir-user', duration_ms: 900 },
-          reply_audio: { asset_id: 'sir-reply', duration_ms: 1500, completeness: 'complete' },
+        turns: [{ turn_id: 'a04-turn', turn_index: 1, outcome: interrupted ? 'interrupted' : 'completed', user_audio: { asset_id: 'sir-user', duration_ms: 900 },
+          reply_audio: { asset_id: 'sir-reply', duration_ms: 1500, completeness: interrupted ? 'partial' : 'complete' },
           sent_audio_ms: 1500, filler_audio_ms: 0, playback: { basis: 'client_drained' } }],
       });
     }
@@ -49,8 +49,14 @@ test('A04 联合链：通话回复音频→确切助手消息→记录反查；�
     }
     if (url === 'https://api.deepseek.com/chat/completions') {
       calls.modelRequests++;
-      const body = 'data: ' + JSON.stringify({ id: 'a04', choices: [{ delta: { content: '我在呢，慢慢说。' } }] }) + '\n\n' +
+      const body = 'data: ' + JSON.stringify({ id: 'a04', choices: [{ delta: { content: '我在呢，慢慢说。\n\n' } }] }) + '\n\n' +
         'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 4 } }) + '\n\ndata: [DONE]\n\n';
+      if (interrupted) {
+        return new Response(new ReadableStream({ start(controller) {
+          controller.enqueue(new TextEncoder().encode(body.split('\n\n')[0] + '\n\n'));
+          init?.signal?.addEventListener('abort', () => controller.close(), { once: true });
+        } }), { headers: { 'content-type': 'text/event-stream' } });
+      }
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
     }
     return Response.json({}, { status: 404 });
@@ -83,13 +89,26 @@ test('A04 联合链：通话回复音频→确切助手消息→记录反查；�
     const streamBody = JSON.stringify({ conversation_id: 'primary', call_id: 'a04-call', turn_id: 'a04-turn', modality: 'voice_call', text: '今天有点累。', audio_ref: 'siren:audit_audio' });
     const stream = await new Promise<string>((resolve, reject) => {
       const r = request(`http://127.0.0.1:${host!.port}/v1/chat/stream`, { method: 'POST', headers: { Authorization: 'Bearer synthetic-ingress', 'Content-Type': 'application/x-ndjson', 'Content-Length': Buffer.byteLength(streamBody) } }, (res) => {
-        let b = ''; res.on('data', (c) => (b += c)); res.once('end', () => resolve(b));
+        let b = '';
+        res.on('data', (chunk) => {
+          b += chunk;
+          if (interrupted && b.includes('"type":"delta"')) { r.destroy(); resolve(b); }
+        });
+        res.once('end', () => resolve(b));
       });
       r.on('error', reject);
       r.end(streamBody);
     });
-    assert.ok(stream.includes('"type":"done"'), `流应正常收口: ${stream.slice(0, 200)}`);
+    assert.ok(stream.includes(interrupted ? '"type":"delta"' : '"type":"done"'));
+    if (interrupted) {
+      const deadline = Date.now() + 3000;
+      while (Date.now() < deadline && (host.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='a04-call'").get() as { state: string } | undefined)?.state !== 'cancelled') {
+        await new Promise(r => setTimeout(r, 10));
+      }
+      assert.equal((host.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='a04-call'").get() as { state: string }).state, 'cancelled');
+    }
     await host.supervisor.waitIdle();
+    assert.ok(host.db.prepare("SELECT 1 FROM messages WHERE speaker='assistant'").get(), '取消前的完整段落已正式发布');
     assert.equal(calls.modelRequests, 1, '一轮=一次模型请求');
 
     // B3-D：挂断命令=est 收口 + 尽力 Siren 终止控制 + 关联 wake
@@ -111,7 +130,7 @@ test('A04 联合链：通话回复音频→确切助手消息→记录反查；�
     assert.equal(link!['link_state'], 'linked');
     assert.equal(link!['siren_asset_id'], 'sir-reply');
     assert.ok(link!['est_asset_id'], '回复字节导入 est 媒体（幂等操作键）');
-    assert.equal(link!['completeness'], 'complete');
+    assert.equal(link!['completeness'], interrupted ? 'partial' : 'complete');
     const playback = JSON.parse(String(link!['playback_json'])) as { basis: string };
     assert.equal(playback.basis, 'client_drained', '播放事实来自 Siren 正本（不推断已播）');
 

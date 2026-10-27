@@ -80,7 +80,7 @@
     "chat_send_text": "td_b5b81340ebf39cc958bdcbfa",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
     "chat_send_attachment": "td_2af95a54c1c9cf216f871e54",
-    "call_control": "td_fb8512a209bb3c0855baf56a",
+    "call_control": "td_e00aeb9a51665a76a96c66f6",
     "oido_analyze": "td_b3247626ef8a62b3dfa4d81b",
     "media_search": "td_ac4449f47a46a873eda23d58",
     "oido_get": "td_4d02ebf1457efaecb290c28e",
@@ -105,7 +105,7 @@
     "wishstar_notifications": "td_e4352dd3c27b90897925d700",
     "context_review_complete": "td_80e678ecb6056243f20c0d26"
   },
-  "toolsSha256": "78b19fec264e3b0c9777595c06f43191f0579b7737664a1e5a58b4d2a7c91988",
+  "toolsSha256": "dfcd71e2d6803460c944014a31c71d0b9cb82e913bc8790dfae3044575ffae50",
   "tools": [
     {
       "type": "function",
@@ -1354,7 +1354,7 @@
                 "accept_call",
                 "decline_call"
               ],
-              "description": "invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（拒绝后在同一回复里对她说一句为什么/改约——她会看到）"
+              "description": "invite=发起来电邀请；status=查询当前邀请；end=提出挂断当前通话（柔性：她说什么都会取消，不是说出口就立刻挂）；cancel=取消自己刚发起、还没被接听的邀请；accept_call=接听她刚发起的语音通话请求；decline_call=拒绝她的通话请求（是否解释或改约由你决定，不说也可以）"
             },
             "ttl_seconds": {
               "type": "integer",

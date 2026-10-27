@@ -26,12 +26,14 @@ const mp3 = Buffer.concat([Buffer.from([0x49, 0x44, 0x33, 0x04]), Buffer.alloc(1
 function fakeSiren(initial: SirenCallAudioTurn[] | 'not_found' | null) {
   let current: SirenCallAudioTurn[] | 'not_found' | null = initial;
   let fetchCalls = 0;
+  let failAudio = false;
   return {
     callTurnAudio: async (): Promise<SirenCallAudioTurn[] | 'not_found' | null> => current,
-    fetchVoiceAssetAudio: async () => { fetchCalls++; return { bytes: new Uint8Array(mp3), mime: 'audio/mpeg' }; },
+    fetchVoiceAssetAudio: async () => { fetchCalls++; if (failAudio) throw new Error('HTTP_503'); return { bytes: new Uint8Array(mp3), mime: 'audio/mpeg' }; },
     set turns(v: SirenCallAudioTurn[] | 'not_found' | null) { current = v; },
+    set failAudio(v: boolean) { failAudio = v; },
     get fetchCalls() { return fetchCalls; },
-  } as unknown as SirenAdapter & { turns: SirenCallAudioTurn[] | 'not_found' | null; fetchCalls: number };
+  } as unknown as SirenAdapter & { turns: SirenCallAudioTurn[] | 'not_found' | null; fetchCalls: number; failAudio: boolean };
 }
 
 /** M 附属同步替身：记录 (kind, operation_id, payload)；生产为真实 MariposaClient */
@@ -163,5 +165,58 @@ test('A04/C04：通话结束后 Siren 404——如实 unavailable，不猜音频
     assert.equal(link.link_state, 'unavailable');
     assert.equal(link.siren_asset_id, null);
     assert.equal(siren.fetchCalls, 0);
+  } finally { await svc.stop(); c.close(); }
+});
+
+for (const failure of ['audio', 'call-sync'] as const) test(`回复关联恢复：${failure} 失败不记完成，恢复后只补缺失阶段`, async () => {
+  const c = compose('deep_listen');
+  const siren = fakeSiren(turn('call-recover', 't1', { basis: 'client_drained' }));
+  siren.failAudio = failure === 'audio';
+  let failCall = failure === 'call-sync';
+  const accepted: Array<{ kind: string; operation_id: string }> = [];
+  const callKeys: string[] = [];
+  const client = {
+    async attachmentsSync(args: { kind: string; operation_id: string }) {
+      if (args.kind === 'call') {
+        callKeys.push(args.operation_id);
+        if (failCall) return { ok: false };
+      }
+      accepted.push(args);
+      return { ok: true };
+    },
+  };
+  const svc = new CallReplyLinkService({ db: c.db, sirenCall: siren, media: c.media, voiceObservations: c.voiceObs, attachmentsClient: client, streamId: 'estomago-primary-live' });
+  try {
+    const messageId = c.admitCompletedTurn('call-recover', 't1');
+    c.markArchived(messageId);
+    svc.start();
+    await svc.wake();
+    const before = c.db.prepare("SELECT * FROM voice_reply_links WHERE call_id='call-recover'").get() as Record<string, unknown>;
+    assert.equal(before.source_call_synced_basis, null, '没有成功 ACK，不推进同步标记');
+    if (failure === 'audio') {
+      assert.equal(before.link_state, 'pending');
+      assert.equal(before.est_asset_id, null);
+      assert.equal(accepted.length, 0, '音频尚未绑定，不提交完成的媒体事实');
+      assert.equal(c.db.prepare('SELECT 1 FROM voice_observations WHERE message_id=?').get(messageId), undefined);
+    } else {
+      assert.equal(before.link_state, 'linked');
+      assert.deepEqual(accepted.map(a => a.kind), ['media']);
+    }
+    const fetchedBefore = siren.fetchCalls;
+    siren.failAudio = false;
+    failCall = false;
+    await svc.wake();
+    const after = c.db.prepare("SELECT * FROM voice_reply_links WHERE call_id='call-recover'").get() as Record<string, unknown>;
+    assert.equal(after.link_state, 'linked');
+    assert.ok(after.est_asset_id);
+    assert.equal(after.source_call_synced_basis, 'client_drained');
+    assert.equal(siren.fetchCalls, fetchedBefore + (failure === 'audio' ? 1 : 0));
+    assert.deepEqual(accepted.map(a => a.kind), ['media', 'call']);
+    assert.equal(new Set(callKeys).size, 1, '同步恢复沿用原操作身份');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM message_attachments WHERE message_id=? AND presentation='voice'").get(messageId) as { n: number }).n, 1);
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM voice_observations WHERE message_id=? AND direction='assistant'").get(messageId) as { n: number }).n, 1);
+    await svc.wake();
+    assert.equal(accepted.length, 2);
+    assert.equal(siren.fetchCalls, fetchedBefore + (failure === 'audio' ? 1 : 0));
   } finally { await svc.stop(); c.close(); }
 });
