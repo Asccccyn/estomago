@@ -1,6 +1,7 @@
 // 协议①（2026-10-24）：来电横幅 + 未接/拒接卡片——est 代理 Siren 邀请（内部凭据不进前端）。
 // 横幅只在有 pending 邀请时出现（Siren 服务端过期，不依赖本页轮询保活；轮询仅用于展示）；
-// 接听=先落邀请终态再打开通话面板；拒接=直接落终态（不自动补打）。终态卡片列近期事实。
+// 接听=先落邀请终态、宿主建好通话拿到连接信息再打开通话面板；拒接=直接落终态（不自动补打）。
+// F-02（跨仓预审 2026-10-25）：接/拒以服务端终态为准（失败不进通话、横幅不凭旧缓存滞留）。
 import { useEffect, useState } from 'react';
 import { Phone, PhoneOff, X, Clock } from 'lucide-react';
 
@@ -8,7 +9,7 @@ type Invite = { invite_id: string; state: string; expires_at?: number; created_a
 
 const LABELS: Record<string, string> = { expired: '未接来电', declined: '已拒接', cancelled: '已取消', accepted: '已接听' };
 
-export function CallInvites({ onAccept }: { onAccept: () => void }): React.JSX.Element | null {
+export function CallInvites({ onAccept }: { onAccept: (conn: { ws_url: string; token: string; call_id: string }) => void }): React.JSX.Element | null {
   const [active, setActive] = useState<Invite | null>(null);
   const [recent, setRecent] = useState<Invite[]>([]);
   const [busy, setBusy] = useState(false);
@@ -21,7 +22,8 @@ export function CallInvites({ onAccept }: { onAccept: () => void }): React.JSX.E
         if (!res.ok) return;
         const data = await res.json() as { active: Invite | null; recent: Invite[] };
         if (stop) return;
-        setActive((prev) => (data.active && (!prev || prev.invite_id === data.active!.invite_id || data.active!.invite_id !== prev.invite_id) ? data.active : prev));
+        // 服务端权威：active 变 null（过期/取消/接听）即撤横幅，不保留旧 pending
+        setActive(data.active ?? null);
         setRecent((data.recent ?? []).slice(0, 3));
       } catch { /* 服务不可达=无来电显示，聊天不受影响 */ }
     };
@@ -33,11 +35,19 @@ export function CallInvites({ onAccept }: { onAccept: () => void }): React.JSX.E
   const act = async (id: string, action: 'accept' | 'decline'): Promise<void> => {
     setBusy(true);
     try {
-      await fetch(`/api/v1/calls/invites/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+      const res = await fetch(`/api/v1/calls/invites/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+      const out = await res.json().catch(() => null) as { state?: string; call_id?: string; ws_url?: string; token?: string } | null;
+      if (action === 'accept') {
+        // 只有服务端确认 accepted 且宿主已交付通话连接才进入通话面板；
+        // 过期/冲突（state=expired 等）保持横幅，下次轮询按服务端状态如实刷新
+        if (out?.state === 'accepted' && out.call_id && out.ws_url && out.token) {
+          onAccept({ ws_url: out.ws_url, token: out.token, call_id: out.call_id });
+        }
+      } else if (out?.state === 'declined') {
+        setActive(null);
+      }
     } catch { /* 失败=下次轮询按服务端状态刷新 */ }
     setBusy(false);
-    if (action === 'accept') onAccept();
-    else setActive(null);
   };
 
   return (

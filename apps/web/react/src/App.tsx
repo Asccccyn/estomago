@@ -113,7 +113,7 @@ function EffortSlider({ value, onChange, levels }: { value: number; onChange: (v
 // V06 深听逐字谱（2026-10-24）：按页读 prosody_page（每页≤32音节），带 next_cursor 续读。
 // 只展示可测声学量（半音/中音域参照）——不做情绪解读；每音节≤5 F0 点按合同渲染。
 function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element | null {
-  const [pages, setPages] = useState<Array<{ syllable: string; tone: string | null; f0: number[]; startS: number }[]>>([])
+  const [pages, setPages] = useState<Array<{ syllable: string; tone: string | null; f0: number[]; startS: number; quality: string }[]>>([])
   const [cursor, setCursor] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(false)
   const [done, setDone] = useState(false)
@@ -127,12 +127,19 @@ function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element
       if (!res.ok) { const b = await res.json().catch(() => ({})) as Record<string, any>; setError(String(b['error_code'] ?? b['detail'] ?? '不可用')); setDone(true); return }
       const body = await res.json() as Record<string, any>
       const syllables = (body['syllables'] ?? []) as Array<Record<string, any>>
-      setPages((prev) => [...prev, syllables.map((x) => ({
-        syllable: String(x['text'] ?? '?'),
-        tone: x['tone'] == null ? null : String(x['tone']),
-        f0: (Array.isArray(x['f0_st']) ? x['f0_st'] : []).map(Number),
-        startS: Number(x['start_s'] ?? 0),
-      }))])
+      // JV-09（联合审计 2026-10-26）：对齐 oído 现行投影字段——pitch_st/lexical_tone/
+      // range_ms（毫秒半开区间，换算秒）；不再读旧 f0_st/tone/start_s，也不再有虚假
+      // 的 0 秒 fallback（缺 range=如实 NaN，不冒充起点）；quality 限制带入提示。
+      setPages((prev) => [...prev, syllables.map((x) => {
+        const rng = Array.isArray(x['range_ms']) && x['range_ms'].length === 2 ? x['range_ms'] as number[] : null
+        return {
+          syllable: String(x['text'] ?? '?'),
+          tone: x['lexical_tone'] == null ? null : String(x['lexical_tone']),
+          f0: (Array.isArray(x['pitch_st']) ? x['pitch_st'] : []).map(Number),
+          startS: rng !== null && Number.isFinite(rng[0]) ? rng[0] / 1000 : NaN,
+          quality: String(x['quality'] ?? ''),
+        }
+      })])
       if (typeof body['next_cursor'] === 'string' && body['next_cursor']) setCursor(body['next_cursor'])
       else { setCursor(undefined); setDone(true) }
     } catch { setError('请求失败'); setDone(true) } finally { setLoading(false) }
@@ -147,7 +154,7 @@ function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap gap-1">
         {pages.flat().map((sy, i) => (
-          <span key={i} className="flex w-8 flex-col items-center rounded-lg bg-white/70 py-1" title={`${sy.startS.toFixed(2)}s${sy.tone ? ' · 本调 ' + sy.tone : ''}`}>
+          <span key={i} className="flex w-8 flex-col items-center rounded-lg bg-white/70 py-1" title={`${Number.isNaN(sy.startS) ? '?s' : sy.startS.toFixed(2) + 's'}${sy.tone ? ' · 本调 ' + sy.tone : ''}${sy.quality && sy.quality !== 'measured' ? ' · ' + sy.quality : ''}`}>
             <span className="text-[13px] leading-none">{sy.syllable}</span>
             <span className="mt-0.5 flex h-6 w-6 items-end justify-center gap-[1px]">
               {sy.f0.slice(0, 5).map((v, j) => (
@@ -173,10 +180,24 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
   const analysisCache = useRef<{ assetId: string; analysisId: string } | null>(null) // 该气泡已有分析（收起不丢）
   const aliveRef = useRef(true)
   useEffect(() => { aliveRef.current = true; return () => { aliveRef.current = false } }, [])
+  // D-04：pending 期自动轮询（60s 上限）；换源/卸载即停
+  useEffect(() => {
+    if (listen.state !== 'pending' || !listen.analysisId) return
+    const forAsset = listenAsset.current
+    let tries = 0
+    const timer = setInterval(() => {
+      tries += 1
+      if (tries > 24) { clearInterval(timer); return } // 2.5s×24=60s 上限
+      void fetchOverview(listen.analysisId!, forAsset ?? assetId ?? '')
+    }, 2500)
+    return () => clearInterval(timer)
+  }, [listen.state, listen.analysisId])
   const fetchOverview = async (analysisId: string, forAsset: string): Promise<void> => {
     const res = await fetch('/api/v1/oido/analyses/' + encodeURIComponent(analysisId))
     if (!aliveRef.current || forAsset !== assetId) return // 迟到/换源作废
     if (res.status === 409) { setListen({ state: 'pending', analysisId }); return } // 未就绪=待定，不是成功
+    // D-04（她裁定 2026-10-26）：pending 自动刷新——结果就绪/失败自动呈现，
+    // 不再需要收起再展开；2.5s 间隔、60s 上限后停止（改为手动重开查询）
     if (!res.ok) { const body = await res.json().catch(() => ({})) as Record<string, any>; setListen({ state: 'error', error: String(body['detail'] ?? body['code'] ?? '深听不可用') }); return }
     const ov = await res.json() as Record<string, any>
     if (!aliveRef.current || forAsset !== assetId) return
@@ -368,6 +389,7 @@ export default function App() {
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
+  const [incomingCall, setIncomingCall] = useState<{ ws_url: string; token: string; call_id: string } | null>(null)
   const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
@@ -699,8 +721,8 @@ export default function App() {
       </footer>
       {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
-      <CallInvites onAccept={() => setCallOpen(true)} />
-      {callOpen && <CallPanel conversationId="primary" onExit={() => setCallOpen(false)} />}
+      <CallInvites onAccept={(conn) => { setIncomingCall(conn); setCallOpen(true); }} />
+      {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
         onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}

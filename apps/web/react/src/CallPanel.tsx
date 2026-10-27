@@ -1,13 +1,15 @@
 // B2/RE-04（2026-10-24）：正式通话面板——est React 页内真实通话入口（非 Siren 测试页）。
 // 按钮点击→经 est owner 代理取 Siren 短 call token（内部凭据不进前端）→CallClient 连接。
 // 字幕=partial/final/reply；挂断=abort+WS 1000+est 侧 voice_calls 收口。
+// F-02（跨仓预审 2026-10-25）：incoming=接听来电的直连信息（宿主在邀请 accept 时已建
+// 通话并交付连接）——此模式不发起 dial、不等char接听。F-03：静音=客户端真停上行。
 import { useEffect, useRef, useState } from 'react';
 import { Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
 import { CallClient } from './call-client'
 
 type Phase = 'idle' | 'connecting' | 'active' | 'ended' | 'error';
 
-export function CallPanel({ conversationId, onExit }: { conversationId: string; onExit: () => void }): React.JSX.Element | null {
+export function CallPanel({ conversationId, onExit, incoming }: { conversationId: string; onExit: () => void; incoming?: { ws_url: string; token: string; call_id: string } }): React.JSX.Element | null {
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const [subtitle, setSubtitle] = useState('');
@@ -35,7 +37,9 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
         onMicLevel: (rms) => setMicLevel(Math.min(1, rms * 12)),
       });
       clientRef.current = client;
-      void client.connect();
+      // JV-20（联合审计 2026-10-26）：WS 连接失败必须收口——connect 的 rejection
+      // 不再无人处理（unhandled + 面板永远停在 connecting），如实报错并结束等待
+      client.connect().catch(() => { if (!cancelled) { setError('通话连接失败（服务不可达或已过期）'); setPhase('error'); } });
     };
     const poll = async (): Promise<void> => {
       if (cancelled) return;
@@ -52,10 +56,20 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
     };
     void (async () => {
       setPhase('connecting');
+      // F-02：接听来电的直连模式——宿主已建通话，直接连接（不反向拨号）
+      if (incoming) { connectCall(incoming.ws_url, incoming.token, incoming.call_id); return; }
       try {
         const res = await fetch('/api/v1/calls/dial', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
-        const created = await res.json() as { request_id?: string; state?: string; ws_url?: string; token?: string; call_id?: string };
+        const created = await res.json().catch(() => null) as { request_id?: string; state?: string; ws_url?: string; token?: string; call_id?: string; error?: { message?: string } | null } | null;
         if (cancelled) return;
+        // JV-20：拨号被拒（503/502 等错误 body）=等待结束——不再把错误 body 当成功
+        // 轮询下去；释放已获得的请求（cleanupDial 语义）
+        if (!res.ok || !created || typeof created.state !== 'string') {
+          setError(`拨号失败：${created?.error?.message ?? res.status}`);
+          setPhase('error');
+          if (created?.request_id) { dialId = created.request_id; cleanupDial(); }
+          return;
+        }
         if (created.state === 'accepted' && created.ws_url) { connectCall(created.ws_url, created.token!, created.call_id!); return; }
         if (created.request_id) dialId = created.request_id;
         void poll(); // 等char接/拒
@@ -83,8 +97,8 @@ export function CallPanel({ conversationId, onExit }: { conversationId: string; 
   const toggleMute = (): void => {
     const next = !muted;
     setMuted(next);
-    // 静音=本地不上行候选（按协议以 abort 取消当前输入；恢复后新输入自动开始）
-    if (next) clientRef.current?.interrupt();
+    // F-03：静音=客户端真停上行（不上传采集帧、收尾在途输入）；不再用未协商的 interrupt 冒充
+    clientRef.current?.setMuted(next);
   };
 
   return (
