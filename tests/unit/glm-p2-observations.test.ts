@@ -209,10 +209,14 @@ test('P04/P2 深听话轮：快观察 ready 带投递事实；普通电话零 o�
     await c.supervisor.waitIdle();
     assert.equal(counts.ingest, 0, '普通电话 0 ingest');
     assert.equal(counts.analyze, 0, '普通电话 0 analyze');
-    // 深听电话：显式 deep_listen → 快观察走 sidecar（ready+dispatched_turn_id）
+    // 深听电话：显式 deep_listen → 派发**不等**快观察（A06 联合审计 2026-10-27）；
+    // 后台机会观察完成同一分析只写 sidecar（不冻结投影、不补开模型）
     const dl = await c.call('/api/v1/calls', 'POST', { conversation_id: 'primary', analysis_mode: 'deep_listen' });
     await c.call('/v1/chat/stream', 'POST', req(dl.body['call_id'] as string, 't-2'), { authorization: 'Bearer tok', 'content-type': 'application/x-ndjson' });
     await c.supervisor.waitIdle();
+    // A06 关键断言：正式模型请求在观察 ready 前已发出——派发请求不含观察投影
+    const deepDispatch = JSON.parse(payloads.at(-1)!) as { messages: Array<{ content: string }> };
+    assert.ok(!deepDispatch.messages.some(m => String(m.content).includes('声音观察')), 'A06：派发不等待可选观察（请求不含观察投影）');
     await new Promise((r) => setTimeout(r, 120));
     assert.equal(counts.ingest, 1, '深听电话 1 ingest');
     const msgs = c.db.prepare("SELECT id FROM messages WHERE conversation_id='primary' AND speaker='owner' AND current_revision IS NOT NULL ORDER BY sequence DESC LIMIT 1").all() as Array<{ id: string }>;
@@ -220,10 +224,8 @@ test('P04/P2 深听话轮：快观察 ready 带投递事实；普通电话零 o�
     const rows = c.voiceObs.listForMessages([callMsgId]);
     assert.equal(rows.length, 1, '深听话轮 sidecar 登记一行');
     assert.equal(rows[0]!.status, 'ready', JSON.stringify(rows[0]));
-    assert.ok(rows[0]!.dispatched_turn_id);
-    assert.ok(rows[0]!.model_projection);
-    const actual = JSON.parse(payloads.at(-1)!) as { messages: Array<{ content: string }> };
-    assert.ok(actual.messages.some(m => String(m.content).includes(rows[0]!.model_projection!)), '实际模型请求必须包含被冻结的观察');
+    assert.equal(rows[0]!.dispatched_turn_id, null, 'A06：晚到观察不改已派发历史（无投递事实）');
+    assert.equal(rows[0]!.model_projection, null, 'A06：迟到结果只持久化/显示，不回写投影');
     const quickKey = counts.keys[0]!;
     const again = await c.hearing!.analyzeVoice({ audio_ref: 'est:' + rows[0]!.asset_id }, ctx());
     assert.equal(again.ok, true);
@@ -233,7 +235,7 @@ test('P04/P2 深听话轮：快观察 ready 带投递事实；普通电话零 o�
     // 深听话轮 sidecar 唯一（UNIQUE 幂等），普通话轮无 sidecar（普通轮 owner 消息=最早一条语音）
     const ordMsgId = (c.db.prepare("SELECT t.input_message_id AS id FROM voice_stream_turns vst JOIN turns t ON t.id=vst.est_turn_id WHERE vst.turn_key='t-1'").get() as { id: string }).id;
     assert.equal(c.voiceObs.listForMessages([ordMsgId]).length, 0, '普通话轮零 sidecar');
-    console.log(JSON.stringify({ case: 'p04_deep_listen_sidecar', ordinary_zero: true, deep_ready: true, dispatched: true }));
+    console.log(JSON.stringify({ case: 'p04_deep_listen_sidecar', ordinary_zero: true, deep_ready: true, dispatch_not_blocked: true }));
   } finally {
     delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
     await c.supervisor.stopAll(); await c.close(); stub.stop();
@@ -285,7 +287,7 @@ test('F03 观察补同步：ready 且正文已 ACK→attachmentsSync 幂等出�
   } finally { await c.supervisor.stopAll(); await c.close(); }
 });
 
-test('SDK 正式驱动入口同样收到转写与观察，派发记录对应真实 query', async () => {
+test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）', async () => {
   const stub = await startSirenStub();
   process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
   const prompts: string[] = [];
@@ -304,12 +306,14 @@ test('SDK 正式驱动入口同样收到转写与观察，派发记录对应真�
       { authorization: 'Bearer tok', 'content-type': 'application/x-ndjson' });
     assert.equal(response.status, 200);
     await c.supervisor.waitIdle();
-    const row = c.db.prepare("SELECT model_projection,dispatched_turn_id,projection_request_id FROM voice_observations").get() as { model_projection: string; dispatched_turn_id: string; projection_request_id: string };
-    assert.ok(row.model_projection);
+    // A06：派发不等观察——SDK 驱动真实 prompt 含转写、不含未就绪的观察投影
     assert.equal(prompts.length, 1);
     assert.ok(prompts[0]!.includes('SDK 的原声转写。'));
-    assert.ok(prompts[0]!.includes(row.model_projection));
-    assert.ok(row.dispatched_turn_id);
-    assert.ok(row.projection_request_id.startsWith('sdk:'));
+    assert.ok(!prompts[0]!.includes('声音观察'), 'A06：派发请求不含未就绪观察');
+    await new Promise((r) => setTimeout(r, 120));
+    const row = c.db.prepare("SELECT status,model_projection,dispatched_turn_id FROM voice_observations").get() as { status: string; model_projection: string | null; dispatched_turn_id: string | null };
+    assert.equal(row.status, 'ready', '晚到分析写入观察行');
+    assert.equal(row.model_projection, null, '迟到结果不回写投影');
+    assert.equal(row.dispatched_turn_id, null, '无投递事实（未用于首发）');
   } finally { await c.supervisor.stopAll(); await c.close(); stub.stop(); delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; }
 });

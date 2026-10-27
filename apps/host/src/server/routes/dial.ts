@@ -47,8 +47,9 @@ if (route === 'POST /api/v1/calls/dial') {
   d.db.prepare("INSERT INTO dial_requests(id,conversation_id,state,ttl_ms,analysis_mode,created_at,updated_at) VALUES (?,'primary','pending',?,?,?,?)").run(id, DIAL_DEFAULT_TTL_MS, dialMode, nowIso, nowIso);
   // 告诉char（程序事实轮，同串行链；他闲着就立刻收到）
   try {
+    // B5（联合审计 2026-10-27，A08）：提示去掉无依据的强制说明——拒绝后说与否由他自主决定
     d.supervisor.submitProgramFactTurn('primary', 'incoming_dial',
-      `她刚刚发起语音通话请求（等你接听，约 45 秒内有效）。接听：调用 call_control，action=accept_call。拒绝：调用 call_control，action=decline_call，并在同一回复里自然地对她说一句为什么不方便或改约——她会看到你的话，通话不开始。超时不选即过期。`,
+      `她刚刚发起语音通话请求（等你接听，约 45 秒内有效）。接听：调用 call_control，action=accept_call。拒绝：调用 call_control，action=decline_call（通话不会开始；你的回复正文她会看到，想说什么自己决定）。超时不选即过期。`,
       `dial:${id}`);
   } catch { /* 事实轮失败=请求保持 pending 到期（如实降级） */ }
   return json(res, 200, { request_id: id, state: 'pending', note: '正在等char接听' });
@@ -164,8 +165,27 @@ if (estCallEnd) {
   const callId = decodeURIComponent(estCallEnd[1]!);
   const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
   if (!row) return json(res, 404, { error: { code: 'not_found', message: '通话不存在' } });
-  if (row.state === 'active') d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
-  return json(res, 200, { call_id: callId, state: 'ended' });
+  // B3-D（联合审计 2026-10-27）：本端点是"est 收口 + 尽力挂断命令"——不再只改投影。
+  // 真实媒体停止走 Siren 既有终止控制（A11 hangup-request：drain→linger→结束）与
+  // WS 断开生命周期；本回执的 ended 是 est 投影事实，不冒充"音频已停"——
+  // producer 是否仍在以 Siren GET /v1/calls/:id（session_active）为准。
+  let mediaClose: 'hangup_requested' | 'siren_unavailable' | 'session_not_active' = 'session_not_active';
+  if (row.state === 'active') {
+    if (d.sirenCall) {
+      try {
+        const hangup = await d.sirenCall.requestHangup(callId);
+        mediaClose = hangup?.accepted ? 'hangup_requested' : 'session_not_active';
+      } catch {
+        mediaClose = 'siren_unavailable'; // 尽力请求失败：投影照常收口，Siren 生命周期/对账兜底
+      }
+    } else {
+      mediaClose = 'siren_unavailable';
+    }
+    d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
+    d.callReplyLinks?.wake(); // 通话收口：最终媒体关联拉取（恢复兜底仍走 worker 周期）
+  }
+  return json(res, 200, { call_id: callId, state: 'ended', media_close: mediaClose,
+    note: 'est 已收口；媒体停止以 Siren 会话生命周期为准（挂断请求已尽力发出，真实停止经 drain→结束）' });
 }
 
 // —— 协议①（2026-10-24）：来电邀请前端面（owner）——est 代理 Siren（内部凭据不进前端）。
@@ -221,16 +241,9 @@ if (inviteAction) {
       }
       return json(res, 200, { ...(out ?? {}), call_id: prior.call_id, state: 'accepted', note: '该邀请已接听，但通话已结束——需要通话请让他重新发起邀请' });
     }
-    // 拒接留言调度①（2026-10-24）：她拒接 → char反应轮（他说一两句落本会话；
-    // 程序事实注入，不伪造她的话；幂等——重复拒接/重试不重建）
-    if (inviteAction[2] === 'decline' && (out?.['state'] as string | undefined) === 'declined') {
-      try {
-        const hm = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
-        d.supervisor.submitProgramFactTurn('primary', 'invite_declined',
-          `她于 ${hm} 拒接了你发起的来电（这是她自己的选择，不是故障）。`,
-          `invite:${inviteAction[1]}:declined`);
-      } catch { /* 反应轮失败不拖垮拒接响应（如实降级：他不说这句） */ }
-    }
+    // B5（联合审计 2026-10-27，A08 执行口径）：她拒接不再触发独立付费反应轮——
+    // 拒接事实保留在 Siren 邀请正本与 call_control status 查询面（既有非派发型读取），
+    // 后续合法轮次按需消费；不为"告诉模型被拒接了"新增收费通知轮。
     return json(res, 200, out ?? {});
   } catch (err) {
     return json(res, 502, { error: { code: 'siren_invite_transition_failed', message: String((err as Error).message ?? err).slice(0, 120) } });

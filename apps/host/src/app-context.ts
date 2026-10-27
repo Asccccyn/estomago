@@ -82,6 +82,7 @@ export class Host {
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
   private readonly voiceObservations: import('./modules/oido/observations.ts').VoiceObservationService | null;
+  private readonly callReplyLinks: import('./modules/voice/call-links.ts').CallReplyLinkService | null;
   private callReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private callReconcileWork: Promise<void> | null = null;
   private readonly callReconcileAbort = new AbortController();
@@ -120,6 +121,7 @@ export class Host {
     this.sirenCallRef = deps.sirenCall ?? null; // JV-04：启动对账用（Siren 正本查询）
     this.archiveSync = archiveSync;
     this.voiceObservations = deps.voiceObservations ?? null;
+    this.callReplyLinks = deps.callReplyLinks ?? null;
     this.server = server;
   }
 
@@ -256,6 +258,15 @@ export class Host {
     const sirenCall = sirenCallCfg.base_url && sirenCallCfg.credential_ref && process.env[sirenCallCfg.credential_ref]
       ? new (await import('./integrations/siren/adapter.ts')).SirenAdapter(sirenCallCfg.base_url, process.env[sirenCallCfg.credential_ref]!)
       : null;
+    // A04（联合审计 2026-10-27）：通话回复媒体关联 worker——Siren turn-audio 拉取→est 助手
+    // 消息持久绑定→deep_listen assistant 观察→source.attachments.sync 补同步（幂等/可恢复）
+    const callReplyLinks = new (await import('./modules/voice/call-links.ts')).CallReplyLinkService({
+      db, sirenCall, media,
+      voiceObservations: voiceObsService,
+      attachmentsClient: opts.config.archive.enabled ? archiveMariposaClient : null,
+      streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
+      logger,
+    });
     // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
     const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
@@ -359,6 +370,7 @@ export class Host {
       mediaIndex: mediaIndex ?? undefined,
       oido: oido ?? undefined,
       voiceObservations: voiceObsService,
+      callReplyLinks,
       sirenCall: sirenCall ?? undefined,
       tools,
       bgExecutorReady,
@@ -398,6 +410,7 @@ export class Host {
     // pending 后正好被下方 recoverSchedule 接管。此前 recoveryPass 仅被测试直接调用，
     // 生产启动从未执行（AUD-10 验收实际未生效——F25 同款"测试绿但未接线"模式）。
     this.voiceObservations?.start();
+    this.callReplyLinks?.start();
     const recovered = TurnSupervisor.recoveryPass(this.db, this.logger);
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
     const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
@@ -439,11 +452,19 @@ export class Host {
 
   private reconcileCalls(): void {
     if (!this.sirenCallRef || this.callReconcileWork || this.callReconcileAbort.signal.aborted) return;
+    const sirenRef = this.sirenCallRef;
     this.callReconcileWork = import('./integrations/siren/reconcile.ts')
-      .then(({ reconcileVoiceCallsOnStartup }) => reconcileVoiceCallsOnStartup(this.db, this.sirenCallRef, this.callReconcileAbort.signal))
+      .then(({ reconcileVoiceCallsOnStartup }) => reconcileVoiceCallsOnStartup(this.db, sirenRef, this.callReconcileAbort.signal))
       .then(result => {
         if (result.ended || result.skipped) this.logger.warn('voice_calls_reconciled', { ...result });
       })
+      // A08（联合审计 2026-10-27）：自然未接的一次可选留言机会——同一对账周期消费，
+      // 幂等身份收敛重复事件/重启；串行入口（submitProgramFactTurn）提交，不等待后继轮
+      .then(() => import('./integrations/siren/missed-calls.ts'))
+      .then(({ consumeMissedCallOpportunities }) => consumeMissedCallOpportunities(this.db, sirenRef,
+        (kind, factText, dedupeKey) => { this.supervisor.submitProgramFactTurn('primary', kind, factText, dedupeKey); },
+        this.callReconcileAbort.signal))
+      .then(r => { if (r.submitted > 0 || r.skipped_busy > 0) this.logger.info('missed_call_opportunities', { ...r }); })
       .catch(error => this.logger.warn('voice_calls_reconcile_failed', { code: stableErrorCode(error) }))
       .finally(() => { this.callReconcileWork = null; });
   }
@@ -462,11 +483,12 @@ export class Host {
     if (this.callReconcileTimer) { clearInterval(this.callReconcileTimer); this.callReconcileTimer = null; }
     this.callReconcileAbort.abort();
     const observationsStopped = this.voiceObservations?.stop();
+    const linksStopped = this.callReplyLinks?.stop();
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
-    await Promise.all([serverStopped, oidoStopped, observationsStopped, this.callReconcileWork, this.archiveSync.stop()]);
+    await Promise.all([serverStopped, oidoStopped, observationsStopped, linksStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();
   }

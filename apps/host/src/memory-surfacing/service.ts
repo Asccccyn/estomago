@@ -7,6 +7,7 @@
 //   credential_ref，不回退聊天凭据）。
 import { executeMemoryReadFull } from './detail-tool.ts';
 import type { Db } from '../db/connection.ts';
+import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
 import {
@@ -538,7 +539,7 @@ export class SurfacingService {
        FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=?
        WHERE m.id=?`,
     ).get(job.source_revision, job.source_message_id) as { id: string; sequence: number; revision: number; content: string; content_hash: string; occurred_at: string | null } | undefined;
-    if (row) return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: row.content, bodyHash: row.content_hash, occurredAt: row.occurred_at };
+    if (row) return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: effectiveRevisionText(this.db, row.id, row.revision, row.content), bodyHash: row.content_hash, occurredAt: row.occurred_at };
     return { messageId: job.source_message_id, revision: job.source_revision, sequence: job.source_sequence, text: '', bodyHash: '', occurredAt: null };
   }
 
@@ -550,7 +551,7 @@ export class SurfacingService {
        WHERE m.id=? AND m.current_revision=? AND m.conversation_id=? AND m.speaker='owner'`,
     ).get(job.target_message_id, job.target_revision, job.conversation_id) as { id: string; sequence: number; revision: number; content: string; content_hash: string; occurred_at: string | null } | undefined;
     if (!row) return null;
-    return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: row.content, bodyHash: row.content_hash, occurredAt: row.occurred_at };
+    return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: effectiveRevisionText(this.db, row.id, row.revision, row.content), bodyHash: row.content_hash, occurredAt: row.occurred_at };
   }
 
   private recentDialogue(conversationId: string, beforeSequence: number): Array<{ message_id: string; revision: number; role: 'owner' | 'assistant'; text: string; sequence: number }> {
@@ -561,7 +562,7 @@ export class SurfacingService {
        ORDER BY m.sequence DESC LIMIT 6`,
     ).all(conversationId, beforeSequence) as Array<{ id: string; sequence: number; speaker: string; rev: number; content: string }>;
     return buildRecentDialogue(rows.reverse().map((r) => ({
-      message_id: r.id, revision: r.rev, role: r.speaker as 'owner' | 'assistant', text: r.content, sequence: r.sequence,
+      message_id: r.id, revision: r.rev, role: r.speaker as 'owner' | 'assistant', text: effectiveRevisionText(this.db, r.id, r.rev, r.content), sequence: r.sequence,
     })));
   }
 }

@@ -207,20 +207,27 @@ export class SirenAdapter {
 
   /** GLM_VOICE_UNIFICATION（04§5.3，A05）：POST /v1/voice/synthesize——char主动
    *  语音的真实合成出口（模型在 est 工具 chat_send_voice 下调用）。返回音频字节+
-   *  时长/格式头；失败如实（付费 TTS 边界在 Siren）。 */
-  async synthesize(args: { text: string; ttsScript?: string; emotion?: string; speed?: number; signal?: AbortSignal }): Promise<{ bytes: Uint8Array; mime: string; format: string; durationMs: number | null; profileId: string | null } | null> {
+   *  时长/格式头；失败如实（付费 TTS 边界在 Siren）。
+   *  A01（联合审计 2026-10-27）：operationId=费用边界前的稳定操作身份——Siren 侧
+   *  生成即持久、同键重放/并发只合成一次；响应丢失后可按同键找回已生成资产。 */
+  async synthesize(args: { text: string; ttsScript?: string; emotion?: string; speed?: number; operationId?: string; signal?: AbortSignal }): Promise<{ bytes: Uint8Array; mime: string; format: string; durationMs: number | null; profileId: string | null } | null> {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
       res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice/synthesize`, {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: args.text, ...(args.ttsScript ? { tts_script: args.ttsScript } : {}), ...(args.emotion ? { emotion: args.emotion } : {}), ...(args.speed !== undefined ? { speed: args.speed } : {}) }),
+        body: JSON.stringify({ text: args.text, ...(args.ttsScript ? { tts_script: args.ttsScript } : {}), ...(args.emotion ? { emotion: args.emotion } : {}), ...(args.speed !== undefined ? { speed: args.speed } : {}), ...(args.operationId ? { operation_id: args.operationId } : {}) }),
         redirect: 'error',
-        signal: args.signal ?? AbortSignal.timeout(30000),
+        // 取消与超时并存：传入轮次取消信号不能顶掉超时（否则 Siren 挂起会一直占住串行链）
+        signal: args.signal ? AbortSignal.any([args.signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000),
       });
     } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
-    if (!res.ok) throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
+    if (!res.ok) {
+      // 409=同操作键但关键输入与已持久资产不一致：不是可重试失败，需换新操作意图
+      if (res.status === 409) throw new SirenTranscriptionError('SIREN_OPERATION_CONFLICT');
+      throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
+    }
     const bytes = new Uint8Array(await res.arrayBuffer());
     return {
       bytes,
@@ -229,6 +236,25 @@ export class SirenAdapter {
       durationMs: Number(res.headers.get('x-siren-duration-ms')) || null,
       profileId: res.headers.get('x-siren-voice-profile'),
     };
+  }
+
+  /** A01（联合审计 2026-10-27）恢复口：按操作身份查 Siren 已持久语音资产。
+   *  GET /v1/voice/messages?message_id=<operation_id>（既有资源查询面，Siren message_id
+   *  即 est 侧操作键）。命中返回资产 id；未持久/未命中返回 null（调用方如实报结果不明）。 */
+  async findVoiceAssetByOperationId(operationId: string, opts: { signal?: AbortSignal } = {}): Promise<{ id: string; durationMs: number | null; format: string } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice/messages?message_id=${encodeURIComponent(operationId)}`, {
+        headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (!res.ok) return null;
+    const data = await res.json() as { items?: Array<{ id?: unknown; duration_ms?: unknown; audio_format?: unknown }> };
+    const first = data.items?.find((item) => typeof item.id === 'string' && item.id.length > 0);
+    if (!first) return null;
+    return { id: first.id as string, durationMs: typeof first.duration_ms === 'number' ? first.duration_ms : null, format: typeof first.audio_format === 'string' ? first.audio_format : 'mp3' };
   }
 
   /** JV-04（联合审计 2026-10-26）：GET /v1/calls/:id——Siren 会话事实（只读、幂等）。

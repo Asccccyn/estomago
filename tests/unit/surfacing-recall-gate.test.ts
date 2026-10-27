@@ -17,6 +17,8 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import {makeDb, tempRoot } from '../helpers.ts';
 import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
+import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { buildConfig } from '../../apps/host/src/config/schema.ts';
 
 type Row = { id: string; category: string; text: string; recentRecall: boolean; expected: boolean; label_source: string };
 
@@ -243,4 +245,40 @@ test('宽召回（她 1022 反馈）：陈述式回忆与新词表变体触发 l
   miss('这个东西怎么用');
   // 写入守卫原样
   miss('记下：上次说的那个地方');
+});
+
+// 联合审计 A07（2026-10-27）：电话/语音消息的正文在可信转写快照（content 为空）——同一句明确回忆
+// 经语音进入时必须与文字命中同一既有门；普通语音仍 skip。A03：派发前已取消的输入不登记作业。
+async function voiceSubmit(ctx: ReturnType<typeof compose>, root: string, transcript: string, clientMessageId: string, extra: { cancelledBeforeDispatch?: string } = {}) {
+  const media = new MediaService(ctx.db, path.join(root, 'media'), buildConfig({}));
+  const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x02, clientMessageId.length]), purpose: 'chat_voice', operationId: 'a07-' + clientMessageId, createdBy: 'qiaosheng', origin: 'upload' });
+  ctx.db.prepare("INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,content_sha256,state,derived_text,derived_source,duration_ms,created_at,updated_at) VALUES (?,?,?,?,'ready',?,'siren:call',NULL,?,?)")
+    .run(asset.id, 'c1', 'a07:' + clientMessageId, asset.content_sha256, transcript, T0, T0);
+  return ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId, occurredAt: T0, attachments: [{ asset_id: asset.id, presentation: 'voice' }], ...extra });
+}
+
+test('A07：明确回忆经语音（空正文+可信转写）与同句文字进入同一回忆门；普通语音零作业', async () => {
+  const root = tempRoot('sfgate-voice-');
+  const ctx = compose(root);
+  const recall = await voiceSubmit(ctx, root, '还记得去年我们去海边的事吗', 'v-recall');
+  assert.equal(ctx.jobsFor(recall.message.id), 1, '语音明确回忆登记作业（修复前读空 content=0）');
+  await waitUntil(() => ctx.calls.includes('memory.surfacing.prepare'));
+  const ordinary = await voiceSubmit(ctx, root, '今天好累', 'v-plain');
+  assert.equal(ctx.jobsFor(ordinary.message.id), 0, '普通语音仍 skip（不把每条语音送检索/JEV）');
+  await ctx.svc.stop();
+  ctx.db.close();
+});
+
+test('A03：派发前已取消的语音输入——消息与归档意图保存，但不登记回忆作业', async () => {
+  const root = tempRoot('sfgate-cancelled-');
+  const ctx = compose(root);
+  const u = await voiceSubmit(ctx, root, '还记得去年我们去海边的事吗', 'v-cancelled', { cancelledBeforeDispatch: 'CANCELLED_BEFORE_DISPATCH' });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(ctx.jobsFor(u.message.id), 0, '无可交付回复：零检索/JEV 作业');
+  assert.equal(ctx.calls.length, 0);
+  assert.equal(ctx.archiveRows(), 1, '归档意图照常');
+  const turn = ctx.db.prepare('SELECT state FROM turns WHERE id=?').get(u.turnId) as { state: string };
+  assert.equal(turn.state, 'failed', 'turn 同事务终态，启动恢复不扫到');
+  await ctx.svc.stop();
+  ctx.db.close();
 });

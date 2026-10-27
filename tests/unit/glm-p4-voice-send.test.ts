@@ -34,23 +34,55 @@ import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity }
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 
-/** Siren stub：/v1/voice/synthesize 返回真实 MP3 头字节；计数与失败开关。 */
-function startSirenStub(): { url: string; stop(): void; synthCalls: number; failSynthesis: boolean } {
+/** Siren stub：/v1/voice/synthesize 返回真实 MP3 头字节；计数与失败开关。
+ *  A01 恢复场景：drop-persisted=已生成并登记操作资产但响应丢失（socket 摧毁）；
+ *  conflict=同键异参 409。资产按 operation_id 可查/可取回字节。 */
+function startSirenStub(): { url: string; stop(): void; synthCalls: number; failSynthesis: boolean; mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict'; clientClosed: Promise<void>; entered: Promise<void> } {
   let synthCalls = 0;
   let failSynthesis = false;
+  let mode: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict' = 'normal';
+  let markClosed!: () => void;
+  const clientClosed = new Promise<void>((resolve) => { markClosed = resolve; });
+  let markEntered!: () => void;
+  const entered = new Promise<void>((resolve) => { markEntered = resolve; });
   const mp3 = Buffer.concat([Buffer.from([0x49, 0x44, 0x33, 0x04]), Buffer.alloc(400)]); // ID3 头
+  const opAssets = new Map<string, { id: string }>(); // operation_id → 资产（生成即持久面）
   const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/voice/synthesize') {
       synthCalls++;
-      if (failSynthesis) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'provider_failed' })); return; }
-      res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'x-siren-format': 'mp3', 'x-siren-duration-ms': '1200', 'x-siren-voice-profile': 'main' });
+      markEntered();
+      if (mode === 'hang') { res.on('close', () => { if (!res.writableEnded) markClosed(); }); return; } // 合成中：等调用方断开
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { operation_id?: string };
+        const opId = typeof body.operation_id === 'string' ? body.operation_id : null;
+        if (mode === 'conflict') { res.writeHead(409, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'operation_conflict', differs: ['text'] })); return; }
+        if (mode === 'drop-persisted' && opId) { opAssets.set(opId, { id: 'asset-x' }); req.socket.destroy(); return; } // 已生成已持久，响应丢失
+        if (mode === 'drop') { req.socket.destroy(); return; } // 服务端中途断连：结果不明
+        if (failSynthesis) { res.writeHead(502, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'provider_failed' })); return; }
+        res.writeHead(200, { 'Content-Type': 'audio/mpeg', 'x-siren-format': 'mp3', 'x-siren-duration-ms': '1200', 'x-siren-voice-profile': 'main' });
+        res.end(mp3);
+      });
+      return;
+    }
+    if (req.method === 'GET' && req.url?.startsWith('/v1/voice/messages?')) {
+      const opId = new URL(req.url, 'http://x').searchParams.get('message_id') ?? '';
+      const asset = opAssets.get(opId);
+      if (!asset) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ items: [] })); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ items: [{ id: asset.id, duration_ms: 1200, audio_format: 'mp3' }] }));
+      return;
+    }
+    if (req.method === 'GET' && /^\/v1\/voice-assets\/[^/]+\/audio$/.test(req.url ?? '')) {
+      res.writeHead(200, { 'Content-Type': 'audio/mpeg' });
       res.end(mp3);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'not_found' }));
   });
   server.listen(0, '127.0.0.1');
-  return new Promise((resolve) => { server.on('listening', () => resolve({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, stop: () => { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); server.close(); }, get synthCalls() { return synthCalls; }, set failSynthesis(v: boolean) { failSynthesis = v; } })); }) as never;
+  return new Promise((resolve) => { server.on('listening', () => resolve({ url: `http://127.0.0.1:${(server.address() as { port: number }).port}`, stop: () => { (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.(); server.close(); }, get synthCalls() { return synthCalls; }, set failSynthesis(v: boolean) { failSynthesis = v; }, set mode(v: 'normal' | 'hang' | 'drop' | 'drop-persisted' | 'conflict') { mode = v; }, clientClosed, entered })); }) as never;
 }
 
 function compose(root: string, transport: OrTransport, sirenUrl: string) {
@@ -122,5 +154,97 @@ test('A05 合成失败如实：工具错误可重试，不产出半截消息', a
     // 无半截 assistant 语音消息
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
     console.log(JSON.stringify({ case: 'a05_synthesis_failure', honest_error: true, no_partial_message: true }));
+  } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('联合审计 A01：轮次取消真实断开到 Siren 的合成请求；不发布消息', async () => {
+  const stub = await startSirenStub();
+  stub.mode = 'hang';
+  const c = compose(tempRoot('glm-a01c-'), quietTransport, stub.url);
+  try {
+    const turn = new AbortController();
+    const pending = c.tools.execute('chat_send_voice', { text: '说到一半被停。' }, ctx({ signal: turn.signal }));
+    await stub.entered;
+    turn.abort();
+    await stub.clientClosed; // Siren 侧观察到连接在响应前关闭（其路由据此取消 provider）
+    const out = await pending;
+    assert.equal(out.ok, false);
+    assert.equal((out.output as Record<string, unknown>)['error_code'], 'CANCELLED');
+    assert.equal(stub.synthCalls, 1);
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
+  } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('联合审计 A01：合成结果不明如实报告，不引导立即重复收费调用', async () => {
+  const stub = await startSirenStub();
+  stub.mode = 'drop';
+  const c = compose(tempRoot('glm-a01u-'), quietTransport, stub.url);
+  try {
+    const out = await c.tools.execute('chat_send_voice', { text: '这句结果不明。' }, ctx());
+    assert.equal(out.ok, false);
+    const o = out.output as Record<string, unknown>;
+    assert.equal(o['error_code'], 'SIREN_OUTCOME_UNKNOWN');
+    assert.doesNotMatch(String(o['detail']), /可重试/);
+    assert.equal(stub.synthCalls, 1);
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
+  } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('联合审计 A01-F02：响应丢失后按操作身份找回已生成资产发布（不重新合成）', async () => {
+  const stub = await startSirenStub();
+  stub.mode = 'drop-persisted'; // Siren 已生成并持久、响应丢失：est 应恢复而非重付
+  const c = compose(tempRoot('glm-a01r-'), quietTransport, stub.url);
+  try {
+    const out = await c.tools.execute('chat_send_voice', { text: '找回这句。' }, ctx());
+    assert.equal(out.ok, true, JSON.stringify(out.output));
+    const v = out.output as Record<string, unknown>;
+    assert.equal(v['state'], 'published');
+    assert.equal(v['recovered'], true);
+    assert.equal(stub.synthCalls, 1, '恢复不重新合成：同操作只有一次 provider 调用');
+    // 唯一 assistant 语音消息，附件=取回的同一资产
+    const msg = c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number };
+    assert.equal(msg.n, 1);
+    const att = c.db.prepare("SELECT a.mime_type FROM message_attachments ma JOIN media_assets a ON a.id=ma.asset_id WHERE ma.presentation='voice'").get() as { mime_type: string };
+    assert.equal(att.mime_type, 'audio/mpeg');
+    // 幂等重放仍取同一消息（恢复后同键不再重复）
+    const again = await c.tools.execute('chat_send_voice', { text: '找回这句。' }, ctx());
+    assert.equal((again.output as Record<string, unknown>)['message_id'], v['message_id']);
+    assert.equal(stub.synthCalls, 1);
+  } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('联合审计 A01-F03：est 已有合成资产（发布前中断）——重试复用资产发布，零 TTS', async () => {
+  const stub = await startSirenStub();
+  const c = compose(tempRoot('glm-a01p-'), quietTransport, stub.url);
+  try {
+    const clientMessageId = 'voice-say:t9:tc1';
+    const opKey = `voice-say:${sha256Hex(clientMessageId).slice(0, 24)}`;
+    const saved = await c.media.saveBuffer({
+      bytes: Buffer.concat([Buffer.from([0x49, 0x44, 0x33, 0x04]), Buffer.alloc(64)]), purpose: 'chat_voice',
+      operationId: opKey, createdBy: 'assistant-voice', origin: 'import', originService: 'siren',
+    });
+    const first = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '在', clientMessageId: 'm0' });
+    c.supervisor.enqueue(first.turnId);
+    await c.supervisor.waitIdle();
+    const out = await c.tools.execute('chat_send_voice', { text: '发布中断后重试。' }, ctx());
+    assert.equal(out.ok, true, JSON.stringify(out.output));
+    const v = out.output as Record<string, unknown>;
+    assert.equal(v['state'], 'published');
+    assert.equal(v['reused_asset'], true);
+    assert.equal(v['audio_asset_id'], saved.id);
+    assert.equal(stub.synthCalls, 0, '已有资产：重试零合成');
+  } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('联合审计 A01：同键异参冲突如实报告（SIREN_OPERATION_CONFLICT），不产出消息', async () => {
+  const stub = await startSirenStub();
+  stub.mode = 'conflict';
+  const c = compose(tempRoot('glm-a01c2-'), quietTransport, stub.url);
+  try {
+    const out = await c.tools.execute('chat_send_voice', { text: '参数对不上的那句。' }, ctx());
+    assert.equal(out.ok, false);
+    const o = out.output as Record<string, unknown>;
+    assert.equal(o['error_code'], 'SIREN_OPERATION_CONFLICT');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
   } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
 });

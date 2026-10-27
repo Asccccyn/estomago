@@ -18,12 +18,11 @@ if (oidoUiAnalyze) {
   return json(res, out.ok ? 200 : (out.output as { error_code?: string })['error_code'] === 'OIDO_UNAVAILABLE' ? 503 : 422, out.output);
 }
 // V06 深听逐字谱（2026-10-24）：UI 翻页读 prosody_page（同 oido_get 工具门）
-// F-07（跨仓预审 2026-10-25）：oído 在途（NOT_READY_YET→OIDO_*_409）是正常服务状态——
+// F-07（跨仓预审 2026-10-25）：oído 在途（NOT_READY_YET→adapter OIDO_NOT_READY）是正常服务状态——
 // 响应边界透传 HTTP 409（前端既有合同：409=pending 轮询），不混入 422 失败。
-const oidoPending = (out: { ok: boolean; output: unknown }): boolean => {
-  const code = (out.output as { error_code?: string } | null)?.['error_code'];
-  return code === 'OIDO_GET_409' || code === 'OIDO_PAGE_409';
-};
+// 其他 409（如逐字谱 NO_CHAR_ALIGNMENT）是确定错误，按 422 返回，前端不再无限轮询。
+const oidoPending = (out: { ok: boolean; output: unknown }): boolean =>
+  (out.output as { error_code?: string } | null)?.['error_code'] === 'OIDO_NOT_READY';
 const oidoUiProsody = /^GET \/api\/v1\/oido\/analyses\/([^/]+)\/prosody$/.exec(route);
 if (oidoUiProsody) {
   if (!d.tools) return json(res, 503, { error: { code: 'oido_unconfigured', message: '深听未接入' } });

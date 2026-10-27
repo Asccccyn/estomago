@@ -1368,4 +1368,31 @@ MIGRATIONS.push({ version: 49, name: 'voice_observation_projection', sql: `
 ALTER TABLE voice_observations ADD COLUMN evidence_json TEXT;
 ALTER TABLE voice_observations ADD COLUMN projection_request_id TEXT;
 ` });
+// 50（2026-10-27，联合审计 A04）：通话回复媒体关联——Siren 持有原声/回复 WAV 与播放
+// 事实，est 按真实 turn UUID 拉取并为已发布助手消息建立持久绑定（附件行+交付状态）。
+// (call_id, turn_key) 唯一：晚到/重复拉取收敛为同一行，不新增消息、不重编号。
+MIGRATIONS.push({ version: 50, name: 'voice_reply_links', sql: `
+CREATE TABLE voice_reply_links(
+ call_id TEXT NOT NULL,
+ turn_key TEXT NOT NULL,
+ conversation_id TEXT NOT NULL,
+ est_turn_id TEXT,
+ message_id TEXT,
+ revision INTEGER,
+ siren_turn_id TEXT,
+ siren_asset_id TEXT,
+ est_asset_id TEXT,
+ completeness TEXT CHECK (completeness IS NULL OR completeness IN ('complete','partial')),
+ sent_audio_ms INTEGER,
+ playback_json TEXT,
+ link_state TEXT NOT NULL DEFAULT 'pending' CHECK (link_state IN ('pending','linked','unavailable')),
+ observation_registered INTEGER NOT NULL DEFAULT 0,
+ source_media_synced_at TEXT,
+ source_call_synced_basis TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(call_id, turn_key)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_reply_links_msg ON voice_reply_links(message_id);
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

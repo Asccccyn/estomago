@@ -24,9 +24,10 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
   }
   return {
     inTransaction(fact: Readonly<MessageLifecycleFact>): void {
-      if (fact.kind === 'accepted') {
+      if (fact.kind === 'accepted' && fact.dispatchable) {
         // 浮现登记幂等（逻辑作业唯一键）——首收/幂等重放/路由重提交三种到达同门，
         // "补缺失作业但不当新真实活动"的现行语义在浮现域内保持（P05.4）。
+        // 派发前已取消的输入（dispatchable=false）不登记：没有可交付的回复，不为它产生检索/JEV 费用。
         consumers.surfacing?.onUserMessageAccepted({
           conversationId: fact.conversationId, messageId: fact.messageId, revision: fact.revision,
           sequence: fact.sequence, content: fact.content, contentHash: fact.contentHash, occurredAt: fact.occurredAt,

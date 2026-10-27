@@ -65,12 +65,8 @@ export class ArchiveSyncService {
     this.client = deps.client;
     this.streamId = deps.config.archive.source_scope ?? 'estomago-primary-live';
     this.enabled = deps.config.archive.enabled && deps.config.integrations.mariposa.base_url !== null;
-    this.disclosedAssetContract = false;
   }
 
-  private disclosedAssetContract: boolean;
-
-  /** §03.10.1：含附件消息的媒体归档状态分列（文字照常/媒体 blocked），每进程聚合披露一次。 */
   /** GLM_VOICE_UNIFICATION（02§2.2/§4，EV05 修复）：当前修订附件的稳定引用与转写。
    *  assets 引用沿用 est 权威资产身份（est:<asset_id>，与 oído 引用一致）；
    *  附件转写在 message_attachments.derived_text（发布时快照）。 */
@@ -78,19 +74,6 @@ export class ArchiveSyncService {
     return (this.db.prepare('SELECT asset_id, derived_text FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position')
       .all(messageId, revision) as Array<{ asset_id: string; derived_text: string | null }>)
       .map((a) => ({ assetRef: `est:${a.asset_id}`, derivedText: a.derived_text }));
-  }
-
-  private attachmentCount(messageId: string, revision: number): number {
-    const n = (this.db.prepare('SELECT COUNT(*) AS n FROM message_attachments WHERE message_id = ? AND revision = ?').get(messageId, revision) as { n: number }).n;
-    if (n > 0 && !this.disclosedAssetContract) {
-      this.disclosedAssetContract = true;
-      this.alerts?.observe({
-        code: 'ASSET_ARCHIVE_CONTRACT_UNVERIFIED', scopeKind: 'integration', scopeId: 'mariposa',
-        dedupeKey: 'asset-archive:contract-unverified', observationId: 'asset-archive:contract-unverified:1',
-        safeSummary: { title: '附件归档合同未核实——文字归档照常，媒体归档暂不发送', reason: 'mariposa_assets_schema_unverified', action_taken: 'text_only_archived' },
-      });
-    }
-    return n;
   }
 
   rawSyncState(conversationId: string): { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } {

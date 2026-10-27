@@ -57,6 +57,7 @@ export class VoiceSendService {
         ttsScript: input.tts_script,
         emotion: input.emotion,
         speed: input.speed,
+        operationId: opKey,
         signal: ctx.signal,
       });
       if (!audio) return { ok: false, error: { error_code: 'SIREN_NOT_CONFIGURED' } };
@@ -82,9 +83,57 @@ export class VoiceSendService {
       };
     } catch (err) {
       const code = String((err as Error).message ?? err);
-      // 合成/网络失败=可重试（同 tool_call 重试同幂等键，服务端/资产层去重）
+      if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED', detail: '本轮已停止；语音未发布' } };
+      // 结果不明（超时/连接中断）：Siren 可能已收费合成并持久化——先按操作身份找回同一资产，
+      // 找不回才如实报告。恢复不是重试：不重新合成、不重新收费。
+      if (code === 'SIREN_OUTCOME_UNKNOWN') {
+        const recovered = await this.recoverFromSirenAsset(opKey, clientMessageId, text, ctx);
+        if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED', detail: '本轮已停止；语音未发布' } };
+        if (recovered) return recovered;
+        return { ok: false, error: { error_code: code, detail: '合成结果不明（可能已生成但未取回）；语音未发布。再次调用会重新合成并计费，不要为补发立即重复调用' } };
+      }
+      // 同操作键但参数不一致（Siren 409）：不是可重试失败，需以新意图发起
+      if (code === 'SIREN_OPERATION_CONFLICT') return { ok: false, error: { error_code: code, detail: '同一操作身份携带了与已生成音频不一致的参数；如确要不同语音请作为新的一次发言重新调用' } };
+      // 服务明确拒绝/失败：未取得音频，可重试
       if (code.startsWith('SIREN_')) return { ok: false, error: { error_code: code.slice(0, 40), detail: '语音合成失败——可重试；文字消息未受影响' } };
       throw err;
+    }
+  }
+
+  /** A01 恢复：按操作身份取回 Siren 已持久资产（GET messages?message_id=op → /voice-assets/:id/audio），
+   *  落 est 媒体并发布同一唯一消息。任何一步失败/找不回都返回 null（调用方如实报结果不明），
+   *  不重新合成、不制造假 sent。取消中的恢复不发布。 */
+  private async recoverFromSirenAsset(opKey: string, clientMessageId: string, text: string, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>> | null> {
+    if (!this.deps.sirenCall) return null;
+    try {
+      const found = await this.deps.sirenCall.findVoiceAssetByOperationId(opKey, { signal: ctx.signal });
+      if (!found || ctx.signal?.aborted) return null;
+      const audio = await this.deps.sirenCall.fetchVoiceAssetAudio(found.id, { signal: ctx.signal });
+      if (!audio || ctx.signal?.aborted) return null;
+      const saved = await this.deps.media.saveBuffer({
+        bytes: Buffer.from(audio.bytes), purpose: 'chat_voice',
+        operationId: opKey,
+        createdBy: 'assistant-voice', origin: 'import', originService: 'siren', originRef: found.id,
+      });
+      this.deps.media.validateForSend([{ asset_id: saved.id, presentation: 'voice' }]);
+      if (ctx.signal?.aborted) return null;
+      const msg = this.deps.publish({
+        conversationId: ctx.roomId, turnId: ctx.turnId ?? '', content: text, kind: 'voice',
+        clientMessageId, attachments: [{ asset_id: saved.id, presentation: 'voice' }],
+      });
+      return {
+        ok: true,
+        value: {
+          state: 'published',
+          message_id: msg.id,
+          sequence: msg.sequence,
+          audio_asset_id: saved.id,
+          recovered: true,
+          note: '响应丢失后按同一操作找回已生成音频发布（未重新合成）',
+        },
+      };
+    } catch {
+      return null;
     }
   }
 }

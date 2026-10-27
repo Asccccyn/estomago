@@ -10,6 +10,7 @@ import { isBlankContent, normalizeNewlines, type MessageAttachmentInput, type Me
 import { sha256Hex as sha256HexOf } from '../util/id.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
 import { assertMessageMutable } from './mutation.ts';
+import { effectiveRevisionText } from './effective-text.ts';
 import type { EventService, StreamEventRow } from '../events/service.ts';
 
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
@@ -54,6 +55,10 @@ export class MessageService {
     kind?: MessageKind;
     attachments?: MessageAttachmentInput[]; // EXEC_V1 §03.5.2：先经 http 层 validateForSend，此处只固定绑定
     tokenEstimateJson?: string | null; // EXEC_V1 §05.7.2：发送前估计快照（调用方算好；与 content_hash 无关）
+    /** 联合审计 A03：输入已真实发生、但回复在派发前已取消（电话准备阶段挂断）——消息/修订/归档
+     *  outbox 照常落库；turn+attempt 同事务落 failed 终态（blocked_reason=该码），启动恢复与追赶
+     *  只扫 pending，不会再派发。生命周期事实 dispatchable=false。 */
+    cancelledBeforeDispatch?: string;
   }): SubmitWithTurnResult {
     const content = normalizeNewlines(opts.content);
     const attachments = opts.attachments ?? [];
@@ -124,8 +129,8 @@ export class MessageService {
         const dupDto = this.getMessage(dup.id)!;
         // 幂等重放：作业缺失则补（同逻辑作业唯一键，不增加作业）——P05.4：不当新真实活动
         this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId: dup.id, revision: dup.current_revision,
-          sequence: dupDto.sequence, content: dupDto.revision.content, contentHash: dupDto.revision.content_hash,
-          occurredAt: dupDto.revision.occurred_at, firstAcceptance: false });
+          sequence: dupDto.sequence, content: effectiveRevisionText(this.db, dup.id, dup.current_revision, dupDto.revision.content), contentHash: dupDto.revision.content_hash,
+          occurredAt: dupDto.revision.occurred_at, firstAcceptance: false, dispatchable: true });
         return { message: dupDto, duplicate: true, turnId: turn.id, attemptId: attemptRow.id, repaired };
       }
 
@@ -156,16 +161,18 @@ export class MessageService {
       this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
       const turnId = genId('turn');
       const attemptId = genId('att');
+      const cancelled = opts.cancelledBeforeDispatch ?? null;
       this.db
-        .prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at) VALUES (?,?, 'user_message', 'pending', ?, ?)")
-        .run(turnId, opts.conversationId, messageId, nowIso);
-      this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,1,1,'pending')").run(attemptId, turnId);
+        .prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at, completed_at) VALUES (?,?, 'user_message', ?, ?, ?, ?)")
+        .run(turnId, opts.conversationId, cancelled ? 'failed' : 'pending', messageId, nowIso, cancelled ? nowIso : null);
+      this.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state, blocked_reason, completed_at) VALUES (?,?,1,1,?,?,?)")
+        .run(attemptId, turnId, cancelled ? 'failed' : 'pending', cancelled, cancelled ? nowIso : null);
       this.db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(turnId, messageId);
       // 自动浮现（2026-10-19）：接受事务内登记事实（SQL only；docs/02 数据入口）
       const msgDto = this.getMessage(messageId)!;
       this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId, revision: 1,
-        sequence: seqRow.next, content, contentHash: msgDto.revision.content_hash,
-        occurredAt, firstAcceptance: true });
+        sequence: seqRow.next, content: effectiveRevisionText(this.db, messageId, 1, content), contentHash: msgDto.revision.content_hash,
+        occurredAt, firstAcceptance: true, dispatchable: cancelled === null });
       // WAKE_KEEPWARM_V1 §05：真实发布（非幂等重放路径）同事务更新 L 锚点
       this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
       return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };
@@ -255,8 +262,8 @@ export class MessageService {
     const msg = this.getMessage(messageId);
     if (!msg || msg.speaker !== 'owner' || msg.current_revision <= 1) return;
     this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: msg.conversation_id, messageId, revision: msg.current_revision,
-      sequence: msg.sequence, content: msg.revision.content,
-      contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at, firstAcceptance: false });
+      sequence: msg.sequence, content: effectiveRevisionText(this.db, messageId, msg.current_revision, msg.revision.content),
+      contentHash: msg.revision.content_hash, occurredAt: msg.revision.occurred_at, firstAcceptance: false, dispatchable: true });
   }
 
   notifyAfterEditCommit(): void { this.lifecycle?.afterCommit(''); } // S17b 批次5：通用 afterCommit 通知

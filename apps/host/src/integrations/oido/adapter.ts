@@ -123,7 +123,7 @@ export class OidoAdapter {
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
     }
-    if (!res.ok) throw new Error(`OIDO_GET_${res.status}`);
+    if (!res.ok) throw await readError(res, 'GET');
     return await res.json() as OidoOverview;
   }
 
@@ -135,7 +135,7 @@ export class OidoAdapter {
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
     }
-    if (!res.ok) throw new Error(`OIDO_PAGE_${res.status}`);
+    if (!res.ok) throw await readError(res, 'PAGE');
     return await res.json() as OidoPage;
   }
 
@@ -185,6 +185,15 @@ export class OidoAdapter {
     }
     return await res.json() as Record<string, unknown>;
   }
+}
+
+/** 按 oído 错误体 code 区分语义：NOT_READY_YET=同一分析仍 queued/running（正常在途，
+ *  调用方沿同一 analysis 续查）；同为 409 的 NO_CHAR_ALIGNMENT/SNAPSHOT_CHANGED 等是确定错误，
+ *  不能按状态码一并当在途。 */
+async function readError(res: Response, op: 'GET' | 'PAGE'): Promise<Error> {
+  const code = ((await res.json().catch(() => null)) as { code?: unknown } | null)?.code;
+  if (code === 'NOT_READY_YET') return new Error('OIDO_NOT_READY');
+  return new Error(`OIDO_${op}_${res.status}${typeof code === 'string' ? `:${code}` : ''}`);
 }
 
 function lifetime(signal: AbortSignal|undefined, timeout:number): AbortSignal { return signal?AbortSignal.any([signal,AbortSignal.timeout(timeout)]):AbortSignal.timeout(timeout); }

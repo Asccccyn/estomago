@@ -100,6 +100,16 @@ export class VoiceObservationService {
     this.wake();
   }
 
+  /** A04（联合审计 2026-10-27）：deep_listen 的正式助手回复音频——assistant 方向独立分析。
+   *  显式标记 assistant：结果不得当用户情绪；无视图注入（分析由 worker 持久任务完成，
+   *  不作为任何后续轮的前置输入）。 */
+  registerAssistantObservation(messageId: string, revision: number, assetId: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(
+      "INSERT INTO voice_observations(id,message_id,revision,asset_id,direction,status,created_at,updated_at) VALUES (?,?,?,?,'assistant','pending',?,?) ON CONFLICT(message_id,revision,asset_id) DO NOTHING",
+    ).run(genId('vobs'), messageId, revision, assetId, now, now);
+  }
+
   snapshotsForRevision(messageId: string, revision: number, currentInput: boolean): VoiceObservationSnapshot[] {
     const rows = this.db.prepare(
       'SELECT id,asset_id,status,evidence_json,model_projection,projection_request_id FROM voice_observations WHERE message_id=? AND revision=? ORDER BY asset_id',
@@ -169,21 +179,22 @@ export class VoiceObservationService {
   }
 
   private storeFailure(id: string, code: string): void {
-    const pending = code === 'OIDO_UNAVAILABLE' || /^OIDO_(GET|ANALYZE)_5/.test(code);
+    // OIDO_NOT_READY=同一 analysis 仍在途：保持 pending，下一跳续查同 ID（不重新 analyze）。
+    const pending = code === 'OIDO_UNAVAILABLE' || code === 'OIDO_NOT_READY' || /^OIDO_(GET|ANALYZE)_5/.test(code);
     this.db.prepare('UPDATE voice_observations SET status=?,error_code=?,updated_at=? WHERE id=?')
       .run(pending ? 'pending' : 'failed', code.slice(0, 64), new Date().toISOString(), id);
   }
 
   async syncPendingAttachments(client: AttachmentsSyncClient, streamId: string, maxRows = 5, signal?: AbortSignal): Promise<void> {
     const rows = this.db.prepare(
-      "SELECT v.id,v.message_id,v.revision,v.display_text,v.analysis_id FROM voice_observations v JOIN source_sync_receipts r ON r.origin_message_id=v.message_id AND r.revision=v.revision WHERE v.status IN ('ready','partial') AND v.attachment_synced_at IS NULL AND v.display_text IS NOT NULL ORDER BY v.updated_at,v.id LIMIT ?",
-    ).all(maxRows) as Array<{ id: string; message_id: string; revision: number; display_text: string; analysis_id: string | null }>;
+      "SELECT v.id,v.message_id,v.revision,v.direction,v.display_text,v.analysis_id FROM voice_observations v JOIN source_sync_receipts r ON r.origin_message_id=v.message_id AND r.revision=v.revision WHERE v.status IN ('ready','partial') AND v.attachment_synced_at IS NULL AND v.display_text IS NOT NULL ORDER BY v.updated_at,v.id LIMIT ?",
+    ).all(maxRows) as Array<{ id: string; message_id: string; revision: number; direction: string; display_text: string; analysis_id: string | null }>;
     for (const row of rows) {
       if (signal?.aborted) break;
       try {
         const result = await client.attachmentsSync({
           stream_id: streamId, origin_message_id: row.message_id, revision: row.revision, kind: 'observation',
-          payload: { observation: row.display_text, ...(row.analysis_id ? { analysis_id: row.analysis_id } : {}), source: 'oido', quality_note: '声学观察，非诊断' },
+          payload: { observation: row.display_text, direction: row.direction, ...(row.analysis_id ? { analysis_id: row.analysis_id } : {}), source: 'oido', quality_note: '声学观察，非诊断' },
           operation_id: 'att-sync:' + row.id,
         }, signal);
         if (result.ok) this.db.prepare('UPDATE voice_observations SET attachment_synced_at=? WHERE id=?').run(new Date().toISOString(), row.id);

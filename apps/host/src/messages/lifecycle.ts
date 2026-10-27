@@ -7,9 +7,12 @@ export type MessageLifecycleFact =
   | {
       kind: 'accepted';
       conversationId: string; messageId: string; revision: number; sequence: number;
+      /** 可信正文（空正文语音消息=发布时快照的可信转写，见 effective-text.ts）；contentHash 仍是修订正本 hash。 */
       content: string; contentHash: string; occurredAt: string | null;
       /** 本次是否真实首次发布（幂等重放/路由重提交=false——补缺失作业但不当新真实活动）。 */
       firstAcceptance: boolean;
+      /** false=输入已保存但对应回复在派发前已取消（如电话准备阶段挂断）：消费者不得为它登记会派发/计费的作业。 */
+      dispatchable: boolean;
     }
   | { kind: 'revised'; conversationId: string; messageId: string; supersededRevision: number; revision: number }
   | { kind: 'published'; conversationId: string; messageId: string; revision: number; publishedAt: string };

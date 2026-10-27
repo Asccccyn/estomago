@@ -37,7 +37,8 @@ export class VoiceCallService {
         if (!req) return { ok: false, error: { error_code: 'NO_PENDING_DIAL', detail: '没有等待中的通话请求（可能已过期或已处理）' } };
         if (args.action === 'decline_call') {
           this.db.prepare("UPDATE dial_requests SET state='declined', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), req.id);
-          return { ok: true, value: { request_id: req.id, state: 'declined', note: '已拒绝。她那边会显示你没接；你现在回复里说的话她会看到——说一句为什么或改约。' } };
+          // B5：不强制说明——拒绝事实如实回执，说不说由他在原续轮自主决定
+          return { ok: true, value: { request_id: req.id, state: 'declined', note: '已拒绝。她那边会显示你没接；回复里想说什么自己决定，不说也可以。' } };
         }
         // accept_call：est 建 Siren 通话，连接信息挂到请求上（前端轮询取走）
         // JV-06（联合审计 2026-10-26）：建呼走注入的 SirenAdapter（正式
@@ -62,11 +63,10 @@ export class VoiceCallService {
         if (!st || !active || typeof active.invite_id !== 'string') return { ok: false, error: { error_code: 'NO_PENDING_INVITE', detail: '没有待取消的邀请（可能已过期或已被处理）' } };
         const out = await this.sirenCall!.cancelInvite(active.invite_id);
         if ((out?.['state'] as string | undefined) !== 'cancelled') return { ok: false, error: { error_code: 'SIREN_INVITE_TRANSITION_FAILED', detail: `终态=${String(out?.['state'] ?? 'unknown')}` } };
-        // 拒接留言调度②（2026-10-24）：他取消 → 附带说话轮（说明/改约落本会话）
-        this.programFacts?.submitProgramFactTurn(ctx.roomId, 'invite_cancelled',
-          `你于刚刚取消了自己发起的来电（她还没接听）。自然地跟她说一两句——说明原因或改约时间，落在本会话。`,
-          `invite:${active.invite_id}:cancelled`);
-        return { ok: true, value: { invite_id: active.invite_id, state: 'cancelled', note: '邀请已取消；接下来你说的每句话都会正常发到会话里' } };
+        // B5（联合审计 2026-10-27，A08 执行口径）：取消不再追加独立说明轮——本工具回执
+        // 即事实，说不说由原续轮的模型自主决定，不强迫解释、不多付一轮。
+        // （旧 invite_cancelled 程序事实轮删除：曾强制"说一两句——说明原因或改约"。）
+        return { ok: true, value: { invite_id: active.invite_id, state: 'cancelled', note: '邀请已取消；本回复里想对她说什么自己决定（也可以用 chat_send_voice 留语音），不说也可以' } };
       }
       if (args.action === 'end') {
         // A11：模型提出挂断——找本会话 active 通话，转 Siren 柔性挂断（立即回执）。

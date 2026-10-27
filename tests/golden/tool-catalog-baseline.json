@@ -1,6 +1,5 @@
 {
   "baselineCommit": "849b1d51da7ff4c245c30d4786bcf1edaaa3d121",
-  "note": "P01 等价基线：849b1d5 纯净代码下 buildHostTools/buildDeferredTools/definitionId 逐字节快照。目录/顺序/schema/description 不得漂移（06 号文档；definitionId 以原序列化为依据）。",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -52,13 +51,13 @@
     "context_review_complete"
   ],
   "deferredOrder": [
-    "tool_catalog",
-    "tool_define",
-    "tool_invoke"
+    null,
+    null,
+    null
   ],
   "definitionIds": {
     "memory_hold": "td_488854e253ffd29c604fc3c0",
-    "memory_recall": "td_f35b52f78ea016cb7460f708",
+    "memory_recall": "td_10a2005e58c03ce1e789bb92",
     "memory_recall_next": "td_2f4d834aef03a8c5354e936f",
     "memory_read_full": "td_409de42b096bb0ca31763a65",
     "conversation_read": "td_ede191bcb2588e4994452f65",
@@ -87,7 +86,7 @@
     "oido_get": "td_4d02ebf1457efaecb290c28e",
     "transcript_read": "td_f65659d4c629a0e1f7e4da8d",
     "oido_capabilities": "td_556434ab24001d6f65381d0b",
-    "oido_view": "td_94c4dc8a4fa196e2c266842d",
+    "oido_view": "td_6315cd66dcd5ffef3ae71de2",
     "oido_find": "td_40a830822b191f723bb37c25",
     "oido_compare": "td_8374f678270234728b18a037",
     "identity_milestone_write": "td_e6d2aa611e9f7165eb72b02e",
@@ -106,7 +105,7 @@
     "wishstar_notifications": "td_e4352dd3c27b90897925d700",
     "context_review_complete": "td_80e678ecb6056243f20c0d26"
   },
-  "toolsSha256": "770e9fefd26944a6a0d82785a943b324e5c553cc5d7cd10312443d69a2e13489",
+  "toolsSha256": "78b19fec264e3b0c9777595c06f43191f0579b7737664a1e5a58b4d2a7c91988",
   "tools": [
     {
       "type": "function",
@@ -305,7 +304,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256,
-              "description": "否定续查时填：要排除的候选引用（上一轮结果里的 candidate_ref 或 memory:xxx 资源引用）。先在该会话内结构性排除此候选，再按新 query 续查（必须同时带 refine_session_id/refine_continue_ref/channel）。用于\"不对，不是这个——排除它再找\"；不要把否定写进 query 文本代替此参数"
+              "description": "否定续查时填：要排除的候选引用（上一轮结果候选卡里的 resource_ref，如 memory:xxx / our_word:xxx，原样回传即可）。先在该会话内结构性排除此候选，再按新 query 续查（必须同时带 refine_session_id/refine_continue_ref/channel）。用于\"不对，不是这个——排除它再找\"；不要把否定写进 query 文本代替此参数"
             },
             "deep_search": {
               "type": "boolean",
@@ -1507,7 +1506,7 @@
       "type": "function",
       "function": {
         "name": "oido_view",
-        "description": "读取深听结果的测量图（波形+基频 PNG）。返回 base64 图与元数据；原生图块直送主模型的运输路径尚未接通（如实声明），图主要供界面展示。",
+        "description": "读取深听结果的概览图（波形与基频 PNG），可指定时间范围。支持图片的模型可查看原图；未携带图片时返回界面引用与限制说明。",
         "parameters": {
           "type": "object",
           "properties": {

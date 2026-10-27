@@ -1,14 +1,12 @@
-// 拒接/取消留言调度（2026-10-24，她拆分两种）：
-// ①她拒接（est 代理 decline 终态 declined）→ char程序事实反应轮——模型请求 prompt 含
-//   [program_fact] 事实（含"拒接了"），回复正常发布落会话；不伪造她的消息（messages 无 owner 新行）。
-// ②char取消（call_control cancel → Siren cancelled）→ 附带说话轮（事实含"取消了自己发起的来电"）。
-// 幂等：同 dedupe_key 重复触发不建第二轮；串行：文字轮占链时事实轮排队不并发。
+// 邀请终态与轮次账（联合审计 A08 / B5，2026-10-27 执行口径）：
+// ①她拒接：事实保留在 Siren 正本与 call_control 查询面，est 不新增独立付费反应轮；
+// ②模型取消邀请：工具回执即事实，原续轮自主回应，不追加强制说明 program_fact 轮；
+// ③串行：程序事实轮与文字轮共用唯一串行链（incoming_dial/留言机会轮的既有入口性质不变）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { Readable, Writable } from 'node:stream';
+import { Readable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
@@ -47,7 +45,13 @@ function sirenTransport(log: Array<{ url: string; method: string }>, inviteState
     if (u.includes('/decline')) { inviteState.state = 'declined'; return Response.json({ invite_id: 'inv-1', state: 'declined', changed: true }); }
     if (u.includes('/cancel')) { inviteState.state = 'cancelled'; return Response.json({ invite_id: 'inv-1', state: 'cancelled', changed: true }); }
     if (u.includes('/invites') && m === 'POST') return Response.json({ invite_id: 'inv-1', state: 'pending', expires_at: Date.now() + 45000 }, { status: 201 });
-    if (u.includes('/invites')) return Response.json({ active: inviteState.state === 'pending' ? { invite_id: 'inv-1', state: 'pending', expires_at: 1 } : null, recent: [] });
+    if (u.includes('/invites')) {
+      return Response.json({
+        active: inviteState.state === 'pending' ? { invite_id: 'inv-1', state: 'pending', expires_at: 1 } : null,
+        // 终态事实保留在正本查询面（recent）——拒接/取消事实不丢，后续合法轮次按需消费
+        recent: inviteState.state === 'pending' ? [] : [{ invite_id: 'inv-1', state: inviteState.state, expires_at: 1, created_at: 1 }],
+      });
+    }
     return Response.json({}, { status: 404 });
   }) as unknown as typeof fetch;
 }
@@ -65,56 +69,45 @@ function compose(root: string, transport: OrTransport, siren: typeof fetch, invi
   const routing = new RoutingService(db, events, messages);
   const windows = new WindowManager(db, events, identity, config);
   const sirenCall = new SirenAdapter('http://127.0.0.1:1', 't', siren);
-  // voice 模块 ProgramFactsPort 绑定真实 Supervisor（call_control cancel → 程序事实）；
-  // supervisor 尚未构造——经惰性绑定（构造完成后赋值）
-  let supervisorRef: { submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown } | null = null;
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall, programFacts: { submitProgramFactTurn: (...a: Parameters<{ submitProgramFactTurn(conversationId: string, kind: string, factText: string, dedupeKey: string): unknown }>) => supervisorRef!.submitProgramFactTurn(...a) } });
+  // B5：voice 模块不再持有 ProgramFactsPort（拒接/取消无附加轮）；装配保持向后兼容入参
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages, sirenCall: sirenCall, programFacts: null });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
-  supervisorRef = supervisor;
   return { db, config, messages, supervisor, tools, sirenCall, inviteState, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
-test('①她拒接 → est 代理触发char反应轮：prompt 含 [program_fact] 拒接事实，回复落会话，不伪造她的消息', async () => {
+test('R02：她拒接——事实留正本可查，无独立付费反应轮、不伪造她的消息', async () => {
   const prompts: string[] = [];
-  const transport: OrTransport = async (p) => { prompts.push(JSON.stringify(p.messages)); return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '好，你先忙。' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + DONE) }; };
+  const transport: OrTransport = async (p) => { prompts.push(JSON.stringify(p.messages)); return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '在' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) }; };
   const inviteState = { state: 'pending' };
-  const ctx = compose(tempRoot('ir-decline-'), transport, sirenTransport([], inviteState), inviteState);
+  const sirenLog: Array<{ url: string; method: string }> = [];
+  const ctx = compose(tempRoot('ir-decline-'), transport, sirenTransport(sirenLog, inviteState), inviteState);
   try {
-    // 先建立窗口轨迹（首条消息）
     const first = ctx.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '在吗', clientMessageId: 'm0' });
     ctx.supervisor.enqueue(first.turnId);
     await ctx.supervisor.waitIdle();
+    const modelRoundsBefore = prompts.length;
     const ownerBefore = (ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='owner'").get() as { n: number }).n;
 
-    // 她拒接（走 est 代理 → Siren declined → 反应轮）
+    // 她拒接（est 代理同链：transitionInvite → Siren declined）
     const out = await ctx.sirenCall.transitionInvite('inv-1', 'decline');
     assert.equal(out?.['state'], 'declined');
-    // 手动执行与代理相同的触发（代理端点在 http 层；此处直接调同 API 验证核心链）
-    const r = ctx.supervisor.submitProgramFactTurn('primary', 'invite_declined', '她于 12:00 拒接了你发起的来电（邀请未接通，这是她自己的选择，不是故障）。你可以自然地说一两句话落在本会话。', 'invite:inv-1:declined');
-    assert.equal('turnId' in r, true);
     await ctx.supervisor.waitIdle();
-    await pause(100);
-    // 模型收到了事实（prompt 含 [program_fact]+拒接）
-    const factPrompt = prompts.find((p) => p.includes('[program_fact]') && p.includes('拒接了你发起的来电'));
-    assert.ok(factPrompt, '事实块必须进入模型请求');
-    assert.ok((factPrompt ?? '').includes('不是用户发言'));
-    // char回复落会话
-    const reply = ctx.db.prepare("SELECT r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.speaker='assistant' ORDER BY m.sequence DESC LIMIT 1").get() as { content: string };
-    assert.equal(reply.content, '好，你先忙。');
-    // 不伪造她的消息
+    await pause(80);
+    // B5：拒接不新增独立付费反应轮——没有 program_fact 轮、没有新模型请求
+    assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='program_fact'").get() as { n: number }).n, 0, '拒接不触发程序事实轮');
+    assert.equal(prompts.length, modelRoundsBefore, '拒接不新增模型请求');
     const ownerAfter = (ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='owner'").get() as { n: number }).n;
-    assert.equal(ownerAfter, ownerBefore, '拒接不得写她的消息');
-    // 幂等
-    const r2 = ctx.supervisor.submitProgramFactTurn('primary', 'invite_declined', 'x', 'invite:inv-1:declined');
-    assert.deepEqual(r2, { deduplicated: true });
-    const dispatches = (ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='program_fact'").get() as { n: number }).n;
-    assert.equal(dispatches, 1);
-    console.log(JSON.stringify({ case: 'ir_declined', reply: reply.content }));
+    assert.equal(ownerAfter, ownerBefore, '拒接不伪造她的消息');
+    // 拒接事实不丢：Siren 正本查询面（call_control status 走同一 listInvites）可见
+    const status = await ctx.sirenCall.listInvites('primary');
+    const declined = (status?.recent ?? []).find((r) => r['invite_id'] === 'inv-1');
+    assert.ok(declined && declined['state'] === 'declined', '拒接终态保留在查询面');
+    console.log(JSON.stringify({ case: 'r02_declined_no_reaction_round' }));
   } finally { await ctx.supervisor.stopAll(); ctx.close(); }
 });
 
-test('②char取消（call_control cancel）→ Siren cancelled + 附带说话轮', async () => {
+test('R03：模型取消邀请——工具回执即事实，原续轮自主回应，无强制说明轮', async () => {
   const prompts: string[] = [];
   const transport: OrTransport = async (p) => { prompts.push(JSON.stringify(p.messages)); return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '刚那通是我拨错时间了，晚上再打给你。' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 2 } }) + DONE) }; };
   const inviteState = { state: 'pending' };
@@ -127,16 +120,19 @@ test('②char取消（call_control cancel）→ Siren cancelled + 附带说话�
     const out = await ctx.tools.execute('call_control', { action: 'cancel' }, tctx);
     assert.equal(out.ok, true, JSON.stringify(out.output));
     await ctx.supervisor.waitIdle();
-    await pause(100);
-    const factPrompt = prompts.find((p) => p.includes('[program_fact]') && p.includes('取消了自己发起的来电'));
-    assert.ok(factPrompt, '取消事实必须进入模型请求');
-    const reply = ctx.db.prepare("SELECT r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.speaker='assistant' ORDER BY m.sequence DESC LIMIT 1").get() as { content: string };
-    assert.ok(reply.content.includes('晚上再打'), '他说了改约的话');
-    console.log(JSON.stringify({ case: 'ir_cancelled', reply: reply.content }));
+    await pause(80);
+    // B5：取消不追加 program_fact 轮（工具回执本身即事实——真实续轮的注入由 runner 工具循环
+    // 既有机制完成，不经第二个事实轮）
+    assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='program_fact'").get() as { n: number }).n, 0, '取消无独立说明事实轮');
+    // 回执只报真实阶段，不再强迫"说一两句并说明原因或改约"
+    const note = String((out.output as Record<string, unknown>)['note'] ?? '');
+    assert.ok(note.includes('已取消'), '取消回执真实');
+    assert.doesNotMatch(note, /说一两句|说明原因/);
+    console.log(JSON.stringify({ case: 'r03_cancelled_no_forced_round' }));
   } finally { await ctx.supervisor.stopAll(); ctx.close(); }
 });
 
-test('串行：文字轮占链时事实轮排队，不并发第二个模型请求', async () => {
+test('串行：程序事实轮与文字轮共用唯一串行链，不并发第二个模型请求', async () => {
   let release!: () => void; const gate = new Promise<void>((r) => { release = r; });
   let active = 0; let maxActive = 0;
   const transport: OrTransport = async () => { active += 1; maxActive = Math.max(maxActive, active); await gate.catch(() => {}); active -= 1; return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '回' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) }; };
@@ -146,7 +142,8 @@ test('串行：文字轮占链时事实轮排队，不并发第二个模型请�
     const first = ctx.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '占链', clientMessageId: 'm0' });
     ctx.supervisor.enqueue(first.turnId);
     await pause(120); // 文字轮进入模型（占住串行链）
-    const r = ctx.supervisor.submitProgramFactTurn('primary', 'invite_declined', '她拒接了你的来电。', 'invite:inv-9:declined');
+    // incoming_dial（她来电通知）沿用既有事实轮入口：排队不并发
+    const r = ctx.supervisor.submitProgramFactTurn('primary', 'incoming_dial', '她刚刚发起语音通话请求（等你接听）。', 'dial:dial-x');
     assert.equal('turnId' in r, true);
     await pause(120);
     assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='program_fact' AND state='pending'").get() as { n: number }).n, 1, '事实轮在链上等待');
