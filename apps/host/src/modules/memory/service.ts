@@ -386,7 +386,10 @@ export class MemoryToolsService {
         // 理解"不是海边"。operation_id 幂等（M 侧 P1-01 收据原子）——重试安全。
         const rejectRef = typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 ? args.reject_candidate_ref : '';
         if (rejectRef) {
-          const isResourceRef = rejectRef.startsWith('memory:');
+          // F-05：M 候选卡出站统一带 resource_ref（memory:/our_word:/source_msg:，
+          // 2026-10-19 瘦身后 candidate_ref 不出站）——按资源前缀路由到 M 的
+          // resource_ref 反查（同资源重复表示一并排除），其余才按 candidate_ref 精确匹配
+          const isResourceRef = /^(memory|our_word|source_msg):/.test(rejectRef);
           const rejOp = `es-rej-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}:reject`).slice(0, 36)}`;
           let rej: Awaited<ReturnType<MariposaClient['recallReject']>>;
           try {
@@ -405,7 +408,7 @@ export class MemoryToolsService {
             return { ok: false, output: { error_code: rejUnknown ? 'RECALL_OUTCOME_UNKNOWN' : `RECALL_${rej.code}`, request_ref: requestRef, ...(rejMsg ? { message: rejMsg } : {}) } };
           }
         }
-        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}) });
+        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId });
       } else {
         r = await this.mariposa.recallStart({
           requestRef, query: String(args.query ?? ''),

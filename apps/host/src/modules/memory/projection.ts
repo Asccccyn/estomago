@@ -57,7 +57,11 @@ export function candidates(v: any[]): Obj[] {
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
     const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version']);
     if(out.mood)out.mood=select(out.mood,['text','tags','author']);
-    if (!out.memory_id && !out.word_id && !out.plan_id && c.resource_ref) out.resource_ref=c.resource_ref;
+    // F-05（跨仓预审 2026-10-25）：resource_ref 是 M 候选卡出站的唯一操作
+    // 句柄（memory:/our_word:/source_msg:），否定续查 reject_candidate_ref
+    // 按工具声明原样回传它——不能因 memory_id/word_id 在场而删（此前事件卡
+    // 只剩 memory_id/excerpt，模型无法回传任何合法引用）。
+    if(c.resource_ref)out.resource_ref=c.resource_ref;
     if (out.original_title) { if (!out.title) out.title=out.original_title; delete out.original_title; }
     const evidence=list(c.evidence).map(e=>{
       const x=select(e,['field','snippet','source_ref']);

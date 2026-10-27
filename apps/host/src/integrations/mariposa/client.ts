@@ -310,10 +310,17 @@ export class MariposaClient {
   }
 
   /** R02（复审 2026-10-07）：同会话续查（refine）——回到原 session 收窄/
-   *  换角度，不是另起 start。request_ref 用服务端给的 continue 引用。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string } }): Promise<MariposaCallResult> {
+   *  换角度，不是另起 start。request_ref 用服务端给的 continue 引用。
+   *  F-01（跨仓预审 2026-10-25）：continue 引用承担两份合同——
+   *  query_plan.request_ref 是幂等逻辑身份（M transport reqref: 键），
+   *  顶层 continue_request_ref 才是新 burst 许可（M budget.try_new_burst）；
+   *  顶层 conversation_scope 供 M require_owned_session 归属核验
+   *  （session 绑定 scope 时省略=SCOPE_REQUIRED）。 */
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
+      continue_request_ref: args.continueRef,
+      ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
       query_plan: {
         original_request: args.query,
         semantic_query: args.query,
