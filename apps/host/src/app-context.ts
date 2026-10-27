@@ -76,10 +76,15 @@ export class Host {
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
   private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
+  private sirenCallRef: import('./integrations/siren/adapter.ts').SirenAdapter | null = null;
   /** P03.8：oído 接入模块生命周期（删除传播重试 timer 的 start/stop 包装；行为逐字保持） */
   private oidoLifecycle: import('./modules/oido/lifecycle.ts').OidoModuleLifecycle | null = null;
   readonly surfacing: SurfacingService | null; // 自动浮现（默认 disabled；未启用=零作业零网络）
   readonly archiveSync: ArchiveSyncService;
+  private readonly voiceObservations: import('./modules/oido/observations.ts').VoiceObservationService | null;
+  private callReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  private callReconcileWork: Promise<void> | null = null;
+  private readonly callReconcileAbort = new AbortController();
   readonly server: http.Server;
   port = 0;
 
@@ -112,7 +117,9 @@ export class Host {
     this.oidoRef = deps.oido ?? null;
     this.oidoLifecycle = createOidoDeleteRetryLifecycle(deps.db, () => this.oidoRef);
     this.surfacing = deps.surfacing ?? null;
+    this.sirenCallRef = deps.sirenCall ?? null; // JV-04：启动对账用（Siren 正本查询）
     this.archiveSync = archiveSync;
+    this.voiceObservations = deps.voiceObservations ?? null;
     this.server = server;
   }
 
@@ -157,9 +164,33 @@ export class Host {
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
+    const media = new MediaService(db, paths.mediaDir, opts.config);
+    const oido = opts.config.integrations.oido.base_url
+      ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
+      : null;
+    const oidoSources = new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db);
+    const archiveCredRef = opts.config.integrations.mariposa.archive_credential_ref
+      ?? (process.env.ESTOMAGO_TEST_MODE === '1' ? opts.config.integrations.mariposa.credential_ref : null);
+    const archiveMariposaClient = new MariposaClient({
+      baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
+      credentialEnv: archiveCredRef,
+    });
+    const voiceObsService = new (await import('./modules/oido/observations.ts')).VoiceObservationService(db, {
+      hearing: oido ? new (await import('./modules/oido/service.ts')).OidoHearingService({ db, oido, sources: oidoSources, audio: media, artifacts: media }) : null,
+      archiveClient: opts.config.archive.enabled ? archiveMariposaClient : null,
+      streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
+      logger,
+    });
     const messages = new MessageService(db,
-      // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口）
-      (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({ surfacing: surfacing.enabled ? surfacing : null, activity }),
+      // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口 + 语音观察登记）
+      (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({
+        surfacing: surfacing.enabled ? surfacing : null,
+        activity,
+        voiceObservations: {
+          ensureForMessage: (messageId, revision, conversationId) => voiceObsService.ensureForMessage(messageId, revision, conversationId, voiceObsService.configured),
+          wake: () => voiceObsService.wake(),
+        },
+      }),
       activity);
     // EXEC_V1 WP1：系统异常红点（一套表+现有 SSE；未装配任何后台，纯观测面）
     const alerts = new SystemAlertService(db, events);
@@ -186,7 +217,6 @@ export class Host {
     }, selections, trajectory);
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
-    const media = new MediaService(db, paths.mediaDir, opts.config);
     const voice = new VoiceService(db, media, opts.config);
     messages.ensureConversation(PRIMARY_CONVERSATION, '私聊');
     // 原文归档同步：archive.enabled 且 mariposa base_url 已配置才实际发送。
@@ -199,12 +229,6 @@ export class Host {
     });
     // 审计 F11：受限归档凭据缺失时——测试模式允许回退共用（联调）；生产形态直接不给归档客户端
     // 发凭据（ArchiveSyncService 发送将 401，如实 failed），不允许 worker 静默持有主模型业务凭据。
-    const archiveCredRef = opts.config.integrations.mariposa.archive_credential_ref
-      ?? (process.env.ESTOMAGO_TEST_MODE === '1' ? opts.config.integrations.mariposa.credential_ref : null);
-    const archiveMariposaClient = new MariposaClient({
-      baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
-      credentialEnv: archiveCredRef,
-    });
     const archiveSync = new ArchiveSyncService({ db, events, logger, client: archiveMariposaClient, config: opts.config, alerts });
     // §3/§8.2：hold 书签、换窗评审、宿主固定工具集（memory.hold 经主模型凭据的客户端；
     // 端到端在 Mariposa 接口上线前 BLOCKED——客户端错误如实回给模型，不伪造成功）
@@ -223,9 +247,6 @@ export class Host {
     // S-06：心跳让位检查经可变引用接线（scheduler 在 supervisor 之后构造）
     let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
     // JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；base_url 未配=不装配，工具/门控如实降级）
-    const oido = opts.config.integrations.oido.base_url
-      ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
-      : null;
     // JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=null，检索能力如实不可用）
     const mediaIndex = opts.config.media_embedding.base_url
       ? new (await import('./media/index/service.ts')).MediaIndexService(db, media, new (await import('./media/index/service.ts')).MediaEmbedWorkerClient(opts.config.media_embedding))
@@ -243,7 +264,7 @@ export class Host {
       db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync,
     });
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
-      db, oido, sources: new (await import('./modules/oido/source-repository.ts')).OidoSourceRepository(db), audio: media, artifacts: media,
+      db, oido, sources: oidoSources, audio: media, artifacts: media,
     });
     const tools = new ModelToolBridge({ db, events });
     tools.setCapabilityRegistry(capabilityRegistry);
@@ -258,6 +279,7 @@ export class Host {
     tools.setMemoryRecovery(memoryService);
     const supervisor = new TurnSupervisor({
       wishstar,
+      voiceObservations: voiceObsService,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
       oidoHearing: oido?.configured === true,
       db,
@@ -290,7 +312,7 @@ export class Host {
     // P03.5/P03.6：voice 域能力（transcript_read/call_control）在 supervisor 就绪后登记——
     // ProgramFactsPort=supervisor 的窄结构面（只提交事实请求，不暴露整个 Supervisor、不等待后继轮）
     (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
-      db, sirenCall, programFacts: supervisor,
+      db, sirenCall, programFacts: supervisor, media, messages, events,
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
@@ -336,6 +358,7 @@ export class Host {
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
       oido: oido ?? undefined,
+      voiceObservations: voiceObsService,
       sirenCall: sirenCall ?? undefined,
       tools,
       bgExecutorReady,
@@ -374,6 +397,7 @@ export class Host {
     // streaming/PREPARING 窗/孤儿票据 owner 落确定终态，waiting_route_gate 无票释放回
     // pending 后正好被下方 recoverSchedule 接管。此前 recoveryPass 仅被测试直接调用，
     // 生产启动从未执行（AUD-10 验收实际未生效——F25 同款"测试绿但未接线"模式）。
+    this.voiceObservations?.start();
     const recovered = TurnSupervisor.recoveryPass(this.db, this.logger);
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
     const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
@@ -382,6 +406,12 @@ export class Host {
     void this.archiveSync.drainOnce().catch((err) => {
       this.logger.warn('archive_sync_startup_failed', { code: stableErrorCode(err) });
     });
+    // 生死仍以 Siren 为正本；Host 只拥有这个可取消的对账任务。
+    this.reconcileCalls();
+    if (this.sirenCallRef) {
+      this.callReconcileTimer = setInterval(() => this.reconcileCalls(), 60_000);
+      this.callReconcileTimer.unref?.();
+    }
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
     // R8′（2026-10-23）：媒体索引后台补全——独立任务边界（不经调度器/会话串行链：
@@ -407,20 +437,36 @@ export class Host {
     finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
   }
 
+  private reconcileCalls(): void {
+    if (!this.sirenCallRef || this.callReconcileWork || this.callReconcileAbort.signal.aborted) return;
+    this.callReconcileWork = import('./integrations/siren/reconcile.ts')
+      .then(({ reconcileVoiceCallsOnStartup }) => reconcileVoiceCallsOnStartup(this.db, this.sirenCallRef, this.callReconcileAbort.signal))
+      .then(result => {
+        if (result.ended || result.skipped) this.logger.warn('voice_calls_reconciled', { ...result });
+      })
+      .catch(error => this.logger.warn('voice_calls_reconcile_failed', { code: stableErrorCode(error) }))
+      .finally(() => { this.callReconcileWork = null; });
+  }
+
   async stop(): Promise<void> {
+    // 先停止接纳，已有请求的 close 会取消其准备/模型工作，再关闭各自拥有的资源。
+    const serverStopped = new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 2000);
+      timer.unref?.();
+      this.server.close(() => { clearTimeout(timer); resolve(); });
+      this.server.closeAllConnections?.();
+    });
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
-    this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
+    const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
+    if (this.callReconcileTimer) { clearInterval(this.callReconcileTimer); this.callReconcileTimer = null; }
+    this.callReconcileAbort.abort();
+    const observationsStopped = this.voiceObservations?.stop();
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
-    await new Promise<void>((resolve) => {
-      this.server.close(() => resolve());
-      this.server.closeAllConnections?.();
-      const timer = setTimeout(() => resolve(), 2000);
-      timer.unref?.();
-    });
+    await Promise.all([serverStopped, oidoStopped, observationsStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();
   }

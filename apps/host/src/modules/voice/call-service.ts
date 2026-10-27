@@ -1,10 +1,9 @@
 // modules/voice/call-service.ts（P03.5/P03.6）：通话控制用例。
 // 原 HostToolExecutor.callControl 逐字迁移；accept_call 的直接 fetch/环境变量读取
-// 抽到 integrations/siren/adapter.ts createCallFromInternalEnv（URL/认证/超时/unknown 语义不变）。
+// JV-06（联合审计 2026-10-26）：建呼经注入的 SirenAdapter.createCall（与邀请族同源配置）。
 // 拒接/取消留言调度改走窄 ProgramFactsPort（只提交事实请求，不取得 Supervisor、不等待后继轮）。
 import type { Db } from '../../db/connection.ts';
 import type { SirenAdapter } from '../../integrations/siren/adapter.ts';
-import { createCallFromInternalEnv } from '../../integrations/siren/adapter.ts';
 import type { CapabilityOutcome, ProgramFactsPort, ToolExecContext } from '../../capabilities/contracts.ts';
 
 export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number };
@@ -18,11 +17,6 @@ export class VoiceCallService {
     this.db = deps.db;
     this.sirenCall = deps.sirenCall;
     this.programFacts = deps.programFacts ?? null;
-  }
-
-  /** 通话激活（voice_calls active）——模型工具调用门与目录过滤的同一事实源。 */
-  voiceCallActive(roomId: string): boolean {
-    return Boolean(this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(roomId));
   }
 
   /** 协议①（2026-10-24）：通话控制。逐字迁移（含备注文案与错误码）。 */
@@ -39,24 +33,28 @@ export class VoiceCallService {
         return { ok: true, value: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
       }
       if (args.action === 'accept_call' || args.action === 'decline_call') {
-        const req = this.db.prepare("SELECT * FROM dial_requests WHERE conversation_id=? AND state='pending' ORDER BY created_at DESC LIMIT 1").get(ctx.roomId) as { id: string } | undefined;
+        const req = this.db.prepare("SELECT id, analysis_mode FROM dial_requests WHERE conversation_id=? AND state='pending' ORDER BY created_at DESC LIMIT 1").get(ctx.roomId) as { id: string; analysis_mode: string | null } | undefined;
         if (!req) return { ok: false, error: { error_code: 'NO_PENDING_DIAL', detail: '没有等待中的通话请求（可能已过期或已处理）' } };
         if (args.action === 'decline_call') {
           this.db.prepare("UPDATE dial_requests SET state='declined', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), req.id);
           return { ok: true, value: { request_id: req.id, state: 'declined', note: '已拒绝。她那边会显示你没接；你现在回复里说的话她会看到——说一句为什么或改约。' } };
         }
         // accept_call：est 建 Siren 通话，连接信息挂到请求上（前端轮询取走）
-        const created = await createCallFromInternalEnv(ctx.roomId);
+        // JV-06（联合审计 2026-10-26）：建呼走注入的 SirenAdapter（正式
+        // config.integrations.siren 装配，与邀请族同一来源）——不再读
+        // env-only 的第二套变量，否则正式 config 部署下 accept_call 误报未配置。
+        if (!this.sirenCall) return { ok: false, error: { error_code: 'SIREN_UNCONFIGURED', detail: 'Siren 通话服务未配置（无法接听）' } };
+        const created = await this.sirenCall.createCall(ctx.roomId);
         if (!created.ok) {
-          if (created.code === 'SIREN_UNCONFIGURED') return { ok: false, error: { error_code: 'SIREN_UNCONFIGURED', detail: 'Siren 通话服务未配置（无法接听）' } };
           if (created.code === 'SIREN_UNREACHABLE') return { ok: false, error: { error_code: 'SIREN_UNREACHABLE', detail: '通话服务不可达，稍后可再试 accept_call' } };
-          if (created.code === 'SIREN_CALL_FAILED') return { ok: false, error: { error_code: 'SIREN_CALL_FAILED', detail: `建呼失败（${created.httpStatus}）` } };
+          if (created.code === 'SIREN_CALL_FAILED') return { ok: false, error: { error_code: 'SIREN_CALL_FAILED', detail: `建呼失败（${created.httpStatus ?? ''}）` } };
           return { ok: false, error: { error_code: 'SIREN_CONTRACT_INVALID' } };
         }
-        const upd = this.db.prepare("UPDATE dial_requests SET state='accepted', ws_url=?, call_token=?, call_id=?, updated_at=? WHERE id=? AND state='pending'").run(created.ws_url, created.token, created.call_id, new Date().toISOString(), req.id);
+        const upd = this.db.prepare("UPDATE dial_requests SET state='accepted', ws_url=?, call_token=?, call_id=?, updated_at=? WHERE id=? AND state='pending'").run(created.wsUrl, created.token, created.callId, new Date().toISOString(), req.id);
         if (upd.changes === 0) return { ok: false, error: { error_code: 'DIAL_SUPERSEDED', detail: '她已取消或请求已过期' } };
-        this.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(created.call_id, ctx.roomId, new Date().toISOString());
-        return { ok: true, value: { request_id: req.id, state: 'accepted', call_id: created.call_id, note: '已接听；她那边的电话面板马上会接通，正常和她说话即可。' } };
+        // P1：模式沿用她发起 dial 时的选择（NULL=历史未记录→ordinary）
+        this.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)").run(created.callId, ctx.roomId, new Date().toISOString(), created.expiresAt ?? null, req.analysis_mode === 'deep_listen' ? 'deep_listen' : 'ordinary');
+        return { ok: true, value: { request_id: req.id, state: 'accepted', call_id: created.callId, note: '已接听；她那边的电话面板马上会接通，正常和她说话即可。' } };
       }
       if (args.action === 'cancel') {
         const st = await this.sirenCall!.listInvites(ctx.roomId);

@@ -98,6 +98,7 @@ export class ClaudeSdkRunner implements AgentRunner {
       ...(req.resumeSessionId ? { resume: req.resumeSessionId } : {}), // 会话连续性（AUD-03）
     };
     try {
+      await req.onBeforeDispatch?.({ attemptIndex: 0, payloadWireJson: JSON.stringify({ prompt: req.prompt }) });
       const iterable = this.query({ prompt: req.prompt!, options }); // driver 守卫后必为 SDK 形状
       for await (const raw of iterable) {
         if (req.abortController.signal.aborted) {

@@ -95,7 +95,14 @@ export class OidoHearingService {
       // 重试同键（服务端幂等去重）；同一请求内不同 tool_call 各自独立。旧执行路径无
       // tool_call_id 时保留 (turn,request) 形态（legacy 直调，一次只有一个调用在跑）
       const toolCallId = ctx.toolCallId ?? null; // S17b 批次4：身份只走可信 ctx
-      const idemKey = toolCallId ? `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}:${toolCallId}` : `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`;
+      const legacyKey = toolCallId ? `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}:${toolCallId}` : `es-an-${ctx.turnId ?? 'bg'}:${ctx.requestId}`;
+      // JV-17（GLM_VOICE_UNIFICATION 03§4.2）：同资产+同 profile（prosody）+无 range
+      // 时复用通话快观察的分析任务（oído 同 digest 去重返回同一分析，RE-13d：已完成
+      // 返回概览）——快观察与深听不再对同一段音频各跑一次 DSP。带 range=不同语义
+      // 身份（可能裁剪），照旧新键新分析。
+      const quickKey = args.range_ms ? null : this.sources.quickAnalysisKey(assetId);
+      const idemKey = quickKey ?? legacyKey;
+      if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey);
       const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal: ctx.signal }).catch((err: Error) => {
         if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
           throw new Error('OIDO_CONTRACT_CHANGED');

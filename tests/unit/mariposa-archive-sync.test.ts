@@ -75,6 +75,51 @@ const ackAll = (req: IngestRequest): Record<string, unknown> => ({
   messages: req.messages.map((m) => ({ origin_message_id: m.origin_message_id, revision: m.revision, source_conversation_id: 'mc', source_message_id: `msrc-${m.origin_message_id}-r${m.revision}`, content_hash: m.content_hash })),
 });
 
+test('发送期间的新消息与唤醒不会丢失；首个发送者收尾后继续排空', async () => {
+  let release!: () => void;
+  let started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const sending = new Promise<void>(resolve => { started = resolve; });
+  let sends = 0;
+  const ctx = compose(tempRoot('msync-wake-'), async (_cap, payload) => {
+    if (++sends === 1) { started(); await gate; }
+    return { ok: true, result: ackAll(payload as unknown as IngestRequest) };
+  });
+  try {
+    ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '先发', clientMessageId: 'wake-1' });
+    const first = ctx.sync.drainOnce();
+    await sending;
+    ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '在等待 ACK 时发', clientMessageId: 'wake-2' });
+    await ctx.sync.drainOnce();
+    release();
+    await first;
+    assert.equal(sends, 2);
+    assert.equal(ctx.sync.rawSyncState('c1').acked, 2);
+    assert.equal(ctx.sync.rawSyncState('c1').pending, 0);
+  } finally { release(); await ctx.sync.stop(); ctx.db.close(); }
+});
+
+test('关闭取消在途传输并等待收尾；未获 ACK 的消息仍可恢复', async () => {
+  let started!: () => void;
+  const sending = new Promise<void>(resolve => { started = resolve; });
+  let cancelled = false;
+  const ctx = compose(tempRoot('msync-stop-'), async (_cap, _payload, signal) => {
+    started();
+    await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => { cancelled = true; reject(new Error('synthetic cancellation')); }, { once: true }));
+    throw new Error('unreachable');
+  });
+  try {
+    ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '关闭期间保留', clientMessageId: 'stop-1' });
+    const first = ctx.sync.drainOnce();
+    await sending;
+    await ctx.sync.stop();
+    await first;
+    assert.equal(cancelled, true);
+    assert.equal(ctx.sync.rawSyncState('c1').acked, 0);
+    assert.equal(ctx.sync.rawSyncState('c1').unknown_outcome, 1);
+  } finally { await ctx.sync.stop(); ctx.db.close(); }
+});
+
 test('正常链：用户消息+助手发布 → 同批 ACK、收据落表、outbox acked；重复 drain 不重发', async () => {
   const root = tempRoot('msync-');
   const { state, transport } = fakeServer();

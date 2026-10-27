@@ -1295,4 +1295,77 @@ CREATE TABLE dial_requests(
  updated_at TEXT NOT NULL
 );
 ` });
+// 42（2026-10-26，复审 R-03）：invite_call_handoffs——他→她邀请的接听建呼归属。
+// 同一 invite 的接听重试（Siren 幂等返回 accepted/changed=false）取回同一交接结果，
+// 不再重复建呼遗留无连接的 active 记录；expires_at 过期或通话结束后如实告知。
+MIGRATIONS.push({ version: 42, name: 'invite_call_handoffs', sql: `
+CREATE TABLE invite_call_handoffs(
+ invite_id TEXT PRIMARY KEY,
+ call_id TEXT NOT NULL,
+ ws_url TEXT NOT NULL,
+ call_token TEXT NOT NULL,
+ expires_at TEXT,
+ created_at TEXT NOT NULL
+);
+` });
+// 43（2026-10-26，复审二 R-03B）：voice_calls.connected_at——Siren WS 会话注册
+//（lifecycle register 通知）= 通话真实建立连接的事实。连接 token 过期只影响新握手、
+// 不等于通话结束；收口只依据连接/结束事实，不按 token 时效推断。
+MIGRATIONS.push({ version: 43, name: 'voice_calls_connected_at', sql: `
+ALTER TABLE voice_calls ADD COLUMN connected_at TEXT;
+` });
+// 44（2026-10-26，联合审计 JV-04）：voice_calls.reserved_until——建呼签发的连接资格
+// 时效（Siren 短 token expires_at）。启动对账时：Siren 正本已 ended → 收口；
+// 正本 active 但无 WS 会话且从未连接、签发时效已过 → 永不可连，收口孤儿。
+MIGRATIONS.push({ version: 44, name: 'voice_calls_reserved_until', sql: `
+ALTER TABLE voice_calls ADD COLUMN reserved_until TEXT;
+` });
+// 45（2026-10-26，GLM_VOICE_UNIFICATION）：通话分析模式——P04：普通电话不自动
+// oído；深听电话由服务端模式分流（不能只以 oido configured 判断）。NULL=历史
+// 未记录（不伪造）；新通话显式写 'ordinary'/'deep_listen'。dial_requests 同步
+// 记录她发起方向的模式，accept_call 建呼时沿用。
+MIGRATIONS.push({ version: 45, name: 'voice_analysis_mode', sql: `
+ALTER TABLE voice_calls ADD COLUMN analysis_mode TEXT;
+ALTER TABLE dial_requests ADD COLUMN analysis_mode TEXT;
+` });
+// 46（2026-10-26，GLM_VOICE_UNIFICATION P1/P2）：voice_observations——声音观察 sidecar。
+// 观察是原消息附属信息（P07/P11：隐藏只改展示）；三事实分列：分析状态（oído 真实
+// 枚举）/显示正文/模型投影快照+投递事实（dispatched_turn_id）。迟到结果只更新本表
+//（03§5），不回写已派发历史。UNIQUE(message_id,revision,asset_id) 幂等。
+MIGRATIONS.push({ version: 46, name: 'voice_observations', sql: `
+CREATE TABLE voice_observations(
+ id TEXT PRIMARY KEY,
+ message_id TEXT NOT NULL,
+ revision INTEGER NOT NULL,
+ asset_id TEXT NOT NULL,
+ direction TEXT NOT NULL CHECK (direction IN ('user','assistant','system_filler')),
+ status TEXT NOT NULL CHECK (status IN ('pending','processing','ready','partial','failed','unsupported')),
+ display_text TEXT,
+ model_projection TEXT,
+ dispatched_turn_id TEXT,
+ dispatched_at TEXT,
+ analysis_id TEXT,
+ error_code TEXT,
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ UNIQUE(message_id, revision, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_voice_obs_msg ON voice_observations(message_id, revision);
+` });
+// 47（2026-10-26，GLM_VOICE_UNIFICATION F03）：观察补同步标记——ready 且正文已
+// ACK 后发 M 附属补同步（幂等键=obs 身份）；成功时间戳防重发。
+MIGRATIONS.push({ version: 47, name: 'voice_obs_sync_marker', sql: `
+ALTER TABLE voice_observations ADD COLUMN attachment_synced_at TEXT;
+` });
+// 48（2026-10-26，GLM_VOICE_UNIFICATION JV-17 03§4.2）：快观察幂等键留档——
+// 深听同资产同 profile 无 range 时复用同一分析任务（oído 同 digest 去重），
+// 不再重复 DSP；带 range=不同语义身份照旧新键。
+MIGRATIONS.push({ version: 48, name: 'oido_quick_analysis_key', sql: `
+ALTER TABLE oido_ingest_receipts ADD COLUMN analysis_key TEXT;
+` });
+// 分析结果与首次实际请求的投影分开，不为旧数据伪造派发证明。
+MIGRATIONS.push({ version: 49, name: 'voice_observation_projection', sql: `
+ALTER TABLE voice_observations ADD COLUMN evidence_json TEXT;
+ALTER TABLE voice_observations ADD COLUMN projection_request_id TEXT;
+` });
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

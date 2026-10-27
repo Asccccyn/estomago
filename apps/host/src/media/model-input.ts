@@ -61,7 +61,7 @@ export function sliceByByteBudget(text: string, offsetChars: number, budgetBytes
 
 // R3″b（2026-10-24）：续读可用性默认 false——能力未经窗口核实时不宣传（诚实默认）；
 // 生产装配（supervisor）一律显式传入 windowHasTool 实值，默认只影响无窗口上下文的直接调用。
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; voiceObservations?: ReadonlyMap<string, string>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const withDefaults = { transcriptContinuationAvailable: false, ...opts };
   const isCurrentInput = opts.isCurrentInput === true;
   const textOnly = opts.textOnly === true;
@@ -101,6 +101,8 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
         // 历史语音无转写：如实占位（模型知道存在语音消息），不静默消失也不空输入阻断
         blocks.push({ type: 'text', text: '[语音消息：本条无转写，原音频已保留]' });
       }
+      const observation = opts.voiceObservations?.get(a.asset_id);
+      if (observation) blocks.push({ type: 'text', text: observation });
       continue;
     }
     if (textOnly) {

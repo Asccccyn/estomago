@@ -209,8 +209,8 @@ export class MariposaClient {
   /** Configuration evidence only; no network request and no credential disclosure. */
   isConfigured(): boolean { return this.configured(); }
 
-  async sourceIngest(req: IngestRequest): Promise<MariposaCallResult & { ack?: IngestAck }> {
-    const r = await this.transport('source.ingest', req as unknown as Record<string, unknown>);
+  async sourceIngest(req: IngestRequest, signal?: AbortSignal): Promise<MariposaCallResult & { ack?: IngestAck }> {
+    const r = await this.transport('source.ingest', req as unknown as Record<string, unknown>, signal);
     if (!r.ok) return r;
     return { ok: true, result: r.result, ack: parseAck(r.result) };
   }
@@ -560,6 +560,12 @@ export class MariposaClient {
 
   async surfaceDetailRead(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('memory.detail.read', payload, signal);
+  }
+
+  /** GLM_VOICE_UNIFICATION（02§4/§5.2，F03）：Source 附属信息补同步——晚到的
+   *  观察/媒体关联追加到已归档修订（M 端幂等；正文不可变）。 */
+  async attachmentsSync(args: { stream_id: string; origin_message_id: string; revision: number; kind: 'media' | 'call' | 'observation'; payload: Record<string, unknown>; operation_id: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('source.attachments.sync', args, signal);
   }
 
   /** 心情词表只读（词表正本；审计 1005B：调用方应动态拉取不各自硬编码）。

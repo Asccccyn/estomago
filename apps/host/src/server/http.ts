@@ -71,6 +71,7 @@ export type RequestDeps = {
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
+  voiceObservations?: import('../modules/oido/observations.ts').VoiceObservationService; // GLMVoice：观察 sidecar 登记/查询
   sirenCall?: import('../integrations/siren/adapter.ts').SirenAdapter; // 协议①②（2026-10-24）：邀请/接听/拒接/通话原声
   tools?: import('../capabilities/model-bridge.ts').ModelToolBridge; // R5：深听 UI 端点（会话绑定同门）
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
@@ -204,6 +205,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return await handleTurnRoutes(req, res, d, route, url);
     }
 
+    // GLM_VOICE_UNIFICATION P2：观察 sidecar 查询（UI 气泡数据源；只读）
+    if (route === 'GET /api/v1/voice-observations') {
+      const ids = (url.searchParams.get('message_ids') ?? '').split(',').map((x) => x.trim()).filter((x) => x.length > 0).slice(0, 200);
+      if (!d.voiceObservations) return json(res, 200, { observations: [] });
+      return json(res, 200, { observations: d.voiceObservations.listForMessages(ids) });
+    }
     // —— 深听 UI 组——P07.1 补迁 server/routes/oido-ui.ts（逐字）；精确路由表委托。
     if (route === 'POST /api/v1/oido/analyze'
       || /^GET \/api\/v1\/oido\/analyses\/([^/]+)\/prosody$/.test(route)
@@ -284,6 +291,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     // —— 建呼/通话请求/邀请组——P07.2 迁 server/routes/dial.ts（逐字）；精确路由表委托。
     if (route === 'POST /api/v1/calls/dial' || route === 'GET /api/v1/calls/dial/current'
       || route === 'POST /api/v1/calls' || route === 'GET /api/v1/calls/invites'
+      || route === 'GET /api/v1/calls/records'
+      || /^GET \/api\/v1\/calls\/([^/]+)\/turns\/([^/]+)\/audio\/(user|reply)$/.test(route)
       || /^DELETE \/api\/v1\/calls\/dial\/([^/]+)$/.test(route)
       || /^DELETE \/api\/v1\/calls\/([^/]+)$/.test(route)
       || /^POST \/api\/v1\/calls\/invites\/([^/]+)\/(accept|decline)$/.test(route)) {

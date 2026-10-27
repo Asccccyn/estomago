@@ -17,6 +17,30 @@ async function readRawBody(req: IncomingMessage, maxBytes: number): Promise<Buff
   return Buffer.concat(chunks);
 }
 
+/** 两个鉴权媒体入口共用单区间 Range 与 active MIME 隔离。 */
+export function serveAudioContent(req: IncomingMessage, res: ServerResponse, bytes: Uint8Array, mime: string): void {
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ''));
+  const activeHeaders = mime === 'image/svg+xml' || mime === 'text/html' ? {
+    'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
+    'Content-Disposition': 'attachment; filename="asset"',
+  } : {};
+  const headers = { 'Content-Type': mime, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...activeHeaders };
+  if (range && (range[1] !== '' || range[2] !== '')) {
+    const start = range[1] === '' ? Math.max(0, bytes.length - Number(range[2])) : Number(range[1]);
+    const end = range[1] === '' || range[2] === '' ? bytes.length - 1 : Math.min(bytes.length - 1, Number(range[2]));
+    if (start > end || start >= bytes.length) {
+      res.setHeader('Content-Range', `bytes */${bytes.length}`);
+      return json(res, 416, { error: { code: 'range_not_satisfiable', message: '区间越界' } });
+    }
+    const slice = bytes.subarray(start, end + 1);
+    res.writeHead(206, { ...headers, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}` });
+    res.end(slice);
+    return;
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': String(bytes.length) });
+  res.end(bytes);
+}
+
 /** 资产组：sandbox 预览（MIME 隔离）、voice 状态、转写、assets 建立导入/内容/引用/删除、oído 测量图二进制。 */
 export async function handleAssetsRoutes(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string, url: URL): Promise<void> {
 // —— EXEC_V1 §03.5.1（WP3/MEDIA-11）：active MIME 隔离预览——CSP sandbox + nosniff ——
@@ -115,32 +139,7 @@ if (assetContent) {
   const id = decodeURIComponent(assetContent[1]!);
   try {
     const { bytes, mime } = d.media.readContent(id);
-    const range = String(req.headers.range ?? '');
-    const m = /^bytes=(\d*)-(\d*)$/.exec(range);
-    // 语音播放所需的最小 Range 行为（§5.1）：单区间
-    if (m && (m[1] !== '' || m[2] !== '')) {
-      const start = m[1] === '' ? Math.max(0, bytes.length - Number(m[2] || 0)) : Number(m[1]);
-      const end = m[2] === '' ? bytes.length - 1 : Math.min(bytes.length - 1, Number(m[2]));
-      if (start > end || start >= bytes.length) return json(res, 416, { error: { code: 'range_not_satisfiable', message: '区间越界' } });
-      const slice = bytes.subarray(start, end + 1);
-      const isActiveR = mime === 'image/svg+xml' || mime === 'text/html';
-      const activeHeadersR: Record<string, string> = isActiveR ? {
-        'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
-        'Content-Disposition': 'attachment; filename="asset"',
-      } : {};
-      res.writeHead(206, { 'Content-Type': mime, 'Content-Length': String(slice.length), 'Content-Range': `bytes ${start}-${end}/${bytes.length}`, 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeadersR });
-      res.end(slice);
-      return;
-    }
-    // AUD-03 P1 修复：active MIME（SVG/HTML）在 content 端点也加隔离——不只靠 preview 路由
-    const isActiveMime = mime === 'image/svg+xml' || mime === 'text/html';
-    const activeHeaders: Record<string, string> = isActiveMime ? {
-      'Content-Security-Policy': "sandbox; default-src 'none'; style-src 'unsafe-inline'",
-      'Content-Disposition': 'attachment; filename="asset"',
-    } : {};
-    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', ...activeHeaders });
-    res.end(bytes);
-    return;
+    return serveAudioContent(req, res, bytes, mime);
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;

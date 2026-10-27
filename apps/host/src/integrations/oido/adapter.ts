@@ -35,6 +35,8 @@ export class OidoAdapter {
 
   /** 受信本地导入：推送原声字节（幂等，重放零成本）；transcript 有则一次带上。 */
   async ingestVoice(args: { assetId: string; bytes: Buffer; sha256: string; mime: string; transcript?: { text: string; source: string } | null; signal?: AbortSignal; timeoutMs?: number }): Promise<{ audioId: string; deduplicated: boolean }> {
+    // 导入和补挂转写属于同一次准备操作，不能在第二个请求重新开始计时。
+    const signal = lifetime(args.signal, args.timeoutMs ?? 30_000);
     const headers = this.headers({
       'Content-Type': 'application/octet-stream',
       'X-Oido-Audio-Ref': `est:${args.assetId}`,
@@ -44,7 +46,7 @@ export class OidoAdapter {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/audio:ingest`, {
-        redirect: 'error', method: 'POST', headers, body: new Uint8Array(args.bytes), signal: lifetime(args.signal,args.timeoutMs ?? 30_000),
+        redirect: 'error', method: 'POST', headers, body: new Uint8Array(args.bytes), signal,
       });
     } catch {
       throw new Error('OIDO_UNAVAILABLE');
@@ -57,7 +59,7 @@ export class OidoAdapter {
         await fetch(`${this.baseUrl}/v1/audio/${encodeURIComponent(body.audio_id)}/transcript`, {
           redirect: 'error', method: 'POST', headers: this.headers({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(args.transcript),
-          signal: lifetime(args.signal,5000),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
         });
       } catch {
         // 转写补挂失败不阻断分析（oído 有 no_transcript 降级路径）；如实忽略

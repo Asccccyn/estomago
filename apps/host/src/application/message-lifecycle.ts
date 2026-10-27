@@ -10,13 +10,16 @@ export type MessageLifecycleConsumers = {
   surfacing: Pick<SurfacingService, 'onUserMessageAccepted' | 'onUserMessageEdited' | 'afterCommit'> | null;
   /** 活动锚点（wake-activity：正式发布的真实活动记账）。 */
   activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
+  /** GLM_VOICE_UNIFICATION P06：语音消息默认分析——接纳即登记观察 sidecar（pending），
+   *  提交后唤醒后台一跳。SQL-only 登记（observations.ensureForMessage）；不依赖打开气泡。 */
+  voiceObservations: { ensureForMessage(messageId: string, revision: number, conversationId: string): void; wake(conversationId: string): void } | null;
 };
 
 export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): MessageLifecycleHooks {
   // 装配形状守卫：误传裸 SurfacingService（而非 {surfacing, activity} 包装）时钩子会
   // 静默空转——在绑定时刻大声失败，而不是让浮现作业登记悄悄消失。
-  const shape = consumers as { surfacing?: unknown; activity?: unknown; onUserMessageAccepted?: unknown };
-  if (shape.surfacing === undefined && shape.activity === undefined) {
+  const shape = consumers as { surfacing?: unknown; activity?: unknown; voiceObservations?: unknown; onUserMessageAccepted?: unknown };
+  if (shape.surfacing === undefined && shape.activity === undefined && shape.voiceObservations === undefined) {
     throw new Error('LIFECYCLE_CONSUMERS_SHAPE_INVALID: 传 { surfacing, activity } 包装对象，不是裸 SurfacingService');
   }
   return {
@@ -32,12 +35,14 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
         // 编辑撤销：旧修订作业失效（未错过目标轮的可建新作业——浮现域判断）
         consumers.surfacing?.onUserMessageEdited({ conversationId: fact.conversationId, messageId: fact.messageId, supersededRevision: fact.supersededRevision });
       }
+      // P06：语音附件消息接纳即登记观察 sidecar（pending；oído 未配置=unsupported 如实）
+      consumers.voiceObservations?.ensureForMessage(fact.messageId, fact.revision, fact.conversationId);
       // published：浮现不消费；活动锚点在发布动作内由消息服务原端口调用（noteRealPublication），
       // 保持 L 记账与发布同事务的现行次序——不改为事实流旁路（行为等价红线）。
     },
     afterCommit: (conversationId) => {
-      void conversationId;
       consumers.surfacing?.afterCommit();
+      consumers.voiceObservations?.wake(conversationId);
     },
   };
 }

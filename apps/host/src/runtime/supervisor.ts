@@ -107,6 +107,8 @@ export type SupervisorDeps = {
   // 生命周期：prepare/reuseFrozen/finalAdmit/markDispatched/markRetained/cancelForTurn）；
   // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
   surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
+  // RR-04：观察「已用于本轮」的真实派发边界回填（observations.markDispatched）。
+  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection'> | null;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
@@ -518,7 +520,7 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
@@ -540,11 +542,13 @@ export class TurnSupervisor {
           }
         }
         const extra = hearing || voiceDurations ? { ...opts, ...(hearing ? { hearing } : {}), ...(voiceDurations ? { voiceDurations } : {}) } : opts;
-        const r = projectRevisionBlocks(withSeq(text), proj.attachments, extra);
-        return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript };
+        const snapshots = this.d.voiceObservations?.snapshotsForRevision(messageId, revision, opts.isCurrentInput === true) ?? [];
+        const r = projectRevisionBlocks(withSeq(text), proj.attachments, { ...extra, voiceObservations: new Map(snapshots.map(snapshot => [snapshot.assetId, snapshot.text])) });
+        const observations = snapshots.filter(snapshot => r.blocks.some(block => block.type === 'text' && block.text === snapshot.text));
+        return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript, observations };
       } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
     }
-    return { blocks: [{ type: 'text', text: withSeq(fallbackText) }], hasImage: false, hasVoiceWithoutTranscript: false };
+    return { blocks: [{ type: 'text', text: withSeq(fallbackText) }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
@@ -568,6 +572,7 @@ export class TurnSupervisor {
      *  （与既有 RE-10 wire 守卫豁免同裁定；保温批 wire 锚与轨迹重建场景单边绿、组合炸，此处弥合） */
     trajectoryRebuiltThisTurn?: boolean;
     inputBinding?: { messageId: string; revision: number };
+    voiceObservations?: readonly import('../modules/oido/observations.ts').VoiceObservationSnapshot[];
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
@@ -696,8 +701,12 @@ export class TurnSupervisor {
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
         if (round === 0 && info.attemptIndex === 0 && o.inputBinding) {
+          if (o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, prqId, o.voiceObservations ?? []);
           const message = d.messages.getMessage(o.inputBinding.messageId);
-          if (message) d.events.publish('message.persisted', {
+          // JV-08：语音接纳行已发布过 persisted（SDK driver 无本补发）——按
+          // kind+turn_id 防重，DS/OR 与接纳路径不会双发同一事件
+          const already = message ? (d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('message.persisted', o.turnId) as { n: number }).n : 0;
+          if (message && already === 0) d.events.publish('message.persisted', {
             conversationId:o.conversationId,turnId:o.turnId,attemptId:o.attemptId,
             entityRef:message.id,entityRevision:message.current_revision,
             payload:{message:{...message,mutation_status:{can_edit:false,can_withdraw:false,reason:'MESSAGE_ALREADY_DISPATCHED'}}},
@@ -2286,7 +2295,6 @@ export class TurnSupervisor {
       ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
     ].join('\n\n');
     // SDK has no host tool bridge; automatic surfacing remains unsupported.
-    const sdkPrompt = prompt;
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
@@ -2327,7 +2335,8 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
-    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
+    const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: Boolean(dv) && voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
+    const sdkPrompt = tailProjection.blocks.filter(block => block.type === 'text').map(block => String(block.text)).join('\n\n');
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
@@ -2716,6 +2725,7 @@ export class TurnSupervisor {
       const loop = await this.runOrToolLoop({
         envelope: orEnvelope, purpose: 'chat', activeReviewId: null,
         ...(inputMessage ? { inputBinding: { messageId: inputMessage.id, revision: effective.revision } } : {}),
+        voiceObservations: tailProjection.observations,
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         trajectoryRebuiltThisTurn: trajInitializedThisTurn,
@@ -2728,6 +2738,8 @@ export class TurnSupervisor {
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
       }
+    } else if (tailProjection.hasVoiceWithoutTranscript) {
+      result = { outcome: 'error', errorClassified: null, errorCode: 'MEDIA_TRANSCRIPTION_FAILED', errorMessage: '当前驱动没有可读取的转写或听觉工具', sessionId: null, requestId: null };
     } else if (d.media && inputMessage && d.media.listMessageAttachments(inputMessage.id, effective.revision).some((a) => a.presentation === 'image' || a.presentation === 'sticker')) {
       // AUD-04 P1：SDK 分支有图=视觉门阻断（消息已保存、零模型请求、不静默丢图/换模型）
       d.logger.warn('media_gate_blocked', { turn_id: turnId, code: 'MODEL_VISION_UNAVAILABLE', driver: 'claude-agent-sdk' });
@@ -2737,7 +2749,15 @@ export class TurnSupervisor {
       // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
       try {
         result = await Promise.race([
-          runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent }),
+          runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent,
+            onBeforeDispatch: async () => {
+              if (runToken.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+              if (inputMessage) {
+                if (d.messages.getMessage(inputMessage.id)?.current_revision !== effective.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
+                d.voiceObservations?.commitProjection({ messageId: inputMessage.id, revision: effective.revision }, turnId, 'sdk:' + attempt.id, tailProjection.observations);
+              }
+            },
+          }),
           new Promise<never>((_, reject) => {
             const arm = (): void => {
               setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();

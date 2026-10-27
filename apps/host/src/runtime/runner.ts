@@ -21,6 +21,7 @@ export type SdkRunRequest = {
   resumeSessionId: string | null; // 同一 window 的后续轮恢复同一 SDK session（AUD-03）
   abortController: AbortController; // 宿主持有；runner 原样传给 SDK（真实 AbortController）
   onEvent: (ev: SdkNormalizedEvent) => void;
+  onBeforeDispatch?: (info: { attemptIndex: number; payloadWireJson: string }) => Promise<void>;
 };
 
 // —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3；DS 直连驱动复用同一信封形状）——

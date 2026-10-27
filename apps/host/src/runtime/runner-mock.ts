@@ -34,6 +34,7 @@ export class MockRunner implements AgentRunner {
       raw.type === 'result' ? { ...raw, session_id: raw.session_id ?? sessionId! } : raw,
     );
     const normalizer = new SdkEventNormalizer();
+    await req.onBeforeDispatch?.({ attemptIndex: 0, payloadWireJson: JSON.stringify({ prompt: req.prompt }) });
     for (const raw of decorated) {
       if (req.abortController.signal.aborted) return mockFinal(normalizer, sessionId, 'interrupted');
       for (const ev of normalizer.normalize(raw)) req.onEvent(ev);

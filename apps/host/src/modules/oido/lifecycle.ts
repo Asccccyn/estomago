@@ -8,26 +8,28 @@ import { retryOneOidoDelete } from '../../integrations/oido/delete-retry.ts';
 
 export interface OidoModuleLifecycle {
   start(): void;
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 export function createOidoDeleteRetryLifecycle(db: Db, oidoRef: () => OidoAdapter | null): OidoModuleLifecycle {
   let timer: ReturnType<typeof setInterval> | null = null;
   let abort: AbortController | null = null;
+  let work: Promise<unknown> | null = null;
   return {
     start(): void {
       // R6′：oído 删除传播重试——独立定时器（≤1 条/跳，指数退避；表即状态，重启恢复）
       timer = setInterval(() => {
         const oido = oidoRef();
-        if (!oido) return;
+        if (!oido || work) return;
         abort = abort ?? new AbortController();
-        void retryOneOidoDelete(db, oido, abort.signal).catch(() => {});
+        work = retryOneOidoDelete(db, oido, abort.signal).catch(() => {}).finally(() => { work = null; });
       }, 30_000);
       timer.unref?.();
     },
-    stop(): void {
+    async stop(): Promise<void> {
       if (timer) { clearInterval(timer); timer = null; }
       abort?.abort(); // R6′：停删除传播重试
+      await work;
     },
   };
 }

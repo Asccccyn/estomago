@@ -161,6 +161,7 @@ export function assembleTestTools(deps: TestToolDeps): {
   // 未注入=运行时如实 INTEGRATION_UNCONFIGURED，与生产装配一致）
   registerVoiceCapabilities(registry, {
     db, sirenCall: (deps.sirenCall ?? null) as never, programFacts: (deps.programFacts ?? null) as never,
+    media: (deps.media ?? null) as never, messages: (deps.messages ?? null) as never,
   });
   const tools = new ModelToolBridge({ db, events: (deps.events ?? null) as never });
   (tools as { setCapabilityRegistry(r: CapabilityRegistry): void }).setCapabilityRegistry(registry);

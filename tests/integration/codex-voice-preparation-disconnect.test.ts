@@ -1,15 +1,4 @@
-// 审计 B2 修复（2026-10-25，Codex 独立复审）：取代旧版两场景测试——旧版悬挂 fake（releaseAnalyse
-// 从不释放、计数在等待之后递增）导致"analyses:0"只是完成数而非派发数，且未查 oido_ingest_receipts。
-// 本版：放行全部迟到响应、分别记录派发/完成、查询真实回执，并补"分析派发中断线"第四场景。
-// 一次性只读审计复现：真实 Host/HTTP，只有外部 Siren/oído/DS transport 为 fake。
-// 场景：用户正常电话输入携带原声，在原声取回过程中断开连接。
-// 前置经真实 HTTP 入口建立；不直接写业务表、不替换 handler/registry/supervisor。
-// P08 批次1（审计修复复现迁入正式目录，源=一次性审计复现 codex-voice-preparation-disconnect）：
-// 真实 Host/HTTP/数据库，只有外部 Siren/oído/DS transport 为 fake。
-// 场景①control：正常电话输入（音频→ingest→analyze→模型）各一次。
-// 场景②disconnect-audio：取音频期间真实 socket 断开——修复后：父取消贯穿 fetch、ingest/analyze/model 不启动、
-//   接纳记录 cancelled、同键重试返回原终态。
-// 场景③disconnect-after-ingest：ingest 已成功后断开——receipt 保留（副作用如实保留），analyze/model 不完成。
+// 正式建呼选择 deep_listen 后验证准备阶段取消；只有外部供应商 transport 为 fake。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -48,6 +37,7 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
   let audioSignal: AbortSignal | null | undefined;
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
+    if (url === 'http://127.0.0.1:47901/v1/calls' && init?.method === 'POST') return Response.json({ call_id: 'audit-call', ws_url: 'ws://127.0.0.1:9/ws/call/audit-call', token: 'synthetic-call' });
     if (url === 'http://127.0.0.1:47901/v1/voice-assets/audit_audio/audio') {
       audioSignal = init?.signal;
       enterAudio();
@@ -89,13 +79,21 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
     },
   });
   let host: Host | null = null;
-  let retryPort = 0;
   try {
     host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
-    retryPort = host.port;
-    // Observe actual socket closure; do not substitute request handling.
-    (host as any).server.on('request', (_req: any, res: any) => res.once('close', serverClosed));
     await host.start();
+    const owner = fs.readFileSync(host.auth.tokenFilePath(), 'utf8').trim();
+    const created = await new Promise<number>((resolve, reject) => {
+      const r = request(`http://127.0.0.1:${host!.port}/api/v1/calls`, { method: 'POST',
+        headers: { authorization: 'Bearer ' + owner, 'content-type': 'application/json' } }, res => {
+        res.resume(); res.once('end', () => resolve(res.statusCode!));
+      });
+      r.on('error', reject);
+      r.end(JSON.stringify({ conversation_id: 'primary', analysis_mode: 'deep_listen' }));
+    });
+    assert.equal(created, 200);
+    // Observe actual socket closure; do not substitute request handling.
+    (host as any).server.on('request', (req: any, res: any) => { if (req.url === '/v1/chat/stream') res.once('close', serverClosed); });
     const body = JSON.stringify({ conversation_id: 'primary', call_id: 'audit-call', turn_id: 'audit-turn', modality: 'voice_call', text: '合成通话输入。', audio_ref: 'siren:audit_audio' });
     let clientClosed!: () => void;
     const clientDone = new Promise<void>(resolve => { clientClosed = resolve; });
@@ -203,12 +201,3 @@ test('disconnect after ingest before analysis: late receipt persists and no late
   assert.deepEqual(result.messages, []);
   assert.equal(result.stream?.state, 'cancelled');
 });
-// 一次性只读审计复现：真实 Host/HTTP，只有外部 Siren/oído/DS transport 为 fake。
-// 场景：用户正常电话输入携带原声，在原声取回过程中断开连接。
-// 前置经真实 HTTP 入口建立；不直接写业务表、不替换 handler/registry/supervisor。
-// P08 批次1（审计修复复现迁入正式目录，源=一次性审计复现 codex-voice-preparation-disconnect）：
-// 真实 Host/HTTP/数据库，只有外部 Siren/oído/DS transport 为 fake。
-// 场景①control：正常电话输入（音频→ingest→analyze→模型）各一次。
-// 场景②disconnect-audio：取音频期间真实 socket 断开——修复后：父取消贯穿 fetch、ingest/analyze/model 不启动、
-//   接纳记录 cancelled、同键重试返回原终态。
-// 场景③disconnect-after-ingest：ingest 已成功后断开——receipt 保留（副作用如实保留），analyze/model 不完成。

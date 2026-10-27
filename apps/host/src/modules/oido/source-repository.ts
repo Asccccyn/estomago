@@ -43,6 +43,16 @@ export class OidoSourceRepository {
   }
 
   /** R6′：导入回执持久化——est asset ↔ oído audio_id 映射（幂等 upsert，deduplicated 指向既有资产时如实更新） */
+  /** JV-17（03§4.2）：通话快观察留档的幂等键（无=该资产未经快观察）。 */
+  quickAnalysisKey(estAssetId: string): string | null {
+    const row = this.db.prepare('SELECT analysis_key FROM oido_ingest_receipts WHERE est_asset_id=?').get(estAssetId) as { analysis_key: string | null } | undefined;
+    return row?.analysis_key ?? null;
+  }
+
+  rememberAnalysisKey(estAssetId: string, key: string): void {
+    this.db.prepare('UPDATE oido_ingest_receipts SET analysis_key=COALESCE(analysis_key,?) WHERE est_asset_id=?').run(key, estAssetId);
+  }
+
   recordIngestReceipt(estAssetId: string, contentSha256: string, oidoAudioId: string, deduplicated: boolean): void {
     this.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
       .run(estAssetId, contentSha256, oidoAudioId, deduplicated ? 1 : 0, new Date().toISOString());

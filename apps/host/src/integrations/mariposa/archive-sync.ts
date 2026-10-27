@@ -13,7 +13,7 @@ import type { HealthComponent } from '../../../../../packages/contracts/src/api.
 import type { Db } from '../../db/connection.ts';
 import { tx } from '../../db/connection.ts';
 import { Buffer } from 'node:buffer';
-import { genId } from '../../util/id.ts';
+import { genId, sha256Hex } from '../../util/id.ts';
 import type { EventService } from '../../events/service.ts';
 import type { Logger } from '../../observability/logging.ts';
 import type { Config } from '../../config/schema.ts';
@@ -52,7 +52,9 @@ export class ArchiveSyncService {
   private client: MariposaClient;
   private streamId: string;
   private enabled: boolean;
-  private draining = false;
+  private drainTask: Promise<DrainSummary> | null = null;
+  private drainRequested = false;
+  private readonly shutdown = new AbortController();
 
   private alerts: import('../../observability/system-alerts.ts').SystemAlertService | null;
   constructor(deps: { db: Db; events: EventService; logger: Logger; client: MariposaClient; config: Config; alerts?: import('../../observability/system-alerts.ts').SystemAlertService | null }) {
@@ -69,6 +71,15 @@ export class ArchiveSyncService {
   private disclosedAssetContract: boolean;
 
   /** §03.10.1：含附件消息的媒体归档状态分列（文字照常/媒体 blocked），每进程聚合披露一次。 */
+  /** GLM_VOICE_UNIFICATION（02§2.2/§4，EV05 修复）：当前修订附件的稳定引用与转写。
+   *  assets 引用沿用 est 权威资产身份（est:<asset_id>，与 oído 引用一致）；
+   *  附件转写在 message_attachments.derived_text（发布时快照）。 */
+  private revisionAttachments(messageId: string, revision: number): Array<{ assetRef: string; derivedText: string | null }> {
+    return (this.db.prepare('SELECT asset_id, derived_text FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position')
+      .all(messageId, revision) as Array<{ asset_id: string; derived_text: string | null }>)
+      .map((a) => ({ assetRef: `est:${a.asset_id}`, derivedText: a.derived_text }));
+  }
+
   private attachmentCount(messageId: string, revision: number): number {
     const n = (this.db.prepare('SELECT COUNT(*) AS n FROM message_attachments WHERE message_id = ? AND revision = ?').get(messageId, revision) as { n: number }).n;
     if (n > 0 && !this.disclosedAssetContract) {
@@ -106,20 +117,32 @@ export class ArchiveSyncService {
     return { status: 'ok', detail: `归档处理器已配置；待处理=${pending}；无未决错误；本查询未探测远端` };
   }
 
-  async drainOnce(): Promise<DrainSummary> {
+  drainOnce(): Promise<DrainSummary> {
     const summary: DrainSummary = { batches: 0, acked: 0, retry_later: 0, dead: 0, skipped_disabled: false, stopped_streams: 0 };
-    if (!this.enabled) {
+    if (!this.enabled || this.shutdown.signal.aborted) {
       summary.skipped_disabled = true;
-      return summary;
+      return Promise.resolve(summary);
     }
-    if (this.draining) return summary; // 单执行者
-    this.draining = true;
-    try {
-      await this.drainLocked(summary);
-    } finally {
-      this.draining = false;
-    }
-    return summary;
+    this.drainRequested = true;
+    if (this.drainTask) return Promise.resolve(summary);
+    this.drainTask = (async () => {
+      try {
+        do {
+          this.drainRequested = false;
+          await this.drainLocked(summary);
+          // 只承接处理中实际收到的发布/修订请求；失败本身不制造无限重试。
+        } while (this.drainRequested && !this.shutdown.signal.aborted);
+        return summary;
+      } finally {
+        this.drainTask = null;
+      }
+    })();
+    return this.drainTask;
+  }
+
+  async stop(): Promise<void> {
+    this.shutdown.abort();
+    await this.drainTask?.catch(() => {});
   }
 
   private async drainLocked(summary: DrainSummary): Promise<void> {
@@ -296,9 +319,7 @@ export class ArchiveSyncService {
         blocked = true;
         break;
       }
-      if (this.attachmentCount(msg.id, rev.revision) > 0) {
-        this.logger.info?.('archive_sync_media_note', { message_id: msg.id, revision: rev.revision, note: 'media_archive_blocked_contract_unverified' });
-      }
+      const attachments = this.revisionAttachments(msg.id, rev.revision);
       const message: IngestMessage = {
         origin_message_id: msg.id,
         revision: rev.revision,
@@ -317,15 +338,27 @@ export class ArchiveSyncService {
         // EXEC_V1 §03.10.1（M2 分列）：Mariposa 附件 schema 未核——含附件消息的文字归档照常，
         // 媒体归档状态如实 blocked（ASSET_ARCHIVE_CONTRACT_UNVERIFIED），不把 assets:[] 冒充
         // "连附件已全部归档"。合同核实落地（M4）前每批只聚合披露一次。
-        // M2 附件披露：assets_note 不进消息载荷（mariposa source.ingest schema
-        // additionalProperties=false 会整批拒——2026-10-17 她报障实测）；披露走日志
-        ...(false ? { assets_note: 'media_archive_blocked_contract_unverified' } : {}),
         occurred_at: rev.occurred_at,
         received_at: rev.received_at,
         published_at: msg.published_at,
-        text: rev.content,
-        assets: [],
-        content_hash: rev.content_hash,
+        // GLM_VOICE_UNIFICATION（02§2.2，F01）：归档正文投影与出站一致——
+        // 正文为空的语音/附件消息用附件转写（发布快照）作为 Source 正文，
+        // content_hash 按投影文本重算（严禁拿空 content 的 hash 给转写签名）；
+        // 非空正文原样（hash=rev.content_hash）。assets 为稳定授权引用字符串。
+        ...(() => {
+          // RR-11（复审）：正文投影与资产引用**独立**决定——正文非空时原文/hash
+          // 不改，仍带真实稳定授权引用；空正文才用可信转写快照并重算 hash。
+          const assetRefs = attachments.map((a) => a.assetRef);
+          if (rev.content.trim().length > 0) {
+            return { text: rev.content, assets: assetRefs, content_hash: rev.content_hash };
+          }
+          const derived = attachments.map((a) => (a.derivedText ?? '').trim()).filter((t) => t.length > 0).join('\n');
+          if (derived.length === 0) {
+            // 有附件但无任何转写：正文如实为空（B03 不伪造），仍归档资产引用
+            return { text: rev.content, assets: assetRefs, content_hash: rev.content_hash };
+          }
+          return { text: derived, assets: assetRefs, content_hash: sha256Hex(derived) };
+        })(),
       };
       // F16 + D21（审计 3655d60）：按"完整请求信封"的**实际序列化字节**计——不再用固定 166B 常量
       // （scope/origin id 变长时曾放行 >1MiB 请求被服务端拒）。候选入批后序列化整个请求验证，
@@ -375,7 +408,7 @@ export class ArchiveSyncService {
     const exhausted = (): boolean => attemptsNow > INGEST_BATCH_MAX_ATTEMPTS;
     let result: Awaited<ReturnType<MariposaClient['sourceIngest']>>;
     try {
-      result = await this.client.sourceIngest(request);
+      result = await this.client.sourceIngest(request, this.shutdown.signal);
     } catch (err) {
       // 网络未知：可能已提交（§4.3）——unknown_outcome，下一轮按冻结 payload 同 op 重放。
       // 审计 F15：重试预算同样约束未知路径——超限如实 dead，不无限 in_flight。

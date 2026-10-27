@@ -6,6 +6,34 @@
 
 export type SirenTranscribeResult = { text: string; language: string | null; durationMs: number | null; voiceMessageId: string | null } | null;
 
+export type SirenCallAudioTurn = {
+  turn_id: string;
+  turn_index: number;
+  outcome: string | null;
+  user_audio: { asset_id: string; duration_ms: number } | null;
+  reply_audio: { asset_id: string; duration_ms: number; completeness: 'complete' | 'partial' | null } | null;
+  sent_audio_ms: number | null;
+  filler_audio_ms: number | null;
+  playback: { basis: 'unknown' | 'client_drained' } | { basis: 'client_reported'; played_ms: number };
+};
+
+function parseCallAudio(data: unknown, callId: string): SirenCallAudioTurn[] {
+  const invalid = (): never => { throw new SirenTranscriptionError('SIREN_CALL_AUDIO_INVALID'); };
+  const obj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
+  const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  const audio = (v: unknown): boolean => v === null || (obj(v) && typeof v.asset_id === 'string' && v.asset_id.length > 0 && ms(v.duration_ms));
+  if (!obj(data) || data.schema_version !== 1 || data.call_id !== callId || !Array.isArray(data.turns)) return invalid();
+  for (const t of data.turns) {
+    if (!obj(t) || typeof t.turn_id !== 'string' || !t.turn_id || !Number.isInteger(t.turn_index) || Number(t.turn_index) < 0
+      || !(t.outcome === null || typeof t.outcome === 'string') || !audio(t.user_audio) || !audio(t.reply_audio)
+      || !(t.sent_audio_ms === null || ms(t.sent_audio_ms)) || !(t.filler_audio_ms === null || ms(t.filler_audio_ms))) return invalid();
+    if (t.reply_audio !== null && (!obj(t.reply_audio) || ![null, 'complete', 'partial'].includes(t.reply_audio.completeness as null | string))) return invalid();
+    if (!obj(t.playback) || !['unknown', 'client_drained', 'client_reported'].includes(String(t.playback.basis))
+      || (t.playback.basis === 'client_reported' && !ms(t.playback.played_ms))) return invalid();
+  }
+  return data.turns as SirenCallAudioTurn[];
+}
+
 export class SirenTranscriptionError extends Error {
   readonly code: string;
   readonly uncertain: boolean;
@@ -122,6 +150,29 @@ export class SirenAdapter {
     return await res.json() as Record<string, unknown>;
   }
 
+  /** F-02（跨仓预审 2026-10-25）：POST /v1/calls——接听交接的建呼出口。
+   *  与邀请族同一 adapter（同 baseUrl/凭据/超时），不让邀请链一半走 env 直读的
+   *  createCallFromInternalEnv（预审 U 类：两套配置来源易漂移）。
+   *  契约与 createCallFromInternalEnv 一致：call_id/ws_url/token 必备，缺=合同无效；
+   *  expires_at 可选透传（R-03：接听重放时判断短 token 是否仍可连）。 */
+  async createCall(conversationId: string, opts: { signal?: AbortSignal } = {}): Promise<{ ok: true; callId: string; wsUrl: string; token: string; expiresAt?: string } | { ok: false; code: 'SIREN_UNREACHABLE' | 'SIREN_CALL_FAILED' | 'SIREN_CONTRACT_INVALID'; httpStatus?: number }> {
+    if (this.status === 'not_configured') return { ok: false, code: 'SIREN_CALL_FAILED' };
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/calls`, {
+        method: 'POST', headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: conversationId }), redirect: 'error',
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      });
+    } catch { return { ok: false, code: 'SIREN_UNREACHABLE' }; }
+    if (!res.ok) return { ok: false, code: 'SIREN_CALL_FAILED', httpStatus: res.status };
+    const created = await res.json().catch(() => null) as { call_id?: unknown; ws_url?: unknown; token?: unknown; expires_at?: unknown } | null;
+    if (!created || typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
+      return { ok: false, code: 'SIREN_CONTRACT_INVALID' };
+    }
+    return { ok: true, callId: created.call_id, wsUrl: created.ws_url, token: created.token, ...(typeof created.expires_at === 'string' ? { expiresAt: created.expires_at } : {}) };
+  }
+
   /** A11（2026-10-24）：POST /v1/calls/:id/hangup-request——模型提出挂断（立即回执；
    *  真正结束由 Siren drain→linger 决定，她开口可取消）。 */
   async requestHangup(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ accepted: boolean } | null> {
@@ -137,6 +188,69 @@ export class SirenAdapter {
     if (!res.ok) throw new SirenTranscriptionError('SIREN_HANGUP_REQUEST_FAILED');
     const data = await res.json() as { accepted?: unknown };
     return { accepted: data.accepted === true };
+  }
+
+  /** 真实 turn UUID 是跨仓关联键；没有音频的轮次也必须保留，不能按数组位置猜配。 */
+  async callTurnAudio(callId: string, opts: { signal?: AbortSignal } = {}): Promise<SirenCallAudioTurn[] | 'not_found' | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/calls/${encodeURIComponent(callId)}/turn-audio`, {
+        headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (res.status === 404) return 'not_found';
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_CALL_STATUS_FAILED');
+    return parseCallAudio(await res.json(), callId);
+  }
+
+  /** GLM_VOICE_UNIFICATION（04§5.3，A05）：POST /v1/voice/synthesize——char主动
+   *  语音的真实合成出口（模型在 est 工具 chat_send_voice 下调用）。返回音频字节+
+   *  时长/格式头；失败如实（付费 TTS 边界在 Siren）。 */
+  async synthesize(args: { text: string; ttsScript?: string; emotion?: string; speed?: number; signal?: AbortSignal }): Promise<{ bytes: Uint8Array; mime: string; format: string; durationMs: number | null; profileId: string | null } | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/voice/synthesize`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${this.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: args.text, ...(args.ttsScript ? { tts_script: args.ttsScript } : {}), ...(args.emotion ? { emotion: args.emotion } : {}), ...(args.speed !== undefined ? { speed: args.speed } : {}) }),
+        redirect: 'error',
+        signal: args.signal ?? AbortSignal.timeout(30000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (!res.ok) throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    return {
+      bytes,
+      mime: res.headers.get('content-type') ?? 'audio/mpeg',
+      format: res.headers.get('x-siren-format') ?? 'mp3',
+      durationMs: Number(res.headers.get('x-siren-duration-ms')) || null,
+      profileId: res.headers.get('x-siren-voice-profile'),
+    };
+  }
+
+  /** JV-04（联合审计 2026-10-26）：GET /v1/calls/:id——Siren 会话事实（只读、幂等）。
+   *  db_status 来自 Siren 持久正本（ended=已收口），session_active=WS 会话仍在；
+   *  est 启动对账据此纠正 voice_calls 投影。404=正本无此通话（返回 null 之外的
+   *  三态由调用方区分：throw=不可达）。 */
+  async callStatus(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ dbStatus: 'active' | 'ended'; sessionActive: boolean } | 'not_found' | null> {
+    if (this.status === 'not_configured') return null;
+    let res: Response;
+    try {
+      res = await this.transport(`${this.baseUrl.replace(/\/$/, '')}/v1/calls/${encodeURIComponent(callId)}`, {
+        headers: { 'Authorization': `Bearer ${this.token}` }, redirect: 'error',
+        signal: opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(5000)]) : AbortSignal.timeout(5000),
+      });
+    } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
+    if (res.status === 404) return 'not_found';
+    if (!res.ok) throw new SirenTranscriptionError('SIREN_CALL_STATUS_FAILED');
+    const data = await res.json() as { db_status?: unknown; session_active?: unknown };
+    return {
+      dbStatus: data.db_status === 'ended' ? 'ended' : 'active',
+      sessionActive: data.session_active === true,
+    };
   }
 
   // —— 协议②（2026-10-24）：通话用户原声取回（服务间只读；绑 est 消息供 oído）——
@@ -156,32 +270,4 @@ export class SirenAdapter {
     if (!res.ok) throw new SirenTranscriptionError('SIREN_AUDIO_FETCH_FAILED');
     return { bytes: new Uint8Array(await res.arrayBuffer()), mime: res.headers.get('content-type') ?? 'audio/wav' };
   }
-}
-
-// —— P03.5：受控建呼工厂（原 callControl.accept_call 内的直接 fetch + 环境变量读取抽出）——
-// URL、认证（可选内部 token）、5s 超时、返回与 unknown 语义逐字保持；配置存在≠服务在线
-//（不可达仍如实 SIREN_UNREACHABLE）。不在通用 executor 读 Siren 配置。
-export type SirenCallCreation =
-  | { ok: true; call_id: string; ws_url: string; token: string }
-  | { ok: false; code: 'SIREN_UNCONFIGURED' | 'SIREN_UNREACHABLE' | 'SIREN_CONTRACT_INVALID' }
-  | { ok: false; code: 'SIREN_CALL_FAILED'; httpStatus: number };
-
-export async function createCallFromInternalEnv(conversationId: string, opts: { signal?: AbortSignal } = {}): Promise<SirenCallCreation> {
-  const sirenBase = process.env.ESTOMAGO_SIREN_BASE_URL;
-  if (!sirenBase) return { ok: false, code: 'SIREN_UNCONFIGURED' };
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  const sirenToken = process.env.ESTOMAGO_SIREN_INTERNAL_TOKEN;
-  if (sirenToken) headers.Authorization = `Bearer ${sirenToken}`;
-  let sirenRes: Response;
-  try {
-    sirenRes = await fetch(`${sirenBase.replace(/\/$/, '')}/v1/calls`, { method: 'POST', headers, body: JSON.stringify({ conversation_id: conversationId }), signal: opts.signal ?? AbortSignal.timeout(5000) });
-  } catch {
-    return { ok: false, code: 'SIREN_UNREACHABLE' };
-  }
-  if (!sirenRes.ok) return { ok: false, code: 'SIREN_CALL_FAILED', httpStatus: sirenRes.status };
-  const created = await sirenRes.json() as { call_id?: string; ws_url?: string; token?: string };
-  if (typeof created.call_id !== 'string' || typeof created.ws_url !== 'string' || typeof created.token !== 'string') {
-    return { ok: false, code: 'SIREN_CONTRACT_INVALID' };
-  }
-  return { ok: true, call_id: created.call_id, ws_url: created.ws_url, token: created.token };
 }

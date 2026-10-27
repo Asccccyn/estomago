@@ -49,7 +49,7 @@ export const OIDO_VIEW_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_view',
-      description: '读取深听结果的测量图（波形+基频 PNG）。返回 base64 图与元数据；原生图块直送主模型的运输路径尚未接通（如实声明），图主要供界面展示。',
+      description: '读取深听结果的概览图（波形与基频 PNG），可指定时间范围。支持图片的模型可查看原图；未携带图片时返回界面引用与限制说明。',
       parameters: {
         type: 'object',
         properties: {
@@ -161,8 +161,7 @@ function oidoSimpleCapability<I extends Record<string, unknown>>(o: {
   id: string; baselineOrder: number; definition: HostToolSpec | (() => HostToolSpec); memoryOnlyAllowed: boolean;
   run: (input: I, ctx: import('../../capabilities/contracts.ts').ToolExecContext) => Promise<import('../../capabilities/contracts.ts').CapabilityOutcome<Record<string, unknown>>>;
 }, deps: OidoModuleDeps): CapabilityDescriptor<I, Record<string, unknown>> {
-  const service = new OidoHearingService(deps);
-  void service;
+  // JV-Q1：删构造后立即 void 的空壳 service（真闭包用外层 service，行为不变）
   // 惰性保留工厂（不提前执行）；窄化用 cast 表达
   const defFactory: () => HostToolSpec = typeof o.definition === 'function'
     ? o.definition

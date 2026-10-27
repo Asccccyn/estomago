@@ -6,23 +6,23 @@ import { json, readJson, ClientBodyError } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
 import { sha256Hex } from '../../util/id.ts';
 import { toSseDto } from './events.ts';
+import { oidoModelView } from '../../integrations/oido/model-view.ts';
 
 /** 语音快速观察（原声+转写→oído 快速通道；自 http.ts 逐字随迁——stream 与 transcribe 共用语义在此声明）。 */
-async function quickVoiceObservation(d: RequestDeps, a: { assetId: string; bytes: Uint8Array; sha256: string; mime: string; transcript: string; signal?: AbortSignal }): Promise<string | null> {
-  // 审计修复：signal 贯穿（oído 适配器已有 lifetime 合并机制，复用）；ingest 返回真实 receipt 先保留，再检查取消，禁止继续 analyze
-  const receipt = await d.oido!.ingestVoice({ assetId: a.assetId, bytes: Buffer.from(a.bytes), sha256: a.sha256, mime: a.mime, transcript: { text: a.transcript, source: 'siren:call' }, timeoutMs: 6000, signal: a.signal });
-  d.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at) VALUES (?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at')
-    .run(a.assetId, a.sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString());
-  if (a.signal?.aborted) throw Object.assign(new Error('CANCELLED_AFTER_INGEST'), { name: 'AbortError' });
-  const result = await d.oido!.analyze({ assetId: a.assetId, waitMs: 600, idempotencyKey: `es-call-${a.assetId}`, timeoutMs: 4000, signal: a.signal }).catch((err: unknown) => { if (a.signal?.aborted) throw err; return null; });
-  if (!result || (result.state !== 'ready' && result.state !== 'partial')) return null;
-  const observations = (result as { observations?: Array<Record<string, unknown>> }).observations;
-  if (!Array.isArray(observations) || observations.length === 0) return null;
-  const first = observations[0]!;
-  const kind = String(first['kind'] ?? '观察');
-  const value = first['value'] == null ? String(first['reason'] ?? '不可用') : `${first['value']}${first['unit'] ? ' ' + first['unit'] : ''}`;
-  const text = `${kind}：${value}`.slice(0, 120);
-  return text;
+async function quickVoiceObservation(d: RequestDeps, input: { assetId: string; bytes: Uint8Array; sha256: string; mime: string; transcript: string; deadlineAt: number; signal?: AbortSignal }): Promise<Record<string, unknown> | null> {
+  const remaining = (): number => input.deadlineAt - Date.now();
+  if (remaining() <= 0) return null;
+  const analysisKey = 'es-call-' + input.assetId;
+  const receipt = await d.oido!.ingestVoice({
+    assetId: input.assetId, bytes: Buffer.from(input.bytes), sha256: input.sha256, mime: input.mime,
+    transcript: { text: input.transcript, source: 'siren:call' }, timeoutMs: remaining(), signal: input.signal,
+  });
+  d.db.prepare('INSERT INTO oido_ingest_receipts(est_asset_id,content_sha256,oido_audio_id,deduplicated,ingested_at,analysis_key) VALUES (?,?,?,?,?,?) ON CONFLICT(est_asset_id) DO UPDATE SET oido_audio_id=excluded.oido_audio_id,deduplicated=excluded.deduplicated,ingested_at=excluded.ingested_at,analysis_key=excluded.analysis_key')
+    .run(input.assetId, input.sha256, receipt.audioId, receipt.deduplicated ? 1 : 0, new Date().toISOString(), analysisKey);
+  input.signal?.throwIfAborted();
+  if (remaining() <= 0) return null;
+  const result = await d.oido!.analyze({ assetId: input.assetId, waitMs: Math.min(600, remaining()), idempotencyKey: analysisKey, timeoutMs: remaining(), signal: input.signal });
+  return oidoModelView(result as unknown as Record<string, unknown>);
 }
 
 // ── R4（2026-10-23）：voice ingress——Siren CoreBridge 的同窗电话入口（NDJSON）──────────
@@ -116,13 +116,20 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
 
   // —— 协议②（2026-10-24）：本轮用户原声——Siren 已按 audio_ref=siren:<asset_id> 落资产，
   //    est 取回字节存本地 chat_voice 资产并绑定为该消息附件（oído 快证据/按需深听可用）。
-  //    失败不阻断通话（如实降级为纯文字轮）；快证据有界等待（≤600ms，未就绪不拖电话）。
+  //    失败不阻断通话（如实降级为纯文字轮）。JV-17（联合审计 2026-10-26，注释纠正）：
+  //    600ms 只是 analyze 单段的等待窗——此前串行链还含原声取回/ingest/转写挂载，
+  //    总准备耗时大于 600ms；不把本注释读成"全链≤600ms"承诺（总预算裁定待定）。
   //    审计修复：取消不得被降级 catch 吞掉——每个异步操作返回后先复核请求存活再落副作用。
+  // JV-17：t0=本轮结束（Siren 在 ASR final 后才上桥）——快观察机会窗统一起点
+  const turnEndT0 = Date.now();
+  const QUICK_OBS_WINDOW_MS = 1500;
   const audioRef = typeof input.audio_ref === 'string' && /^siren:[A-Za-z0-9_-]{1,128}$/.test(input.audio_ref) ? input.audio_ref.slice('siren:'.length) : null;
-  let attachment: { asset_id: string; presentation: 'voice' } | null = null;
+  let attachment: { asset_id: string; presentation: 'voice'; caption?: string | null } | null = null;
   let transcriptText: string | null = null;
+  let pendingObsRegistration: { assetId: string; view: Record<string, unknown> | null } | null = null;
   if (audioRef && d.media && d.sirenCall) {
     try {
+      // R2-05（复审）：原声取回是**必要媒体保存**，不受可选观察 1500ms 窗裁剪
       const audio = await d.sirenCall.fetchVoiceAssetAudio(audioRef, { timeoutMs: 8000, signal: prepareAbort.signal });
       if (prepareAbort.signal.aborted) return; // 取消：接纳已收口，无后续副作用
       if (audio) {
@@ -135,22 +142,18 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
         transcriptText = input.text;
         d.db.prepare("INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,content_sha256,state,derived_text,derived_source,duration_ms,created_at,updated_at) VALUES (?,?,?,?,'ready',?,?,NULL,?,?) ON CONFLICT(asset_id) DO UPDATE SET derived_text=excluded.derived_text,updated_at=excluded.updated_at")
           .run(asset.id, conversationId, `siren:${callId}:${turnKey}`, asset.content_sha256, transcriptText, 'siren:call', new Date().toISOString(), new Date().toISOString());
-        // 快证据（A14 语义：宿主消费，非模型工具轮）：有界等待；未就绪=不带，不回写不拖电话。
-        // 审计修复：signal 贯穿 ingest/analyze；ingest 已返回真实 receipt 时先保留 receipt 再检查取消，
-        // 禁止继续 analyze；取消不得被"快证据失败忽略"吞掉。
-        if (d.oido?.configured) {
-          try {
-            const obs = await quickVoiceObservation(d, { assetId: asset.id, bytes: audio.bytes, sha256: asset.content_sha256, mime: audio.mime, transcript: input.text, signal: prepareAbort.signal });
-            if (prepareAbort.signal.aborted) return; // receipt 已持久化；不提交正式消息
-            if (obs) {
-              const marked = `\n[声音观察（oído 快证据，非转写）：${obs}]`;
-              d.db.prepare('UPDATE voice_transcripts SET derived_text=? WHERE asset_id=?').run(transcriptText + marked, asset.id);
-              transcriptText = transcriptText + marked;
+        const callMode = (d.db.prepare('SELECT analysis_mode FROM voice_calls WHERE call_id=?').get(callId) as { analysis_mode: string | null } | undefined)?.analysis_mode ?? 'ordinary';
+        if (callMode === 'deep_listen' && d.voiceObservations) {
+          let view: Record<string, unknown> | null = null;
+          if (d.oido?.configured) {
+            try {
+              view = await quickVoiceObservation(d, { assetId: asset.id, bytes: audio.bytes, sha256: asset.content_sha256, mime: audio.mime, transcript: input.text, deadlineAt: turnEndT0 + QUICK_OBS_WINDOW_MS, signal: prepareAbort.signal });
+            } catch {
+              if (prepareAbort.signal.aborted) return;
+              // 机会窗只结束本次可选等待；持久任务在消息接纳后继续。
             }
-          } catch (err) {
-            if (prepareAbort.signal.aborted) return; // 取消不得被吞
-            /* 快证据失败=不带（如实缺省） */
           }
+          pendingObsRegistration = { assetId: asset.id, view };
         }
         d.media.validateForSend([{ asset_id: asset.id, presentation: 'voice' }]); // §5.2：附件先全量校验再入事务
         if (prepareAbort.signal.aborted) return; // 提交正式消息前再检查一次（操作期间存活的请求状态复核）
@@ -171,7 +174,22 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
     occurredAt: new Date().toISOString(),
     ...(attachment ? { attachments: [attachment] } : {}),
   });
+  // JV-08（联合审计 2026-10-26）：语音接纳行统一发布普通消息入口的既有合同
+  // （message.persisted/turn.started，防重判据与 conversations.ts 相同：kind+turn_id）
+  // ——SDK driver 不触发 dispatch 补发时，用户语音消息不再"落库但页面刷新才可见"。
+  {
+    const vmsg = d.messages.getMessage(sub.message.id);
+    if (vmsg && (d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('message.persisted', sub.turnId) as { n: number }).n === 0) {
+      d.events.publish('message.persisted', { conversationId, turnId: sub.turnId, entityRef: vmsg.id, entityRevision: vmsg.sequence, payload: { message: vmsg } });
+    }
+    if ((d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('turn.started', sub.turnId) as { n: number }).n === 0) {
+      d.events.publish('turn.started', { conversationId, turnId: sub.turnId, attemptId: sub.attemptId, payload: {} });
+    }
+  }
   estTurnId = sub.turnId; // 审计修复：turnId 接线到统一取消处理（此后断开→stop 该 turn）
+  if (pendingObsRegistration && d.voiceObservations) {
+    d.voiceObservations.recordCallTurnObservation(sub.message.id, 1, pendingObsRegistration.assetId, pendingObsRegistration.view);
+  }
   d.db.prepare("UPDATE voice_stream_turns SET est_turn_id=?, state='running', updated_at=? WHERE call_id=? AND turn_key=?")
     .run(sub.turnId, new Date().toISOString(), callId, turnKey);
 
@@ -254,9 +272,11 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
       } else if (row.kind === 'turn.status') {
         const state = row['state'] as string | undefined;
         const reason = row['reason'] as string | undefined;
-        if (state === 'failed') {
-          send({ type: 'error', message: reason ?? 'turn failed' });
-          admissionClose('failed');
+        // RR-12（复审）：blocked 等确定拒绝终态也如实收口 NDJSON——客户端不等
+        // Siren 60s 超时；completed/interrupted 口径不变。
+        if (state === 'failed' || state === 'blocked') {
+          send({ type: 'error', message: reason ?? (state === 'blocked' ? '模型能力暂不可用（blocked）' : 'turn failed') });
+          admissionClose(state === 'blocked' ? 'failed' : 'failed');
           cleanup();
           return;
         }

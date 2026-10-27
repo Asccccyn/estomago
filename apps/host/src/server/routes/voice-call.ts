@@ -22,9 +22,15 @@ export async function handleVoiceCallLifecycle(req: IncomingMessage, res: Server
     if (!idOk(body.call_id) || !idOk(body.conversation_id)) return ndjsonError(422, 'call_id and conversation_id required');
     if (!d.db.prepare('SELECT 1 FROM conversations WHERE id=?').get(body.conversation_id)) return ndjsonError(404, 'conversation not found');
     const existing = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(body.call_id) as { state: string } | undefined;
-    if (existing?.state === 'active') return json(res, 200, { call_id: body.call_id, state: 'active' });
+    if (existing?.state === 'active') {
+      // 复审二 R-03B：Siren WS 会话注册=该通话真实建立连接的事实——记录 connected_at。
+      // 连接 token 过期只影响新握手、不结束通话；接听重放的收口判定以此事实为据。
+      d.db.prepare('UPDATE voice_calls SET connected_at=COALESCE(connected_at, ?) WHERE call_id=?').run(nowIso, body.call_id);
+      return json(res, 200, { call_id: body.call_id, state: 'active' });
+    }
     if (existing?.state === 'ended') return ndjsonError(409, 'call already ended (new call needs a new call_id)');
-    d.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,\'active\',?)".replace("\\'", "'")).run(body.call_id, body.conversation_id, nowIso);
+    // 调用方=Siren lifecycle register（WS 会话注册）：立册即已连接
+    d.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at) VALUES (?,?,\'active\',?,?)".replace("\\'", "'")).run(body.call_id, body.conversation_id, nowIso, nowIso);
     return json(res, 200, { call_id: body.call_id, state: 'active', memory_only: true });
   }
   const m = /^DELETE \/v1\/calls\/([^/]+)$/.exec(route);

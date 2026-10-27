@@ -75,6 +75,10 @@ function makeSirenTransport(log: Array<{ url: string; method: string }>): typeof
     }
     if (u.includes('/accept')) return Response.json({ invite_id: 'inv-fake-1', state: 'accepted', changed: true, state_version: 2, expires_at: 1 });
     if (u.includes('/decline')) return Response.json({ invite_id: 'inv-fake-1', state: 'declined', changed: true, state_version: 2, expires_at: 1 });
+    // F-02（Phase 0.5）：邀请 accept 交接经同一 adapter 建 Siren 通话
+    if (u.endsWith('/v1/calls') && (init?.method ?? 'GET') === 'POST') {
+      return Response.json({ call_id: 'sc-fake-1', ws_url: 'ws://127.0.0.1:1/ws/call/sc-fake-1', token: 'tk-1', expires_at: new Date().toISOString(), conversation_id: 'primary' }, { status: 200 });
+    }
     if (u.includes('/v1/voice-assets/') && u.includes('/audio')) {
       const bytes = WAV();
       return new Response(new Uint8Array(bytes), { status: 200, headers: { 'Content-Type': 'audio/wav', 'Content-Length': String(bytes.length) } });
@@ -137,10 +141,16 @@ test('协议② audio_ref：原声取回→资产绑定→快证据标记', asyn
     assert.equal(att.mime_type, 'audio/wav');
     const vt = ctx.db.prepare('SELECT derived_text FROM voice_transcripts WHERE asset_id=?').get(att.id) as { derived_text: string };
     assert.ok(vt.derived_text.includes('电话里说的话。'), '转写入库');
-    assert.ok(vt.derived_text.includes('[声音观察（oído 快证据，非转写）：末尾停顿'), '快证据标记行随转写进模型面: ' + vt.derived_text);
+    // JV-14（联合审计 2026-10-26）：观察走附件 caption（独立通道）——derived_text
+    // 保持纯 ASR 正本，不再拼写"非转写"标记（此前会被 transcript_read/oído 当纯转写回传）
+    assert.ok(!vt.derived_text.includes('[声音观察'), '转写正本不得混入观察: ' + vt.derived_text);
+    const cap = ctx.db.prepare('SELECT caption FROM message_attachments WHERE asset_id=?').get(att.id) as { caption: string | null };
+    // P04（GLM_VOICE_UNIFICATION）：普通电话（本用例未显式选深听）自动 oído 调用数为 0
+    // ——不再有快观察 caption；A03 的深听分支见 phase05-voice-remediation 模式分流用例
+    assert.equal(cap.caption, null, '普通电话不自动观察: ' + cap.caption);
     // ③ 流正常完成
     assert.ok(res.lines.some((l) => l.includes('"done"')), '电话轮完成');
-    console.log(JSON.stringify({ case: 'p2_audio_chain', transcript: vt.derived_text.slice(0, 80) }));
+    console.log(JSON.stringify({ case: 'p2_audio_chain', transcript: vt.derived_text.slice(0, 80), ordinary_call_zero_auto_oido: true }));
   } finally {
     if (prior === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = prior;
     await ctx.supervisor.stopAll();
