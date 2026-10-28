@@ -1,10 +1,10 @@
 # estómago Claude Agent SDK 接入验收
 
-本轮完成候选代码和隔离验收，**没有部署或启用正式订阅入口**。生产目录、生产配置、聊天数据库和 VPS 代理均未修改。解锁后补验了当前家宽 HTTP 出口与设置页，用户已通过官方运行时完成本机登录。官方 SDK 的套餐和额度数据仍不完整，模型准入保持阻断；真实订阅模型请求、额度事件和缓存命中尚未验收。
+本轮完成候选代码和隔离验收，**没有部署或启用正式订阅入口**。生产目录、生产配置、聊天数据库和 VPS 代理均未修改。解锁后补验了当前家宽 HTTP 出口与设置页，用户已完成官方本机登录。一笔独立 SDK 合成短消息已成功，服务端确认使用订阅额度且未用额外付费；完整宿主的自动准入、真实工具续轮及缓存等验收尚未完成。新增模型请求已停止。
 
 基线为 `52c7dcb44abd9390ff2ca6317ab647cad18261d4`，取自现行整合工作树；候选分支为 `sdk-subscription-integration`。实际安装并保持不变的是 `@anthropic-ai/claude-agent-sdk 0.3.283`，随包官方运行时 `Claude Code 2.1.283`。已比较候选和既有发布目录中的官方二进制，字节一致。MCP SDK 已有的 peer 包 `1.30.1` 被显式列为依赖，锁文件经 npm 重新生成，没有升级 Claude SDK。
 
-实现提交：`1f667b9`；登录后按实际官方账户元数据修正准入的提交为 `13ff61e`。本报告和 README 索引另行记录。
+实现提交：`1f667b9`；按实际官方账户元数据修正准入为 `13ff61e`；删除套餐名称硬匹配为 `d9b5d33`。本报告和 README 索引另行记录。
 
 ## 接入变化
 
@@ -91,9 +91,19 @@ SDK stream 用量按每笔请求写入既有用量账本，忽略重复的整轮
 
 2026-10-28 07:32 PDT 的 SDK 控制接口返回 `apiProvider: firstParty`、`subscriptionType: Claude API`，未提供 tokenSource 或 apiKeySource；usage 返回 `rate_limits_available: true`，但 `subscription_type`、`rate_limits` 均为空。本次检查会话的 SDK 费用为 0、模型用量表为空；检查器从未放行模型输入。模型目录可读取不代表账户已获对应型号权限。
 
-已只读核对当前安装运行时：正常本机 OAuth 登录会省略 tokenSource；未识别到套餐时，显示名称默认落到 `Claude API`，这个标签不是使用 API key 的证据。`13ff61e` 删除了 tokenSource 必须存在的错误前提，按 usage 中明确的 pro/max/team/enterprise 套餐及额外付费关闭状态准入，并保留 API key 来源的拒绝。修正后当前实际阻塞为 `SDK_EXTRA_USAGE_UNVERIFIED`，未转交 OR，也未发送收费测试请求。已有 15 项额度/工具/流式单测及两项 SDK 合同测试、主机类型检查均通过。
+已只读核对当前安装运行时：正常本机 OAuth 登录会省略 tokenSource；未识别到套餐时，显示名称默认落到 `Claude API`，这个标签不是使用 API key 的证据。`13ff61e` 删除了 tokenSource 必须存在的错误前提，`d9b5d33` 进一步删除了套餐名称硬匹配，保留第一方认证、API key 来源拒绝及额外付费检查。已有 15 项额度/工具/流式单测及两项 SDK 合同测试、主机类型检查均通过。当前完整宿主仍因 usage 接口缺少额外付费数据返回 `SDK_EXTRA_USAGE_UNVERIFIED`；没有自动转交 OR。
 
 本机官方资料缓存显示 Apple 订阅计费方式及额外付费关闭；这是账户资料证据，不能代替尚未取得的当前 usage 响应。账户检查脚本和脱敏结果位于任务输出目录，原始诊断仅经内存筛选，不保存授权码、token 或请求头。未知套餐/usage 的具体原因仍待确认，未通过修改凭据或硬编码套餐绕过。
+
+补充对照：用户确认套餐为 Pro；官方网页侧显示 Pro 有效、使用积分关闭。08:17 PDT 在独立临时目录用官方 SDK `0.3.312`／运行时 `2.1.312` 查询同一本机登录，仍得到空套餐与空 rate_limits，模型输入未提交、会话费用 0、模型用量表为空。候选及生产依赖仍为 `0.3.283`，没有因这个对照替换版本。
+
+公开检索发现高度相似的 [iOS App Store 套餐识别报告 #34049](https://github.com/anthropics/claude-code/issues/34049) 与 [Pro 登录成功但 subscriptionType 为空的报告 #36769](https://github.com/anthropics/claude-code/issues/36769)。这些是官方仓库中的用户报告，部分被机器人关闭，不能据此声称 Anthropic 已确认本机根因或修复。现有证据更符合 OAuth 套餐资料识别／同步异常；尚未定位具体故障端，也未找到已验证的本地修复。不能据此要求用户更换付费渠道、手填 pro、删除凭据或使用 API key。
+
+08:41 PDT 做了一笔独立真实 SDK 请求，依据已完成的官方登录及已核对的使用积分关闭状态放行；它没有走完整宿主的自动预检，也未启用生产入口。自定义 system 为 `This is a synthetic connectivity check. Reply only with EST_SDK_OK.`，用户消息为 `Synthetic test. Reply only with EST_SDK_OK.`。实际型号 `claude-sonnet-5`，工具为空，session 不持久化；返回 `EST_SDK_OK`，成功结果，观察到两次文本增量。未提交 est 的真实身份、记忆或聊天正文。
+
+这笔请求实际消耗订阅输入 500／输出 11 tokens。真实 `rate_limit_event` 为 `status: allowed`、`rateLimitType: five_hour`、`isUsingOverage: false`、`overageStatus: rejected`、`overageDisabledReason: org_level_disabled`。SDK 的 `costUSD: 0.00111` 标注 `costBasis: list`，属于价目表用量估值，不能当成 API 账单。缓存创建/读取均为 0；短消息不构成缓存命中验收。脱敏结果在任务输出目录 `official-subscription-message.json`。
+
+该结果直接证明：套餐字段为空不妨碍此账号的实际 SDK 订阅调用。此前把套餐识别失败等同于不能使用 SDK 的判断过严。请求后的只读 usage 查询仍为空；完整宿主如何可靠取得额外付费状态仍须收口，不能把这笔独立诊断冒充整个正式接入已通过。已停止新增真实模型请求。
 
 按用户要求，准备了任务输出目录中的 `登录-Claude-官方订阅.command`。它启动前再次检查家宽出口，使用替换式环境和本机代理网络限制，再执行未修改的官方运行时 `auth login --claudeai`；用户在终端打开官方链接并手动输入授权码。没有把授权码、token 或真实认证请求写入抓包日志。
 
