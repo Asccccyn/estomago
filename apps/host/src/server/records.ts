@@ -6,6 +6,7 @@ import type { WindowManager } from '../windows/manager.ts';
 import { lastCacheEvidence, keepwarmTargetAtMs } from '../runtime/cache-observation.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
 import { SubscriptionAccessRunner } from '../runtime/subscription-access.ts';
+import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
 
 export type RecordSnapshot = {
   roomId: string;
@@ -58,16 +59,10 @@ export function buildRecordSnapshot(d: {
     estimated = Math.ceil(chars / charsPerToken);
     quality = 'rough';
   }
-  const lastUsage = win
-    ? (d.db.prepare(
-        `SELECT u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.observed_at
-         FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id
-         WHERE (u.window_id = ? OR a.window_id = ?) AND u.source IN ('or_stream','ds_stream') AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
-         ORDER BY u.observed_at DESC LIMIT 1`,
-      ).get(win.id, win.id) as { input_tokens: number; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; observed_at: string } | undefined)
-    : undefined;
-  if (lastUsage) {
-    estimated = Math.max(estimated ?? 0, lastUsage.input_tokens);
+  const lastUsage = win ? lastRequestUsageForWindow(d.db, win.id) : null;
+  const lastInput = lastUsage ? providerInputTotal(lastUsage) : null;
+  if (lastInput !== null) {
+    estimated = Math.max(estimated ?? 0, lastInput);
     quality = 'calibrated_rough';
   }
   const w = d.config.windows;
@@ -127,7 +122,7 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
-    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
+    context: { estimatedInput: estimated, lastActualInput: lastInput, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
       requestedTtl: driver === 'deepseek' ? 'auto' : '1h',
@@ -143,9 +138,9 @@ export function buildRecordSnapshot(d: {
             : { desired: driver === 'mock' ? '1h' : 'auto', effective: null, verification: 'unknown' },
       lastRead: lastUsage?.cache_read_input_tokens ?? null,
       lastWrite: lastUsage?.cache_creation_input_tokens ?? null,
-      lastNoncached: lastUsage && lastUsage.input_tokens !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
-        ? lastUsage.input_tokens - lastUsage.cache_read_input_tokens - lastUsage.cache_creation_input_tokens
-        : null,
+      lastNoncached: lastUsage?.source.startsWith('sdk') ? lastUsage.input_tokens
+        : lastUsage && lastInput !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
+          ? lastInput - lastUsage.cache_read_input_tokens - lastUsage.cache_creation_input_tokens : null,
       lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
       // §7.3：OR 1h 从**缓存证据请求**开始估计（始终是估计——路由黏性/上游空闲过期独立存在）；

@@ -27,22 +27,29 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
+import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
+import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
+import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
+import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
 
 const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
 const usage = { subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } } as any;
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; deferred?: boolean } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
     provider: 'openrouter', access_policy: 'subscription-first', model: 'claude-sonnet-4-6',
-    subscription_proxy_url: 'http://127.0.0.1:1082' }, openrouter: { model: 'anthropic/claude-sonnet-4.6' } });
+    subscription_proxy_url: 'http://127.0.0.1:1082', ...(options.deferred ? { tool_schema_mode: 'deferred' } : {}) }, openrouter: { model: 'anthropic/claude-sonnet-4.6' }, windows: options.windows ?? {} });
   const messages = new MessageService(db); messages.ensureConversation('synthetic');
   const events = new EventService(db); const identity = new IdentityService(config, paths);
-  const windows = new WindowManager(db, events, identity, config);
   const trajectory = new WindowTrajectoryService(db);
+  const selections = new ManualSelectionService(db);
+  const reviews = new RotationReviewService(db);
+  const checkpoint = new HoldCheckpointService(db);
+  const windows = new WindowManager(db, events, identity, config, selections, trajectory);
   const settings = new RuntimeSettingsService(db);
   const calls = { sdk: [] as any[], or: [] as any[], orFactories: 0 };
   let clock = 1_800_000_000_000;
@@ -65,18 +72,20 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     return { status: 'ok', runner: new OpenRouterRunner({ providerOnly: [], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
       calls.or.push(payload);
       const frames = [{ id: 'or-synthetic', choices: [{ delta: { content: 'OR 合成回复' } }] },
-        { choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 30, completion_tokens: 3 } }];
+        { choices: [{ delta: {}, finish_reason: 'stop' }], usage: options.orUsage ?? { prompt_tokens: 30, completion_tokens: 3 } }];
       return { status: 200, headers: new Headers(), body: Readable.from(frames.map(f => Buffer.from(`data: ${JSON.stringify(f)}\n\n`)).concat([Buffer.from('data: [DONE]\n\n')])) };
     }) };
   }, () => clock);
   const backgroundSettings = new BackgroundSettingsService(db, config);
   const taskService = new BackgroundTaskService(db, backgroundSettings);
-  const { tools, registry } = assembleTestTools({ db, messages, taskService, events });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, windows, trajectory, settings, tools, toolCatalog: registry,
+  const { tools, registry } = assembleTestTools({ db, messages, taskService, events, reviews, checkpoint });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, windows, trajectory, selections, reviews, checkpoint, settings, tools, toolCatalog: registry,
     runnerSelection: { status: 'ok', runner }, capabilities: new CapabilityMatrix(config), reasoning: new ReasoningService(db, events),
     routing: new RoutingService(db, events, messages), usage: new UsageCollector(db), logger: new Logger(null) });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { db, config, calls, runner, settings, windows, trajectory, backgroundSettings, setNow: (n: number) => { clock = n; },
+  return { db, config, calls, runner, settings, windows, trajectory, selections, backgroundSettings,
+    records: () => buildRecordSnapshot({ db, config, windows, runnerSelection: { status: 'ok', runner } }, 'synthetic', null),
+    setNow: (n: number) => { clock = n; },
     send: async (text: string) => {
       const input = messages.submitUserMessageWithTurn({ conversationId: 'synthetic', content: text, clientMessageId: randomUUID() });
       supervisor.enqueue(input.turnId); await supervisor.waitIdle();
@@ -209,4 +218,50 @@ test('SDK child assembly excludes all API credentials and provider endpoints', (
     assert.equal(built.options.permissionMode, 'default');
     assert.deepEqual(built.options.tools, []); assert.deepEqual(built.options.skills, []);
   } finally { for (const n of names) if (before[n] === undefined) delete process.env[n]; else process.env[n] = before[n]; }
+});
+
+function usageEvents(input: number, read: number | null, write: number | null) {
+  return [
+    { type: 'stream_event', event: { type: 'message_start', message: { id: randomUUID(), model: 'claude-sonnet-4-6', usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: read, cache_creation_input_tokens: write } } } },
+    { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 4 } } },
+    { type: 'stream_event', event: { type: 'message_stop' } },
+    { type: 'result', subtype: 'success', session_id: randomUUID(), usage: { input_tokens: input, output_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write } },
+  ];
+}
+
+test('SDK cached input calibrates capacity and records using the complete request total', async t => {
+  const f = fixture(t, () => usageEvents(12, 20000, 0), { deferred: true, windows: { soft_limit_tokens: 12000, model_context_capacity: 100000 } });
+  assert.equal((await f.send('合成缓存请求')).state, 'completed');
+  const records = f.records();
+  assert.deepEqual([records.context.lastActualInput, records.cache.lastRead, records.cache.lastWrite, records.cache.lastNoncached], [20012, 20000, 0, 12]);
+  assert.equal((await f.send('短续聊')).state, 'blocked');
+  assert.equal(f.selections.awaitingFor('synthetic')?.rotation_cause, 'capacity');
+  assert.equal(f.calls.sdk.length, 1);
+});
+
+test('SDK unknown cache partition keeps total unknown but preserves known partitions', async t => {
+  const f = fixture(t, () => usageEvents(12, 20000, null));
+  await f.send('合成部分计量');
+  const records = f.records();
+  assert.deepEqual([records.context.lastActualInput, records.cache.lastRead, records.cache.lastWrite, records.cache.lastNoncached], [null, 20000, null, 12]);
+});
+
+test('OR total input is not counted twice and does not require cache partitions', async t => {
+  for (const details of [{ cached_tokens: 20000, cache_write_tokens: 0 }, undefined]) {
+    const f = fixture(t, () => [limit()], { orUsage: { prompt_tokens: 20012, completion_tokens: 4, ...(details ? { prompt_tokens_details: details } : {}) } });
+    await f.send('合成 OR 总量');
+    const records = f.records();
+    assert.equal(records.context.lastActualInput, 20012);
+    if (details) assert.equal(records.cache.lastNoncached, 12);
+  }
+});
+
+test('SDK turn aggregates cannot replace the last measured request context', async t => {
+  const f = fixture(t, round => round === 2
+    ? [{ type: 'result', subtype: 'success', session_id: randomUUID(), usage: { input_tokens: 90000, output_tokens: 8, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }]
+    : usageEvents(12, 20000, 0), { windows: { soft_limit_tokens: 40000, model_context_capacity: 100000 } });
+  await f.send('单请求观测');
+  await f.send('只有整轮累计的观测');
+  assert.equal(f.records().context.lastActualInput, 20012);
+  assert.equal((await f.send('继续聊天')).state, 'completed');
 });

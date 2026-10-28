@@ -21,6 +21,7 @@ import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from './capabilities.ts';
 import { buildSdkOptions, subscriptionSdkOptions } from './build-options.ts';
 import { SubscriptionAccessRunner } from './subscription-access.ts';
+import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
 import type { RunnerSelection } from './runner.ts';
 import type { ReasoningService } from '../reasoning/service.ts';
 import type { UsageCollector } from '../usage/collector.ts';
@@ -1606,10 +1607,8 @@ export class TurnSupervisor {
     // F-J-33：无轨迹回退路径补 system 材料（轨迹路径 system 段已在 messages 内）
     const systemChars = trajForEstimate ? 0 : (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
     const oldWindowEstimate = this.estimateRequestTokens(trajMessagesForEstimate, o.window.id) + Math.ceil(systemChars / (dv?.charsPerToken ?? 1.5)); // 旧窗自身工作集
-    const lastActual = (d.db.prepare(
-      `SELECT u.input_tokens FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
-       WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
-    ).get(o.window.id) as { input_tokens: number } | undefined)?.input_tokens ?? null;
+    const lastUsage = lastRequestUsageForWindow(d.db, o.window.id);
+    const lastActual = lastUsage ? providerInputTotal(lastUsage) : null;
     const workingSet = Math.max(oldWindowEstimate, lastActual ?? 0);
     // R21（复审 2026-10-07）：下一输入=旧工作集+本轮新增输入（system 只计
     // 一次）——此前 Math.max(workingSet, incomingEstimate) 漏加本轮输入，
@@ -2750,7 +2749,8 @@ export class TurnSupervisor {
                     model: actualModelForUsage ?? configuredModelForUsage,
                     readTokens: ev.usage.cache_read_input_tokens ?? null,
                     writeTokens: ev.usage.cache_creation_input_tokens ?? null,
-                    inputTotal: ev.usage.input_tokens ?? null,
+                    inputTotal: providerInputTotal({ source: ev.source, input_tokens: ev.usage.input_tokens ?? null,
+                      cache_read_input_tokens: ev.usage.cache_read_input_tokens ?? null, cache_creation_input_tokens: ev.usage.cache_creation_input_tokens ?? null }),
                     dispatchStartedAt: prq?.dispatch_started_at ?? null,
                     usageCompleteness: ev.completeness,
                   });
