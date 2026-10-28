@@ -7,10 +7,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { HOLD_CATEGORIES, HOLD_CREATION_MODES, HOLD_DATE_CONFIDENCE, HOLD_TITLE_MAX } from '../../apps/host/src/modules/memory/hold-contract.ts';
 
-const MARIPOSA_REPO = process.env.MARIPOSA_REPO ?? '/Users/owner/Projects/mariposa';
+// 兄弟仓寻址不含用户名：env 覆盖 → 本 worktree 相对（worktrees/<x>/tests/unit 上五级=项目根）
+// → home 兜底；找不到时由 repoAvailable 分支如实跳过。
+const MARIPOSA_REPO = process.env.MARIPOSA_REPO
+  ?? [path.resolve(import.meta.dirname, '../../../../..', 'mariposa'), path.join(os.homedir(), 'Projects/mariposa')]
+    .find((p) => fs.existsSync(path.join(p, 'backend/mariposa/capabilities/input_schemas.py')))
+  ?? path.join(os.homedir(), 'Projects/mariposa');
 const schemasPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/input_schemas.py');
 const registryPath = path.join(MARIPOSA_REPO, 'backend/mariposa/capabilities/registry.py');
 const ourWordsPath = path.join(MARIPOSA_REPO, 'backend/mariposa/memory/our_words.py');
