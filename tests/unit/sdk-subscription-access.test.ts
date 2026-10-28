@@ -60,7 +60,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     calls.sdk.push(input);
     const round = calls.sdk.length;
     const iterator = (async function* () {
-      for await (const _ of input.prompt) break;
+      for await (const value of input.prompt) { input.capturedPrompt = value; break; }
       for await (const event of scripted(round, input)) {
         if (event instanceof Error) throw event;
         yield event;
@@ -112,6 +112,8 @@ test('only a rejected subscription bucket can start OR; next safe round after re
   f.setNow(1_800_000_101_000);
   assert.equal((await f.send('重置后的下一条')).state, 'completed');
   assert.equal(f.calls.sdk.length, 2); assert.equal(f.calls.sdk[1].options.resume, undefined);
+  assert.ok(JSON.stringify(f.calls.sdk[1].capturedPrompt).includes('OR 合成回复'));
+  assert.ok(JSON.stringify(f.calls.sdk[1].capturedPrompt).includes('额度未重置时的下一条'));
   const window = f.windows.activeWindow('synthetic')!;
   const history = JSON.stringify(f.trajectory.forWindow(window.id)!.messages);
   assert.ok(history.includes('第一条合成消息') && history.includes('额度未重置时的下一条') && history.includes('OR 合成回复'));
@@ -310,4 +312,66 @@ test('capacity review fallback uses the actual OR model in quiet usage', async t
   await f.supervisor.selectionConfirm({ conversationId: 'synthetic', windowId: window.id, items: [], explicitEmpty: true, idempotencyKey: 'review-model' });
   const row = f.db.prepare("SELECT model FROM usage_observations WHERE purpose='pre_rotate_review' AND source='or_stream'").get();
   assert.equal(row?.model, model);
+});
+
+test('SDK estimates preserve session scope and pricing basis without adding request tokens or actual charges', async t => {
+  const f = fixture(t, round => {
+    const events: any[] = usageEvents(12, 100, 0);
+    Object.assign(events.at(-1), { session_id: 'cost-session', total_cost_usd: round === 1 ? 0.02 : 0.03,
+      modelUsage: { 'claude-sonnet-4-6': { inputTokens: round * 112, costUSD: round === 1 ? 0.02 : 0.03, costBasis: 'list' } } });
+    return events;
+  });
+  await f.send('第一笔估值'); await f.send('恢复会话后的累计估值');
+  const rows = f.db.prepare("SELECT scope,cost_usd,input_tokens,raw_usage_json FROM usage_observations ORDER BY rowid").all() as any[];
+  assert.equal(rows.filter(r => r.scope === 'request').length, 2);
+  const estimates = rows.filter(r => r.scope === 'cumulative').map(r => { assert.equal(r.cost_usd, null); assert.equal(r.input_tokens, null); return JSON.parse(r.raw_usage_json); });
+  assert.deepEqual(estimates.map(e => e.total_cost_usd), [0.02, 0.03]);
+  assert.equal(estimates[1].scope, 'sdk_session_cumulative'); assert.equal(estimates[1].session_id, 'cost-session');
+  assert.equal(estimates[1].resumed_from_session_id, 'cost-session'); assert.equal(estimates[1].fork_session, false);
+  assert.equal(estimates[1].model_usage['claude-sonnet-4-6'].costBasis, 'list');
+  const last = f.db.prepare('SELECT id FROM turns ORDER BY rowid DESC LIMIT 1').get()!.id as string;
+  const collector = new UsageCollector(f.db); const summary = collector.summaryForTurn(last);
+  assert.equal(summary.totals.fields.input_tokens.complete_total, 112);
+  assert.equal(summary.totals.cost_usd, null);
+  assert.equal(summary.sdk_estimates[0].estimate.total_cost_usd, 0.03);
+  assert.equal(f.records().sdkEstimates.at(-1)!.estimate.total_cost_usd, 0.03);
+  assert.equal(f.records().usageByPurpose.find(p => p.purpose === 'chat')?.count, 2);
+});
+
+test('interrupted SDK input keeps observed tokens without manufacturing a result estimate', async t => {
+  const f = fixture(t, () => [...usageEvents(12, 100, 0).slice(0, 2), new Error('ECONNRESET')]);
+  assert.equal((await f.send('合成断流')).state, 'failed');
+  const rows = f.db.prepare('SELECT scope,input_tokens,completeness,cost_usd FROM usage_observations').all();
+  assert.deepEqual(rows.map(r => ({...r})), [{scope:'request',input_tokens:12,completeness:'partial',cost_usd:null}]);
+  assert.equal(f.records().sdkEstimates.length, 0);
+});
+
+test('a native tool continuation keeps last request context separate from turn usage and session estimate', async t => {
+  const f = fixture(t, async function* (_round, input) {
+    const first = usageEvents(12, 100, 0);
+    yield first[0];
+    const args = {operation:'list'};
+    yield {type:'assistant',message:{id:'metered-tool',content:[{type:'tool_use',id:'metered-call',name:'mcp__est__wake_manage',input:args}]}};
+    yield first[1]; yield first[2];
+    await input.options.hooks.PreToolUse[0].hooks[0]({hook_event_name:'PreToolUse',tool_name:'mcp__est__wake_manage',tool_input:args,tool_use_id:'metered-call'});
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({name:'metering-boundary',version:'1.0.0'});
+    await input.options.mcpServers.est.instance.connect(serverTransport); await client.connect(clientTransport);
+    const result = await client.callTool({name:'wake_manage',arguments:args}); await client.close();
+    assert.equal(result.isError,false);
+    await input.options.hooks.PostToolBatch[0].hooks[0]({hook_event_name:'PostToolBatch'});
+    const final: any[] = usageEvents(7,20000,0);
+    Object.assign(final.at(-1),{total_cost_usd:0.03,modelUsage:{'claude-sonnet-4-6':{costUSD:0.03,costBasis:'list'}}});
+    yield* final;
+  });
+  await f.send('合成工具计量');
+  const turnId=f.db.prepare('SELECT id FROM turns').get()!.id as string;
+  const total=new UsageCollector(f.db).summaryForTurn(turnId);
+  assert.equal(f.records().context.lastActualInput,20007);
+  assert.equal(total.totals.fields.input_tokens.complete_total,20119);
+  assert.equal(total.sdk_estimates.length,1);
+  assert.equal(total.totals.cost_usd,null);
+  const day=f.db.prepare('SELECT budget_day FROM usage_observations LIMIT 1').get()!.budget_day as string;
+  const daily=new UsageCollector(f.db).summaryByDay(day).purposes[0]!;
+  assert.equal(daily.row_count,2); assert.equal(daily.known_input_total,20119);
 });

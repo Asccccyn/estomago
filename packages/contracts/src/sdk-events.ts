@@ -47,6 +47,17 @@ export type RawUsage = {
   raw_json?: string;
 };
 
+export type SdkCostEstimate = {
+  kind: 'sdk_cost_estimate';
+  scope: 'sdk_session_cumulative';
+  session_id: string | null;
+  resumed_from_session_id: string | null;
+  fork_session: boolean;
+  total_cost_usd: number | null;
+  model_usage: Record<string, unknown>;
+  result_subtype: string;
+};
+
 // —— 归一化输出 ——————————————————————————————
 
 // channel: main = 主会话；subagent = parent_tool_use_id 非空（不投影进主私聊）

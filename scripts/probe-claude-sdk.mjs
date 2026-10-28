@@ -261,7 +261,7 @@ if (process.argv[2] !== '--worker') {
     const taskCount = db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get().n;
     if (taskCount !== 1) throw Error('HOST_TOOL_SIDE_EFFECT_COUNT:' + taskCount);
     const modelRequests = db.prepare("SELECT COUNT(*) n FROM provider_requests p JOIN turns t ON t.id=p.turn_id WHERE t.conversation_id='primary' AND p.sent_at IS NOT NULL").get().n;
-    const usageRows = db.prepare("SELECT u.scope,u.input_tokens,u.cache_creation_input_tokens FROM usage_observations u JOIN turns t ON t.id=u.turn_id WHERE t.conversation_id='primary'").all();
+    const usageRows = db.prepare("SELECT u.scope,u.input_tokens,u.cache_creation_input_tokens FROM usage_observations u JOIN turns t ON t.id=u.turn_id WHERE t.conversation_id='primary' AND u.scope='request'").all();
     if (usageRows.length !== modelRequests || usageRows.some(u => u.scope !== 'request' || u.input_tokens !== 100 || u.cache_creation_input_tokens !== 100)) throw Error('SDK_USAGE_DOUBLE_COUNTED_OR_MISSCOPED');
     let scheduler;
     const alerts = new SystemAlertService(db, hostEvents);
@@ -328,6 +328,14 @@ if (process.argv[2] !== '--worker') {
         if (!payload.system.some(b => b.cache_control?.ttl === '1h')) throw Error('ONE_HOUR_CACHE_NOT_REQUESTED');
       }
     }
+    const estimateRows = db.prepare("SELECT u.cost_usd,u.input_tokens,u.raw_usage_json,p.purpose FROM usage_observations u JOIN provider_requests p ON p.id=u.request_id JOIN turns t ON t.id=u.turn_id WHERE t.conversation_id='primary' AND u.scope='cumulative' ORDER BY u.rowid").all();
+    const estimates = estimateRows.map(row => JSON.parse(row.raw_usage_json));
+    if (estimateRows.length !== 4 || estimateRows.some(row => row.cost_usd !== null || row.input_tokens !== null)) throw Error('SDK_ESTIMATE_MIXED_WITH_REQUEST_USAGE');
+    const fork = estimates.at(-1);
+    if (fork.scope !== 'sdk_session_cumulative' || !fork.fork_session || fork.resumed_from_session_id !== parentSession || fork.session_id === parentSession) throw Error('SDK_FORK_ESTIMATE_SCOPE_LOST');
+    if (estimates[1].resumed_from_session_id !== estimates[0].session_id || estimates[2].resumed_from_session_id !== estimates[1].session_id) throw Error('SDK_RESUME_ESTIMATE_SCOPE_LOST');
+    summary.push({ mode: 'sdk-estimates', observations: estimates, monetaryRequestCosts: estimateRows.map(row => row.cost_usd) });
+    console.log(JSON.stringify({ mode: 'sdk-estimates', count: estimates.length, forkScopePreserved: true, actualChargesUnknown: true }));
     await supervisor.stopAll();
     db.close();
   } finally {

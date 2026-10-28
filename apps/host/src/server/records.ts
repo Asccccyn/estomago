@@ -7,6 +7,7 @@ import { lastCacheEvidence, keepwarmTargetAtMs } from '../runtime/cache-observat
 import type { RunnerSelection } from '../runtime/runner.ts';
 import { SubscriptionAccessRunner } from '../runtime/subscription-access.ts';
 import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
+import { UsageCollector } from '../usage/collector.ts';
 
 export type RecordSnapshot = {
   roomId: string;
@@ -14,6 +15,7 @@ export type RecordSnapshot = {
   epochId: string | null;
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
+  sdkEstimates: ReturnType<UsageCollector['sdkCostEstimates']>;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string; uiReference: number };
   cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' }; cacheEvidenceState: 'dispatch_started_at' | 'legacy_observed_at' | 'no_evidence'; nextKeepwarmEstimateAt: string | null };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
@@ -113,7 +115,7 @@ export function buildRecordSnapshot(d: {
     FROM usage_observations u
     LEFT JOIN provider_requests pr ON pr.id = u.request_id
     LEFT JOIN attempts a ON a.id = u.attempt_id
-    WHERE u.observed_at >= ? AND (a.id IS NULL OR a.turn_id IN (SELECT id FROM turns WHERE conversation_id = ?))
+    WHERE u.scope != 'cumulative' AND u.observed_at >= ? AND (a.id IS NULL OR a.turn_id IN (SELECT id FROM turns WHERE conversation_id = ?))
     GROUP BY COALESCE(pr.purpose, 'unknown')
   `).all(usageDayStartUtcIso, conversationId) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
   return {
@@ -122,6 +124,7 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
+    sdkEstimates: win ? new UsageCollector(d.db).sdkCostEstimates('window', win.id) : [],
     context: { estimatedInput: estimated, lastActualInput: lastInput, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）

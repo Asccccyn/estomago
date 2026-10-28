@@ -2,7 +2,7 @@ import type { Options, Query, SDKUserMessage, SDKMessage, SDKRateLimitInfo } fro
 import { createEstSdkMcp, sdkToolName } from './sdk-mcp.ts';
 import { subscriptionAdmission, subscriptionRejected, sdkUsesExtraUsage } from './sdk-subscription.ts';
 import { SdkEventNormalizer } from './sdk-event-normalizer.ts';
-import type { RawStreamEvent, RawUsage } from '../../../../packages/contracts/src/sdk-events.ts';
+import type { RawStreamEvent, RawUsage, SdkCostEstimate } from '../../../../packages/contracts/src/sdk-events.ts';
 import type { HostToolSpec } from '../capabilities/contracts.ts';
 import type { SdkRunRequest, RunnerRunResult } from './runner.ts';
 import type { OrMessage } from './or-payload.ts';
@@ -171,6 +171,18 @@ export async function runSdkHostQuery(
     catch (error) { failure = String((error as Error).message); releaseInput(false); return finish('error'); }
     for await (const raw of run) {
       const event = raw as SDKMessage;
+      if (event.type === 'result' && (event.total_cost_usd !== undefined || event.modelUsage !== undefined)) {
+        // Runtime 2.1.283 restores cumulative spend on resume/fork. Keep the
+        // estimate as evidence, never as another request or an actual charge.
+        const estimate: SdkCostEstimate = {
+          kind: 'sdk_cost_estimate', scope: 'sdk_session_cumulative',
+          session_id: event.session_id ?? null, resumed_from_session_id: resume?.sessionId ?? null,
+          fork_session: options.forkSession === true,
+          total_cost_usd: event.total_cost_usd ?? null, model_usage: event.modelUsage ?? {}, result_subtype: event.subtype,
+        };
+        req.onEvent({ kind: 'usage', scope: 'cumulative', source: 'sdk_result',
+          completeness: event.subtype === 'success' && !event.is_error ? 'complete' : 'partial', usage: { raw_json: JSON.stringify(estimate) } });
+      }
       if (event.type === 'rate_limit_event') {
         limit = event.rate_limit_info;
         if (sdkUsesExtraUsage(limit)) { failure = 'SDK_EXTRA_USAGE_ACTIVE'; run.close(); break; }
