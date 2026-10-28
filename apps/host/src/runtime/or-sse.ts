@@ -78,6 +78,8 @@ type ToolAcc = { id: string | null; type: 'function'; name: string; arguments: s
 
 export class OrStreamAccumulator {
   private id: string | null = null;
+  private model: string | null = null;
+  private provider: string | null = null;
   private text = '';
   private terminal: string | null = null;
   private terminalEvents = 0;
@@ -100,8 +102,8 @@ export class OrStreamAccumulator {
   }
 
   /** 驱动层增量映射用的只读快照（正文/generation id 当前累计；不暴露内部结构） */
-  snapshot(): { id: string | null; text: string } {
-    return { id: this.id, text: this.text };
+  snapshot(): { id: string | null; text: string; model: string | null; provider: string | null } {
+    return { id: this.id, text: this.text, model: this.model, provider: this.provider };
   }
 
   reasoningSnapshot(): OrReasoningBlock[] {
@@ -153,6 +155,8 @@ export class OrStreamAccumulator {
     let x: {
       error?: unknown;
       id?: unknown;
+      model?: unknown;
+      provider?: unknown;
       usage?: OrUsageFrame;
       choices?: Array<{ index?: number; delta?: { content?: unknown; reasoning?: unknown; reasoning_content?: unknown; reasoning_details?: unknown[]; tool_calls?: Array<{ index?: unknown; id?: unknown; type?: unknown; function?: { name?: unknown; arguments?: unknown } }> }; finish_reason?: unknown }>;
     };
@@ -167,6 +171,8 @@ export class OrStreamAccumulator {
       this.id = x.id;
     }
     if (x.usage) this.rawUsage = structuredClone(x.usage); // 记账帧替换，绝不求和
+    if (typeof x.model === 'string' && x.model.trim()) this.model = x.model;
+    if (typeof x.provider === 'string' && x.provider.trim()) this.provider = x.provider;
     for (const ch of x.choices ?? []) {
       requireThat(ch.index === 0 || ch.index === undefined, 'UNSUPPORTED_MULTIPLE_CHOICES');
       const d = ch.delta ?? {};

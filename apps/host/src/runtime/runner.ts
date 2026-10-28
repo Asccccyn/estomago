@@ -30,7 +30,7 @@ export type SdkRunRequest = {
     envelope: OrRequestEnvelope;
     executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number) => Promise<ToolExecResult>;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
-    modelStarted: (generationId: string | null, round: number) => void;
+    modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
     maxModelRequests: number;
   };
 };
@@ -58,6 +58,7 @@ export type OrRunRequest = {
   //    信封请求后访问（守卫的联合判别收窄对多值 driver 不生效，TS 层需经此可选声明到达），
   //    信封请求运行时不携带这些字段。
   onDispatch?: (info: { attemptIndex: number; generationId: string | null }) => void;
+  onResponseMetadata?: (info: { model: string | null; provider: string | null }) => void;
   // EXEC_V1 02 §4.2：每次 transport 前（含 429/网络/首字节前重试）异步准入——宿主在此落
   // dispatch_started_at 与逐尝试账（旧 onDispatch 在响应后，漏掉全部"发出但无响应"的尝试）。
   // 抛错=本次尝试被拒（不 transport）。payloadWireJson=最终发包体证据（wire_v1）。

@@ -183,7 +183,7 @@ export async function runSdkHostQuery(
       }
       if (event.type === 'stream_event') {
         if (event.event.type === 'message_start') {
-          host.modelStarted(event.event.message.id, round);
+          host.modelStarted(event.event.message.id, round, event.event.message.model);
           requestUsage = event.event.message.usage ? sdkUsageFields(event.event.message.usage) : null;
           observedRequestUsage ||= requestUsage !== null;
         }

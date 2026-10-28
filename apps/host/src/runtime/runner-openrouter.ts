@@ -268,6 +268,7 @@ export class OpenRouterRunner implements AgentRunner {
         const beforeReasoning = acc.reasoningSnapshot();
         acc.feed(chunk); // 审计 F20：先吸收（含已抵达的计量帧），停止不丢已收到的事实
         const after = acc.snapshot();
+        if (after.model !== before.model || after.provider !== before.provider) req.onResponseMetadata?.({ model: after.model, provider: after.provider });
         if (req.abortController.signal.aborted) {
           abortedMidStream = true;
           continue; // 不再发布内容/工具；usage 由 fence 单独放行（下方收口补记）

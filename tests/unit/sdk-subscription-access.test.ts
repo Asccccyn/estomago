@@ -30,6 +30,9 @@ import { BackgroundTaskService } from '../../apps/host/src/runtime/background-ta
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
+import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
+import { createBackgroundExecution } from '../../apps/host/src/application/background-execution.ts';
+import { SystemAlertService } from '../../apps/host/src/observability/system-alerts.ts';
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
 
 const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
@@ -37,12 +40,12 @@ const usage = { subscription_type: 'max', rate_limits_available: true, rate_limi
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; deferred?: boolean } = {}) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
     provider: 'openrouter', access_policy: 'subscription-first', model: 'claude-sonnet-4-6',
-    subscription_proxy_url: 'http://127.0.0.1:1082', ...(options.deferred ? { tool_schema_mode: 'deferred' } : {}) }, openrouter: { model: 'anthropic/claude-sonnet-4.6' }, windows: options.windows ?? {} });
+    subscription_proxy_url: 'http://127.0.0.1:1082', ...(options.deferred ? { tool_schema_mode: 'deferred' } : {}) }, openrouter: { model: options.orModel ?? 'anthropic/claude-sonnet-4.6' }, windows: options.windows ?? {} });
   const messages = new MessageService(db); messages.ensureConversation('synthetic');
   const events = new EventService(db); const identity = new IdentityService(config, paths);
   const trajectory = new WindowTrajectoryService(db);
@@ -71,7 +74,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     calls.orFactories++;
     return { status: 'ok', runner: new OpenRouterRunner({ providerOnly: [], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
       calls.or.push(payload);
-      const frames = [{ id: 'or-synthetic', choices: [{ delta: { content: 'OR 合成回复' } }] },
+      const frames = [{ id: 'or-synthetic', model: options.responseModel, provider: options.provider, choices: [{ delta: { content: 'OR 合成回复' } }] },
         { choices: [{ delta: {}, finish_reason: 'stop' }], usage: options.orUsage ?? { prompt_tokens: 30, completion_tokens: 3 } }];
       return { status: 200, headers: new Headers(), body: Readable.from(frames.map(f => Buffer.from(`data: ${JSON.stringify(f)}\n\n`)).concat([Buffer.from('data: [DONE]\n\n')])) };
     }) };
@@ -83,7 +86,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     runnerSelection: { status: 'ok', runner }, capabilities: new CapabilityMatrix(config), reasoning: new ReasoningService(db, events),
     routing: new RoutingService(db, events, messages), usage: new UsageCollector(db), logger: new Logger(null) });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { db, config, calls, runner, settings, windows, trajectory, selections, backgroundSettings,
+  return { db, config, calls, runner, settings, windows, trajectory, selections, backgroundSettings, supervisor, messages, events, taskService,
     records: () => buildRecordSnapshot({ db, config, windows, runnerSelection: { status: 'ok', runner } }, 'synthetic', null),
     setNow: (n: number) => { clock = n; },
     send: async (text: string) => {
@@ -264,4 +267,47 @@ test('SDK turn aggregates cannot replace the last measured request context', asy
   await f.send('只有整轮累计的观测');
   assert.equal(f.records().context.lastActualInput, 20012);
   assert.equal((await f.send('继续聊天')).state, 'completed');
+});
+
+test('OR fallback attributes each request to its envelope and observed response, independent of SDK policy', async t => {
+  for (const responseModel of [undefined, 'deepseek/synthetic-resolved']) {
+    const f = fixture(t, () => [limit()], { orModel: 'deepseek/deepseek-chat-v3.1', responseModel, provider: 'Synthetic Upstream' });
+    assert.equal((await f.send('跨模型家族回退')).state, 'completed');
+    assert.equal(f.runner.kind, 'claude-agent-sdk');
+    const rows = f.db.prepare("SELECT u.model,p.payload_json FROM usage_observations u JOIN provider_requests p ON p.id=u.request_id WHERE u.source='or_stream'").all() as any[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].model, responseModel ?? 'deepseek/deepseek-chat-v3.1');
+    assert.deepEqual(JSON.parse(rows[0].payload_json).execution, {
+      entry: 'openrouter', requestedModel: 'deepseek/deepseek-chat-v3.1', responseModel: responseModel ?? null, provider: 'Synthetic Upstream',
+    });
+  }
+});
+
+test('background fallback records the actual request model in usage and the existing run', async t => {
+  const model = 'deepseek/deepseek-chat-v3.1';
+  const f = fixture(t, round => round === 1 ? usageEvents(12, 0, 0) : [limit()], { orModel: model });
+  await f.send('先建立会话');
+  f.backgroundSettings.applyUpdate({ expectedRevision: f.backgroundSettings.revision(), patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
+  f.settings.set('or_model_price', JSON.stringify({ input_micro_per_token: 1, output_micro_per_token: 1 }));
+  assert.equal(f.taskService.schedule({ actorId: 'jiaming', createdBy: 'jiaming', conversationId: 'synthetic', operationId: 'fallback-wake', note: '合成自醒', delaySeconds: 1 }).ok, true);
+  let scheduler: BackgroundScheduler;
+  const executor = createBackgroundExecution({ messages: f.messages, events: f.events, bgSettings: f.backgroundSettings, supervisor: f.supervisor, scheduler: { recordDispatchStart: input => scheduler.recordDispatchStart(input) } });
+  scheduler = new BackgroundScheduler({ db: f.db, config: f.config, settings: f.backgroundSettings, alerts: new SystemAlertService(f.db, f.events), executor, now: () => Date.now() + 2000 });
+  scheduler.start();
+  try { await scheduler.tick(); await f.supervisor.waitIdle(); } finally { scheduler.stop(); }
+  const run = f.db.prepare('SELECT driver,model,state FROM background_runs').get();
+  assert.equal(run?.state, 'completed'); assert.equal(run?.driver, 'openrouter'); assert.equal(run?.model, model);
+  const usage = f.db.prepare("SELECT model FROM usage_observations WHERE purpose='proactive_turn' AND source='or_stream'").get();
+  assert.equal(usage?.model, model);
+});
+
+test('capacity review fallback uses the actual OR model in quiet usage', async t => {
+  const model = 'deepseek/deepseek-chat-v3.1';
+  const f = fixture(t, round => round === 1 ? usageEvents(12, 20000, 0) : [limit()], { orModel: model, deferred: true, windows: { soft_limit_tokens: 12000, model_context_capacity: 100000 } });
+  await f.send('建立已见历史');
+  await f.send('触发容量选集');
+  const window = f.windows.activeWindow('synthetic')!;
+  await f.supervisor.selectionConfirm({ conversationId: 'synthetic', windowId: window.id, items: [], explicitEmpty: true, idempotencyKey: 'review-model' });
+  const row = f.db.prepare("SELECT model FROM usage_observations WHERE purpose='pre_rotate_review' AND source='or_stream'").get();
+  assert.equal(row?.model, model);
 });

@@ -131,6 +131,24 @@ const BOOTSTRAP_DEADLINE_MS = 8000;
 export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' | 'claude-agent-sdk' =>
   kind === 'openrouter' || kind === 'deepseek' || kind === 'claude-agent-sdk';
 
+type ModelRequestContext = {
+  requestId: string | null;
+  entry: 'claude-agent-sdk' | 'openrouter' | 'deepseek';
+  requestedModel: string;
+  responseModel: string | null;
+  provider: string | null;
+};
+
+// Request execution facts live with the existing request projection. Policy
+// selection remains independent; upstream provider is unknown until observed.
+function recordRequestExecution(db: Db, context: ModelRequestContext, backgroundRunId?: string): void {
+  const { requestId, ...execution } = context;
+  db.prepare("UPDATE provider_requests SET payload_json=json_set(payload_json,'$.execution',json(?)) WHERE id=?")
+    .run(JSON.stringify(execution), requestId);
+  if (backgroundRunId) db.prepare('UPDATE background_runs SET driver=?,model=? WHERE id=?')
+    .run(context.entry, context.responseModel ?? context.requestedModel, backgroundRunId);
+}
+
 type ActiveRun = {
   token: { cancelled: boolean };
   controller: AbortController;
@@ -449,10 +467,10 @@ export class TurnSupervisor {
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
       conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
-      onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => {
+      onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext) => {
         // 后台回合不发聊天气泡/思考流；用量照常入账（§05.6：后台无 handleEvent，此处最小挂钩）
         if (ev.kind === 'usage') {
-          d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: dv.model, source: ev.source, completeness: ev.completeness });
+          d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? dv.model, source: ev.source, completeness: ev.completeness });
         }
       },
       // B12 修复：已见视野从轨迹 manifest 派生（不再恒空）；续轮工具片段由循环内部并入
@@ -577,7 +595,7 @@ export class TurnSupervisor {
     turnId: string | null; // 确认后恢复的容量评审可无所属 turn——与运行时实况对齐（F-J-31）
     attemptId: string;
     controller: AbortController;
-    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
+    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext) => void;
     seenSequence: number;
     seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：实际装载视野（引用核对）
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
@@ -651,14 +669,20 @@ export class TurnSupervisor {
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const prqId = prqId0;
       let lastPrqId = prqId0; // D07：终态/计量归属**最后一次实际派发**的请求行（重试不再覆盖首发）
-      const wrapped: typeof o.onEvent = (ev, reqCtx) => {
-        void reqCtx;
+      const requestContext: ModelRequestContext = { requestId: prqId, entry: transportKind,
+        requestedModel: envelope.model, responseModel: null, provider: transportKind === 'deepseek' ? 'deepseek' : null };
+      const onResponseMetadata = (info: { model: string | null; provider: string | null }): void => {
+        requestContext.responseModel = info.model;
+        requestContext.provider = info.provider ?? requestContext.provider;
+        recordRequestExecution(d.db, requestContext, o.background?.runId);
+      };
+      const wrapped: typeof o.onEvent = (ev) => {
         if (ev.kind === 'complete_message') {
           for (const b of ev.matched) if (b.block_type === 'tool_use') captured.push(b);
           const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
           if (text) lastText = text.text;
         }
-        o.onEvent(ev, { requestId: lastPrqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
+        o.onEvent(ev, requestContext); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
       // cost-20261018：每轮落上下文指纹（只含 hash/位置/计数）；同轮重试行共用同一指纹
@@ -728,6 +752,10 @@ export class TurnSupervisor {
             .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
+        requestContext.requestId = lastPrqId;
+        requestContext.responseModel = null;
+        requestContext.provider = transportKind === 'deepseek' ? 'deepseek' : null;
+        recordRequestExecution(d.db, requestContext, o.background?.runId);
         if (round === 0 && info.attemptIndex === 0 && o.inputBinding) {
           if (o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, prqId, o.voiceObservations ?? []);
           const message = d.messages.getMessage(o.inputBinding.messageId);
@@ -780,7 +808,7 @@ export class TurnSupervisor {
         }
       }
       const result = await Promise.race([
-        runner.run({ driver: transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
+        runner.run({ driver: transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -938,11 +966,13 @@ export class TurnSupervisor {
     let generationId: string | null = null;
     let dispatchId: string | null = null;
     let lastSentMessages: OrMessage[] | null = null;
+    const requestContext: ModelRequestContext = { requestId: null, entry: 'claude-agent-sdk',
+      requestedModel: o.envelope.model, responseModel: null, provider: 'firstParty' };
     const result = await runner.run({
       driver: 'claude-agent-sdk', prompt: '', options, resumeSessionId: null, abortController: o.controller,
       onEvent: ev => {
         if (ev.kind === 'message_stop' && requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run('completed', requestId);
-        o.onEvent(ev, { requestId });
+        o.onEvent(ev, requestContext);
       },
       host: {
         windowId: o.windowId, purpose: o.purpose, envelope: o.envelope, maxModelRequests: MAX_TOOL_ROUNDS + 1,
@@ -977,12 +1007,17 @@ export class TurnSupervisor {
             JSON.stringify(messages.map(m => ({ role: m.role }))), JSON.stringify(envelope),
             contextFingerprintJson({ round, tools: envelope.tools, messages, boundaries: envelope.boundaries }),
             'sdk_projection_v1', at, at, 0, o.background?.runId ?? null, dispatchId);
+          requestContext.requestId = requestId;
+          requestContext.responseModel = null;
+          recordRequestExecution(d.db, requestContext, o.background?.runId);
           lastSentMessages = structuredClone(messages);
           if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
           d.surfacing?.markDispatched?.(o.attemptId);
         },
-        modelStarted: (id) => {
+        modelStarted: (id, _round, model) => {
           generationId = id;
+          requestContext.responseModel = model ?? null;
+          recordRequestExecution(d.db, requestContext, o.background?.runId);
           d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
         },
@@ -1817,10 +1852,10 @@ export class TurnSupervisor {
     const stopKey = o.turnId ?? `review:${o.window.id}`;
     this.active.set(stopKey, reviewRun);
     const reviewTurnId = (d.db.prepare('SELECT turn_id FROM attempts WHERE id = ?').get(o.attemptId) as { turn_id: string } | undefined)?.turn_id ?? o.attemptId;
-    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
+    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
       }
     };
     const seenHighWater = effectiveManifest.length > 0 ? Math.max(...effectiveManifest.map((m) => m.seq)) : 0;
@@ -2676,7 +2711,7 @@ export class TurnSupervisor {
     };
 
     // §6.3：驱动判别请求——同一 handleEvent（发布/记账/route 语义对两驱动一致，不复制两套处理）
-    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
+    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext): void => {
           // generation fence（AUD-05/03 迟到 chunk）：只挡内容类事件（正文/思考/工具投影）；
           // usage 与路由事实是记账观测，不是发布——fence 后仍须入账（F10：实际模型不能丢）
           if (runToken.token.cancelled && ev.kind !== 'usage' && ev.kind !== 'system_notice' && ev.kind !== 'packet_conflict') return;
@@ -2737,7 +2772,7 @@ export class TurnSupervisor {
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
                 requestId: reqCtx?.requestId ?? undefined, // F12：同 turn 多请求按请求身份分行保留
                 windowId: window.id, // F31：直接归属窗口（不再只靠 attempt JOIN）
-                model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
+                model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
               // EXEC_V1 §04.5（WP2）：缓存证据观测——温态五条件门活接线（字段缺失/无派发起点=不评）
@@ -2746,7 +2781,7 @@ export class TurnSupervisor {
                   const prq = d.db.prepare('SELECT dispatch_started_at FROM provider_requests WHERE id = ?').get(reqCtx.requestId) as { dispatch_started_at: string | null } | undefined;
                   observeCacheUsage(d.alerts, {
                     db: d.db, windowId: window.id, requestId: reqCtx.requestId,
-                    model: actualModelForUsage ?? configuredModelForUsage,
+                    model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? actualModelForUsage ?? configuredModelForUsage,
                     readTokens: ev.usage.cache_read_input_tokens ?? null,
                     writeTokens: ev.usage.cache_creation_input_tokens ?? null,
                     inputTotal: providerInputTotal({ source: ev.source, input_tokens: ev.usage.input_tokens ?? null,

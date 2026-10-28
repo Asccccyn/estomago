@@ -262,6 +262,7 @@ export class DeepSeekRunner implements AgentRunner {
         const before = acc.snapshot();
         acc.feed(chunk);
         const after = acc.snapshot();
+        if (after.model !== before.model || after.provider !== before.provider) req.onResponseMetadata?.({ model: after.model, provider: after.provider });
         if (req.abortController.signal.aborted) {
           abortedMidStream = true;
           continue;
