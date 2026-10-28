@@ -15,7 +15,6 @@ export type SdkSessionAnchor = { sessionId: string; prefixHash: string; messageC
 
 export async function verifySdkSubscription(run: Query): Promise<string | null> {
   const account = await run.accountInfo();
-  if (account.apiProvider !== 'firstParty' || !account.subscriptionType || !account.tokenSource || account.apiKeySource) return 'SDK_SUBSCRIPTION_AUTH_REQUIRED';
   const usage = await run.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({ skipBehaviors: true }).catch(() => null);
   return subscriptionAdmission(account, usage);
 }

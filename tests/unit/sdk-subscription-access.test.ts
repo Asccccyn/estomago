@@ -28,7 +28,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
 
-const account = { apiProvider: 'firstParty', subscriptionType: 'max', tokenSource: 'claude.ai' } as const;
+const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
 const usage = { subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } } as any;
 
 // Only the two external model transports are simulated. The host queue, input
@@ -181,6 +181,10 @@ test('subscription admission rejects API authentication, missing overage evidenc
   assert.equal(subscriptionAdmission(account, usage), null);
   assert.equal(subscriptionAdmission({ ...account, apiKeySource: 'env' }, usage), 'SDK_SUBSCRIPTION_AUTH_REQUIRED');
   assert.equal(subscriptionAdmission(account, null), 'SDK_EXTRA_USAGE_UNVERIFIED');
+  assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', subscriptionType: 'Claude API' }, {
+    ...usage, subscription_type: null, rate_limits: null,
+  }), 'SDK_EXTRA_USAGE_UNVERIFIED');
+  assert.equal(subscriptionAdmission(account, { ...usage, subscription_type: 'unrecognized-plan' }), 'SDK_EXTRA_USAGE_UNVERIFIED');
   assert.equal(subscriptionAdmission(account, { ...usage, rate_limits: { extra_usage: { is_enabled: true } } }), 'SDK_EXTRA_USAGE_ENABLED');
 });
 

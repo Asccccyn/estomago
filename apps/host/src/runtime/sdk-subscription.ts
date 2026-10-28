@@ -11,10 +11,13 @@ export function subscriptionRejected(info: SDKRateLimitInfo | undefined): boolea
 /** Both the local identity and the server's plan response are required. A local
  * "verified" flag or an API-key response cannot stand in for a subscription. */
 export function subscriptionAdmission(account: AccountInfo, usage: SDKControlGetUsageResponse | null): string | null {
-  if (account.apiProvider !== 'firstParty' || !account.subscriptionType || !account.tokenSource || account.apiKeySource) {
+  // 0.3.283 omits tokenSource for a normal local claude.ai subscription login.
+  // Its display label also defaults to "Claude API" when the plan is unknown;
+  // only the structured usage response can establish the subscription plan.
+  if (account.apiProvider !== 'firstParty' || account.apiKeySource) {
     return 'SDK_SUBSCRIPTION_AUTH_REQUIRED';
   }
-  if (!usage?.rate_limits_available || !usage.subscription_type || !usage.rate_limits?.extra_usage) return 'SDK_EXTRA_USAGE_UNVERIFIED';
+  if (!usage?.rate_limits_available || !['pro', 'max', 'team', 'enterprise'].includes(usage.subscription_type ?? '') || !usage.rate_limits?.extra_usage) return 'SDK_EXTRA_USAGE_UNVERIFIED';
   if (usage.rate_limits.extra_usage.is_enabled !== false) return 'SDK_EXTRA_USAGE_ENABLED';
   return null;
 }
