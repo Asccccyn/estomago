@@ -6,6 +6,19 @@
 
 实现提交：`1f667b9`；按实际官方账户元数据修正准入为 `13ff61e`；删除套餐名称硬匹配为 `d9b5d33`。本报告和 README 索引另行记录。
 
+## 2026-10-28 后续专项修复
+
+候选在原审计基线 `1f3f79d` 上继续修复，未升级 SDK、未部署、未改生产配置：
+
+- F01 `b73ef06`：容量与记录共享单请求输入观测，按 source 归一化缓存分项；未知仍未知，回合/会话累计不冒充当前上下文。
+- F02 `5377849`、记录面补齐 `7cbd8db`：实际入口、请求型号、上游响应型号与 provider 记录到既有 provider_requests，聊天、自醒、评审及记录面共同消费。
+- F03 `138bb44`：累计估值及 modelUsage/costBasis 保存在既有 cumulative/raw 观测；不重复 token、不加入实际收费汇总，resume/fork 的范围关联可查询。
+- `778067b`：完整隔离 Host 经过真实 HTTP 登录、消息接纳、准入与持久化，核对冷重启、角色/更正记录、已完成工具回执、人工选集。外部 SDK 回答为合成，不能证明真实模型理解。
+
+最终相关单元 15 文件/127 项与集成 4 文件/11 项通过，主机类型检查通过；原生 SDK 本机假 API 基础抓包 26 笔、扩展抓包 20 笔。后者含真实 Siren HttpCoreBridge、主动发布、记忆投影、纯心跳、取消/超时与普通 429；均无真实模型或外部业务服务效果。
+
+10:35 PDT 使用同一锁定 SDK、正式环境白名单及既有本机代理只读查询官方控制接口：firstParty、无 apiKeySource，usage 仍为 rate_limits_available=true / rate_limits=null。输入生成器没有 yield，persistSession=false，会话费用 0、model_usage 为空；准入仍是 SDK_EXTRA_USAGE_UNVERIFIED。没有放宽准入、建立人工永久放行或用 API key 冒充订阅。正式入口、真实冷重建理解、真实额度恢复和物理 1h 缓存仍未通过供应商验收。
+
 ## 接入变化
 
 est 仍负责身份与 I、Mariposa、消息与协议账本、窗口、后台调度、权限及业务执行。正式 SDK 调用采用官方 `query()`；SDK MCP 只映射现有窗口冻结的工具定义，并调用现有 `ModelToolBridge`（此前的 HostToolExecutor）。没有第二个业务服务，也没有手写 `claude -p` 模型通道。
