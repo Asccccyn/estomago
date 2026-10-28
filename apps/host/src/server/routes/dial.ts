@@ -62,7 +62,7 @@ if (route === 'GET /api/v1/calls/records') {
     let mediaError: string | undefined;
     try {
       const result = await d.sirenCall?.callTurnAudio(c.call_id);
-      if (Array.isArray(result)) mediaTurns = result;
+      if (result && result !== 'not_found') mediaTurns = result.turns;
       else mediaError = result === 'not_found' ? 'siren_call_not_found' : 'siren_unconfigured';
     } catch (err) {
       mediaError = err instanceof SirenTranscriptionError ? err.code.toLowerCase() : 'siren_unavailable';
@@ -118,9 +118,9 @@ if (callAudio) {
   }
   if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: '语音服务未配置' } });
   try {
-    const turns = await d.sirenCall.callTurnAudio(callId);
-    if (turns === null) return json(res, 503, { error: { code: 'siren_unconfigured', message: '语音服务未配置' } });
-    const turn = Array.isArray(turns) ? turns.find((t) => t.turn_id === turnId) : undefined;
+    const snapshot = await d.sirenCall.callTurnAudio(callId);
+    if (snapshot === null) return json(res, 503, { error: { code: 'siren_unconfigured', message: '语音服务未配置' } });
+    const turn = snapshot !== 'not_found' ? snapshot.turns.find((t) => t.turn_id === turnId) : undefined;
     const asset = callAudio[3] === 'user' ? turn?.user_audio : turn?.reply_audio;
     if (!asset) return json(res, 404, { error: { code: 'audio_not_found', message: '此轮没有留存的音频' } });
     const content = await d.sirenCall.fetchVoiceAssetAudio(asset.asset_id);

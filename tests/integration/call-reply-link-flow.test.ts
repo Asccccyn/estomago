@@ -13,7 +13,11 @@ import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.t
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 
-for (const interrupted of [false, true]) test(`A04 联合链：${interrupted ? '客户端断开后的部分回复' : '完成回复'}仍绑定正式助手消息`, { timeout: 20000 }, async () => {
+for (const scenario of ['completed', 'interrupted', 'late-reply', 'no-reply'] as const) test(`A04 联合链：${scenario}`, { timeout: 20000 }, async () => {
+  const interrupted = scenario === 'interrupted';
+  const late = scenario === 'late-reply' || scenario === 'no-reply';
+  let replyReady = !late;
+  let audioFinalized: boolean | undefined;
   const root = tempRoot('a04-link-');
   writeApprovedIdentity(root);
   const originalFetch = globalThis.fetch;
@@ -37,9 +41,9 @@ for (const interrupted of [false, true]) test(`A04 联合链：${interrupted ? '
     if (url === 'http://127.0.0.1:47901/v1/calls/a04-call/turn-audio') {
       calls.turnAudio++;
       return Response.json({
-        schema_version: 1, call_id: 'a04-call',
+        schema_version: 1, call_id: 'a04-call', audio_finalized: audioFinalized,
         turns: [{ turn_id: 'a04-turn', turn_index: 1, outcome: interrupted ? 'interrupted' : 'completed', user_audio: { asset_id: 'sir-user', duration_ms: 900 },
-          reply_audio: { asset_id: 'sir-reply', duration_ms: 1500, completeness: interrupted ? 'partial' : 'complete' },
+          reply_audio: replyReady && scenario !== 'no-reply' ? { asset_id: 'sir-reply', duration_ms: 1500, completeness: interrupted ? 'partial' : 'complete' } : null,
           sent_audio_ms: 1500, filler_audio_ms: 0, playback: { basis: 'client_drained' } }],
       });
     }
@@ -118,6 +122,32 @@ for (const interrupted of [false, true]) test(`A04 联合链：${interrupted ? '
     assert.equal(ended.json.media_close, 'hangup_requested', '挂断经既有 Siren 终止控制（A11）');
     assert.equal(calls.hangupRequests, 1);
 
+    if (late) {
+      // 已发布消息、est 已结束，但旧版缺收尾字段和新版尚未收尾都不能证明音频不存在。
+      for (const finalized of [undefined, false]) {
+        audioFinalized = finalized;
+        const reads = calls.turnAudio;
+        await host.callReplyLinks!.wake();
+        assert.ok(calls.turnAudio > reads, '确实重新读取了该通话的媒体事实');
+        const pending = host.db.prepare("SELECT link_state FROM voice_reply_links WHERE call_id='a04-call'").get() as { link_state: string } | undefined;
+        assert.notEqual(pending?.link_state, 'unavailable');
+        assert.equal(calls.replyFetches, 0);
+      }
+      audioFinalized = true;
+      replyReady = true;
+      await host.callReplyLinks!.wake();
+      if (scenario === 'no-reply') {
+        const absent = host.db.prepare("SELECT link_state FROM voice_reply_links WHERE call_id='a04-call'").get() as { link_state: string };
+        assert.equal(absent.link_state, 'unavailable', '正本收尾后无音频才结束补齐');
+        const reads = calls.turnAudio;
+        await host.callReplyLinks!.wake();
+        assert.equal(calls.turnAudio, reads, '确定无音频的终态不永久占用轮询批次');
+        assert.equal(calls.replyFetches, 0);
+        assert.equal(calls.modelRequests, 1);
+        return;
+      }
+    }
+
     // 关联 worker 收敛：links 行 + 附件行 + assistant 观察（deep_listen）
     const deadline = Date.now() + 5000;
     let link: Record<string, unknown> | undefined;
@@ -155,6 +185,9 @@ for (const interrupted of [false, true]) test(`A04 联合链：${interrupted ? '
     // 历史读取不重复合成：整个流程只有 1 次模型请求、回复字节只取 1 次
     assert.equal(calls.modelRequests, 1);
     assert.equal(calls.replyFetches, 1, '回复字节幂等导入（不重取）');
+    await host.callReplyLinks!.wake();
+    assert.equal(calls.replyFetches, 1);
+    assert.equal((host.db.prepare("SELECT COUNT(*) n FROM message_attachments WHERE message_id=? AND presentation='voice'").get(assistant.id) as { n: number }).n, 1);
     console.log(JSON.stringify({ case: 'a04_joint_link_flow', linked: true, media_close: ended.json.media_close }));
   } finally {
     if (host) await host.stop();

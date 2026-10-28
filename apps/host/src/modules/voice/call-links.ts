@@ -76,7 +76,7 @@ export class CallReplyLinkService {
     const { db, sirenCall } = this.deps;
     if (!sirenCall) return;
     const calls = db.prepare(
-      `SELECT vc.call_id, vc.state AS call_state, vc.analysis_mode FROM voice_calls vc
+      `SELECT vc.call_id FROM voice_calls vc
        WHERE EXISTS (
          SELECT 1 FROM voice_stream_turns vst WHERE vst.call_id = vc.call_id AND vst.state IN ('completed','cancelled','failed')
            AND EXISTS (SELECT 1 FROM messages m WHERE m.turn_id=vst.est_turn_id AND m.speaker='assistant')
@@ -90,12 +90,12 @@ export class CallReplyLinkService {
                         OR vc.state != 'active')))
            )
        ) ORDER BY vc.started_at DESC LIMIT 3`,
-    ).all() as Array<{ call_id: string; call_state: string; analysis_mode: string | null }>;
+    ).all() as Array<{ call_id: string }>;
     for (const call of calls) {
       if (signal.aborted) break;
-      let turns: Awaited<ReturnType<SirenAdapter['callTurnAudio']>>;
+      let snapshot: Awaited<ReturnType<SirenAdapter['callTurnAudio']>>;
       try {
-        turns = await sirenCall.callTurnAudio(call.call_id, { signal });
+        snapshot = await sirenCall.callTurnAudio(call.call_id, { signal });
       } catch {
         continue; // Siren 不可达/结果不明：不动本地状态，下一跳重试
       }
@@ -104,7 +104,7 @@ export class CallReplyLinkService {
         `SELECT turn_key, est_turn_id FROM voice_stream_turns vst WHERE call_id=? AND state IN ('completed','cancelled','failed')
          AND EXISTS (SELECT 1 FROM messages m WHERE m.turn_id=vst.est_turn_id AND m.speaker='assistant') ORDER BY created_at`,
       ).all(call.call_id) as Array<{ turn_key: string; est_turn_id: string | null }>;
-      const byId = new Map(Array.isArray(turns) ? turns.map((t) => [t.turn_id, t]) : []);
+      const byId = new Map(snapshot && snapshot !== 'not_found' ? snapshot.turns.map((t) => [t.turn_id, t]) : []);
       for (const admission of admissions) {
         if (signal.aborted) break;
         const existing = db.prepare(`SELECT link_state, est_asset_id, playback_json,
@@ -112,7 +112,7 @@ export class CallReplyLinkService {
             AND ma.revision=l.revision AND ma.asset_id=l.est_asset_id AND ma.presentation='voice') AS has_attachment
           FROM voice_reply_links l WHERE call_id=? AND turn_key=?`)
           .get(call.call_id, admission.turn_key) as { link_state: string; est_asset_id: string | null; playback_json: string | null; has_attachment: number } | undefined;
-        const media = Array.isArray(turns) ? byId.get(admission.turn_key) : undefined;
+        const media = byId.get(admission.turn_key);
         const reply = media?.reply_audio ?? null;
         if (existing?.link_state === 'linked' && existing.est_asset_id && existing.has_attachment) {
           // 已链接：播放事实可晚到演进（unknown→drained/reported）——basis 变了才重收敛，
@@ -127,15 +127,13 @@ export class CallReplyLinkService {
         }
         if (media && reply) {
           await this.linkReply(call.call_id, admission, media.turn_id, reply, media.sent_audio_ms, media.playback, media.filler_audio_ms, media.outcome, existing?.est_asset_id ?? null);
-        } else if (turns === 'not_found') {
+        } else if (snapshot === 'not_found') {
           // 通话在 Siren 已不存在（结束后的 404）：如实 unavailable，不猜音频
           this.markUnavailable(call.call_id, admission.turn_key, admission.est_turn_id, 'siren_call_not_found');
-        } else if (turns === null) {
-          continue; // adapter 未配置：保持 pending（start 时已要求 sirenCall，状态不变边界）
-        } else if (call.call_state === 'ended') {
-          // 通话已收口且正本明确无回复音频留存（TTS 前失败/打断无留存/无此轮记录）：如实 unavailable
+        } else if (snapshot?.audio_finalized) {
+          // 只有 Siren 的音频收尾完成才证明不会再出现资产；est ended 只是通话投影。
           this.markUnavailable(call.call_id, admission.turn_key, admission.est_turn_id, media ? 'no_reply_audio' : 'siren_turn_missing');
-        } // else：通话仍在，回复音频可能尚未最终化——保持 pending 下一跳再拉
+        } // 尚未收尾：保留资格，下一跳读取同一话轮，不重新合成。
       }
     }
   }

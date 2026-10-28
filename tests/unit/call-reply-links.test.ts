@@ -28,7 +28,7 @@ function fakeSiren(initial: SirenCallAudioTurn[] | 'not_found' | null) {
   let fetchCalls = 0;
   let failAudio = false;
   return {
-    callTurnAudio: async (): Promise<SirenCallAudioTurn[] | 'not_found' | null> => current,
+    callTurnAudio: async () => Array.isArray(current) ? { turns: current, audio_finalized: false } : current,
     fetchVoiceAssetAudio: async () => { fetchCalls++; if (failAudio) throw new Error('HTTP_503'); return { bytes: new Uint8Array(mp3), mime: 'audio/mpeg' }; },
     set turns(v: SirenCallAudioTurn[] | 'not_found' | null) { current = v; },
     set failAudio(v: boolean) { failAudio = v; },

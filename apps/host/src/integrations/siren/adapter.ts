@@ -17,12 +17,15 @@ export type SirenCallAudioTurn = {
   playback: { basis: 'unknown' | 'client_drained' } | { basis: 'client_reported'; played_ms: number };
 };
 
-function parseCallAudio(data: unknown, callId: string): SirenCallAudioTurn[] {
+export type SirenCallAudio = { turns: SirenCallAudioTurn[]; audio_finalized: boolean };
+
+function parseCallAudio(data: unknown, callId: string): SirenCallAudio {
   const invalid = (): never => { throw new SirenTranscriptionError('SIREN_CALL_AUDIO_INVALID'); };
   const obj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null;
   const ms = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const audio = (v: unknown): boolean => v === null || (obj(v) && typeof v.asset_id === 'string' && v.asset_id.length > 0 && ms(v.duration_ms));
   if (!obj(data) || data.schema_version !== 1 || data.call_id !== callId || !Array.isArray(data.turns)) return invalid();
+  if (data.audio_finalized !== undefined && typeof data.audio_finalized !== 'boolean') return invalid();
   for (const t of data.turns) {
     if (!obj(t) || typeof t.turn_id !== 'string' || !t.turn_id || !Number.isInteger(t.turn_index) || Number(t.turn_index) < 0
       || !(t.outcome === null || typeof t.outcome === 'string') || !audio(t.user_audio) || !audio(t.reply_audio)
@@ -31,7 +34,8 @@ function parseCallAudio(data: unknown, callId: string): SirenCallAudioTurn[] {
     if (!obj(t.playback) || !['unknown', 'client_drained', 'client_reported'].includes(String(t.playback.basis))
       || (t.playback.basis === 'client_reported' && !ms(t.playback.played_ms))) return invalid();
   }
-  return data.turns as SirenCallAudioTurn[];
+  // 已部署旧版没有收尾字段；缺少证明时仍可读取已有音频，不能据空清单判定永久缺失。
+  return { turns: data.turns as SirenCallAudioTurn[], audio_finalized: data.audio_finalized === true };
 }
 
 export class SirenTranscriptionError extends Error {
@@ -191,7 +195,7 @@ export class SirenAdapter {
   }
 
   /** 真实 turn UUID 是跨仓关联键；没有音频的轮次也必须保留，不能按数组位置猜配。 */
-  async callTurnAudio(callId: string, opts: { signal?: AbortSignal } = {}): Promise<SirenCallAudioTurn[] | 'not_found' | null> {
+  async callTurnAudio(callId: string, opts: { signal?: AbortSignal } = {}): Promise<SirenCallAudio | 'not_found' | null> {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
