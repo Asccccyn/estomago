@@ -177,14 +177,16 @@ for (const [name, event] of [
   assert.equal(f.calls.or.length, 0); assert.equal(f.calls.orFactories, 0);
 });
 
-test('subscription admission rejects API authentication, missing overage evidence and enabled extra usage', () => {
+test('subscription admission ignores plan labels but rejects API authentication and unverified or enabled extra usage', () => {
   assert.equal(subscriptionAdmission(account, usage), null);
   assert.equal(subscriptionAdmission({ ...account, apiKeySource: 'env' }, usage), 'SDK_SUBSCRIPTION_AUTH_REQUIRED');
   assert.equal(subscriptionAdmission(account, null), 'SDK_EXTRA_USAGE_UNVERIFIED');
   assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', subscriptionType: 'Claude API' }, {
     ...usage, subscription_type: null, rate_limits: null,
   }), 'SDK_EXTRA_USAGE_UNVERIFIED');
-  assert.equal(subscriptionAdmission(account, { ...usage, subscription_type: 'unrecognized-plan' }), 'SDK_EXTRA_USAGE_UNVERIFIED');
+  assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', subscriptionType: 'Claude API' }, {
+    ...usage, subscription_type: null,
+  }), null);
   assert.equal(subscriptionAdmission(account, { ...usage, rate_limits: { extra_usage: { is_enabled: true } } }), 'SDK_EXTRA_USAGE_ENABLED');
 });
 

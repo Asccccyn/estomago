@@ -8,16 +8,16 @@ export function subscriptionRejected(info: SDKRateLimitInfo | undefined): boolea
   return info?.status === 'rejected' && subscriptionLimits.has(info.rateLimitType);
 }
 
-/** Both the local identity and the server's plan response are required. A local
- * "verified" flag or an API-key response cannot stand in for a subscription. */
+/** Authenticate the transport and check paid-overage admission independently
+ * of the optional plan labels returned by the runtime. */
 export function subscriptionAdmission(account: AccountInfo, usage: SDKControlGetUsageResponse | null): string | null {
   // 0.3.283 omits tokenSource for a normal local claude.ai subscription login.
-  // Its display label also defaults to "Claude API" when the plan is unknown;
-  // only the structured usage response can establish the subscription plan.
+  // Its display label defaults to "Claude API" when the plan is unknown. Neither
+  // label is an authentication requirement or evidence of quota exhaustion.
   if (account.apiProvider !== 'firstParty' || account.apiKeySource) {
     return 'SDK_SUBSCRIPTION_AUTH_REQUIRED';
   }
-  if (!usage?.rate_limits_available || !['pro', 'max', 'team', 'enterprise'].includes(usage.subscription_type ?? '') || !usage.rate_limits?.extra_usage) return 'SDK_EXTRA_USAGE_UNVERIFIED';
+  if (!usage?.rate_limits_available || !usage.rate_limits?.extra_usage) return 'SDK_EXTRA_USAGE_UNVERIFIED';
   if (usage.rate_limits.extra_usage.is_enabled !== false) return 'SDK_EXTRA_USAGE_ENABLED';
   return null;
 }
