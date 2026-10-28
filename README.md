@@ -1,6 +1,6 @@
 # estómago
 
-- 2026-10-27（工作树修复，**未部署**）：回复音频缺失只在 Siren 明确 `audio_finalized` 后收口，删除以 est 通话 ended 推断媒体完成的判断；迟到音频继续沿原 worker/操作身份补齐，旧服务缺字段时保留恢复资格。正式入口回归及真实 est↔Siren HTTP/WS 联合反例通过，类型检查通过；未修改生产库、窗口或重启服务。
+- 2026-10-27（**已部署并重启**，代码 `36d14a8`，发布目录 `~/Projects/estomago-releases/voice-reply-finalization-20261027`）：回复音频缺失仅在 Siren 明确 `audio_finalized` 后收口，迟到音频沿原 worker/操作身份补齐；旧服务缺字段时保留恢复资格。同批 Siren `a258592` 已上线；正式入口回归、四个真实 est↔Siren HTTP/WS 隔离场景、类型检查及发布目录验证通过。生产 ready=true、health 200、库 v50；735 条消息、序号水位、442 条模型请求和当前窗 38 工具均未变，零收费验证请求。回退备份：`/Users/owner/Backups/pre-voice-reply-finalization-20261027-201518`。
 
 - 2026-10-27（**已部署并重启**，代码 `b167284`，发布目录 `~/Projects/estomago-releases/voice-backend-20261027`）：回复音频与 Source 同步失败可恢复，打断后的正式回复保留关联；正文断流按同一操作找回资产，旧未接机会在回拨后及派发前失效。13 个相关回归文件（56 项）及类型检查通过。配套 Siren `6505648` / oído `8d74ee1` / Mariposa `7d0e002` 已同批切换；四服务健康为 200，est ready=true，数据库 v50，原 735 条消息及水位未变，验证新增模型请求为 0。Siren→est 复用既有 Core 令牌，归档 worker 仅补 `source.attachments.sync`。当前聊天窗仍冻结旧 38 工具，新语音工具须经既有换窗流程生效；没有自动换窗。回退资料：`~/Backups/pre-voice-backend-20261027-160943`。未做真机或真实收费语音验收。
 
