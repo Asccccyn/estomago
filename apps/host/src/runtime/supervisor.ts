@@ -19,7 +19,8 @@ import type { MessageService } from '../messages/service.ts';
 import type { EventService } from '../events/service.ts';
 import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from './capabilities.ts';
-import { buildSdkOptions } from './build-options.ts';
+import { buildSdkOptions, subscriptionSdkOptions } from './build-options.ts';
+import { SubscriptionAccessRunner } from './subscription-access.ts';
 import type { RunnerSelection } from './runner.ts';
 import type { ReasoningService } from '../reasoning/service.ts';
 import type { UsageCollector } from '../usage/collector.ts';
@@ -126,8 +127,8 @@ const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
 const BOOTSTRAP_DEADLINE_MS = 8000;
 
 /** 信封驱动（OR / DS 直连共用消息轨迹与工具循环管线；SDK/mock 走 prompt 路径） */
-export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' =>
-  kind === 'openrouter' || kind === 'deepseek';
+export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' | 'claude-agent-sdk' =>
+  kind === 'openrouter' || kind === 'deepseek' || kind === 'claude-agent-sdk';
 
 type ActiveRun = {
   token: { cancelled: boolean };
@@ -211,7 +212,9 @@ export class TurnSupervisor {
    *  前序任务失败不阻断后续（fn 总被执行），返回值/异常原样传给调用方。 */
   private runSerialized<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(conversationId) ?? Promise.resolve();
-    const result = prev.then(fn, fn);
+    const run = () => this.d.runnerSelection.status === 'ok' && this.d.runnerSelection.runner instanceof SubscriptionAccessRunner
+      ? this.d.runnerSelection.runner.atSafeTurn(fn) : fn();
+    const result = prev.then(run, run);
     const next = result.catch(() => {}).finally(() => {
       if (this.chains.get(conversationId) === next) this.chains.delete(conversationId);
     });
@@ -564,6 +567,7 @@ export class TurnSupervisor {
   // 同样经 P2（previousPayload append-only 断言）。发布/记账语义由调用方 onEvent 决定。
   // 返回 finalMessages：成功回合的完整轨迹消息（含最终 assistant 文本），供轨迹持久化（§2.2）。
   private async runOrToolLoop(o: {
+    forceOpenRouter?: boolean;
     envelope: OrRequestEnvelope;
     purpose: RunnerPurpose;
     activeReviewId: string | null;
@@ -598,7 +602,20 @@ export class TurnSupervisor {
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
-    let envelope = o.envelope;
+    if (this.drv()?.kind === 'claude-agent-sdk' && !o.forceOpenRouter && !(runner instanceof SubscriptionAccessRunner && runner.useOpenRouter())) {
+      const sdk = await this.runSdkToolLoop(o);
+      if (runner instanceof SubscriptionAccessRunner && runner.canFallback(sdk.result)) {
+        runner.invalidateSdkSession(o.windowId);
+        return this.runOrToolLoop({ ...o, forceOpenRouter: true });
+      }
+      return sdk;
+    }
+    const transportKind = this.drv()?.kind === 'deepseek' ? 'deepseek' : 'openrouter';
+    const orFallback = this.drv()?.kind === 'claude-agent-sdk';
+    if (orFallback && runner instanceof SubscriptionAccessRunner) runner.invalidateSdkSession(o.windowId);
+    const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
+    let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
+      reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
     // WP4（§7.2，2026-10-08）：conversation_read 的片段级已见——工具结果
     // **实际进入下一模型请求**（onDispatch 首发即真实发出）才从 pending 转
@@ -743,9 +760,9 @@ export class TurnSupervisor {
           }
         }
       };
-      let previousPayload = prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null;
+      let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(matEnv(prevEnvelope), transportKind) : null;
       // 整合（2026-10-24）：轨迹本轮重建（懒初始化）=合法新基线——旧 wire 锚不再可比，豁免
-      if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn) {
+      if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn && !orFallback) {
         const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
           JOIN turns t ON t.id=p.turn_id LEFT JOIN background_runs b ON b.id=p.background_run_id
           WHERE p.window_id=? AND p.outcome='completed' AND p.sent_at IS NOT NULL
@@ -762,7 +779,7 @@ export class TurnSupervisor {
         }
       }
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
+        runner.run({ driver: transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -907,6 +924,105 @@ export class TurnSupervisor {
     }
   }
 
+  private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
+    const d = this.d;
+    const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner;
+    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').map(m => typeof m.content === 'string'
+      ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n\n');
+    const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
+    const options = subscriptionSdkOptions(d.config, systemPrompt, cwd);
+    const toolSeen: ManifestEntry[] = [];
+    let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    let requestId: string | null = null;
+    let generationId: string | null = null;
+    let dispatchId: string | null = null;
+    let lastSentMessages: OrMessage[] | null = null;
+    const result = await runner.run({
+      driver: 'claude-agent-sdk', prompt: '', options, resumeSessionId: null, abortController: o.controller,
+      onEvent: ev => {
+        if (ev.kind === 'message_stop' && requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run('completed', requestId);
+        o.onEvent(ev, { requestId });
+      },
+      host: {
+        windowId: o.windowId, purpose: o.purpose, envelope: o.envelope, maxModelRequests: MAX_TOOL_ROUNDS + 1,
+        beforeModel: async (messages, round) => {
+          if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+          if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
+          if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
+          if (d.config.windows.model_context_capacity !== null) {
+            const estimate = this.estimateRequestTokens(messages, o.windowId);
+            const plan = rotationPlan({ currentInput: estimate, nextInput: estimate, capacity: d.config.windows.model_context_capacity,
+              maxOutput: o.envelope.maxTokens, toolReserve: d.config.windows.tool_input_reserve_tokens,
+              reviewReserve: d.config.windows.review_reserve_tokens, safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens });
+            if (plan.action === 'blocked_hard') throw new ContractError('CAPACITY_BLOCKED_HARD_TOOL_ROUND');
+          }
+          if (o.background) {
+            if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+            if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+            if (o.background.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
+            const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id=?').get(o.background.runId) as { model_requests_started: number }).model_requests_started;
+            if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
+            // The official preflight has just confirmed included subscription
+            // usage and disabled overage. OR fallback retains its existing quote.
+            const admission = o.background.recordDispatch({ logicalActionKey: `sdk:model:${round}`, attemptNo: 1, dispatchKind: 'model', reservedCostMicroUsd: 0 });
+            if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_BUDGET_EXHAUSTED');
+            dispatchId = admission.dispatchId;
+          }
+          requestId = genId('prq');
+          const envelope = { ...o.envelope, messages };
+          const at = new Date().toISOString();
+          d.db.prepare(`INSERT INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,context_fingerprint_json,payload_format,created_at,dispatch_started_at,attempt_no,background_run_id,background_dispatch_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId, o.windowId, o.attemptId, o.turnId, o.purpose,
+            JSON.stringify(messages.map(m => ({ role: m.role }))), JSON.stringify(envelope),
+            contextFingerprintJson({ round, tools: envelope.tools, messages, boundaries: envelope.boundaries }),
+            'sdk_projection_v1', at, at, 0, o.background?.runId ?? null, dispatchId);
+          lastSentMessages = structuredClone(messages);
+          if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
+          d.surfacing?.markDispatched?.(o.attemptId);
+        },
+        modelStarted: (id) => {
+          generationId = id;
+          d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
+          toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
+        },
+        executeTool: async (name, args, toolCallId, round) => {
+          if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
+          if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
+          if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
+          if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
+          o.background?.observeToolCall?.();
+          let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
+          const executed = await d.tools.execute(name, args, {
+            signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
+            purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
+            activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
+            seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
+            requestId: requestId!, toolCallId, attemptId: o.attemptId, round, generationId,
+            ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
+              const admission = o.background!.recordDispatch({ logicalActionKey: `tool:${toolCallId}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
+              if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
+              toolDispatch = { id: admission.dispatchId, quote };
+            } } : {}),
+          });
+          const settled = toolDispatch as { id: string; quote: BackgroundToolQuote } | null;
+          if (executed.ok && settled?.quote.verifiedFree) settleBackgroundDispatch(d.db, settled.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
+          for (const seen of executed.seenAdditions ?? []) {
+            const row = d.db.prepare('SELECT sequence FROM messages WHERE id=?').get(seen.id) as { sequence: number } | undefined;
+            pendingToolSeen.push({ ...seen, seq: row?.sequence ?? 0, origin: 'tool', visible: true });
+          }
+          return executed;
+        },
+      },
+    });
+    if (requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run(result.outcome, requestId);
+    if (result.sessionId && o.purpose !== 'cache_keepalive') {
+      const old = d.windows.get(o.windowId)?.sdk_session_id ?? null;
+      d.windows.rebindSession(o.windowId, old, result.sessionId);
+    }
+    return { result, finalMessages: lastSentMessages ? result.finalMessages ?? null : null,
+      lastSentMessages: result.lastSentMessages ?? lastSentMessages, toolSeen, pendingToolSeen };
+  }
+
   /** 指纹输入视图：并入运行时 override（or_model）。reasoning 不参与指纹
    *  ——effort 是逐请求生成参数，切换不构成运行边界变化（不换窗）。 */
   private fingerprintConfigView(config: import('../config/schema.ts').Config): import('../identity/service.ts').BoundaryConfigInput {
@@ -931,9 +1047,13 @@ export class TurnSupervisor {
 
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */
-  private drv(): { kind: 'openrouter' | 'deepseek'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
+  private drv(): { kind: 'openrouter' | 'deepseek' | 'claude-agent-sdk'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
     const r = this.d.runnerSelection;
     if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
+    if (r.runner.kind === 'claude-agent-sdk') {
+      return { kind: 'claude-agent-sdk', model: this.d.config.runtime.model!, maxTokens: this.d.config.openrouter.max_output_tokens,
+        reasoning: null, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
+    }
     if (r.runner.kind === 'deepseek') {
       const ds = this.d.config.deepseek;
       return { kind: 'deepseek', model: ds.model!, maxTokens: ds.max_output_tokens, reasoning: null, charsPerToken: ds.estimate_chars_per_token, sessionId: (roomId) => dsSessionId(roomId, ds.model!) };
@@ -946,8 +1066,9 @@ export class TurnSupervisor {
     return { kind: 'openrouter', model: model!, maxTokens: or.max_output_tokens, reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, model!, null) };
   }
 
-  private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
-    if (this.drv()?.kind === 'deepseek') return buildDeepSeekPayload(envelope);
+  private buildPayloadFrom(envelope: OrRequestEnvelope, kind = this.drv()?.kind): Record<string, unknown> {
+    if (kind === 'claude-agent-sdk') return { ...envelope };
+    if (kind === 'deepseek') return buildDeepSeekPayload(envelope);
     const or = this.d.config.openrouter;
     return buildOrPayload({
       model: envelope.model, sessionId: envelope.sessionId, messages: envelope.messages, tools: envelope.tools,
@@ -2789,6 +2910,15 @@ export class TurnSupervisor {
       }
     }
     this.active.delete(turnId);
+
+    // A native SDK turn can consume tools before a later subscription rejection.
+    // Preserve that actual protocol work so the next OR turn cannot replay it.
+    if (dv?.kind === 'claude-agent-sdk' && result.outcome !== 'completed' && result.activityStarted && orFinalMessages && d.trajectory) {
+      if (!runToken.token.cancelled) publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
+      const base = d.trajectory.forWindow(window.id)?.manifest ?? [];
+      const input: ManifestEntry[] = inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }] : [];
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orLastSentMessages ?? orFinalMessages), [...base, ...catchupManifest, ...input, ...turnManifestAdditions, ...orToolSeen]);
+    }
 
     // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口；
     // fresh_session 重跑完成后改绑新 session（旧 session 因含被替代输入而弃用）

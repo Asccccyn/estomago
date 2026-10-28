@@ -10,6 +10,8 @@ import type { SdkNormalizedEvent, RawStreamEvent } from '../../../../packages/co
 import type { AssembledSdkOptions } from './build-options.ts';
 import type { OrBoundary, OrMessage, OrTool } from './or-payload.ts';
 import { MockRunner } from './runner-mock.ts';
+import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolExecResult } from '../capabilities/contracts.ts';
 
 export type RunnerPurpose = 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive'; // §12：keepalive 默认禁用
 
@@ -22,6 +24,15 @@ export type SdkRunRequest = {
   abortController: AbortController; // 宿主持有；runner 原样传给 SDK（真实 AbortController）
   onEvent: (ev: SdkNormalizedEvent) => void;
   onBeforeDispatch?: (info: { attemptIndex: number; payloadWireJson: string }) => Promise<void>;
+  host?: {
+    purpose?: RunnerPurpose;
+    windowId: string;
+    envelope: OrRequestEnvelope;
+    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number) => Promise<ToolExecResult>;
+    beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
+    modelStarted: (generationId: string | null, round: number) => void;
+    maxModelRequests: number;
+  };
 };
 
 // —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3；DS 直连驱动复用同一信封形状）——
@@ -68,6 +79,10 @@ export type RunnerRunResult = {
   attempts?: number; // §9.2：真实发出的模型请求次数（含重试）；1=未重试
   reasoningFrames?: unknown[]; // OR §10：opaque reasoning 片段（按接收顺序；协议继续态保真用，非 UI 思考）
   reasoningContent?: string; // DS opaque协议继续态：带tools的后续请求按当前合同原样保留，不进入UI正文
+  subscriptionLimit?: SDKRateLimitInfo;
+  activityStarted?: boolean;
+  finalMessages?: OrMessage[];
+  lastSentMessages?: OrMessage[];
 };
 
 export interface AgentRunner {

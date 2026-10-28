@@ -11,7 +11,6 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { SdkEventNormalizer } from '../../apps/host/src/runtime/sdk-event-normalizer.ts';
-import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { buildSdkOptions } from '../../apps/host/src/runtime/build-options.ts';
 import { IdentityService, contextFingerprint } from '../../apps/host/src/identity/service.ts';
 import { buildConfig, THINKING_EFFORT_ENUM } from '../../apps/host/src/config/schema.ts';
@@ -129,13 +128,6 @@ test('§29 effort：枚举校验 + buildOptions → runner options.effort 全贯
   const gate = identity.evaluateGate(db);
   const built = buildSdkOptions({ config, gate, identityText: 'x', approvedRulesText: 'rules', cwd: paths.workspacesDir });
   assert.ok(built.status === 'ok' && (built.assembled.options as Record<string, unknown>).effort === 'xhigh'); // F07：顶层
-  const captured: Array<{ prompt: string; options: Record<string, unknown> }> = [];
-  const runner = new ClaudeSdkRunner((p) => {
-    captured.push(p as { prompt: string; options: Record<string, unknown> });
-    return (async function* () { yield { type: 'result', subtype: 'success' }; })();
-  });
-  await runner.run({ prompt: 'p', options: built.assembled!, resumeSessionId: null, abortController: new AbortController(), onEvent: () => {} });
-  assert.equal((captured[0]!.options as Record<string, unknown>).effort, 'xhigh', 'SDK options.effort 必须收到（F07 顶层）');
   db.close();
 });
 

@@ -5,6 +5,7 @@ import type { Config } from '../config/schema.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import { lastCacheEvidence, keepwarmTargetAtMs } from '../runtime/cache-observation.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
+import { SubscriptionAccessRunner } from '../runtime/subscription-access.ts';
 
 export type RecordSnapshot = {
   roomId: string;
@@ -34,7 +35,9 @@ export function buildRecordSnapshot(d: {
   rawSyncState?: { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } | null;
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
-  const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok' ? (d.runnerSelection.runner.kind as RecordSnapshot['driver']) : 'unknown';
+  const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok'
+    ? (d.runnerSelection.runner instanceof SubscriptionAccessRunner ? d.runnerSelection.runner.status().actual_entry ?? d.runnerSelection.runner.kind : d.runnerSelection.runner.kind)
+    : 'unknown';
   // WP-05（B14）：exactModel 经注入的 runtime settings 取生效值（与设置页
   //  同源——override 后不再显示配置默认型号）；无注入回落 config
   const orEff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
@@ -136,7 +139,7 @@ export function buildRecordSnapshot(d: {
         : driver === 'openrouter'
           ? { desired: '1h', effective: null, verification: 'requested' }
           : driver === 'claude-agent-sdk'
-            ? { desired: '1h', effective: null, verification: 'sdk_unverified' }
+            ? { desired: '1h', effective: null, verification: 'requested' }
             : { desired: driver === 'mock' ? '1h' : 'auto', effective: null, verification: 'unknown' },
       lastRead: lastUsage?.cache_read_input_tokens ?? null,
       lastWrite: lastUsage?.cache_creation_input_tokens ?? null,
@@ -169,7 +172,7 @@ export function buildRecordSnapshot(d: {
       : driver === 'deepseek'
         ? { driver, backgroundEligible: false, reason: 'AUTO_CACHE_NO_FIXED_TTL' }
         : driver === 'claude-agent-sdk'
-          ? { driver, backgroundEligible: false, reason: 'SDK_BACKGROUND_POLICY_UNVERIFIED' }
+          ? { driver, backgroundEligible: true, reason: 'SDK_SUBSCRIPTION_PREFLIGHT_REQUIRED' }
           : { driver: String(driver), backgroundEligible: false, reason: 'UNKNOWN_DRIVER' },
     usageByPurpose: purposeCost.map((r) => ({
       purpose: r.purpose, count: r.n,

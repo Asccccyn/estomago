@@ -17,6 +17,7 @@ import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
 import { CapabilityMatrix } from './runtime/capabilities.ts';
 import { selectRunner, type RunnerSelection } from './runtime/runner.ts';
+import { SubscriptionAccessRunner } from './runtime/subscription-access.ts';
 import { ReasoningService } from './reasoning/service.ts';
 import { UsageCollector } from './usage/collector.ts';
 import { RoutingService } from './routing/service.ts';
@@ -198,7 +199,10 @@ export class Host {
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
     const capabilities = new CapabilityMatrix(opts.config);
-    const runnerSelection = await selectRunner(opts.config);
+    const settings = new RuntimeSettingsService(db);
+    const runnerSelection: RunnerSelection = opts.config.runtime.provider === 'mock'
+      ? await selectRunner(opts.config)
+      : { status: 'ok', runner: new SubscriptionAccessRunner(opts.config, settings) };
     // EXEC_V1 02 §4.1（ALERT-07）：SDK 无 TTL 装配证据——显示面经 records.ttlVerification
     // 分离 desired/effective/verification（不得显示"已生效 1h"）。聚合告警在 WP2 核最终
     // options 时按真实证据观察（开机观测会污染事件序列，不是证据点）。
@@ -210,7 +214,6 @@ export class Host {
     const selections = new ManualSelectionService(db);
     // 2026-10-08 她裁定：运行时换模型/推理等级——override 持久正本；
     // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
-    const settings = new RuntimeSettingsService(db);
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
     const windows = new WindowManager(db, events, identity, () => {

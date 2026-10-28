@@ -5,6 +5,7 @@ import { json, readJson } from '../http-leaf.ts';
 import { fetchOrModelMeta, effortsForModel } from '../../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../../config/schema.ts';
 import type { RequestDeps } from '../http.ts';
+import { SubscriptionAccessRunner } from '../../runtime/subscription-access.ts';
 
 /** 运行时设置组：GET/PUT /api/v1/runtime-settings。 */
 export async function handleRuntimeSettingsRoutes(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string): Promise<void> {
@@ -23,6 +24,11 @@ if (rtGet) {
   }
   return json(res, 200, {
     driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
+    access: d.runnerSelection.status === 'ok' && d.runnerSelection.runner instanceof SubscriptionAccessRunner
+      ? d.runnerSelection.runner.status() : { policy: d.settings?.accessPolicy(d.config.runtime.access_policy) ?? d.config.runtime.access_policy, actual_entry: null, subscription: { status: 'unverified' } },
+    sdk_model: d.config.runtime.model,
+    sdk_proxy_configured: Boolean(d.config.runtime.subscription_proxy_url),
+    sdk_login_verified: d.config.runtime.auth_and_billing_verified,
     or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
     reasoning_effort: { effective: effEffort, override: d.settings?.reasoningEffort() ?? null, config_default: cfg.reasoning },
     model_options: cfg.model_options ?? [],
@@ -34,7 +40,10 @@ if (rtGet) {
 const rtPut = route === 'PUT /api/v1/runtime-settings';
 if (rtPut) {
   if (!d.settings) return json(res, 503, { error: { code: 'unavailable', message: '运行时设置服务未接线' } });
-  const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown };
+  const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown; access_policy?: unknown };
+  if (body.access_policy !== undefined && !['configured', 'subscription-first'].includes(body.access_policy as string)) {
+    return json(res, 422, { error: { code: 'invalid_access_policy', message: '接入策略必须为 configured 或 subscription-first' } });
+  }
   // WP-04（JFA-B05/CX-10/C-016）：两字段全验通过后一次性写入——
   // 任一失败 422 且零写入（不再逐字段先写先错）；or_model 按配置层
   // 同款形状门（orModelIdIssue：auto/latest/逗号拼单/未知形态拒）
@@ -73,7 +82,7 @@ if (rtPut) {
   const defEffort = (d.config.openrouter.reasoning as { effort?: unknown } | null | undefined)?.effort;
   const defEffortStr = typeof defEffort === 'string' && defEffort !== 'default' ? defEffort : null;
   const candidateEffort = (nextEffort !== undefined ? nextEffort : d.settings.reasoningEffort()) ?? defEffortStr;
-  if (candidateEffort !== null && candidateModel) {
+  if ((body.or_model !== undefined || body.reasoning_effort !== undefined) && candidateEffort !== null && candidateModel) {
     const driver = d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : null;
     if (driver === 'openrouter') {
       const meta = await fetchOrModelMeta(d.config.openrouter.base_url, candidateModel);
@@ -89,6 +98,7 @@ if (rtPut) {
   // FU-002（回访）：全验通过后**单事务**写入（setMany）——此前两字段
   // 各开事务，第二写失败后第一写已提交（半提交状态）
   const writes: Array<[string, string | null]> = [];
+  if (body.access_policy !== undefined) writes.push(['access_policy', body.access_policy as string]);
   if (nextModel !== undefined) writes.push(['or_model', nextModel]);
   if (nextEffort !== undefined) writes.push(['reasoning_effort', nextEffort]);
   d.settings.setMany(writes);

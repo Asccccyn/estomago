@@ -251,9 +251,9 @@ test('K-11 心跳发言：目标按正式发言的发布时间（不是心跳开
 test('S-01/S-03：enqueueBackground 同 conversation 任意时刻最多一个执行；不嵌套自锁', async () => {
   const t = setup();
   const db = t.db;
-  // 最小 supervisor（真实类；deps 只给 db+logger 形状——runSerialized 不触及其他依赖）
+  // 串行链在执行位固定接入策略；这里只测试队列，不启动模型。
   const logger = { info(): void {}, warn(): void {}, error(): void {} } as unknown as import('../../apps/host/src/observability/logging.ts').Logger;
-  const sup = new TurnSupervisor({ db, config: t.config, logger } as unknown as import('../../apps/host/src/runtime/supervisor.ts').SupervisorDeps);
+  const sup = new TurnSupervisor({ db, config: t.config, logger, runnerSelection: { status: 'blocked', reasons: ['queue-only fixture'] } } as unknown as import('../../apps/host/src/runtime/supervisor.ts').SupervisorDeps);
   let active = 0;
   let maxActive = 0;
   const job = async (ms: number): Promise<string> => {

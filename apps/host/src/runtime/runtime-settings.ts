@@ -115,6 +115,10 @@ export class RuntimeSettingsService {
     return (REASONING_EFFORTS as readonly string[]).includes(v) ? v as ReasoningEffortChoice : null;
   }
 
+  accessPolicy(configDefault: 'configured' | 'subscription-first'): 'configured' | 'subscription-first' {
+    return (this.get('access_policy') as 'configured' | 'subscription-first' | null) ?? configDefault;
+  }
+
   /** 写入（人触发；空串/null = 清除 override 回落默认）。 */
   set(key: string, value: string | null): void {
     this.setMany([[key, value]]);

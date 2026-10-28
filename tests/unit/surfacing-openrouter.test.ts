@@ -275,6 +275,6 @@ test('existing OR cache trajectory gains its first memory only in the new tail',
     assert.deepEqual(nextMessages.filter(m=>m.role==='system'),oldMessages.filter(m=>m.role==='system'));
     assert.equal(nextMessages.at(-2).content[0].text,SURFACE_HOST_NOTICE);
     assert.equal(JSON.parse(nextMessages.at(-2).content[1].text).memories[0].text,ITEM.event_text);
-    assert.equal(supportsSurfacingTransport('claude-agent-sdk'),false);
+    assert.equal(supportsSurfacingTransport('claude-agent-sdk'),true);
   } finally {await ctx.svc.stop();ctx.db.close();}
 });

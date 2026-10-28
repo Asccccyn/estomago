@@ -106,7 +106,7 @@ function fakeOidoAdapter(counts: { ingest: number; analyze: number; keys?: strin
 
 function compose(root: string, transport: OrTransport, sirenUrl: string, opts: { oido?: unknown; sdkQuery?: ConstructorParameters<typeof ClaudeSdkRunner>[0] } = {}) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: opts.sdkQuery ? 'claude-agent-sdk' : 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: opts.sdkQuery ? 'claude-agent-sdk' : 'deepseek', subscription_proxy_url: opts.sdkQuery ? 'http://127.0.0.1:1082' : null }, deepseek: { model: 'deepseek-chat' } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -293,9 +293,18 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
   const prompts: string[] = [];
   const c = compose(tempRoot('sdk-obs-'), quietTransport, stub.url, {
     oido: fakeOidoAdapter({ ingest: 0, analyze: 0 }),
-    sdkQuery: async function* (req) {
-      prompts.push(req.prompt);
-      for (const raw of fixtureScenario('consistent', req.prompt)) yield raw;
+    sdkQuery: (req) => {
+      const stream = (async function* () {
+        let text = '';
+        if (typeof req.prompt === 'string') text = req.prompt;
+        else for await (const message of req.prompt as any) { text += JSON.stringify(message.message.content); }
+        prompts.push(text);
+        for (const raw of fixtureScenario('consistent', text)) yield raw;
+      })();
+      return Object.assign(stream, { close() {},
+        accountInfo: async () => ({ apiProvider: 'firstParty', subscriptionType: 'max', tokenSource: 'claude.ai' }),
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({ subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } }),
+      });
     },
   });
   try {

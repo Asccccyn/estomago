@@ -197,10 +197,10 @@ test('CACHE-07/08：compact 专项识别；上游冲突别名归一 critical；�
   // 记录面：驱动后台能力状态（SDK=未验证阻断；DS=自动缓存不借 1h；OR=合格）
   const fakeWin = { activeWindow: () => null } as never;
   const mkSnap = (kind: string) => buildRecordSnapshot({ db, config: buildConfig({}), windows: fakeWin, runnerSelection: { status: 'ok', runner: { kind } } as never }, 'conv-w2', null);
-  assert.deepEqual(mkSnap('claude-agent-sdk').backgroundPolicy, { driver: 'claude-agent-sdk', backgroundEligible: false, reason: 'SDK_BACKGROUND_POLICY_UNVERIFIED' });
+  assert.deepEqual(mkSnap('claude-agent-sdk').backgroundPolicy, { driver: 'claude-agent-sdk', backgroundEligible: true, reason: 'SDK_SUBSCRIPTION_PREFLIGHT_REQUIRED' });
   assert.deepEqual(mkSnap('deepseek').backgroundPolicy, { driver: 'deepseek', backgroundEligible: false, reason: 'AUTO_CACHE_NO_FIXED_TTL' });
   assert.deepEqual(mkSnap('openrouter').backgroundPolicy, { driver: 'openrouter', backgroundEligible: true, reason: 'eligible_or_anthropic_path' });
-  assert.equal(mkSnap('claude-agent-sdk').cache.ttlVerification.verification, 'sdk_unverified'); // 不显示已生效 1h
+  assert.equal(mkSnap('claude-agent-sdk').cache.ttlVerification.verification, 'requested'); // 已装配请求，仍不冒充真实命中或有效 TTL
   assert.equal(mkSnap('openrouter').cache.ttlVerification.verification, 'requested'); // 已请求待证据，不是已核实
   db.close();
 });

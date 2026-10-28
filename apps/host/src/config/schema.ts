@@ -65,6 +65,8 @@ export type Config = {
   runtime: {
     tool_schema_mode: 'legacy' | 'deferred';
     provider: string;
+    access_policy: 'configured' | 'subscription-first';
+    subscription_proxy_url: string | null;
     language: string;
     node_version: string | null;
     sdk_version: string | null;
@@ -300,6 +302,8 @@ export const CONFIG_DEFAULTS: Config = {
   runtime: {
     tool_schema_mode: 'deferred',
     provider: 'claude-agent-sdk',
+    access_policy: 'configured',
+    subscription_proxy_url: null,
     language: 'typescript',
     node_version: null,
     sdk_version: null,
@@ -518,7 +522,7 @@ const SHAPE: SectionSpec = { section: {
     bind: 'string', port: 'number', public_origin: 'string?', public_enabled: 'boolean', supervisor: 'string?',
   } },
   runtime: { section: {
-    tool_schema_mode: 'string', provider: 'string', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
+    tool_schema_mode: 'string', provider: 'string', access_policy: 'string', subscription_proxy_url: 'string?', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
     model: 'string?', authentication_profile_ref: 'string?', system_prompt_mode: 'string', setting_sources: 'string[]',
     require_identity_manifest: 'boolean', disable_auto_memory: 'boolean', strict_mcp_config: 'boolean',
     automatic_flag_switch: 'boolean', automatic_availability_fallbacks: 'string[]', max_active_primary_runners: 'number?',
@@ -694,6 +698,17 @@ export function dsModelIdIssue(model: string): string | null {
 
 // 产品硬规则（v0.2.1 固定，配置不得放宽；01 §6.2/§11.1、05 §2.1 + ESTOMAGO_OR_SELF_HOLD §6/§7）
 function checkHardRules(c: Config, issues: ValidationIssue[]): void {
+  if (!['configured', 'subscription-first'].includes(c.runtime.access_policy)) {
+    issues.push({ path: 'runtime.access_policy', message: '必须为 configured 或 subscription-first' });
+  }
+  if (c.runtime.subscription_proxy_url !== null) {
+    try {
+      const proxy = new URL(c.runtime.subscription_proxy_url);
+      if (!['http:', 'https:'].includes(proxy.protocol) || proxy.hostname !== '127.0.0.1' || !proxy.port || proxy.username || proxy.password || proxy.search || proxy.hash || proxy.pathname !== '/') throw Error();
+    } catch {
+      issues.push({ path: 'runtime.subscription_proxy_url', message: '必须是 127.0.0.1 上带端口、无凭据或路径的 HTTP/HTTPS 代理地址' });
+    }
+  }
   const fixed: Array<[boolean, string]> = [
     [c.input.multiline === true, 'input.multiline 必须为 true（v0.2.1 产品规则）'],
     [c.input.enter_behavior === 'newline', 'input.enter_behavior 必须为 newline：回车只换行'],

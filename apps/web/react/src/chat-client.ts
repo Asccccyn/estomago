@@ -540,6 +540,11 @@ export class EstomagoClient {
       this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable})
     }catch(e){this.report(e)}
   }
+  accessSettings = (): Promise<Json> => this.request('/runtime-settings')
+  setAccessPolicy = async (policy: 'configured' | 'subscription-first'): Promise<void> => {
+    await this.request('/runtime-settings', this.json('PUT', { access_policy: policy }))
+    await this.loadRuntime()
+  }
   setModel = async (index:number) => {
     if(!this.snapshot.canConfigure){this.notify('当前通道不支持此处切换模型');return}
     const id=this.snapshot.modelIds[index];if(!id)return

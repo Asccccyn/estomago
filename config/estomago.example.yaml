@@ -19,6 +19,11 @@ runtime:
   # 新窗口按需读取详细工具定义；既有窗口沿用已发送的冻结工具集。
   tool_schema_mode: deferred
   provider: claude-agent-sdk
+  # configured 保留当前入口；subscription-first 仅在官方订阅额度明确拒绝时回退现有 OR。
+  access_policy: configured
+  # 填既有代理的本机 HTTP 端口；先核实其唯一出口是获准家宽节点。
+  # SDK 子进程只能连接这个回环端口，代理失效不会尝试直连。
+  subscription_proxy_url: null
   language: typescript
   node_version: null
   sdk_version: null
