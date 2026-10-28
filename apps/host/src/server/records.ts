@@ -15,6 +15,7 @@ export type RecordSnapshot = {
   epochId: string | null;
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
+  requestExecution: { requestId: string; entry: string; requestedModel: string; responseModel: string | null; provider: string | null } | null;
   sdkEstimates: ReturnType<UsageCollector['sdkCostEstimates']>;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string; uiReference: number };
   cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' }; cacheEvidenceState: 'dispatch_started_at' | 'legacy_observed_at' | 'no_evidence'; nextKeepwarmEstimateAt: string | null };
@@ -38,13 +39,22 @@ export function buildRecordSnapshot(d: {
   rawSyncState?: { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } | null;
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
+  const requestExecution = win ? d.db.prepare(`SELECT id AS requestId,
+    json_extract(payload_json,'$.execution.entry') AS entry,
+    json_extract(payload_json,'$.execution.requestedModel') AS requestedModel,
+    json_extract(payload_json,'$.execution.responseModel') AS responseModel,
+    json_extract(payload_json,'$.execution.provider') AS provider
+    FROM provider_requests WHERE window_id=? AND dispatch_started_at IS NOT NULL
+      AND json_type(payload_json,'$.execution')='object'
+    ORDER BY dispatch_started_at DESC,rowid DESC LIMIT 1`).get(win.id) as RecordSnapshot['requestExecution'] | undefined : null;
   const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok'
-    ? (d.runnerSelection.runner instanceof SubscriptionAccessRunner ? d.runnerSelection.runner.status().actual_entry ?? d.runnerSelection.runner.kind : d.runnerSelection.runner.kind)
+    ? (requestExecution?.entry as RecordSnapshot['driver'] | undefined) ?? (d.runnerSelection.runner instanceof SubscriptionAccessRunner ? d.runnerSelection.runner.status().actual_entry ?? d.runnerSelection.runner.kind : d.runnerSelection.runner.kind)
     : 'unknown';
   // WP-05（B14）：exactModel 经注入的 runtime settings 取生效值（与设置页
   //  同源——override 后不再显示配置默认型号）；无注入回落 config
   const orEff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
-  const exactModel = driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model;
+  const exactModel = requestExecution?.responseModel ?? requestExecution?.requestedModel
+    ?? (driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model);
   // §11.1：本地粗估 + 实际 usage 校准；粗估系数按驱动（DS 默认 1.5——中文场景；OR 默认 2.5），精度分级如实
   const charsPerToken = driver === 'deepseek' ? d.config.deepseek.estimate_chars_per_token : driver === 'openrouter' ? d.config.openrouter.estimate_chars_per_token : 2.5;
 
@@ -124,6 +134,7 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
+    requestExecution: requestExecution ?? null,
     sdkEstimates: win ? new UsageCollector(d.db).sdkCostEstimates('window', win.id) : [],
     context: { estimatedInput: estimated, lastActualInput: lastInput, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
     cache: {

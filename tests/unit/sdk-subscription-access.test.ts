@@ -279,6 +279,9 @@ test('OR fallback attributes each request to its envelope and observed response,
     const rows = f.db.prepare("SELECT u.model,p.payload_json FROM usage_observations u JOIN provider_requests p ON p.id=u.request_id WHERE u.source='or_stream'").all() as any[];
     assert.equal(rows.length, 1);
     assert.equal(rows[0].model, responseModel ?? 'deepseek/deepseek-chat-v3.1');
+    assert.equal(f.records().driver, 'openrouter');
+    assert.equal(f.records().exactModel, responseModel ?? 'deepseek/deepseek-chat-v3.1');
+    assert.equal(f.records().requestExecution?.provider, 'Synthetic Upstream');
     assert.deepEqual(JSON.parse(rows[0].payload_json).execution, {
       entry: 'openrouter', requestedModel: 'deepseek/deepseek-chat-v3.1', responseModel: responseModel ?? null, provider: 'Synthetic Upstream',
     });
