@@ -1,5 +1,7 @@
 # estómago
 
+- **2026-10-28 16:25 PDT（已部署，SDK未启用）**：代码 `3d510f6` 上线至 `~/Projects/estomago-releases/sdk-integration-20261028-3d510f6`，沿原 LaunchAgent 切换目录并重启；ready/live均200，735条消息、序号735、442次模型请求、窗口及schema50不变。配置保留 configured/OpenRouter；16:21官方只读usage仍为rate_limits=null，B01未解除。恢复点 `~/Backups/pre-estomago-sdk-20261028-3d510f6`；无真实模型验证请求。[接入与部署记录](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
+
 - **2026-10-28（候选，未部署）专项修复收口**：F01 `b73ef06`、F02 `5377849`（记录面补齐 `7cbd8db`）、F03 `138bb44`；`778067b` 验证完整 Host 登录/冷重启/角色与更正记录/工具回执/人工选集。相关 19 文件 138 项通过，官方 SDK 假 API 抓包 26+20 笔；本轮零真实模型输入。10:35 PDT 官方只读 usage 仍无 rate_limits，B01 维持 SDK_EXTRA_USAGE_UNVERIFIED；正式模型理解与真实缓存未验收。[接入记录](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
 
 - **2026-10-28（候选，未部署）F03 `138bb44`**：SDK 会话累计估值及 modelUsage/costBasis 进入既有 cumulative/raw 观测；请求 token、上下文与真实收费保持独立。原生 resume/fork 抓包和单/多请求计量回归通过；正式订阅准入仍待官方额外使用状态证据。

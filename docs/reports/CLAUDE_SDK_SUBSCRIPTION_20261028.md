@@ -19,6 +19,14 @@
 
 10:35 PDT 使用同一锁定 SDK、正式环境白名单及既有本机代理只读查询官方控制接口：firstParty、无 apiKeySource，usage 仍为 rate_limits_available=true / rate_limits=null。输入生成器没有 yield，persistSession=false，会话费用 0、model_usage 为空；准入仍是 SDK_EXTRA_USAGE_UNVERIFIED。没有放宽准入、建立人工永久放行或用 API key 冒充订阅。正式入口、真实冷重建理解、真实额度恢复和物理 1h 缓存仍未通过供应商验收。
 
+## 2026-10-28 16:25 PDT 部署
+
+用户批准后，将代码 `3d510f6` 部署到 `~/Projects/estomago-releases/sdk-integration-20261028-3d510f6`。沿用原 LaunchAgent 和启动脚本，仅修改 cd 发布目录；旧发布目录保留。原备份脚本保存数据库、配置、认证元数据及媒体，原启动脚本/plist另存 `~/Backups/pre-estomago-sdk-20261028-3d510f6`。
+
+生产ready/live均200。新进程实际位于新目录，275个运行文件与资产匹配候选，网页脚本散列匹配。消息数/序号735、模型请求442、当前窗、schema50及配置散列均未变化，自醒和心跳开关仍false。未发送模型测试消息。
+
+本次上线保留 configured/OpenRouter。SDK模型/版本/认证确认/代理字段未擅自填入，订阅SDK未启用。16:21 PDT官方控制接口重新核对仍返回rate_limits=null、额外付费状态未知，SDK_EXTRA_USAGE_UNVERIFIED仍成立；该控制查询无yield输入、不保存会话，费用0、model_usage为空。需要继续解决B01并完成正式入口验收，不能把代码部署写成SDK已经可聊天。
+
 ## 接入变化
 
 est 仍负责身份与 I、Mariposa、消息与协议账本、窗口、后台调度、权限及业务执行。正式 SDK 调用采用官方 `query()`；SDK MCP 只映射现有窗口冻结的工具定义，并调用现有 `ModelToolBridge`（此前的 HostToolExecutor）。没有第二个业务服务，也没有手写 `claude -p` 模型通道。
