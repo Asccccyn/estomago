@@ -1,10 +1,10 @@
 # estómago Claude Agent SDK 接入验收
 
-本轮完成候选代码和隔离验收，**没有部署或启用正式订阅入口**。生产目录、生产配置、聊天数据库和 VPS 代理均未修改。解锁后补验了当前家宽 HTTP 出口与设置页，并准备官方手动登录入口。最后一次账户检查仍为未登录；正式订阅请求、真实额度事件和真实缓存命中仍待登录后验收。
+本轮完成候选代码和隔离验收，**没有部署或启用正式订阅入口**。生产目录、生产配置、聊天数据库和 VPS 代理均未修改。解锁后补验了当前家宽 HTTP 出口与设置页，用户已通过官方运行时完成本机登录。官方 SDK 的套餐和额度数据仍不完整，模型准入保持阻断；真实订阅模型请求、额度事件和缓存命中尚未验收。
 
 基线为 `52c7dcb44abd9390ff2ca6317ab647cad18261d4`，取自现行整合工作树；候选分支为 `sdk-subscription-integration`。实际安装并保持不变的是 `@anthropic-ai/claude-agent-sdk 0.3.283`，随包官方运行时 `Claude Code 2.1.283`。已比较候选和既有发布目录中的官方二进制，字节一致。MCP SDK 已有的 peer 包 `1.30.1` 被显式列为依赖，锁文件经 npm 重新生成，没有升级 Claude SDK。
 
-实现提交：`1f667b9`。本报告和 README 索引另行记录，不改变运行代码。
+实现提交：`1f667b9`；登录后按实际官方账户元数据修正准入的提交为 `13ff61e`。本报告和 README 索引另行记录。
 
 ## 接入变化
 
@@ -87,7 +87,13 @@ SDK stream 用量按每笔请求写入既有用量账本，忽略重复的整轮
 
 这是对 **SDK 子进程** 的已测限制，不是整台 Mac、浏览器或用户手动启动的其他进程的全局保证。当前连接下的 HTTP 出口已实测；DNS/IPv6 结论来自实时配置核查，未做全链路抓包，也没有主动断开用户正在使用的 VPN。参考仓库中的多节点自动切换和 CLIProxyAPI 没有采用。
 
-2026-10-28 13:51 UTC 的官方 SDK 控制接口检查未发送模型输入，返回 `apiProvider: firstParty`、`tokenSource: none`、`subscriptionType: null`、`apiKeySource: null`；usage 返回 `rate_limits_available: false`。实际准入结果为 `SDK_SUBSCRIPTION_AUTH_REQUIRED`，不是登录成功。模型目录虽可读取，但不能据此认定订阅有权使用其中型号。账户检查脚本和脱敏结果位于任务输出目录，未接触 OR/API key。
+用户登录后，宿主权限下的官方 `auth status --json` 已返回 `loggedIn: true`、`authMethod: claude.ai`、`apiProvider: firstParty`。受限工具沙箱不能访问系统钥匙串时会得到未登录结果，因此不能把该结果误报为用户登录失败；正式 SDK 检查在同样网络限制下使用宿主的正常钥匙串访问。
+
+2026-10-28 07:32 PDT 的 SDK 控制接口返回 `apiProvider: firstParty`、`subscriptionType: Claude API`，未提供 tokenSource 或 apiKeySource；usage 返回 `rate_limits_available: true`，但 `subscription_type`、`rate_limits` 均为空。本次检查会话的 SDK 费用为 0、模型用量表为空；检查器从未放行模型输入。模型目录可读取不代表账户已获对应型号权限。
+
+已只读核对当前安装运行时：正常本机 OAuth 登录会省略 tokenSource；未识别到套餐时，显示名称默认落到 `Claude API`，这个标签不是使用 API key 的证据。`13ff61e` 删除了 tokenSource 必须存在的错误前提，按 usage 中明确的 pro/max/team/enterprise 套餐及额外付费关闭状态准入，并保留 API key 来源的拒绝。修正后当前实际阻塞为 `SDK_EXTRA_USAGE_UNVERIFIED`，未转交 OR，也未发送收费测试请求。已有 15 项额度/工具/流式单测及两项 SDK 合同测试、主机类型检查均通过。
+
+本机官方资料缓存显示 Apple 订阅计费方式及额外付费关闭；这是账户资料证据，不能代替尚未取得的当前 usage 响应。账户检查脚本和脱敏结果位于任务输出目录，原始诊断仅经内存筛选，不保存授权码、token 或请求头。未知套餐/usage 的具体原因仍待确认，未通过修改凭据或硬编码套餐绕过。
 
 按用户要求，准备了任务输出目录中的 `登录-Claude-官方订阅.command`。它启动前再次检查家宽出口，使用替换式环境和本机代理网络限制，再执行未修改的官方运行时 `auth login --claudeai`；用户在终端打开官方链接并手动输入授权码。没有把授权码、token 或真实认证请求写入抓包日志。
 
@@ -116,7 +122,7 @@ node scripts/probe-claude-sdk.mjs
 
 本轮没有数据库 schema 迁移。当前未部署，因此生产无须回滚。若之后试用候选版本，需要退回时：在安全回合边界恢复 `access_policy: configured`，回到既有 OR；必要时停止候选实例并把启动目录指回原发布版本。保留聊天数据库和工具副作用账本，不恢复旧数据库快照，不重放已执行回合。代码可在干净基线应用或反向应用随交付提供的补丁；不要覆盖别人的未提交修改。
 
-仍未完成：用户手动完成正式登录及随后账户额外付费核验、全链路断线/DNS 抓包、真实额度耗尽/恢复、真实缓存/长时间保温、真实外部业务服务及 SDK 媒体透传验收。新 SDK 文本接入没有宣称解决既有图片输入限制。
+仍未完成：官方 usage 套餐/额度与额外付费的实时核验、全链路断线/DNS 抓包、真实额度耗尽/恢复、真实缓存/长时间保温、真实外部业务服务及 SDK 媒体透传验收。新 SDK 文本接入没有宣称解决既有图片输入限制。
 
 ## 参考与适用边界
 

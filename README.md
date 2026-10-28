@@ -1,6 +1,6 @@
 # estómago
 
-- **2026-10-28（候选，未部署）**：Claude 订阅 SDK 接回既有宿主、MCP 工具、额度回退与设置页；完成合成抓包和回退/网络隔离验证，正式登录与家宽出口仍待核验。代码 `1f667b9`。[验收、残留与回滚](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
+- **2026-10-28（候选，未部署）**：Claude 订阅 SDK 接回既有宿主、MCP 工具、额度回退与设置页；合成抓包、回退/网络隔离、当前家宽 HTTP 出口及设置页已验收，官方本机登录已完成，套餐/额度接口仍待确认。代码 `1f667b9`；`13ff61e` 修正官方 OAuth 省略 tokenSource 时的误阻断，未知套餐及额外付费状态继续阻断模型调用。[验收、残留与回滚](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
 
 - 2026-10-27（**已部署并重启**，代码 `36d14a8`，发布目录 `~/Projects/estomago-releases/voice-reply-finalization-20261027`）：回复音频缺失仅在 Siren 明确 `audio_finalized` 后收口，迟到音频沿原 worker/操作身份补齐；旧服务缺字段时保留恢复资格。同批 Siren `a258592` 已上线；正式入口回归、四个真实 est↔Siren HTTP/WS 隔离场景、类型检查及发布目录验证通过。生产 ready=true、health 200、库 v50；735 条消息、序号水位、442 条模型请求和当前窗 38 工具均未变，零收费验证请求。回退备份：`/Users/owner/Backups/pre-voice-reply-finalization-20261027-201518`。
 
