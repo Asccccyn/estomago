@@ -7,8 +7,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 //    指纹、不换窗**，下一请求立即生效（上下文全复用）。
 //  - 仅信封驱动（OR）面生效；DS 官方直连无 effort 参数，模型沿用配置。
 export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5'] as const;
+export const SDK_TO_API_MODEL: Record<string, string> = { 'claude-opus-4-6': 'anthropic/claude-opus-4.6', 'claude-opus-5-5': 'anthropic/claude-opus-5.5' };
 export function sdkEffortsForModel(model: string | null): string[] | null {
-  const apiModel = model === 'claude-opus-4-6' ? 'anthropic/claude-opus-4.6' : model === 'claude-opus-5-5' ? 'anthropic/claude-opus-5.5' : null;
+  const apiModel = model ? SDK_TO_API_MODEL[model] ?? null : null;
   return effortsForModel(null, apiModel);
 }
 

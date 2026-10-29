@@ -115,6 +115,7 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     openrouter: { model: 'anthropic/claude-opus-4.6' }, deployment: { port: 0 },
   });
   setModelMetaForTests(config.openrouter.model!, null);
+  setModelMetaForTests('anthropic/claude-opus-5.5', null);
   let host: Host | undefined;
   let base = '', cookie = '';
   const start = async () => {
@@ -162,6 +163,10 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     const record = await (await fetch(base + '/api/v1/conversations/primary/context-records', {headers:{cookie}})).json();
     assert.equal(record.exactModel, 'claude-opus-5-5');
     assert.deepEqual((await get()).effort_options,['default','low','medium','high','xhigh','max']);
+    await change('configured');
+    assert.equal((await get()).or_model.effective, 'anthropic/claude-opus-5.5');
+    await change('subscription-first');
+    assert.equal((await get()).sdk_model, 'claude-opus-5-5');
     assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM messages').get()?.n, 0);
   } finally {
