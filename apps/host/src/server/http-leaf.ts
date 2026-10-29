@@ -44,7 +44,7 @@ export type EstimatorDeps = {
     openrouter: { model: string | null; estimate_chars_per_token: number; max_output_tokens: number | null };
     runtime: { model: string | null };
   };
-  settings?: { effectiveOrModel: (m: string | null) => string | null } | null;
+  settings?: { effectiveOrModel: (m: string | null) => string | null; effectiveSdkModel?: (m: string | null) => string | null } | null;
 };
 
 export function estimateContextFor(d: EstimatorDeps): { model: string | null; charsPerToken: number; outputCap: number | null } {
@@ -56,5 +56,5 @@ export function estimateContextFor(d: EstimatorDeps): { model: string | null; ch
     return { model: eff, charsPerToken: d.config.openrouter.estimate_chars_per_token, outputCap: d.config.openrouter.max_output_tokens };
   }
   if (driver === 'mock') return { model: 'mock', charsPerToken: 2.5, outputCap: 1024 };
-  return { model: d.config.runtime.model, charsPerToken: 2.5, outputCap: null };
+  return { model: d.settings?.effectiveSdkModel?.(d.config.runtime.model) ?? d.config.runtime.model, charsPerToken: 2.5, outputCap: null };
 }

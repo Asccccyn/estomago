@@ -217,8 +217,7 @@ export class Host {
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
     const windows = new WindowManager(db, events, identity, () => {
-      const effModel = settings.effectiveOrModel(opts.config.openrouter.model);
-      return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
+      return settings.effectiveConfig(opts.config);
     }, selections, trajectory);
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）

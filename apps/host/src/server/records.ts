@@ -36,6 +36,7 @@ export function buildRecordSnapshot(d: {
   config: Config;
   windows: WindowManager;
   runnerSelection: RunnerSelection;
+  settings?: { effectiveOrModel: (m: string | null) => string | null; effectiveSdkModel?: (m: string | null) => string | null } | null;
   rawSyncState?: { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } | null;
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
@@ -54,7 +55,7 @@ export function buildRecordSnapshot(d: {
   //  同源——override 后不再显示配置默认型号）；无注入回落 config
   const orEff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
   const exactModel = requestExecution?.responseModel ?? requestExecution?.requestedModel
-    ?? (driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model);
+    ?? (driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : (d.settings?.effectiveSdkModel?.(d.config.runtime.model) ?? d.config.runtime.model));
   // §11.1：本地粗估 + 实际 usage 校准；粗估系数按驱动（DS 默认 1.5——中文场景；OR 默认 2.5），精度分级如实
   const charsPerToken = driver === 'deepseek' ? d.config.deepseek.estimate_chars_per_token : driver === 'openrouter' ? d.config.openrouter.estimate_chars_per_token : 2.5;
 

@@ -51,7 +51,7 @@ const operationId = () => {
   const hex = [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('')
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`
 }
-export const shortModel = (x: string) => x.split('/').pop()!.replace(/^claude-/, '').replace(/(opus|sonnet|haiku|fable)-(?=\d)/g, '$1')
+export const shortModel = (x: string) => x.split('/').pop()!.replace(/^claude-/, '').replace(/(opus|sonnet|haiku|fable)-(?=\d)/g, '$1').replace(/(\d)-(\d)/g, '$1.$2')
 export class EstomagoClient {
   private transport: typeof fetch
   private sourceFactory: (url: string) => EventSource
@@ -534,11 +534,11 @@ export class EstomagoClient {
       const data=await this.request('/runtime-settings');this.runtime=data
       const editable=data.driver==='openrouter'
       let exact=editable?data.or_model?.effective:data.driver==='claude-agent-sdk'?data.sdk_model:null
-      if(!editable){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
-      const ids=[...new Set<string>([...(editable?data.model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
+      if(!editable && data.driver!=='claude-agent-sdk'){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
+      const ids=[...new Set<string>([...(editable?data.model_options??[]:data.driver==='claude-agent-sdk'?data.sdk_model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
       const efforts:string[]=editable?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
       const current=data.reasoning_effort?.override??data.reasoning_effort?.effective??'default'
-      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable})
+      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable || data.driver==='claude-agent-sdk'})
     }catch(e){this.report(e)}
   }
   accessSettings = (): Promise<Json> => this.request('/runtime-settings')
@@ -552,10 +552,10 @@ export class EstomagoClient {
   setModel = async (index:number) => {
     if(!this.snapshot.canConfigure){this.notify('当前通道不支持此处切换模型');return}
     const id=this.snapshot.modelIds[index];if(!id)return
-    try{await this.request('/runtime-settings',this.json('PUT',{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
+    try{await this.request('/runtime-settings',this.json('PUT',this.runtime?.driver==='claude-agent-sdk'?{sdk_model:id}:{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
   }
   setEffort = async (index:number) => {
-    if(!this.snapshot.canConfigure)return
+    if(this.runtime?.driver!=='openrouter')return
     const effort=index===-1?'default':this.snapshot.efforts[index];if(!effort)return
     try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.report(e)}
   }

@@ -310,3 +310,20 @@ test('订阅入口首次切入也显示已配置 SDK 型号，不被上一笔 AP
     assert.deepEqual(h.client.snapshot.modelIds,['anthropic/claude-opus-4.6'])
   }finally{h.client.stop()}
 })
+
+test('SDK model picker writes SDK IDs and does not use the last response model as the selected model', async()=>{
+ let selected='claude-opus-4-6';const writes:any[]=[];
+ const h=await setup((url,init)=>{
+  if(url.endsWith('/runtime-settings')){
+   if(init?.method==='PUT'){const body=JSON.parse(String(init.body));writes.push(body);selected=body.sdk_model;}
+   return Response.json({driver:'claude-agent-sdk',sdk_model:selected,sdk_model_options:['claude-opus-4-6','claude-opus-5-5'],reasoning_effort:{effective:'default'}})
+  }
+  if(url.endsWith('/context-records'))return Response.json({driver:'claude-agent-sdk',exactModel:'claude-sonnet-5',context:{}})
+ });
+ try{
+  assert.deepEqual(h.client.snapshot.models,['opus4.6','opus5.5']);
+  await h.client.setModel(1);
+  assert.deepEqual(writes,[{sdk_model:'claude-opus-5-5'}]);
+  assert.equal(h.client.snapshot.model,1);
+ }finally{h.client.stop()}
+});

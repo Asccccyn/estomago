@@ -6,6 +6,9 @@
 //  - reasoning_effort：仅生成参数（OR reasoning.effort 七档）——**不进
 //    指纹、不换窗**，下一请求立即生效（上下文全复用）。
 //  - 仅信封驱动（OR）面生效；DS 官方直连无 effort 参数，模型沿用配置。
+import type { Config } from '../config/schema.ts';
+export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5'] as const;
+
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 
@@ -102,6 +105,13 @@ export class RuntimeSettingsService {
   get(key: string): string | null {
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value ?? null;
+  }
+
+  effectiveSdkModel(defaultModel: string | null): string | null { return this.get('sdk_model') ?? defaultModel; }
+
+  effectiveConfig(config: Config): Config {
+    return { ...config, runtime: { ...config.runtime, model: this.effectiveSdkModel(config.runtime.model) },
+      openrouter: { ...config.openrouter, model: this.effectiveOrModel(config.openrouter.model) } };
   }
 
   orModel(): string | null {

@@ -959,7 +959,7 @@ export class TurnSupervisor {
     const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').map(m => typeof m.content === 'string'
       ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n\n');
     const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const options = subscriptionSdkOptions(d.config, systemPrompt, cwd);
+    const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
     const toolSeen: ManifestEntry[] = [];
     let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
     let requestId: string | null = null;
@@ -1063,9 +1063,7 @@ export class TurnSupervisor {
    *  ——effort 是逐请求生成参数，切换不构成运行边界变化（不换窗）。 */
   private fingerprintConfigView(config: import('../config/schema.ts').Config): import('../identity/service.ts').BoundaryConfigInput {
     if (!this.d.settings) return config;
-    const model = this.d.settings.effectiveOrModel(config.openrouter.model);
-    if (model === config.openrouter.model) return config;
-    return { ...config, openrouter: { ...config.openrouter, model } };
+    return this.d.settings.effectiveConfig(config);
   }
 
   /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
@@ -1087,7 +1085,7 @@ export class TurnSupervisor {
     const r = this.d.runnerSelection;
     if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
     if (r.runner.kind === 'claude-agent-sdk') {
-      return { kind: 'claude-agent-sdk', model: this.d.config.runtime.model!, maxTokens: this.d.config.openrouter.max_output_tokens,
+      return { kind: 'claude-agent-sdk', model: (this.d.settings?.effectiveSdkModel(this.d.config.runtime.model) ?? this.d.config.runtime.model)!, maxTokens: this.d.config.openrouter.max_output_tokens,
         reasoning: null, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
     }
     if (r.runner.kind === 'deepseek') {

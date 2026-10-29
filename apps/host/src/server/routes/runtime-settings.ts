@@ -2,7 +2,7 @@
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序/响应与错误码逐字保持。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
-import { fetchOrModelMeta, effortsForModel } from '../../runtime/runtime-settings.ts';
+import { fetchOrModelMeta, effortsForModel, SDK_MODEL_OPTIONS } from '../../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../../config/schema.ts';
 import type { RequestDeps } from '../http.ts';
 import { SubscriptionAccessRunner } from '../../runtime/subscription-access.ts';
@@ -27,7 +27,8 @@ if (rtGet) {
     configured_entry: d.config.runtime.provider,
     access: d.runnerSelection.status === 'ok' && d.runnerSelection.runner instanceof SubscriptionAccessRunner
       ? d.runnerSelection.runner.status() : { policy: d.settings?.accessPolicy(d.config.runtime.access_policy) ?? d.config.runtime.access_policy, actual_entry: null, subscription: { status: 'unverified' } },
-    sdk_model: d.config.runtime.model,
+    sdk_model: d.settings?.effectiveSdkModel(d.config.runtime.model) ?? d.config.runtime.model,
+    sdk_model_options: SDK_MODEL_OPTIONS,
     sdk_proxy_configured: Boolean(d.config.runtime.subscription_proxy_url),
     sdk_login_verified: d.config.runtime.auth_and_billing_verified,
     or_model: { effective: effModel, override: d.settings?.orModel() ?? null, config_default: cfg.model },
@@ -41,9 +42,12 @@ if (rtGet) {
 const rtPut = route === 'PUT /api/v1/runtime-settings';
 if (rtPut) {
   if (!d.settings) return json(res, 503, { error: { code: 'unavailable', message: '运行时设置服务未接线' } });
-  const body = (await readJson(req, d)) as { or_model?: unknown; reasoning_effort?: unknown; access_policy?: unknown };
+  const body = (await readJson(req, d)) as { sdk_model?: unknown; or_model?: unknown; reasoning_effort?: unknown; access_policy?: unknown };
   if (body.access_policy !== undefined && !['configured', 'subscription-first'].includes(body.access_policy as string)) {
     return json(res, 422, { error: { code: 'invalid_access_policy', message: '接入策略必须为 configured 或 subscription-first' } });
+  }
+  if (body.sdk_model !== undefined && body.sdk_model !== null && !(SDK_MODEL_OPTIONS as readonly unknown[]).includes(body.sdk_model)) {
+    return json(res, 422, { error: { code: 'invalid_sdk_model', message: 'SDK 当前只接入 Opus 4.6 与 Opus 5.5。' } });
   }
   // WP-04（JFA-B05/CX-10/C-016）：两字段全验通过后一次性写入——
   // 任一失败 422 且零写入（不再逐字段先写先错）；or_model 按配置层
@@ -100,6 +104,7 @@ if (rtPut) {
   // 各开事务，第二写失败后第一写已提交（半提交状态）
   const writes: Array<[string, string | null]> = [];
   if (body.access_policy !== undefined) writes.push(['access_policy', body.access_policy as string]);
+  if (body.sdk_model !== undefined) writes.push(['sdk_model', body.sdk_model as string | null]);
   if (nextModel !== undefined) writes.push(['or_model', nextModel]);
   if (nextEffort !== undefined) writes.push(['reasoning_effort', nextEffort]);
   d.settings.setMany(writes);

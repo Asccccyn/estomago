@@ -29,7 +29,7 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
       for await(const message of input.prompt){captures.push({options:input.options,message});break;}
       if(n===2){
         const args={operation:'schedule',operation_id:'continuity-once',delay_seconds:3600,note:'SYNTHETIC_COMPLETED_TASK'};
-        yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id:'tool-message',model:'claude-sonnet-4-6',usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}};
+        yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id:'tool-message',model:input.options.model,usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}};
         yield {type:'assistant',session_id:session,message:{id:'tool-message',content:[{type:'tool_use',id:'continuity-tool',name:'mcp__est__wake_manage',input:args}]}};
         yield {type:'stream_event',event:{type:'message_stop'}};
         await input.options.hooks.PreToolUse[0].hooks[0]({hook_event_name:'PreToolUse',tool_name:'mcp__est__wake_manage',tool_input:args,tool_use_id:'continuity-tool'});
@@ -40,7 +40,7 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
       }
       const text=n===1?'ASSISTANT_ORIGINAL':n===2?'ASSISTANT_ACK_CORRECTION':'ASSISTANT_FOLLOWUP';
       const id=randomUUID();
-      yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id,model:'claude-sonnet-4-6',usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:100,cache_creation_input_tokens:0}}}};
+      yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id,model:input.options.model,usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:100,cache_creation_input_tokens:0}}}};
       yield {type:'assistant',session_id:session,message:{id,content:[{type:'text',text}]}};
       yield {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:null},usage:{output_tokens:4}}};
       yield {type:'stream_event',event:{type:'message_stop'}};
@@ -85,10 +85,12 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     assert.ok(history.some((m:any)=>m.role==='user'&&text(m).includes('OWNER_CORRECTION')));
     assert.ok(history.some((m:any)=>m.role==='tool'&&m.tool_call_id==='continuity-tool'&&text(m).includes('task_id')));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
+    new RuntimeSettingsService(host!.db).set('sdk_model', 'claude-opus-5-5');
     await host!.supervisor.manualRotate('primary');
     const selection=await host!.supervisor.selectionConfirm({conversationId:'primary',windowId:window,items:[{message_id:corrected.message.id}],explicitEmpty:false,idempotencyKey:'continuity-selection'});
     assert.equal(selection.ok,true,JSON.stringify(selection));
     await send('AFTER_SELECTION');
+    assert.equal(captures[3].options.model, 'claude-opus-5-5');
     const selected=JSON.stringify(captures[3].message);
     assert.equal(captures[3].options.resume,undefined);assert.ok(selected.includes('OWNER_CORRECTION'));
     assert.ok(!selected.includes('OWNER_ORIGINAL'));assert.ok(!selected.includes('ASSISTANT_ORIGINAL'));
@@ -129,6 +131,11 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     const page = await fetch(base + '/settings/model-access', { headers: { cookie } });
     assert.equal(page.status, 200); assert.match(await page.text(), /chat-app\.js/);
     assert.equal((await get()).access.next_entry, 'claude-agent-sdk');
+    const selectSdk = await fetch(base + '/api/v1/runtime-settings', { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie }, body: JSON.stringify({ sdk_model: 'claude-opus-4-6' }) });
+    assert.equal(selectSdk.status, 200);
+    const rejected = await fetch(base + '/api/v1/runtime-settings', { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie }, body: JSON.stringify({ sdk_model: 'claude-fable-5-1' }) });
+    assert.equal(rejected.status, 422);
+    assert.equal((await get()).sdk_model, 'claude-opus-4-6');
     await change('configured');
     assert.equal((await get()).access.next_entry, 'openrouter');
     await host!.stop(); host = undefined;
@@ -137,7 +144,8 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     assert.equal(restored.access.policy, 'configured'); assert.equal(restored.driver, 'openrouter');
     await change('subscription-first');
     const sdk = await get();
-    assert.equal(sdk.driver, 'claude-agent-sdk'); assert.equal(sdk.sdk_model, 'claude-sonnet-5');
+    assert.equal(sdk.driver, 'claude-agent-sdk'); assert.equal(sdk.sdk_model, 'claude-opus-4-6');
+    assert.deepEqual(sdk.sdk_model_options, ['claude-opus-4-6', 'claude-opus-5-5']);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM messages').get()?.n, 0);
   } finally {
