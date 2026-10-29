@@ -467,6 +467,9 @@ export default function App() {
     el.style.height = '24px'
     el.style.height = Math.min(120, el.scrollHeight) + 'px'
   }, [input])
+  if (['/settings/model-access', '/settings/account'].includes(window.location.pathname) && !state.ready) {
+    return <main className="min-h-screen bg-[#faf9f5] p-8 text-[#3d3929]"><p role="status">{state.notice || '正在连接…'}</p>{state.notice && <button onClick={() => void client.start()}>重新连接</button>}</main>
+  }
   if (window.location.pathname === '/settings/model-access') {
     return <AccessControls client={client} onClose={() => window.location.assign('/chat')} />
   }
