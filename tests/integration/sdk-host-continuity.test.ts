@@ -1,3 +1,4 @@
+import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -26,7 +27,7 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
   const query = (input: any) => {
     const n=++queryCount; const session=input.options.resume ?? randomUUID();
     const iterator=(async function*(){
-      for await(const message of input.prompt){captures.push({options:input.options,message});break;}
+      if (!(yield* scriptedSdkInput(input, session, (message, history) => captures.push({options:input.options,message,history})))) return;
       if(n===2){
         const args={operation:'schedule',operation_id:'continuity-once',delay_seconds:3600,note:'SYNTHETIC_COMPLETED_TASK'};
         yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id:'tool-message',model:input.options.model,usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}}};
@@ -66,7 +67,8 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
   const send=async(content:string)=>{
     const r=await fetch(base+'/api/v1/conversations/primary/messages',{method:'POST',headers:{'content-type':'application/json',origin:base,cookie},body:JSON.stringify({content,client_message_id:randomUUID()})});
     assert.equal(r.status,201);const body:any=await r.json();await host!.supervisor.waitIdle();
-    assert.equal(host!.db.prepare('SELECT state FROM turns WHERE id=?').get(body.turn_id)?.state,'completed');return body;
+    assert.equal(host!.db.prepare('SELECT state FROM turns WHERE id=?').get(body.turn_id)?.state,'completed');
+    assert.equal(host!.db.prepare("SELECT count(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(body.turn_id)?.n,1,'history replay must not republish prior assistant messages');return body;
   };
   try{
     await start();
@@ -77,20 +79,19 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     await host!.stop();host=undefined;
     await start();await send('AFTER_COLD_REBUILD');
     assert.equal(host!.windows.activeWindow('primary')!.id,window);assert.equal(captures[2].options.resume,undefined);
-    const historyBlock=captures[2].message.message.content.find((b:any)=>b.text.startsWith('<est_history>')).text;
-    const history=JSON.parse(historyBlock.slice(historyBlock.indexOf('[{'),historyBlock.lastIndexOf('\n</est_history>')));
+    const history=captures[2].history.map((frame:any)=>frame.message);
     const text=(m:any)=>typeof m.content==='string'?m.content:JSON.stringify(m.content);
     assert.ok(history.some((m:any)=>m.role==='user'&&text(m).includes('OWNER_ORIGINAL')));
     assert.ok(history.some((m:any)=>m.role==='assistant'&&text(m).includes('ASSISTANT_ORIGINAL')));
     assert.ok(history.some((m:any)=>m.role==='user'&&text(m).includes('OWNER_CORRECTION')));
-    assert.ok(history.some((m:any)=>m.role==='tool'&&m.tool_call_id==='continuity-tool'&&text(m).includes('task_id')));
+    assert.ok(history.some((m:any)=>m.role==='user'&&m.content.some((b:any)=>b.type==='tool_result'&&b.tool_use_id==='continuity-tool'&&JSON.stringify(b.content).includes('task_id'))));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
     new RuntimeSettingsService(host!.db).setMany([['sdk_model', 'claude-opus-5-5'], ['reasoning_effort', 'high']]);
     await send('AFTER_MODEL_SWITCH');
     assert.equal(host!.windows.activeWindow('primary')!.id, window);
     assert.equal(captures[3].options.resume, undefined);
     assert.equal(captures[3].options.model, 'claude-opus-5-5');
-    const switchedHistory=JSON.stringify(captures[3].message);
+    const switchedHistory=JSON.stringify(captures[3].history);
     assert.ok(switchedHistory.includes('OWNER_ORIGINAL') && switchedHistory.includes('OWNER_CORRECTION') && switchedHistory.includes('continuity-tool'));
     assert.equal(host!.db.prepare('SELECT count(*) n FROM context_selections').get()?.n, 0);
     await host!.supervisor.manualRotate('primary');
@@ -99,7 +100,7 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     await send('AFTER_SELECTION');
     assert.equal(captures[4].options.model, 'claude-opus-5-5');
     assert.equal(captures[4].options.effort, 'high');
-    const selected=JSON.stringify(captures[4].message);
+    const selected=JSON.stringify(captures[4].history);
     assert.equal(captures[4].options.resume,undefined);assert.ok(selected.includes('OWNER_CORRECTION'));
     assert.ok(!selected.includes('OWNER_ORIGINAL'));assert.ok(!selected.includes('ASSISTANT_ORIGINAL'));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);

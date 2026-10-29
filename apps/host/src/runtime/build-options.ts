@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 export type AssembledSdkOptions = {
   options: {
     model: string;
-    systemPrompt: string;
+    systemPrompt: string | string[];
     settingSources: [];
     tools: [];
     skills: [];
@@ -63,7 +63,7 @@ export function buildSdkOptions(opts: {
     `${opts.identityText}\n\n${opts.approvedRulesText}\n\n${FIXED_RUNTIME_FRAGMENT}\n\n${HOST_BOUNDARY_RULES}`, opts.cwd) };
 }
 
-export function subscriptionSdkOptions(config: Config, systemPrompt: string, cwd: string): AssembledSdkOptions {
+export function subscriptionSdkOptions(config: Config, systemPrompt: string | string[], cwd: string): AssembledSdkOptions {
   // Options.env replaces the child environment in 0.3.283. Authentication is
   // exclusively the official local login; API/OR keys and routing overrides stay out.
   const env: Record<string, string> = {};
@@ -82,9 +82,9 @@ export function subscriptionSdkOptions(config: Config, systemPrompt: string, cwd
     // systemPrompt replaces the coding preset, but the runtime still prepends
     // identity/attribution text. Override the final system field with our own
     // prompt; do not override messages, tools, model or authentication metadata.
-    CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ system: [
-      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
-    ] }),
+    CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ system: (Array.isArray(systemPrompt) ? systemPrompt : [systemPrompt]).map((text, index, blocks) => ({
+      type: 'text', text, ...(index === blocks.length - 1 ? { cache_control: { type: 'ephemeral', ttl: '1h' } } : {}),
+    })) }),
   });
   if (config.runtime.subscription_proxy_url) {
     env.HTTPS_PROXY = config.runtime.subscription_proxy_url;

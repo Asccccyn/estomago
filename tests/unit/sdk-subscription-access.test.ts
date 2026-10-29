@@ -1,3 +1,4 @@
+import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -60,7 +61,8 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     calls.sdk.push(input);
     const round = calls.sdk.length;
     const iterator = (async function* () {
-      for await (const value of input.prompt) { input.capturedPrompt = value; break; }
+      const current = yield* scriptedSdkInput(input, 'synthetic-replay-session', (value, history) => { input.capturedPrompt = [...history, value]; });
+      if (!current) return;
       for await (const event of scripted(round, input)) {
         if (event instanceof Error) throw event;
         yield event;

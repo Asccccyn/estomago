@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { subscriptionSdkOptions } from '../../apps/host/src/runtime/build-options.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { runSdkHostQuery } from '../../apps/host/src/runtime/sdk-host-query.ts';
 
 test('SDK isolation and resume follow the host ledger; stale session IDs cannot override it', async () => {
   const config = buildConfig({ runtime: { model: 'claude-sonnet-4-6', subscription_proxy_url: 'http://127.0.0.1:1082', thinking: { effort: 'xhigh' } } });
@@ -49,4 +50,30 @@ test('the removed prompt-only entry cannot bypass host subscription and network 
   const result = await runner.run({ prompt: 'synthetic', options: subscriptionSdkOptions(buildConfig({}), 'identity', '/tmp/test'),
     resumeSessionId: null, abortController: new AbortController(), onEvent() {} });
   assert.equal(result.errorCode, 'SDK_HOST_CONTEXT_REQUIRED'); assert.equal(called, false);
+});
+
+test('cancelling during history import releases the input stream without dispatching the new prompt', async () => {
+  const controller = new AbortController();
+  let dispatches = 0;
+  const emitted: any[] = [];
+  const query = (input: any) => Object.assign((async function* () {
+    const iterator = input.prompt[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    assert.equal(first.value.shouldQuery, false);
+    yield { ...first.value, isReplay: true, session_id: 'synthetic-cancel-import' };
+    controller.abort();
+    assert.equal((await iterator.next()).done, true);
+  })(), { close() {}, accountInfo: async () => ({ apiProvider: 'firstParty' }),
+    usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => null });
+  const config = buildConfig({ runtime: { model: 'claude-opus-4-6', subscription_proxy_url: 'http://127.0.0.1:1' } });
+  const result = await runSdkHostQuery(query as any, {
+    prompt: '', options: subscriptionSdkOptions(config, 'SYNTHETIC_SYSTEM', '/tmp/synthetic-cancel-import'),
+    resumeSessionId: null, abortController: controller, onEvent: e => emitted.push(e),
+    host: { windowId: 'synthetic-window', envelope: { model: config.runtime.model!, sessionId: 'synthetic-window',
+      messages: [{ role: 'user', content: 'PAST_USER' }, { role: 'assistant', content: 'PAST_ASSISTANT' }, { role: 'user', content: 'CURRENT_MUST_NOT_SEND' }],
+      tools: [], boundaries: [], maxTokens: 1024, reasoning: null }, maxModelRequests: 2,
+      beforeModel: async () => { dispatches++; }, modelStarted() {}, executeTool: async () => { throw Error('unexpected tool'); } },
+  }, new Map());
+  assert.equal(result.outcome, 'interrupted'); assert.equal(result.attempts, 0);
+  assert.equal(dispatches, 0); assert.equal(emitted.length, 0);
 });

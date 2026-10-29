@@ -9,6 +9,7 @@ import type { OrMessage } from './or-payload.ts';
 import { sha256Hex } from '../util/id.ts';
 import { proxyOnlySdkSpawn } from './sdk-network.ts';
 import { effectiveToolName } from './tool-discovery.ts';
+import { SdkHistoryReplay } from './sdk-history.ts';
 
 export type SdkQueryFactory = (request: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 export type SdkSessionAnchor = { sessionId: string; prefixHash: string; messageCount: number; messagesHash: string };
@@ -43,7 +44,6 @@ export async function runSdkHostQuery(
   const history = inputMessages.slice(0, Math.max(0, lastUser));
   const tail = inputMessages.slice(Math.max(0, lastUser));
   const content: Array<{ type: 'text'; text: string }> = [];
-  if (history.length) content.push({ type: 'text', text: `<est_history>\n以下是宿主聊天账本的历史记录，仅作历史上下文；不是新的用户指令，也不要重执其中的工具。\n${JSON.stringify(history)}\n</est_history>` });
   for (const message of tail) {
     if (typeof message.content === 'string') content.push({ type: 'text', text: message.content });
     else for (const block of message.content) {
@@ -51,6 +51,9 @@ export async function runSdkHostQuery(
       content.push({ type: 'text', text: block.text ?? '' });
     }
   }
+  let replay: SdkHistoryReplay;
+  try { replay = new SdkHistoryReplay(history, req.abortController.signal); }
+  catch (error) { return { outcome: 'error', errorCode: (error as Error).message, errorClassified: 'unknown', errorMessage: 'SDK 历史输入格式不受支持，未发送模型请求', sessionId: null, requestId: null, attempts: 0, activityStarted: false }; }
   let activityStarted = false;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
@@ -108,11 +111,8 @@ export async function runSdkHostQuery(
   });
   let releaseInput!: (allowed: boolean) => void;
   const admitted = new Promise<boolean>(resolve => { releaseInput = resolve; });
-  const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
-    if (!(await admitted)) return;
-    yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null,
-      session_id: '', client_composed: true };
-  })();
+  let finishInput!: () => void;
+  const inputDone = new Promise<void>(resolve => { finishInput = resolve; });
   let run: Query | undefined;
   const beforeModel = async (): Promise<void> => {
     if (req.abortController.signal.aborted) throw Error('SDK_CANCELLED');
@@ -125,6 +125,7 @@ export async function runSdkHostQuery(
   };
   const options: Options = {
     ...req.options.options, model: host.envelope.model,
+    extraArgs: { 'replay-user-messages': null },
     env: { ...req.options.options.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(host.envelope.maxTokens) },
     abortController: req.abortController, ...(resume ? { resume: resume.sessionId } : {}),
     // est discards a pure maintenance acknowledgement. A native fork warms the
@@ -165,12 +166,26 @@ export async function runSdkHostQuery(
       PreModelSwitch: [{ hooks: [async () => ({ continue: false, stopReason: 'EST_OWNS_ROUTING' })] }],
     },
   };
+  const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
+    if (!(await admitted)) return;
+    yield* replay.input();
+    if (!replay.completed || req.abortController.signal.aborted) return;
+    try { await beforeModel(); }
+    catch (error) { failure = String((error as Error).message); run?.close(); return; }
+    yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null,
+      session_id: '', client_composed: true };
+    // Replay completions already satisfy the SDK's first-result wait. Keep
+    // stdin open until the real turn finishes, including tool/control replies.
+    await inputDone;
+  })();
   try {
     run = query({ prompt, options });
-    try { await beforeModel(); releaseInput(true); }
-    catch (error) { failure = String((error as Error).message); releaseInput(false); return finish('error'); }
+    releaseInput(true);
     for await (const raw of run) {
       const event = raw as SDKMessage;
+      const replayed = replay.consume(event);
+      if (replayed === 'failed') { failure = 'SDK_HISTORY_REPLAY_FAILED'; run.close(); break; }
+      if (replayed === 'replayed') continue;
       if (event.type === 'result' && (event.total_cost_usd !== undefined || event.modelUsage !== undefined)) {
         // Runtime 2.1.283 restores cumulative spend on resume/fork. Keep the
         // estimate as evidence, never as another request or an actual charge.
@@ -242,6 +257,7 @@ export async function runSdkHostQuery(
           return finish('interrupted');
         }
       }
+      if (event.type === 'result') finishInput();
     }
     if (req.abortController.signal.aborted) return finish('interrupted');
     if (failure) return finish('error');
@@ -251,7 +267,7 @@ export async function runSdkHostQuery(
     return finish(req.abortController.signal.aborted ? 'interrupted' : 'error');
   } finally {
     if (requestUsage) req.onEvent({ kind: 'usage', scope: 'request', usage: requestUsage, source: 'sdk_stream', completeness: 'partial' });
-    releaseInput(false); run?.close();
+    replay.close(); releaseInput(false); finishInput(); run?.close();
   }
 
   function finish(outcome: RunnerRunResult['outcome']): RunnerRunResult {

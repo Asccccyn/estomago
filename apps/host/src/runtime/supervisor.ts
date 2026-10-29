@@ -977,8 +977,8 @@ export class TurnSupervisor {
   private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner;
-    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').map(m => typeof m.content === 'string'
-      ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n\n');
+    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').flatMap(m => typeof m.content === 'string'
+      ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text ?? ''));
     const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
     const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
     const sdkEffort = o.envelope.reasoning?.effort;

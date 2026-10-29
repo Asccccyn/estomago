@@ -1,3 +1,4 @@
+import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 // GLM_VOICE_UNIFICATION P2 验证：声音观察 sidecar——
 // - P06：用户语音消息正式接纳即登记 pending（不依赖打开气泡），提交后后台一跳走
 //   真实 analyzeVoice（fake oído 是外部 HTTP 边界替代）→ ready + 精简观察；
@@ -297,7 +298,7 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
       const stream = (async function* () {
         let text = '';
         if (typeof req.prompt === 'string') text = req.prompt;
-        else for await (const message of req.prompt as any) { text += JSON.stringify(message.message.content); }
+        else if (!(yield* scriptedSdkInput(req, 'synthetic-voice-session', (message, history) => { text = JSON.stringify([...history, message].map(frame => frame.message.content)); }))) return;
         prompts.push(text);
         for (const raw of fixtureScenario('consistent', text)) yield raw;
       })();

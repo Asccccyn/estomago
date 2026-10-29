@@ -82,7 +82,11 @@ if (process.argv[2] !== '--worker') {
           { name: 'tool_invoke', input: { name: 'context_review_complete', definition_id: reviewDefinitionId, arguments: { review_id: reviewId, decision: 'no_new_hold' } } },
           { name: 'tool_invoke', input: { name: 'wake_manage', definition_id: invokeDefinitionId, arguments: { operation: 'schedule', operation_id: 'synthetic-review-peer', delay_seconds: 600, note: 'EST_SYNTHETIC_REVIEW_PEER' } } },
         ] : [];
-      if (!batch.length) throw Error('REVIEW_REQUESTED_AN_UNNECESSARY_MODEL_ROUND');
+      if (!batch.length) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'REVIEW_REQUESTED_AN_UNNECESSARY_MODEL_ROUND' } }));
+        return;
+      }
       frames.splice(1, frames.length - 1,
         ...batch.flatMap((tool, index) => [
           { type: 'content_block_start', index, content_block: { type: 'tool_use', id: `tool_review_${captures.length}_${index}`, name: `mcp__est__${tool.name}`, input: {} } },
@@ -239,6 +243,12 @@ if (process.argv[2] !== '--worker') {
       canonical = result.finalMessages;
     }
     if (toolExecutions !== 3) throw Error('DUPLICATE_OR_MISSING_HOST_EXECUTION');
+    const rebuilt = captures.find(c => c.mode === 'est-restart')?.payload.messages ?? [];
+    if (!rebuilt.some(m => m.role === 'assistant') || JSON.stringify(rebuilt).includes('<est_history>')) throw Error('SDK_HISTORY_ROLES_NOT_REBUILT');
+    const historicalCalls = rebuilt.filter(m => m.role === 'assistant').flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_use') : []);
+    const historicalResults = rebuilt.filter(m => m.role === 'user').flatMap(m => Array.isArray(m.content) ? m.content.filter(b => b.type === 'tool_result') : []);
+    if (historicalCalls.length !== 3 || historicalCalls.some(call => !historicalResults.some(result => result.tool_use_id === call.id))) throw Error('SDK_HISTORY_TOOL_PAIRS_LOST');
+    summary.push({ mode: 'native-history-replay', roleSequence: rebuilt.map(m => m.role), historicalToolPairs: historicalCalls.length, historicalToolsReexecuted: false });
     const { TurnSupervisor } = await import('../apps/host/src/runtime/supervisor.ts');
     const { WindowTrajectoryService } = await import('../apps/host/src/runtime/window-trajectory.ts');
     const { CapabilityMatrix } = await import('../apps/host/src/runtime/capabilities.ts');
@@ -344,6 +354,18 @@ if (process.argv[2] !== '--worker') {
     summary.push({ mode, outcome: reviewed.outcome, reviewStatus: reviews.get(review.id)?.status, executionOrder: reviewTrace, requests: captures.filter(c => c.mode === mode).length });
     console.log(JSON.stringify(summary.at(-1)));
     if (reviewed.outcome !== 'completed' || reviews.get(review.id)?.status !== 'completed' || reviewTrace.slice(-2).join(',') !== 'wake_manage,context_review_complete') throw Error('NATIVE_REVIEW_ORDER_FAILED');
+    mode = 'est-parallel-history';
+    let replayedTools = 0;
+    const replayedBatch = await runSdkHostQuery(query, { prompt: '', options: reviewOptions, resumeSessionId: null, abortController: new AbortController(), onEvent: e => events.push({ mode, event: e }),
+      host: { windowId: hostWindow.id, purpose: 'chat', envelope: { model: config.runtime.model, sessionId: hostWindow.id,
+        messages: [...reviewed.finalMessages, { role: 'user', content: 'SYNTHETIC_AFTER_COMPLETED_PARALLEL_TOOLS' }], tools: reviewTools, boundaries: [], maxTokens: 1024, reasoning: null }, maxModelRequests: 2,
+        beforeModel: async () => {}, modelStarted() {}, executeTool: async () => { replayedTools++; throw Error('HISTORICAL_TOOL_REEXECUTED'); } },
+    }, new Map(), async () => null, proxyOnlySdkSpawn(baseUrl));
+    const batchWire = captures.find(c => c.mode === mode)?.payload.messages ?? [];
+    const batchIndex = batchWire.findLastIndex(m => m.role === 'assistant' && Array.isArray(m.content) && m.content.filter(b => b.type === 'tool_use').length === 2);
+    const resultBatch = batchWire[batchIndex + 1];
+    if (replayedBatch.outcome !== 'completed' || replayedTools !== 0 || batchIndex < 0 || resultBatch?.role !== 'user' || resultBatch.content.filter(b => b.type === 'tool_result').length !== 2) throw Error('HISTORICAL_TOOL_BATCH_NOT_PRESERVED');
+    summary.push({ mode, historicalToolResultsInOneBatch: 2, historicalToolsReexecuted: replayedTools, requests: captures.filter(c => c.mode === mode).length });
     const serialized = JSON.stringify(captures);
     for (const marker of ['EST_UNWANTED_PROJECT_INSTRUCTIONS', 'EST_UNWANTED_SKILL', 'EST_FAKE_OR_KEY_MUST_STAY_OUT', 'EST_FAKE_AUTH_MUST_STAY_OUT']) {
       if (serialized.includes(marker)) throw Error('UNEXPECTED_INPUT_SOURCE:' + marker);
@@ -383,11 +405,14 @@ if (process.argv[2] !== '--worker') {
     const cleanRequests = captures.filter(c => c.mode.startsWith('est-') && c.mode !== 'est-bare-comparison');
     for (const { payload, clientEntry } of cleanRequests) {
       if (clientEntry !== 'sdk-ts') throw Error('SDK_ENTRYPOINT_CHANGED');
-      if (payload.system.length !== 1 || payload.system[0].text.includes('Claude Agent SDK') || payload.system[0].text.includes('x-anthropic-billing-header')) throw Error('SDK_SYSTEM_PREFIX_REMAINED');
+      if (!payload.system.length || payload.system.some(b => b.text.includes('Claude Agent SDK') || b.text.includes('x-anthropic-billing-header'))) throw Error('SDK_SYSTEM_PREFIX_REMAINED');
       const blocks = payload.messages.flatMap(m => Array.isArray(m.content) ? m.content : []);
       if (blocks.some(b => b.type === 'text' && b.text !== literalReminder && /^<system-reminder>\s*(# Environment|You are powered by|Today's date is|The date has changed)/.test(b.text))) throw Error('SDK_AMBIENT_REMINDER_REMAINED');
     }
     if (!captures.find(c => c.mode === 'est-literal')?.payload.messages.some(m => Array.isArray(m.content) && m.content.some(b => b.text === literalReminder))) throw Error('USER_LITERAL_REMINDER_WAS_MODIFIED');
+    const hostSystemBlocks = trajectory.forWindow(hostWindow.id).messages.filter(m => m.role === 'system')
+      .flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text));
+    if (JSON.stringify(captures.find(c => c.mode === 'est-host-first')?.payload.system.map(b => b.text)) !== JSON.stringify(hostSystemBlocks)) throw Error('HOST_SYSTEM_BLOCKS_CHANGED');
     summary.push({ mode: 'prompt-cleanliness', requests: cleanRequests.length, systemPrefixRemoved: true, ambientRemindersRemoved: true, userLiteralPreserved: true, clientEntry: 'sdk-ts' });
     if (!captures.find(c=>c.mode==='custom')?.payload.system.some(b=>b.text===prompts.custom)) throw Error('CUSTOM_SYSTEM_PROMPT_NOT_SERIALIZED');
     const sdkVersion=JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json',import.meta.url),'utf8')).version;
