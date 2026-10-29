@@ -152,6 +152,8 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     assert.equal(effort.status,422);
     const combined = await fetch(base + '/api/v1/runtime-settings', {method:'PUT',headers:{'content-type':'application/json',origin:base,cookie},body:JSON.stringify({sdk_model:'claude-opus-5-5',reasoning_effort:'xhigh'})});
     assert.equal(combined.status,200);
+    const record = await (await fetch(base + '/api/v1/conversations/primary/context-records', {headers:{cookie}})).json();
+    assert.equal(record.exactModel, 'claude-opus-5-5');
     assert.deepEqual((await get()).effort_options,['default','low','medium','high','xhigh','max']);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM messages').get()?.n, 0);

@@ -156,7 +156,7 @@ if (ctxRecords) {
   const conversationId = decodeURIComponent(ctxRecords[1]!);
   const lastSeq = (d.db.prepare('SELECT MAX(sequence) AS m FROM runtime_stream_events WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m;
   const snapshot = buildRecordSnapshot(
-    { db: d.db, config: d.config, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
+    { db: d.db, config: d.config, settings: d.settings, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
     conversationId,
     lastSeq,
   );
