@@ -405,15 +405,16 @@ if (process.argv[2] !== '--worker') {
     const cleanRequests = captures.filter(c => c.mode.startsWith('est-') && c.mode !== 'est-bare-comparison');
     for (const { payload, clientEntry } of cleanRequests) {
       if (clientEntry !== 'sdk-ts') throw Error('SDK_ENTRYPOINT_CHANGED');
-      if (!payload.system.length || payload.system.some(b => b.text.includes('Claude Agent SDK') || b.text.includes('x-anthropic-billing-header'))) throw Error('SDK_SYSTEM_PREFIX_REMAINED');
+      if (!payload.system[0]?.text.startsWith('x-anthropic-billing-header:') || !payload.system[0].text.includes('cc_entrypoint=sdk-ts;')) throw Error('SDK_SUBSCRIPTION_ATTRIBUTION_STRIPPED');
+      if (payload.system[1]?.text !== 'You are a Claude agent, built on Anthropic\'s Claude Agent SDK.') throw Error('SDK_NATIVE_IDENTITY_CHANGED');
       const blocks = payload.messages.flatMap(m => Array.isArray(m.content) ? m.content : []);
       if (blocks.some(b => b.type === 'text' && b.text !== literalReminder && /^<system-reminder>\s*(# Environment|You are powered by|Today's date is|The date has changed)/.test(b.text))) throw Error('SDK_AMBIENT_REMINDER_REMAINED');
     }
     if (!captures.find(c => c.mode === 'est-literal')?.payload.messages.some(m => Array.isArray(m.content) && m.content.some(b => b.text === literalReminder))) throw Error('USER_LITERAL_REMINDER_WAS_MODIFIED');
     const hostSystemBlocks = trajectory.forWindow(hostWindow.id).messages.filter(m => m.role === 'system')
       .flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text));
-    if (JSON.stringify(captures.find(c => c.mode === 'est-host-first')?.payload.system.map(b => b.text)) !== JSON.stringify(hostSystemBlocks)) throw Error('HOST_SYSTEM_BLOCKS_CHANGED');
-    summary.push({ mode: 'prompt-cleanliness', requests: cleanRequests.length, systemPrefixRemoved: true, ambientRemindersRemoved: true, userLiteralPreserved: true, clientEntry: 'sdk-ts' });
+    if (JSON.stringify(captures.find(c => c.mode === 'est-host-first')?.payload.system.slice(2).map(b => b.text)) !== JSON.stringify(hostSystemBlocks)) throw Error('HOST_SYSTEM_BLOCKS_CHANGED');
+    summary.push({ mode: 'prompt-cleanliness', requests: cleanRequests.length, nativeAttributionPreserved: true, nativeSdkIdentityPreserved: true, hostSystemPreserved: true, ambientRemindersRemoved: true, userLiteralPreserved: true, clientEntry: 'sdk-ts' });
     if (!captures.find(c=>c.mode==='custom')?.payload.system.some(b=>b.text===prompts.custom)) throw Error('CUSTOM_SYSTEM_PROMPT_NOT_SERIALIZED');
     const sdkVersion=JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json',import.meta.url),'utf8')).version;
     fs.writeFileSync(path.join(root,'captures','capabilities.json'),JSON.stringify({sdk_version:sdkVersion,observed_at:new Date().toISOString(),verification_scope:'official_runtime_local_transport',upstream:'loopback_synthetic',

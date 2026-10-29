@@ -33,9 +33,7 @@ test('SDK isolation and resume follow the host ledger; stale session IDs cannot 
   assert.equal(o.plugins.length, 1); assert.equal(o.plugins[0].type, 'local');
   assert.match(o.plugins[0].path, /sdk-prompt-context\/$/);
   assert.equal(o.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, '1');
-  assert.deepEqual(JSON.parse(o.env.CLAUDE_CODE_EXTRA_BODY), { system: [
-    { type: 'text', text: 'synthetic identity and policy', cache_control: { type: 'ephemeral', ttl: '1h' } },
-  ] });
+  assert.equal(o.env.CLAUDE_CODE_EXTRA_BODY, undefined, 'the final system override must not strip native subscription attribution');
   assert.equal(o.permissionMode, 'default'); assert.equal(o.strictMcpConfig, true);
   assert.equal(o.settings.autoMemoryEnabled, false); assert.equal(o.settings.disableClaudeAiConnectors, true);
   assert.equal(o.env.DISABLE_COMPACT, '1'); assert.equal(o.effort, 'xhigh');

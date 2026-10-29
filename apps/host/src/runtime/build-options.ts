@@ -79,13 +79,10 @@ export function subscriptionSdkOptions(config: Config, systemPrompt: string | st
     DISABLE_COMPACT: '1', DISABLE_AUTO_COMPACT: '1',
     ENABLE_TOOL_SEARCH: 'false', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '1',
     CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1',
-    // systemPrompt replaces the coding preset, but the runtime still prepends
-    // identity/attribution text. Override the final system field with our own
-    // prompt; do not override messages, tools, model or authentication metadata.
-    CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ system: (Array.isArray(systemPrompt) ? systemPrompt : [systemPrompt]).map((text, index, blocks) => ({
-      type: 'text', text, ...(index === blocks.length - 1 ? { cache_control: { type: 'ephemeral', ttl: '1h' } } : {}),
-    })) }),
   });
+  // Custom systemPrompt replaces the coding preset. Keep the SDK's generated
+  // attribution prefix: stripping it from OAuth requests can produce a generic
+  // 429. Ambient model/environment/date attachments are filtered by our plugin.
   if (config.runtime.subscription_proxy_url) {
     env.HTTPS_PROXY = config.runtime.subscription_proxy_url;
     env.HTTP_PROXY = config.runtime.subscription_proxy_url;
