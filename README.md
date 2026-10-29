@@ -1,6 +1,6 @@
 # estómago
 
-- **2026-10-28（SDK 思考/flag 适配，待上线）**：明确的 SDK refusal 接入现有路由票据，已发生 fallback 保留事实并暂停；思考缺失本身不触发路由。修正重复 flag 的终态、订阅首次切换型号显示和路由提示文案；新增原生本机思考/中断/flag 证据及 `probe-capabilities --local --apply`（只登记本机适配能力，不冒充供应商验收）。全程无真实模型测试；费用未知的准入策略尚待用户确认。
+- **2026-10-28（SDK 思考/flag 适配，`3ca3f1b` 已上线，SDK 未启用）**：明确的 SDK refusal 接入现有路由票据，已发生 fallback 保留事实并暂停；思考缺失本身不触发路由。修正重复 flag 的终态、订阅首次切换型号显示和路由提示文案；新增原生本机思考/中断/flag 证据及 `probe-capabilities --local --apply`（只登记本机适配能力，不冒充供应商验收）。全程无真实模型测试；费用未知的准入策略尚待用户确认。18:15 PDT 已部署至 `sdk-thinking-flag-20261028-3ca3f1b`，默认 OR/生产配置不变，健康200，735条消息与442次模型请求不变。
 
 - **2026-10-28 16:25 PDT（已部署，SDK未启用）**：代码 `3d510f6` 上线至 `~/Projects/estomago-releases/sdk-integration-20261028-3d510f6`，沿原 LaunchAgent 切换目录并重启；ready/live均200，735条消息、序号735、442次模型请求、窗口及schema50不变。配置保留 configured/OpenRouter；16:21官方只读usage仍为rate_limits=null，B01未解除。恢复点 `~/Backups/pre-estomago-sdk-20261028-3d510f6`；无真实模型验证请求。[接入与部署记录](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
 
