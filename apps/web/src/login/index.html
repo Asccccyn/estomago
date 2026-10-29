@@ -20,11 +20,11 @@
           <form id="login-form" method="post">
             <div class="login-field">
               <label for="account">账号</label>
-              <input id="account" name="username" value="宿主用户" autocomplete="username" readonly />
+              <input id="account" name="username" value="宿主用户" autocomplete="username" maxlength="64" required />
             </div>
             <div class="login-field">
               <label for="password">密码</label>
-              <input id="password" name="password" type="password" autocomplete="current-password" required />
+              <input id="password" name="password" type="password" autocomplete="current-password" maxlength="256" required />
             </div>
             <button id="login-submit" class="login-submit" type="submit" aria-label="推门登录">
               <svg viewBox="0 0 40 40" aria-hidden="true"><path d="M11 33V5h20v29M6 34h29" /><path d="m11 5 13 5v27l-13-5Z" /><circle cx="20" cy="22" r=".8" /></svg>

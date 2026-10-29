@@ -542,6 +542,9 @@ export class EstomagoClient {
     }catch(e){this.report(e)}
   }
   accessSettings = (): Promise<Json> => this.request('/runtime-settings')
+  accountSettings = (): Promise<Json> => this.request('/auth/account')
+  setAccount = (username: string, password: string, confirmation: string): Promise<Json> =>
+    this.request('/auth/account', this.json('PUT', { username, password, confirm_password: confirmation }))
   setAccessPolicy = async (policy: 'configured' | 'subscription-first'): Promise<void> => {
     await this.request('/runtime-settings', this.json('PUT', { access_policy: policy }))
     await this.loadRuntime()

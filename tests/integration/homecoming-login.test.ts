@@ -6,6 +6,9 @@ import path from 'node:path';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { AuthService } from '../../apps/host/src/auth/tokens.ts';
+import { buildPaths } from '../../apps/host/src/config/paths.ts';
+import { execFileSync } from 'node:child_process';
 
 const root = tempRoot('estomago-homecoming-login-');
 const previousHome = process.env.ESTOMAGO_HOME;
@@ -161,4 +164,54 @@ test('恶意或 null Origin 不可换取 cookie；无 Origin 的既有脚本登�
   const bearer = await fetch(`${base}/api/v1/auth/session`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(bearer.status, 200);
   assert.deepEqual(await bearer.json(), { authenticated: true });
+});
+
+test('owner sets web credentials, browser sessions change, API pairing remains valid and backup restores the login', async () => {
+  const oldCookie = sessionCookie(await login(token));
+  const credentials = { username: 'synthetic-owner', password: 'synthetic password one', confirm_password: 'synthetic password one' };
+  const update = (headers: Record<string, string>, body = credentials) => fetch(base + '/api/v1/auth/account', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json', Origin: base, ...headers }, body: JSON.stringify(body),
+  });
+  const session = (cookie: string) => fetch(base + '/api/v1/auth/session', { headers: { Cookie: cookie } });
+  assert.equal((await update({})).status, 401);
+  assert.equal((await update({ Cookie: oldCookie, Origin: 'https://untrusted.invalid' })).status, 403);
+  assert.equal((await update({ Cookie: oldCookie }, { ...credentials, confirm_password: 'different' })).status, 422);
+  assert.equal(fs.existsSync(path.join(root, 'config/auth.web.json')), false);
+  const saved = await update({ Cookie: oldCookie });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(await saved.json(), { ok: true, configured: true, username: 'synthetic-owner' });
+  const newCookie = sessionCookie(saved);
+  assert.equal((await session(oldCookie)).status, 401);
+  assert.equal((await session(newCookie)).status, 200);
+  assert.equal((await session('estomago_session=' + encodeURIComponent('界'.repeat(64)))).status, 401);
+  assert.equal((await fetch(base + '/api/v1/auth/account', { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+  const passwordLogin = (username: string, password: string) => fetch(base + '/api/v1/auth/login', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ username, password }),
+  });
+  assert.equal((await passwordLogin('wrong-owner', credentials.password)).status, 401);
+  assert.equal((await passwordLogin(credentials.username, 'wrong-password')).status, 401);
+  assert.equal((await passwordLogin(credentials.username, credentials.password)).status, 200);
+  const stored = fs.readFileSync(path.join(root, 'config/auth.web.json'), 'utf8');
+  assert.ok(!stored.includes(credentials.password), 'password must not be stored in plaintext');
+  assert.equal(fs.statSync(path.join(root, 'config/auth.web.json')).mode & 0o777, 0o600);
+  const reloaded = new AuthService(buildPaths(root));
+  assert.equal(await reloaded.verifyPassword(credentials.username, credentials.password), true);
+  const changed = await update({ Authorization: `Bearer ${token}` }, { ...credentials, password: 'synthetic password two', confirm_password: 'synthetic password two' });
+  assert.equal(changed.status, 200);
+  assert.equal((await session(newCookie)).status, 401);
+  assert.equal((await passwordLogin(credentials.username, credentials.password)).status, 401);
+  assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
+  const repo = path.resolve(import.meta.dirname, '../..');
+  const env = { PATH: process.env.PATH!, HOME: process.env.HOME!, ESTOMAGO_HOME: root, ESTOMAGO_BACKUP_KEEP: '10000' };
+  execFileSync(process.execPath, ['scripts/backup.mjs'], { cwd: repo, env, stdio: 'pipe' });
+  const manifest = fs.readdirSync(path.join(root, 'backups')).find(name => name.endsWith('.manifest.json'))!;
+  const backup = JSON.parse(fs.readFileSync(path.join(root, 'backups', manifest), 'utf8'));
+  assert.ok(backup.meta_files.includes('auth.web.json'));
+  const restoredRoot = tempRoot('estomago-account-restore-');
+  try {
+    execFileSync(process.execPath, ['scripts/restore.mjs', backup.file, '--into', restoredRoot], { cwd: repo, env, stdio: 'pipe' });
+    const restored = new AuthService(buildPaths(restoredRoot));
+    assert.equal(await restored.verifyPassword(credentials.username, 'synthetic password two'), true);
+    assert.equal(restored.verifyToken(token), true);
+  } finally { fs.rmSync(restoredRoot, { recursive: true, force: true }); }
 });

@@ -95,6 +95,7 @@ const STATIC_FILES = new Map<string, { file: string; type: string; cache: string
   ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/settings/model-access', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/settings/account', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/wishstar', { file: 'wishstar/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ...HOME_STATIC_FILES,
   ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
@@ -148,15 +149,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!d.auth.originAllowed(req, String(req.headers.host ?? ''))) {
         return json(res, 403, { error: { code: 'bad_origin', message: 'Origin 校验失败' } });
       }
-      const body = (await readJson(req, d)) as { token?: unknown } | null;
+      const body = (await readJson(req, d)) as { token?: unknown; username?: unknown; password?: unknown } | null;
       const token = typeof body?.token === 'string' ? body.token : null;
-      if (!d.auth.verifyToken(token)) {
+      const passwordLogin = typeof body?.username === 'string' && body.username.trim().length <= 64
+        && typeof body?.password === 'string' && body.password.length > 0 && body.password.length <= 256
+        && await d.auth.verifyPassword(body.username.trim(), body.password);
+      if (!d.auth.verifyToken(token) && !passwordLogin) {
         return json(res, 401, { error: { code: 'unauthorized', message: 'token 不正确' } });
       }
-      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(d.auth.sessionToken())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
       return json(res, 200, { ok: true });
     }
-    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname === '/settings/model-access' || url.pathname.startsWith('/home/'));
+    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname === '/settings/model-access' || url.pathname === '/settings/account' || url.pathname.startsWith('/home/'));
     if ((protectedPage && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
       res.writeHead(302, { Location: url.pathname === '/login' ? '/' : '/login', 'Cache-Control': 'no-store' });
       res.end();
@@ -185,6 +189,18 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     }
     if (route === 'GET /api/v1/auth/session') {
       return json(res, 200, { authenticated: true });
+    }
+    if (route === 'GET /api/v1/auth/account') return json(res, 200, d.auth.account());
+    if (route === 'PUT /api/v1/auth/account') {
+      const body = await readJson(req, d) as { username?: unknown; password?: unknown; confirm_password?: unknown } | null;
+      if (typeof body?.username !== 'string' || !body.username.trim() || body.username.trim().length > 64
+        || typeof body.password !== 'string' || body.password.length < 12 || body.password.length > 256
+        || body.confirm_password !== body.password) {
+        return json(res, 422, { error: { code: 'invalid_account', message: '账号须为 1–64 字，密码须为 12–256 字，两次密码须一致。' } });
+      }
+      await d.auth.setAccount(body.username.trim(), body.password);
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(d.auth.sessionToken())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
+      return json(res, 200, { ok: true, ...d.auth.account() });
     }
 
     // —— 会话/消息/浮现视图组——P07.2 迁 server/routes/conversations.ts（逐字）。

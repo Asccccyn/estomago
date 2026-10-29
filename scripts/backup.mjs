@@ -52,6 +52,12 @@ if (fs.existsSync(tokenSrc)) {
   fs.chmodSync(path.join(metaDir, 'auth.token'), 0o600);
   metaFiles.push('auth.token');
 }
+const webLoginSrc = path.join(stateRoot, 'config', 'auth.web.json');
+if (fs.existsSync(webLoginSrc)) {
+  fs.copyFileSync(webLoginSrc, path.join(metaDir, 'auth.web.json'));
+  fs.chmodSync(path.join(metaDir, 'auth.web.json'), 0o600);
+  metaFiles.push('auth.web.json');
+}
 
 const manifest = {
   created_at: new Date().toISOString(),

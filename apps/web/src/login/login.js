@@ -1,9 +1,10 @@
-/* The existing single-owner pairing credential becomes an HttpOnly session. */
+/* Credentials are submitted once to the owner's login endpoint, never stored in the browser. */
 (() => {
   'use strict';
   const panel = document.getElementById('login-panel');
   const form = document.getElementById('login-form');
   const password = document.getElementById('password');
+  const account = document.getElementById('account');
   const submit = document.getElementById('login-submit');
   const message = document.getElementById('login-message');
   let busy = false, leaving = false, sessionCheck = 0;
@@ -28,8 +29,9 @@
   form.addEventListener('submit', async event => {
     event.preventDefault();
     if (busy || leaving || !form.reportValidity()) return;
-    const token = password.value.trim();
-    if (!token) { message.textContent = '请输入密码。'; password.focus(); return; }
+    const username = account.value.trim();
+    const secret = password.value;
+    if (!secret.trim()) { message.textContent = '请输入密码。'; password.focus(); return; }
     busy = true;
     ++sessionCheck;
     submit.disabled = true;
@@ -41,7 +43,7 @@
       const response = await fetch('/api/v1/auth/login', {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         signal: controller.signal,
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password: secret }),
       });
       if (response.ok) {
         const result = await response.json();
@@ -49,7 +51,7 @@
         message.textContent = '';
         enterHome();
       } else if (response.status === 401) {
-        message.textContent = '口令不正确，请再试一次。';
+        message.textContent = '账号或密码不正确，请再试一次。';
       } else if (response.status === 403) {
         message.textContent = '登录请求被拒绝，请刷新后重试。';
       } else {

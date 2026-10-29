@@ -5,6 +5,7 @@ import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
 import { BackgroundControls } from './BackgroundControls'
 import { AccessControls } from './AccessControls'
+import { AccountSettings } from './AccountSettings'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
@@ -469,6 +470,7 @@ export default function App() {
   if (window.location.pathname === '/settings/model-access') {
     return <AccessControls client={client} onClose={() => window.location.assign('/chat')} />
   }
+  if (window.location.pathname === '/settings/account') return <AccountSettings client={client} />
   return (
     <div ref={appRef} className="chat-app flex w-full overflow-hidden flex-col bg-[#faf9f5]">
       {/* Header */}
@@ -494,8 +496,8 @@ export default function App() {
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setMore(false)} />
                   <div className="pop-in absolute right-0 top-9 z-40 w-52 rounded-2xl border border-black/10 bg-white p-1 shadow-xl">
-                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温'], ['access', Wrench, 'SDK / API key', '自主切换模型入口']] as const).map(([k, I, t, d]) => (
-                      <button key={k} onClick={() => { if (k === 'access') window.location.assign('/settings/model-access'); else setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
+                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温'], ['access', Wrench, 'SDK / API key', '自主切换模型入口'], ['account', Wrench, '账号与密码', '自己设置网页登录凭据']] as const).map(([k, I, t, d]) => (
+                      <button key={k} onClick={() => { if (k === 'access') window.location.assign('/settings/model-access'); else if (k === 'account') window.location.assign('/settings/account'); else setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
                         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#f3e6df] text-[#c96442]"><I size={16} /></span>
                         <span><span className="block text-[14px]">{t}</span><span className="block text-[11.5px] text-[#8a8780]">{d}</span></span>
                       </button>

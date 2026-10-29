@@ -52,6 +52,7 @@ export function AccessControls({ client, onClose }: { client: EstomagoClient; on
       <p className="mt-3 text-[12px] text-[#8a8780]">切换在下一回合生效，当前回合继续使用原入口。首次切换后可能需要确认携带的历史。</p>
       <p className="mt-2 text-[12px] text-[#8a8780]">订阅额度被明确拒绝且本轮尚未输出或执行工具时，按现有策略回退 OpenRouter；网络、登录故障和 flag 不触发额度回退。</p>
       <button className="mt-5 rounded-lg border border-black/10 px-3 py-2" disabled={busy} onClick={() => void refresh().catch(e => setError((e as Error).message))}>刷新状态</button>
+      <a href="/settings/account" className="ml-4 underline">账号与密码</a>
     </section>
   </main>
 }
