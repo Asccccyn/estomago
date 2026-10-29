@@ -960,6 +960,8 @@ export class TurnSupervisor {
       ? m.content : m.content.filter(b => b.type === 'text').map(b => b.text).join('\n')).join('\n\n');
     const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
     const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
+    const sdkEffort = o.envelope.reasoning?.effort;
+    if (sdkEffort) options.options.effort = sdkEffort as import('../config/schema.ts').ThinkingEffort;
     const toolSeen: ManifestEntry[] = [];
     let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
     let requestId: string | null = null;
@@ -1086,7 +1088,7 @@ export class TurnSupervisor {
     if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
     if (r.runner.kind === 'claude-agent-sdk') {
       return { kind: 'claude-agent-sdk', model: (this.d.settings?.effectiveSdkModel(this.d.config.runtime.model) ?? this.d.config.runtime.model)!, maxTokens: this.d.config.openrouter.max_output_tokens,
-        reasoning: null, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
+        reasoning: { effort: this.d.settings?.reasoningEffort() ?? this.d.config.runtime.thinking.effort }, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
     }
     if (r.runner.kind === 'deepseek') {
       const ds = this.d.config.deepseek;

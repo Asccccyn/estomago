@@ -315,8 +315,8 @@ test('SDK model picker writes SDK IDs and does not use the last response model a
  let selected='claude-opus-4-6';const writes:any[]=[];
  const h=await setup((url,init)=>{
   if(url.endsWith('/runtime-settings')){
-   if(init?.method==='PUT'){const body=JSON.parse(String(init.body));writes.push(body);selected=body.sdk_model;}
-   return Response.json({driver:'claude-agent-sdk',sdk_model:selected,sdk_model_options:['claude-opus-4-6','claude-opus-5-5'],reasoning_effort:{effective:'default'}})
+   if(init?.method==='PUT'){const body=JSON.parse(String(init.body));writes.push(body);if(body.sdk_model)selected=body.sdk_model;}
+   return Response.json({driver:'claude-agent-sdk',sdk_model:selected,sdk_model_options:['claude-opus-4-6','claude-opus-5-5'],effort_options:['default','low','medium','high','max'],reasoning_effort:{effective:'medium'}})
   }
   if(url.endsWith('/context-records'))return Response.json({driver:'claude-agent-sdk',exactModel:'claude-sonnet-5',context:{}})
  });
@@ -325,5 +325,8 @@ test('SDK model picker writes SDK IDs and does not use the last response model a
   await h.client.setModel(1);
   assert.deepEqual(writes,[{sdk_model:'claude-opus-5-5'}]);
   assert.equal(h.client.snapshot.model,1);
+  assert.deepEqual(h.client.snapshot.efforts,['low','medium','high','max']);
+  await h.client.setEffort(2);
+  assert.deepEqual(writes.at(-1),{reasoning_effort:'high'});
  }finally{h.client.stop()}
 });

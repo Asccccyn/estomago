@@ -536,7 +536,7 @@ export class EstomagoClient {
       let exact=editable?data.or_model?.effective:data.driver==='claude-agent-sdk'?data.sdk_model:null
       if(!editable && data.driver!=='claude-agent-sdk'){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
       const ids=[...new Set<string>([...(editable?data.model_options??[]:data.driver==='claude-agent-sdk'?data.sdk_model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
-      const efforts:string[]=editable?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
+      const efforts:string[]=(editable || data.driver==='claude-agent-sdk')?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
       const current=data.reasoning_effort?.override??data.reasoning_effort?.effective??'default'
       this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable || data.driver==='claude-agent-sdk'})
     }catch(e){this.report(e)}
@@ -555,7 +555,7 @@ export class EstomagoClient {
     try{await this.request('/runtime-settings',this.json('PUT',this.runtime?.driver==='claude-agent-sdk'?{sdk_model:id}:{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
   }
   setEffort = async (index:number) => {
-    if(this.runtime?.driver!=='openrouter')return
+    if(!this.snapshot.canConfigure)return
     const effort=index===-1?'default':this.snapshot.efforts[index];if(!effort)return
     try{await this.request('/runtime-settings',this.json('PUT',{reasoning_effort:effort}));this.estimateGeneration++;await this.loadRuntime()}catch(e){this.report(e)}
   }

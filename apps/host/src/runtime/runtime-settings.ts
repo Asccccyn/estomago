@@ -8,6 +8,10 @@
 //  - 仅信封驱动（OR）面生效；DS 官方直连无 effort 参数，模型沿用配置。
 import type { Config } from '../config/schema.ts';
 export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5'] as const;
+export function sdkEffortsForModel(model: string | null): string[] | null {
+  const apiModel = model === 'claude-opus-4-6' ? 'anthropic/claude-opus-4.6' : model === 'claude-opus-5-5' ? 'anthropic/claude-opus-5.5' : null;
+  return effortsForModel(null, apiModel);
+}
 
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';

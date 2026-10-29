@@ -85,12 +85,13 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     assert.ok(history.some((m:any)=>m.role==='user'&&text(m).includes('OWNER_CORRECTION')));
     assert.ok(history.some((m:any)=>m.role==='tool'&&m.tool_call_id==='continuity-tool'&&text(m).includes('task_id')));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
-    new RuntimeSettingsService(host!.db).set('sdk_model', 'claude-opus-5-5');
+    new RuntimeSettingsService(host!.db).setMany([['sdk_model', 'claude-opus-5-5'], ['reasoning_effort', 'high']]);
     await host!.supervisor.manualRotate('primary');
     const selection=await host!.supervisor.selectionConfirm({conversationId:'primary',windowId:window,items:[{message_id:corrected.message.id}],explicitEmpty:false,idempotencyKey:'continuity-selection'});
     assert.equal(selection.ok,true,JSON.stringify(selection));
     await send('AFTER_SELECTION');
     assert.equal(captures[3].options.model, 'claude-opus-5-5');
+    assert.equal(captures[3].options.effort, 'high');
     const selected=JSON.stringify(captures[3].message);
     assert.equal(captures[3].options.resume,undefined);assert.ok(selected.includes('OWNER_CORRECTION'));
     assert.ok(!selected.includes('OWNER_ORIGINAL'));assert.ok(!selected.includes('ASSISTANT_ORIGINAL'));
@@ -146,6 +147,12 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     const sdk = await get();
     assert.equal(sdk.driver, 'claude-agent-sdk'); assert.equal(sdk.sdk_model, 'claude-opus-4-6');
     assert.deepEqual(sdk.sdk_model_options, ['claude-opus-4-6', 'claude-opus-5-5']);
+    assert.deepEqual(sdk.effort_options, ['default', 'low', 'medium', 'high', 'max']);
+    const effort = await fetch(base + '/api/v1/runtime-settings', {method:'PUT',headers:{'content-type':'application/json',origin:base,cookie},body:JSON.stringify({reasoning_effort:'xhigh'})});
+    assert.equal(effort.status,422);
+    const combined = await fetch(base + '/api/v1/runtime-settings', {method:'PUT',headers:{'content-type':'application/json',origin:base,cookie},body:JSON.stringify({sdk_model:'claude-opus-5-5',reasoning_effort:'xhigh'})});
+    assert.equal(combined.status,200);
+    assert.deepEqual((await get()).effort_options,['default','low','medium','high','xhigh','max']);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
     assert.equal(host!.db.prepare('SELECT count(*) n FROM messages').get()?.n, 0);
   } finally {
