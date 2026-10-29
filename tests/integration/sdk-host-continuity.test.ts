@@ -86,14 +86,21 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     assert.ok(history.some((m:any)=>m.role==='tool'&&m.tool_call_id==='continuity-tool'&&text(m).includes('task_id')));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
     new RuntimeSettingsService(host!.db).setMany([['sdk_model', 'claude-opus-5-5'], ['reasoning_effort', 'high']]);
+    await send('AFTER_MODEL_SWITCH');
+    assert.equal(host!.windows.activeWindow('primary')!.id, window);
+    assert.equal(captures[3].options.resume, undefined);
+    assert.equal(captures[3].options.model, 'claude-opus-5-5');
+    const switchedHistory=JSON.stringify(captures[3].message);
+    assert.ok(switchedHistory.includes('OWNER_ORIGINAL') && switchedHistory.includes('OWNER_CORRECTION') && switchedHistory.includes('continuity-tool'));
+    assert.equal(host!.db.prepare('SELECT count(*) n FROM context_selections').get()?.n, 0);
     await host!.supervisor.manualRotate('primary');
     const selection=await host!.supervisor.selectionConfirm({conversationId:'primary',windowId:window,items:[{message_id:corrected.message.id}],explicitEmpty:false,idempotencyKey:'continuity-selection'});
     assert.equal(selection.ok,true,JSON.stringify(selection));
     await send('AFTER_SELECTION');
-    assert.equal(captures[3].options.model, 'claude-opus-5-5');
-    assert.equal(captures[3].options.effort, 'high');
-    const selected=JSON.stringify(captures[3].message);
-    assert.equal(captures[3].options.resume,undefined);assert.ok(selected.includes('OWNER_CORRECTION'));
+    assert.equal(captures[4].options.model, 'claude-opus-5-5');
+    assert.equal(captures[4].options.effort, 'high');
+    const selected=JSON.stringify(captures[4].message);
+    assert.equal(captures[4].options.resume,undefined);assert.ok(selected.includes('OWNER_CORRECTION'));
     assert.ok(!selected.includes('OWNER_ORIGINAL'));assert.ok(!selected.includes('ASSISTANT_ORIGINAL'));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
   } finally { await host?.stop(); if(previousHome===undefined)delete process.env.ESTOMAGO_HOME;else process.env.ESTOMAGO_HOME=previousHome;fs.rmSync(root,{recursive:true,force:true}); }

@@ -106,7 +106,7 @@ test('OR 分支：完整 turn 发布、or_stream 用量入账、窗口无 SDK se
   ctx.db.close();
 });
 
-test('指纹：OR 型号变更 → 旧窗 CONTEXT_STALE、attempt 阻断要求受控换窗', async () => {
+test('OR 型号切换沿用同窗上下文并完成下一轮', async () => {
   const transport: OrTransport = async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) });
   const root = tempRoot('orfp-');
   const ctx = composeOr(root, transport);
@@ -115,19 +115,19 @@ test('指纹：OR 型号变更 → 旧窗 CONTEXT_STALE、attempt 阻断要求�
   await ctx.supervisor.waitIdle();
   const win1 = ctx.windows.activeWindow('c1')!;
 
-  // 换型号（模拟设置页变更）——同 manifest 下指纹必须不同
+  // 换型号（模拟设置页变更）——同 manifest 下上下文指纹保持不变
   const cfg2 = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: 'anthropic/claude-test-2' } });
   const manifest = (ctx.identity.evaluateGate(ctx.db) as { manifest: unknown }).manifest;
-  assert.notEqual(contextFingerprint(cfg2, manifest as never), contextFingerprint(ctx.config, manifest as never), 'OR 型号参与指纹');
+  assert.equal(contextFingerprint(cfg2, manifest as never), contextFingerprint(ctx.config, manifest as never), '型号选择不改变逻辑窗口');
 
-  // 用不同 config 的 supervisor 跑第二轮 → 指纹不匹配 → CONTEXT_ROTATION_REQUIRED
+  // 下一轮使用新型号，保留原窗口与轨迹。
   const supervisor2 = new TurnSupervisor({ db: ctx.db, config: cfg2, messages: ctx.messages, events: new EventService(ctx.db), identity: ctx.identity, capabilities: new CapabilityMatrix(cfg2), runnerSelection: { status: 'ok', runner: new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, transport) }, reasoning: new ReasoningService(ctx.db, new EventService(ctx.db)), usage: new UsageCollector(ctx.db), routing: ctx.routing, windows: ctx.windows, logger: new Logger(path.join(root, 'logs')), toolCatalog: buildFullTestRegistry() });
   const t2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第二轮', clientMessageId: 'fp2' });
   supervisor2.enqueue(t2.turnId);
   await supervisor2.waitIdle();
   const att2 = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(t2.attemptId) as { state: string; blocked_reason: string };
-  assert.equal(att2.state, 'blocked');
-  assert.ok(att2.blocked_reason.startsWith('CONTEXT_ROTATION_REQUIRED'), '模型变更走受控换窗，不静默换型号续跑');
-  assert.equal(ctx.windows.get(win1.id)!.status, 'CONTEXT_STALE');
+  assert.equal(att2.state, 'completed');
+  assert.equal(ctx.windows.activeWindow('c1')!.id, win1.id);
+  assert.equal(ctx.windows.get(win1.id)!.status, 'ACTIVE');
   ctx.db.close();
 });

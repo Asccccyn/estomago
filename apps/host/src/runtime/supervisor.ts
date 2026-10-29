@@ -636,6 +636,26 @@ export class TurnSupervisor {
     let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
       reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
+    // Signed reasoning belongs to the model/provider that produced it. Keep the
+    // canonical ledger intact, but omit those opaque fields from earlier model
+    // intervals in the outgoing API projection. Current tool-loop reasoning stays.
+    const priorInterval = transportKind === 'openrouter' ? d.db.prepare(`
+      SELECT json_array_length(p.payload_json,'$.messages') AS message_count
+      FROM provider_requests p JOIN turns t ON t.id=p.turn_id
+      LEFT JOIN background_runs b ON b.id=p.background_run_id
+      WHERE p.window_id=? AND p.outcome='completed'
+        AND (json_extract(p.payload_json,'$.model') IS NOT ?
+          OR (json_extract(p.payload_json,'$.execution.entry') IS NOT NULL AND json_extract(p.payload_json,'$.execution.entry') <> ?))
+        AND ((p.purpose='chat' AND t.state='completed') OR (b.retention='retained' AND b.trajectory_committed_at IS NOT NULL))
+      ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1
+    `).get(o.windowId, envelope.model, transportKind) as { message_count: number } | undefined : undefined;
+    const projectModelHistory = <T extends { messages: OrMessage[] }>(value: T): T => {
+      if (!priorInterval) return value;
+      const projected = structuredClone(value);
+      for (const message of projected.messages.slice(0, priorInterval.message_count + 1)) delete message.reasoning_details;
+      return projected;
+    };
+
     // WP4（§7.2，2026-10-08）：conversation_read 的片段级已见——工具结果
     // **实际进入下一模型请求**（onDispatch 首发即真实发出）才从 pending 转
     // active；仅取到工具结果而未发送（停止/轮次耗尽/错误收口）不算已见（O05）
@@ -708,13 +728,14 @@ export class TurnSupervisor {
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
       // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
       // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
-      const matEnv = (env: typeof envelope): typeof envelope => (d.media ? materializeEnvelope(env, d.media) as typeof envelope : env);
+      const matEnv = (env: typeof envelope): typeof envelope => projectModelHistory(d.media ? materializeEnvelope(env, d.media) as typeof envelope : env);
       const runEnvelope = matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
         if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+        if (runner instanceof SubscriptionAccessRunner) runner.invalidateSdkSession(o.windowId);
         if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
         if (o.inputBinding) {
           const current = d.messages.getMessage(o.inputBinding.messageId);
@@ -804,7 +825,7 @@ export class TurnSupervisor {
             return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW', errorMessage: '旧窗口缺少已发送的模型协议内容，请通过正常手动换窗选择原文后继续；已有历史保持不变。', sessionId: null, requestId: null });
           }
           // Stored redacted image payloads cannot be compared as exact wire bytes.
-          if (!hasStorageImageRedaction(recorded)) previousPayload = recorded;
+          if (!hasStorageImageRedaction(recorded)) previousPayload = projectModelHistory(recorded as Record<string, unknown> & { messages: OrMessage[] });
         }
       }
       const result = await Promise.race([
@@ -1059,13 +1080,6 @@ export class TurnSupervisor {
     }
     return { result, finalMessages: lastSentMessages ? result.finalMessages ?? null : null,
       lastSentMessages: result.lastSentMessages ?? lastSentMessages, toolSeen, pendingToolSeen };
-  }
-
-  /** 指纹输入视图：并入运行时 override（or_model）。reasoning 不参与指纹
-   *  ——effort 是逐请求生成参数，切换不构成运行边界变化（不换窗）。 */
-  private fingerprintConfigView(config: import('../config/schema.ts').Config): import('../identity/service.ts').BoundaryConfigInput {
-    if (!this.d.settings) return config;
-    return this.d.settings.effectiveConfig(config);
   }
 
   /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
@@ -1722,7 +1736,7 @@ export class TurnSupervisor {
       return { rotated: false, blocked: `WRITES_UNRESOLVED:${unresolvedBefore.length}（存在结果未知的写操作，换窗前须核实）` };
     }
 
-    const fingerprintChanged = o.window.context_fingerprint && o.window.context_fingerprint !== contextFingerprint(this.fingerprintConfigView(d.config), o.gate.manifest);
+    const fingerprintChanged = o.window.context_fingerprint && o.window.context_fingerprint !== contextFingerprint(d.config, o.gate.manifest);
     if (reason !== 'capacity' || fingerprintChanged || !dv) {
       d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { code: reason === 'manual' ? 'manual_review_bypassed' : 'identity_or_transport_review_unavailable', reason } });
       return this.doRotate(o, reason, null, selectionId);
@@ -1899,7 +1913,7 @@ export class TurnSupervisor {
     //（selection consumed + target_window_id + ACTIVE 指针 + 初始轨迹
     // 要么全成要么全回滚）
     const latestGate = this.d.identity.evaluateGate(this.d.db, { driver: this.drv()?.kind ?? 'claude-agent-sdk' });
-    if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(this.d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(this.d.config), o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
+    if (latestGate.state !== 'READY' || contextFingerprint(this.d.config, latestGate.manifest) !== contextFingerprint(this.d.config, o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
     const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
@@ -2104,7 +2118,7 @@ export class TurnSupervisor {
         if (rot === null) {
           try {
             const latestGate = d.identity.evaluateGate(d.db, { driver: dv?.kind ?? 'claude-agent-sdk' });
-            if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
+            if (latestGate.state !== 'READY' || contextFingerprint(d.config, latestGate.manifest) !== contextFingerprint(d.config, gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
             const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
             rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
             // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
@@ -2275,7 +2289,7 @@ export class TurnSupervisor {
     // §7 AUD：人格/运行边界指纹变化 → 旧窗 CONTEXT_STALE，禁止 resume 旧 session
     // 2026-10-08：指纹按生效视图（含 or_model override；reasoning 已不参与指纹——
     // 换思考深度不换窗，上下文全复用）
-    const expectedFingerprint = contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest);
+    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
       if (attempt.retry_window_id) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'RETRY_CONTEXT_CHANGED:运行配置已变化，本次重试未发送', 'blocked');

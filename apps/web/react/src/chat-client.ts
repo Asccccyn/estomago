@@ -552,7 +552,7 @@ export class EstomagoClient {
   setModel = async (index:number) => {
     if(!this.snapshot.canConfigure){this.notify('当前通道不支持此处切换模型');return}
     const id=this.snapshot.modelIds[index];if(!id)return
-    try{await this.request('/runtime-settings',this.json('PUT',this.runtime?.driver==='claude-agent-sdk'?{sdk_model:id}:{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
+    try{await this.request('/runtime-settings',this.json('PUT',this.runtime?.driver==='claude-agent-sdk'?{sdk_model:id}:{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已选择，下一次回复使用；当前上下文继续保留')}catch(e){this.report(e)}
   }
   setEffort = async (index:number) => {
     if(!this.snapshot.canConfigure)return

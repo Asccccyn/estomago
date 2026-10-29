@@ -216,9 +216,7 @@ export class Host {
     // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
-    const windows = new WindowManager(db, events, identity, () => {
-      return settings.effectiveConfig(opts.config);
-    }, selections, trajectory);
+    const windows = new WindowManager(db, events, identity, opts.config, selections, trajectory);
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
     const voice = new VoiceService(db, media, opts.config);

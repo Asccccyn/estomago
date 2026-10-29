@@ -40,7 +40,7 @@ test('设置服务：override 持久/清除/回落；effort 枚举校验', () =>
   db.close();
 });
 
-test('指纹：reasoning 变化不再改变指纹；模型变化改变指纹', () => {
+test('指纹：reasoning 和模型选择均不改变会话指纹', () => {
   const base = {
     runtime: { provider: 'openrouter', sdk_version: null, model: null, setting_sources: [], builtin_tools: [], mcp_servers_allowlist: [] },
     openrouter: { model: 'anthropic/claude-opus-4.6', max_output_tokens: 8192, provider_only: ['anthropic'], reasoning: null },
@@ -48,7 +48,7 @@ test('指纹：reasoning 变化不再改变指纹；模型变化改变指纹', (
   const withEffort = { ...base, openrouter: { ...base.openrouter, reasoning: { effort: 'high' } } };
   assert.equal(contextFingerprint(base, null), contextFingerprint(withEffort, null), '换思考深度不构成边界变化');
   const otherModel = { ...base, openrouter: { ...base.openrouter, model: 'anthropic/claude-fable-5.1' } };
-  assert.notEqual(contextFingerprint(base, null), contextFingerprint(otherModel, null), '换模型=边界变化');
+  assert.equal(contextFingerprint(base, null), contextFingerprint(otherModel, null), '换模型只更换执行选择');
 });
 
 test('档位清单与 OR 文档一致（default 是回落哨兵不是 OR 值）', () => {
@@ -173,4 +173,18 @@ test('端到端：模型 override 变化 → 受控换窗（等选集确认）�
   // 的指纹视图触发；此处断言的是"设置服务+阻断语义"接线，OR 实机验证
   // 属于 live 项（与 Codex live 同批）。
   ctx.db.close();
+});
+
+test('execution boundary pins model and effort until the next turn',async()=>{
+ const db=makeDb(tempRoot('rts-boundary-'));const settings=new RuntimeSettingsService(db);
+ settings.setMany([['sdk_model','claude-opus-4-6'],['reasoning_effort','medium']]);
+ try {
+  await settings.atExecutionBoundary(async()=>{
+   settings.setMany([['sdk_model','claude-opus-5-5'],['reasoning_effort','high']]);
+   assert.equal(settings.effectiveSdkModel(null),'claude-opus-4-6');
+   assert.equal(settings.reasoningEffort(),'medium');
+  });
+  assert.equal(settings.effectiveSdkModel(null),'claude-opus-5-5');
+  assert.equal(settings.reasoningEffort(),'high');
+ }finally{db.close()}
 });

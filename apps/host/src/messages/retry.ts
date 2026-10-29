@@ -78,7 +78,7 @@ export class MessageRetryService {
       else if (row.busy) reason = 'RETRY_CONVERSATION_BUSY';
       else if (row.has_tool_activity) reason = 'RETRY_HAS_TOOL_ACTIVITY';
       else if (row.response_started) reason = 'RETRY_RESPONSE_STARTED';
-      else if (!['openrouter', 'deepseek', 'mock'].includes(this.driver)) reason = 'RETRY_DRIVER_UNSUPPORTED';
+      else if (!['openrouter', 'deepseek', 'claude-agent-sdk', 'mock'].includes(this.driver)) reason = 'RETRY_DRIVER_UNSUPPORTED';
       else if (!row.active_window_id || row.window_status !== 'ACTIVE') reason = 'RETRY_CONTEXT_UNAVAILABLE';
       else if (row.other_window || (row.window_id && row.window_id !== row.active_window_id)) reason = 'RETRY_CONTEXT_CHANGED';
       else {

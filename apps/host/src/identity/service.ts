@@ -8,34 +8,20 @@
 // 没有批准身份材料 → 阻断，绝不提供默认人格。
 import fs from 'node:fs';
 import path from 'node:path';
-// 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与。
-// ESTOMAGO_OR_SELF_HOLD §4.1：驱动/模型/缓存配置变更同样改变上下文有效性 → 纳入指纹触发换窗。
-// 身份映射隔离：deepseek 段独立参与指纹——OR↔DS 切换（或 DS 型号/输出上限变化）→ CONTEXT_STALE 强制换窗。
+// Conversation identity and tool permissions stay fixed within a window.
+// Model, provider, SDK version and generation settings are execution choices.
 export function contextFingerprint(config: {
   runtime: { provider?: string; sdk_version: string | null; model?: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
   openrouter?: { model: string | null; max_output_tokens: number; provider_only: string[]; reasoning: Record<string, unknown> | null };
   deepseek?: { model: string | null; max_output_tokens: number };
 }, manifest: IdentityManifestFile | null): string {
-  const parts = [
-    // 2026-10-17 她裁定：正文槽（identity_version/approved_source_hash，即长期记忆里程碑）
-    // 与 I 槽（i_version/i_hash）均不参与指纹——两者都是char可自维护的演进材料，
-    // 演进同 §7.1 桶/I 中途修改口径：当前窗继续旧冻结副本、下一新窗自动带新版，
-    // 不触发 CONTEXT_STALE。运行边界变化防护仍由规则槽+驱动/模型/配置项承担
-    //（换模型/换规则/换驱动仍强制换窗）。
+  return sha256Hex([
     manifest?.runtime_rules_version ?? null,
     manifest?.rules_hash ?? null,
-    config.runtime.sdk_version,
-    config.runtime.model, // D09（审计 3655d60）：SDK 实际型号参与指纹——只换 runtime.model 也算运行边界变化（旧窗不 resume）
     JSON.stringify(config.runtime.setting_sources),
     JSON.stringify(config.runtime.builtin_tools),
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
-    config.runtime.provider ?? 'claude-agent-sdk',
-    // 2026-10-08 她裁定：reasoning 不参与指纹——推理等级是逐请求生成参数，
-    // 切换不构成运行边界变化（上下文/窗口全复用；型号仍参与）
-    config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort()]) : null,
-    config.deepseek ? JSON.stringify([config.deepseek.model, config.deepseek.max_output_tokens]) : null,
-  ];
-  return sha256Hex(parts.join('\u0001'));
+  ].join('\u0001'));
 }
 
 /** 指纹输入的配置形状（windows/manager 与 supervisor 共用；完整 Config 结构满足此类型） */

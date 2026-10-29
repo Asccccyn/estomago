@@ -49,7 +49,7 @@ export function AccessControls({ client, onClose }: { client: EstomagoClient; on
       {settings && !settings.sdk_proxy_configured && <p>家宽代理待配置，正式 SDK 请求保持阻塞。</p>}
       {settings?.access.last_error && <p className="mt-2">最近状态：{settings.access.last_error}</p>}
       {error && <p role="alert" className="mt-2 text-[#a54b35]">{error}</p>}
-      <p className="mt-3 text-[12px] text-[#8a8780]">切换在下一回合生效，当前回合继续使用原入口。首次切换后可能需要确认携带的历史。</p>
+      <p className="mt-3 text-[12px] text-[#8a8780]">切换在下一回合生效，当前回合继续使用原入口。当前有效上下文继续保留，不会因此换窗。</p>
       <p className="mt-2 text-[12px] text-[#8a8780]">订阅额度被明确拒绝且本轮尚未输出或执行工具时，按现有策略回退 OpenRouter；网络、登录故障和 flag 不触发额度回退。</p>
       <button className="mt-5 rounded-lg border border-black/10 px-3 py-2" disabled={busy} onClick={() => void refresh().catch(e => setError((e as Error).message))}>刷新状态</button>
       <a href="/settings/account" className="ml-4 underline">账号与密码</a>

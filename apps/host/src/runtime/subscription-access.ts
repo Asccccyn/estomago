@@ -4,7 +4,6 @@ import { selectRunner, type AgentRunner, type RunnerRunRequest, type RunnerRunRe
 import { RuntimeSettingsService } from './runtime-settings.ts';
 import { subscriptionRejected, subscriptionResetTime } from './sdk-subscription.ts';
 import { ClaudeSdkRunner } from './runner-claude-sdk.ts';
-import { AsyncLocalStorage } from 'node:async_hooks';
 
 export type AccessPolicy = 'configured' | 'subscription-first';
 
@@ -16,7 +15,6 @@ export class SubscriptionAccessRunner implements AgentRunner {
   private lastLimit: SDKRateLimitInfo | undefined;
   private actualEntry: AgentRunner['kind'] | null = null;
   private lastError: string | null = null;
-  private turnPolicy = new AsyncLocalStorage<AccessPolicy>();
   readonly config: Config;
   readonly settings: RuntimeSettingsService;
   private factory: (config: Config) => Promise<RunnerSelection>;
@@ -32,8 +30,8 @@ export class SubscriptionAccessRunner implements AgentRunner {
     if (saved) this.lastLimit = JSON.parse(saved) as SDKRateLimitInfo;
   }
 
-  policy(): AccessPolicy { return this.turnPolicy.getStore() ?? this.settings.accessPolicy(this.config.runtime.access_policy); }
-  atSafeTurn<T>(work: () => Promise<T>): Promise<T> { return this.turnPolicy.run(this.settings.accessPolicy(this.config.runtime.access_policy), work); }
+  policy(): AccessPolicy { return this.settings.accessPolicy(this.config.runtime.access_policy); }
+  atSafeTurn<T>(work: () => Promise<T>): Promise<T> { return this.settings.atExecutionBoundary(work); }
   get kind(): AgentRunner['kind'] {
     return this.policy() === 'subscription-first' ? 'claude-agent-sdk' : this.config.runtime.provider as AgentRunner['kind'];
   }

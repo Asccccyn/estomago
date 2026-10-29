@@ -40,7 +40,7 @@ const usage = { subscription_type: 'max', rate_limits_available: true, rate_limi
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any } = {}) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any; orFrames?: (round: number) => any[] } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
@@ -74,7 +74,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
     calls.orFactories++;
     return { status: 'ok', runner: new OpenRouterRunner({ providerOnly: [], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
       calls.or.push(payload);
-      const frames = [{ id: 'or-synthetic', model: options.responseModel, provider: options.provider, choices: [{ delta: { content: 'OR 合成回复' } }] },
+      const frames = options.orFrames?.(calls.or.length) ?? [{ id: 'or-synthetic', model: options.responseModel, provider: options.provider, choices: [{ delta: { content: 'OR 合成回复' } }] },
         { choices: [{ delta: {}, finish_reason: 'stop' }], usage: options.orUsage ?? { prompt_tokens: 30, completion_tokens: 3 } }];
       return { status: 200, headers: new Headers(), body: Readable.from(frames.map(f => Buffer.from(`data: ${JSON.stringify(f)}\n\n`)).concat([Buffer.from('data: [DONE]\n\n')])) };
     }) };
@@ -476,4 +476,42 @@ test('runtime overage detection still stops SDK and does not fall back to OR',as
   assert.equal((await f.send('合成运行时额外用量')).state,'failed');
   assert.equal(f.calls.or.length,0);
   assert.equal(f.runner.status().last_error,'SDK_EXTRA_USAGE_ACTIVE');
+});
+
+test('manual SDK/API and model selections retain the same window and all prior conversation', async t => {
+ const f=fixture(t,()=>[...textEvents(),{type:'result',subtype:'success',session_id:randomUUID()}]);
+ assert.equal((await f.send('FIRST_SDK_HISTORY')).state,'completed');
+ const window=f.windows.activeWindow('synthetic')!.id;
+ f.settings.set('access_policy','configured');
+ assert.equal((await f.send('API_INTERVAL_HISTORY')).state,'completed');
+ assert.ok(JSON.stringify(f.calls.or.at(-1).messages).includes('FIRST_SDK_HISTORY'));
+ f.settings.set('or_model','anthropic/claude-opus-5.5');
+ assert.equal((await f.send('API_MODEL_CHANGE')).state,'completed');
+ f.settings.setMany([['access_policy','subscription-first'],['sdk_model','claude-opus-5-5']]);
+ assert.equal((await f.send('RETURN_TO_SDK')).state,'completed');
+ const latest=f.calls.sdk.at(-1);
+ assert.equal(latest.options.model,'claude-opus-5-5');assert.equal(latest.options.resume,undefined);
+ assert.ok(JSON.stringify(latest.capturedPrompt).includes('FIRST_SDK_HISTORY'));
+ assert.ok(JSON.stringify(latest.capturedPrompt).includes('API_INTERVAL_HISTORY'));
+ assert.ok(JSON.stringify(latest.capturedPrompt).includes('API_MODEL_CHANGE'));
+ assert.equal(f.windows.activeWindow('synthetic')!.id,window);
+ assert.equal(f.db.prepare('SELECT count(*) n FROM context_selections').get()?.n,0);
+});
+
+test('model switch projects prior signed thinking out of API requests while preserving canonical tool receipts',async t=>{
+ const f=fixture(t,()=>[],{orFrames:round=>round===1?[
+  {id:'signed-tool',choices:[{delta:{reasoning_details:[{type:'reasoning.encrypted',data:'SYNTHETIC_OPAQUE'}],tool_calls:[{index:0,id:'signed-call',type:'function',function:{name:'wake_manage',arguments:'{"operation":"list"}'}}]}}]},
+  {choices:[{delta:{},finish_reason:'tool_calls'}]},
+ ]:[{id:'reply-'+round,choices:[{delta:{content:'SYNTHETIC_API_REPLY'}}]},{choices:[{delta:{},finish_reason:'stop'}]}]});
+ f.settings.set('access_policy','configured');
+ assert.equal((await f.send('TOOL_BEFORE_MODEL_SWITCH')).state,'completed');
+ const id=f.windows.activeWindow('synthetic')!.id;
+ const old=f.trajectory.forWindow(id)!.messages;
+ assert.ok(old.some(m=>m.reasoning_details));
+ f.settings.set('or_model','anthropic/claude-opus-5.5');
+ assert.equal((await f.send('AFTER_MODEL_SWITCH')).state,'completed');
+ const sent=f.calls.or.at(-1).messages;
+ assert.ok(sent.some((m:any)=>m.tool_call_id==='signed-call'));
+ assert.ok(!sent.some((m:any)=>m.reasoning_details));
+ assert.deepEqual(f.trajectory.forWindow(id)!.messages.slice(0,old.length),old);
 });

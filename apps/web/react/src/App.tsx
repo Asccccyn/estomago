@@ -384,7 +384,7 @@ export default function App() {
   const effort = state.effort
   const MODELS = state.models
   const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e)
-  const setModel = (i: number) => { if (i !== model && window.confirm('切换模型后，下一次发送前可选择携带的历史。确认切换？')) void client.setModel(i) }
+  const setModel = (i: number) => { if (i !== model) void client.setModel(i) }
   const setEffort = (i: number) => { void client.setEffort(i) }
   const [menu, setMenu] = useState(false)
   const [plus, setPlus] = useState(false)

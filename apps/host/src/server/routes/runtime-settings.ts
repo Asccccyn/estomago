@@ -37,7 +37,7 @@ if (rtGet) {
     model_options: cfg.model_options ?? [],
     effort_options: efforts ?? ['default'],
     effort_options_verified: efforts !== null,
-    note: '切模型=运行边界变化，下一条消息将等待历史选集确认后换窗；切思考深度=立即生效，不换窗（上下文复用）',
+    note: '模型、入口与思考等级从下一回合生效，沿用当前上下文；只有主动换窗或容量不足才需要历史选集',
   });
 }
 const rtPut = route === 'PUT /api/v1/runtime-settings';
