@@ -35,7 +35,7 @@ export function AccessControls({ client, onClose }: { client: EstomagoClient; on
       <p>订阅型号：{settings?.sdk_model ?? '未配置'}</p>
       <p>订阅额度：{status?.status === 'rejected' ? '已拒绝' : status?.status === 'allowed_warning' ? '接近限额' : status?.status === 'allowed' ? '可用' : '尚未核验'}</p>
       <p>订阅重置：{status?.resets_at ? new Date(status.resets_at).toLocaleString() : '尚未取得重置时间'}{status?.reset_state === 'due_for_sdk_check' ? ' · 下一回合重新核验 SDK' : ''}</p>
-      <p>额外付费：{status?.extra_usage === 'active' ? '检测到使用，已阻断' : status?.extra_usage === 'enabled' ? '账号已启用，SDK 已阻断' : '正式请求前通过官方运行时核验'}</p>
+      <p>额外付费：{status?.extra_usage === 'active' ? '检测到使用，已阻断' : status?.extra_usage === 'enabled' ? '账号已启用，SDK 已阻断' : settings?.sdk_login_verified ? '按已确认的账户设置使用；未知状态可继续，检测到开启或使用时阻断' : '等待账户设置确认'}</p>
       {settings && !settings.sdk_model && <p className="mt-3">尚未配置订阅模型。</p>}
       {settings && !settings.sdk_login_verified && <p>本机官方订阅登录待核验。</p>}
       {settings && !settings.sdk_proxy_configured && <p>家宽代理待配置，正式 SDK 请求保持阻塞。</p>}

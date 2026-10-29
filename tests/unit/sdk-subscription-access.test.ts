@@ -40,7 +40,7 @@ const usage = { subscription_type: 'max', rate_limits_available: true, rate_limi
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean } = {}) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
@@ -67,7 +67,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
       }
     })();
     return Object.assign(iterator, { close() {}, accountInfo: async () => account,
-      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => usage });
+      usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => options.sdkUsage === undefined ? usage : options.sdkUsage });
   }) as any);
   const runner = new SubscriptionAccessRunner(config, settings, async cfg => {
     if (cfg.runtime.provider === 'claude-agent-sdk') return { status: 'ok', runner: sdk };
@@ -191,13 +191,15 @@ for (const [name, event] of [
   assert.equal(f.calls.or.length, 0); assert.equal(f.calls.orFactories, 0);
 });
 
-test('subscription admission ignores plan labels but rejects API authentication and unverified or enabled extra usage', () => {
+test('approved subscription admission permits unknown usage but rejects API authentication and explicitly enabled extra usage', () => {
   assert.equal(subscriptionAdmission(account, usage), null);
   assert.equal(subscriptionAdmission({ ...account, apiKeySource: 'env' }, usage), 'SDK_SUBSCRIPTION_AUTH_REQUIRED');
-  assert.equal(subscriptionAdmission(account, null), 'SDK_EXTRA_USAGE_UNVERIFIED');
+  assert.equal(subscriptionAdmission(account, null), null);
+  assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', tokenSource: 'none' }, null), 'SDK_SUBSCRIPTION_AUTH_REQUIRED');
+  assert.equal(subscriptionAdmission({ ...account, apiKeySource: 'env' }, null), 'SDK_SUBSCRIPTION_AUTH_REQUIRED');
   assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', subscriptionType: 'Claude API' }, {
     ...usage, subscription_type: null, rate_limits: null,
-  }), 'SDK_EXTRA_USAGE_UNVERIFIED');
+  }), null);
   assert.equal(subscriptionAdmission({ apiProvider: 'firstParty', subscriptionType: 'Claude API' }, {
     ...usage, subscription_type: null,
   }), null);
@@ -450,4 +452,28 @@ test('SDK flag preserves the existing dispatched-input edit restriction and comp
   assert.equal(f.calls.sdk.length,1);
   assert.equal(f.db.prepare('SELECT state FROM turns WHERE id=?').get(ticket.turn_id)?.state,'blocked');
   assert.equal(f.db.prepare("SELECT count(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
+});
+
+
+test('approved unknown quota reaches the SDK host lane and never authorizes OR by itself',async t=>{
+  const f=fixture(t,()=>[...textEvents(),{type:'result',subtype:'success',session_id:'unknown-usage-session'}],{sdkUsage:null});
+  assert.equal((await f.send('合成未知额度准入')).state,'completed');
+  assert.equal(f.calls.or.length,0);
+  assert.equal(f.runner.status().actual_entry,'claude-agent-sdk');
+  assert.equal(f.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n,1);
+});
+
+test('explicit extra usage remains blocked before model input after enabling the new policy',async t=>{
+  const f=fixture(t,()=>textEvents(),{sdkUsage:{...usage,rate_limits:{extra_usage:{is_enabled:true}}}});
+  assert.equal((await f.send('合成额外付费已开启')).state,'failed');
+  assert.equal(f.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n,0);
+  assert.equal(f.calls.or.length,0);
+  assert.match(String(f.db.prepare('SELECT blocked_reason FROM attempts').get()?.blocked_reason),/^SDK_EXTRA_USAGE_ENABLED:/);
+});
+
+test('runtime overage detection still stops SDK and does not fall back to OR',async t=>{
+  const f=fixture(t,()=>[{type:'rate_limit_event',rate_limit_info:{status:'allowed',rateLimitType:'five_hour',isUsingOverage:true}}],{sdkUsage:null});
+  assert.equal((await f.send('合成运行时额外用量')).state,'failed');
+  assert.equal(f.calls.or.length,0);
+  assert.equal(f.runner.status().last_error,'SDK_EXTRA_USAGE_ACTIVE');
 });
