@@ -85,7 +85,7 @@ test('fallback 已发生：事实落账+route.observed 事件+实际模型记账
   ctx.db.close();
 });
 
-test('no_fallback：记录为"拒绝未切换"，不打断回合', async () => {
+test('no_fallback：记录拒绝未切换，并进入既有用户路由决议', async () => {
   const noFallbackRunner: AgentRunner = {
     kind: 'mock', interruptSupport: 'claimed',
     async run(req) {
@@ -104,7 +104,8 @@ test('no_fallback：记录为"拒绝未切换"，不打断回合', async () => {
   assert.equal(evt.subtype, 'model_refusal_no_fallback');
   assert.equal(evt.actual_model, null, 'no_fallback 不得伪造成已切换');
   const turn = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(t.turnId) as { state: string };
-  assert.equal(turn.state, 'failed', '拒绝按回合失败自然收口（不是 interrupted）');
+  assert.equal(turn.state, 'route_owner_pending');
+  assert.equal(ctx.routing.pendingForTurn(t.turnId)?.source_evidence, 'SDK_FLAGGED');
   ctx.db.close();
 });
 

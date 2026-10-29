@@ -92,7 +92,8 @@ export class RoutingService {
     });
     this.events.publish('route.observed', {
       conversationId: o.conversationId, turnId: o.turnId, attemptId: o.attemptId, scope: 'private',
-      payload: { subtype: o.subtype, original_model: o.originalModel, actual_model: o.actualModel, already_switched: o.actualModel !== null, evidence: 'sdk_system_notice' },
+      payload: { subtype: o.subtype, original_model: o.originalModel, actual_model: o.actualModel, already_switched: o.actualModel !== null, scope: o.scope ?? null,
+        evidence: o.subtype === 'model_flagged' ? 'sdk_stop_reason_refusal' : 'sdk_system_notice' },
     });
     return { id };
   }

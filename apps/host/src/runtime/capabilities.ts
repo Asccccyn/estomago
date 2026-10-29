@@ -1,6 +1,7 @@
 // SDK 适配能力矩阵（02 §5）：每项 unknown/supported/unsupported/blocked + evidence_ref。
 // 官网说明只是支持线索，不是实机 PASS；unknown 不在 doctor/UI 冒充 available。
 import type { Config } from '../config/schema.ts';
+import type { GateResult } from '../identity/service.ts';
 
 export type CapabilityState = 'unknown' | 'supported' | 'unsupported' | 'blocked';
 
@@ -83,7 +84,7 @@ export class CapabilityMatrix {
     this.records.set(key, { ...cur, note });
   }
 
-  overall(): 'verified' | 'unknown' | 'blocked' {
+  overall(observed?: GateResult['observed']['probes']): 'verified' | 'unknown' | 'blocked' {
     // 关键 P0 能力任一 unknown → unknown；出现 blocked → blocked
     const critical: CapabilityKey[] = [
       'system_prompt_explicit',
@@ -92,14 +93,19 @@ export class CapabilityMatrix {
       'thinking_delta_observed',
       'complete_block_mapping_verified',
     ];
-    const states = critical.map(k => this.get(k).state);
+    const records = this.describe(observed);
+    const states = critical.map(k => records[k]!.state);
     if (states.includes('blocked')) return 'blocked';
     return states.every(s => s === 'supported') ? 'verified' : 'unknown';
   }
 
-  describe(): Record<string, CapabilityRecord> {
+  describe(observed?: GateResult['observed']['probes']): Record<string, CapabilityRecord> {
     const out: Record<string, CapabilityRecord> = {};
-    for (const k of ALL_KEYS) out[k] = this.get(k);
+    for (const k of ALL_KEYS) {
+      const probe = observed?.[k];
+      out[k] = probe ? { state: probe.state as CapabilityState, evidence_ref: probe.evidence_ref ?? null,
+        note: '适配能力观测；真实供应商的当前返回仍需单独验证' } : this.get(k);
+    }
     return out;
   }
 }

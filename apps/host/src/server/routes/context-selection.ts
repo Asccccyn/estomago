@@ -100,7 +100,7 @@ if (runtime) {
     runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
     openrouter: orStatus,
     deepseek: dsStatus,
-    capabilities: d.capabilities.describe(),
+    capabilities: d.capabilities.describe(gate.observed.probes),
     active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
     // WP-07（CX-10）：无活动窗时附 awaiting 选集引用——UI 锚定确认
     // 入口（preview/confirm 以 source_window_id 为目标，含哨兵源）

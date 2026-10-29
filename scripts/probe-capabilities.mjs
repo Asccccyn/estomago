@@ -1,12 +1,54 @@
 #!/usr/bin/env node
-// 能力探针（AUD-02 配套）：唯一允许向 capability_probes 写"supported"证据的生产入口。
-// 纪律：真实探测会发起真实 Claude Agent SDK 调用——必须由用户显式授权
+// 能力探针：唯一向 capability_probes 登记证据的入口。
+// --local 使用官方 runtime + 本机假 API；--apply 登记明确的本机适配验证范围。
+// 缺省的供应商探测会发起真实 Claude Agent SDK 调用——必须由用户显式授权
 //（ESTOMAGO_REAL_PROBE=1 由用户本人设置；且遵守"Claude 相关行为须二次确认"）。
 // 未授权时：只读自检 + 打印 BLOCKED，不写任何证据行。
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { spawnSync } from 'node:child_process';
+
+// --local observes the installed official runtime against an isolated fake API.
+// It proves adapter behavior, not provider inference; --apply records that scope.
+if (process.argv.includes('--local')) {
+  const repo = path.resolve(import.meta.dirname, '..');
+  const env = Object.fromEntries(['PATH','HOME','TMPDIR','LANG'].filter(k=>process.env[k]!==undefined).map(k=>[k,process.env[k]]));
+  const execution = spawnSync(process.execPath, [path.join(repo,'scripts/probe-claude-sdk.mjs')], {cwd:repo,env,encoding:'utf8',timeout:60000,maxBuffer:4*1024*1024});
+  if (execution.status !== 0) {
+    console.error(execution.stdout?.trim().split('\n').at(-1) ?? 'No capture location returned');
+    process.stderr.write(execution.stderr ?? '');
+    console.error('[probe] Local runtime verification failed; no evidence registered.');
+    process.exit(1);
+  }
+  const result = JSON.parse(execution.stdout.trim().split('\n').at(-1));
+  const source = path.join(result.captureDirectory,'capabilities.json');
+  const report = JSON.parse(fs.readFileSync(source,'utf8'));
+  const installed = JSON.parse(fs.readFileSync(path.join(repo,'node_modules/@anthropic-ai/claude-agent-sdk/package.json'),'utf8')).version;
+  const required = ['system_prompt_explicit','settings_sources_isolated','interrupt_supported','thinking_delta_observed','complete_block_mapping_verified'];
+  if (report.sdk_version !== installed || report.verification_scope !== 'official_runtime_local_transport' || required.some(key=>report.probes[key]!=='supported')) throw Error('LOCAL_PROBE_EVIDENCE_INVALID');
+  let evidence = source;
+  if (process.argv.includes('--apply')) {
+    const root = process.env.ESTOMAGO_HOME || path.join(os.homedir(),'Library','Application Support','estomago');
+    const database = path.join(root,'data','chat.sqlite3');
+    if (!fs.existsSync(database)) throw Error('CAPABILITY_DATABASE_NOT_FOUND');
+    const target = path.join(root,'sdk-state','probes','sdk-local-'+Date.now());
+    fs.mkdirSync(target,{recursive:true,mode:0o700});
+    fs.cpSync(result.captureDirectory,target,{recursive:true});
+    evidence = path.join(target,'capabilities.json');
+    const db = new DatabaseSync(database);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const insert=db.prepare('INSERT INTO capability_probes(id,probe_key,state,sdk_version,evidence_ref,observed_at) VALUES (?,?,?,?,?,?) ON CONFLICT(probe_key,sdk_version) DO UPDATE SET state=excluded.state,evidence_ref=excluded.evidence_ref,observed_at=excluded.observed_at');
+      for (const key of required) insert.run('local-'+Date.now()+'-'+key,key,report.probes[key],installed,evidence+'#'+key,report.observed_at);
+      db.exec('COMMIT');
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    finally { db.close(); }
+  }
+  console.log(JSON.stringify({sdk_version:installed,verification_scope:report.verification_scope,upstream:report.upstream,applied:process.argv.includes('--apply'),evidence}));
+  process.exit(0);
+}
 
 const authorized = process.env.ESTOMAGO_REAL_PROBE === '1';
 let sdk = null;

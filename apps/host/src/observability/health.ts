@@ -33,7 +33,7 @@ export function buildReadyReport(opts: {
       ? { status: 'ok', detail: `runner=${kind}; 本地请求入口已配置；本查询未探测供应商可用性` }
       : { status: 'blocked', detail: 'MODEL_CREDENTIAL_UNAVAILABLE' };
   } else {
-    const capabilityState = capabilities.overall();
+    const capabilityState = capabilities.overall(gate.observed.probes);
     runtime = { status: capabilityState === 'verified' ? 'ok' : capabilityState,
       detail: `runner=${runnerSelection.runner.kind}; SDK capabilities=${capabilityState}` };
   }

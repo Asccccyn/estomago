@@ -130,7 +130,7 @@ test('partial SDK output is retained; subscription rejection never replays that 
 test('SDK request usage is counted once and nullable cache counters remain unknown', async t => {
   const f = fixture(t, () => [
     { type: 'stream_event', event: { type: 'message_start', message: { id: 'usage-request', model: 'claude-sonnet-4-6', usage: { input_tokens: 12, output_tokens: 0, cache_read_input_tokens: null, cache_creation_input_tokens: null } } } },
-    { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 4 } } },
+    { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 4 } } },
     { type: 'stream_event', event: { type: 'message_stop' } },
     { type: 'result', subtype: 'success', usage: { input_tokens: 12, output_tokens: 4 }, session_id: randomUUID() },
   ]);
@@ -228,7 +228,7 @@ test('SDK child assembly excludes all API credentials and provider endpoints', (
 function usageEvents(input: number, read: number | null, write: number | null) {
   return [
     { type: 'stream_event', event: { type: 'message_start', message: { id: randomUUID(), model: 'claude-sonnet-4-6', usage: { input_tokens: input, output_tokens: 0, cache_read_input_tokens: read, cache_creation_input_tokens: write } } } },
-    { type: 'stream_event', event: { type: 'message_delta', usage: { output_tokens: 4 } } },
+    { type: 'stream_event', event: { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 4 } } },
     { type: 'stream_event', event: { type: 'message_stop' } },
     { type: 'result', subtype: 'success', session_id: randomUUID(), usage: { input_tokens: input, output_tokens: 4, cache_read_input_tokens: read, cache_creation_input_tokens: write } },
   ];
@@ -377,4 +377,77 @@ test('a native tool continuation keeps last request context separate from turn u
   const day=f.db.prepare('SELECT budget_day FROM usage_observations LIMIT 1').get()!.budget_day as string;
   const daily=new UsageCollector(f.db).summaryByDay(day).purposes[0]!;
   assert.equal(daily.row_count,2); assert.equal(daily.known_input_total,20119);
+});
+
+test('SDK complete-only thinking is visible without a contradictory no_block marker', async t => {
+  const f=fixture(t,()=>[
+    {type:'assistant',session_id:'thinking-full',uuid:'thinking-packet',message:{id:'thinking-message',model:'claude-sonnet-4-6',content:[{type:'thinking',thinking:'SYNTHETIC_COMPLETE_THINKING',signature:'SYNTHETIC_SIGNATURE'}]}},
+    {type:'assistant',session_id:'thinking-full',uuid:'text-packet',message:{id:'thinking-message',content:[{type:'text',text:'合成正式回答'}]}},
+    {type:'result',subtype:'success',session_id:'thinking-full'},
+  ]);
+  assert.equal((await f.send('完整思考块')).state,'completed');
+  const rows=f.db.prepare('SELECT visibility,received_text FROM reasoning_blocks ORDER BY rowid').all();
+  assert.deepEqual(rows.map(r=>({...r})),[{visibility:'summary',received_text:'SYNTHETIC_COMPLETE_THINKING'}]);
+});
+
+test('SDK structured flag joins the existing route gate; absent thinking alone does not',async t=>{
+  const f=fixture(t,round=>round===1?[
+    {type:'stream_event',session_id:'flag-session',event:{type:'message_start',message:{id:'flag-message',model:'claude-sonnet-4-6'}}},
+    {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'refusal'},usage:{output_tokens:1}}},
+    {type:'result',subtype:'success',session_id:'flag-session'},
+  ]:[...textEvents(),{type:'result',subtype:'success',session_id:'continued-session'}]);
+  assert.equal((await f.send('合成flag')).state,'route_owner_pending');
+  const routing=new RoutingService(f.db,f.events,f.messages);
+  const ticket=routing.pendingForConversation('synthetic')!;
+  assert.equal(ticket.source_evidence,'SDK_FLAGGED');
+  assert.equal(f.calls.or.length,0);
+  assert.equal((await f.send('后续合成输入')).state,'pending');
+  assert.equal(f.calls.sdk.length,1);
+  const resolved=routing.validateAndConsume(ticket.id,{choice:'approve'});assert.equal(resolved.ok,true);
+  f.supervisor.requeueConversationQueuedTurns('synthetic');await f.supervisor.waitIdle();
+  assert.equal(routing.pendingForConversation('synthetic'),null);
+  assert.equal(f.db.prepare('SELECT state FROM turns WHERE id=?').get(ticket.turn_id)?.state,'completed');
+  assert.equal(f.calls.or.length,0);
+});
+
+test('repeated SDK flag after approval finishes with failed status instead of reopening a pending UI state',async t=>{
+  const f=fixture(t,()=>[
+    {type:'stream_event',session_id:'repeat-flag',event:{type:'message_start',message:{id:'repeat-flag-message',model:'claude-sonnet-4-6'}}},
+    {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'refusal'}}},
+    {type:'result',subtype:'success',session_id:'repeat-flag'},
+  ]);
+  await f.send('合成持续flag');
+  const routing=new RoutingService(f.db,f.events,f.messages);const ticket=routing.pendingForConversation('synthetic')!;
+  assert.equal(routing.validateAndConsume(ticket.id,{choice:'approve'}).ok,true);
+  f.supervisor.requeueConversationQueuedTurns('synthetic');await f.supervisor.waitIdle();
+  assert.equal(f.db.prepare('SELECT state FROM turns WHERE id=?').get(ticket.turn_id)?.state,'failed');
+  assert.equal(routing.pendingForTurn(ticket.turn_id),null);
+  const event=f.db.prepare("SELECT payload_ref FROM runtime_stream_events WHERE turn_id=? AND kind='turn.status' ORDER BY sequence DESC LIMIT 1").get(ticket.turn_id)!;
+  assert.equal(JSON.parse(event.payload_ref as string).state,'failed');
+});
+
+test('SDK flag preserves the existing dispatched-input edit restriction and completed tool receipt',async t=>{
+  const f=fixture(t,async function*(round,input){
+    if(round!==1){yield* textEvents();yield {type:'result',subtype:'success',session_id:'edited-route-session'};return;}
+    const args={operation:'schedule',operation_id:'route-edit-effect',delay_seconds:600,note:'SYNTHETIC_COMMITTED_EFFECT'};
+    yield {type:'stream_event',event:{type:'message_start',message:{id:'effect-before-flag',model:'claude-sonnet-4-6'}}};
+    yield {type:'assistant',message:{id:'effect-before-flag',content:[{type:'tool_use',id:'route-effect',name:'mcp__est__wake_manage',input:args}]}};
+    await input.options.hooks.PreToolUse[0].hooks[0]({hook_event_name:'PreToolUse',tool_name:'mcp__est__wake_manage',tool_input:args,tool_use_id:'route-effect'});
+    const [a,b]=InMemoryTransport.createLinkedPair();const client=new Client({name:'synthetic-route',version:'1.0.0'});
+    await input.options.mcpServers.est.instance.connect(b);await client.connect(a);
+    const result=await client.callTool({name:'wake_manage',arguments:args});await client.close();assert.equal(result.isError,false);
+    await input.options.hooks.PostToolBatch[0].hooks[0]({hook_event_name:'PostToolBatch'});
+    yield {type:'stream_event',event:{type:'message_start',message:{id:'flag-after-effect',model:'claude-sonnet-4-6'}}};
+    yield {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'refusal'}}};
+  });
+  f.backgroundSettings.applyUpdate({expectedRevision:f.backgroundSettings.revision(),patch:{autonomous_enabled:true,autonomous_daily_cost_cap_usd:1}});
+  await f.send('SYNTHETIC_SUPERSEDED_INPUT');
+  const routing=new RoutingService(f.db,f.events,f.messages);const ticket=routing.pendingForConversation('synthetic')!;
+  const edited=routing.validateAndConsume(ticket.id,{choice:'edit',content:'SYNTHETIC_CURRENT_INPUT'});
+  assert.equal(edited.ok,false);if(!edited.ok)assert.equal(edited.code,'ROUTE_EDIT_REJECTED');
+  assert.equal(routing.pendingForTurn(ticket.turn_id)?.id,ticket.id);
+  assert.equal(routing.validateAndConsume(ticket.id,{choice:'cancel'}).ok,true);
+  assert.equal(f.calls.sdk.length,1);
+  assert.equal(f.db.prepare('SELECT state FROM turns WHERE id=?').get(ticket.turn_id)?.state,'blocked');
+  assert.equal(f.db.prepare("SELECT count(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
 });

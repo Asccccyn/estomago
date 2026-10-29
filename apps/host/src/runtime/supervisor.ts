@@ -2661,7 +2661,7 @@ export class TurnSupervisor {
       }
     };
 
-    const handleRouteSignal = (): void => {
+    const handleRouteSignal = (notice?: { currentModel: string | null; evidenceCode: string }): void => {
       if (routeSignalHandled) return;
       routeSignalHandled = true;
       runToken.token.cancelled = true; // fence 立即生效（AUD-05：迟到输出不得发布）
@@ -2690,7 +2690,7 @@ export class TurnSupervisor {
         tx(d.db, () => {
           const ticket = d.routing.createPendingInTx({
             conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
-            inputHash, targetModel: null, evidenceCode: 'SDK_ROUTE_SIGNAL',
+            inputHash, targetModel: null, evidenceCode: notice?.evidenceCode ?? 'SDK_ROUTE_SIGNAL',
             messageId: inputMessage?.id ?? null, inputRevision: effective.revision,
           });
           ticketId = ticket.id;
@@ -2704,8 +2704,9 @@ export class TurnSupervisor {
       }
       d.events.publish('route.pending', {
         conversationId: turn.conversation_id, turnId, attemptId: attempt.id, scope: 'private',
-        payload: { decision_id: ticketId, current_model: null, target_model: null, evidence_code: 'SDK_ROUTE_SIGNAL', already_switched: false, affects_future_sessions: null },
+        payload: { decision_id: ticketId, current_model: notice?.currentModel ?? null, target_model: null, evidence_code: notice?.evidenceCode ?? 'SDK_ROUTE_SIGNAL', already_switched: false, affects_future_sessions: null },
       });
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_owner_pending', generation } });
       runToken.controller.abort(); // 通知 runner 停止
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'interrupted', generation });
     };
@@ -2818,17 +2819,21 @@ export class TurnSupervisor {
                   });
                 } catch { /* 告警失败不影响回合 */ }
               }
-              if (ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
+              if (ev.subtype === 'model_flagged' || ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
                 const actualModel = ev.subtype === 'model_refusal_fallback' ? (ev.fallback_model ?? null) : null;
                 try {
                   d.routing.recordSdkRouteEvent({
                     conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
                     subtype: ev.subtype, originalModel: ev.original_model, actualModel,
+                    scope: ev.scope ?? 'session', noticeId: ev.notice_id, requestId: ev.request_id,
                   });
                 } catch (err) {
                   d.logger.error('route_event_tx_failed', { turn_id: turnId, code: stableCode(err) });
                 }
-                if (actualModel) {
+                if (ev.scope === 'local') break;
+                if (ev.subtype === 'model_flagged' || ev.subtype === 'model_refusal_no_fallback') {
+                  handleRouteSignal({ currentModel: ev.original_model ?? reqCtx?.responseModel ?? reqCtx?.requestedModel ?? null, evidenceCode: 'SDK_FLAGGED' });
+                } else if (actualModel) {
                   // 切换已发生：后续生成/工具动作按规格暂停——fence + abort，回合按 interrupted 收口
                   actualModelForUsage = actualModel;
                   fallbackSwitched = true;
@@ -2967,8 +2972,7 @@ export class TurnSupervisor {
     if (runToken.token.cancelled && routeSignalHandled) {
       segmenter.drop();
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
-      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_owner_pending', generation } });
-      return; // attempt/turn 已在 handleRouteSignal 的事务里置 route_owner_pending
+      return; // handleRouteSignal 已发布实际终态；再次 flag 的 failed 不被 pending 覆盖。
     }
     if (runToken.token.cancelled || result.outcome === 'interrupted') {
       segmenter.drop();

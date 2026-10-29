@@ -42,7 +42,7 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
       const id=randomUUID();
       yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id,model:'claude-sonnet-4-6',usage:{input_tokens:10,output_tokens:0,cache_read_input_tokens:100,cache_creation_input_tokens:0}}}};
       yield {type:'assistant',session_id:session,message:{id,content:[{type:'text',text}]}};
-      yield {type:'stream_event',event:{type:'message_delta',usage:{output_tokens:4}}};
+      yield {type:'stream_event',event:{type:'message_delta',delta:{stop_reason:null},usage:{output_tokens:4}}};
       yield {type:'stream_event',event:{type:'message_stop'}};
       yield {type:'result',subtype:'success',session_id:session};
     })();

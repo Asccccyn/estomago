@@ -363,6 +363,7 @@ export class EstomagoClient {
     }
     if(id&&data.kind==='usage.updated'&&this.visibleTurn(id))void this.loadUsage(id)
     if(data.kind==='route.pending')this.patch({route:data})
+    if(data.kind==='route.observed'&&data.already_switched===true&&data.scope!=='local')this.notify('Anthropic 已将本轮路由到其他型号，本轮已暂停。')
     if(data.kind==='route.resolved'){this.patch({route:null});if(data.message){this.absorb(data.message);this.render()}}
     if(data.kind==='system.alert.changed')void this.loadAlerts(this.alertsOpen)
     if(data.kind==='context.warning')void this.loadContext()
@@ -532,7 +533,7 @@ export class EstomagoClient {
     try {
       const data=await this.request('/runtime-settings');this.runtime=data
       const editable=data.driver==='openrouter'
-      let exact=editable?data.or_model?.effective:null
+      let exact=editable?data.or_model?.effective:data.driver==='claude-agent-sdk'?data.sdk_model:null
       if(!editable){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
       const ids=[...new Set<string>([...(editable?data.model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
       const efforts:string[]=editable?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]

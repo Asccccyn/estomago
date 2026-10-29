@@ -98,7 +98,7 @@ export type GateResult = {
   observed: {
     installed_sdk_version: string | null;
     cwd_realpath: string | null;
-    probes: Record<string, { state: string; sdk_version: string } | null>;
+    probes: Record<string, { state: string; sdk_version: string; evidence_ref?: string } | null>;
   };
 };
 

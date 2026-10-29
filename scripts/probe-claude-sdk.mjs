@@ -91,6 +91,21 @@ if (process.argv[2] !== '--worker') {
         { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 } },
         { type: 'message_stop' });
     }
+    if (mode === 'est-host-thinking') {
+      frames.find(f=>f.type==='message_delta').usage.output_tokens_details={thinking_tokens:4};
+      for (const f of frames) if ('index' in f) f.index = 1;
+      frames.splice(1,0,
+        {type:'content_block_start',index:0,content_block:{type:'thinking',thinking:''}},
+        {type:'content_block_delta',index:0,delta:{type:'thinking_delta',thinking:'SYNTHETIC_SDK_THINKING'}},
+        {type:'content_block_delta',index:0,delta:{type:'signature_delta',signature:'SYNTHETIC_SIGNATURE'}},
+        {type:'content_block_stop',index:0});
+    }
+    if (mode === 'est-host-flag') frames.find(f=>f.type==='message_delta').delta.stop_reason='refusal';
+    if (mode === 'est-host-cancel') {
+      res.writeHead(200,{'content-type':'text/event-stream'});
+      res.write(frames.slice(0,3).map(f=>`event: ${f.type}\ndata: ${JSON.stringify(f)}\n\n`).join(''));
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
     res.end(frames.map(frame => `event: ${frame.type}\ndata: ${JSON.stringify(frame)}\n\n`).join(''));
   });
@@ -240,8 +255,16 @@ if (process.argv[2] !== '--worker') {
     hostMessages.ensureConversation('primary');
     const trajectory = new WindowTrajectoryService(db);
     const hostSessions = new Map();
+    let cancelTurnId = null; let abortAt = null;
     const nativeRunner = { kind: 'claude-agent-sdk', interruptSupport: 'claimed', run: req => {
       req.options.options.env = { ...req.options.options.env, ...env };
+      const onEvent = req.onEvent;
+      req.onEvent = event => {
+        events.push({mode,event}); onEvent(event);
+        if (mode === 'est-host-cancel' && event.kind === 'text_delta' && abortAt === null) {
+          abortAt = Date.now(); supervisor.stop(cancelTurnId);
+        }
+      };
       return runSdkHostQuery(query, req, hostSessions, async () => null, proxyOnlySdkSpawn(baseUrl));
     } };
     const supervisor = new TurnSupervisor({ db, config, messages: hostMessages, events: hostEvents, identity, windows, trajectory,
@@ -249,7 +272,7 @@ if (process.argv[2] !== '--worker') {
       reasoning: new ReasoningService(db, hostEvents), routing: new RoutingService(db, hostEvents, hostMessages),
       usage: new UsageCollector(db), logger: new Logger(null), activity, reviews, checkpoint, now: () => nowMs });
     bgSettings.applyUpdate({ expectedRevision: bgSettings.revision(), patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
-    for (const name of ['est-host-first', 'est-host-tool']) {
+    for (const name of ['est-host-first', 'est-host-tool', 'est-host-thinking']) {
       mode = name;
       const input = hostMessages.submitUserMessageWithTurn({ conversationId: 'primary', content: `EST_SYNTHETIC_USER ${name}`, clientMessageId: name });
       supervisor.enqueue(input.turnId); await supervisor.waitIdle();
@@ -258,6 +281,9 @@ if (process.argv[2] !== '--worker') {
       console.log(JSON.stringify(summary.at(-1)));
       if (state !== 'completed') throw Error('HOST_TURN_FAILED:' + JSON.stringify(db.prepare('SELECT blocked_reason FROM attempts WHERE turn_id=?').all(input.turnId)));
     }
+    const thinking = db.prepare("SELECT received_text,final_text FROM reasoning_blocks WHERE visibility='summary' AND received_text='SYNTHETIC_SDK_THINKING'").get();
+    if (!thinking || thinking.final_text !== thinking.received_text || !events.some(e=>e.mode==='est-host-thinking'&&e.event.kind==='thinking_delta')) throw Error('SDK_THINKING_MAPPING_FAILED');
+    if (!events.some(e=>e.mode==='est-host-thinking'&&e.event.kind==='usage'&&e.event.usage.reasoning_tokens===4)) throw Error('SDK_THINKING_USAGE_MISSING');
     const taskCount = db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get().n;
     if (taskCount !== 1) throw Error('HOST_TOOL_SIDE_EFFECT_COUNT:' + taskCount);
     const modelRequests = db.prepare("SELECT COUNT(*) n FROM provider_requests p JOIN turns t ON t.id=p.turn_id WHERE t.conversation_id='primary' AND p.sent_at IS NOT NULL").get().n;
@@ -330,12 +356,34 @@ if (process.argv[2] !== '--worker') {
     }
     const estimateRows = db.prepare("SELECT u.cost_usd,u.input_tokens,u.raw_usage_json,p.purpose FROM usage_observations u JOIN provider_requests p ON p.id=u.request_id JOIN turns t ON t.id=u.turn_id WHERE t.conversation_id='primary' AND u.scope='cumulative' ORDER BY u.rowid").all();
     const estimates = estimateRows.map(row => JSON.parse(row.raw_usage_json));
-    if (estimateRows.length !== 4 || estimateRows.some(row => row.cost_usd !== null || row.input_tokens !== null)) throw Error('SDK_ESTIMATE_MIXED_WITH_REQUEST_USAGE');
+    if (estimateRows.length !== 5 || estimateRows.some(row => row.cost_usd !== null || row.input_tokens !== null)) throw Error('SDK_ESTIMATE_MIXED_WITH_REQUEST_USAGE');
     const fork = estimates.at(-1);
     if (fork.scope !== 'sdk_session_cumulative' || !fork.fork_session || fork.resumed_from_session_id !== parentSession || fork.session_id === parentSession) throw Error('SDK_FORK_ESTIMATE_SCOPE_LOST');
     if (estimates[1].resumed_from_session_id !== estimates[0].session_id || estimates[2].resumed_from_session_id !== estimates[1].session_id) throw Error('SDK_RESUME_ESTIMATE_SCOPE_LOST');
     summary.push({ mode: 'sdk-estimates', observations: estimates, monetaryRequestCosts: estimateRows.map(row => row.cost_usd) });
     console.log(JSON.stringify({ mode: 'sdk-estimates', count: estimates.length, forkScopePreserved: true, actualChargesUnknown: true }));
+    mode='est-host-cancel';
+    const cancelInput=hostMessages.submitUserMessageWithTurn({conversationId:'primary',content:'SYNTHETIC_CANCEL',clientMessageId:mode});cancelTurnId=cancelInput.turnId;
+    supervisor.enqueue(cancelTurnId);await supervisor.waitIdle();
+    const cancelled=db.prepare('SELECT state FROM turns WHERE id=?').get(cancelTurnId);
+    const cancelMs=abortAt===null?null:Date.now()-abortAt;
+    if(cancelled?.state!=='interrupted'||cancelMs===null||cancelMs>5000)throw Error('SDK_INTERRUPT_NOT_VERIFIED');
+    summary.push({mode,state:cancelled.state,abort_to_end_ms:cancelMs});
+    mode='est-host-flag';
+    const flagInput=hostMessages.submitUserMessageWithTurn({conversationId:'primary',content:'SYNTHETIC_FLAG',clientMessageId:mode});
+    supervisor.enqueue(flagInput.turnId);await supervisor.waitIdle();
+    const flagState=db.prepare('SELECT state FROM turns WHERE id=?').get(flagInput.turnId)?.state;
+    const flagRequests=captures.filter(c=>c.mode===mode).length;
+    // The runtime can start its refusal-recovery request before the host receives
+    // the stream notice. Assert the host gate, not an invented one-request limit.
+    if(flagState!=='route_owner_pending'||flagRequests<1)throw Error('SDK_FLAG_NOT_ROUTED');
+    summary.push({mode,state:flagState,requests:flagRequests});
+    if (!captures.find(c=>c.mode==='custom')?.payload.system.some(b=>b.text===prompts.custom)) throw Error('CUSTOM_SYSTEM_PROMPT_NOT_SERIALIZED');
+    const sdkVersion=JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json',import.meta.url),'utf8')).version;
+    fs.writeFileSync(path.join(root,'captures','capabilities.json'),JSON.stringify({sdk_version:sdkVersion,observed_at:new Date().toISOString(),verification_scope:'official_runtime_local_transport',upstream:'loopback_synthetic',
+      probes:{system_prompt_explicit:'supported',settings_sources_isolated:'supported',interrupt_supported:'supported',thinking_delta_observed:'supported',complete_block_mapping_verified:'supported'},
+      evidence:{requests:'requests.json',events:'events.json',summary:'summary.json'},
+      note:'These are observed SDK adapter capabilities. No real provider inference, semantic obedience or subscription billing is verified.'},null,2));
     await supervisor.stopAll();
     db.close();
   } finally {

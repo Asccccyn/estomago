@@ -12,9 +12,9 @@ export type ContentBlockType = 'thinking' | 'text' | 'tool_use' | 'redacted_thin
 export type RawStreamEvent =
   | { type: 'stream_event'; event: RawAnthropicEvent; parent_tool_use_id?: string | null; session_id?: string | null }
   | { type: 'assistant'; message: RawAssistantMessage; uuid?: string | null; parent_tool_use_id?: string | null; session_id?: string | null; request_id?: string | null }
-  | { type: 'result'; subtype?: string; is_error?: boolean; usage?: RawUsage; session_id?: string | null; error?: string; errors?: string[] }
+  | { type: 'result'; subtype?: string; is_error?: boolean; stop_reason?: string | null; usage?: RawUsage; session_id?: string | null; error?: string; errors?: string[] }
   // F10：对齐 0.3.283 SDKSystemMessage（model_refusal_fallback / model_refusal_no_fallback 等结构化子类型）
-  | { type: 'system'; subtype?: string; content?: string; message?: string; original_model?: string; fallback_model?: string | null; request_id?: string | null; session_id?: string | null }
+  | { type: 'system'; subtype?: string; content?: string; message?: string; original_model?: string; fallback_model?: string | null; request_id?: string | null; session_id?: string | null; scope?: 'session' | 'local'; uuid?: string }
   | { type: 'error'; error: string };
 
 export type RawAnthropicEvent =
@@ -22,6 +22,7 @@ export type RawAnthropicEvent =
   | { type: 'content_block_start'; index: number; content_block: { type: ContentBlockType; thinking?: string; text?: string } }
   | { type: 'content_block_delta'; index: number; delta: RawDelta }
   | { type: 'content_block_stop'; index: number }
+  | { type: 'message_delta'; delta: { stop_reason?: string | null } }
   | { type: 'message_stop' };
 
 export type RawDelta =
@@ -87,7 +88,7 @@ export type SdkNormalizedEvent =
   | { kind: 'packet_conflict'; packet_key: string; session_id: string | null } // F11：同包标识不同载荷——不发布正文，只留观测
   | { kind: 'usage'; scope: 'request' | 'turn' | 'cumulative'; usage: RawUsage; source: 'sdk_result' | 'sdk_stream' | 'or_stream' | 'ds_stream'; completeness: 'complete' | 'partial' }
   // F10：system 事件（含 model_refusal_fallback / model_refusal_no_fallback）不再被归一化层丢弃
-  | { kind: 'system_notice'; subtype: string; content: string | null; original_model: string | null; fallback_model: string | null; session_id: string | null }
+  | { kind: 'system_notice'; subtype: string; content: string | null; original_model: string | null; fallback_model: string | null; session_id: string | null; scope?: 'session' | 'local'; notice_id?: string | null; request_id?: string | null }
   | { kind: 'turn_end'; outcome: 'completed' | 'error'; error_classified: ErrorClass | null; error_message: string | null; session_id: string | null; request_id: string | null };
 
 // 错误分类（10.1：普通拒绝、网络故障和明确路由分别归类；不确定归 unknown，不冒充路由）

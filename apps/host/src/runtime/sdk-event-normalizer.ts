@@ -88,6 +88,10 @@ export class SdkEventNormalizer {
             if (id) out.push({ kind: 'message_stop', sdk_message_id: id, channel });
             break;
           }
+          case 'message_delta': {
+            if (channel === 'main' && ev.delta.stop_reason === 'refusal') out.push(this.flagNotice());
+            break;
+          }
         }
         break;
       }
@@ -148,13 +152,17 @@ export class SdkEventNormalizer {
           original_model: raw.original_model ?? null,
           fallback_model: raw.fallback_model ?? null,
           session_id: this.session_id,
+          scope: raw.scope,
+          notice_id: raw.uuid ?? null,
+          request_id: raw.request_id ?? null,
         });
         break;
       }
       case 'result': {
         if (raw.session_id) this.session_id = raw.session_id;
+        if (raw.stop_reason === 'refusal') out.push(this.flagNotice());
         if (raw.usage) out.push({ kind: 'usage', scope: 'turn', usage: raw.usage, source: 'sdk_result', completeness: 'complete' });
-        const isSuccess = raw.subtype === 'success' && raw.is_error !== true;
+        const isSuccess = raw.subtype === 'success' && raw.is_error !== true && raw.stop_reason !== 'refusal';
         if (isSuccess) {
           this.sawSuccessResult = true;
           out.push({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: this.session_id, request_id: this.request_id });
@@ -184,5 +192,10 @@ export class SdkEventNormalizer {
     this.openBlocks.set(id, new Map());
     out.push({ kind: 'message_start', sdk_message_id: id, model: null, session_id: this.session_id, channel });
     return id;
+  }
+
+  private flagNotice(): SdkNormalizedEvent {
+    return { kind: 'system_notice', subtype: 'model_flagged', content: null, original_model: this.currentModel,
+      fallback_model: null, session_id: this.session_id, scope: 'session', request_id: this.request_id };
   }
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { EstomagoClient } from './chat-client'
 
 type AccessSettings = {
+  configured_entry: string
   sdk_model: string | null; sdk_proxy_configured: boolean; sdk_login_verified: boolean
   access: { policy: 'configured' | 'subscription-first'; actual_entry: string | null; next_entry?: string; last_error?: string | null
     subscription: { status: string; limit_type?: string | null; resets_at?: string | null; reset_state?: string; extra_usage?: string } }
@@ -25,12 +26,13 @@ export function AccessControls({ client, onClose }: { client: EstomagoClient; on
       <div className="mb-4 flex justify-between"><h2 className="text-[17px] font-medium">模型接入</h2><button onClick={onClose} aria-label="关闭模型接入设置">关闭</button></div>
       <label className="block">接入策略
         <select aria-label="接入策略" className="mt-2 w-full rounded-lg border border-black/10 bg-white p-2" disabled={!settings || busy} value={settings?.access.policy ?? 'configured'} onChange={e => void change(e.target.value as 'configured' | 'subscription-first')}>
-          <option value="configured">使用当前配置入口</option>
+          <option value="configured">{settings?.configured_entry === 'openrouter' ? 'API · OpenRouter' : `使用配置入口 · ${entryName(settings?.configured_entry)}`}</option>
           <option value="subscription-first">订阅 SDK 优先，额度耗尽后自动 OR</option>
         </select>
       </label>
       <p className="mt-3">最近实际入口：{entryName(settings?.access.actual_entry)}</p>
       <p>下一安全回合：{entryName(settings?.access.next_entry)}</p>
+      <p>订阅型号：{settings?.sdk_model ?? '未配置'}</p>
       <p>订阅额度：{status?.status === 'rejected' ? '已拒绝' : status?.status === 'allowed_warning' ? '接近限额' : status?.status === 'allowed' ? '可用' : '尚未核验'}</p>
       <p>订阅重置：{status?.resets_at ? new Date(status.resets_at).toLocaleString() : '尚未取得重置时间'}{status?.reset_state === 'due_for_sdk_check' ? ' · 下一回合重新核验 SDK' : ''}</p>
       <p>额外付费：{status?.extra_usage === 'active' ? '检测到使用，已阻断' : status?.extra_usage === 'enabled' ? '账号已启用，SDK 已阻断' : '正式请求前通过官方运行时核验'}</p>

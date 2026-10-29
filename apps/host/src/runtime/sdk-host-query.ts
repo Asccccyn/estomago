@@ -206,7 +206,8 @@ export async function runSdkHostQuery(
         }
         if (event.event.type === 'content_block_delta' || event.event.type === 'content_block_start') activityStarted = true;
       }
-      const normalized = normalizer.normalize(raw as unknown as RawStreamEvent);
+      const normalized = normalizer.normalize((event.type === 'result' && event.usage
+        ? { ...event, usage: sdkUsageFields(event.usage) } : raw) as unknown as RawStreamEvent);
       if (event.type === 'assistant' && normalized.some(e => e.kind === 'complete_message')) {
         activityStarted = true;
         const assistant = assistantMessage(event.message.id);
@@ -231,6 +232,15 @@ export async function runSdkHostQuery(
         // double-count tokens and present that sum as the last request's context.
         if (event.kind === 'usage' && observedRequestUsage) continue;
         req.onEvent(event);
+        // Refusal is an explicit upstream flag. End the native loop before its
+        // continuation; the existing host route ticket owns the user's choice.
+        if (event.kind === 'system_notice' && event.scope !== 'local'
+          && (event.subtype === 'model_flagged' || event.subtype === 'model_refusal_no_fallback')) {
+          failure = 'SDK_FLAGGED';
+          req.abortController.abort();
+          run.close();
+          return finish('interrupted');
+        }
       }
     }
     if (req.abortController.signal.aborted) return finish('interrupted');
@@ -268,11 +278,13 @@ export async function runSdkHostQuery(
 }
 
 // SDK counters are nullable; absent is unknown, never an observed zero.
-function sdkUsageFields(usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null }): RawUsage {
+function sdkUsageFields(usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; output_tokens_details?: { thinking_tokens?: number | null } | null }): RawUsage {
   const result: RawUsage = {};
   for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) {
     const value = usage[key];
     if (typeof value === 'number') result[key] = value;
   }
+  const thinking = usage.output_tokens_details?.thinking_tokens;
+  if (typeof thinking === 'number') result.reasoning_tokens = thinking;
   return result;
 }

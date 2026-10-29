@@ -24,6 +24,7 @@ if (rtGet) {
   }
   return json(res, 200, {
     driver: d.runnerSelection.status === 'ok' ? d.runnerSelection.runner.kind : 'unknown',
+    configured_entry: d.config.runtime.provider,
     access: d.runnerSelection.status === 'ok' && d.runnerSelection.runner instanceof SubscriptionAccessRunner
       ? d.runnerSelection.runner.status() : { policy: d.settings?.accessPolicy(d.config.runtime.access_policy) ?? d.config.runtime.access_policy, actual_entry: null, subscription: { status: 'unverified' } },
     sdk_model: d.config.runtime.model,

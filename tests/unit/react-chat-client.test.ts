@@ -294,3 +294,19 @@ test('旧DS协议缺失通过既有失败事件明确提示正常人工换窗，
   assert.equal(h.calls.filter(c=>c.init?.method==='POST').length,before);
  }finally{h.client.stop()}
 });
+test('订阅入口首次切入也显示已配置 SDK 型号，不被上一笔 API 记录显示成未配置',async()=>{
+  let policy='configured'
+  const h=await setup((url,init)=>{
+    if(url.endsWith('/runtime-settings')){
+      if(init?.method==='PUT')policy=JSON.parse(String(init.body)).access_policy
+      return Response.json({driver:policy==='configured'?'openrouter':'claude-agent-sdk',configured_entry:'openrouter',sdk_model:'claude-sonnet-5',access:{policy},or_model:{effective:'anthropic/claude-opus-4.6'}})
+    }
+    if(url.endsWith('/context-records'))return Response.json({driver:'openrouter',exactModel:'anthropic/claude-opus-4.6',context:{}})
+  })
+  try{
+    await h.client.setAccessPolicy('subscription-first')
+    assert.deepEqual(h.client.snapshot.modelIds,['claude-sonnet-5'])
+    await h.client.setAccessPolicy('configured')
+    assert.deepEqual(h.client.snapshot.modelIds,['anthropic/claude-opus-4.6'])
+  }finally{h.client.stop()}
+})
