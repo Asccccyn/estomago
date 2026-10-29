@@ -1,0 +1,5 @@
+{
+  "name": "est-prompt-context",
+  "version": "1.0.0",
+  "description": "Keep est host context without Claude Code environment, model and date reminders."
+}

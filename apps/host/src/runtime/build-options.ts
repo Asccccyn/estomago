@@ -7,6 +7,7 @@ import { sha256Hex } from '../util/id.ts';
 import type { GateResult } from '../identity/service.ts';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import { HOST_BOUNDARY_RULES, FIXED_RUNTIME_FRAGMENT } from '../context/fixed-runtime.ts';
+import { fileURLToPath } from 'node:url';
 
 // 我们自己的装配契约：字段与 0.3.283 Options 一一对应（可对照 sdk.d.ts 的 export declare type Options）
 export type AssembledSdkOptions = {
@@ -16,7 +17,7 @@ export type AssembledSdkOptions = {
     settingSources: [];
     tools: [];
     skills: [];
-    plugins: [];
+    plugins: Array<{ type: 'local'; path: string }>;
     permissionMode: 'default';
     mcpServers: Record<string, never>;
     strictMcpConfig: true;
@@ -77,6 +78,13 @@ export function subscriptionSdkOptions(config: Config, systemPrompt: string, cwd
     CLAUDE_CODE_MAX_RETRIES: '0', CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
     DISABLE_COMPACT: '1', DISABLE_AUTO_COMPACT: '1',
     ENABLE_TOOL_SEARCH: 'false', CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY: '1',
+    CLAUDE_CODE_ENABLE_FUNCTION_HOOKS: '1',
+    // systemPrompt replaces the coding preset, but the runtime still prepends
+    // identity/attribution text. Override the final system field with our own
+    // prompt; do not override messages, tools, model or authentication metadata.
+    CLAUDE_CODE_EXTRA_BODY: JSON.stringify({ system: [
+      { type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral', ttl: '1h' } },
+    ] }),
   });
   if (config.runtime.subscription_proxy_url) {
     env.HTTPS_PROXY = config.runtime.subscription_proxy_url;
@@ -91,7 +99,7 @@ export function subscriptionSdkOptions(config: Config, systemPrompt: string, cwd
         settingSources: [],
         tools: [],
         skills: [],
-        plugins: [],
+        plugins: [{ type: 'local', path: fileURLToPath(new URL('./sdk-prompt-context/', import.meta.url)) }],
         permissionMode: 'default',
         mcpServers: {},
         strictMcpConfig: true,

@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const fakeKey = 'sk-ant-est-synthetic-local-only';
+const literalReminder = "<system-reminder>\nToday's date is USER_LITERAL_DO_NOT_STRIP.\n</system-reminder>";
 
 if (process.argv[2] !== '--worker') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-sdk-capture-'));
@@ -58,7 +59,7 @@ if (process.argv[2] !== '--worker') {
       return;
     }
     const payload = JSON.parse(body);
-    captures.push({ mode, payload });
+    captures.push({ mode, payload, clientEntry: String(req.headers['user-agent'] ?? '').includes('sdk-ts') ? 'sdk-ts' : 'other' });
     const step = captures.filter(c => c.mode === mode).length;
     const toolStep = mode === 'est-tool' || mode === 'est-host-tool' ? [
       { name: 'tool_catalog', input: {} },
@@ -189,7 +190,7 @@ if (process.argv[2] !== '--worker') {
     let sessions = new Map();
     let canonical = [{ role: 'system', content: `${materials.identityText}\n${materials.rulesText}\n${materials.iText}` }];
     let toolExecutions = 0;
-    for (const name of ['est-first', 'est-followup', 'est-tool', 'est-resume', 'est-restart', 'est-rotation', 'est-wake', 'est-keepwarm', 'est-bare-comparison']) {
+    for (const name of ['est-first', 'est-followup', 'est-tool', 'est-resume', 'est-restart', 'est-rotation', 'est-wake', 'est-keepwarm', 'est-literal', 'est-bare-comparison']) {
       mode = name;
       if (name === 'est-restart' || name === 'est-bare-comparison') sessions = new Map();
       if (name === 'est-rotation') {
@@ -198,10 +199,11 @@ if (process.argv[2] !== '--worker') {
         window = rotated.window; sessions = new Map();
       }
       const submission = messageService.submitUserMessageWithTurn({ conversationId: 'synthetic', content: `EST_SYNTHETIC_USER ${name}`, clientMessageId: name });
-      canonical = [...canonical, { role: 'user', content: name === 'est-wake' ? '[host_event] 合成自动唤醒，不是用户发言' : name === 'est-keepwarm' ? '[host_event] 合成心跳，可回复1' : `EST_SYNTHETIC_USER ${name}` }];
+      canonical = [...canonical, { role: 'user', content: name === 'est-wake' ? '[host_event] 合成自动唤醒，不是用户发言' : name === 'est-keepwarm' ? '[host_event] 合成心跳，可回复1' : name === 'est-literal' ? literalReminder : `EST_SYNTHETIC_USER ${name}` }];
       const toolset = freezeWindowTools(db, window.id, registry.currentCatalog(), 'deferred');
       const assembled = subscriptionSdkOptions(config, canonical[0].content, paths.workspacesDir);
       assembled.options.env = { ...assembled.options.env, ...env };
+      if (name === 'est-resume') assembled.options.env.CLAUDE_CODE_OVERRIDE_DATE = '2026-10-30';
       if (name === 'est-bare-comparison') assembled.options.env.CLAUDE_CODE_SIMPLE = '1';
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 45_000);
@@ -378,6 +380,15 @@ if (process.argv[2] !== '--worker') {
     // the stream notice. Assert the host gate, not an invented one-request limit.
     if(flagState!=='route_owner_pending'||flagRequests<1)throw Error('SDK_FLAG_NOT_ROUTED');
     summary.push({mode,state:flagState,requests:flagRequests});
+    const cleanRequests = captures.filter(c => c.mode.startsWith('est-') && c.mode !== 'est-bare-comparison');
+    for (const { payload, clientEntry } of cleanRequests) {
+      if (clientEntry !== 'sdk-ts') throw Error('SDK_ENTRYPOINT_CHANGED');
+      if (payload.system.length !== 1 || payload.system[0].text.includes('Claude Agent SDK') || payload.system[0].text.includes('x-anthropic-billing-header')) throw Error('SDK_SYSTEM_PREFIX_REMAINED');
+      const blocks = payload.messages.flatMap(m => Array.isArray(m.content) ? m.content : []);
+      if (blocks.some(b => b.type === 'text' && b.text !== literalReminder && /^<system-reminder>\s*(# Environment|You are powered by|Today's date is|The date has changed)/.test(b.text))) throw Error('SDK_AMBIENT_REMINDER_REMAINED');
+    }
+    if (!captures.find(c => c.mode === 'est-literal')?.payload.messages.some(m => Array.isArray(m.content) && m.content.some(b => b.text === literalReminder))) throw Error('USER_LITERAL_REMINDER_WAS_MODIFIED');
+    summary.push({ mode: 'prompt-cleanliness', requests: cleanRequests.length, systemPrefixRemoved: true, ambientRemindersRemoved: true, userLiteralPreserved: true, clientEntry: 'sdk-ts' });
     if (!captures.find(c=>c.mode==='custom')?.payload.system.some(b=>b.text===prompts.custom)) throw Error('CUSTOM_SYSTEM_PROMPT_NOT_SERIALIZED');
     const sdkVersion=JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json',import.meta.url),'utf8')).version;
     fs.writeFileSync(path.join(root,'captures','capabilities.json'),JSON.stringify({sdk_version:sdkVersion,observed_at:new Date().toISOString(),verification_scope:'official_runtime_local_transport',upstream:'loopback_synthetic',
