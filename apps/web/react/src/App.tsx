@@ -391,7 +391,7 @@ export default function App() {
   const [more, setMore] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
   const [incomingCall, setIncomingCall] = useState<{ ws_url: string; token: string; call_id: string } | null>(null)
-  const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake' | 'access'>(null)
+  const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
   const [historyAction, setHistoryAction] = useState<'earlier' | 'later' | 'date' | 'latest' | null>(null)
@@ -454,7 +454,7 @@ export default function App() {
     return saved
   }
   useEffect(() => {
-    if (sheet && sheet !== 'wake' && sheet !== 'access') void client.loadPanel(sheet)
+    if (sheet && sheet !== 'wake') void client.loadPanel(sheet)
   }, [sheet, client])
   useEffect(() => {client.setAlertsOpen(alertsOpen);return ()=>client.setAlertsOpen(false)}, [alertsOpen, client])
   useEffect(() => {
@@ -466,6 +466,9 @@ export default function App() {
     el.style.height = '24px'
     el.style.height = Math.min(120, el.scrollHeight) + 'px'
   }, [input])
+  if (window.location.pathname === '/settings/model-access') {
+    return <AccessControls client={client} onClose={() => window.location.assign('/chat')} />
+  }
   return (
     <div ref={appRef} className="chat-app flex w-full overflow-hidden flex-col bg-[#faf9f5]">
       {/* Header */}
@@ -491,8 +494,8 @@ export default function App() {
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setMore(false)} />
                   <div className="pop-in absolute right-0 top-9 z-40 w-52 rounded-2xl border border-black/10 bg-white p-1 shadow-xl">
-                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温'], ['access', Wrench, '模型接入', '订阅优先与额度状态']] as const).map(([k, I, t, d]) => (
-                      <button key={k} onClick={() => { setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
+                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温'], ['access', Wrench, 'SDK / API key', '自主切换模型入口']] as const).map(([k, I, t, d]) => (
+                      <button key={k} onClick={() => { if (k === 'access') window.location.assign('/settings/model-access'); else setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
                         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#f3e6df] text-[#c96442]"><I size={16} /></span>
                         <span><span className="block text-[14px]">{t}</span><span className="block text-[11.5px] text-[#8a8780]">{d}</span></span>
                       </button>
@@ -720,9 +723,8 @@ export default function App() {
         <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = '' }} />
         </>)}
       </footer>
-      {sheet && sheet !== 'wake' && sheet !== 'access' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
+      {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
-      {sheet === 'access' && <AccessControls client={client} onClose={() => setSheet(null)} />}
       <CallInvites onAccept={(conn) => { setIncomingCall(conn); setCallOpen(true); }} />
       {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}

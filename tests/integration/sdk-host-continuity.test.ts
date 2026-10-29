@@ -7,7 +7,7 @@ import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { SubscriptionAccessRunner } from '../../apps/host/src/runtime/subscription-access.ts';
-import { RuntimeSettingsService } from '../../apps/host/src/runtime/runtime-settings.ts';
+import { RuntimeSettingsService, setModelMetaForTests, clearModelMetaCache } from '../../apps/host/src/runtime/runtime-settings.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -94,4 +94,55 @@ test('authenticated SDK chat survives host restart, preserves roles/corrections/
     assert.ok(!selected.includes('OWNER_ORIGINAL'));assert.ok(!selected.includes('ASSISTANT_ORIGINAL'));
     assert.equal(host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get()?.n,1);
   } finally { await host?.stop(); if(previousHome===undefined)delete process.env.ESTOMAGO_HOME;else process.env.ESTOMAGO_HOME=previousHome;fs.rmSync(root,{recursive:true,force:true}); }
+});
+
+test('owner access page switches SDK and API through authenticated HTTP and preserves the choice after restart without inference', async () => {
+  const root = tempRoot('sdk-access-page-');
+  const previousHome = process.env.ESTOMAGO_HOME; process.env.ESTOMAGO_HOME = root;
+  writeApprovedIdentity(root);
+  const config = buildConfig({ ...readyRuntimePatch(),
+    runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', access_policy: 'subscription-first', model: 'claude-sonnet-5' },
+    openrouter: { model: 'anthropic/claude-opus-4.6' }, deployment: { port: 0 },
+  });
+  setModelMetaForTests(config.openrouter.model!, null);
+  let host: Host | undefined;
+  let base = '', cookie = '';
+  const start = async () => {
+    host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
+    await host.start(); base = `http://127.0.0.1:${host.port}`;
+  };
+  const get = async () => (await fetch(base + '/api/v1/runtime-settings', { headers: { cookie } })).json();
+  const change = async (policy: string) => {
+    const response = await fetch(base + '/api/v1/runtime-settings', {
+      method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie },
+      body: JSON.stringify({ access_policy: policy }),
+    });
+    assert.equal(response.status, 200);
+  };
+  try {
+    await start();
+    const denied = await fetch(base + '/settings/model-access', { redirect: 'manual' });
+    assert.equal(denied.status, 302); assert.equal(denied.headers.get('location'), '/login');
+    const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
+    const login = await fetch(base + '/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ token }) });
+    assert.equal(login.status, 200); cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    const page = await fetch(base + '/settings/model-access', { headers: { cookie } });
+    assert.equal(page.status, 200); assert.match(await page.text(), /chat-app\.js/);
+    assert.equal((await get()).access.next_entry, 'claude-agent-sdk');
+    await change('configured');
+    assert.equal((await get()).access.next_entry, 'openrouter');
+    await host!.stop(); host = undefined;
+    await start();
+    const restored = await get();
+    assert.equal(restored.access.policy, 'configured'); assert.equal(restored.driver, 'openrouter');
+    await change('subscription-first');
+    const sdk = await get();
+    assert.equal(sdk.driver, 'claude-agent-sdk'); assert.equal(sdk.sdk_model, 'claude-sonnet-5');
+    assert.equal(host!.db.prepare('SELECT count(*) n FROM provider_requests').get()?.n, 0);
+    assert.equal(host!.db.prepare('SELECT count(*) n FROM messages').get()?.n, 0);
+  } finally {
+    await host?.stop(); clearModelMetaCache();
+    if (previousHome === undefined) delete process.env.ESTOMAGO_HOME; else process.env.ESTOMAGO_HOME = previousHome;
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

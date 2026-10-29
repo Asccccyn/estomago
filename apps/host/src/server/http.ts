@@ -94,6 +94,7 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
   ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/settings/model-access', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/wishstar', { file: 'wishstar/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ...HOME_STATIC_FILES,
   ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
@@ -155,7 +156,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
       return json(res, 200, { ok: true });
     }
-    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname.startsWith('/home/'));
+    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname === '/settings/model-access' || url.pathname.startsWith('/home/'));
     if ((protectedPage && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
       res.writeHead(302, { Location: url.pathname === '/login' ? '/' : '/login', 'Cache-Control': 'no-store' });
       res.end();
