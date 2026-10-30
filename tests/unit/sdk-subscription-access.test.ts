@@ -217,13 +217,17 @@ test('policy changes are deferred until the next serialized host operation', asy
   assert.equal(f.runner.policy(), 'configured');
 });
 
-test('SDK child assembly excludes all API credentials and provider endpoints', () => {
-  const names = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENROUTER_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN'];
+test('SDK child accepts the official setup-token while excluding API credentials and provider overrides', () => {
+  const excluded = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'OPENROUTER_API_KEY', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'];
+  const names = [...excluded, 'CLAUDE_CODE_OAUTH_TOKEN'];
   const before = Object.fromEntries(names.map(n => [n, process.env[n]]));
   try {
     for (const n of names) process.env[n] = 'synthetic-must-not-inherit';
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-synthetic-setup-token';
     const built = subscriptionSdkOptions(buildConfig({ runtime: { model: 'claude-sonnet-4-6' } }), 'synthetic identity', '/tmp/synthetic-workspace');
-    for (const n of names) assert.equal(built.options.env[n], undefined);
+    for (const n of excluded) assert.equal(built.options.env[n], undefined);
+    assert.equal(built.options.env.CLAUDE_CODE_OAUTH_TOKEN, 'sk-ant-oat01-synthetic-setup-token');
+    assert.equal(built.options.env.CLAUDE_CODE_SIMPLE, undefined);
     assert.equal(built.options.permissionMode, 'default');
     assert.deepEqual(built.options.tools, []); assert.deepEqual(built.options.skills, []);
   } finally { for (const n of names) if (before[n] === undefined) delete process.env[n]; else process.env[n] = before[n]; }

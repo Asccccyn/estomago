@@ -64,10 +64,11 @@ export function buildSdkOptions(opts: {
 }
 
 export function subscriptionSdkOptions(config: Config, systemPrompt: string | string[], cwd: string): AssembledSdkOptions {
-  // Options.env replaces the child environment in 0.3.283. Authentication is
-  // exclusively the official local login; API/OR keys and routing overrides stay out.
+  // Options.env replaces the child environment in 0.3.283. The official
+  // setup-token credential takes precedence over local login; API/OR keys,
+  // cloud-provider switches and routing overrides stay out.
   const env: Record<string, string> = {};
-  for (const key of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL']) {
+  for (const key of ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'CLAUDE_CODE_OAUTH_TOKEN']) {
     const v = process.env[key];
     if (typeof v === 'string' && v.length > 0) env[key] = v;
   }
