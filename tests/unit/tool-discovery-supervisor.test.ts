@@ -1,9 +1,9 @@
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
 // block 置于真实 user_input block 之前（docs/04）。
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { assertAppendOnly } from '../../apps/host/src/runtime/or-payload.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -58,10 +58,10 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), fakeSolJudge([{ decision: "recall" }]).judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
+    max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);

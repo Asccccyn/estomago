@@ -256,3 +256,33 @@ media:
   import_timeout_ms: 30000
   max_redirects: 3
   auto_physical_gc_enabled: false
+
+# 自动记忆浮现（SOL_RECALL_REFACTOR 2026-10-30）：Sol 三态判断（独立 OpenAI key）
+# + Mariposa 检索/JEV + 同轮注入。默认关闭（零作业/零网络/零凭据读取）。
+memory_surfacing:
+  enabled: false
+  # Mariposa 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
+  surfacing_credential_ref: null
+  # 同轮总预算（Sol 判断 + M 检索/JEV + 复核 + check 的总和）
+  delivery_deadline_ms: 25000
+  max_added_tokens_per_turn: 4096
+  max_retained_tokens_per_window: 8192
+  max_packet_bytes: 24576
+  worker_concurrency: 2
+  # 近文窗口：当前消息之外的先前用户消息条数（窗口按用户消息计数）
+  recent_user_messages: 3
+  recent_window_bytes: 24576
+  sol:
+    # OpenAI Responses 独立凭据（环境变量名；不与主模型/M/JEV 复用）
+    api_key_env: null
+    base_url: 'https://api.openai.com/v1'
+    model: 'gpt-6.1-sol'
+    reasoning_effort: low
+    verbosity: low
+    max_output_tokens: 2048
+    # 固定判断前缀的显式缓存期限（12h | 30m）
+    cache_ttl: '12h'
+    # 判断模板覆盖（null=内置默认模板；设置面可在线覆盖）
+    decision_template: null
+    user_display_name: '用户'
+    assistant_display_name: '助手'

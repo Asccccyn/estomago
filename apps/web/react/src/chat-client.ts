@@ -133,6 +133,10 @@ export class EstomagoClient {
   private json(method: string, body: unknown, headers: Record<string,string> = {}): RequestInit {
     return {method,headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)}
   }
+  // —— SOL_RECALL_REFACTOR（2026-10-30）：自动浮现设置面（SurfacingSettings 用；凭据只显示状态）——
+  surfacingSettings = (): Promise<Json> => this.request('/memory-surfacing/settings')
+  surfacingPutSettings = (patch: Json): Promise<Json> =>
+    this.request('/memory-surfacing/settings', this.json('PUT', patch))
   // —— WAKE_KEEPWARM_V1（2026-10-22）：后台设置/预约管理面（BackgroundControls 用；独立拉取不进主 Snapshot）——
   backgroundSettings = (): Promise<Json> => this.request('/background/settings')
   backgroundPutSettings = (ifMatch: number, patch: Json, opKey: string): Promise<Json> =>

@@ -22,8 +22,10 @@ import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } 
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
 import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
+import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION, type SolJudgeConfig, type SolTransport } from '../apps/host/src/memory-surfacing/sol-provider.ts';
 
 process.env.ESTOMAGO_TEST_MODE = '1';
+process.env.EST_TEST_SOL_KEY ??= 'test-sol-key'; // Sol 判断器测试凭据（仅测试进程）
 
 export const OBSERVED_SDK = defaultObservedSdkVersion(); // 测试环境实装版本（与 gate 观测一致）
 
@@ -109,6 +111,63 @@ export function readyRuntimePatch(sdkVersion?: string): Record<string, unknown> 
       capability_state: 'verified', // 仅历史字段；v0.2.2 gate 不再信任它（AUD-02 回归验证点）
     },
   };
+}
+
+/** SOL_RECALL_REFACTOR 测试桩：可脚本化 Sol 判断器（队列耗尽后复用最后一条）。 */
+export function solJudgeConfigForTest(overrides: Partial<SolJudgeConfig> = {}): SolJudgeConfig {
+  return {
+    apiKeyEnv: 'EST_TEST_SOL_KEY',
+    baseUrl: 'https://sol.test/v1',
+    model: 'gpt-6.1-sol-test',
+    reasoningEffort: 'low',
+    verbosity: 'low',
+    maxOutputTokens: 2048,
+    cacheTtl: '12h',
+    cacheKeySeed: 'test-seed',
+    userDisplayName: '用户',
+    assistantDisplayName: '助手',
+    templateOverride: null,
+    templateRevision: SOL_DECISION_SCHEMA_VERSION,
+    ...overrides,
+  };
+}
+
+export function fakeSolJudge(
+  decisions: Array<{ decision: 'none' | 'observe' | 'recall'; topic?: 'same' | 'new'; basis?: string; plan?: Record<string, unknown> }>,
+  opts: { config?: Partial<SolJudgeConfig>; response?: (payload: Record<string, unknown>) => { status: number; json: unknown } } = {},
+): { judge: SolDecisionJudge; requests: Array<Record<string, unknown>>; calls: () => number } {
+  const requests: Array<Record<string, unknown>> = [];
+  const queue = [...decisions];
+  const transport: SolTransport = async (_url, _headers, payload) => {
+    requests.push(payload as Record<string, unknown>);
+    if (opts.response) return opts.response(payload as Record<string, unknown>);
+    const scripted = queue.length > 1 ? queue.shift()! : queue[0];
+    const decision = scripted ?? { decision: 'none' as const };
+    const userLines = String(((payload as { input: Array<{ content: unknown }> }).input[1]).content)
+      .split('\n').filter(line => line.startsWith('用户：')).map(line => line.slice(3));
+    const plan = decision.plan ?? {
+      purpose: '测试检索目的', route: 'event', breadth: 'single',
+      queries: [{ semantic: '测试语义查询', keywords: ['测试'] }], time_hint: null, speaker: null,
+    };
+    const outputText = JSON.stringify({
+      decision: decision.decision,
+      topic: decision.topic ?? 'new',
+      basis: decision.basis ?? `测试依据：${decision.decision}`,
+      plan: decision.decision === 'recall' ? { ...plan,
+        evidence: plan.evidence ?? [{ user_turn: userLines.length, quote: userLines.at(-1)!.slice(0, 200) }],
+      } : null,
+    });
+    return {
+      status: 200,
+      json: {
+        status: 'completed',
+        output: [{ type: 'message', content: [{ type: 'output_text', text: outputText }] }],
+        usage: { input_tokens: 1200, output_tokens: 80, input_tokens_details: { cached_tokens: 1024 } },
+      },
+    };
+  };
+  const judge = new SolDecisionJudge(solJudgeConfigForTest(opts.config), transport);
+  return { judge, requests, calls: () => requests.length };
 }
 
 export function sleep(ms: number): Promise<void> {

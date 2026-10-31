@@ -255,13 +255,27 @@ export type Config = {
     max_body_bytes: number; // JSON 草稿+资产 ID 上限；无图像 base64/旧历史全文
   };
   memory_surfacing: {
-    enabled: boolean; // EST_MARIPOSA_AUTO_SURFACING_V1：默认关闭（零作业/零网络/零凭据读取）
+    enabled: boolean; // 默认关闭（零作业/零网络/零凭据读取）
     surfacing_credential_ref: string | null; // 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
-    delivery_deadline_ms: number; // 本轮复核+check 总预算（同轮总预算 15000；含准备/交付/check）
+    delivery_deadline_ms: number; // 同轮总预算（Sol 判断+检索+JEV+复核+check 总和）
     max_added_tokens_per_turn: number; // 本轮自动新增上限（estimated）
     max_retained_tokens_per_window: number; // 同窗自动保留上限
     max_packet_bytes: number; // 注入块字节上限
     worker_concurrency: number; // 全局 worker 并发上限（每房间恒串行）
+    recent_user_messages: number; // 近文窗口：当前消息之外的先前用户消息条数
+    recent_window_bytes: number; // 近文窗口字节预算（整轮移除最旧，不截断单条）
+    sol: {
+      api_key_env: string | null; // OpenAI Responses 独立凭据（环境变量名；不与主模型/M/JEV 复用）
+      base_url: string;
+      model: string; // 判断模型（默认 gpt-6.1-sol）
+      reasoning_effort: string; // low（Sol 档位；不传 none/minimal）
+      verbosity: string;
+      max_output_tokens: number; // 含推理开销的总输出上限
+      cache_ttl: '12h' | '30m'; // 固定判断前缀的显式缓存期限
+      decision_template: string | null; // 判断模板覆盖（null=内置默认模板）
+      user_display_name: string; // 模板占位称呼（运行时身份；公开默认为通用称呼）
+      assistant_display_name: string;
+    };
   };
   media: {
     max_image_bytes: number; // 存储上限≠供应商请求上限
@@ -492,11 +506,25 @@ export const CONFIG_DEFAULTS: Config = {
   memory_surfacing: {
     enabled: false,
     surfacing_credential_ref: null,
-    delivery_deadline_ms: 15000,
+    delivery_deadline_ms: 25000,
     max_added_tokens_per_turn: 4096,
     max_retained_tokens_per_window: 8192,
     max_packet_bytes: 24576,
     worker_concurrency: 2,
+    recent_user_messages: 3,
+    recent_window_bytes: 24576,
+    sol: {
+      api_key_env: null,
+      base_url: 'https://api.openai.com/v1',
+      model: 'gpt-6.1-sol',
+      reasoning_effort: 'low',
+      verbosity: 'low',
+      max_output_tokens: 2048,
+      cache_ttl: '12h',
+      decision_template: null,
+      user_display_name: '用户',
+      assistant_display_name: '助手',
+    },
   },
   media: {
     max_image_bytes: 20971520,
@@ -629,7 +657,14 @@ const SHAPE: SectionSpec = { section: {
     enabled: 'boolean', surfacing_credential_ref: 'string?',
     delivery_deadline_ms: 'number', max_added_tokens_per_turn: 'number',
     max_retained_tokens_per_window: 'number', max_packet_bytes: 'number',
-    worker_concurrency: 'number',
+    worker_concurrency: 'number', recent_user_messages: 'number',
+    recent_window_bytes: 'number',
+    sol: { section: {
+      api_key_env: 'string?', base_url: 'string', model: 'string',
+      reasoning_effort: 'string', verbosity: 'string', max_output_tokens: 'number',
+      cache_ttl: 'string', decision_template: 'string?',
+      user_display_name: 'string', assistant_display_name: 'string',
+    } },
   } },
   media: { section: {
     max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
@@ -842,6 +877,14 @@ export function validateConfig(raw: unknown): { config: Config; issues: Validati
   if (toolMode !== undefined && toolMode !== 'legacy' && toolMode !== 'deferred') issues.push({path:'runtime.tool_schema_mode',message:'必须是 legacy|deferred'});
   if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
     issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
+  }
+  // SOL_RECALL_REFACTOR：Sol 缓存期限/推理档位枚举（非法值不得静默落到默认）
+  const solCfg = (patched as { memory_surfacing?: { sol?: { cache_ttl?: unknown; reasoning_effort?: unknown } } })?.memory_surfacing?.sol;
+  if (solCfg?.cache_ttl !== undefined && solCfg.cache_ttl !== '12h' && solCfg.cache_ttl !== '30m') {
+    issues.push({ path: 'memory_surfacing.sol.cache_ttl', message: '必须是 12h|30m' });
+  }
+  if (solCfg?.reasoning_effort !== undefined && solCfg.reasoning_effort !== null && typeof solCfg.reasoning_effort !== 'string') {
+    issues.push({ path: 'memory_surfacing.sol.reasoning_effort', message: '必须是字符串（如 low）' });
   }
   if (issues.length > 0) return { config: structuredClone(CONFIG_DEFAULTS), issues };
   const config = deepMergeConfig(patched);

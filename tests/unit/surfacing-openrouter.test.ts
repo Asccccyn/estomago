@@ -1,5 +1,5 @@
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
 import {memoryRefFor} from '../../apps/host/src/memory-surfacing/contracts.ts';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -60,10 +60,10 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), fakeSolJudge([{ decision: "recall" }]).judge, {
     enabled: true, transport_overhead_text: SURFACE_HOST_NOTICE, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
+    max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
@@ -171,7 +171,7 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   assert.equal(msgs2.slice(msgs2.findIndex(m=>m.role!=='system')).some(m=>m.role==='system'), false, 'no mid-conversation system message can be hoisted into the cached prefix');
   const memoryText = toBlocks(memoryMessage.content)[1]!.text!;
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
-  assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), date: '2026-07-09', text: ITEM.event_text }] });
+  assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), kind: 'event', date: '2026-07-09', text: ITEM.event_text }] });
   assert.ok(memoryText.includes(memoryRefFor(ITEM.detail_ref)));
 
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
@@ -200,7 +200,7 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   // 覆盖表登记一次
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
-  assert.ok(ctx.svc.repo.coveredInWindow('c1', activeWindow, [ITEM]).has(ITEM.event_id), 'actual retained trajectory establishes visibility');
+  assert.ok(ctx.svc.repo.coveredInWindow('c1', activeWindow, [ITEM]).has(`event:${ITEM.detail_ref}`), 'actual retained trajectory establishes visibility');
   assert.equal(ctx.svc.repo.coveredInWindow('c1', 'new-window', [ITEM]).size, 0, 'a new window has no inherited visibility claim');
 
   // 工具集：memory_read_full 进入冻结工具集（docs/06 E：不等首次出现才加）
@@ -275,6 +275,7 @@ test('existing OR cache trajectory gains its first memory only in the new tail',
     assert.deepEqual(nextMessages.filter(m=>m.role==='system'),oldMessages.filter(m=>m.role==='system'));
     assert.equal(nextMessages.at(-2).content[0].text,SURFACE_HOST_NOTICE);
     assert.equal(JSON.parse(nextMessages.at(-2).content[1].text).memories[0].text,ITEM.event_text);
+    // SOL_RECALL_REFACTOR：SDK 现以 prompt 文本面承载同一冻结证据块
     assert.equal(supportsSurfacingTransport('claude-agent-sdk'),true);
   } finally {await ctx.svc.stop();ctx.db.close();}
 });

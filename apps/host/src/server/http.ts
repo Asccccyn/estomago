@@ -205,7 +205,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
     // —— 会话/消息/浮现视图组——P07.2 迁 server/routes/conversations.ts（逐字）。
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/conversations/* 子路径继续走链尾 404，不被前缀抢占。
-    if (route === 'GET /api/v1/conversations'
+    if (route === 'GET /api/v1/memory-surfacing/settings'
+      || route === 'PUT /api/v1/memory-surfacing/settings'
+      || route === 'GET /api/v1/conversations'
       || /^GET \/api\/v1\/conversations\/([^/]+)\/messages$/.test(route)
       || /^GET \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.test(route)
       || /^POST \/api\/v1\/conversations\/([^/]+)\/messages$/.test(route)

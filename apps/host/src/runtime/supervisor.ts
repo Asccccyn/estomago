@@ -2473,7 +2473,6 @@ export class TurnSupervisor {
       ...assembledContext.segments.map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`),
       ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
     ].join('\n\n');
-    // SDK has no host tool bridge; automatic surfacing remains unsupported.
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；

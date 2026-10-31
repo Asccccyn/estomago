@@ -13,29 +13,51 @@ export type SurfacingJobState =
   // 任意尚未正式发送阶段可进入：
   | 'cancelled' | 'superseded' | 'missed_target' | 'expired';
 
-export type EventHypothesis = {
-  hypothesis_id: string;
-  start_cp: number;
-  end_cp: number;
-  inherited_date_span: { start_cp: number; end_cp: number } | null;
-};
+/**
+ * 证据合同（SOL_RECALL_REFACTOR 2026-10-30）：kind=event 沿用既有事件字段；
+ * kind=words 为真实引语（speaker=说话人、quote_text=保存原文、memory 链接的桶）；
+ * kind=source 为无桶原文区间（source_ref 定位，绝不伪造 event_id/memory_id——
+ * 该字段为 null）。旧响应缺 kind 时按 event 解释（同轮迁移兼容，不双注册）。
+ */
+export type SurfaceItemKind = 'event' | 'words' | 'source';
 
 export type SurfaceItem = {
-  event_id: string;
-  memory_id: string;
-  memory_version: string;
+  kind?: SurfaceItemKind;
+  event_id: string | null;
+  memory_id: string | null;
+  memory_version: string | null;
   memory_date: string | null;
   date_confidence: string | null;
   event_text: string;
   body_hash: string;
   detail_ref: string;
+  /** kind=words：真实说话人（jiaming/qiaosheng）与引语原文。 */
+  speaker?: string | null;
+  quote_text?: string | null;
+  /** kind=source：既有来源定位（source_msg 引用），无记忆桶。 */
+  source_ref?: string | null;
+  /** words/source：M 定向展开的有界来源上下文（完整来源仍可深读）。 */
+  source_context_text?: string | null;
 };
+
+/**
+ * 证据去重/引用键（F3，审计 2026-10-31）：M 返回的 event_id 只是**查询
+ * 分区**（ev_1..ev_n），同分区的 related 多条会撞键——第二条覆盖第一条
+ * 的引用映射，深读取到错误记忆。键改用真实资源身份：每条验证项的
+ * detail_ref 唯一；无 detail_ref 的历史形状退回 body_hash 组合。
+ */
+export function surfaceItemKey(item: SurfaceItem): string {
+  const kind = item.kind ?? 'event';
+  if (item.detail_ref) return `${kind}:${item.detail_ref}`;
+  if (kind === 'words') return `words:${item.body_hash}:${item.memory_id ?? ''}`;
+  return `source:${item.source_ref ?? ''}:${item.body_hash}`;
+}
 
 export type FrozenAugmentation = {
   deliveryId: string;
-  text: string;               // 完整冻结投影（日期、事件正文与短引用）
+  text: string;               // 完整冻结投影（日期、正文/引语与短引用）
   items: SurfaceItem[];       // 实际入选赢家（全覆盖/预算过滤后）
-  memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
+  memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string | null }>;
   payloadHash: string;
 };
 
@@ -75,18 +97,26 @@ function eventTimeText(item: SurfaceItem): string {
 }
 
 /** 渲染注入块（docs/04 投影示例；正文逐字原样，日期取真实事件日期，
- * 不确定日期以 null 表达）。 */
-export function projectSurfacedMemory(item: SurfaceItem): { date: string | null; text: string } {
+ * 不确定日期以 null 表达）。kind=words 额外保留真实说话人与引语原文；
+ * kind=source 保留来源区间原文——都不截断、不改写。 */
+export function projectSurfacedMemory(item: SurfaceItem): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind } {
+  const kind = item.kind ?? 'event';
   const date = eventTimeText(item);
-  return { date: date === '不确定' ? null : date, text: item.event_text };
+  const context = item.source_context_text && item.source_context_text.length > 0 ? item.source_context_text : undefined;
+  if (kind === 'words' || kind === 'source') {
+    return { date: date === '不确定' ? null : date, text: item.quote_text ?? item.event_text, speaker: item.speaker ?? null, ...(context !== undefined ? { context } : {}), kind };
+  }
+  return { date: date === '不确定' ? null : date, text: item.event_text, kind };
 }
 
 export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>): string {
   if (items.length === 0) return '';
   return JSON.stringify({ memories: items.map(item => {
-    const ref = refs?.get(item.event_id) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
+    const key = surfaceItemKey(item);
+    const ref = refs?.get(key) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
     if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
-    return { memory_ref: ref, ...projectSurfacedMemory(item) };
+    const projected = projectSurfacedMemory(item);
+    return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), text: projected.text };
   }) });
 }
 

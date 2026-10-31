@@ -1186,6 +1186,7 @@ CREATE INDEX IF NOT EXISTS idx_media_embed_namespace ON media_embedding_index(na
 `,
 });
 
+
 export function schemaVersion(db: Db): number {
   const row = db.prepare('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations').get() as { v: number };
   return row.v;
@@ -1395,4 +1396,26 @@ CREATE TABLE voice_reply_links(
 );
 CREATE INDEX IF NOT EXISTS idx_voice_reply_links_msg ON voice_reply_links(message_id);
 ` });
+// v51：接在当前SDK/语音发布线之后；既有v1–v50迁移及其hash保持原样。
+//  - surfacing_jobs 增列：sol 判定/依据/计划/usage（旧 hypotheses_json 保留
+//    存量行，不再写入——旧分句假设链退役）；
+//  - surfacing_settings：自动浮现设置覆盖（模板/模型；与配置文件同源合并，
+//    预览与实际请求共用同一生效值读者）。
+MIGRATIONS.push({
+  version: 51,
+  name: 'surfacing-sol-decision-state',
+  sql: `
+ALTER TABLE surfacing_jobs ADD COLUMN sol_decision TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_topic TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_basis TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_plan_json TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_usage_json TEXT;
+CREATE TABLE surfacing_settings(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

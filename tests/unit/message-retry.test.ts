@@ -1,4 +1,5 @@
 import { test, type TestContext } from 'node:test';
+import { fakeSolJudge } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {makeDb } from '../helpers.ts';
@@ -14,8 +15,10 @@ function fixture(t: TestContext, surfaceEnabled?: boolean) {
   let wakes = 0;
   const surfacing = surfaceEnabled === undefined ? null : new SurfacingService(db,
     new MariposaClient({ transport: async () => { throw new Error('unit test must not dispatch'); } }),
+    fakeSolJudge([{ decision: 'recall' }]).judge,
     { enabled: surfaceEnabled, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-      delivery_deadline_ms: 15000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
+      delivery_deadline_ms: 15000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
+      recent_user_messages: 3, recent_window_bytes: 24576 }, null);
   // These transaction tests inspect committed jobs without starting a worker.
   if (surfacing) surfacing.afterCommit = () => { wakes++; };
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing, activity: null }));
@@ -178,12 +181,15 @@ test('编辑重发建作业与 attempt 一起回滚，普通编辑不补作业',
   assert.equal(f.db.prepare('SELECT state FROM surfacing_jobs').get()!.state, 'cancelled');
 });
 
-test('编辑重发普通聊天或浮现关闭均不登记新任务', t => {
-  for (const enabled of [true, false]) {
-    const f = fixture(t, enabled);
-    f.retry.retry({ ...f.input, content: enabled ? '晚安，早点睡。' : '还记得我们一起做饭那次吗？' });
-    assert.equal(f.db.prepare("SELECT COUNT(*) n FROM surfacing_jobs WHERE source_revision=2").get()!.n, 0);
-  }
+test('编辑重发：启用即登记（语义判断归 Sol）；关闭则零登记', t => {
+  // SOL_RECALL_REFACTOR：旧关键词门退役——启用时普通聊天也登记作业，
+  // none/observe 由提交后的 Sol 判断收口；关闭时零作业零网络不变。
+  const on = fixture(t, true);
+  on.retry.retry({ ...on.input, content: '晚安，早点睡。' });
+  assert.equal(on.db.prepare("SELECT COUNT(*) n FROM surfacing_jobs WHERE source_revision=2").get()!.n, 1);
+  const off = fixture(t, false);
+  off.retry.retry({ ...off.input, content: '还记得我们一起做饭那次吗？' });
+  assert.equal(off.db.prepare("SELECT COUNT(*) n FROM surfacing_jobs WHERE source_revision=2").get()!.n, 0);
 });
 
 

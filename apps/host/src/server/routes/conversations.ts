@@ -14,6 +14,20 @@ import type { RequestDeps } from '../http.ts';
 
 /** 会话组：浮现详情视图（owner 只读）/会话列表/消息分页/单条/编辑/重试/发送/恢复快照。 */
 export async function handleConversationRoutes(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string, url: URL): Promise<void> {
+if (route === 'GET /api/v1/memory-surfacing/settings') {
+  if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+  res.setHeader('Cache-Control', 'no-store');
+  return json(res, 200, d.surfacing.settingsView());
+}
+if (route === 'PUT /api/v1/memory-surfacing/settings') {
+  if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+  const body = await readJson(req, d) as { enabled?: unknown; model?: unknown; decision_template?: unknown } | null;
+  const result = d.surfacing.updateSettings({ enabled: body?.enabled, model: body?.model, decision_template: body?.decision_template });
+  if (!result.ok) return json(res, 422, { error: { code: 'INVALID_SURFACING_SETTINGS', message: result.error } });
+  res.setHeader('Cache-Control', 'no-store');
+  return json(res, 200, d.surfacing.settingsView());
+}
+
 // Owner-authenticated detail view; never a model request or new retrieval.
 const surfaceView = /^GET \/api\/v1\/conversations\/([^/]+)\/turns\/([^/]+)\/memories(?:\/([^/]+))?$/.exec(route);
 if (surfaceView) {

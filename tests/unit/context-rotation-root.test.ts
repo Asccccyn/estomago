@@ -254,7 +254,7 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
 test('M01-M04/C02: full memory text/date and minimal deep-read reference; no summary or internal metadata', () => {
   const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
   const second = {...item,event_id:'e2',detail_ref:'sdr2',memory_date:null,event_text:'第二个事件'};
-  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{memory_ref:memoryRefFor('sdr1'),date:'2026-07-09',text:item.event_text},{memory_ref:memoryRefFor('sdr2'),date:null,text:second.event_text}]});
+  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{memory_ref:memoryRefFor('sdr1'),kind:'event',date:'2026-07-09',text:item.event_text},{memory_ref:memoryRefFor('sdr2'),kind:'event',date:null,text:second.event_text}]});
   assert.equal(renderAugmentation([]),'');
 });
 

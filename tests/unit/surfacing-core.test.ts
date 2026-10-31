@@ -1,8 +1,8 @@
+import { pollUntil, tempRoot, fakeSolJudge } from '../helpers.ts';
 // 自动记忆浮现 · 合同/仓库/服务核心（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 最新合同：整包一次来源声明、日期+正文+短 ref、同步同轮同修订、幂等
 // （AC025）、无次优补位（AC055 由 M 侧合同+本侧预算跳过共保）。
 import { test } from 'node:test';
-import { pollUntil, tempRoot } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -36,7 +36,7 @@ test('new surfacing data has one source/past-event notice on both chat adapters'
     const message = surfaceTransportMessage(provider, renderAugmentation([ITEM]));
     assert.equal(message.content.filter(b => b.text === SURFACE_HOST_NOTICE).length, 1);
     assert.deepEqual(JSON.parse(message.content[1]!.text).memories[0], {
-      memory_ref: memoryRefFor(ITEM.detail_ref), date:'2026-07-09', text:ITEM.event_text,
+      memory_ref: memoryRefFor(ITEM.detail_ref), kind: 'event', date:'2026-07-09', text:ITEM.event_text,
     });
   }
 });
@@ -44,7 +44,7 @@ test('new surfacing data has one source/past-event notice on both chat adapters'
 test('AC015：浮现仅 memory_ref/date/text——无 mood/words/分数/内部UUID', () => {
   const ref = memoryRefFor(ITEM.detail_ref);
   const text = renderAugmentation([ITEM], new Map([['ev_1', ref]]));
-  assert.deepEqual(JSON.parse(text), { memories: [{ memory_ref: ref, date: '2026-07-09', text: ITEM.event_text }] });
+  assert.deepEqual(JSON.parse(text), { memories: [{ memory_ref: ref, kind: 'event', date: '2026-07-09', text: ITEM.event_text }] });
   assert.ok(text.includes(ref));
   assert.ok(!text.includes(SURFACE_HOST_NOTICE), 'the one notice belongs to the transport message, not each item');
   for (const forbidden of ['mood', 'our_words', 'rrf', 'judge', '00001', ITEM.detail_ref, ITEM.body_hash]) {
@@ -113,13 +113,13 @@ async function waitUntil(cond: () => boolean, ms = 3000): Promise<void> {
   }
 }
 
-function makeService(root: string, enabled = true) {
+function makeService(root: string, enabled = true, solDecisions: Parameters<typeof fakeSolJudge>[0] = [{ decision: 'recall' }]) {
   const db = makeDb(root);
   const { client, log } = fakeMariposa({});
-  const svc = new SurfacingService(db, client, {
+  const svc = new SurfacingService(db, client, fakeSolJudge(solDecisions).judge, {
     enabled, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
+    max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: enabled ? svc : null, activity: null }));
   messages.ensureConversation('c1');
@@ -127,7 +127,7 @@ function makeService(root: string, enabled = true) {
 }
 
 test('P3：接受即同轮绑定；装配抢占 prepare 与后台单飞；后轮不得借用', async () => {
-  const { db, svc, messages, log } = makeService(tempRoot('sfservice-'));
+  const { db, svc, messages, log } = makeService(tempRoot('sfservice-'), true, [{ decision: 'recall' }, { decision: 'none' }]);
   try {
     const content = '还记得7.9那天我们把记忆库做成的事吗';
     const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: 'u1', occurredAt: T0 });
@@ -180,7 +180,7 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   const db = makeDb(root);
   const big: SurfaceItem = { ...ITEM, event_text: '超'.repeat(30000) };
   const { client } = fakeMariposa({ validate: () => ({ status: 'ready', validation_receipt: 'svr_9', items: [big], reason_code: null }) });
-  const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2 }, null);
+  const svc = new SurfacingService(db, client, fakeSolJudge([{ decision: "recall" }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2 }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
   const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得那件大事吗', clientMessageId: 'b1', occurredAt: T0 });
@@ -209,9 +209,9 @@ function editFixture() {
     if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
     throw new Error('UNEXPECTED_CAPABILITY');
   };
-  const svc = new SurfacingService(db, new MariposaClient({ transport }), {
+  const svc = new SurfacingService(db, new MariposaClient({ transport }), fakeSolJudge([{ decision: "recall" }]).judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
+    delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
@@ -350,9 +350,9 @@ test('E-LC9 开关关闭/重启不复活已失效作业', async () => {
     await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     f.messages.editUserMessage(a.message.id, '关闭前编辑');
     await f.svc.stop();
-    const svc2 = new SurfacingService(f.db, new MariposaClient({ transport: async () => { throw new Error('不应外发'); } }), {
+    const svc2 = new SurfacingService(f.db, new MariposaClient({ transport: async () => { throw new Error('不应外发'); } }), fakeSolJudge([{ decision: 'none' }]).judge, {
       enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-      delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1,
+      delivery_deadline_ms: 200, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576,
     }, null);
     await svc2.start(); // 崩溃恢复：cancelled 不在恢复集
     assert.equal(svc2.repo.jobById(f.jobOf(a.message.id)!.id)!.state, 'cancelled', '重启不复活');
@@ -365,5 +365,5 @@ test('三个独立事件保留三份完整原文，只输出必要引用/date/te
   const items=[0,1,2].map(n=>({...ITEM,event_id:'event-'+n,detail_ref:'detail-'+n,event_text:`  事件${n}\n第二行🦋\n` }));
   const out=JSON.parse(renderAugmentation(items));
   assert.equal(out.memories.length,3);
-  out.memories.forEach((m:any,n:number)=>{assert.deepEqual(Object.keys(m),['memory_ref','date','text']);assert.equal(m.text,items[n].event_text)});
+  out.memories.forEach((m:any,n:number)=>{assert.deepEqual(Object.keys(m),['memory_ref','kind','date','text']);assert.equal(m.text,items[n].event_text)});
 });

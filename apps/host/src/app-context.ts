@@ -43,6 +43,7 @@ import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
+import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION } from './memory-surfacing/sol-provider.ts';
 
 export type HostOptions = {
   stateRoot: string;
@@ -137,9 +138,11 @@ export class Host {
     if (applied.applied.length > 0) logger.info('db_migrated', { versions: applied.applied.join(','), schema_version: schemaVersion(db) });
 
     const events = new EventService(db);
-    // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1）：专用受限 service binding
-    // （surfacing_credential_ref，不回退聊天/归档凭据；docs/06）；enabled=false
-    // 时服务仍装配（表结构就绪）但零作业/零网络/零凭据读取。
+    // 自动浮现（SOL_RECALL_REFACTOR 2026-10-30）：M 走专用受限 service binding
+    // （surfacing_credential_ref，不回退聊天/归档凭据）；Sol 判断走独立 OpenAI
+    // Responses key（sol.api_key_env，凭据职责分离）。enabled=false 时服务仍装配
+    // （表结构就绪）但零作业/零网络/零凭据读取。缺 key 不禁用功能——作业照常
+    // 登记并以 SURFACE_SOL_NOT_CONFIGURED 收口（真实原因可诊断，不伪装 none）。
     const surfaceCfg = opts.config.memory_surfacing;
     if (surfaceCfg.enabled && !supportsSurfacingTransport(opts.config.runtime.provider)) {
       logger.warn('surface_transport_unsupported', { provider: opts.config.runtime.provider, code: 'SURFACE_PROFILE_UNSUPPORTED' });
@@ -148,22 +151,41 @@ export class Host {
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
       credentialEnv: surfaceCfg.surfacing_credential_ref,
     });
+    const solJudge = new SolDecisionJudge({
+      apiKeyEnv: surfaceCfg.sol.api_key_env,
+      baseUrl: surfaceCfg.sol.base_url,
+      model: surfaceCfg.sol.model,
+      reasoningEffort: surfaceCfg.sol.reasoning_effort,
+      verbosity: surfaceCfg.sol.verbosity,
+      maxOutputTokens: surfaceCfg.sol.max_output_tokens,
+      cacheTtl: surfaceCfg.sol.cache_ttl,
+      cacheKeySeed: sha256Hex(`surface-sol:${opts.stateRoot}`).slice(0, 16),
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+      templateOverride: surfaceCfg.sol.decision_template,
+      templateRevision: SOL_DECISION_SCHEMA_VERSION,
+    });
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
+      solJudge,
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
         transport_overhead_text: SURFACE_HOST_NOTICE,
         policy_revision: 1,
-        prompt_prepare_revision: 'surface_prepare_v1',
+        prompt_prepare_revision: 'surface_prepare_v2',
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
         max_added_tokens_per_turn: surfaceCfg.max_added_tokens_per_turn,
         max_packet_bytes: surfaceCfg.max_packet_bytes,
         worker_concurrency: surfaceCfg.worker_concurrency,
+        recent_user_messages: surfaceCfg.recent_user_messages,
+        recent_window_bytes: surfaceCfg.recent_window_bytes,
       },
       logger,
       events,
     );
+    // 保存的模板/模型/开关覆盖与配置文件合并，仍由同一服务消费。
+    surfacing.restoreSavedSettings();
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
@@ -187,7 +209,7 @@ export class Host {
     const messages = new MessageService(db,
       // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口 + 语音观察登记）
       (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({
-        surfacing: surfacing.enabled ? surfacing : null,
+        surfacing,
         activity,
         voiceObservations: {
           ensureForMessage: (messageId, revision, conversationId) => voiceObsService.ensureForMessage(messageId, revision, conversationId, voiceObsService.configured),

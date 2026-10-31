@@ -1,23 +1,25 @@
-// SurfacingService：E 侧编排（docs/02/04）。
-// - MessageService 接受事务内只登记作业（SQL 零网络），提交后唤醒 worker；
-// - worker 与当轮装配共享 prepare → 同轮源/目标绑定 →
-//   validate（有界复核）→ supervisor 装配期通过 HTTP 调 M 本地 check → 冻结注入块；
+// SurfacingService：E 侧编排（docs/02/04 + SOL_RECALL_REFACTOR 2026-10-30）。
+// - MessageService 接受事务内只登记作业（SQL 零网络；旧 regex 意图门已退役，
+//   每条正式消息都登记），提交后唤醒 worker；
+// - worker（提交后）先跑 Sol 三态判断（none/observe 收口；recall 出计划），
+//   计划随既有 prepare 请求进入 M 检索/JEV → 同轮源/目标绑定 →
+//   validate（有界复核）→ supervisor 装配期 check → 冻结注入块；
 // - 每房间串行、全局并发上限；崩溃恢复有界；无后台补扫历史。
-// - 后台零主模型 key / 零主模型 runner：专用 MariposaClient（surfacing
-//   credential_ref，不回退聊天凭据）。
+// - 后台零主模型 key / 零主模型 runner：M 走专用 MariposaClient（surfacing
+//   credential_ref，不回退聊天凭据）；Sol 走独立 OpenAI key（sol-provider）。
 import { executeMemoryReadFull } from './detail-tool.ts';
 import type { Db } from '../db/connection.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
+import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import {
-  extractHypotheses, buildRecentDialogue, detectRecallNeed,
-  type RecallGateResult, type RecentRecallState,
-} from './trigger.ts';
-import {
-  estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE,
+  estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, surfaceItemKey,
   type FrozenAugmentation, type SurfaceItem,
 } from './contracts.ts';
+import {
+  SolDecisionJudge, type SolDecisionInput, type SolDecisionPlan, type SolJudgeResult,
+} from './sol-provider.ts';
 
 export type SurfacingConfig = {
   enabled: boolean;
@@ -28,6 +30,10 @@ export type SurfacingConfig = {
   max_packet_bytes: number;
   transport_overhead_text?: string;
   worker_concurrency: number;
+  /** 近文窗口：当前消息之外的先前用户消息条数（docs/01 §2 默认 3）。 */
+  recent_user_messages: number;
+  /** 本轮原话窗口字节预算（含当前消息，整轮移除最旧，不截断单条）。 */
+  recent_window_bytes: number;
 };
 
 export type AugmentInput = {
@@ -72,6 +78,7 @@ export class SurfacingService {
 
   private db: Db;
   private client: MariposaClient;
+  private sol: SolDecisionJudge;
   private cfg: SurfacingConfig;
   private log: import('../observability/logging.ts').Logger | null;
   private events: import('../events/service.ts').EventService | null;
@@ -81,12 +88,14 @@ export class SurfacingService {
   constructor(
     db: Db,
     client: MariposaClient,
+    sol: SolDecisionJudge,
     cfg: SurfacingConfig,
     log: import('../observability/logging.ts').Logger | null,
     events: import('../events/service.ts').EventService | null = null,
   ) {
     this.db = db;
     this.client = client;
+    this.sol = sol;
     this.cfg = cfg;
     this.log = log;
     this.events = events;
@@ -123,51 +132,21 @@ export class SurfacingService {
     content: string; contentHash: string; occurredAt: string | null;
   }): void {
     if (!this.cfg.enabled) return;
-    const hypotheses = extractHypotheses(o.content);
-    if (hypotheses.length === 0) return;
-    // P1 回忆意图门（她 2026-10-20）：只控制"要不要登记检索作业"。普通
-    // 聊天 skip → 零 Mariposa 检索/Dense/JEV；归档 outbox 在 MessageService
-    // 另一条路径，不受影响。第一段纯函数零 I/O，只有省略表达才读近期状态。
-    const gate = this.recallGate(o);
-    let jobId: string | null = null;
-    if (gate.action === 'lookup') {
-      jobId = this.repo.registerAcceptedJob({
-        conversationId: o.conversationId, messageId: o.messageId, revision: o.revision,
-        sequence: o.sequence, content: o.content, contentHash: o.contentHash,
-        occurredAt: o.occurredAt, hypotheses,
-        policyRevision: this.cfg.policy_revision, promptRevision: this.cfg.prompt_prepare_revision,
-        deadlineMs: this.cfg.delivery_deadline_ms,
-      });
-    }
-    this.log?.info('surface_recall_gate', {
-      conversation: o.conversationId, message: o.messageId, revision: o.revision,
-      action: gate.action, reason: gate.reason, registered: jobId !== null,
+    if (!o.content || o.content.trim().length === 0) return;
+    // SOL_RECALL_REFACTOR：旧 P1 regex 意图门退役——每条正式用户消息都登记
+    // 作业，语义判断（none/observe/recall）在提交后由 Sol 完成。这里不做
+    // 任何网络调用；Sol 网络请求只出现在事务提交后的 preparePhase。
+    const jobId = this.repo.registerAcceptedJob({
+      conversationId: o.conversationId, messageId: o.messageId, revision: o.revision,
+      sequence: o.sequence, content: o.content, contentHash: o.contentHash,
+      occurredAt: o.occurredAt,
+      policyRevision: this.cfg.policy_revision, promptRevision: this.cfg.prompt_prepare_revision,
+      deadlineMs: this.cfg.delivery_deadline_ms,
     });
-  }
-
-  /** 两段式门：纯函数先行；仅 needs_context（"后来呢"）才读有界近期状态。 */
-  private recallGate(o: { conversationId: string; sequence: number; content: string; occurredAt: string | null }): RecallGateResult {
-    const now = o.occurredAt ? new Date(o.occurredAt) : new Date();
-    const first = detectRecallNeed(o.content, null, Number.isNaN(now.getTime()) ? new Date() : now);
-    if (first.action !== 'needs_context') return first;
-    return detectRecallNeed(o.content, this.recentRecallState(o.conversationId, o.sequence), now);
-  }
-
-  /** 有界近期状态：最近 ≤2 个已接受 owner 轮里已确定回忆对象或已验证交付的同轮作业。
-   *  只取用户自己消息的身份（id/revision/sequence），不读全历史、不存模型猜测；
-   *  之前未命中（empty）、悬置（rejected/blocked）或修订失效都不延续。 */
-  private recentRecallState(conversationId: string, beforeSequence: number): RecentRecallState {
-    const rows = this.db.prepare(
-      `SELECT sequence FROM messages WHERE conversation_id=? AND sequence < ? AND speaker='owner'
-       ORDER BY sequence DESC LIMIT 2`,
-    ).all(conversationId, beforeSequence) as Array<{ sequence: number }>;
-    if (rows.length === 0) return { boundLookup: null };
-    const job = this.repo.preparedBetween(conversationId, rows[rows.length - 1].sequence, beforeSequence);
-    return {
-      boundLookup: job
-        ? { sourceMessageId: job.source_message_id, sourceRevision: job.source_revision, sourceSequence: job.source_sequence }
-        : null,
-    };
+    this.log?.info('surface_job_registered', {
+      conversation: o.conversationId, message: o.messageId, revision: o.revision,
+      registered: jobId !== null,
+    });
   }
 
   onUserMessageEdited(o: { conversationId: string; messageId: string; supersededRevision: number }): void {
@@ -261,6 +240,74 @@ export class SurfacingService {
     }
     if (!this.repo.transition(job.id, ['pending'], 'preparing')) return;
     const src = this.sourceInputOf(job);
+    if (Buffer.byteLength(src.text, 'utf8') > this.cfg.recent_window_bytes) {
+      this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: 'SURFACE_BODY_TOO_LARGE' });
+      return;
+    }
+    const recent = this.recentDialogue(job.conversation_id, src.sequence, src.text);
+    // —— Sol 三态判断（事务提交后；先于任何 M 检索/JEV）——
+    const sol = await this.runSolDecision(job, {
+      currentMessage: { text: src.text },
+      recentDialogue: recent.map(({ role, text }) => ({ role, text })),
+    });
+    if (!sol.ok) {
+      // 技术失败 ≠ none：独立原因码落作业，主对话照常继续
+      this.repo.transition(job.id, ['preparing'], 'blocked', {
+        reason_code: sol.code,
+        sol_usage_json: sol.usage ? JSON.stringify(sol.usage) : null,
+      });
+      this.log?.warn('surface_sol_failed', { job: job.id, code: sol.code, elapsed_ms: sol.elapsed_ms });
+      return;
+    }
+    const d = sol.decision;
+    this.repo.transition(job.id, ['preparing'], 'preparing', {
+      sol_decision: d.decision, sol_topic: d.topic, sol_basis: d.basis,
+      sol_plan_json: d.plan ? JSON.stringify(d.plan) : null,
+      sol_usage_json: sol.usage ? JSON.stringify(sol.usage) : null,
+    });
+    this.log?.info('surface_sol_decision', {
+      job: job.id, decision: d.decision, topic: d.topic,
+      route: d.plan?.route ?? null, breadth: d.plan?.breadth ?? null,
+      queries: d.plan?.queries.length ?? 0, elapsed_ms: sol.elapsed_ms,
+      usage_input: sol.usage?.input_tokens ?? null, usage_cached: sol.usage?.cached_tokens ?? null,
+      usage_cache_write: sol.usage?.cache_write_tokens ?? null, usage_output: sol.usage?.output_tokens ?? null,
+    });
+    if (d.decision !== 'recall' || !d.plan) {
+      // 原始近文仍在聊天记录中；无需复制一份 observe 内容池。
+      this.repo.transition(job.id, ['preparing'], 'empty', {
+        reason_code: d.decision === 'observe' ? 'SURFACE_SOL_OBSERVE' : 'SURFACE_SOL_NONE',
+      });
+      return;
+    }
+    const plan = d.plan;
+    const userInputs = [...recent.filter(m => m.role === 'owner'), {
+      message_id: src.messageId, revision: src.revision, text: src.text,
+    }];
+    const needSources = new Map<string, { message_id: string; revision: number }>();
+    for (const evidence of plan.evidence) {
+      const original = userInputs[evidence.user_turn - 1];
+      if (!original || !original.text.includes(evidence.quote)) {
+        this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: 'SURFACE_SOL_INVALID_OUTPUT' });
+        return;
+      }
+      needSources.set(original.message_id, { message_id: original.message_id, revision: original.revision });
+    }
+    // 同需身份来自实际用户原话及修订，查询/用途的自然语言改写不产生新身份。
+    // 新对象、日期、原句或明确再查由新的原话依据区分，模型改写检索计划
+    // 本身不能让同一组已处理原话再次消费。
+    const need = { sources: [...needSources.values()].sort((a, b) => a.message_id.localeCompare(b.message_id)) };
+    this.repo.transition(job.id, ['preparing'], 'preparing', { sol_plan_json: JSON.stringify({ ...plan, need }) });
+    const previous = this.repo.completedNeed(job.conversation_id, need);
+    const activeWindow = (this.db.prepare('SELECT active_window_id FROM conversations WHERE id=?')
+      .get(job.conversation_id) as { active_window_id: string | null } | undefined)?.active_window_id;
+    const deliveredHere = previous?.windowId && previous.windowId === activeWindow && previous.items.length > 0
+      && this.repo.coveredInWindow(job.conversation_id, previous.windowId, previous.items).size === previous.items.length;
+    if (previous && (previous.outcome === 'no_match' || deliveredHere)) {
+      this.repo.transition(job.id, ['preparing'], 'empty', {
+        reason_code: previous.outcome === 'delivered' ? 'SURFACE_NEED_ALREADY_DELIVERED' : 'SURFACE_NEED_ALREADY_SEARCHED',
+      });
+      return;
+    }
     const opId = `est-surface:${job.id}`;
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
@@ -269,8 +316,8 @@ export class SurfacingService {
         message_id: src.messageId, revision: src.revision, sequence: src.sequence,
         text: src.text, body_hash: src.bodyHash, occurred_at: src.occurredAt,
       },
-      recent_dialogue: this.recentDialogue(job.conversation_id, src.sequence),
-      event_hypotheses: JSON.parse(job.hypotheses_json ?? '[]'),
+      recent_dialogue: recent,
+      plan: this.planForMariposa(plan),
       deadline_at: new Date(this.deadline(job)).toISOString(),
     }, signal), this.deadline(job) - Date.now(), job.id);
     if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
@@ -283,11 +330,58 @@ export class SurfacingService {
       : data.status === 'empty' ? 'empty'
         : data.status === 'rejected' ? 'rejected'
           : data.status === 'unknown_outcome' ? 'unknown_cost' : 'blocked';
+    if (state === 'empty') {
+      // 只有M正常完成的空结果消费需要；接纳/预算/版本拒绝不等于查过。
+      this.repo.recordSolRetrievalOutcome(job.id, 'no_match');
+    }
     this.repo.transition(job.id, ['preparing'], state, {
       m_operation_id: opId,
       m_snapshot_ref: data.candidate_snapshot_ref ?? null,
       reason_code: data.reason_code ?? null,
     });
+  }
+
+  /** Sol 判断（含一次同任务内的有界技术重试；共享剩余 deadline）。 */
+  private async runSolDecision(job: JobRow, input: SolDecisionInput): Promise<SolJudgeResult> {
+    const attempt = (): Promise<SolJudgeResult> => this.bounded(
+      signal => this.sol.decide(input, signal),
+      this.deadline(job) - Date.now(), job.id,
+    ).catch((err): SolJudgeResult => ({
+      ok: false,
+      code: err instanceof Error && err.message === 'SURFACE_CANCELLED' ? 'SURFACE_SOL_CANCELLED' : 'SURFACE_SOL_TIMEOUT',
+      usage: null, elapsed_ms: 0,
+    }));
+    const first = await attempt();
+    const transient = first.ok === false && ['SURFACE_SOL_HTTP_5XX', 'SURFACE_SOL_HTTP_429', 'SURFACE_SOL_TRANSPORT'].includes(first.code);
+    if (!transient) return first;
+    // 剩余 deadline ≥ 40% 才重试一次；重试仍失败保留真实原因码
+    const remaining = this.deadline(job) - Date.now();
+    if (remaining < 0.4 * this.cfg.delivery_deadline_ms) return first;
+    const second = await attempt();
+    return second;
+  }
+
+  /** est→M 计划：Sol 输出的说话人显示名映射为 M 内部枚举；其余字段原样。 */
+  private planForMariposa(plan: SolDecisionPlan): Record<string, unknown> {
+    return {
+      purpose: plan.purpose,
+      route: plan.route,
+      breadth: plan.breadth,
+      queries: plan.queries.map(q => ({ semantic: q.semantic, keywords: q.keywords })),
+      time_hint: plan.time_hint,
+      speaker: this.speakerEnumFor(plan.speaker),
+    };
+  }
+
+  private speakerEnumFor(display: string | null): 'jiaming' | 'qiaosheng' | null {
+    if (!display) return null;
+    const v = display.trim();
+    if (v === 'jiaming' || v === 'qiaosheng') return v;
+    if (v === '助手') return 'jiaming';
+    if (v === '用户') return 'qiaosheng';
+    if (this.sol.cfg.assistantDisplayName && v === this.sol.cfg.assistantDisplayName.trim()) return 'jiaming';
+    if (this.sol.cfg.userDisplayName && v === this.sol.cfg.userDisplayName.trim()) return 'qiaosheng';
+    return null;
   }
 
   private async validatePhase(job: JobRow, windowId: string): Promise<void> {
@@ -311,7 +405,7 @@ export class SurfacingService {
           message_id: target.messageId, revision: target.revision, sequence: target.sequence,
           text: target.text, body_hash: target.bodyHash, occurred_at: target.occurredAt,
         },
-        recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence),
+        recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence, target.text),
         window_id: windowId,
         deadline_at: deadlineAt,
       }, signal), this.deadline(job) - Date.now(), job.id);
@@ -396,29 +490,37 @@ export class SurfacingService {
       return null;
     }
     const accepted = new Set(ckd.accepted_detail_refs ?? []);
-    // 去重（本窗口实际上下文为准）+ 预算（按源事件顺序装入严格赢家；
-    // 放不下的整条跳过，不截断/不摘要/不换次优——R33/R34）
+    // 去重（本窗口实际上下文为准；事件正文与引语/来源分开记）+ 预算
+    // （按源顺序装入严格赢家；放不下的整条跳过，不截断/不摘要/不换次优——R33/R34）
     const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, itemsAll);
     const items: SurfaceItem[] = [];
     const refs = new Map<string, string>();
     const refList: FrozenAugmentation['memoryRefs'] = [];
+    let droppedCovered = 0;
+    let droppedBudget = 0;
     for (const it of itemsAll) {
       if (!accepted.has(it.detail_ref)) continue;
-      if (covered.has(it.event_id)) continue;
+      const key = surfaceItemKey(it);
+      if (covered.has(key)) { droppedCovered++; continue; }
       const ref = memoryRefFor(it.detail_ref);
-      const candidateRefs = new Map(refs).set(it.event_id, ref);
+      const candidateRefs = new Map(refs).set(key, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs);
       const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + candidate;
       const tokens = estimateTokens(wireText);
       const bytes = Buffer.byteLength(wireText, 'utf8');
       if (tokens > this.cfg.max_added_tokens_per_turn
-        || bytes > this.cfg.max_packet_bytes) continue;
+        || bytes > this.cfg.max_packet_bytes) { droppedBudget++; continue; }
       items.push(it);
-      refs.set(it.event_id, ref);
+      refs.set(key, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
     if (items.length === 0) {
-      this.repo.transition(job.id, ['ready'], 'empty');
+      // F6：空结果原因分列——"全部已被覆盖"与"容量放不下"不是同一状态，
+      // 也不能与"没找到"混同；原因码如实区分
+      const reason = droppedBudget > 0
+        ? (droppedCovered > 0 ? 'SURFACE_ALL_COVERED_OR_BUDGET' : 'SURFACE_BUDGET_NO_ROOM')
+        : 'SURFACE_ALREADY_COVERED';
+      this.repo.transition(job.id, ['ready'], 'empty', { reason_code: reason });
       return null;
     }
     if (Date.now() >= deadline) {
@@ -478,9 +580,9 @@ export class SurfacingService {
           // 接受面收缩（权限/版本撤销）：冻结块任一条掉出 accepted 即整块丢弃
           const accepted = new Set(ckd.accepted_detail_refs ?? []);
           if (aug.items.every(it => accepted.has(it.detail_ref))) {
-            // 装配间隙同窗重复覆盖防护：任一事件已被实际覆盖即整块丢弃
+            // 装配间隙同窗重复覆盖防护：任一证据已被实际覆盖即整块丢弃
             const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, aug.items);
-            if (aug.items.every(it => !covered.has(it.event_id))) return aug;
+            if (aug.items.every(it => !covered.has(surfaceItemKey(it)))) return aug;
           }
         }
       }
@@ -498,6 +600,67 @@ export class SurfacingService {
   /** 成功轨迹 retain：写入真实 manifest 后调（不假标 coverage）。 */
   markRetained(result: AugmentResult): void {
     this.repo.markRetained(result.jobId || '', result.deliveryId, result.items);
+    // 检索目的完成状态：delivered（供下一轮 Sol 判断"同一需要已处理"）
+    const job = result.jobId ? this.repo.jobById(result.jobId) : null;
+    if (job) this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
+  }
+
+  // —— 设置面（同一功能的唯一设置区域；生效值与实际请求同源）——
+
+  get solJudge(): SolDecisionJudge { return this.sol; }
+
+  /** 启动时恢复已保存的设置覆盖（app-context 装配后调用一次）。
+   *  F8（审计 2026-10-31）：双向恢复——此前只把保存的"关闭"生效，保存的
+   *  "开启"在配置默认禁用时重启即丢（DB 仍为 1 而服务关闭）。 */
+  restoreSavedSettings(): void {
+    const model = this.repo.getSetting('sol_model');
+    const template = this.repo.getSetting('sol_decision_template');
+    const enabled = this.repo.getSetting('runtime_enabled');
+    this.sol.applyOverrides({
+      model: model ?? undefined,
+      decision_template: template ?? null,
+    });
+    if (enabled === '1' || enabled === '0') {
+      this.cfg = { ...this.cfg, enabled: enabled === '1' };
+    }
+  }
+
+  settingsView(): Record<string, unknown> {
+    const override = this.repo.getSetting('sol_decision_template');
+    return {
+      enabled: this.cfg.enabled,
+      sol: {
+        configured: this.sol.isConfigured(),          // 只报状态，绝不回显凭据值
+        model: this.sol.effectiveModel(),
+        base_url: this.sol.cfg.baseUrl,
+        cache_ttl: this.sol.cfg.cacheTtl,
+        template_revision: this.sol.cfg.templateRevision,
+        template_source: override ? 'override' : 'default',
+        effective_template: this.sol.effectiveTemplate(), // 预览=请求正文同一出口
+      },
+    };
+  }
+
+  updateSettings(patch: { enabled?: unknown; model?: unknown; decision_template?: unknown }): { ok: boolean; error?: string } {
+    if (patch.enabled !== undefined) {
+      if (typeof patch.enabled !== 'boolean') return { ok: false, error: 'enabled 必须是 boolean' };
+      this.repo.setSetting('runtime_enabled', patch.enabled ? '1' : '0');
+      this.cfg = { ...this.cfg, enabled: patch.enabled };
+    }
+    if (patch.model !== undefined) {
+      if (patch.model !== null && typeof patch.model !== 'string') return { ok: false, error: 'model 必须是字符串或 null' };
+      const model = typeof patch.model === 'string' && patch.model.trim().length > 0 ? patch.model.trim() : null;
+      this.repo.setSetting('sol_model', model);
+      this.sol.applyOverrides({ model: model ?? undefined });
+    }
+    if (patch.decision_template !== undefined) {
+      if (patch.decision_template !== null && typeof patch.decision_template !== 'string') return { ok: false, error: 'decision_template 必须是字符串或 null（null=重置为默认）' };
+      const template = typeof patch.decision_template === 'string' && patch.decision_template.trim().length > 0 ? patch.decision_template : null;
+      if (template !== null && template.length > 65536) return { ok: false, error: 'decision_template 过长' };
+      this.repo.setSetting('sol_decision_template', template);
+      this.sol.applyOverrides({ decision_template: template });
+    }
+    return { ok: true };
   }
 
   visibleMemoriesForTurn(conversationId: string, turnId: string) {
@@ -554,15 +717,22 @@ export class SurfacingService {
     return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: effectiveRevisionText(this.db, row.id, row.revision, row.content), bodyHash: row.content_hash, occurredAt: row.occurred_at };
   }
 
-  private recentDialogue(conversationId: string, beforeSequence: number): Array<{ message_id: string; revision: number; role: 'owner' | 'assistant'; text: string; sequence: number }> {
+  /** 近文窗口：先取有界原始行（混合 ≤40），再按用户消息计数裁窗；
+   *  当前消息不在其中（调用方单独追加，保证只出现一次）。 */
+  private recentDialogue(conversationId: string, beforeSequence: number, currentText: string): RecentMessage[] {
     const rows = this.db.prepare(
-      `SELECT m.id, m.sequence, m.speaker, m.current_revision AS rev, r.content
+      `SELECT m.id, m.sequence, m.speaker, m.current_revision AS rev, r.content, r.occurred_at
        FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
        WHERE m.conversation_id=? AND m.sequence < ? AND m.speaker IN ('owner','assistant')
-       ORDER BY m.sequence DESC LIMIT 6`,
-    ).all(conversationId, beforeSequence) as Array<{ id: string; sequence: number; speaker: string; rev: number; content: string }>;
-    return buildRecentDialogue(rows.reverse().map((r) => ({
-      message_id: r.id, revision: r.rev, role: r.speaker as 'owner' | 'assistant', text: effectiveRevisionText(this.db, r.id, r.rev, r.content), sequence: r.sequence,
-    })));
+       ORDER BY m.sequence DESC LIMIT 40`,
+    ).all(conversationId, beforeSequence) as Array<{ id: string; sequence: number; speaker: string; rev: number; content: string; occurred_at: string | null }>;
+    const messages: RecentMessage[] = rows.reverse().map((r) => ({
+      message_id: r.id, revision: r.rev, role: r.speaker as 'owner' | 'assistant', text: effectiveRevisionText(this.db, r.id, r.rev, r.content), sequence: r.sequence, occurred_at: r.occurred_at,
+    }));
+    return buildRecentDialogue(messages, {
+      priorUserMessages: this.cfg.recent_user_messages,
+      maxMessages: 16,
+      budgetBytes: Math.max(0, this.cfg.recent_window_bytes - Buffer.byteLength(currentText, 'utf8')),
+    });
   }
 }

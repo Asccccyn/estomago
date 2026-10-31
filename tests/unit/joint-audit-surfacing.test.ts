@@ -1,11 +1,10 @@
+import { makeDb, pollUntil, fakeSolJudge } from '../helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {makeDb, pollUntil } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { extractHypotheses } from '../../apps/host/src/memory-surfacing/trigger.ts';
 import { estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { executeMemoryReadFull } from '../../apps/host/src/memory-surfacing/detail-tool.ts';
 
@@ -14,7 +13,7 @@ const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1'
   event_text: '合成事件一', body_hash: 'hash1', detail_ref: 'sdr_fixture1' };
 const items = [item, { ...item, event_id: 'e2', memory_id: 'm2', detail_ref: 'sdr_fixture2', event_text: '合成事件二', body_hash: 'hash2' },
   { ...item, event_id: 'e3', memory_id: 'm3', detail_ref: 'sdr_fixture3', event_text: '合成事件三', body_hash: 'hash3' }];
-function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise<void>; check?: () => Promise<void>; deadlineMs?: number; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }> } = {}) {
+function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise<void>; check?: () => Promise<void>; deadlineMs?: number; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }>; solDecisions?: Parameters<typeof fakeSolJudge>[0] } = {}) {
   const { db } = makeDb();
   const calls: string[] = [];
   const selected = opts.selected ?? [item];
@@ -36,8 +35,8 @@ function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise
     throw new Error('UNEXPECTED_CAPABILITY');
   };
   const client = new MariposaClient({ transport });
-  const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
+  const svc = new SurfacingService(db, client, fakeSolJudge(opts.solDecisions ?? [{ decision: 'recall' }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+    delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576 }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null })); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
@@ -108,21 +107,6 @@ test('JA-S05: memory refs are scoped to the actual room and window', async () =>
     assert.equal(denied.ok, false);
     assert.equal(f.calls.filter(x => x === 'memory.detail.read').length, 0);
   } finally { await f.close(); }
-});
-
-test('JA-S06: hypotheses use Unicode code points, including supplementary characters', () => {
-  const text = '🦋7.9记忆库完成。8.19结婚。';
-  const cp = [...text];
-  const spans = extractHypotheses(text);
-  assert.equal(spans[0].end_cp, [...'🦋7.9记忆库完成。'].length);
-  assert.equal(spans.map(s => cp.slice(s.start_cp, s.end_cp).join('')).join(''), text);
-});
-
-test('JA-S07: comma-separated three-event input supplies three hypotheses without guessed year', () => {
-  const text = '7.9我们记忆库做成了，也是我们的结婚纪念日，8.19我们结婚。';
-  const spans = extractHypotheses(text);
-  assert.equal(spans.length, 3);
-  assert.equal(spans.map(s => [...text].slice(s.start_cp, s.end_cp).join('')).join(''), text);
 });
 
 test('JA-S09: same-body new version updates the coverage identity instead of repeating forever', async () => {
@@ -239,7 +223,7 @@ test('JA-S15: a package already on the wire is reused verbatim — final admissi
 test('P3: prepare and validate spend one absolute acceptance deadline, late results never carry', async () => {
   let release!: () => void;
   const late = new Promise<void>(r => { release = r; });
-  const f = fixture({ deadlineMs: 200,
+  const f = fixture({ deadlineMs: 200, solDecisions: [{ decision: 'recall' }, { decision: 'none' }],
     prepare: () => new Promise(r => setTimeout(r, 110)), validate: () => late });
   try {
     const a = f.say('a');
@@ -319,8 +303,11 @@ test('P3: an edited retained source cannot supply follow-up intent from its stal
     const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
     f.svc.markDispatched('a2'); f.svc.markRetained(aug);
     f.messages.editUserMessage(a.message.id, '切换成普通聊天');
+    // 旧两段式省略门退役：'后来呢'照常登记并交给 Sol 判断；被编辑的旧修订
+    // 不再作为意图延续依据（Sol 只看真实近文与 sol_state，不看旧 hypotheses）。
     const b = f.say('b', '后来呢');
-    assert.equal(f.job(b.message.id), null);
+    await pollUntil(() => ['empty', 'prepared', 'blocked', 'timed_out'].includes(f.job(b.message.id)?.state ?? ''));
+    assert.notEqual(f.job(b.message.id), null);
     assert.equal(f.job(a.message.id).state, 'retained', 'historical delivery remains factual');
   } finally { await f.close(); }
 });

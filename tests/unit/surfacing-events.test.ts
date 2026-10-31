@@ -1,9 +1,9 @@
+import { makeDb, pollUntil, fakeSolJudge } from '../helpers.ts';
 // R05（审计 J02）：后台浮现生命周期事件合同——状态提交处发 surface.job
 // 事件（job/source/target/delivery 身份+reason）；正文绝不进事件；
 // 读取路径零事件；恢复/撤销/重复派发各有真实身份。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {makeDb, pollUntil } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
@@ -31,8 +31,8 @@ function fixture(opts: { validate?: () => ValidateResult; validateOk?: boolean }
     throw new Error('UNEXPECTED_CAPABILITY');
   };
   const client = new MariposaClient({ transport });
-  const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: 100, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null, events);
+  const svc = new SurfacingService(db, client, fakeSolJudge([{ decision: "recall" }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+    delivery_deadline_ms: 100, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576 }, null, events);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null })); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
