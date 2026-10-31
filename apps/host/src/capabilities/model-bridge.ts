@@ -13,7 +13,7 @@ import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from './c
 import type { CapabilityRegistry } from './registry.ts';
 import { executeRegisteredCapability } from './executor.ts';
 export { DISCOVERY_META, isDiscoveryFree } from './model-bridge-meta.ts';
-import { DISCOVERY_META, isDiscoveryFree } from './model-bridge-meta.ts';
+import { DISCOVERY_META, isDiscoveryFree, toolPresentation } from './model-bridge-meta.ts';
 
 export class ModelToolBridge {
   private db: Db;
@@ -78,11 +78,11 @@ export class ModelToolBridge {
     const descriptor = this.capabilityRegistry?.get(name) ?? null;
     const discoveryMeta = descriptor ? null : (DISCOVERY_META[name] ?? null);
     const silent = descriptor ? descriptor.silent : (discoveryMeta?.silent ?? false);
-    const label = descriptor ? descriptor.label : (discoveryMeta?.label ?? name);
+    const presentation = toolPresentation(this.capabilityRegistry, name, rawArgs);
     const visible = !silent && ctx.turnId;
     const identity = () => ({
       tool: name,
-      label,
+      ...presentation,
       tool_call_id: ctx.toolCallId ?? null, // S17b 批次4：身份只走可信 ctx
       turn_id: ctx.turnId,
       attempt_id: ctx.attemptId ?? null,
@@ -158,7 +158,7 @@ export class ModelToolBridge {
     }
     const initialSeen = initialVisibleTools(this.db).includes(spec.function.name) && initialDefinitionSeen(this.db, ctx.windowId, spec);
     if (args.definition_id !== definitionId(spec) || (!definitionWasSeen(this.db,ctx,spec) && !initialSeen)) return deny('TOOL_DEFINITION_NOT_SEEN');
-    if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return deny('TOOL_ARG_TYPE');
+    if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);
   }

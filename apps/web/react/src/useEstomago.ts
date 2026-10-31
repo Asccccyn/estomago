@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, useRef } from 'react'
 import { EstomagoClient } from './chat-client'
+import { microphoneEnvironmentIssue, microphoneErrorMessage } from '../../src/microphone-access.js'
 
 export function useEstomago() {
   const client = useMemo(() => new EstomagoClient(), [])
@@ -37,7 +38,9 @@ export function useEstomago() {
     const r=recording.current
     if(r.starting||r.recorder)return
     if(client.snapshot.attachments.length){client.notify('请先发送或移除当前附件');return}
-    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined'){client.notify('此访问环境不支持录音，请使用支持麦克风的安全连接');return}
+    const unavailable=microphoneEnvironmentIssue()
+    if(unavailable){client.notify(unavailable);return}
+    if(typeof MediaRecorder==='undefined'){client.notify('当前浏览器不支持录音，请更新 Safari 或 Chrome 后重试');return}
     r.starting=true;const generation=++r.generation
     try{
       pausedRef.current=false;setRecPaused(false)
@@ -61,7 +64,7 @@ export function useEstomago() {
         else client.notify('没有录到音频')
       }
       recorder.start(1000);clock.current={activeMs:0,resumedAt:performance.now()};setRecSecs(0);setRec(Date.now())
-    }catch{r.stream?.getTracks().forEach(t=>t.stop());r.stream=null;r.recorder=null;client.notify('无法开始录音，请检查麦克风权限')}
+    }catch(error){r.stream?.getTracks().forEach(t=>t.stop());r.stream=null;r.recorder=null;client.notify(microphoneErrorMessage(error))}
     finally{r.starting=false}
   }
   const onPick = (file?: File) => {

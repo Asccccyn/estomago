@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Phone, PhoneOff, Mic, MicOff } from 'lucide-react';
 import { CallClient } from './call-client'
+import { microphoneEnvironmentIssue, secureMicrophoneUrl } from '../../src/microphone-access.js'
 
 type Phase = 'idle' | 'connecting' | 'active' | 'ended' | 'error';
 
@@ -55,6 +56,8 @@ export function CallPanel({ conversationId, onExit, incoming }: { conversationId
       } catch { pollTimer = setTimeout(() => void poll(), 2000); }
     };
     void (async () => {
+      const unavailable = microphoneEnvironmentIssue();
+      if (unavailable) { setError(unavailable); setPhase('error'); return; }
       setPhase('connecting');
       // F-02：接听来电的直连模式——宿主已建通话，直接连接（不反向拨号）
       if (incoming) { connectCall(incoming.ws_url, incoming.token, incoming.call_id); return; }
@@ -106,6 +109,7 @@ export function CallPanel({ conversationId, onExit, incoming }: { conversationId
       <div className="mt-6 text-center">
         <div className="text-[15px] opacity-70">{phase === 'connecting' ? '正在叫char…（他可以接听或拒绝）' : phase === 'active' ? '通话中' : phase === 'ended' ? '已结束' : '连接失败'}</div>
         {error && <div className="mt-2 max-w-sm text-[13px] text-[#e08d6d]">{error}</div>}
+        {error && secureMicrophoneUrl() && <a className="mt-3 inline-block underline" href={secureMicrophoneUrl()!} target="_blank" rel="noopener noreferrer">使用 HTTPS 打开</a>}
       </div>
       <div className="flex w-full max-w-md flex-1 flex-col justify-end gap-1 overflow-hidden pb-6">
         {transcript.map((line, i) => (

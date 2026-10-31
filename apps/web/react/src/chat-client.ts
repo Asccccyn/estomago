@@ -1,6 +1,6 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
-export type Step = { kind: 'think' | 'tool'; text: string }
+export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
 export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
@@ -358,8 +358,7 @@ export class EstomagoClient {
     if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.markReplyState(id,data.kind==='turn.completed'?'completed':'interrupted',data.attempt_id);this.render();this.refreshLatestReply(id);if(this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
     if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id)
     if(id&&data.kind==='turn.tool'){
-      const label=String(data.label??data.tool??'')
-      if(label&&this.visibleTurn(id)){const arr=this.toolSteps.get(id)??[];arr.push({kind:'tool',text:label+(data.ok===false?'（失败）':'')});this.toolSteps.set(id,arr);this.render()}
+      if(this.visibleTurn(id)){this.updateToolStep(id,data);this.render()}
     }
     if(id&&data.kind==='usage.updated'&&this.visibleTurn(id))void this.loadUsage(id)
     if(data.kind==='route.pending')this.patch({route:data})
@@ -370,6 +369,21 @@ export class EstomagoClient {
     if(data.kind==='window.rotated'){void this.loadRuntime();void this.loadContext()}
   }
   private visibleTurn(id:string) {return [...this.raw.values()].some(message=>message.turn_id===id)}
+  private updateToolStep(turnId:string,data:Json) {
+    const id=[data.attempt_id??'',data.request_id??'',data.tool_call_id??data.event_id??data.sequence].join(':')
+    const steps=this.toolSteps.get(turnId)??[]
+    const index=steps.findIndex(step=>step.id===id)
+    if(index>=0&&(steps[index].sequence??0)>(data.sequence??0))return
+    const label=String(data.label??data.effective_tool??data.tool??'工具')
+    const tool=String(data.effective_tool??data.tool??'')
+    const state=data.phase==='error'||data.ok===false?'failed':data.phase==='result'&&data.ok===true?'completed':'running'
+    const errors:Record<string,string>={TOOL_ARG_TYPE:'参数格式错误',TOOL_ARG_INVALID:'参数无效',TOOL_ARG_MISSING:'缺少参数',TOOL_ARG_UNKNOWN:'包含未知参数',TOOL_DEFINITION_NOT_SEEN:'尚未读取工具定义',TOOL_NOT_IN_ALLOWLIST:'本窗口未开放此工具',TOOL_UNAVAILABLE_IN_CALL:'通话期间不可用',I_FORBIDDEN:'无权访问该项',CANCELLED:'已取消'}
+    const reason=data.error_code?(errors[data.error_code]?`${errors[data.error_code]}（${data.error_code}）`:String(data.error_code)):''
+    const status=state==='failed'?'失败'+(reason?'：'+reason:''):state==='completed'?'完成':'进行中'
+    const step:Step={id,sequence:data.sequence??0,kind:'tool',state,text:label+(tool&&tool!==label?' · '+tool:'')+' · '+status}
+    if(index<0)steps.push(step);else steps[index]=step
+    this.toolSteps.set(turnId,steps)
+  }
   private markReplyState(turnId:string,state:string,attemptId?:string) {
     for(const [id,m] of this.raw){if(m.speaker==='owner'&&m.turn_id===turnId){
       this.raw.set(id,{...m,reply_status:{...m.reply_status,state,attempt_id:attemptId??m.reply_status?.attempt_id,can_retry:false}})
@@ -383,7 +397,7 @@ export class EstomagoClient {
     if(entry.busy)return
     entry.busy=true
     void (async()=>{
-      try {while(entry!.dirty&&this.started){entry!.dirty=false;const epoch=this.historyEpoch;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));if(epoch===this.historyEpoch&&this.visibleTurn(id)&&JSON.stringify(this.blocks.get(id)??[])!==JSON.stringify(result.blocks??[])){this.blocks.set(id,result.blocks??[]);this.render()}}}
+      try {while(entry!.dirty&&this.started){entry!.dirty=false;const epoch=this.historyEpoch;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));if(epoch===this.historyEpoch&&this.visibleTurn(id)){this.blocks.set(id,result.blocks??[]);for(const tool of result.tools??[])this.updateToolStep(id,tool);this.render()}}}
       catch {/* A failed projection does not discard saved messages. */}
       finally{entry!.busy=false;if(entry!.dirty&&this.started)this.refreshReasoning(id,entry!.attempt)}
     })()
@@ -398,7 +412,7 @@ export class EstomagoClient {
     const epoch=this.historyEpoch
     const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning')
     if(epoch!==this.historyEpoch||!this.visibleTurn(id))return
-    this.blocks.set(id,data.blocks??[]);this.detailsLoaded.add(id);this.render()
+    this.blocks.set(id,data.blocks??[]);for(const tool of data.tools??[])this.updateToolStep(id,tool);this.detailsLoaded.add(id);this.render()
     await this.loadUsage(id)
   }
   private async extendHistory(direction:'before'|'after'):Promise<boolean> {

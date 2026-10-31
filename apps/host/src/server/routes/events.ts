@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
 import type { SseSubscriber } from '../../events/service.ts';
+import { readToolActivity } from '../tool-activity.ts';
 
 const SSE_PAGE_LIMIT = 1000;
 const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开，游标重连）
@@ -143,7 +144,7 @@ const reasoning = /^GET \/api\/v1\/turns\/([^/]+)\/reasoning$/.exec(route);
 if (reasoning) {
   const turnId = decodeURIComponent(reasoning[1]!);
   const attemptId = url.searchParams.get('attempt_id');
-  return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId) });
+  return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId), tools: readToolActivity(d.db, d.tools?.getCapabilityRegistry() ?? null, turnId, attemptId) });
 }
 
 const stopTurn = /^POST \/api\/v1\/turns\/([^/]+)\/stop$/.exec(route);

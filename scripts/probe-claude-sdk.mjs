@@ -413,7 +413,10 @@ if (process.argv[2] !== '--worker') {
     if (!captures.find(c => c.mode === 'est-literal')?.payload.messages.some(m => Array.isArray(m.content) && m.content.some(b => b.text === literalReminder))) throw Error('USER_LITERAL_REMINDER_WAS_MODIFIED');
     const hostSystemBlocks = trajectory.forWindow(hostWindow.id).messages.filter(m => m.role === 'system')
       .flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text));
-    if (JSON.stringify(captures.find(c => c.mode === 'est-host-first')?.payload.system.slice(2).map(b => b.text)) !== JSON.stringify(hostSystemBlocks)) throw Error('HOST_SYSTEM_BLOCKS_CHANGED');
+    const { THINKING_LANGUAGE_RULE } = await import('../apps/host/src/runtime/build-options.ts');
+    // The pinned runtime joins custom system strings with two newlines.
+    if (captures.find(c => c.mode === 'est-host-first')?.payload.system.slice(2).map(b => b.text).join('\n\n') !== [...hostSystemBlocks, THINKING_LANGUAGE_RULE].join('\n\n')) throw Error('HOST_SYSTEM_BLOCKS_CHANGED');
+    if (cleanRequests.some(c => c.payload.system.map(b => b.text).join('\n\n').split(THINKING_LANGUAGE_RULE).length !== 2)) throw Error('THINKING_LANGUAGE_RULE_MISSING_OR_DUPLICATED');
     summary.push({ mode: 'prompt-cleanliness', requests: cleanRequests.length, nativeAttributionPreserved: true, nativeSdkIdentityPreserved: true, hostSystemPreserved: true, ambientRemindersRemoved: true, userLiteralPreserved: true, clientEntry: 'sdk-ts' });
     if (!captures.find(c=>c.mode==='custom')?.payload.system.some(b=>b.text===prompts.custom)) throw Error('CUSTOM_SYSTEM_PROMPT_NOT_SERIALIZED');
     const sdkVersion=JSON.parse(fs.readFileSync(new URL('../node_modules/@anthropic-ai/claude-agent-sdk/package.json',import.meta.url),'utf8')).version;

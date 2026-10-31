@@ -8,6 +8,8 @@ import {freezeWindowTools,storedToolset,definitionId,buildDeferredTools,effectiv
 import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
 import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
 import {HoldCheckpointService} from '../../apps/host/src/memory/hold-checkpoint.ts';
+import {EventService} from '../../apps/host/src/events/service.ts';
+import {readToolActivity} from '../../apps/host/src/server/tool-activity.ts';
 
 function fixture(t:any){
  const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true})});
@@ -16,7 +18,7 @@ function fixture(t:any){
  const sub=messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成输入',clientMessageId:'fixture'});
  const calls:any[]=[];
  const mariposa=new MariposaClient({transport:async(cap,payload)=>{calls.push({cap,payload});return {ok:true,result:{operation_id:payload.operation_id,memory_id:'m1',version:1,binding_ids:[],committed_at:'2026-10-21T12:00:00Z'}}}});
- const { tools: executor } = assembleTestTools({ db: db, mariposa: mariposa, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+ const { tools: executor } = assembleTestTools({ db: db, mariposa: mariposa, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), events: new EventService(db) });
  const ctx={roomId:'c1',windowId:'w1',turnId:sub.turnId,requestId:'req1',purpose:'chat' as const,activeReviewId:null,seenSequence:sub.message.sequence,seenMessages:[]};
  const persist=(tools:any[],messages:any[]=[])=>db.prepare("INSERT OR REPLACE INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,sent_at,created_at) VALUES ('req1','w1',?,?,'chat','[]',?,'now','now')").run(sub.attemptId,sub.turnId,JSON.stringify({tools,messages}));
  return {db,executor,ctx,calls,persist};
@@ -65,6 +67,30 @@ test('catalog does not expose schemas and invoke cannot inject reserved args',as
  const result=await f.executor.execute('tool_catalog',{},f.ctx);
  assert.ok(Array.isArray(result.output.tools));assert.ok(!JSON.stringify(result.output).includes('parameters'));
  assert.equal(effectiveToolName('tool_invoke','{"name":"context_review_complete"}'),'context_review_complete');
+});
+
+test('deferred lifecycle names the real tool and persists a useful argument rejection',async t=>{
+ const f=fixture(t);const catalog=fullToolCatalog();const wire=freezeWindowTools(f.db,'w1',catalog,'deferred');
+ const defined=await f.executor.execute('tool_define',{name:'memory_hold'},{...f.ctx,toolCallId:'define-visible'});
+ assert.equal(defined.ok,true);
+ const history=[{role:'assistant',tool_calls:[{id:'define-visible',function:{name:'tool_define',arguments:JSON.stringify({name:'memory_hold'})}}]}, {role:'tool',tool_call_id:'define-visible',content:JSON.stringify(defined.output)}];
+ f.persist(wire,history);
+ const failed=await f.executor.execute('tool_invoke',{name:'memory_hold',definition_id:defined.output.definition_id,arguments:'synthetic invalid argument'},{...f.ctx,toolCallId:'invoke-visible'});
+ assert.equal(failed.ok,false);assert.equal(failed.output.error_code,'TOOL_ARG_TYPE');assert.match(String(failed.output.detail),/参数对象/);
+ assert.equal(f.calls.length,0,'bad input never reaches the memory service');
+ const projected=readToolActivity(f.db,f.executor.getCapabilityRegistry(),f.ctx.turnId,null);
+ assert.equal(projected.length,2,'start/result are one activity per actual call');
+ assert.equal(projected[0].effective_tool,'memory_hold');assert.match(projected[0].label,/读取工具定义/);
+ assert.equal(projected[1].effective_tool,'memory_hold');assert.equal(projected[1].error_code,'TOOL_ARG_TYPE');
+
+ // Persisted pre-upgrade events had the wrapper only; recover the target from
+ // their existing protocol request, without invoking any historical operation.
+ const events=new EventService(f.db);
+ for(const phase of ['start','result'])events.publish('turn.tool',{conversationId:'c1',turnId:f.ctx.turnId,payload:{tool:'tool_invoke',label:'tool_invoke',tool_call_id:'legacy-call',attempt_id:null,request_id:'req1',phase,...(phase==='result'?{ok:false,error_code:'TOOL_ARG_TYPE'}:{})}});
+ f.persist(wire,[...history,{role:'assistant',tool_calls:[{id:'legacy-call',function:{name:'tool_invoke',arguments:JSON.stringify({name:'memory_recall',arguments:'SYNTHETIC_PRIVATE_INPUT'})}}]}]);
+ const restored=readToolActivity(f.db,f.executor.getCapabilityRegistry(),f.ctx.turnId,null);
+ assert.equal(restored.length,3);assert.equal(restored[2].effective_tool,'memory_recall');assert.equal(restored[2].label,'查记忆');
+ assert.ok(!JSON.stringify(restored).includes('SYNTHETIC_PRIVATE_INPUT'));assert.equal(f.calls.length,0);
 });
 
 test('new-window default is deferred; explicit legacy remains a compatibility option',()=>{assert.equal(buildConfig().runtime.tool_schema_mode,'deferred');assert.equal(buildConfig({runtime:{tool_schema_mode:'legacy'}}).runtime.tool_schema_mode,'legacy');assert.throws(()=>buildConfig({runtime:{tool_schema_mode:'unknown'}}));});

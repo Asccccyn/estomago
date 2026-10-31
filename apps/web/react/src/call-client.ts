@@ -9,6 +9,8 @@
 //  或服务端 interrupted 帧）停止该流全部已调度节点并重置排程，新回复立即从头排；
 // 迟到的已作废流二进制块丢弃（P0-3）。未实现（如实声明）：回声参考通道、pre-roll
 // 精调——真机/真实 Siren 端到端属后续验收。
+import { microphoneEnvironmentIssue, microphoneErrorMessage } from '../../src/microphone-access.js';
+
 export type CallClientEvents = {
   onState: (state: 'connecting' | 'listening' | 'speaking' | 'ending' | 'ended' | 'error') => void;
   onPartial: (text: string) => void;
@@ -141,6 +143,8 @@ export class CallClient {
   // —— 上行：采集 + VAD 断句 + 输入代际 ——
   private async startMic(): Promise<void> {
     try {
+      const unavailable = microphoneEnvironmentIssue();
+      if (unavailable) { this.events.onError(unavailable); return; }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       // JV-15（联合审计 2026-10-26）：授权/设备初始化是真实异步边界——await 期间可能
       // 已挂断。晚到资源立即释放，不再重建音频链（否则挂断后 mic track/context 泄漏）。
@@ -172,7 +176,7 @@ registerProcessor('uplink', UplinkProcessor);`;
       this.events.onState('listening');
     } catch (err) {
       if (this.ended) return; // 已挂断：设备错误不再打扰结束态
-      this.events.onError(`麦克风不可用：${String((err as Error).message ?? err)}`);
+      this.events.onError(microphoneErrorMessage(err));
     }
   }
 

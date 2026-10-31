@@ -2,6 +2,23 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts'
 const dto=(id:string,text:string,revision=1)=>({id,sequence:1,speaker:'owner',turn_id:'turn-fixture',current_revision:revision,mutation_status:{can_edit:true,can_withdraw:true,reason:null},revision:{revision,content:text,content_hash:'fixture-hash-'+revision,occurred_at:'2026-10-13T12:00:00Z',attachments:[]}})
+test('tool activity merges start/result and restores concrete names and errors after refresh',async()=>{
+  const event={kind:'turn.tool',turn_id:'turn-fixture',attempt_id:'a1',request_id:'r1',tool_call_id:'call-1',tool:'tool_invoke',effective_tool:'memory_recall',label:'检索记忆'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[dto('m-tool','synthetic')]}):url.endsWith('/reasoning')?Response.json({blocks:[],tools:[{...event,sequence:2,phase:'result',ok:false,error_code:'TOOL_ARG_TYPE'}]}):undefined)
+  try{
+    h.client.handleEvent({...event,sequence:1,phase:'start'})
+    h.client.handleEvent({...event,sequence:2,phase:'result',ok:false,error_code:'TOOL_ARG_TYPE'})
+    let steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,1);assert.match(steps[0].text,/检索记忆 · memory_recall · 失败：参数格式错误/)
+    await h.client.loadTurnDetails('turn-fixture')
+    steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,1);assert.equal(steps[0].state,'failed')
+    h.client.handleEvent({...event,sequence:3,tool_call_id:'call-2',phase:'start'})
+    h.client.handleEvent({...event,sequence:4,tool_call_id:'call-2',phase:'result',ok:true})
+    steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,2);assert.equal(steps[1].state,'completed')
+  }finally{h.client.stop()}
+})
 test('推理默认是未选择状态，取消选择清除覆盖值，不添加第五档',async()=>{
   let effort:string|null=null
   const h=await setup((url,init)=>{

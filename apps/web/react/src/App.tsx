@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
+import { secureMicrophoneUrl } from '../../src/microphone-access.js'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
 import { BackgroundControls } from './BackgroundControls'
@@ -55,7 +56,7 @@ function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpa
     <div className="mb-2 -ml-[13px]">
       <button onClick={toggle} aria-expanded={open} className="flex items-center gap-1.5 text-[13px] text-[#8a8780] hover:text-[#3d3929]">
         {m.pending ? <DotSpinner /> : <Sparkle size={14} />}
-        <span>{m.pending ? 'thinking · 思考中' : m.thinkSecs == null ? '思考过程' : `thinking · ${m.thinkSecs}s`}</span>
+        <span>{m.pending ? '思考中' : m.thinkSecs == null ? '思考过程' : `思考 · ${m.thinkSecs} 秒`}</span>
         <ChevronLeft size={14} className={`transition-transform ${open ? '-rotate-90' : ''}`} />
       </button>
       {open && (
@@ -67,10 +68,10 @@ function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpa
             <div key={i} className="relative flex gap-3 pb-3">
               {i < m.steps!.length - 1 && <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#dcd8cc]" />}
               <span className="mt-[5px] flex h-[11px] w-[11px] shrink-0 items-center justify-center rounded-full border border-[#c9c4b6] bg-[#faf9f5]">
-                {s.kind === 'tool' && <span className="h-[5px] w-[5px] rounded-full bg-[#c96442]" />}
+                {s.kind === 'tool' && <span className={`h-[5px] w-[5px] rounded-full ${s.state === 'failed' ? 'bg-[#a54b35]' : s.state === 'completed' ? 'bg-[#788269]' : 'bg-[#c96442]'}`} />}
               </span>
-              <p className={`text-[13.5px] leading-[1.55] text-[#8a8780] ${s.kind === 'tool' ? 'flex items-center gap-1 font-mono text-[12.5px]' : 'font-claude'}`}>
-                {s.kind === 'tool' && <Wrench size={12} />}{s.text}
+              <p className={`min-w-0 break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${s.kind === 'tool' ? 'text-[12.5px]' : 'font-claude'}`}>
+                {s.kind === 'tool' && <Wrench size={12} className="mr-1 inline-block" />}{s.text}
               </p>
             </div>
           ))}
@@ -476,6 +477,7 @@ export default function App() {
   if (window.location.pathname === '/settings/account') return <AccountSettings client={client} />
   return (
     <div ref={appRef} className="chat-app flex w-full overflow-hidden flex-col bg-[#faf9f5]">
+      {globalThis.isSecureContext === false && secureMicrophoneUrl() && <div role="status" className="shrink-0 border-b border-black/5 px-4 py-2 text-[12px] text-[#a54b35]">录音和电话需要安全连接。<a className="ml-2 underline" href={secureMicrophoneUrl()!} target="_blank" rel="noopener noreferrer">使用 HTTPS 打开</a></div>}
       {/* Header */}
       <header className="relative z-20 shrink-0 border-b border-black/5 pb-2">
         <div className="flex items-center justify-between pl-5 pr-3">
