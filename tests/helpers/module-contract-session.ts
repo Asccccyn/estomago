@@ -31,6 +31,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
+import { fakeSolJudge } from '../helpers.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import {writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
@@ -102,11 +103,14 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
     if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [SURFACE_ITEM.detail_ref] } };
     throw Error('unexpected ' + cap);
   };
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
-    enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
-  }, null);
+  // 构造签名对齐正本 (db, client, sol, cfg, log)：此前 cfg 误入 sol 位、
+  // null 入 cfg 位，首条消息即在 onUserMessageAccepted 空引用崩溃
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }),
+    fakeSolJudge([{ decision: 'recall' }]).judge, {
+      enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+      delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
+      max_packet_bytes: 24576, worker_concurrency: 2,
+    }, null);
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);

@@ -1,6 +1,6 @@
 {
   "baselineCommit": "849b1d51da7ff4c245c30d4786bcf1edaaa3d121",
-  "baselineNote": "P01.5 采集：源基线 849b1d5；采集时代码=849b1d5+P01.1~P01.4 结构重构（目录 sha256 与 tool-catalog-golden 一致、P01 全部定向测试通过，语义等价已证）。ID/时间戳/宿主时钟归一化仅消技术噪声，业务正文/角色/顺序/修订/权限差异不归一化。 2026-10-27 重录：oido_view 描述随 1ff8708 更新（概览图+时间范围），逐字差异仅此一处。",
+  "baselineNote": "P01.5 采集：源基线 849b1d5；采集时代码=849b1d5+P01.1~P01.4 结构重构（目录 sha256 与 tool-catalog-golden 一致、P01 全部定向测试通过，语义等价已证）。ID/时间戳/宿主时钟归一化仅消技术噪声，业务正文/角色/顺序/修订/权限差异不归一化。 2026-10-27 重录：oido_view 描述随 1ff8708 更新（概览图+时间范围），逐字差异仅此一处。｜2026-10-31 更新：Sol 三态合同（每条正式消息登记；无信号消息 empty；memory 块含 kind 字段）——golden 与 surfacing-prod 分支行为对齐",
   "records": [
     {
       "label": "turn1-req1",
@@ -45,7 +45,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -103,7 +103,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -180,7 +180,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -276,7 +276,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -391,7 +391,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -528,7 +528,7 @@
             },
             {
               "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
             }
           ]
         },
@@ -859,6 +859,13 @@
         "source_revision": 1,
         "source_sequence": 1,
         "state": "retained"
+      },
+      {
+        "conversation_id": "c1",
+        "source_message_id": "<id>",
+        "source_revision": 1,
+        "source_sequence": 3,
+        "state": "empty"
       }
     ],
     "surfacing_deliveries": [
