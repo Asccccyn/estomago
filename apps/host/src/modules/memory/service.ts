@@ -74,6 +74,32 @@ export class MemoryToolsService {
     this.archiveSync = deps.archiveSync ?? null;
   }
 
+  /** P4 §8.3：会话内结构性否定（refine 续查与 reject→round2 两条路径共用）。
+   *  F-05：候选卡出站带 resource_ref（memory:/our_word:/source_msg:）——按资源
+   *  前缀路由到 M 的 resource_ref 反查（同资源重复表示一并排除），其余按
+   *  candidate_ref 精确匹配。operation 幂等：同 (turn,tool_call) 重试同键。 */
+  private async rejectInSession(sessionId: string, rejectRef: string, ctx: ToolExecContext): Promise<{ ok: true } | { ok: false; output: Record<string, unknown> }> {
+    const isResourceRef = /^(memory|our_word|source_msg):/.test(rejectRef);
+    const rejOp = `es-rej-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}:reject`).slice(0, 36)}`;
+    let rej: Awaited<ReturnType<MariposaClient['recallReject']>>;
+    try {
+      rej = await this.mariposa!.recallReject({
+        sessionId,
+        ...(isResourceRef ? { resourceRef: rejectRef } : { candidateRef: rejectRef }),
+        operationId: rejOp,
+        conversationScope: ctx.roomId,
+      });
+    } catch {
+      return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: rejOp } };
+    }
+    if (!rej.ok) {
+      const rejUnknown = rej.code.startsWith('HTTP_5') || rej.code === 'HTTP_429' || rej.code.startsWith('TRANSPORT');
+      const rejMsg = (rej as { message?: string }).message;
+      return { ok: false, output: { error_code: rejUnknown ? 'RECALL_OUTCOME_UNKNOWN' : `RECALL_${rej.code}`, request_ref: rejOp, ...(rejMsg ? { message: rejMsg } : {}) } };
+    }
+    return { ok: true };
+  }
+
   async memoryReadFull(args: { memory_ref?: string; cursor?: string; section?: 'memory' | 'relations' | 'source' }, ctx: ToolExecContext): Promise<ToolExecResult> {
     const client = this.surfaceDetailClient;
     if (!client) return { ok: false, output: { error_code: 'SURFACE_CLIENT_NOT_CONFIGURED', error: '独立浮现只读客户端未装配' } };
@@ -334,9 +360,10 @@ export class MemoryToolsService {
     if ((refineSession || refineRef) && !(refineSession && refineRef) && args.deep_search !== true) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '续查须同时带 refine_session_id 与 refine_continue_ref' } };
     }
-    // 否定续查前置校验：reject 作用于既有会话（排除后按新 query 续查），
-    // 无续查身份时早失败（不静默忽略、不冒充全新检索）
-    if (typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 && !(refineSession && refineRef)) {
+    // 否定续查前置校验：reject 作用于既有会话（排除后续查/或进入原文第二轮），
+    // 无续查身份时早失败（不静默忽略、不冒充全新检索）。P4 §8.3：reject+deep_search
+    // 的原文第二轮只需 refine_session_id（M 的 round2 无 continue_ref）
+    if (typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 && !(refineSession && (refineRef || args.deep_search === true))) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '否定续查（reject_candidate_ref）必须同时带 refine_session_id 与 refine_continue_ref——先排除该候选，再按新 query 在同一会话续查', request_ref: requestRef } };
     }
     const lexical = Array.isArray(args.lexical_terms) ? (args.lexical_terms as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
@@ -361,9 +388,20 @@ export class MemoryToolsService {
       if (!refineSession) {
         return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '深搜（deep_search）必须带 refine_session_id——它作用于既有召回会话的第二轮', request_ref: requestRef } };
       }
-      const reason = typeof args.deep_reason === 'string' ? args.deep_reason : '';
+      const rejectRef = typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 ? args.reject_candidate_ref : '';
+      // P4 §8.3：交付后明确否定→原文第二轮。带 reject 时 reason 可缺省为
+      // EXPLICIT_REJECT_AFTER_DELIVERY（M 门核验 rejected∩delivered 真实交集）
+      const reason = typeof args.deep_reason === 'string' && args.deep_reason.length > 0
+        ? args.deep_reason
+        : (rejectRef ? 'EXPLICIT_REJECT_AFTER_DELIVERY' : '');
       if (!reason) {
         return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: '深搜（deep_search）必须带 deep_reason（闭集枚举，最常用 EVIDENCE_INSUFFICIENT）', request_ref: requestRef } };
+      }
+      if (rejectRef) {
+        // 先在会话内结构性否定（幂等 operation；否定保存后若 round2 失败，
+        // 已保存状态保留、真实原因如实返回，重试沿用同一 operation 键）
+        const rej = await this.rejectInSession(refineSession, rejectRef, ctx);
+        if (!rej.ok) return rej;
       }
       const opId = `es-r2-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}`).slice(0, 40)}`;
       let r2: Awaited<ReturnType<MariposaClient['recallRound2']>>;
@@ -385,29 +423,10 @@ export class MemoryToolsService {
         //（M 侧 session_local 标记，后续检索确定性排除），再按新条件 refine。
         // 与把否定写进 query 文本的区别：结构化排除是确定性的，不依赖检索器
         // 理解"不是海边"。operation_id 幂等（M 侧 P1-01 收据原子）——重试安全。
-        const rejectRef = typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 ? args.reject_candidate_ref : '';
-        if (rejectRef) {
-          // F-05：M 候选卡出站统一带 resource_ref（memory:/our_word:/source_msg:，
-          // 2026-10-19 瘦身后 candidate_ref 不出站）——按资源前缀路由到 M 的
-          // resource_ref 反查（同资源重复表示一并排除），其余才按 candidate_ref 精确匹配
-          const isResourceRef = /^(memory|our_word|source_msg):/.test(rejectRef);
-          const rejOp = `es-rej-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}:reject`).slice(0, 36)}`;
-          let rej: Awaited<ReturnType<MariposaClient['recallReject']>>;
-          try {
-            rej = await this.mariposa.recallReject({
-              sessionId: refineSession,
-              ...(isResourceRef ? { resourceRef: rejectRef } : { candidateRef: rejectRef }),
-              operationId: rejOp,
-              conversationScope: ctx.roomId,
-            });
-          } catch {
-            return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: refineRef || requestRef } };
-          }
-          if (!rej.ok) {
-            const rejUnknown = rej.code.startsWith('HTTP_5') || rej.code === 'HTTP_429' || rej.code.startsWith('TRANSPORT');
-            const rejMsg = (rej as { message?: string }).message;
-            return { ok: false, output: { error_code: rejUnknown ? 'RECALL_OUTCOME_UNKNOWN' : `RECALL_${rej.code}`, request_ref: requestRef, ...(rejMsg ? { message: rejMsg } : {}) } };
-          }
+        const rejectRefInline = typeof args.reject_candidate_ref === 'string' && args.reject_candidate_ref.length > 0 ? args.reject_candidate_ref : '';
+        if (rejectRefInline) {
+          const rej = await this.rejectInSession(refineSession, rejectRefInline, ctx);
+          if (!rej.ok) return rej;
         }
         r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId });
       } else {
