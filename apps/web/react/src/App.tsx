@@ -18,7 +18,7 @@ import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHisto
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
-  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock,
+  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square,
 } from 'lucide-react'
 
 function DotSpinner() {
@@ -657,6 +657,7 @@ export default function App() {
         ) : (<>
         {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => <div key={a.id} className="flex items-center gap-1">
           <button onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
+          {a.kind === 'voice' && <button aria-label="重新录制" onClick={() => { client.removeAttachment(a.id); void startRec() }} className="text-[#8a8780]">重录</button>}
           {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
           <button aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
         </div>)}</div>}
@@ -704,8 +705,8 @@ export default function App() {
                 </div>
               </>
             )}
-            <button aria-label="语音" onClick={() => (rec === null ? (pauseAllVoice(), startRec()) : stopRec(true))}
-              className={`p-1 ${rec === null ? 'text-[#5e5d59]' : 'text-[#c96442]'}`}><Mic size={18} /></button>
+            <button aria-label="语音" aria-disabled={rec !== null} onClick={() => { if (rec === null) (pauseAllVoice(), startRec()) }}
+              className={`p-1 ${rec === null ? 'text-[#5e5d59]' : 'text-[#c96442] opacity-50'}`}><Mic size={18} /></button>
             {rec !== null ? (
               <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[14px] text-[#5e5d59]">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-[#d94a3a]" />
@@ -721,10 +722,17 @@ export default function App() {
               onKeyDown={(e) => { if (shouldSendOnKeydown(e)) { e.preventDefault(); send(); } }}
               placeholder="回复…" className="min-w-0 flex-1 resize-none bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]" />}
             {msgs.some(m=>m.pending||m.streaming) && <button aria-label="停止回复" onClick={() => {const running=msgs.filter(m=>m.pending||m.streaming).at(-1);if(running?.turnId)void client.stopTurn(running.turnId)}} className="shrink-0 rounded-lg px-2 py-1 text-[13px] text-[#8a8780]">停止</button>}
-            <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
+            {rec !== null ? (
+              <button onClick={() => stopRec(true)} aria-label="结束录音" title="结束录音（进入试听）"
+                className="flex h-[42px] shrink-0 items-center gap-1.5 rounded-full bg-[#c96442] px-3.5 text-[14px] font-medium text-white shadow-sm">
+                <Square size={11} strokeWidth={0} fill="currentColor" />结束录音
+              </button>
+            ) : (
+            <button onClick={() => send()} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={!client.canSend} onPointerDown={(e) => e.preventDefault()}
               className="group flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full text-white">
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#c96442] transition group-disabled:bg-[#e6c2b4]"><ArrowUp size={17} /></span>
             </button>
+            )}
           </div>
         </div>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { setPlus(false); onPick(e.target.files?.[0]); e.target.value = '' }} />
