@@ -104,6 +104,7 @@ export class SurfacingService {
     // 事务内的状态写入不会嵌套开 EventService 事务；事件=投影非正本，
     // 发布失败只记日志绝不影响浮现状态机。
     this.repo = new SurfacingRepository(db, (p) => {
+      this.logTerminalStage(p);
       this.eventQueue.push(p);
       if (!this.eventFlushScheduled) {
         this.eventFlushScheduled = true;
@@ -205,6 +206,39 @@ export class SurfacingService {
     }
   }
 
+  /** P5 §9.4：生产分阶段耗时（进程内 performance.now 单调钟；跨进程由 job.created_at 桥接）。 */
+  private readonly stageTimings = new Map<string, { firstRun?: number; solDone?: number; prepareDone?: number; validateDone?: number }>();
+  private noteStage(jobId: string, stage: 'firstRun' | 'solDone' | 'prepareDone' | 'validateDone'): void {
+    const t = this.stageTimings.get(jobId) ?? {};
+    if (t[stage] === undefined) t[stage] = performance.now();
+    this.stageTimings.set(jobId, t);
+    this.log?.info('surface_stage', { job: jobId, stage, since_first_run_ms: Math.round(performance.now() - (t.firstRun ?? performance.now())) });
+  }
+  private logTerminalStage(p: { job_id: string; to: string }): void {
+    if (!['delivered', 'retained', 'empty', 'blocked', 'timed_out', 'cancelled', 'expired', 'missed_target', 'rejected', 'unknown_cost'].includes(p.to)) return;
+    const job = this.repo.jobById(p.job_id);
+    const t = this.stageTimings.get(p.job_id);
+    this.stageTimings.delete(p.job_id);
+    if (!job || !t?.firstRun) return;
+    const nowP = performance.now();
+    const createdWall = Date.parse(job.created_at);
+    const totalMs = Number.isFinite(createdWall) ? Math.round(Date.now() - createdWall) : Math.round(nowP - t.firstRun);
+    const mk = (from?: number, to?: number): number | null => (from === undefined || to === undefined ? null : Math.round(to - from));
+    const summary = {
+      job: p.job_id, final_state: p.to, total_ms: totalMs,
+      queue_ms: null as number | null,
+      sol_ms: mk(t.firstRun, t.solDone),
+      prepare_ms: mk(t.solDone, t.prepareDone),
+      validate_ms: mk(t.prepareDone, t.validateDone),
+      deliver_ms: mk(t.validateDone, nowP),
+      crossed_10s: totalMs >= 10_000, crossed_25s: totalMs >= 25_000, crossed_60s: totalMs >= 60_000,
+      deadline_ms: this.cfg.delivery_deadline_ms,
+    };
+    const firstRunWall = Date.now() - (nowP - t.firstRun);
+    summary.queue_ms = Number.isFinite(createdWall) ? Math.round(firstRunWall - createdWall) : null;
+    this.log?.info('surface_job_summary', summary);
+  }
+
   private deadline(job: JobRow): number {
     const value = job.expires_at ? Date.parse(job.expires_at) : Date.parse(job.created_at) + this.cfg.delivery_deadline_ms;
     return Number.isFinite(value) ? value : 0;
@@ -251,6 +285,7 @@ export class SurfacingService {
   }
 
   private async preparePhase(job: JobRow): Promise<void> {
+    this.noteStage(job.id, 'firstRun');
     if (!this.current(job)) {
       this.repo.transition(job.id, ['pending'], 'expired', { reason_code: 'SURFACE_BINDING_INVALID' });
       return;
@@ -289,6 +324,7 @@ export class SurfacingService {
       usage_input: sol.usage?.input_tokens ?? null, usage_cached: sol.usage?.cached_tokens ?? null,
       usage_cache_write: sol.usage?.cache_write_tokens ?? null, usage_output: sol.usage?.output_tokens ?? null,
     });
+    this.noteStage(job.id, 'solDone');
     if (d.decision !== 'recall' || !d.plan) {
       // 原始近文仍在聊天记录中；无需复制一份 observe 内容池。
       this.repo.transition(job.id, ['preparing'], 'empty', {
@@ -350,6 +386,7 @@ export class SurfacingService {
       ...(in_context_source_ids.length > 0 ? { in_context_source_ids } : {}),
       deadline_at: new Date(this.deadline(job)).toISOString(),
     }, signal), this.deadline(job) - Date.now(), job.id);
+    this.noteStage(job.id, 'prepareDone');
     if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
     if (!r.ok) {
       this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: r.code, m_operation_id: opId });
@@ -439,6 +476,7 @@ export class SurfacingService {
         window_id: windowId,
         deadline_at: deadlineAt,
       }, signal), this.deadline(job) - Date.now(), job.id);
+      this.noteStage(job.id, 'validateDone');
       if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
       if (!r.ok) {
         this.repo.transition(job.id, ['validating'], 'blocked', { reason_code: r.code });
