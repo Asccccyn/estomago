@@ -553,6 +553,17 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
+  /** 2026-11-02 她裁定：通话指引**只给纯技术事实**，不规定说什么/说多少——内容与长短
+   *  完全由char自己决定。唯一告知：消息编号是宿主内部标记，写了会被语音合成念出来
+   *  （11-02 生产实测"1051"事故）。仅当前输入装配，不持久化、不影响历史与缓存。 */
+  private static readonly CALL_TTS_FACT = '\n\n[通话模式技术提示]（宿主注入的程序事实，不是对她发言方式的任何要求）你现在和她实时通话，你说的字会被语音合成读出来：不要输出 [数字]、[seq] 之类的消息编号或宿主内部标记（会被念出来）。说什么、说多长、怎么说，完全由你决定。';
+
+  private isCallTurnMessage(messageId: string | null | undefined): boolean {
+    if (!messageId) return false;
+    const row = this.d.db.prepare('SELECT client_message_id FROM messages WHERE id=?').get(messageId) as { client_message_id: string | null } | undefined;
+    return (row?.client_message_id ?? '').startsWith('voice:');
+  }
+
   private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
@@ -2466,7 +2477,7 @@ export class TurnSupervisor {
       {
         conversationId: turn.conversation_id, windowId: window?.id ?? null, turnId,
         inputMessageId: inputMessage?.id ?? null,
-        timeContextText: modelTimeContextText(timeCtx),
+        timeContextText: modelTimeContextText(timeCtx) + (this.isCallTurnMessage(inputMessage?.id) ? TurnSupervisor.CALL_TTS_FACT : ''),
         userInput: { revision: effective.revision, content: effective.content },
       },
       {},

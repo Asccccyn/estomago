@@ -323,6 +323,8 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
     // A06：派发不等观察——SDK 驱动真实 prompt 含转写、不含未就绪的观察投影
     assert.equal(prompts.length, 1);
     assert.ok(prompts[0]!.includes('SDK 的原声转写。'));
+    assert.ok(prompts[0]!.includes('[通话模式技术提示]'), '通话轮注入技术事实（禁编号）');
+    assert.ok(!prompts[0]!.includes('一次说一两句'), '不规定说话长度/风格（她 11-02 裁定）');
     assert.ok(!prompts[0]!.includes('声音观察'), 'A06：派发请求不含未就绪观察');
     await new Promise((r) => setTimeout(r, 120));
     const row = c.db.prepare("SELECT status,model_projection,dispatched_turn_id FROM voice_observations").get() as { status: string; model_projection: string | null; dispatched_turn_id: string | null };
