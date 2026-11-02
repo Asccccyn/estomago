@@ -8,6 +8,7 @@
 // - 后台零主模型 key / 零主模型 runner：M 走专用 MariposaClient（surfacing
 //   credential_ref，不回退聊天凭据）；Sol 走独立 OpenAI key（sol-provider）。
 import { executeMemoryReadFull } from './detail-tool.ts';
+import { syncedSourceIdsFor, windowContextMessageIds } from './source-boundary.ts';
 import type { Db } from '../db/connection.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
@@ -209,6 +210,22 @@ export class SurfacingService {
     return Number.isFinite(value) ? value : 0;
   }
 
+  /** C5：历史 delivered job 的全部 items 是否均为其**自身输入上下文**
+   *  （触发消息+其近文窗）的原文回声——是则该送达没有提供任何历史
+   *  证据，不构成"需要已满足"。逐字精确匹配（确切重复），只回溯评价
+   *  那一次送达自身，不影响未来检索（T05 安全线内）。 */
+  private echoDeliveryOf(conversationId: string, previous: { sourceMessageId: string; sourceSequence: number | null; items: Array<{ text?: string }> }): boolean {
+    if (!previous.items || previous.items.length === 0) return false;
+    const row = this.db.prepare(
+      'SELECT m.sequence, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.id=?',
+    ).get(previous.sourceMessageId) as { sequence: number; revision: number; content: string } | undefined;
+    if (!row) return false;
+    const triggerText = effectiveRevisionText(this.db, previous.sourceMessageId, row.revision, row.content);
+    const contextTexts = new Set<string>([triggerText]);
+    for (const m of this.recentDialogue(conversationId, row.sequence, triggerText)) contextTexts.add(m.text);
+    return previous.items.every(it => typeof it.text === 'string' && contextTexts.has(it.text));
+  }
+
   private current(job: JobRow): boolean {
     return job.source_message_id === job.target_message_id
       && job.source_revision === job.target_revision && this.targetInputOf(job) !== null;
@@ -297,7 +314,14 @@ export class SurfacingService {
     // 本身不能让同一组已处理原话再次消费。
     const need = { sources: [...needSources.values()].sort((a, b) => a.message_id.localeCompare(b.message_id)) };
     this.repo.transition(job.id, ['preparing'], 'preparing', { sol_plan_json: JSON.stringify({ ...plan, need }) });
-    const previous = this.repo.completedNeed(job.conversation_id, need);
+    let previous = this.repo.completedNeed(job.conversation_id, need);
+    if (previous && previous.outcome === 'delivered' && previous.sourceMessageId && this.echoDeliveryOf(job.conversation_id, previous)) {
+      // C5（RECALL_SOURCE_BOUNDARY 2026-11-01）：回声送达不满足历史需要——
+      // 13:11 类错误交付（items 全为该 job 自身输入上下文的原文）不再占用
+      // 同需去重；审计行原样保留（不改历史数据、不补发），本次需要照常检索。
+      this.log?.info('surface_need_echo_delivery_bypassed', { job: job.id, previous_job: previous.jobId });
+      previous = null;
+    }
     const activeWindow = (this.db.prepare('SELECT active_window_id FROM conversations WHERE id=?')
       .get(job.conversation_id) as { active_window_id: string | null } | undefined)?.active_window_id;
     const deliveredHere = previous?.windowId && previous.windowId === activeWindow && previous.items.length > 0
@@ -309,6 +333,10 @@ export class SurfacingService {
       return;
     }
     const opId = `est-surface:${job.id}`;
+    // RECALL_SOURCE_BOUNDARY：来源边界随 prepare 下推（excluded=触发消息
+    // 全修订+回声；in_context=当前窗携带原文）。收据缺席=如实不带（fail-open）。
+    const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId], 64);
+    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id), 128);
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
       conversation_scope: job.conversation_id,
@@ -318,6 +346,8 @@ export class SurfacingService {
       },
       recent_dialogue: recent,
       plan: this.planForMariposa(plan),
+      ...(excluded_source_ids.length > 0 ? { excluded_source_ids } : {}),
+      ...(in_context_source_ids.length > 0 ? { in_context_source_ids } : {}),
       deadline_at: new Date(this.deadline(job)).toISOString(),
     }, signal), this.deadline(job) - Date.now(), job.id);
     if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');

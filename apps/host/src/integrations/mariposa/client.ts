@@ -316,7 +316,7 @@ export class MariposaClient {
    *  顶层 continue_request_ref 才是新 burst 许可（M budget.try_new_burst）；
    *  顶层 conversation_scope 供 M require_owned_session 归属核验
    *  （session 绑定 scope 时省略=SCOPE_REQUIRED）。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string; excludedSourceIds?: string[] }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
       continue_request_ref: args.continueRef,
@@ -330,6 +330,9 @@ export class MariposaClient {
         channels: args.channels,
         request_ref: args.continueRef,
         ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
+        // RECALL_SOURCE_BOUNDARY（2026-11-01）：来源资格排除随会话全程
+        // 一致（round2 不丢约束，C3）；M 侧 validate_query_plan 归一化。
+        ...(args.excludedSourceIds && args.excludedSourceIds.length > 0 ? { excluded_source_ids: args.excludedSourceIds } : {}),
       },
     });
   }
@@ -508,7 +511,7 @@ export class MariposaClient {
 
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string } }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string }; excludedSourceIds?: string[] }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.start', {
       query_plan: {
         original_request: args.query,
@@ -523,6 +526,10 @@ export class MariposaClient {
         // 2026-10-17（她报障修复）：明确日期段直取桶池（memory_date 收窄）——
         // 语义近邻对"日期主导"查询不可靠（9.25-9.27 曾 0 命中而桶实际存在）
         ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
+        // RECALL_SOURCE_BOUNDARY（2026-11-01）：历史证据资格排除（当前
+        // 请求/当前窗消息的 sm id）——刚发出的检索请求不能自证"以前说过"；
+        // M 侧 validate_query_plan 归一化并随 session 全程一致（C3）。
+        ...(args.excludedSourceIds && args.excludedSourceIds.length > 0 ? { excluded_source_ids: args.excludedSourceIds } : {}),
       },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
       request_ref: args.requestRef,

@@ -12,6 +12,7 @@ import { projectCandidatesForModel } from './projection.ts';
 import { refreshMoodCategories } from './mood-vocab.ts';
 import { executeMemoryReadFull } from '../../memory-surfacing/detail-tool.ts';
 import { SurfacingRepository } from '../../memory-surfacing/repository.ts';
+import { syncedSourceIdsFor, windowContextMessageIds } from '../../memory-surfacing/source-boundary.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
 
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
@@ -410,12 +411,18 @@ export class MemoryToolsService {
         }
         r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId });
       } else {
+        // RECALL_SOURCE_BOUNDARY（2026-11-01）：当前请求不能自证过去——
+        // 本轮输入消息+当前窗已携带原文经收据解析为 sm id 后随查询下推
+        // （B4：主动 recall 只用资格集，不带自动去重集；显式核对旧来源
+        // 不受影响；conversation_read 当前回看通道不经此边界）。
+        const recallExcluded = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, ctx.roomId, 64), 64);
         r = await this.mariposa.recallStart({
           requestRef, query: String(args.query ?? ''),
           conversationScope: ctx.roomId,
           channels: [channel],
           ...(lexical && lexical.length > 0 ? { lexicalTerms: lexical } : {}),
           ...(eventDate ? { eventDate } : {}),
+          ...(recallExcluded.length > 0 ? { excludedSourceIds: recallExcluded } : {}),
         });
       }
     } catch {

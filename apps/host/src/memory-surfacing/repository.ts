@@ -184,8 +184,10 @@ export class SurfacingRepository {
   /** 已完成需要来自现有作业与实际交付，不另存会话消费指针。 */
   completedNeed(conversationId: string, need: { sources: Array<{ message_id: string; revision: number }> }): {
     outcome: 'delivered' | 'no_match'; windowId: string | null; items: SurfaceItem[];
+    jobId: string | null; sourceMessageId: string | null; sourceSequence: number | null;
   } | null {
-    const row = this.db.prepare(`SELECT json_extract(j.sol_plan_json, '$.need_outcome') AS outcome,
+    const row = this.db.prepare(`SELECT j.id AS job_id, j.source_message_id, j.source_sequence,
+      json_extract(j.sol_plan_json, '$.need_outcome') AS outcome,
       d.window_id, d.selected_refs_json
       FROM surfacing_jobs j LEFT JOIN surfacing_deliveries d
         ON d.job_id=j.id AND d.retained=1 AND d.state='retained'
@@ -193,9 +195,10 @@ export class SurfacingRepository {
         AND json_extract(j.sol_plan_json, '$.need_outcome') IN ('delivered','no_match')
         AND j.state IN ('retained','empty','rejected')
       ORDER BY j.source_sequence DESC, j.created_at DESC LIMIT 1`)
-      .get(conversationId, JSON.stringify(need)) as { outcome: 'delivered' | 'no_match'; window_id: string | null; selected_refs_json: string | null } | undefined;
+      .get(conversationId, JSON.stringify(need)) as { job_id: string; source_message_id: string | null; source_sequence: number | null; outcome: 'delivered' | 'no_match'; window_id: string | null; selected_refs_json: string | null } | undefined;
     return row ? { outcome: row.outcome, windowId: row.window_id,
-      items: row.selected_refs_json ? (JSON.parse(row.selected_refs_json) as { items: SurfaceItem[] }).items : [] } : null;
+      items: row.selected_refs_json ? (JSON.parse(row.selected_refs_json) as { items: SurfaceItem[] }).items : [],
+      jobId: row.job_id, sourceMessageId: row.source_message_id, sourceSequence: row.source_sequence } : null;
   }
 
   recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'no_match'): void {
