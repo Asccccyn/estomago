@@ -41,7 +41,10 @@ function parseCallAudio(data: unknown, callId: string): SirenCallAudio {
 export class SirenTranscriptionError extends Error {
   readonly code: string;
   readonly uncertain: boolean;
-  constructor(code: string, uncertain = false) { super(code); this.code = code; this.uncertain = uncertain; }
+  /** P6 §10.2：Siren 安全错误分类（响应体 {error, message} 的白名单 token）——
+   *  稳定 code 之外保留排障线索，不再只剩 SIREN_SYNTHESIS_FAILED。 */
+  readonly detail?: string;
+  constructor(code: string, uncertain = false, detail?: string) { super(code); this.code = code; this.uncertain = uncertain; this.detail = detail; }
 }
 
 export class SirenAdapter {
@@ -230,7 +233,11 @@ export class SirenAdapter {
     if (!res.ok) {
       // 409=同操作键但关键输入与已持久资产不一致：不是可重试失败，需换新操作意图
       if (res.status === 409) throw new SirenTranscriptionError('SIREN_OPERATION_CONFLICT');
-      throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
+      // P6 §10.2：保留 Siren 的安全错误分类（provider_unavailable/tts_failed/…
+      //  白名单 token + 短 message），稳定 code 不变，排障不再只剩 SYNTHESIS_FAILED
+      let detail = `http_${res.status}`;
+      try { const body = await res.json() as { error?: unknown; message?: unknown }; if (typeof body.error === 'string') detail = `${body.error.slice(0, 40)}${typeof body.message === 'string' && body.message ? ':' + body.message.slice(0, 60) : ''}`; } catch { /* body 不可读=只留 http 码 */ }
+      throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED', false, `siren:${detail}`);
     }
     let bytes: Uint8Array;
     try {

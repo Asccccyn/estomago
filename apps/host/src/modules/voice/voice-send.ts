@@ -94,8 +94,12 @@ export class VoiceSendService {
       }
       // 同操作键但参数不一致（Siren 409）：不是可重试失败，需以新意图发起
       if (code === 'SIREN_OPERATION_CONFLICT') return { ok: false, error: { error_code: code, detail: '同一操作身份携带了与已生成音频不一致的参数；如确要不同语音请作为新的一次发言重新调用' } };
-      // 服务明确拒绝/失败：未取得音频，可重试
-      if (code.startsWith('SIREN_')) return { ok: false, error: { error_code: code.slice(0, 40), detail: '语音合成失败——可重试；文字消息未受影响' } };
+      // 服务明确拒绝/失败：未取得音频，可重试。P6 §10.2：带上 Siren 的安全
+      // 分类（adapter.detail），模型可见结果保持简洁、后台可排障
+      if (code.startsWith('SIREN_')) {
+        const sirenClass = (err as { detail?: string }).detail;
+        return { ok: false, error: { error_code: code.slice(0, 40), detail: '语音合成失败——可重试；文字消息未受影响' + (sirenClass ? `（服务分类：${sirenClass}）` : '') } };
+      }
       throw err;
     }
   }
