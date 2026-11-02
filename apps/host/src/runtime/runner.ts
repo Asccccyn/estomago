@@ -32,6 +32,10 @@ export type SdkRunRequest = {
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
     maxModelRequests: number;
+    /** 2026-10-31 她批：SDK 原生媒体投影（官方文档核实 Streaming Input 支持图片块）——
+     *  发送边界把 asset_image 引用物化为 SDK image 块；仅进 prompt 流，
+     *  messages 账本/持久化保持引用形态（§6.2 Base64 不入库）。 */
+    readImage?: (assetId: string) => { bytes: Buffer; mime: string };
   };
 };
 

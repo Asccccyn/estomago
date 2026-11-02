@@ -43,16 +43,24 @@ export async function runSdkHostQuery(
   const lastUser = inputMessages.findLastIndex(m => m.role === 'user');
   const history = inputMessages.slice(0, Math.max(0, lastUser));
   const tail = inputMessages.slice(Math.max(0, lastUser));
-  const content: Array<{ type: 'text'; text: string }> = [];
+  // 2026-10-31 她批：SDK 原生媒体投影——官方文档核实 Streaming Input（client_composed
+  // SDKUserMessage）支持 image 内容块。asset_image 引用块在发送边界物化为 SDK image 块；
+  // 仅进本 prompt 流，messages 账本/lastSent/持久化保持引用形态（§6.2 Base64 不入库）。
+  // 无 readImage（无媒体服务）或未知块型 → 维持未核实门，不静默丢图。
+  const content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
   for (const message of tail) {
     if (typeof message.content === 'string') content.push({ type: 'text', text: message.content });
     else for (const block of message.content) {
-      if (block.type !== 'text') return { outcome: 'error', errorCode: 'SDK_MEDIA_TRANSPORT_UNVERIFIED', errorClassified: null, errorMessage: 'SDK 原生媒体投影尚未验证', sessionId: null, requestId: null };
-      content.push({ type: 'text', text: block.text ?? '' });
+      if (block.type === 'text') content.push({ type: 'text', text: block.text ?? '' });
+      else if (block.type === 'asset_image' && host.readImage) {
+        const { bytes, mime } = host.readImage(block.asset_id);
+        content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+      }
+      else return { outcome: 'error', errorCode: 'SDK_MEDIA_TRANSPORT_UNVERIFIED', errorClassified: null, errorMessage: 'SDK 原生媒体投影尚未验证', sessionId: null, requestId: null };
     }
   }
   let replay: SdkHistoryReplay;
-  try { replay = new SdkHistoryReplay(history, req.abortController.signal); }
+  try { replay = new SdkHistoryReplay(history, req.abortController.signal, host.readImage); }
   catch (error) { return { outcome: 'error', errorCode: (error as Error).message, errorClassified: 'unknown', errorMessage: 'SDK 历史输入格式不受支持，未发送模型请求', sessionId: null, requestId: null, attempts: 0, activityStarted: false }; }
   let activityStarted = false;
   let limit: SDKRateLimitInfo | undefined;

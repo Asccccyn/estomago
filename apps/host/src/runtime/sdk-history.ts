@@ -4,7 +4,10 @@ import type { OrMessage } from './or-payload.ts';
 import { sdkToolName } from './sdk-mcp.ts';
 
 type TextBlock = { type: 'text'; text: string };
-type HistoryBlock = TextBlock
+// 2026-10-31 她批：历史回放的 asset_image 同样在发送边界物化为 SDK image 块（§6.2 不入账本）
+type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
+type ReadImage = (assetId: string) => { bytes: Buffer; mime: string };
+type HistoryBlock = TextBlock | ImageBlock
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: TextBlock[] };
 type HistoryFrame = {
@@ -13,11 +16,21 @@ type HistoryFrame = {
   parent_tool_use_id: null; shouldQuery?: false; client_composed?: true;
 };
 
-function textBlocks(content: OrMessage['content']): TextBlock[] {
+function textBlocks(content: OrMessage['content'], readImage?: ReadImage): Array<TextBlock | ImageBlock> {
   if (content == null || content === '') return [];
   if (typeof content === 'string') return [{ type: 'text', text: content }];
-  if (!Array.isArray(content) || content.some(b => b.type !== 'text' || typeof b.text !== 'string')) throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
-  return content.map(b => ({ type: 'text', text: b.text! }));
+  if (!Array.isArray(content)) throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
+  const out: Array<TextBlock | ImageBlock> = [];
+  for (const b of content) {
+    if (b.type === 'text' && typeof b.text === 'string') { out.push({ type: 'text', text: b.text }); continue; }
+    if (b.type === 'asset_image' && readImage) {
+      const { bytes, mime } = readImage(b.asset_id);
+      out.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+      continue;
+    }
+    throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
+  }
+  return out;
 }
 
 /** Ordered stdin replay, not a second conversation ledger. A non-query user
@@ -31,13 +44,13 @@ export class SdkHistoryReplay {
   private signal: AbortSignal;
   completed = false;
 
-  constructor(history: OrMessage[], signal: AbortSignal) {
+  constructor(history: OrMessage[], signal: AbortSignal, readImage?: ReadImage) {
     this.signal = signal;
     this.frames = [];
     for (const message of history) {
       if (!['user', 'assistant', 'tool'].includes(message.role)) throw Error('SDK_HISTORY_ROLE_UNSUPPORTED');
       const role = message.role === 'assistant' ? 'assistant' : 'user';
-      let content: HistoryBlock[] = textBlocks(message.content);
+      let content: HistoryBlock[] = textBlocks(message.content, readImage);
       if (message.role === 'tool') {
         if (typeof message.tool_call_id !== 'string') throw Error('SDK_HISTORY_TOOL_ID_MISSING');
         content = [{ type: 'tool_result', tool_use_id: message.tool_call_id, content: content as TextBlock[] }];
