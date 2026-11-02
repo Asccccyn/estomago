@@ -271,7 +271,8 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
         {text.slice(0, shown)}{shown < text.length && <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-[#8a8780] align-middle" />}
       </p>
     )}
-    {assetId && (
+    {/* 2026-11-02 她裁定：深听只对自己的语音有意义（听自己的声音模式）；char的语音不放深听入口 */}
+    {assetId && !ai && (
       <div className={`flex max-w-full flex-col gap-1 ${ai ? 'items-start' : 'items-end'}`}>
         <button onClick={() => void startListen()} className="shrink-0 rounded-full bg-[#f0ede5] px-3 py-1 text-[12px] text-[#5e5d59]">
           {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : listen.state === 'pending' ? '收起（分析中）' : '深听'}
