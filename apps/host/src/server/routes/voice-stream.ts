@@ -200,14 +200,17 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
       if (cut <= 0) break;
       let chunk = chars.slice(0, cut).join('');
       pending = chars.slice(cut).join('');
-      if (atLineStart) chunk = stripMarker(chunk);
+      // 2026-11-02 生产实测修复：模型学舌的 [seq] 标记可能出现在**首句之后**（如
+      // "嗯。[1051]…"）——按句成帧后该块不处行首，旧行首剥离漏剥→TTS 把序号念出来。
+      // 聊天发布层按行剥与之同义；此处对每个句块开头剥（[N]/[seq N] 从不是正文）。
+      chunk = stripMarker(chunk);
       atLineStart = chunk.endsWith('\n');
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
     }
     if (flush && pending.length > 0) {
       let chunk = pending;
       pending = '';
-      if (atLineStart) chunk = stripMarker(chunk);
+      chunk = stripMarker(chunk);
       atLineStart = chunk.endsWith('\n');
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
     }
