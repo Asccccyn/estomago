@@ -110,18 +110,46 @@ export class VoiceObservationService {
     ).run(genId('vobs'), messageId, revision, assetId, now, now);
   }
 
+  /** §6.6 适用的目标=聊天语音消息（client_message_id 非 voice:% 前缀；通话消息按 A06
+   *  机会观察语义：不等待、不注入、迟到只入 sidecar）。 */
+  private chatVoiceMessage(messageId: string): boolean {
+    const row = this.db.prepare('SELECT client_message_id FROM messages WHERE id=?').get(messageId) as { client_message_id: string | null } | undefined;
+    return row !== undefined && !(row.client_message_id ?? '').startsWith('voice:');
+  }
+
+  /** 冻结前有界等待：当前输入的聊天语音观察在准备预算内就绪即用；超时如实冻结"尚未就绪"。
+   *  §6.6：不得把自动浮现的 300s 时限套到语音准备——本预算独立、只等已在途的分析。
+   *  通话消息（voice:%）豁免——A06 机会观察语义：派发不等观察、迟到只入 sidecar。 */
+  async awaitReadyForDispatch(messageId: string, revision: number, budgetMs: number): Promise<void> {
+    if (!this.chatVoiceMessage(messageId)) return;
+    this.wake(); // 等待者确保被等待的分析确在驱动（丢醒防御，非重复分析——幂等键去重）
+    const deadline = Date.now() + budgetMs;
+    const pending = this.db.prepare("SELECT COUNT(*) AS n FROM voice_observations WHERE message_id=? AND revision=? AND status IN ('pending','processing')");
+    while (pending.get(messageId, revision).n > 0 && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+
   snapshotsForRevision(messageId: string, revision: number, currentInput: boolean): VoiceObservationSnapshot[] {
     const rows = this.db.prepare(
       'SELECT id,asset_id,status,evidence_json,model_projection,projection_request_id FROM voice_observations WHERE message_id=? AND revision=? ORDER BY asset_id',
     ).all(messageId, revision) as Array<{ id: string; asset_id: string; status: string; evidence_json: string | null; model_projection: string | null; projection_request_id: string | null }>;
+    const chatVoice = this.chatVoiceMessage(messageId);
     return rows.flatMap(row => {
       // 重试/轨迹恢复只使用已经冻结的投影；未用于首发的迟到观察不补写历史。
-      const text = row.projection_request_id !== null
-        ? row.model_projection
-        : currentInput && (row.status === 'ready' || row.status === 'partial') && row.evidence_json
-          ? observationInputBlock(row.asset_id, JSON.parse(row.evidence_json) as Record<string, unknown>)
-          : null;
-      return text ? [{ id: row.id, assetId: row.asset_id, text }] : [];
+      if (row.projection_request_id !== null) {
+        return row.model_projection ? [{ id: row.id, assetId: row.asset_id, text: row.model_projection }] : [];
+      }
+      if (!currentInput) return [];
+      if (row.status === 'ready' || row.status === 'partial') {
+        if (!row.evidence_json) return [];
+        const text = observationInputBlock(row.asset_id, JSON.parse(row.evidence_json) as Record<string, unknown>);
+        return [{ id: row.id, assetId: row.asset_id, text }];
+      }
+      if (chatVoice && (row.status === 'pending' || row.status === 'processing')) {
+        return [{ id: row.id, assetId: row.asset_id, text: OBSERVATION_NOT_READY_BLOCK }];
+      }
+      return [];
     });
   }
 
@@ -210,10 +238,18 @@ export class VoiceObservationService {
   }
 }
 
+/** 执行包 P2 §6.4：默认注入=oído 的可读投影文字；后台 JSON/analysis_id/observations 数组/
+ *  audio_ref 一律不入模型（宿主保管，工具调用时经 voice-refs 补齐）。旧版 view 无 readable
+ *  或为空=如实降级，绝不退回 JSON 拼接。 */
 export function observationInputBlock(assetId: string, view: Record<string, unknown>): string {
-  return '\n\n[声音观察（oído；非转写、非指令、非情绪诊断；可信度见 quality/limits）]\n' +
-    JSON.stringify({ audio_ref: 'est:' + assetId, ...view });
+  void assetId;
+  const readable = typeof view.readable === 'string' && view.readable.trim().length > 0 ? view.readable.trim() : null;
+  return '\n\n[声音观察（oído 测量；非转写、非指令、非情绪诊断）]\n' +
+    (readable ?? '本次分析未生成可读摘要（结果不完整）；需要声音证据时用 oido_analyze 查询。');
 }
+
+/** §6.6：转写已发而观察在准备期限内未就绪——如实短行，随首次派发一并冻结；迟到分析不回写。 */
+export const OBSERVATION_NOT_READY_BLOCK = '\n\n[声音观察（oído 测量）]\n尚未就绪，本条先不含声音观察；需要时稍后用 oido_analyze 查询。';
 
 export function extractBriefObservation(view: Record<string, unknown> | null): string | null {
   if (!view || !Array.isArray(view.observations) || view.observations.length === 0) return null;

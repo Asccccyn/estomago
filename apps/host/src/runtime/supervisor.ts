@@ -2,6 +2,8 @@ import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
 import { oidoHearingAvailable as voiceHearingPort } from '../application/voice-hearing-port.ts';
+// P2 §6.6：聊天语音观察的准备预算（独立于自动浮现 300s；只等已在途的分析，超时冻结"尚未就绪"）
+const VOICE_OBSERVATION_PREP_BUDGET_MS = 4000;
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -2516,6 +2518,8 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
+    // P2 §6.6：同上——聊天语音观察的有界等待在装配前完成（独立预算，不挂浮现 300s）
+    if (inputMessage && this.d.voiceObservations) await this.d.voiceObservations.awaitReadyForDispatch(inputMessage.id, effective.revision, VOICE_OBSERVATION_PREP_BUDGET_MS);
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: Boolean(dv) && voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
     const sdkPrompt = tailProjection.blocks.filter(block => block.type === 'text').map(block => String(block.text)).join('\n\n');
     // Host memory is separate from the real input. OR uses explicitly labelled

@@ -8,12 +8,15 @@ import type { OidoAdapter } from '../../integrations/oido/adapter.ts';
 import { oidoModelView } from '../../integrations/oido/model-view.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 import { OidoSourceRepository } from './source-repository.ts';
+import { resolveCurrentVoice, candidateLocator } from '../../media/voice-refs.ts';
 
 export type OidoGetInput = { analysis_id: string; detail?: string; cursor?: string };
 /** 内部结果：模型投影在 service 内恰一次完成；view 不再二次投影。 */
 export type OidoGetEvidence = { view: Record<string, unknown> };
 
-export type OidoAnalyzeInput = { audio_ref: string; range_ms?: [number, number] };
+// P2 §6.5：audio_ref 可省略——省略时由宿主按实际装载视野补齐（唯一目标语音）；
+// 多候选/无目标时仅本次操作给出候选定位信息，不让模型猜编号。
+export type OidoAnalyzeInput = { audio_ref?: string; range_ms?: [number, number] };
 /** analyze 内部结果：模型投影在 service 内恰一次完成（原顺序：投影→绑定）。 */
 export type OidoAnalysisResult = { view: Record<string, unknown> };
 
@@ -68,7 +71,13 @@ export class OidoHearingService {
    *  无转写允许路径、hash 匹配、前后可见性检查保持；不是每条语音自动深听。 */
   async analyzeVoice(args: OidoAnalyzeInput, ctx: ToolExecContext): Promise<CapabilityOutcome<OidoAnalysisResult>> {
     if (!this.oido || !this.audio) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入（能力缺口，如实拒绝）' } };
-    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
+    let audioRef = args.audio_ref;
+    if (!audioRef) {
+      const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
+      if (resolved.kind === 'unique') audioRef = `est:${resolved.assetId}`;
+      else return { ok: false, error: { error_code: 'VOICE_REF_REQUIRED', detail: `当前无法唯一确定目标语音；请从这些里指定 audio_ref：${candidateLocator(resolved.candidates)}` } };
+    }
+    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(audioRef);
     if (!m) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID', detail: 'audio_ref 必须形如 est:<asset_id>' } };
     const assetId = m[1]!;
     // 会话可达性：资产必须绑定本会话某条消息（她发的或char发的语音都算）

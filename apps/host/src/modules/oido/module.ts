@@ -17,7 +17,7 @@ export const OIDO_ANALYZE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_analyze',
-      description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。她明确要你听语气、或转写不足以判断她的状态时调用。audio_ref 形如 est:<asset_id>（语音消息投影里带）。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
+      description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。她明确要你听语气、或转写不足以判断她的状态时调用。audio_ref 可省略：省略=当前这条语音（唯一目标时宿主自动定位）；多条语音时按返回的候选列表指定。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
       parameters: {
         type: 'object',
         properties: {

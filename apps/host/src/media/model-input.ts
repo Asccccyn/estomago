@@ -72,7 +72,6 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
   let hasVoiceWithoutTranscript = false;
   for (const a of attachments) {
     if (a.presentation === 'voice') {
-      const audioRef = `est:${a.asset_id}`;
       const durMs = opts.voiceDurations?.get(a.asset_id);
       const durText = typeof durMs === 'number' ? `${Math.round(durMs)}ms` : '时长未知';
       // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
@@ -82,10 +81,11 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       // 给出（旧冻结窗无此工具=如实受限提示，不宣传不存在的读取能力、不静默丢正文）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
         const sourceLine = `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]`;
-        const tailLine = hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : '';
+        // P2 §6.5：audio_ref 不再入默认投影（宿主保管；oido_analyze/transcript_read 缺省即本条）
+        const tailLine = hearing && isCurrentInput ? `\n[原声 ${durText} 已保留；语气/声音证据须用 oido_analyze 查询（不带编号即默认本条），转写不含语气]` : '';
         if (withDefaults.transcriptContinuationAvailable === true) {
           const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
-          const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（audio_ref="${audioRef}"，无 cursor 从头，翻页传上页 next_cursor）]`;
+          const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（缺省即本条语音；无 cursor 从头，翻页传上页 next_cursor）]`;
           blocks.push({ type: 'text', text: `${sourceLine}\n${sliced.pageText}${moreHint}${tailLine}` });
         } else {
           const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
@@ -94,7 +94,7 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
         }
       } else if (isCurrentInput === true && hearing) {
         // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
-        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n仅有原声；需声音证据时用 oido_analyze，取得证据前不推断内容或语气。` });
+        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| 原声已保留 | ${durText}]\n仅有原声；需声音证据时用 oido_analyze（不带编号即默认本条），取得证据前不推断内容或语气。` });
       } else if (isCurrentInput === true) {
         hasVoiceWithoutTranscript = true; // 当前输入无转写且无听觉能力→不空输入唤起模型（门阻断）
       } else {

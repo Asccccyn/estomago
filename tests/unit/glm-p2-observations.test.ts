@@ -91,15 +91,19 @@ function startSirenStub(): { url: string; stop(): void; audioCalls: number } {
 }
 
 /** fake oído：外部 HTTP 边界替代（ingest/analyze 合同与 OidoAdapter 一致）。 */
-function fakeOidoAdapter(counts: { ingest: number; analyze: number; keys?: string[] }) {
+function fakeOidoAdapter(counts: { ingest: number; analyze: number; keys?: string[] }, opts: { delayMs?: number } = {}) {
   return {
     configured: true,
     async ingestVoice(): Promise<{ audioId: string; deduplicated: boolean }> { counts.ingest++; return { audioId: `aud_${counts.ingest}`, deduplicated: false }; },
     async analyze(args: { idempotencyKey?: string }): Promise<Record<string, unknown>> {
       counts.analyze++;
       counts.keys?.push(args.idempotencyKey ?? '');
-      return { analysis_id: `an_${counts.analyze}`, revision: 1, state: 'ready', range_ms: [0, 2000],
-        observations: [{ kind: 'pause', range_ms: [400, 1600], value: 1.2, unit: 'ms', quality: 'measured' }],
+      if (opts.delayMs) await new Promise(r => setTimeout(r, opts.delayMs));
+      // P2 §6.4：真实 oído 现随概览交付 readable 可读投影（projections.readable_overview）——
+      // 外部边界替身同步该合同形态
+      return { analysis_id: `an_${counts.analyze}`, revision: 1, state: 'ready', range_ms: [0, 5481],
+        readable: '录音总长约 5.5 秒。\n0.0—3.0 秒之间检测到语音（有声/能量检测，阈 −50 dBFS，语音段平均录音电平约 -21 dBFS）。\n末尾 2.5 秒未检测到语音（低于检测阈，非绝对无声）。',
+        observations: [{ kind: 'pause', range_ms: [2140, 2960], value: 820, unit: 'ms', quality: 'measured' }],
         limits: ['capture_processing_unknown'] };
     },
   } as never;
@@ -326,4 +330,94 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
     assert.equal(row.model_projection, null, '迟到结果不回写投影');
     assert.equal(row.dispatched_turn_id, null, '无投递事实（未用于首发）');
   } finally { await c.supervisor.stopAll(); await c.close(); stub.stop(); delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; }
+});
+
+function minimalWav(): Buffer {
+  const pcm = Buffer.alloc(3200);
+  const wav = Buffer.alloc(44 + pcm.length);
+  wav.write('RIFF', 0); wav.writeUInt32LE(36 + pcm.length, 4); wav.write('WAVE', 8);
+  wav.write('fmt ', 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28); wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34);
+  wav.write('data', 36); wav.writeUInt32LE(pcm.length, 40); pcm.copy(wav, 44);
+  return wav;
+}
+
+test('P2 §6.6 聊天语音：等待→可读投影注入并冻结；未就绪如实冻结；迟到不回写；无 JSON/audio_ref', async () => {
+  const stub = await startSirenStub();
+  const counts = { ingest: 0, analyze: 0, keys: [] as string[] };
+  const prompts: string[] = [];
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
+  const c = compose(tempRoot('glm-p2-readable-'), quietTransport, stub.url, {
+    oido: fakeOidoAdapter(counts),
+    sdkQuery: (req) => {
+      const stream = (async function* () {
+        let text = '';
+        if (typeof req.prompt === 'string') text = req.prompt;
+        else if (!(yield* scriptedSdkInput(req, 'synthetic-voice-session', (message, history) => { text = JSON.stringify([...history, message].map(frame => frame.message.content)); }))) return;
+        prompts.push(text);
+        for (const raw of fixtureScenario('consistent', text)) yield raw;
+      })();
+      return Object.assign(stream, { close() {},
+        accountInfo: async () => ({ apiProvider: 'firstParty', subscriptionType: 'max', tokenSource: 'claude.ai' }),
+        usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({ subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } }),
+      });
+    },
+  });
+  try {
+    const wav = minimalWav();
+    const saved = await c.media.saveBuffer({ bytes: wav, purpose: 'chat_voice', operationId: 'p2-r-1', createdBy: 'test', origin: 'upload' });
+    c.db.prepare("INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,content_sha256,state,derived_text,derived_source,duration_ms,created_at,updated_at) VALUES (?,?,?,?,'ready','她说：今天好累呀。','siren:transcribe',5481,?,?)")
+      .run(saved.id, 'primary', `t:${saved.id}`, saved.content_sha256, new Date().toISOString(), new Date().toISOString());
+    const sub = c.messages.submitUserMessageWithTurn({
+      conversationId: 'primary', content: '', clientMessageId: 'chat-voice-p2',
+      attachments: [{ asset_id: saved.id, presentation: 'voice' } as never],
+    });
+    c.supervisor.enqueue(sub.turnId);
+    await c.supervisor.waitIdle();
+    // 等待预算内分析就绪→可读投影随派发进入 SDK prompt；后台 JSON/audio_ref 不可见
+    assert.equal(prompts.length, 1);
+    const prompt = prompts[0]!;
+    assert.ok(prompt.includes('她说：今天好累呀。'), '转写随派发');
+    assert.ok(prompt.includes('[声音观察（oído 测量'), '可读观察块随派发');
+    assert.ok(prompt.includes('录音总长约 5.5 秒'), 'readable 事实行');
+    assert.ok(prompt.includes('末尾 2.5 秒未检测到语音'), '首尾低电平如实');
+    assert.ok(!prompt.includes('"observations"'), '后台 observations 数组不入模型');
+    assert.ok(!prompt.includes('"analysis_id"'), 'analysis_id 不入模型');
+    assert.ok(!prompt.includes('audio_ref'), 'audio_ref 由宿主保管（§6.5）');
+    assert.ok(!prompt.includes('audio_ref: est:'.replace('audio_ref: ', 'audio_ref')), 'sanity');
+    // 冻结：行已带 projection_request_id + model_projection
+    const row = c.db.prepare('SELECT model_projection, dispatched_turn_id, projection_request_id FROM voice_observations WHERE message_id=?').get(sub.message.id) as { model_projection: string | null; dispatched_turn_id: string | null; projection_request_id: string | null };
+    assert.ok(row.projection_request_id !== null, '已冻结');
+    assert.ok((row.model_projection ?? '').includes('录音总长约 5.5 秒'), '冻结内容=可读投影');
+    assert.equal(row.dispatched_turn_id, sub.turnId, '投递事实');
+    // 迟到的"更好分析"不回写：改 evidence_json 后重放仍用冻结文本
+    c.db.prepare("UPDATE voice_observations SET evidence_json=? WHERE message_id=?")
+      .run(JSON.stringify({ analysis_id: 'an_late', revision: 2, state: 'ready', readable: '录音总长约 9.9 秒。', observations: [] }), sub.message.id);
+    const replay = c.voiceObs.snapshotsForRevision(sub.message.id, 1, true);
+    assert.equal(replay.length, 1);
+    assert.ok(replay[0]!.text.includes('录音总长约 5.5 秒'), '迟到分析不回写已冻结投影');
+    // 未就绪冻结臂：service 层直证（pending→尚未就绪块；budget 快速耗尽）
+    const slow = fakeOidoAdapter({ ingest: 0, analyze: 0 }, { delayMs: 60_000 });
+    const c2 = compose(tempRoot('glm-p2-notready-'), quietTransport, stub.url, { oido: slow });
+    try {
+      const wav2 = minimalWav();
+      const saved2 = await c2.media.saveBuffer({ bytes: wav2, purpose: 'chat_voice', operationId: 'p2-nr-1', createdBy: 'test', origin: 'upload' });
+      const sub2 = c2.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '', clientMessageId: 'chat-voice-nr', attachments: [{ asset_id: saved2.id, presentation: 'voice' } as never] });
+      const t0 = Date.now();
+      await c2.voiceObs.awaitReadyForDispatch(sub2.message.id, 1, 400);
+      assert.ok(Date.now() - t0 < 5_000, '预算有界');
+      const snap = c2.voiceObs.snapshotsForRevision(sub2.message.id, 1, true);
+      assert.equal(snap.length, 1, '未就绪→如实行');
+      assert.ok(snap[0]!.text.includes('尚未就绪'), '尚未就绪冻结语义');
+      // 通话消息豁免：voice:% 前缀即不等（A06）
+      const callSub = c2.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '', clientMessageId: 'voice:call-1:t1', attachments: [{ asset_id: saved2.id, presentation: 'voice' } as never] });
+      const t1 = Date.now();
+      await c2.voiceObs.awaitReadyForDispatch(callSub.message.id, 1, 400);
+      assert.ok(Date.now() - t1 < 50, '通话消息豁免等待');
+    } finally { await c2.supervisor.stopAll(); await c2.close(); }
+    console.log(JSON.stringify({ case: 'p2_readable_freeze', readable_injected: true, frozen: true, no_json: true, no_ref: true, not_ready_honest: true, call_exempt: true }));
+  } finally {
+    delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+    await c.supervisor.stopAll(); await c.close(); stub.stop();
+  }
 });

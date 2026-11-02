@@ -22,10 +22,10 @@ export const TRANSCRIPT_READ_DEFINITION: HostToolSpec = {
     parameters: {
       type: 'object',
       properties: {
-        audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
+        audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '可选：目标语音引用；省略=当前这条语音（唯一目标时宿主自动定位）' },
         cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
       },
-      required: ['audio_ref'], additionalProperties: false,
+      required: [], additionalProperties: false,
     },
   },
 };

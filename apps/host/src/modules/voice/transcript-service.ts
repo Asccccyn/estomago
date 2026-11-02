@@ -7,10 +7,13 @@
 // 纯分页函数（sliceByByteBudget）已有单测；业务成功 fixture 必须真实完成发送（测试政策 §7）。
 import type { Db } from '../../db/connection.ts';
 import { sliceByByteBudget, TRANSCRIPT_PAGE_BUDGET_BYTES } from '../../media/model-input.ts';
+import { resolveCurrentVoice, candidateLocator } from '../../media/voice-refs.ts';
 import { sha256Hex } from '../../util/id.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 
-export type TranscriptReadInput = { audio_ref: string; cursor?: string };
+// P2 §6.5：audio_ref 可省略——省略时由宿主按实际装载视野补齐（唯一目标语音）；
+// 多候选/无目标时仅本次操作给出候选定位信息，不让模型猜编号。
+export type TranscriptReadInput = { audio_ref?: string; cursor?: string };
 
 export class VoiceTranscriptService {
   private readonly db: Db;
@@ -20,7 +23,15 @@ export class VoiceTranscriptService {
   }
 
   read(args: TranscriptReadInput, ctx: ToolExecContext): CapabilityOutcome<Record<string, unknown>> {
-    const assetId = args.audio_ref.slice('est:'.length);
+    const audioRef = args.audio_ref ?? (() => {
+      const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
+      return resolved.kind === 'unique' ? `est:${resolved.assetId}` : null;
+    })();
+    if (!audioRef) {
+      const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
+      return { ok: false, error: { error_code: 'VOICE_REF_REQUIRED', message: `当前无法唯一确定目标语音；请从这些里指定 audio_ref：${candidateLocator(resolved.candidates)}` } };
+    }
+    const assetId = audioRef.slice('est:'.length);
     const row = this.db.prepare(
       `SELECT t.derived_text, a.content_sha256 FROM voice_transcripts t
        JOIN media_assets a ON a.id = t.asset_id
@@ -49,7 +60,7 @@ export class VoiceTranscriptService {
     return {
       ok: true,
       value: {
-        audio_ref: args.audio_ref,
+        audio_ref: audioRef,
         page_text: sliced.pageText,
         page_chars: [...sliced.pageText].length,
         total_chars: chars.length,
