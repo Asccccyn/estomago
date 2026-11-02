@@ -61,7 +61,7 @@ export const CHAT_SEND_VOICE_DEFINITION: HostToolSpec = {
       properties: {
         text: { type: 'string', minLength: 1, maxLength: 4000, description: '语音消息的正文（她会看到这段字，也是合成的源文本）' },
         tts_script: { type: 'string', maxLength: 8000, description: '可选：交给 TTS 的表达文本（可含情绪标记），缺省用 text' },
-        emotion: { type: 'string', description: '可选：情绪风格（如 softly/warm，按合成服务支持）' },
+        emotion: { type: 'string', enum: ['neutral', 'warm', 'happy', 'sad', 'angry', 'teasing', 'sleepy', 'excited', 'surprised'], description: '可选：情绪风格，闭集枚举（合成服务合同）：neutral 平常 / warm 温柔温暖 / happy 开心 / sad 低落 / angry 生气 / teasing 调侃 / sleepy 困倦 / excited 兴奋 / surprised 惊讶。缺省用音色档案默认（warm）。枚举外值会被拒绝' },
         speed: { type: 'number', minimum: 0.5, maximum: 2, description: '可选：语速（0.5-2，缺省 1）' },
       },
       required: ['text'], additionalProperties: false,

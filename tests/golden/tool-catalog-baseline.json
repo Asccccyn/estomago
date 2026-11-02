@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "b80cb6d（P4 重录：reject_candidate_ref/oido_analyze/transcript_read 描述随执行包 P2/P4 合同更新）",
+  "baselineCommit": "adf0682（P6 追修：chat_send_voice emotion 闭集枚举——修复 invalid_body 生产根因）",
   "order": [
     "memory_hold",
     "memory_recall",

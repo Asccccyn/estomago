@@ -27,6 +27,12 @@ export class VoiceSendService {
   async send(input: ChatSendVoiceInput, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
     const text = input.text.trim();
     if (!text) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID', detail: 'text 必填（语音内容=你原话的正文）' } };
+    // 2026-11-02 生产实测根因修复：emotion 是 Siren 合同闭集枚举；工具定义曾示例
+    // "softly"——模型照用即 invalid_body。此处预检兜底（定义层枚举已拦，直调也拦）。
+    const EMOTIONS = ['neutral', 'warm', 'happy', 'sad', 'angry', 'teasing', 'sleepy', 'excited', 'surprised'];
+    if (input.emotion !== undefined && !EMOTIONS.includes(input.emotion)) {
+      return { ok: false, error: { error_code: 'TOOL_ARG_INVALID', detail: `emotion 须为闭集枚举之一：${EMOTIONS.join(' / ')}（收到：${input.emotion}）` } };
+    }
     if (text.length > 4000) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID', detail: 'text 上限 4000 字（与合成服务输入合同一致）' } };
     if (!this.deps.sirenCall || this.deps.sirenCall.status !== 'available') {
       return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '语音合成服务未接入（能力缺口，如实拒绝）' } };

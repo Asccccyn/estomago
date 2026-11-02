@@ -236,7 +236,16 @@ export class SirenAdapter {
       // P6 §10.2：保留 Siren 的安全错误分类（provider_unavailable/tts_failed/…
       //  白名单 token + 短 message），稳定 code 不变，排障不再只剩 SYNTHESIS_FAILED
       let detail = `http_${res.status}`;
-      try { const body = await res.json() as { error?: unknown; message?: unknown }; if (typeof body.error === 'string') detail = `${body.error.slice(0, 40)}${typeof body.message === 'string' && body.message ? ':' + body.message.slice(0, 60) : ''}`; } catch { /* body 不可读=只留 http 码 */ }
+      try {
+        const body = await res.json() as { error?: unknown; message?: unknown; details?: unknown };
+        if (typeof body.error === 'string') detail = body.error.slice(0, 40);
+        if (typeof body.message === 'string' && body.message) detail += ':' + body.message.slice(0, 60);
+        // zod 校验失败：指认字段路径（如 emotion）——排障直达
+        if (Array.isArray(body.details)) {
+          const paths = body.details.map((d) => typeof (d as { path?: unknown })?.path === 'object' && Array.isArray((d as { path: unknown[] }).path) ? (d as { path: unknown[] }).path.join('.') : String((d as { path?: unknown })?.path ?? '')).filter(Boolean).slice(0, 3).join(',');
+          if (paths) detail += `（字段：${paths}）`;
+        }
+      } catch { /* body 不可读=只留 http 码 */ }
       throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED', false, `siren:${detail}`);
     }
     let bytes: Uint8Array;

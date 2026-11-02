@@ -256,3 +256,19 @@ test('联合审计 A01：同键异参冲突如实报告（SIREN_OPERATION_CONFLI
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
   } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
 });
+
+test('P6 追加（11-02 生产根因）：emotion 越界在 est 边界拒绝并给出闭集；合法值照常走合成', async () => {
+  const stub = await startSirenStub();
+  const c = compose(tempRoot('p6-emo-'), quietTransport, stub.url);
+  try {
+    const bad = await c.tools.execute('chat_send_voice', { text: '晚安', emotion: 'softly' }, ctx());
+    assert.equal(bad.ok, false);
+    const b = bad as unknown as { output: { error_code?: string; detail?: string } };
+    assert.ok(['TOOL_ARG_ENUM', 'TOOL_ARG_INVALID'].includes(String(b.output['error_code'])), '边界拒绝（定义层枚举或服务预检）');
+    assert.ok(JSON.stringify(b).includes('warm'), '允许值清单可见');
+    assert.equal(stub.synthCalls, 0, '越界不发请求（省一次注定 400 的往返）');
+    const good = await c.tools.execute('chat_send_voice', { text: '晚安', emotion: 'warm' }, ctx());
+    assert.equal(good.ok, true, '合法枚举照常合成');
+    assert.ok(stub.synthCalls >= 1);
+  } finally { await c.supervisor.stopAll(); await c.close(); stub.stop(); }
+});
