@@ -244,6 +244,14 @@ export class SurfacingService {
     return Number.isFinite(value) ? value : 0;
   }
 
+  /** R1/R3（裁定 2026-11-03）：本轮投递预算，最终投影 UTF-8 bytes 计量。
+   * estimateTokens=bytes/3 的逆运算得 token 门对应字节，再与注入包字节
+   * 门取小——与最终装入循环是同一对象同一尺；同 job 三次跨线调用
+   * 同值（预算属操作载荷，M 端 payload_hash 幂等校验一致性）。 */
+  private deliveryBudgetBytes(): number {
+    return Math.min(this.cfg.max_added_tokens_per_turn * 3, this.cfg.max_packet_bytes);
+  }
+
   /** C5：历史 delivered job 的全部 items 是否均为其**自身输入上下文**
    *  （触发消息+其近文窗）的原文回声——是则该送达没有提供任何历史
    *  证据，不构成"需要已满足"。逐字精确匹配（确切重复），只回溯评价
@@ -385,6 +393,10 @@ export class SurfacingService {
       ...(excluded_source_ids.length > 0 ? { excluded_source_ids } : {}),
       ...(in_context_source_ids.length > 0 ? { in_context_source_ids } : {}),
       deadline_at: new Date(this.deadline(job)).toISOString(),
+      // R1/R3（裁定 2026-11-03）：本轮投递预算随载荷过线（最终投影
+      // UTF-8 bytes；属操作载荷，同 operation_id 重试须同值——M 端
+      // payload_hash 幂等即校验）。E 终检仍权威。
+      delivery_budget_bytes: this.deliveryBudgetBytes(),
     }, signal), this.deadline(job) - Date.now(), job.id);
     this.noteStage(job.id, 'prepareDone');
     if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
@@ -392,7 +404,19 @@ export class SurfacingService {
       this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: r.code, m_operation_id: opId });
       return;
     }
-    const data = r.result as { status?: string; candidate_snapshot_ref?: string | null; reason_code?: string | null };
+    const data = r.result as { status?: string; candidate_snapshot_ref?: string | null; reason_code?: string | null; policy_revision?: number; prompt_revision?: string };
+    // R9（裁定 2026-11-03）：读取并落盘 M 实际执行的政策/提示词版本——
+    // 观测与失效对账依据（作业键仍用 E 自身调度身份，不受此影响）
+    if (typeof data.policy_revision === 'number' || typeof data.prompt_revision === 'string') {
+      this.repo.recordMExecutionVersions(
+        job.id,
+        typeof data.policy_revision === 'number' ? data.policy_revision : null,
+        typeof data.prompt_revision === 'string' ? data.prompt_revision : null,
+      );
+      this.log?.info('surface_m_versions', {
+        job: job.id, m_policy_revision: data.policy_revision ?? null, m_prompt_revision: data.prompt_revision ?? null,
+      });
+    }
     const state = data.status === 'prepared' ? 'prepared'
       : data.status === 'empty' ? 'empty'
         : data.status === 'rejected' ? 'rejected'
@@ -475,6 +499,8 @@ export class SurfacingService {
         recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence, target.text),
         window_id: windowId,
         deadline_at: deadlineAt,
+        // R1（2026-11-03）：预算贯穿 prepare→validate→check，同 job 同值
+        delivery_budget_bytes: this.deliveryBudgetBytes(),
       }, signal), this.deadline(job) - Date.now(), job.id);
       this.noteStage(job.id, 'validateDone');
       if (Date.now() >= this.deadline(job)) throw new Error('SURFACE_TIMEOUT');
@@ -538,6 +564,8 @@ export class SurfacingService {
       target_message_id: input.message.id,
       target_revision: input.message.revision,
       window_id: input.windowId,
+      // R1（2026-11-03）：预算贯穿 prepare→validate→check，同 job 同值
+      delivery_budget_bytes: this.deliveryBudgetBytes(),
     }, signal), deadline - Date.now(), job.id);
     } catch {
       this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_CHECK_FAILED' });

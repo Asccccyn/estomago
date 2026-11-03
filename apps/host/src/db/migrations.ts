@@ -1417,5 +1417,17 @@ CREATE TABLE surfacing_settings(
 );
 `,
 });
+// v52（R9，裁定 2026-11-03）：surfacing_jobs 增列——M 响应返回的真实
+// 政策/提示词版本。作业唯一键继续用 E 自身调度身份（schema
+// memory_surfacing.job_policy_revision / job_prompt_revision）；本列只做
+// 观测与失效对账依据（"M 实际执行的是什么版本"），不参与键。
+MIGRATIONS.push({
+  version: 52,
+  name: 'surfacing-m-execution-versions',
+  sql: `
+ALTER TABLE surfacing_jobs ADD COLUMN m_policy_revision INTEGER;
+ALTER TABLE surfacing_jobs ADD COLUMN m_prompt_revision TEXT;
+`,
+});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

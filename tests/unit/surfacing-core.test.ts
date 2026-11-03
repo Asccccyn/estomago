@@ -97,7 +97,7 @@ function fakeMariposa(script: {
   const log: FakeM = { calls: [] };
   const transport: MariposaTransport = async (cap, payload) => {
     log.calls.push({ cap, payload: payload as Record<string, unknown> });
-    if (cap === 'memory.surfacing.prepare') return { ok: true, result: script.prepare ? script.prepare(payload as Record<string, unknown>) : { status: 'prepared', candidate_snapshot_ref: 'sfr_1', selected_count: 1, reason_code: null } };
+    if (cap === 'memory.surfacing.prepare') return { ok: true, result: script.prepare ? script.prepare(payload as Record<string, unknown>) : { status: 'prepared', candidate_snapshot_ref: 'sfr_1', selected_count: 1, reason_code: null, policy_revision: 7, prompt_revision: 'surface_prepare_v5' } };
     if (cap === 'memory.surfacing.validate') return { ok: true, result: script.validate ? script.validate(payload as Record<string, unknown>) : { status: 'ready', validation_receipt: 'svr_1', items: [ITEM], reason_code: null } };
     if (cap === 'memory.surfacing.check') return { ok: true, result: script.check ? script.check(payload as Record<string, unknown>) : { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
@@ -151,6 +151,31 @@ test('P3：接受即同轮绑定；装配抢占 prepare 与后台单飞；后轮
     assert.equal(svc.reuseFrozen('a1')?.text, aug.text);
     const u2 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '普通聊天', clientMessageId: 'u2', occurredAt: T0 });
     assert.equal(await svc.augmentFor({ ...input, attemptId: 'a2', message: { ...input.message, id: u2.message.id } }), null);
+  } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
+});
+
+test('R1（2026-11-03）：投递预算过线——prepare/validate/check 三处同值，最终投影 bytes 口径', async () => {
+  const { db, svc, messages, log } = makeService(tempRoot('sfbudget-'), true, [{ decision: 'recall' }]);
+  try {
+    const content = '还记得7.9那天我们把记忆库做成的事吗';
+    const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: 'bu1', occurredAt: T0 });
+    const input = { conversationId: 'c1', windowId: 'w1', turnId: u1.turnId, attemptId: 'a1',
+      message: { id: u1.message.id, revision: 1, sequence: u1.message.sequence, content, hash: 'h1' } };
+    const aug = await svc.augmentFor(input);
+    assert.ok(aug);
+    assert.ok(await svc.finalAdmit(aug, { conversationId: 'c1', windowId: 'w1', messageId: u1.message.id, revision: 1 }));
+    // estimateTokens=bytes/3 的逆运算取 token 门对应字节，再与包字节门取小
+    const expect = Math.min(4096 * 3, 24576);
+    const prep = log.calls.find(c => c.cap.endsWith('.prepare'))!.payload as { delivery_budget_bytes?: number };
+    const val = log.calls.find(c => c.cap.endsWith('.validate'))!.payload as { delivery_budget_bytes?: number };
+    const chk = log.calls.find(c => c.cap.endsWith('.check'))!.payload as { delivery_budget_bytes?: number };
+    assert.equal(prep.delivery_budget_bytes, expect, 'prepare 预算=min(tokens×3, 包字节)');
+    assert.equal(val.delivery_budget_bytes, expect, 'validate 同值（预算属操作载荷）');
+    assert.equal(chk.delivery_budget_bytes, expect, 'check 同值');
+    // R9（2026-11-03）：M 响应的真实执行版本读取落盘（观测/对账列，不入作业键）
+    const jobRow = svc.repo.jobById(aug.jobId)!;
+    assert.equal(jobRow.m_policy_revision, 7, 'M 真实政策版本落库');
+    assert.equal(jobRow.m_prompt_revision, 'surface_prepare_v5', 'M 真实提示词版本落库');
   } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
 });
 

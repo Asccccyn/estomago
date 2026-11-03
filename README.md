@@ -1,5 +1,9 @@
 # estómago
 
+## 2026-11-03 · 自动浮现预算与交付合同（裁定批次1+2，本地未提交、未部署）
+
+依据《ESTOMAGO_MARIPOSA_BUDGET_RULING_20261103》（她 13 项裁定）：**R1/R3** 投递预算 `delivery_budget_bytes=min(4096×3, 24576)` 随 prepare/validate/check 载荷过线（同 job 同值，M 端 payload_hash 幂等校验），E 终检仍权威；跨线统一 UTF-8 bytes、量最终投影。**R5/R6** 记忆与原文分开交付——"我们的话"/事件命中只投记忆本体（原话+日期+说话人），原文模式命中投真实锚词前后各 300 字节选（〔原文节选〕标识；定位失败保持全文逐字；不随预算缩放）；复核侧邻文窗保留（R3 裁定③，相邻纠正仍达 JEV），交付侧剥离。**R2 已知后果**：不可截断且超 12KiB 投影预算的长正文永不自动完整注入，走既有主动深读入口，不视为缺陷。**R4/R8** 删除从未执行的 `max_retained_tokens_per_window`（schema/示例 yaml/RETIRED_CONFIG_KEYS 结构化披露）；M 端同步删除 AUTO×3/union60/256KiB/delivery_same_occurrence 四组死配置并升 `SURFACE_POLICY_REVISION` 6→7（在途 run 失效、判断缓存换键）。**R9** 作业调度身份改由配置 `memory_surfacing.job_policy_revision/job_prompt_revision`（默认 1/`e_surface_v1`）承担，删除冒充 M 的硬编码 1/`surface_prepare_v2`；新增迁移 v52——M 响应真实执行版本落 `surfacing_jobs.m_policy_revision/m_prompt_revision` 并记 `surface_m_versions` 日志；`integrations.mariposa.contract_version` 退役（transport 从未消费，F15；siren 侧有真实消费者保留）。验收：11-02"明明哥哥"生产数据只读重放 18,661B/6,221tokens（丢弃）→ 333B/111tokens（双门通过）。
+
 ## 2026-10-31 · Sol 自动浮现整合修复（本地未提交、未部署）
 
 基于当前 SDK 发布源 `164b7d9` 整合 `cf7d2bf` 的 Sol 浮现功能，保留订阅优先、统一请求账本、原生历史和工具续轮。删除 SDK prompt/retain 旁路；Sol v2 仅收原话与角色，输出原话依据由宿主映射消息/修订，同需完成事实留在原有 surfacing job（不另建判断状态池）。普通空结果消费，容量/技术拒绝不消费；新对象、日期、原句及明确重查正常放行。来源详情支持前后逐片续读。新增迁移 v51，既有 v1–v50 SQL不变；生成前端按现有构建流程更新。实际 OR/CC/CLI、产品 Sol/JEV API 均未调用，生产配置与数据库未改。该整合代码不能用旧 GLM 分支的单元失败清单代替验证。

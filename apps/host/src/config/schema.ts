@@ -259,8 +259,9 @@ export type Config = {
     surfacing_credential_ref: string | null; // 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
     delivery_deadline_ms: number; // 同轮总预算（Sol 判断+检索+JEV+复核+check 总和）
     max_added_tokens_per_turn: number; // 本轮自动新增上限（estimated）
-    max_retained_tokens_per_window: number; // 同窗自动保留上限
     max_packet_bytes: number; // 注入块字节上限
+    job_policy_revision: number; // R9（2026-11-03）：E 自身调度政策版本——作业唯一键成分；换值=同消息重登记
+    job_prompt_revision: string; // R9：E 自身调度提示词版本（同上；不是 M 的远端版本）
     worker_concurrency: number; // 全局 worker 并发上限（每房间恒串行）
     recent_user_messages: number; // 近文窗口：当前消息之外的先前用户消息条数
     recent_window_bytes: number; // 近文窗口字节预算（整轮移除最旧，不截断单条）
@@ -295,7 +296,10 @@ export type IntegrationConfig = {
   // 审计 F11（LC-050）：归档 worker 用独立的受限 stream 凭据（环境变量名）。
   // null=回退共用 credential_ref（仅限开发/联调；生产必须配置受限 token——联合契约 §8）
   archive_credential_ref: string | null;
-  contract_version: string | null;
+  // siren 有真实消费者（voice.ts：≠'1.1.1' 阻断）。mariposa 侧已退役
+  // （R9/F15，2026-11-03）：可选字段，mariposa 默认值不带——退役剥离后
+  // Config 回灌不再自我披露
+  contract_version?: string | null;
 };
 
 // —— 默认值：与 config/estomago.example.yaml 语义一致 ——
@@ -425,7 +429,7 @@ export const CONFIG_DEFAULTS: Config = {
   },
   media_embedding: { base_url: null, credential_ref: null },
   integrations: {
-    mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null },
     siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     oido: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     superposition: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
@@ -508,8 +512,11 @@ export const CONFIG_DEFAULTS: Config = {
     surfacing_credential_ref: null,
     delivery_deadline_ms: 25000,
     max_added_tokens_per_turn: 4096,
-    max_retained_tokens_per_window: 8192,
+    // R4/R8（裁定 2026-11-03）：max_retained_tokens_per_window 删除——
+    // 从未接入执行；窗口级抑制由 coverage 去重（coveredInWindow）承担。
     max_packet_bytes: 24576,
+    job_policy_revision: 1,
+    job_prompt_revision: 'e_surface_v1',
     worker_concurrency: 2,
     recent_user_messages: 3,
     recent_window_bytes: 24576,
@@ -656,7 +663,8 @@ const SHAPE: SectionSpec = { section: {
   memory_surfacing: { section: {
     enabled: 'boolean', surfacing_credential_ref: 'string?',
     delivery_deadline_ms: 'number', max_added_tokens_per_turn: 'number',
-    max_retained_tokens_per_window: 'number', max_packet_bytes: 'number',
+    max_packet_bytes: 'number',
+    job_policy_revision: 'number', job_prompt_revision: 'string',
     worker_concurrency: 'number', recent_user_messages: 'number',
     recent_window_bytes: 'number',
     sol: { section: {
@@ -840,8 +848,11 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
  *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
  *  读取处负责把披露写进日志/启动报告）。
  *  WP-03（2026-10-09，JFA-005）：6h 静默/零点换窗/bootstrap_target_tokens
- *  三键并入退役——唯一自动换窗基线=容量软线（红线 E-18；现行 600k 兜底） */
-export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens'] as const;
+ *  三键并入退役——唯一自动换窗基线=容量软线（红线 E-18；现行 600k 兜底）
+ *  R4/R8/R9（裁定 2026-11-03）：memory_surfacing.max_retained_tokens_per_window
+ *  （从未接入执行）与 integrations.mariposa.contract_version（transport 从未
+ *  发送/消费，F15）退役。siren.contract_version 不在此列——voice.ts 有真实消费者 */
+export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens', 'memory_surfacing.max_retained_tokens_per_window', 'integrations.mariposa.contract_version'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];

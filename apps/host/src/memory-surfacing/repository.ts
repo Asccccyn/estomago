@@ -32,9 +32,12 @@ export type JobRow = {
   created_at: string;
   updated_at: string;
   expires_at: string | null;
+  /** R9（2026-11-03）：M 响应返回的真实执行版本（观测/对账，不参与作业键） */
+  m_policy_revision: number | null;
+  m_prompt_revision: string | null;
 };
 
-const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_basis, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at';
+const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_basis, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at, m_policy_revision, m_prompt_revision';
 
 export class SurfacingRepository {
   private db: Db;
@@ -204,6 +207,12 @@ export class SurfacingRepository {
   recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'no_match'): void {
     this.db.prepare("UPDATE surfacing_jobs SET sol_plan_json=json_set(sol_plan_json, '$.need_outcome', ?) WHERE id=?")
       .run(outcome, jobId);
+  }
+
+  /** R9（2026-11-03）：记录 M prepare 响应返回的真实执行版本（观测/对账列） */
+  recordMExecutionVersions(jobId: string, policyRevision: number | null, promptRevision: string | null): void {
+    this.db.prepare('UPDATE surfacing_jobs SET m_policy_revision=?, m_prompt_revision=? WHERE id=?')
+      .run(policyRevision, promptRevision, jobId);
   }
 
   // —— 设置覆盖（v35；与配置文件合并出同一生效值，预览/请求共用读者）——

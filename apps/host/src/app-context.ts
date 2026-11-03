@@ -172,8 +172,11 @@ export class Host {
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
         transport_overhead_text: SURFACE_HOST_NOTICE,
-        policy_revision: 1,
-        prompt_prepare_revision: 'surface_prepare_v2',
+        // R9（裁定 2026-11-03）：调度身份来自配置（E 自身版本，不再是
+        // 冒充 M 的硬编码 1/surface_prepare_v2）；M 实际执行版本由
+        // prepare 响应读取落盘（surfacing_jobs.m_policy_revision 等）
+        policy_revision: surfaceCfg.job_policy_revision,
+        prompt_prepare_revision: surfaceCfg.job_prompt_revision,
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
         max_added_tokens_per_turn: surfaceCfg.max_added_tokens_per_turn,
         max_packet_bytes: surfaceCfg.max_packet_bytes,
