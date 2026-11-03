@@ -28,16 +28,37 @@ export function syncedSourceIdsFor(db: Db, originMessageIds: string[], cap = 128
   return [...out].slice(0, cap);
 }
 
-/** 当前活动窗实际携带的消息 id（owner/assistant；cutoff_sequence 之后），
- *  最新优先有界返回——这是"本次有效输入"的原文身份区间（B3）。 */
+/** 当前活动窗实际携带的消息 id——G1-F03（裁定 2026-11-03）修正映射：
+ *  ① 边界序列取**最近 CLOSED 窗的 cutoff_sequence**（换窗时写在旧窗行上；
+ *    ACTIVE 新窗该列恒 NULL，旧实现读 ACTIVE 行 → NULL 按 0 = 会话最近
+ *    N 条，既误排未携带旧文也漏排已携带原文）；首个窗口无 CLOSED 前驱
+ *    =无携带，边界 0 语义正确。
+ *  ② 人工携带原文：window_trajectories.manifest_json 的 id 条目（换窗
+ *    选集带入的旧消息，sequence ≤ 边界但确在本窗上下文）。
+ *  两者并集、最新优先有界返回（B3"本次有效输入"的原文身份区间）。 */
 export function windowContextMessageIds(db: Db, conversationId: string, cap = 128): string[] {
-  const win = db.prepare(
-    "SELECT id, cutoff_sequence FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
-  ).get(conversationId) as { id: string; cutoff_sequence: number | null } | undefined;
-  if (!win) return [];
-  const cutoff = win.cutoff_sequence ?? 0;
+  const active = db.prepare(
+    "SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1",
+  ).get(conversationId) as { id: string } | undefined;
+  if (!active) return [];
+  const prev = db.prepare(
+    "SELECT cutoff_sequence FROM windows WHERE conversation_id = ? AND status = 'CLOSED' AND cutoff_sequence IS NOT NULL ORDER BY updated_at DESC LIMIT 1",
+  ).get(conversationId) as { cutoff_sequence: number } | undefined;
+  const cutoff = prev?.cutoff_sequence ?? 0;
   const rows = db.prepare(
     "SELECT id FROM messages WHERE conversation_id = ? AND sequence > ? AND speaker IN ('owner','assistant') ORDER BY sequence DESC LIMIT ?",
   ).all(conversationId, cutoff, cap) as Array<{ id: string }>;
-  return rows.map(r => r.id);
+  const ids = new Set(rows.map(r => r.id));
+  const traj = db.prepare(
+    'SELECT manifest_json FROM window_trajectories WHERE window_id = ?',
+  ).get(active.id) as { manifest_json: string } | undefined;
+  if (traj?.manifest_json) {
+    try {
+      const manifest = JSON.parse(traj.manifest_json) as Array<{ id?: string }>;
+      for (const e of manifest) {
+        if (typeof e?.id === 'string' && e.id.length > 0 && ids.size < cap) ids.add(e.id);
+      }
+    } catch { /* manifest 损坏=如实只带本窗新消息，不猜 */ }
+  }
+  return [...ids].slice(0, cap);
 }

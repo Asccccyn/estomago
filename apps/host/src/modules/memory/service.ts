@@ -418,6 +418,10 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['recallStart']>> | Awaited<ReturnType<MariposaClient['recallRefine']>>;
     try {
+      // G1-F02（裁定 2026-11-03）：来源资格排除 start/refine 共用一份——
+      // refine 缺席时 M 对新 query_plan 整体归一化替换、缺字段按 []，
+      // 旧排除静默清空，续查会把当前请求/回声再当历史证据
+      const recallExcluded = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, ctx.roomId, 64), 64);
       if (refineSession && refineRef) {
         // 否定续查（2026-10-24 她裁·reject 接入）：先在会话内结构性排除指定候选
         //（M 侧 session_local 标记，后续检索确定性排除），再按新条件 refine。
@@ -428,13 +432,12 @@ export class MemoryToolsService {
           const rej = await this.rejectInSession(refineSession, rejectRefInline, ctx);
           if (!rej.ok) return rej;
         }
-        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId });
+        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId, ...(recallExcluded.length > 0 ? { excludedSourceIds: recallExcluded } : {}) });
       } else {
         // RECALL_SOURCE_BOUNDARY（2026-11-01）：当前请求不能自证过去——
         // 本轮输入消息+当前窗已携带原文经收据解析为 sm id 后随查询下推
         // （B4：主动 recall 只用资格集，不带自动去重集；显式核对旧来源
         // 不受影响；conversation_read 当前回看通道不经此边界）。
-        const recallExcluded = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, ctx.roomId, 64), 64);
         r = await this.mariposa.recallStart({
           requestRef, query: String(args.query ?? ''),
           conversationScope: ctx.roomId,
