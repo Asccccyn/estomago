@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "adf0682（P6 追修：chat_send_voice emotion 闭集枚举——修复 invalid_body 生产根因）",
+  "baselineCommit": "08befbe+（G2-F19 重录：plans_read 状态筛选举例修正为 M 真实枚举 planned/active/waiting/blocked/done/cancelled，删不存在的 in_progress）",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -62,7 +62,7 @@
     "memory_read_full": "td_409de42b096bb0ca31763a65",
     "conversation_read": "td_ede191bcb2588e4994452f65",
     "memory_i_read": "td_2d9999219765fcb205c9b5ab",
-    "plans_read": "td_67a5d1a006b5887019ecf2bf",
+    "plans_read": "td_a2457c107b9e8eca4670c451",
     "memory_i_write": "td_cebf0380170d31aa3fb53e66",
     "plans_write": "td_322f0e5479a73972fe05e941",
     "memory_open": "td_91aaa376a6567236d28d2334",
@@ -105,7 +105,7 @@
     "wishstar_notifications": "td_e4352dd3c27b90897925d700",
     "context_review_complete": "td_80e678ecb6056243f20c0d26"
   },
-  "toolsSha256": "e26f702d9972451075c6f698d53fd1b49797421c6461c32d049336e8b95c89a6",
+  "toolsSha256": "ecac0b57406a38108a2e685c07e5b37a2c7569c4d2056cb3237a5df36445622e",
   "tools": [
     {
       "type": "function",
@@ -515,7 +515,7 @@
               "items": {
                 "type": "string"
               },
-              "description": "可选：列表时按状态筛选（如 planned/in_progress/done/cancelled）"
+              "description": "可选：列表时按状态筛选（planned/active/waiting/blocked/done/cancelled——与 M 端枚举一致，无 in_progress）"
             }
           },
           "required": [],

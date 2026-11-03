@@ -164,7 +164,7 @@ export const PLANSREAD_DEFINITION: HostToolSpec = {
         type: 'object',
         properties: {
           plan_id: { type: 'string', minLength: 1, maxLength: 128, description: '可选：读单个计划明细（列表结果里有 plan_id）；不传=列表' },
-          states: { type: 'array', items: { type: 'string' }, description: '可选：列表时按状态筛选（如 planned/in_progress/done/cancelled）' },
+          states: { type: 'array', items: { type: 'string' }, description: '可选：列表时按状态筛选（planned/active/waiting/blocked/done/cancelled——与 M 端枚举一致，无 in_progress）' },
         },
         required: [], additionalProperties: false,
       },

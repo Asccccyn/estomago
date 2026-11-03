@@ -10,7 +10,10 @@ export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
   | { ok: false; code: string; httpStatus: number };
 
-export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal) => Promise<MariposaCallResult>;
+// G2-F07（裁定 2026-11-03）：可选信封扩展——与 arguments 平级的顶层
+// 字段（如 idempotency_key），由 M 端 HTTP 入口读取驱动通用传输幂等
+// （claim/终态重放/崩溃恢复；见 mariposa app.py 的 idempotency_key）。
+export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal, envelope?: Record<string, unknown>) => Promise<MariposaCallResult>;
 
 export type BootstrapSection = 'memory_days' | 'plans' | 'plan_content' | 'i' | 'memory_item';
 /** Text offsets are Unicode code points, not JavaScript UTF-16 indices. */
@@ -116,7 +119,7 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
   //  /api/capability/X（无 v1 前缀）、请求 {arguments:{...}} 信封、成功响应
   //  {ok,data} 取 data、错误读 error.code。离线 fake transport 不经过此处；
   //  端到端仍待真实凭据与联调授权。
-  return async (capability, payload, signal) => {
+  return async (capability, payload, signal, envelope) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (credentialEnv) {
       const v = process.env[credentialEnv];
@@ -127,7 +130,7 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/capability/${capability}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ arguments: payload }),
+      body: JSON.stringify({ arguments: payload, ...(envelope ?? {}) }),
       ...(signal ? { signal } : {}),
     });
     if (res.status >= 200 && res.status < 300) {
@@ -416,7 +419,10 @@ export class MariposaClient {
     if (typeof args.state === 'string') payload.state = args.state;
     if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
     if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
-    return this.transport('plan.create', payload);
+    // G2-F07（2026-11-03）：operation_id 同时作信封级 idempotency_key——
+    // 同一工具调用的传输重试同 key（opId 由 turn+toolCall 派生），M 端
+    // 通用传输幂等承担 claim/终态重放/崩溃恢复；不是只收字段不执行
+    return this.transport('plan.create', payload, undefined, { idempotency_key: args.operationId });
   }
   async planUpdate(args: { planId: string; expectedVersion: number; title?: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { plan_id: args.planId, expected_version: args.expectedVersion, operation_id: args.operationId };
@@ -425,7 +431,7 @@ export class MariposaClient {
     if (typeof args.state === 'string') payload.state = args.state;
     if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
     if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
-    return this.transport('plan.update', payload);
+    return this.transport('plan.update', payload, undefined, { idempotency_key: args.operationId });
   }
   async planSetState(cap: 'plan.complete' | 'plan.cancel', planId: string, expectedVersion: number): Promise<MariposaCallResult> {
     return this.transport(cap, { plan_id: planId, expected_version: expectedVersion });
