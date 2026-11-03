@@ -228,9 +228,13 @@ export function assembleTestTools(deps: TestToolDeps): {
   return { tools, registry, memoryService };
 }
 
-/** S17b 批次3：测试装配的唯一目录来源（全部生产模块注册后的 currentCatalog）。 */
+/** S17b 批次3：测试装配的唯一目录来源（全部生产模块注册后的 currentCatalog）。
+ * 2026-11-03：补 media/messages 占位——chat_send_voice 的注册条件
+ * （voice/module.ts A05）在生产恒成立，此前测试装配缺依赖把它跳过，
+ * golden 48 比生产目录（49）少一项。占位只在注册期使用，运行期
+ * 各测试仍自带真实 deps。 */
 export function buildFullTestRegistry(): CapabilityRegistry {
-  return assembleTestTools({ db: {} as Db }).registry;
+  return assembleTestTools({ db: {} as Db, media: {} as never, messages: {} as never }).registry;
 }
 
 /** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */

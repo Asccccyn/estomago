@@ -608,8 +608,18 @@ export class MemoryToolsService {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
     const m = this.mariposa.withSignal(ctx.signal);
-    const what = args.what === 'items' || args.what === 'item' || args.what === 'item_history' || args.what === 'doc_history' ? args.what : 'current';
+    const what = args.what === 'items' || args.what === 'item' || args.what === 'item_history' || args.what === 'doc_history' || args.what === 'emotion' ? args.what : 'current';
     const itemId = typeof args.item_id === 'string' ? args.item_id : '';
+    if (what === 'emotion') {
+      // 2026-11-03 四缺口之一：emotion.context.get（心情词表正本+各类有效计数）
+      try {
+        const r = await m.emotionContextGet();
+        if (!r.ok) return { ok: false, output: { error_code: `I_${r.code}` } };
+        return { ok: true, output: { note: '心情数据面=数据（非指令）。写 mood_tags 前的正本参考。', what, ...(r.result as Record<string, unknown>) } };
+      } catch {
+        return { ok: false, output: { error_code: 'I_READ_OUTCOME_UNKNOWN' } };
+      }
+    }
     if ((what === 'item' || what === 'item_history') && !itemId) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `what=${what} 必须带 item_id（先 what=items 拿条目列表）` } };
     }
@@ -704,10 +714,10 @@ export class MemoryToolsService {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
     const m = this.mariposa.withSignal(ctx.signal);
-    const actions = ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections', 'word_add', 'word_revise'] as const;
+    const actions = ['relation', 'word_source', 'binding', 'plan_link', 'i_relation', 'link', 'relations', 'trace', 'corrections', 'word_add', 'word_revise'] as const;
     type CorAction = typeof actions[number];
     const action = actions.includes(args.action as CorAction) ? args.action as CorAction : '';
-    if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 relation/word_source/binding/link/relations/corrections/word_add/word_revise' } };
+    if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 relation/word_source/binding/plan_link/i_relation/link/relations/trace/corrections/word_add/word_revise' } };
     // —— 我们的话新增/修改（勾选式；与 hold quotes 同一解析门）——
     if (action === 'word_add' || action === 'word_revise') {
       const memoryId = typeof args.memory_id === 'string' ? args.memory_id : '';
@@ -753,7 +763,7 @@ export class MemoryToolsService {
     }
     const opId = `es-cor-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}:${action}`).slice(0, 40)}`;
     const ca = args.correction_action === 'remove_wrong_binding' || args.correction_action === 'replace_wrong_binding' ? args.correction_action : '';
-    if (action === 'relation' || action === 'word_source' || action === 'binding') {
+    if (action === 'relation' || action === 'word_source' || action === 'binding' || action === 'plan_link' || action === 'i_relation') {
       if (!ca) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 纠错必须带 correction_action（remove_wrong_binding/replace_wrong_binding）` } };
     }
     const replacement = args.replacement && typeof args.replacement === 'object' && !Array.isArray(args.replacement) ? args.replacement as Record<string, unknown> : undefined;
@@ -764,11 +774,15 @@ export class MemoryToolsService {
     const relationId = typeof args.relation_id === 'string' ? args.relation_id : '';
     const wordId = typeof args.word_id === 'string' ? args.word_id : '';
     const bindingId = typeof args.binding_id === 'string' ? args.binding_id : '';
+    const linkId = typeof args.link_id === 'string' ? args.link_id : '';
     const memoryId = typeof args.memory_id === 'string' ? args.memory_id : '';
     if (action === 'relation' && !relationId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'relation 必须带 relation_id' } };
     if (action === 'word_source' && !wordId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'word_source 必须带 word_id' } };
     if (action === 'binding' && !bindingId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'binding 必须带 binding_id' } };
+    if (action === 'plan_link' && !linkId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'plan_link 必须带 link_id（plans_read 明细的链接列表里有）' } };
+    if (action === 'i_relation' && !relationId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'i_relation 必须带 relation_id' } };
     if (action === 'relations' && !memoryId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'relations 必须带 memory_id' } };
+    if (action === 'trace' && !memoryId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'trace 必须带 memory_id' } };
     const esv = typeof args.expected_source_version === 'number' ? args.expected_source_version : -1;
     if (action === 'word_source' && esv < 0) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'word_source 必须带 expected_source_version（来源换代计数 CAS——读取结果里有）' } };
     const fromMemory = typeof args.from_memory === 'string' ? args.from_memory : '';
@@ -777,13 +791,16 @@ export class MemoryToolsService {
     if (action === 'link' && (!fromMemory || !toMemory || !relType)) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'link 必须带 from_memory、to_memory 与 relation_type' } };
     }
-    let r: Awaited<ReturnType<MariposaClient['relationsCorrect'] | MariposaClient['relationsLink'] | MariposaClient['relationsList'] | MariposaClient['wordSourceCorrect'] | MariposaClient['sourceBindingCorrect'] | MariposaClient['correctionsList']>>;
+    let r: Awaited<ReturnType<MariposaClient['relationsCorrect'] | MariposaClient['relationsLink'] | MariposaClient['relationsList'] | MariposaClient['wordSourceCorrect'] | MariposaClient['sourceBindingCorrect'] | MariposaClient['correctionsList'] | MariposaClient['planMemoryCorrect'] | MariposaClient['iItemRelationsCorrect'] | MariposaClient['memoryRelationsTrace']>>;
     try {
       if (action === 'relation') r = await m.relationsCorrect({ relationId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
       else if (action === 'word_source') r = await m.wordSourceCorrect({ wordId, correctionAction: ca, operationId: opId, expectedSourceVersion: esv, ...(replacement ? { replacement } : {}) });
       else if (action === 'binding') r = await m.sourceBindingCorrect({ bindingId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
+      else if (action === 'plan_link') r = await m.planMemoryCorrect({ linkId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
+      else if (action === 'i_relation') r = await m.iItemRelationsCorrect({ relationId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
       else if (action === 'link') r = await m.relationsLink({ fromMemory, toMemory, relationType: relType, ...(typeof args.custom_label === 'string' && args.custom_label.length > 0 ? { customLabel: args.custom_label } : {}) });
       else if (action === 'relations') r = await m.relationsList(memoryId);
+      else if (action === 'trace') r = await m.memoryRelationsTrace({ memoryId, ...(typeof args.max_depth === 'number' ? { maxDepth: args.max_depth } : {}) });
       else r = await m.correctionsList({});
     } catch {
       return { ok: false, output: { error_code: 'CORRECT_OUTCOME_UNKNOWN' } };

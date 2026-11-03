@@ -502,6 +502,25 @@ export class MariposaClient {
     if (args.note) payload.note = args.note;
     return this.transport('source.binding.correct', payload);
   }
+  /** 2026-11-03 她裁补的四个映射缺口（原只存在于 M，E 无消费者） */
+  async planMemoryCorrect(args: { linkId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { link_id: args.linkId, correction_action: args.correctionAction, operation_id: args.operationId };
+    if (args.replacement) payload.replacement = args.replacement;
+    if (args.note) payload.note = args.note;
+    return this.transport('plan.memory.correct', payload, undefined, { idempotency_key: args.operationId });
+  }
+  async iItemRelationsCorrect(args: { relationId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { relation_id: args.relationId, correction_action: args.correctionAction, operation_id: args.operationId };
+    if (args.replacement) payload.replacement = args.replacement;
+    if (args.note) payload.note = args.note;
+    return this.transport('i.item.relations.correct', payload, undefined, { idempotency_key: args.operationId });
+  }
+  async memoryRelationsTrace(args: { memoryId: string; maxDepth?: number }): Promise<MariposaCallResult> {
+    return this.transport('memory.relations.trace', { memory_id: args.memoryId, ...(typeof args.maxDepth === 'number' ? { max_depth: args.maxDepth } : {}) });
+  }
+  async emotionContextGet(): Promise<MariposaCallResult> {
+    return this.transport('emotion.context.get', {});
+  }
   async correctionsList(args: { endpoint?: string; instanceId?: string; domain?: string; limit?: number }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = {};
     if (args.endpoint) payload.endpoint = args.endpoint;
