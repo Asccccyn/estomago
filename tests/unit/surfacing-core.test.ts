@@ -392,3 +392,55 @@ test('三个独立事件保留三份完整原文，只输出必要引用/date/te
   assert.equal(out.memories.length,3);
   out.memories.forEach((m:any,n:number)=>{assert.deepEqual(Object.keys(m),['memory_ref','kind','date','text']);assert.equal(m.text,items[n].event_text)});
 });
+
+test('R12（2026-11-03）：settingsView.effective——最终生效值+来源+范围；DB 覆盖如实标注', async () => {
+  const { db, svc } = makeService(tempRoot('sfset-'), true, [{ decision: 'none' }]);
+  try {
+    let v = svc.settingsView().effective as Record<string, Record<string, unknown>>;
+    assert.equal(v.enabled!.value, true);
+    assert.equal(v.enabled!.source, 'config', '无 DB 覆盖时来源=config');
+    assert.equal(v.delivery_budget_bytes!.value, Math.min(4096 * 3, 24576));
+    assert.equal(v.delivery_budget_bytes!.source, 'derived');
+    assert.equal((v.m_execution as Record<string, unknown>).source, 'observed');
+    // DB 覆盖后来源翻转
+    svc.updateSettings({ model: 'gpt-6.1-sol-alt' });
+    v = svc.settingsView().effective as Record<string, Record<string, unknown>>;
+    assert.equal(v.sol_model!.source, 'db_override', '模型被设置面覆盖后如实标注');
+    assert.equal(v.sol_model!.value, 'gpt-6.1-sol-alt');
+  } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
+});
+
+test('F18（2026-11-03）：finalAdmit 消费 check 回执 expires_at——过期不注入（不放宽到任务 deadline）', async () => {
+  const expiredIso = new Date(Date.now() - 60_000).toISOString();
+  const { db, svc, messages } = ((): ReturnType<typeof makeService> => {
+    const root = tempRoot('sfexp-');
+    const db = makeDb(root);
+    const transport: MariposaTransport = async (cap) => {
+      if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_1', selected_count: 1, reason_code: null, policy_revision: 7, prompt_revision: 'surface_prepare_v5' } };
+      if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_1', items: [ITEM], reason_code: null } };
+      // 两次 check（augmentFor 冻结 + finalAdmit 复核）都带已过期的回执时效
+      if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref], expires_at: expiredIso } };
+      return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
+    };
+    const svc = new SurfacingService(db, new MariposaClient({ transport }), fakeSolJudge([{ decision: 'recall' }]).judge, {
+      enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+      delivery_deadline_ms: 5000, max_added_tokens_per_turn: 4096,
+      max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576,
+    }, null);
+    const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
+    messages.ensureConversation('c1');
+    return { db, svc, messages };
+  })();
+  try {
+    const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得7.9记忆库吗', clientMessageId: 'exp1', occurredAt: T0 });
+    const input = { conversationId: 'c1', windowId: 'w1', turnId: u1.turnId, attemptId: 'a1',
+      message: { id: u1.message.id, revision: 1, sequence: u1.message.sequence, content: 'x', hash: 'h1' } };
+    const aug = await svc.augmentFor(input);
+    assert.ok(aug, '冻结阶段成功（check 未过期门不拦冻结）');
+    const admitted = await svc.finalAdmit(aug, { conversationId: 'c1', windowId: 'w1', messageId: u1.message.id, revision: 1 });
+    assert.equal(admitted, null, 'F18：回执已过期 → 最终准入丢弃，不注入');
+    const job = svc.repo.jobById(aug.jobId)!;
+    assert.equal(job.state, "cancelled", "作业如实收口留痕（FINAL_ADMISSION_DROPPED）");
+    assert.equal(job.reason_code, "FINAL_ADMISSION_DROPPED");
+  } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
+});

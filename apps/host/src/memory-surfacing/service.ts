@@ -671,8 +671,20 @@ export class SurfacingService {
       }, signal), this.deadline(job) - Date.now(), job.id);
       if (ck.ok && Date.now() < this.deadline(job) && this.current(job)
         && this.repo.jobById(job.id)?.state === 'reserved') {
-        const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[] };
+        const ckd = ck.result as { valid?: boolean; accepted_detail_refs?: string[]; expires_at?: string };
         if (ckd.valid === true) {
+          // F18（裁定 2026-11-03）：check 新鲜度合同——M 回执带短时效
+          // expires_at（SURFACE_MAX_RECEIPT_AGE_MS=250ms 量级）：终验通过
+          // 但回执已过期=不再注入。不放宽到任务 300s，也不在未过期时
+          // 断言风险；字段缺席（旧 M/测试桩）不额外设障（以任务 deadline 为界）。
+          const exp = typeof ckd.expires_at === 'string' ? Date.parse(ckd.expires_at) : NaN;
+          const receiptFresh = !Number.isFinite(exp) || Date.now() < exp;
+          if (!receiptFresh) {
+            this.log?.warn('surface_check_expired', {
+              job: job.id, expires_at: ckd.expires_at,
+            });
+            return this.repo.dropAtFinalAdmission(job.id);
+          }
           // 接受面收缩（权限/版本撤销）：冻结块任一条掉出 accepted 即整块丢弃
           const accepted = new Set(ckd.accepted_detail_refs ?? []);
           if (aug.items.every(it => accepted.has(it.detail_ref))) {
@@ -723,6 +735,15 @@ export class SurfacingService {
 
   settingsView(): Record<string, unknown> {
     const override = this.repo.getSetting('sol_decision_template');
+    const modelOverride = this.repo.getSetting('sol_model');
+    const enabledOverride = this.repo.getSetting('runtime_enabled');
+    // R12（裁定 2026-11-03）：最终生效值+来源+作用范围——能回答"这次
+    // 实际用了什么"。来源枚举：db_override（surfacing_settings 覆盖）/
+    // config（yaml 或代码默认，以生效值为准）/ derived（按 R1 公式派生）/
+    // observed（从 M 响应实测落库）。展示不改变配置优先级。
+    const mLast = this.db.prepare(
+      'SELECT m_policy_revision, m_prompt_revision, updated_at FROM surfacing_jobs WHERE m_policy_revision IS NOT NULL ORDER BY updated_at DESC LIMIT 1',
+    ).get() as { m_policy_revision: number; m_prompt_revision: string; updated_at: string } | undefined;
     return {
       enabled: this.cfg.enabled,
       sol: {
@@ -733,6 +754,23 @@ export class SurfacingService {
         template_revision: this.sol.cfg.templateRevision,
         template_source: override ? 'override' : 'default',
         effective_template: this.sol.effectiveTemplate(), // 预览=请求正文同一出口
+      },
+      effective: {
+        enabled: { value: this.cfg.enabled, scope: 'host', source: enabledOverride === null ? 'config' : 'db_override' },
+        delivery_deadline_ms: { value: this.cfg.delivery_deadline_ms, scope: 'host/job', source: 'config' },
+        max_added_tokens_per_turn: { value: this.cfg.max_added_tokens_per_turn, scope: 'host/turn', source: 'config' },
+        max_packet_bytes: { value: this.cfg.max_packet_bytes, scope: 'host/turn', source: 'config' },
+        delivery_budget_bytes: { value: this.deliveryBudgetBytes(), scope: 'host/turn', source: 'derived', note: 'min(max_added_tokens_per_turn×3, max_packet_bytes)；随 prepare/validate/check 载荷过线（R1/R3）' },
+        worker_concurrency: { value: this.cfg.worker_concurrency, scope: 'host', source: 'config' },
+        recent_user_messages: { value: this.cfg.recent_user_messages, scope: 'host', source: 'config' },
+        recent_window_bytes: { value: this.cfg.recent_window_bytes, scope: 'host', source: 'config' },
+        job_policy_revision: { value: this.cfg.policy_revision, scope: 'host/job', source: 'config', note: 'E 调度身份（R9），非 M 版本' },
+        job_prompt_revision: { value: this.cfg.prompt_prepare_revision, scope: 'host/job', source: 'config', note: 'E 调度身份（R9），非 M 版本' },
+        sol_model: { value: this.sol.effectiveModel(), scope: 'host/judge', source: modelOverride ? 'db_override' : 'config' },
+        m_execution: mLast
+          ? { policy_revision: mLast.m_policy_revision, prompt_revision: mLast.m_prompt_revision, observed_at: mLast.updated_at, source: 'observed' }
+          : { source: 'observed', note: '尚无 M 版本观测（首个 prepare 响应后落库，R9）' },
+        m_daily_quota: { source: 'observed', note: 'M 侧进程 env（当前 1000 次/$5），未跨线暴露——如实标注不可见，不冒充默认值' },
       },
     };
   }

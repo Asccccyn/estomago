@@ -212,6 +212,16 @@ export class MariposaClient {
   /** Configuration evidence only; no network request and no credential disclosure. */
   isConfigured(): boolean { return this.configured(); }
 
+  /** R13/F16（裁定 2026-11-03）：把宿主取消信号绑定到本视图的后续调用。
+   * 取消只停止本地等待（socket 中断），不撤销已提交的远端写入——
+   * 写操作结果仍以回执/对账为准（unknown 路径同 op 同载荷恢复）。 */
+  withSignal(signal?: AbortSignal): MariposaClient {
+    if (!signal) return this;
+    const base = this.transport;
+    const bound: MariposaTransport = (cap, payload, _ignored, envelope) => base(cap, payload, signal, envelope);
+    return new MariposaClient({ transport: bound });
+  }
+
   async sourceIngest(req: IngestRequest, signal?: AbortSignal): Promise<MariposaCallResult & { ack?: IngestAck }> {
     const r = await this.transport('source.ingest', req as unknown as Record<string, unknown>, signal);
     if (!r.ok) return r;

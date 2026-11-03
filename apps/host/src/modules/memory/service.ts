@@ -182,6 +182,8 @@ export class MemoryToolsService {
 
   async memoryHold(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     // P04：全局 rawToolCallIdRef 不再随迁——新路径 tool_call_id 由执行外壳注入 args；
     // 宿主直调无 id 时与旧全局为 null 的行为一致（空串派生）。
     const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
@@ -311,7 +313,7 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
     try {
-      r = await this.mariposa.memoryHold({ operationId, holdPayload, eventSourceRanges: eventSelections.length > 0 ? eventSelections : null });
+      r = await m.memoryHold({ operationId, holdPayload, eventSourceRanges: eventSelections.length > 0 ? eventSelections : null });
     } catch {
       // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
       this.reviews.settleEffect(effectId, 'unknown', false, null);
@@ -357,6 +359,8 @@ export class MemoryToolsService {
 
   async memoryRecall(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
     const requestRef = `es-recall-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     // R02（复审 2026-10-07）：续查=refine 回原 session（不是另起 start 冒充
@@ -414,7 +418,7 @@ export class MemoryToolsService {
       const opId = `es-r2-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}`).slice(0, 40)}`;
       let r2: Awaited<ReturnType<MariposaClient['recallRound2']>>;
       try {
-        r2 = await this.mariposa.recallRound2({ sessionId: refineSession, reason, operationId: opId, conversationScope: ctx.roomId });
+        r2 = await m.recallRound2({ sessionId: refineSession, reason, operationId: opId, conversationScope: ctx.roomId });
       } catch {
         return { ok: false, output: { error_code: 'RECALL_OUTCOME_UNKNOWN', request_ref: requestRef } };
       }
@@ -440,13 +444,13 @@ export class MemoryToolsService {
           const rej = await this.rejectInSession(refineSession, rejectRefInline, ctx);
           if (!rej.ok) return rej;
         }
-        r = await this.mariposa.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId, ...(recallExcluded.length > 0 ? { excludedSourceIds: recallExcluded } : {}) });
+        r = await m.recallRefine({ sessionId: refineSession, continueRef: refineRef, query: String(args.query ?? ''), channels: [channel], ...(eventDate ? { eventDate } : {}), conversationScope: ctx.roomId, ...(recallExcluded.length > 0 ? { excludedSourceIds: recallExcluded } : {}) });
       } else {
         // RECALL_SOURCE_BOUNDARY（2026-11-01）：当前请求不能自证过去——
         // 本轮输入消息+当前窗已携带原文经收据解析为 sm id 后随查询下推
         // （B4：主动 recall 只用资格集，不带自动去重集；显式核对旧来源
         // 不受影响；conversation_read 当前回看通道不经此边界）。
-        r = await this.mariposa.recallStart({
+        r = await m.recallStart({
           requestRef, query: String(args.query ?? ''),
           conversationScope: ctx.roomId,
           channels: [channel],
@@ -543,13 +547,15 @@ export class MemoryToolsService {
 
   async memoryRecallNext(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const resultSetId = typeof args.result_set_id === 'string' ? args.result_set_id : '';
     if (!resultSetId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'result_set_id 必填（上一页 pagination.result_set_id）' } };
     const cursor = typeof args.cursor === 'string' ? args.cursor : '';
     const sessionId = typeof args.session_id === 'string' ? args.session_id : '';
     let r: Awaited<ReturnType<MariposaClient['recallPage']>>;
     try {
-      r = await this.mariposa.recallPage({
+      r = await m.recallPage({
         resultSetId,
         ...(sessionId ? { sessionId } : {}),
         ...(cursor ? { cursor } : {}),
@@ -598,8 +604,10 @@ export class MemoryToolsService {
   }
 
 
-  async memoryIRead(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async memoryIRead(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const what = args.what === 'items' || args.what === 'item' || args.what === 'item_history' || args.what === 'doc_history' ? args.what : 'current';
     const itemId = typeof args.item_id === 'string' ? args.item_id : '';
     if ((what === 'item' || what === 'item_history') && !itemId) {
@@ -607,11 +615,11 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['iGet'] | MariposaClient['iItemsList'] | MariposaClient['iItemGet'] | MariposaClient['iItemHistory'] | MariposaClient['iVersionsRead']>>;
     try {
-      if (what === 'items') r = await this.mariposa.iItemsList();
-      else if (what === 'item') r = await this.mariposa.iItemGet(itemId);
-      else if (what === 'item_history') r = await this.mariposa.iItemHistory(itemId);
-      else if (what === 'doc_history') r = await this.mariposa.iVersionsRead();
-      else r = await this.mariposa.iGet();
+      if (what === 'items') r = await m.iItemsList();
+      else if (what === 'item') r = await m.iItemGet(itemId);
+      else if (what === 'item_history') r = await m.iItemHistory(itemId);
+      else if (what === 'doc_history') r = await m.iVersionsRead();
+      else r = await m.iGet();
     } catch {
       return { ok: false, output: { error_code: 'I_READ_OUTCOME_UNKNOWN' } };
     }
@@ -623,14 +631,16 @@ export class MemoryToolsService {
   }
 
 
-  async plansRead(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async plansRead(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const planId = typeof args.plan_id === 'string' ? args.plan_id : '';
     const states = Array.isArray(args.states) ? (args.states as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
     let r: Awaited<ReturnType<MariposaClient['planList'] | MariposaClient['planGet']>>;
     try {
-      if (planId) r = await this.mariposa.planGet(planId);
-      else r = await this.mariposa.planList(states);
+      if (planId) r = await m.planGet(planId);
+      else r = await m.planList(states);
     } catch {
       return { ok: false, output: { error_code: 'PLANS_READ_OUTCOME_UNKNOWN' } };
     }
@@ -642,8 +652,10 @@ export class MemoryToolsService {
   }
 
 
-  async memoryOpenTool(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async memoryOpenTool(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const actions = ['open', 'confirm', 'recollect', 'revise', 'recollections', 'keeps', 'unkeep'] as const;
     type OpenAction = typeof actions[number];
     const action = actions.includes(args.action as OpenAction) ? args.action as OpenAction : '';
@@ -670,13 +682,13 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['memoryOpen'] | MariposaClient['viewConfirm'] | MariposaClient['recollectionsAppend'] | MariposaClient['recollectionsRevise'] | MariposaClient['recollectionsList'] | MariposaClient['keepsList'] | MariposaClient['keepRevoke']>>;
     try {
-      if (action === 'open') r = await this.mariposa.memoryOpen(memoryId, true);
-      else if (action === 'confirm') r = await this.mariposa.viewConfirm(memoryId, receiptId);
-      else if (action === 'recollect') r = await this.mariposa.recollectionsAppend({ memoryId, receiptId, text, ...(args.keep_wide === true ? { keepWide: true } : {}) });
-      else if (action === 'revise') r = await this.mariposa.recollectionsRevise(recollectionId, text);
-      else if (action === 'recollections') r = await this.mariposa.recollectionsList(memoryId, args.include_history === true);
-      else if (action === 'keeps') r = await this.mariposa.keepsList(memoryId);
-      else r = await this.mariposa.keepRevoke(markId);
+      if (action === 'open') r = await m.memoryOpen(memoryId, true);
+      else if (action === 'confirm') r = await m.viewConfirm(memoryId, receiptId);
+      else if (action === 'recollect') r = await m.recollectionsAppend({ memoryId, receiptId, text, ...(args.keep_wide === true ? { keepWide: true } : {}) });
+      else if (action === 'revise') r = await m.recollectionsRevise(recollectionId, text);
+      else if (action === 'recollections') r = await m.recollectionsList(memoryId, args.include_history === true);
+      else if (action === 'keeps') r = await m.keepsList(memoryId);
+      else r = await m.keepRevoke(markId);
     } catch {
       return { ok: false, output: { error_code: 'OPEN_CHAIN_OUTCOME_UNKNOWN' } };
     }
@@ -690,6 +702,8 @@ export class MemoryToolsService {
 
   async memoryCorrect(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const actions = ['relation', 'word_source', 'binding', 'link', 'relations', 'corrections', 'word_add', 'word_revise'] as const;
     type CorAction = typeof actions[number];
     const action = actions.includes(args.action as CorAction) ? args.action as CorAction : '';
@@ -723,14 +737,14 @@ export class MemoryToolsService {
       }
       const mid = typeof args.memory_id === 'string' ? args.memory_id : '';
       if (!mid) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 必须带 memory_id（话语所在记忆）` } };
-      const got = await this.mariposa.memoryGet(mid);
+      const got = await m.memoryGet(mid);
       if (!got.ok) return { ok: false, output: { error_code: `WORD_OPS_${got.code}`, error: '读取目标记忆失败（版本 CAS 需要）' } };
       const cur = (got.result as Record<string, unknown>).version;
       if (typeof cur !== 'number') return { ok: false, output: { error_code: 'WORD_OPS_VERSION_MISSING', error: '读取结果缺 version，无法执行 CAS' } };
       const payload: Record<string, unknown> = { memory_id: mid, expected_version: cur };
       if (action === 'word_add') payload.our_words_add = words;
       else payload.our_words_revise = [{ word_id: wordId, ...words[0]! }];
-      const r = await this.mariposa.memoryUpdate(payload);
+      const r = await m.memoryUpdate(payload);
       if (!r.ok) {
         const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
         return { ok: false, output: { error_code: unknown ? 'CORRECT_OUTCOME_UNKNOWN' : `CORRECT_${r.code}` } };
@@ -765,12 +779,12 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['relationsCorrect'] | MariposaClient['relationsLink'] | MariposaClient['relationsList'] | MariposaClient['wordSourceCorrect'] | MariposaClient['sourceBindingCorrect'] | MariposaClient['correctionsList']>>;
     try {
-      if (action === 'relation') r = await this.mariposa.relationsCorrect({ relationId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
-      else if (action === 'word_source') r = await this.mariposa.wordSourceCorrect({ wordId, correctionAction: ca, operationId: opId, expectedSourceVersion: esv, ...(replacement ? { replacement } : {}) });
-      else if (action === 'binding') r = await this.mariposa.sourceBindingCorrect({ bindingId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
-      else if (action === 'link') r = await this.mariposa.relationsLink({ fromMemory, toMemory, relationType: relType, ...(typeof args.custom_label === 'string' && args.custom_label.length > 0 ? { customLabel: args.custom_label } : {}) });
-      else if (action === 'relations') r = await this.mariposa.relationsList(memoryId);
-      else r = await this.mariposa.correctionsList({});
+      if (action === 'relation') r = await m.relationsCorrect({ relationId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
+      else if (action === 'word_source') r = await m.wordSourceCorrect({ wordId, correctionAction: ca, operationId: opId, expectedSourceVersion: esv, ...(replacement ? { replacement } : {}) });
+      else if (action === 'binding') r = await m.sourceBindingCorrect({ bindingId, correctionAction: ca, operationId: opId, ...(replacement ? { replacement } : {}), ...(note ? { note } : {}) });
+      else if (action === 'link') r = await m.relationsLink({ fromMemory, toMemory, relationType: relType, ...(typeof args.custom_label === 'string' && args.custom_label.length > 0 ? { customLabel: args.custom_label } : {}) });
+      else if (action === 'relations') r = await m.relationsList(memoryId);
+      else r = await m.correctionsList({});
     } catch {
       return { ok: false, output: { error_code: 'CORRECT_OUTCOME_UNKNOWN' } };
     }
@@ -784,6 +798,8 @@ export class MemoryToolsService {
 
   async deletionReview(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const actions = ['requests', 'get', 'decide'] as const;
     type DelAction = typeof actions[number];
     const action = actions.includes(args.action as DelAction) ? args.action as DelAction : '';
@@ -803,11 +819,11 @@ export class MemoryToolsService {
     const status = typeof args.status === 'string' && args.status.length > 0 ? args.status : undefined;
     let r: Awaited<ReturnType<MariposaClient['deletionDecide'] | MariposaClient['deletionGet'] | MariposaClient['deletionList']>>;
     try {
-      if (action === 'requests') r = await this.mariposa.deletionList({ ...(status ? { status } : {}) });
-      else if (action === 'get') r = await this.mariposa.deletionGet(requestId);
+      if (action === 'requests') r = await m.deletionList({ ...(status ? { status } : {}) });
+      else if (action === 'get') r = await m.deletionGet(requestId);
       else {
         const opId = `es-del-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}`).slice(0, 40)}`;
-        r = await this.mariposa.deletionDecide({ requestId, decision: decision as 'approve' | 'reject', ...(rejectionReason ? { rejectionReason } : {}), operationId: opId });
+        r = await m.deletionDecide({ requestId, decision: decision as 'approve' | 'reject', ...(rejectionReason ? { rejectionReason } : {}), operationId: opId });
       }
     } catch {
       return { ok: false, output: { error_code: 'DELETION_OUTCOME_UNKNOWN' } };
@@ -820,8 +836,10 @@ export class MemoryToolsService {
   }
 
 
-  async memoryIWrite(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async memoryIWrite(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const action = args.action === 'revise' || args.action === 'restore' ? args.action : (args.action === 'create' ? 'create' : '');
     if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 create/revise/restore' } };
     const content = typeof args.content === 'string' ? args.content : '';
@@ -845,11 +863,11 @@ export class MemoryToolsService {
     let r: Awaited<ReturnType<MariposaClient['iItemCreate'] | MariposaClient['iItemRevise'] | MariposaClient['iItemRestore']>>;
     try {
       if (action === 'create') {
-        r = await this.mariposa.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}) });
+        r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}) });
       } else if (action === 'revise') {
-        r = await this.mariposa.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}), ...(relations ? { relations } : {}) });
+        r = await m.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}), ...(relations ? { relations } : {}) });
       } else {
-        r = await this.mariposa.iItemRestore({ itemId, restoreRevision, expectedRevision: expected, ...(changeReason ? { changeReason } : {}) });
+        r = await m.iItemRestore({ itemId, restoreRevision, expectedRevision: expected, ...(changeReason ? { changeReason } : {}) });
       }
     } catch {
       return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN' } };
@@ -864,6 +882,8 @@ export class MemoryToolsService {
 
   async plansWrite(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const action = args.action === 'update' || args.action === 'complete' || args.action === 'cancel' ? args.action : (args.action === 'create' ? 'create' : '');
     if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 create/update/complete/cancel' } };
     const planId = typeof args.plan_id === 'string' ? args.plan_id : '';
@@ -879,7 +899,7 @@ export class MemoryToolsService {
     let r: Awaited<ReturnType<MariposaClient['planCreate'] | MariposaClient['planUpdate'] | MariposaClient['planSetState']>>;
     try {
       if (action === 'create') {
-        r = await this.mariposa.planCreate({
+        r = await m.planCreate({
           title: title!, operationId: opId,
           ...(typeof args.content === 'string' ? { content: args.content } : {}),
           ...(typeof args.state === 'string' ? { state: args.state } : {}),
@@ -887,7 +907,7 @@ export class MemoryToolsService {
           ...(typeof args.due_at === 'string' ? { dueAt: args.due_at } : {}),
         });
       } else if (action === 'update') {
-        r = await this.mariposa.planUpdate({
+        r = await m.planUpdate({
           planId, expectedVersion: expected, operationId: opId,
           ...(title ? { title } : {}),
           ...(typeof args.content === 'string' ? { content: args.content } : {}),
@@ -896,7 +916,7 @@ export class MemoryToolsService {
           ...(typeof args.due_at === 'string' ? { dueAt: args.due_at } : {}),
         });
       } else {
-        r = await this.mariposa.planSetState(action === 'complete' ? 'plan.complete' : 'plan.cancel', planId, expected);
+        r = await m.planSetState(action === 'complete' ? 'plan.complete' : 'plan.cancel', planId, expected);
       }
     } catch {
       return { ok: false, output: { error_code: 'PLANS_WRITE_OUTCOME_UNKNOWN' } };
@@ -911,11 +931,13 @@ export class MemoryToolsService {
 
   async episodeList(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const states = Array.isArray(args.states) ? (args.states as string[]) : undefined;
     const cursor = (args.cursor && typeof args.cursor === 'object' && !Array.isArray(args.cursor)) ? args.cursor as Record<string, unknown> : undefined;
     // R05（复审 2026-10-07）：续页游标透传——has_more 必须带可消费的 next_cursor，
     // 第 6 条事件不靠已知 ID 的 get 才能被发现
-    const r = await this.mariposa.episodeList({
+    const r = await m.episodeList({
       scopeId: ctx.roomId,
       ...(states ? { states } : {}),
       limit: 5,
@@ -938,11 +960,13 @@ export class MemoryToolsService {
   }
 
 
-  async episodeGet(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async episodeGet(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const eid = String(args.episode_id ?? '');
     if (!eid) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', field: 'episode_id' } };
-    const r = await this.mariposa.episodeGet(eid).catch(() => null);
+    const r = await m.episodeGet(eid).catch(() => null);
     if (!r || !r.ok) {
       return { ok: false, output: { error_code: r ? `EPISODE_${r.code}` : 'EPISODE_OUTCOME_UNKNOWN', episode_id: eid } };
     }
@@ -952,6 +976,8 @@ export class MemoryToolsService {
 
   async episodeApply(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线' } };
+    // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
+    const m = this.mariposa.withSignal(ctx.signal);
     const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
     const operationId = `es-ep-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const { __tool_call_id: _ignored, operation_id: _modelOp, scope_id: _modelScope, ...modelArgs } = args;
@@ -962,7 +988,7 @@ export class MemoryToolsService {
     };
     let r: Awaited<ReturnType<MariposaClient['episodeApply']>>;
     try {
-      r = await this.mariposa.episodeApply(payload);
+      r = await m.episodeApply(payload);
     } catch {
       return { ok: false, output: { error_code: 'EPISODE_OUTCOME_UNKNOWN', operation_id: operationId } };
     }
