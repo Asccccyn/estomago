@@ -410,13 +410,27 @@ export class ArchiveSyncService {
     if (!result.ok) {
       const cls = classifyError(result.code, result.httpStatus); // 审计 1005B：传 httpStatus——429/423/50x 按 HTTP 语义判 retry，不再依赖码名字符串匹配
       const attempts = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
-      // WP-04（JFA-C07）：超限=服务端门比本地批界严——本批退回 pending 并
-      // 把本地批界减半（会话内记忆），下一轮按更小批重组重试（不无限：
-      // 重试上限仍计 attempts）
+      // WP-04（JFA-C07）+ G4-F10（裁定 2026-11-03）：超限=服务端门比本地
+      // 批界严的**确定性拒绝**（≠结果未知）——旧冻结批必须真正退出：
+      // 行解绑（batch_id=NULL）回 pending，下一轮按减半批界重组**新批**；
+      // 旧实现只减预算却保留绑定，冻结恢复阶段永远原样重放同一超限
+      // 载荷，缩批从不发生。未知路径（transport）不变：仍同 op 同载荷对账。
       if (result.code === 'SOURCE_SELECTION_TOO_LARGE') {
         this.batchByteBudget = Math.max(64 * 1024, Math.floor(this.batchByteBudget / 2));
         this.logger.warn('archive_sync_rebatch_shrink', { op: meta.operationId, bytes: this.batchByteBudget });
-        this.markChunk(rows, 'pending', result.code);
+        if (exhausted()) {
+          this.markChunk(rows, 'failed', 'TOO_LARGE_EXHAUSTED');
+          this.markBatchDead(meta.operationId, 'TOO_LARGE_EXHAUSTED');
+          summary.dead += rows.length;
+          return 'dead';
+        }
+        tx(this.db, () => {
+          const nowIso = new Date().toISOString();
+          this.db.prepare("UPDATE outbox SET batch_id = NULL, state = 'pending', last_error = ?, updated_at = ? WHERE batch_id = ?").run(result.code, nowIso, meta.operationId);
+          // op 是内容派生键——死行不清会让重组同键批撞 UNIQUE（重批=同内容
+          // 新身份：attempts 归零，审计经 rebatch 事件与日志留痕）
+          this.db.prepare("DELETE FROM ingest_batches WHERE operation_id = ?").run(meta.operationId);
+        });
         this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'rebatch', code: result.code, next_batch_bytes: this.batchByteBudget, attempts } });
         summary.retry_later += rows.length;
         return 'retry_later';

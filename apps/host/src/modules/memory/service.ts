@@ -121,11 +121,16 @@ export class MemoryToolsService {
       const row = this.db.prepare(
         'SELECT m.id, m.sequence, m.speaker, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
       ).get(s.revision, s.id, roomId) as { id: string; sequence: number; speaker: string; revision: number; content: string } | undefined;
-      if (row && (row.speaker === 'owner' || row.speaker === 'assistant') && typeof row.content === 'string' && row.content.length > 0) {
-        const range = typeof s.char_start === 'number' && typeof s.char_end === 'number'
-          ? ([s.char_start, s.char_end] as [number, number])
-          : null;
-        candidates.set(row.sequence, { ...row, range });
+      // G3-F08（2026-11-03）：语音消息有效正文=可信转写（与归档同一投影），
+      // 不再把空正文语音整体排除出引语候选
+      if (row && (row.speaker === 'owner' || row.speaker === 'assistant')) {
+        const content = this.effectiveTextOf(row.id, row.revision, row.content);
+        if (content.length > 0) {
+          const range = typeof s.char_start === 'number' && typeof s.char_end === 'number'
+            ? ([s.char_start, s.char_end] as [number, number])
+            : null;
+          candidates.set(row.sequence, { ...row, content, range });
+        }
       }
     }
     const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费码点区间
@@ -246,16 +251,19 @@ export class MemoryToolsService {
       const members: Array<{ source_message_id: string; content_hash: string }> = [];
       for (const row of rows) {
         if (typeof row.content !== 'string') return { ok: false, output: { error_code: 'EVENT_SOURCE_REVISION_MISSING' } };
+        // G3-F08（2026-11-03）：语音有效正文=可信转写（归档投影同一份）——
+        // 覆盖度/收据 hash 核对都按这份文本，已归档语音不再被误报未同步
+        const content = this.effectiveTextOf(row.id, row.revision, row.content);
         // All messages must have actually been read at this revision, including long-message fragments.
         const spans = ctx.seenMessages.filter((x) => x.id === row.id && x.revision === row.revision)
-          .map((x) => [x.char_start ?? 0, x.char_end ?? [...row.content].length]).sort((a,b) => a[0]! - b[0]!);
+          .map((x) => [x.char_start ?? 0, x.char_end ?? [...content].length]).sort((a,b) => a[0]! - a[0]!);
         let covered = 0;
         for (const span of spans) { if (span[0]! > covered) break; covered = Math.max(covered, span[1]!); }
-        if (!spans.length || covered < [...row.content].length) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SEEN', seq: row.sequence } };
+        if (!spans.length || covered < [...content].length) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SEEN', seq: row.sequence } };
         if (used.has(row.id)) return { ok: false, output: { error_code: 'EVENT_SOURCE_OVERLAP' } };
         used.add(row.id);
         const receipt = this.receiptOf(row.id, row.revision);
-        if (!receipt || receipt.content_hash !== sha256Hex(row.content)) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SYNCED', seq: row.sequence } };
+        if (!receipt || receipt.content_hash !== sha256Hex(content)) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SYNCED', seq: row.sequence } };
         if (conversationId && receipt.source_conversation_id !== conversationId) return { ok: false, output: { error_code: 'EVENT_SOURCE_CONVERSATION_MISMATCH' } };
         conversationId = receipt.source_conversation_id;
         members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
@@ -977,6 +985,21 @@ export class MemoryToolsService {
       .get(messageId, revision) as { source_conversation_id: string | null; source_message_id: string | null; content_hash: string | null } | undefined;
     if (!row || !row.source_conversation_id || !row.source_message_id || !row.content_hash) return null;
     return { source_conversation_id: row.source_conversation_id, source_message_id: row.source_message_id, content_hash: row.content_hash };
+  }
+
+  /** G3-F08（裁定 2026-11-03）：语音消息的有效正文——与归档投影
+   * （archive-sync RR-11）同一规则：空正文取可信转写（发布快照，
+   * message_attachments.derived_text，按位置拼接），非空正文原样。
+   * 模型输入（可读声学投影承载转写）、归档正文、hold 引语/事件范围
+   * 三处自此同一份文本、同一份 hash 口径——已归档的语音不再被
+   * EVENT_SOURCE_NOT_SYNCED 误报，转写也不再被 quotes 路径排除。 */
+  effectiveTextOf(messageId: string, revision: number, content: string): string {
+    if (typeof content === 'string' && content.trim().length > 0) return content;
+    const rows = this.db.prepare(
+      "SELECT derived_text FROM message_attachments WHERE message_id = ? AND revision = ? AND presentation = 'voice' AND derived_text IS NOT NULL ORDER BY position",
+    ).all(messageId, revision) as Array<{ derived_text: string | null }>;
+    const derived = rows.map((r) => (r.derived_text ?? '').trim()).filter((t) => t.length > 0).join('\n');
+    return derived.length > 0 ? derived : (content ?? '');
   }
 
 
