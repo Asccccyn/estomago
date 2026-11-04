@@ -67,9 +67,10 @@ export function candidates(v: any[]): Obj[] {
     if(c.memory_ref)out.memory_ref=c.memory_ref;
     if(c.content_complete !== undefined)out.content_complete=c.content_complete;
     Object.assign(out,select(c,['start_char','end_char']));
+    if(c.fragment)out.fragment=select(c.fragment,['kind','evidence_index','start_char','end_char','total_chars','text','content_complete']);
     if (out.original_title) { if (!out.title) out.title=out.original_title; delete out.original_title; }
     const evidence=list(c.evidence).map(e=>{
-      const x=select(e,['field','snippet','source_ref']);
+      const x=select(e,['evidence_kind','field','snippet','source_ref','source_version']);
       if(e.structured_value)x.structured_value=select(e.structured_value,['categories','legacy_content_gap','source_ref_state','source_binding_version']);
       if(e.evidence_kind==='word_unverified')x.unverified=true;
       if(e.truncated===true)x.truncated=true;

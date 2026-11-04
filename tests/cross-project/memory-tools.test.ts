@@ -202,6 +202,23 @@ try {
     raw = await invoke(next.tool,next.arguments);
   }
   assert.equal(rawRefs.size,25,'frozen result pages and raw continuation remain distinct, no skipped source rows');
+  const longText='长片锚点 AbC  原生空格。\n'+ '甲乙丙丁  XyZ\n'.repeat(3200);
+  const longHold=await invoke('memory_hold',{original_title:'合成长片',text:longText,categories:['daily'],creation_mode:'contemporaneous'});
+  assert.equal(longHold.ok,true,JSON.stringify(longHold));
+  let longPage=await invoke('memory_recall',{query:'长片锚点',lexical_terms:['长片锚点']});
+  let delivered='';let offset=0;
+  for(let step=0;step<30;step++){
+    assert.equal(longPage.ok,true,JSON.stringify(longPage));
+    const wirePage=wire.at(-1)!.response.data;
+    const longWire=(wirePage.candidates??[]).filter((c:any)=>c.memory_id===longHold.output.memory_id&&c.fragment?.kind==='evidence_snippet'&&c.fragment.evidence_index===0);
+    const cards=(longPage.output.candidates as any[]).filter(c=>c.memory_id===longHold.output.memory_id&&c.fragment?.kind==='evidence_snippet'&&c.fragment.evidence_index===0);
+    assert.deepEqual(cards.map(c=>c.fragment),longWire.map((c:any)=>c.fragment),'authored fragment and incomplete marker survive toModel');
+    for(const card of cards){assert.equal(card.fragment.start_char,offset);delivered+=card.fragment.text;offset=card.fragment.end_char;assert.equal(card.fragment.content_complete,false);}
+    const next=longPage.output.next as {tool:string;arguments:Record<string,unknown>}|undefined;
+    if(!next||next.tool!=='memory_recall_next')break;
+    longPage=await invoke(next.tool,next.arguments);
+  }
+  assert.equal(delivered,longText,'full authored text reconstructed from actual HTTP pages');
   fs.writeFileSync(process.env.CROSS_MARIPOSA_RESULT!, JSON.stringify({ evidence: 'A01-A04/A09/A10/A12 frozen schema → ModelToolBridge → actual HTTP legacy profile → domain → toModel', wire }, null, 2));
   console.log('P1/P2: actual HTTP, delivered detail and structured continuation contracts passed; synthetic data only');
 } finally { globalThis.fetch = nativeFetch; db.close(); }

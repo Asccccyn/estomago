@@ -4,8 +4,8 @@
 // 页面、调度器、派发前检查统一经 effectiveSettingsFor() 读——不存在 worker 用旧 enabled 的路径。
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
-import type { Config } from '../config/schema.ts';
-import { effectiveSettings, type EffectiveSettings } from '../runtime/background-policy.ts';
+import { isDailyCostCap, type DailyCostCap, type Config } from '../config/schema.ts';
+import { effectiveSettings, MODEL_BACKGROUND_CONTROLS, type ModelBackgroundControl, type EffectiveSettings } from '../runtime/background-policy.ts';
 
 const SETTINGS_KEY = 'background.settings';
 const REVISION_KEY = 'background.settings_revision';
@@ -29,8 +29,9 @@ export class BackgroundSettingsService {
   effective(): EffectiveSettings {
     const rev = this.revision();
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
-    const stored = row ? JSON.parse(row.value) as { autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null } : null;
+    const stored = row ? JSON.parse(row.value) as { free_activity_enabled?: boolean | null; autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap } : null;
     const es = effectiveSettings(this.config, rev, stored);
+    if ('free_activity_daily_cost_cap_usd' in (stored ?? {})) es.free_activity.daily_cost_cap_usd = stored?.free_activity_daily_cost_cap_usd ?? null;
     if ('autonomous_daily_cost_cap_usd' in (stored ?? {})) es.autonomous.daily_cost_cap_usd = stored?.autonomous_daily_cost_cap_usd ?? null;
     if ('keepwarm_daily_cost_cap_usd' in (stored ?? {})) es.keepwarm.daily_cost_cap_usd = stored?.keepwarm_daily_cost_cap_usd ?? null;
     return es;
@@ -41,9 +42,9 @@ export class BackgroundSettingsService {
    * expectedRevision 不匹配=REVISION_CONFLICT（If-Match 409）。返回新 revision。
    */
   /** AUD-02 修复：关闭时终止运行中执行的回调（由 scheduler 装配时注入） */
-  onDisable: ((kind: 'autonomous' | 'keepwarm') => void) | null = null;
+  onDisable: ((kind: ModelBackgroundControl) => void) | null = null;
 
-  applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; autonomous_daily_cost_cap_usd?: number | null; keepwarm_daily_cost_cap_usd?: number | null }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
+  applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { free_activity_enabled?: boolean; autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
     return tx(this.db, () => {
       const requestHash = JSON.stringify({ expectedRevision: opts.expectedRevision, patch: Object.fromEntries(Object.entries(opts.patch).sort(([a], [b]) => a.localeCompare(b))) });
       if (opts.operationId !== undefined) {
@@ -57,33 +58,33 @@ export class BackgroundSettingsService {
       const current = this.revision();
       if (opts.expectedRevision !== current) throw new Error(`REVISION_CONFLICT:${current}`);
       const before = this.effective();
-      for (const cap of ['autonomous_daily_cost_cap_usd', 'keepwarm_daily_cost_cap_usd'] as const) {
-        if (cap in opts.patch && opts.patch[cap] !== null && !(typeof opts.patch[cap] === 'number' && Number.isFinite(opts.patch[cap]) && opts.patch[cap]! > 0)) throw new Error(`BACKGROUND_BUDGET_INVALID:${cap}`);
-      }
-      // §4.2 422 门：开启付费用途须预算已配（null=未配置非无限）+执行器就绪——不先开功能再等第一次付费失败
       const readiness = opts.readiness ?? { autonomousExecutorReady: true, keepwarmExecutorReady: true };
-      if (opts.patch.autonomous_enabled === true) {
-        const cap = 'autonomous_daily_cost_cap_usd' in opts.patch ? opts.patch.autonomous_daily_cost_cap_usd : before.autonomous.daily_cost_cap_usd;
-        if (typeof cap !== 'number' || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:autonomous');
-        if (!readiness.autonomousExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:autonomous');
-      }
-      if (opts.patch.keepwarm_enabled === true) {
-        const cap = 'keepwarm_daily_cost_cap_usd' in opts.patch ? opts.patch.keepwarm_daily_cost_cap_usd : before.keepwarm.daily_cost_cap_usd;
-        if (typeof cap !== 'number' || !(cap > 0)) throw new Error('BACKGROUND_BUDGET_NOT_CONFIGURED:keepwarm');
-        if (!readiness.keepwarmExecutorReady) throw new Error('BACKGROUND_EXECUTOR_NOT_READY:keepwarm');
-      }
-      // 预算上限写入（有限正数才接受；null=显式未配置）
       const caps: Record<string, unknown> = {};
-      if ('autonomous_daily_cost_cap_usd' in opts.patch) caps.autonomous_daily_cost_cap_usd = opts.patch.autonomous_daily_cost_cap_usd ?? null;
-      if ('keepwarm_daily_cost_cap_usd' in opts.patch) caps.keepwarm_daily_cost_cap_usd = opts.patch.keepwarm_daily_cost_cap_usd ?? null;
+      for (const control of MODEL_BACKGROUND_CONTROLS) {
+        const key = `${control}_daily_cost_cap_usd` as const;
+        if (key in opts.patch) {
+          if (!isDailyCostCap(opts.patch[key])) throw new Error(`BACKGROUND_BUDGET_INVALID:${key}`);
+          caps[key] = opts.patch[key];
+        }
+        if (opts.patch[`${control}_enabled`] === true) {
+          const cap = key in opts.patch ? opts.patch[key] : before[control].daily_cost_cap_usd;
+          if (cap === null || cap === undefined) throw new Error(`BACKGROUND_BUDGET_NOT_CONFIGURED:${control}`);
+          const ready = control === 'keepwarm' ? readiness.keepwarmExecutorReady : readiness.autonomousExecutorReady;
+          if (!ready) throw new Error(`BACKGROUND_EXECUTOR_NOT_READY:${control}`);
+        }
+      }
       const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
       const stored = row ? JSON.parse(row.value) as Record<string, unknown> : {};
       const merged = { ...stored, ...Object.fromEntries(Object.entries(opts.patch).filter(([, v]) => typeof v === 'boolean')), ...caps };
       const nowIso = new Date().toISOString();
       // No tick is guaranteed while the host is stopped or a previous run is in
       // flight. The reopening transaction must quarantine disabled-period misses.
-      if (!before.autonomous.enabled && opts.patch.autonomous_enabled === true) {
-        this.db.prepare("UPDATE background_tasks SET control_reason='disabled_missed_needs_review', updated_at=? WHERE kind='autonomous' AND schedule_kind='once' AND enabled=1 AND control_reason IS NULL AND next_due_at <= ?").run(nowIso, nowIso);
+      for (const control of ['autonomous','free_activity'] as const) {
+        if (!before[control].enabled && opts.patch[`${control}_enabled`] === true) {
+          this.db.prepare(`UPDATE background_tasks SET control_reason='disabled_missed_needs_review', updated_at=?
+            WHERE kind='autonomous' AND (origin='self_schedule')=? AND schedule_kind='once'
+            AND enabled=1 AND control_reason IS NULL AND next_due_at<=?`).run(nowIso,control==='autonomous'?1:0,nowIso);
+        }
       }
       this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at").run(SETTINGS_KEY, JSON.stringify(merged), nowIso);
       const nextRev = current + 1;
@@ -99,11 +100,14 @@ export class BackgroundSettingsService {
           this.db.prepare('UPDATE background_tasks SET enabled = 1, updated_at = ? WHERE id = ?').run(nowIso, existingKw.id);
         }
       }
-      // §7.2.1：关闭自主 → 尚未执行的领取（claimed、零派发）标 cancelled（正在执行的由调度器 fence）
-      if (opts.patch.autonomous_enabled === false) {
-        this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'AUTONOMOUS_DISABLED', result_code = 'AUTONOMOUS_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'autonomous'").run(nowIso, nowIso);
-        // AUD-02 P1 修复：终止运行中的自主执行——cancel Set + abort
-        this.onDisable?.('autonomous');
+      for (const control of ['autonomous','free_activity'] as const) {
+        if (opts.patch[`${control}_enabled`] === false) {
+          const reason = control === 'free_activity' ? 'FREE_ACTIVITY_DISABLED' : 'AUTONOMOUS_DISABLED';
+          this.db.prepare(`UPDATE background_runs SET state='cancelled',cancel_reason=?,result_code=?,finished_at=?,updated_at=?
+            WHERE state='claimed' AND kind='autonomous' AND task_id IN
+            (SELECT id FROM background_tasks WHERE (origin='self_schedule')=?)`).run(reason,reason,nowIso,nowIso,control==='autonomous'?1:0);
+          this.onDisable?.(control);
+        }
       }
       if (opts.patch.keepwarm_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'keepwarm'").run(nowIso, nowIso);

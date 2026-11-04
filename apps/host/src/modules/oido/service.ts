@@ -175,7 +175,7 @@ export class OidoHearingService {
         analysis_id: args.analysis_id,
         ...(args.range_ms ? { range_ms: args.range_ms } : {}),
         image: artifactAssetId !== null
-          ? { view: 'ui_only', ui_ref: `/api/v1/oido/views/${encodeURIComponent(args.analysis_id)}${args.range_ms ? `?range_ms=${args.range_ms[0]},${args.range_ms[1]}` : ''}`, mime: view.mime, note: '测量图已存为界面资产，未随工具正文携带；当前型号/通道未携带原图时不得声称已看图，结论以 oido_get 的数值证据为准' }
+          ? { view: 'image', asset_ref: artifactAssetId, mime: view.mime }
           : { view: 'unavailable', note: '宿主未配置媒体服务，图未保存；不得声称已看图' },
       };
       return { ok: true, value: out, ...(artifactAssetId !== null ? { imageRefs: [artifactAssetId] } : {}) };

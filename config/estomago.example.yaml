@@ -217,6 +217,9 @@ reasoning:
 # 禁止），不是无限。保温间隔50min与分页上限等固定策略在policy-constants.ts。
 # 自主60min冷却、心跳单请求/禁工具等旧限制已退役。工具沿用现有授权；费用由可信报价和金额cap约束。
 background:
+  free_activity: # 非自设预约的额外自主任务；不创建任何新任务
+    enabled: false
+    daily_cost_cap_usd: null # 正数或 unlimited；null=未配置
   autonomous:
     enabled: false
     max_model_requests_per_run: 4

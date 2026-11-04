@@ -49,6 +49,11 @@ export type DeepSeekConfig = {
   estimate_chars_per_token: number; // 中文场景默认 1.5（DS 主用途为中文对话；粗估+真实 usage 校准）
 };
 
+export type DailyCostCap = number | 'unlimited' | null;
+export function isDailyCostCap(value: unknown): value is DailyCostCap {
+  return value === null || value === 'unlimited' || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+}
+
 export type Config = {
   project: { display_name: string; slug: string; spec_version: string };
   deployment: {
@@ -213,20 +218,21 @@ export type Config = {
   // config/policy-constants.ts，不盲目展开成可改配置。旧配置升级后
   // autonomous/keepwarm 默认关闭（enabled=false 是交付状态，不是缺陷）。
   background: {
+    free_activity: { enabled: boolean; daily_cost_cap_usd: DailyCostCap };
     autonomous: {
-      enabled: boolean; // 三开关之一：自主活动（模型生成类后台）
+      enabled: boolean; // 自设预约唤醒；非预约自主任务由 free_activity 控制
       max_model_requests_per_run: number;
       max_output_tokens_per_run: number;
       max_tool_calls_per_run: number;
       max_run_ms: number;
       paid_tools_enabled: boolean; // deprecated：只兼容旧YAML；不是有效权限来源。现有工具授权+可信报价+金额cap决定准入。
-      daily_cost_cap_usd: number | null; // null=未配置→该用途后台付费禁止；不是无限
+      daily_cost_cap_usd: DailyCostCap; // null=未配置→该用途后台付费禁止；不是无限
     };
     keepwarm: {
-      enabled: boolean; // 三开关之一：缓存保温（与自主独立）
+      enabled: boolean; // 心跳保温，与两类自主任务独立
       max_output_tokens_per_run: number; // deprecated：只兼容旧YAML；实际使用主回合输出上限。
       max_run_ms: number; // deprecated：只兼容旧YAML；有效时限由正常background.autonomous.max_run_ms决定。
-      daily_cost_cap_usd: number | null; // 与自主日预算独立
+      daily_cost_cap_usd: DailyCostCap; // 与自主日预算独立
       sleep_window: { enabled: boolean; start: string; end: string; timezone: string }; // 仅暂停心跳；不取消显式自主预约
     };
     reminders: {
@@ -485,6 +491,7 @@ export const CONFIG_DEFAULTS: Config = {
   // ESTOMAGO_CHAT_EXEC_V1 policy-defaults：新增段默认值（adjustable 面）。
   // autonomous/keepwarm enabled=false 是首版交付状态；费用上限 null=未配置。
   background: {
+    free_activity: { enabled: false, daily_cost_cap_usd: null },
     autonomous: {
       enabled: false,
       max_model_requests_per_run: 4,
@@ -547,7 +554,7 @@ export const CONFIG_DEFAULTS: Config = {
 
 // —— 显式类型树（AUD-19 修复）：每个叶子的类型显式声明，不从默认值推导 ——
 // 'json?' = 可选任意 JSON 值（openrouter.reasoning：未批准覆盖=null；不假装理解其内部结构）
-type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | 'json?' | { section: Record<string, Leaf> };
+type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | 'json?' | 'budget?' | { section: Record<string, Leaf> };
 type SectionSpec = { section: Record<string, Leaf> };
 
 const SHAPE: SectionSpec = { section: {
@@ -638,14 +645,15 @@ const SHAPE: SectionSpec = { section: {
     stop_transcript_main_capture: 'boolean', capability_state: 'string?',
   } },
   background: { section: {
+    free_activity: { section: { enabled:'boolean',daily_cost_cap_usd:'budget?' } },
     autonomous: { section: {
       enabled: 'boolean', max_model_requests_per_run: 'number', max_output_tokens_per_run: 'number',
       max_tool_calls_per_run: 'number', max_run_ms: 'number', paid_tools_enabled: 'boolean',
-      daily_cost_cap_usd: 'number?',
+      daily_cost_cap_usd: 'budget?',
     } },
     keepwarm: { section: {
       enabled: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
-      daily_cost_cap_usd: 'number?',
+      daily_cost_cap_usd: 'budget?',
       sleep_window: { section: { enabled: 'boolean', start: 'string', end: 'string', timezone: 'string' } },
     } },
     reminders: { section: {
@@ -694,6 +702,9 @@ function checkType(v: unknown, t: Leaf, path: string, issues: ValidationIssue[])
         return;
       case 'number':
         if (typeof v !== 'number' || !Number.isFinite(v)) issues.push({ path, message: `需要数字，得到 ${String(v)}` });
+        return;
+      case 'budget':
+        if (!isDailyCostCap(v)) issues.push({path,message:'日费用上限必须为正数、unlimited 或 null（未配置）'});
         return;
       case 'boolean':
         if (typeof v !== 'boolean') issues.push({ path, message: `需要布尔，得到 ${typeof v}` });
@@ -798,7 +809,6 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     ...(() => {
       const posInt = (v: number) => Number.isSafeInteger(v) && v >= 1;
       const posMs = (v: number) => Number.isFinite(v) && v > 0;
-      const capOk = (v: number | null) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0);
       const timezoneOk = (v: string) => { try { new Intl.DateTimeFormat('en-GB', { timeZone: v }).format(0); return v.length > 0; } catch { return false; } };
       const a = c.background.autonomous, k = c.background.keepwarm, r = c.background.reminders;
       const checks: Array<[boolean, string]> = [
@@ -806,10 +816,8 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
         [posInt(a.max_output_tokens_per_run), 'background.autonomous.max_output_tokens_per_run 必须是 ≥1 的整数'],
         [Number.isSafeInteger(a.max_tool_calls_per_run) && a.max_tool_calls_per_run >= 0, 'background.autonomous.max_tool_calls_per_run 必须是 ≥0 的整数'],
         [posMs(a.max_run_ms), 'background.autonomous.max_run_ms 必须为正数'],
-        [capOk(a.daily_cost_cap_usd), 'background.autonomous.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止该用途后台付费，不是无限）'],
         [posInt(k.max_output_tokens_per_run), 'background.keepwarm.max_output_tokens_per_run 必须是 ≥1 的整数'],
         [posMs(k.max_run_ms), 'background.keepwarm.max_run_ms 必须为正数'],
-        [capOk(k.daily_cost_cap_usd), 'background.keepwarm.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止保温付费，不是无限）'],
         [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.start), 'background.keepwarm.sleep_window.start 必须是 HH:MM'],
         [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.end), 'background.keepwarm.sleep_window.end 必须是 HH:MM'],
         [k.sleep_window.start !== k.sleep_window.end, 'background.keepwarm.sleep_window.end 必须与 start 不同（无需睡眠门时设 enabled=false）'],

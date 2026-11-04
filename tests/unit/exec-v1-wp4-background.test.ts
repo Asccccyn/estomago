@@ -34,13 +34,13 @@ function setup(over: { config?: Record<string, unknown>; now?: number; executor?
   return { root, db, alerts, config, settings, sched, calls, setNow: (iso: string) => { nowMs = Date.parse(iso); }, get now() { return nowMs; } };
 }
 
-function seedTask(db: ReturnType<typeof openDatabase>, over: Partial<{ kind: string; schedule_kind: string; next_due_at: string | null; enabled: number; interval_ms: number | null; actor: string; payload: string }> = {}) {
+function seedTask(db: ReturnType<typeof openDatabase>, over: Partial<{ kind: string; origin: string; schedule_kind: string; next_due_at: string | null; enabled: number; interval_ms: number | null; actor: string; payload: string }> = {}) {
   const id = `bgt_${genId('x').slice(2)}`;
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,'Asia/Shanghai',?,?,?,'qiaosheng',?,?)`,
-  ).run(id, 'primary', over.actor ?? 'jiaming', over.kind ?? 'reminder', over.enabled ?? 1, 1, over.schedule_kind ?? 'once', over.next_due_at ?? null, over.next_due_at ?? null, null, over.interval_ms ?? null, over.payload ?? '{}', now, now);
+    `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,'Asia/Shanghai',?,?,?,'qiaosheng',?,?,?)`,
+  ).run(id, 'primary', over.actor ?? 'jiaming', over.kind ?? 'reminder', over.enabled ?? 1, 1, over.schedule_kind ?? 'once', over.next_due_at ?? null, over.next_due_at ?? null, null, over.interval_ms ?? null, over.payload ?? '{}', over.origin ?? (over.kind === 'autonomous' ? 'self_schedule' : 'legacy_unknown'), now, now);
   return id;
 }
 
@@ -73,6 +73,43 @@ test('§9.1/9.2：重启孤儿=可恢复（W-14 语义）；时钟回拨暂停',
   assert.equal(clockRegressionAction(1000, 1100), null);
 });
 
+test('明确无日上限仍保留报价、单轮次数与时限；null 仍是未配置', () => {
+  const settings=effectiveSettings(buildConfig({background:{autonomous:{daily_cost_cap_usd:'unlimited'},keepwarm:{daily_cost_cap_usd:'unlimited'}}}),0,null);
+  const run={model_requests_started:0,tool_calls_started:0,output_tokens_observed:0,startedAtMs:0,reserved_cost_micro_usd:100_000_000,known_cost_micro_usd:0,unknown_cost_count:0};
+  for(const kind of ['autonomous','keepwarm'] as const){
+    assert.equal(budgetGate({kind,settings,run,nowMs:100,nextRequestCostMicroUsd:1_000_000}).allowed,true);
+    assert.deepEqual(budgetGate({kind,settings,run,nowMs:100,nextRequestCostMicroUsd:null}),{allowed:false,code:'BUDGET_ESTIMATE_UNAVAILABLE'});
+    assert.deepEqual(budgetGate({kind,settings,run,nowMs:settings[kind].max_run_ms,nextRequestCostMicroUsd:0}),{allowed:false,code:'BACKGROUND_BUDGET_EXHAUSTED'});
+  }
+  assert.deepEqual(budgetGate({kind:'autonomous',settings,run:{...run,model_requests_started:settings.autonomous.max_model_requests_per_run},nowMs:100,nextRequestCostMicroUsd:0}),{allowed:false,code:'BACKGROUND_BUDGET_EXHAUSTED'});
+});
+
+test('关闭自由活动不取消正在执行的预约；旧非预约任务停留待复核，不会补跑', async t => {
+  const config=buildConfig({background:{autonomous:{enabled:true,daily_cost_cap_usd:'unlimited'},free_activity:{enabled:true,daily_cost_cap_usd:1}}});
+  const s=setup({config:{background:config.background}});
+  const self=seedTask(s.db,{kind:'autonomous',next_due_at:new Date(s.now).toISOString()});
+  const free=seedTask(s.db,{kind:'autonomous',origin:'legacy_unknown',next_due_at:new Date(s.now+1000).toISOString()});
+  const calls:string[]=[];
+  const scheduler=new BackgroundScheduler({db:s.db,config,settings:s.settings,alerts:s.alerts,now:()=>s.now,tickMs:60000,
+    executor:{async executeRun(input){
+      calls.push(input.taskId);
+      const abort=new AbortController();input.registerAbort(abort);
+      s.settings.applyUpdate({expectedRevision:0,patch:{free_activity_enabled:false}});
+      assert.equal(abort.signal.aborted,false,'closing free activity does not abort self wake');
+      assert.equal(input.isCancelRequested(),false);
+      return {outcome:'noop'};
+    }}});
+  s.settings.onDisable=kind=>scheduler.disableKind(kind);
+  scheduler.start();t.after(()=>{scheduler.stop();s.db.close();fs.rmSync(s.root,{recursive:true,force:true});});
+  await scheduler.tick();
+  assert.deepEqual(calls,[self]);
+  s.setNow(new Date(s.now+2000).toISOString());await scheduler.tick();
+  assert.deepEqual(calls,[self]);
+  assert.equal(s.db.prepare('SELECT control_reason FROM background_tasks WHERE id=?').get(free)!.control_reason,'disabled_missed_needs_review');
+  assert.equal(s.settings.effective().autonomous.enabled,true);
+  assert.equal(s.db.prepare('SELECT state FROM background_runs WHERE task_id=?').get(self)!.state,'noop');
+});
+
 // —— 设置面（§7.2 原子关闭）——
 test('BACKGROUND-02/CW-23：设置原子写+revision 门；关闭自主使未执行领取失效', () => {
   const { db, settings } = setup();
@@ -82,7 +119,8 @@ test('BACKGROUND-02/CW-23：设置原子写+revision 门；关闭自主使未执
   assert.equal(settings.effective().autonomous.enabled, true);
   assert.throws(() => settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: false } }), /REVISION_CONFLICT/); // 旧 If-Match 拒
   // 未执行自主领取 → 关闭后标 cancelled
-  db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, claimed_at, created_at, updated_at) VALUES ('bgr1','t1','primary','jiaming','autonomous',1,'occ1','claimed',? ,?,?)").run(new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
+  const taskId = seedTask(db, {kind:'autonomous'});
+  db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, claimed_at, created_at, updated_at) VALUES ('bgr1',?,'primary','jiaming','autonomous',1,'occ1','claimed',? ,?,?)").run(taskId, new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
   settings.applyUpdate({ expectedRevision: 1, patch: { autonomous_enabled: false } });
   const run = db.prepare('SELECT state, result_code FROM background_runs WHERE id = ?').get('bgr1') as { state: string; result_code: string };
   assert.equal(run.state, 'cancelled');

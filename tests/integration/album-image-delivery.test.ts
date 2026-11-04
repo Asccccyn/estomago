@@ -102,6 +102,7 @@ test('相册/朋友圈多页稳定倒序；真实图片进入 MCP、API 与历�
   const frame:any = (await frames.next()).value;
   assert.equal(frame.message.content[0].type,'tool_result');
   assert.equal(frame.message.content[0].content[1].type,'image');
+  console.log(JSON.stringify({evidence:'A14 fake MCP / API / SDK replay',mcp:(result.content as any[]).map(c=>({type:c.type,...(c.type==='image'?{mimeType:c.mimeType,bytes:Buffer.from(c.data,'base64').length}:{})})),api:envelope.messages[1].content.map((c:any)=>c.type),sdk_replay:frame.message.content[0].content.map((c:any)=>c.type),persistent_history_has_base64:false}));
   replay.consume({type:'result',subtype:'success',is_error:false} as any);
   await frames.next(); replay.close();
   await call('DELETE',`/album-entries/${entries[0].id}`,{},'remove-entry');

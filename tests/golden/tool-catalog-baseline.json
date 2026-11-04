@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "a6b915d4bf6e33e184db46f193ee6a9615642a00",
+  "baselineCommit": "ae95541ebcff9c84b2cd9f5f9cd2602d09d6bbd2",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -75,7 +75,7 @@
     "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
     "creation_save_artifact": "td_b0234b5f99bc82a2ce38ed6a",
-    "wake_manage": "td_4781ac6c65ab9967e8aebe77",
+    "wake_manage": "td_cc02e5a1dca761a16aad1398",
     "background_complete": "td_e4bd112b3b94eefbe84a2ffd",
     "chat_send_text": "td_ff6f885475512d66ae93c52a",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
@@ -107,7 +107,7 @@
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "af5a7f3de45a3a673e428f5d7cf5492387034b7ac2595f75c1f17257c6fd135f",
+  "toolsSha256": "50a2b488f79db1b01831eee6c5e8a82139b90bef3fc17ea3e869479b5c09bb36",
   "tools": [
     {
       "type": "function",
@@ -1216,7 +1216,7 @@
       "type": "function",
       "function": {
         "name": "wake_manage",
-        "description": "给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。",
+        "description": "给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。预约唤醒、额外自由活动和心跳分别控制；预约关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1257,7 +1257,8 @@
             },
             "expected_revision": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "description": "update/cancel 必填：list 中该任务的 revision 或上次成功回执；冲突后读回"
             },
             "cursor": {
               "type": "string"

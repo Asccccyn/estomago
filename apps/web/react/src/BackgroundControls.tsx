@@ -7,6 +7,8 @@ import type { EstomagoClient } from './chat-client'
 import { appendBackgroundPage, backgroundInputTime, backgroundInputToIso, backgroundTaskStatus } from './background-controls-model'
 
 type Json = Record<string, any>
+type Control = 'autonomous' | 'keepwarm' | 'free_activity'
+const controlLabels: Record<Control,string> = {autonomous:'预约唤醒',keepwarm:'心跳保温',free_activity:'自由活动'}
 
 const fmtTime = (iso: string | null | undefined): string => {
   if (!iso) return '—'
@@ -29,7 +31,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
   const [wakeAt, setWakeAt] = useState('')
   const [editNote, setEditNote] = useState('')
   const [editAt, setEditAt] = useState('')
-  const [budgets, setBudgets] = useState({ autonomous: '', keepwarm: '' })
+  const [budgets, setBudgets] = useState({ autonomous: '', keepwarm: '', free_activity: '' })
   const refreshGeneration = useRef(0)
   const detailGeneration = useRef(0)
   const pendingCreate = useRef<{ key: string; body: { note: string; at: string } } | null>(null)
@@ -42,7 +44,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
       if (generation !== refreshGeneration.current) return
       setSettings(s); setTasks(t.tasks ?? []); setRuns(r.runs ?? [])
       setTaskCursor(t.next_cursor ?? null); setRunCursor(r.next_cursor ?? null)
-      setBudgets({ autonomous: String(s.autonomous?.daily_cost_cap_usd ?? ''), keepwarm: String(s.keepwarm?.daily_cost_cap_usd ?? '') })
+      setBudgets({ autonomous: String(s.autonomous?.daily_cost_cap_usd ?? ''), keepwarm: String(s.keepwarm?.daily_cost_cap_usd ?? ''), free_activity: String(s.free_activity?.daily_cost_cap_usd ?? '') })
     } catch (e) {
       if (generation !== refreshGeneration.current) return
       setError((e as Error).message || '加载失败')
@@ -59,7 +61,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
     return () => { document.removeEventListener('visibilitychange', onVisible) }
   }, [refresh, loading])
 
-  const toggle = async (section: 'autonomous' | 'keepwarm'): Promise<void> => {
+  const toggle = async (section: Control): Promise<void> => {
     if (!settings || busy) return
     const current = settings[section]?.enabled === true
     const optimistic = { ...settings, [section]: { ...settings[section], enabled: !current } }
@@ -141,10 +143,10 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
     } finally { setBusy(false) }
   }
 
-  const saveBudget = async (section: 'autonomous' | 'keepwarm'): Promise<void> => {
+  const saveBudget = async (section: Control): Promise<void> => {
     if (busy || !settings) return
-    const cap = Number(budgets[section])
-    if (!budgets[section].trim() || !Number.isFinite(cap) || cap <= 0) { setError('日费用上限必须是有效正数（美元）'); return }
+    const cap = budgets[section] === 'unlimited' ? 'unlimited' : Number(budgets[section])
+    if (cap !== 'unlimited' && (!budgets[section].trim() || !Number.isFinite(cap) || cap <= 0)) { setError('请填写正数金额，或选择无日上限'); return }
     setBusy(true); setError(null)
     try {
       await client.backgroundPutSettings(settings.revision, { [section]: { daily_cost_cap_usd: cap } }, `ui-budget-${crypto.randomUUID()}`)
@@ -185,9 +187,9 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
 
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/25" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="自主预约与心跳保温" className="max-h-[82vh] w-full overflow-y-auto rounded-t-3xl bg-[#faf9f5] p-5 text-[14px]" onClick={(e) => { e.stopPropagation() }}>
+      <div role="dialog" aria-modal="true" aria-label="唤醒、保温与自由活动" className="max-h-[82vh] w-full overflow-y-auto rounded-t-3xl bg-[#faf9f5] p-5 text-[14px]" onClick={(e) => { e.stopPropagation() }}>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[16px] font-medium">自主预约与心跳保温</h2>
+          <h2 className="text-[16px] font-medium">唤醒、保温与自由活动</h2>
           <div className="flex items-center gap-2">
             <button className="text-[12px] text-[#8a8780]" onClick={() => void refresh()}>刷新</button>
             <button aria-label="关闭" onClick={onClose}>×</button>
@@ -214,15 +216,22 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 </span>
                 <input type="checkbox" checked={settings.keepwarm?.enabled === true} disabled={busy} onChange={() => void toggle('keepwarm')} />
               </label>
+              <label className="flex items-center justify-between rounded-2xl border border-black/5 bg-white px-3 py-2.5">
+                <span><span className="block">自由活动</span><span className="block text-[11.5px] text-[#8a8780]">非预约的额外自主任务；预约与心跳单独控制</span></span>
+                <input type="checkbox" checked={settings.free_activity?.enabled === true} disabled={busy} onChange={() => void toggle('free_activity')} />
+              </label>
             </div>
             <div className="mt-3 space-y-2 rounded-2xl border border-black/5 bg-white p-3">
               <h3 className="text-[13px] font-medium">每日费用上限（美元）</h3>
-              {(['autonomous', 'keepwarm'] as const).map((section) => <label key={section} className="flex items-center gap-2 text-[12px]">
-                <span className="w-20">{section === 'autonomous' ? '自主唤醒' : '心跳保温'}</span>
-                <input aria-label={`${section === 'autonomous' ? '自主唤醒' : '心跳保温'}日费用上限`} type="number" min="0.01" step="0.01" className="min-w-0 flex-1 rounded-lg border border-black/10 p-2" placeholder="未配置" value={budgets[section]} onChange={(e) => setBudgets((old) => ({ ...old, [section]: e.target.value }))} />
+              {(['autonomous','keepwarm','free_activity'] as const).map((section) => <div key={section} className="flex flex-wrap items-center gap-2 text-[12px]">
+                <span className="w-20">{controlLabels[section]}</span>
+                <select aria-label={`${controlLabels[section]}预算方式`} value={budgets[section] === 'unlimited' ? 'unlimited' : 'limited'} onChange={e => setBudgets(old => ({...old,[section]:e.target.value === 'unlimited' ? 'unlimited' : ''}))} className="rounded-lg border border-black/10 p-2">
+                  <option value="limited">填写金额</option><option value="unlimited">无日上限</option>
+                </select>
+                {budgets[section] !== 'unlimited' && <input aria-label={`${controlLabels[section]}日费用上限`} type="number" min="0.01" step="0.01" className="min-w-0 flex-1 rounded-lg border border-black/10 p-2" placeholder="未配置" value={budgets[section]} onChange={(e) => setBudgets((old) => ({ ...old, [section]: e.target.value }))} />}
                 <button disabled={busy} onClick={() => void saveBudget(section)}>保存</button>
-              </label>)}
-              <p className="text-[11px] text-[#8a8780]">先保存费用上限，再开启对应开关。保存预算不会自动开启。</p>
+              </div>)}
+              <p className="text-[11px] text-[#8a8780]">先填写金额或明确选择无日上限，再开启对应开关。未配置与无日上限不同；保存预算不会自动开启。</p>
             </div>
             {settings.current_window?.requires_normal_rotation && <p role="status" className="mt-3 text-[12px] text-[#a4552f]">当前聊天窗口尚不能使用预约工具，下次正常换窗后生效。这里仍可管理预约。</p>}
             {settings.current_window?.wake_manage_available === true && <p className="mt-2 text-[12px] text-[#8a8780]">当前聊天窗口可使用自主预约工具。</p>}
@@ -267,7 +276,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 {detail.kind === 'autonomous' && ['scheduled', 'needs_review'].includes(detail.status) && <div className="mt-3 space-y-2">
                   <textarea aria-label="修改预约内容" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" rows={3} value={editNote} onChange={(e) => setEditNote(e.target.value)} />
                   <input aria-label="修改预约时间（北京时间）" type="datetime-local" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" value={editAt} onChange={(e) => setEditAt(e.target.value)} />
-                  <div className="flex gap-4 text-[12.5px] text-[#a4552f]"><button disabled={busy || settings.autonomous?.enabled !== true} onClick={() => void updateTask()}>保存修改</button><button disabled={busy} onClick={() => void cancelTask(detail)}>取消预约</button></div>
+                  <div className="flex gap-4 text-[12.5px] text-[#a4552f]"><button disabled={busy || settings[detail.origin === 'self_schedule' ? 'autonomous' : 'free_activity']?.enabled !== true} onClick={() => void updateTask()}>保存修改</button><button disabled={busy} onClick={() => void cancelTask(detail)}>取消预约</button></div>
                 </div>}
               </div>
             )}
@@ -276,7 +285,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               <div className="space-y-1">
                 {(runs ?? []).map((r) => (
                   <p key={String(r.id)} className="flex items-center justify-between text-[12px] text-[#8a8780]">
-                    <span>{r.trigger_origin === 'self_wake' ? '自主唤醒' : r.trigger_origin === 'keepwarm' ? '心跳' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
+                    <span>{r.trigger_origin === 'self_wake' ? '自主唤醒' : r.trigger_origin === 'keepwarm' ? '心跳' : r.trigger_origin === 'free_activity' ? '自由活动' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
                     <span>{fmtTime(r.first_dispatch_started_at ?? r.created_at)}{r.known_cost_micro_usd ? ` · $${(r.known_cost_micro_usd / 1e6).toFixed(4)}` : ''}{Number(r.unknown_cost_count) > 0 ? ` · ${r.unknown_cost_count} 笔待核实` : ''}</span>
                   </p>
                 ))}

@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import { keepwarmSleepState } from '../../runtime/keepwarm-sleep.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
+import { MODEL_BACKGROUND_CONTROLS } from '../../runtime/background-policy.ts';
 import { genId } from '../../util/id.ts';
 import type { RequestDeps } from '../http.ts';
 
@@ -45,13 +46,14 @@ if (route === 'GET /api/v1/background/settings') {
   }
   return json(res, 200, {
     revision: es.revision,
+    free_activity:{enabled:es.free_activity.enabled,daily_cost_cap_usd:es.free_activity.daily_cost_cap_usd},
     autonomous: { enabled: es.autonomous.enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
     keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
     reminders: { enabled: es.reminders.enabled },
-    executor_ready: d.bgExecutorReady ?? { autonomous: false, keepwarm: false },
+    executor_ready:{...(d.bgExecutorReady ?? {autonomous:false,keepwarm:false}),free_activity:d.bgExecutorReady?.autonomous ?? false},
     current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
     keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: sleep.code, local_time: sleep.local_time },
-    notice: '关闭后不再开始自主预约唤醒/心跳保温，正在进行的后续步骤会停止；已产生的费用和已完成的动作保留。两项开关独立。',
+    notice: '预约唤醒、心跳保温、额外自由活动分别控制。关闭只停止对应来源的新执行及后续步骤，已完成动作与费用保留。',
   });
 }
 if (route === 'PUT /api/v1/background/settings') {
@@ -62,7 +64,7 @@ if (route === 'PUT /api/v1/background/settings') {
   if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
   const body = (await readJson(req, d)) as Record<string, unknown>;
   const patch: Record<string, unknown> = {};
-  for (const section of ['autonomous', 'keepwarm', 'reminders'] as const) {
+  for (const section of [...MODEL_BACKGROUND_CONTROLS,'reminders'] as const) {
     if (body[section] === undefined) continue;
     const sv = body[section];
     if (!sv || typeof sv !== 'object' || Array.isArray(sv)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section} 必须是对象` } });
@@ -73,7 +75,6 @@ if (route === 'PUT /api/v1/background/settings') {
     }
     if (section !== 'reminders' && 'daily_cost_cap_usd' in values) {
       const cap = values.daily_cost_cap_usd;
-      if (cap !== null && (typeof cap !== 'number' || !Number.isFinite(cap) || cap <= 0)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.daily_cost_cap_usd 必须为正数或 null` } });
       patch[`${section}_daily_cost_cap_usd`] = cap;
     }
   }
@@ -86,8 +87,8 @@ if (route === 'PUT /api/v1/background/settings') {
     if (msg.startsWith('REVISION_CONFLICT')) return json(res, 409, { error: { code: 'revision_conflict', message: `设置版本已变化（当前 ${msg.split(':')[1] ?? '?'}），请刷新重试` } });
     if (msg.startsWith('IDEMPOTENCY_CONFLICT')) return json(res, 409, { error: { code: 'idempotency_conflict', message: '该操作键已用于不同的设置，请核对原操作' } });
     if (msg.startsWith('BACKGROUND_BUDGET_INVALID') || msg.startsWith('SETTINGS_OPERATION_ID_INVALID')) return json(res, 422, { error: { code: 'invalid_background_settings', message: '设置操作或费用上限无效' } });
-    if (msg.startsWith('BACKGROUND_BUDGET_NOT_CONFIGURED')) return json(res, 422, { error: { code: 'background_budget_not_configured', message: '该用途日费用上限未配置（null 不是无限）——先填有效上限再开启' } });
-    if (msg.startsWith('BACKGROUND_EXECUTOR_NOT_READY')) return json(res, 422, { error: { code: 'background_executor_not_ready', message: '自主/保温的模型执行器尚未接线（后续批次）——开关意图已保存语义见 422，不开启付费路径' } });
+    if (msg.startsWith('BACKGROUND_BUDGET_NOT_CONFIGURED')) return json(res, 422, { error: { code: 'background_budget_not_configured', message: '该用途日预算未配置；请填写正数上限或明确选择无日上限后开启（null 不是无限）' } });
+    if (msg.startsWith('BACKGROUND_EXECUTOR_NOT_READY')) return json(res, 422, { error: { code: 'background_executor_not_ready', message: '该用途的模型执行器未就绪，本次设置未保存；执行器就绪后可重试' } });
     throw err;
   }
 }
@@ -178,7 +179,7 @@ if (route === 'GET /api/v1/background/runs') {
   // 发布计数/成本/阻断原因——不含原 payload、工具 JSON、reasoning 或聊天正文。
   const rows = d.db.prepare(
     `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason,
-            CASE WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' ELSE 'legacy' END AS trigger_origin,
+            CASE WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' WHEN r.kind='autonomous' THEN 'free_activity' ELSE 'reminder' END AS trigger_origin,
             r.model_requests_started, r.tool_calls_started, r.tool_calls_observed, r.published_message_count,
             r.reserved_cost_micro_usd, r.known_cost_micro_usd, r.unknown_cost_count, r.retention,
             r.first_dispatch_started_at, r.claimed_at, r.finished_at, r.created_at

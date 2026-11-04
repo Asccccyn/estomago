@@ -17,14 +17,14 @@ import { genId } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 import type { SystemAlertService } from '../observability/system-alerts.ts';
 import { BackgroundSettingsService } from './background-settings.ts';
-import { restartDisposition, clockRegressionAction, budgetGate, type RunState, type BackgroundKind } from './background-policy.ts';
+import { restartDisposition, clockRegressionAction, budgetGate, backgroundControl, type ModelBackgroundControl, type RunState, type BackgroundKind } from './background-policy.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundRun } from './background-ledger.ts';
 
 export type BackgroundExecutor = {
   /** 执行一次已领取的 run（在会话串行链内被调用——executor 负责取得执行位）。scheduler 负责状态/记账框架。 */
-  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }>;
+  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }>;
 };
 
 export type SchedulerDeps = {
@@ -85,12 +85,12 @@ export class BackgroundScheduler {
   }
 
   /** AUD-02 P1 修复：按 kind 终止运行中的后台执行（关闭开关时调用）。 */
-  disableKind(kind: 'autonomous' | 'keepwarm'): void {
+  disableKind(kind: ModelBackgroundControl): void {
     for (const [runId, c] of this.aborts) {
-      const row = this.d.db.prepare('SELECT kind FROM background_runs WHERE id = ?').get(runId) as { kind: string } | undefined;
-      if (row?.kind === kind) {
+      const row = this.d.db.prepare('SELECT r.kind,t.origin FROM background_runs r JOIN background_tasks t ON t.id=r.task_id WHERE r.id=?').get(runId) as {kind:BackgroundKind;origin:string}|undefined;
+      if (row && row.kind !== 'reminder' && backgroundControl(row.kind,row.origin) === kind) {
         this.cancelRequested.add(runId);
-        this.cancelReasons.set(runId, kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED');
+        this.cancelReasons.set(runId, kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : kind === 'free_activity' ? 'FREE_ACTIVITY_DISABLED' : 'AUTONOMOUS_DISABLED');
         c.abort();
       }
     }
@@ -169,7 +169,7 @@ export class BackgroundScheduler {
       if (due === null || Number.isNaN(due) || due > nowMs) continue;
       // 待核对任务不自动调度（E06/W-16：关闭期间错过/结果未知——等待显式恢复）
       if (task.control_reason !== null) continue;
-      if (task.kind === 'autonomous' && !settings.autonomous.enabled) {
+      if (task.kind === 'autonomous' && !settings[backgroundControl(task.kind,task.origin)].enabled) {
         // W-16：明确关闭期间到期的一次性预约→needs_review（不突发补发；未来任务按原时间继续）
         if (task.schedule_kind === 'once') {
           this.d.db.prepare("UPDATE background_tasks SET control_reason = 'disabled_missed_needs_review', updated_at = ? WHERE id = ?").run(new Date(nowMs).toISOString(), task.id);
@@ -278,7 +278,7 @@ export class BackgroundScheduler {
       this.finalizeTaskAfterRun(task, state, nowIso);
     };
     try {
-      const r = await this.d.executor.executeRun({ runId, taskId: task.id, kind: task.kind, conversationId: task.conversation_id, payload: JSON.parse(task.payload_json) as Record<string, unknown>, isCancelRequested, registerAbort });
+      const r = await this.d.executor.executeRun({ runId, taskId: task.id, kind: task.kind, origin: task.origin, conversationId: task.conversation_id, payload: JSON.parse(task.payload_json) as Record<string, unknown>, isCancelRequested, registerAbort });
       if (this.cancelRequested.has(runId)) finish('cancelled', r.result_code ?? 'CANCELLED', this.cancelReasons.get(runId) ?? 'RUN_STOPPED');
       else finish(r.outcome, r.result_code ?? null);
     } catch (err) {
@@ -328,24 +328,25 @@ export class BackgroundScheduler {
       } | undefined;
       if (!run) return reject('RUN_NOT_FOUND');
       if (this.cancelRequested.has(input.runId) || (run.state !== 'claimed' && run.state !== 'running')) return reject('CANCELLED');
-      const task = this.d.db.prepare('SELECT revision,enabled,control_reason FROM background_tasks WHERE id = ?').get(run.task_id) as { revision: number; enabled: number; control_reason: string | null } | undefined;
+      const task = this.d.db.prepare('SELECT revision,enabled,control_reason,origin FROM background_tasks WHERE id = ?').get(run.task_id) as { revision: number; enabled: number; control_reason: string | null; origin: string } | undefined;
       if (!task) return reject('TASK_NOT_FOUND');
       if (task.revision !== run.task_revision) return reject('TASK_SUPERSEDED');
       if (!task.enabled || task.control_reason !== null) return reject('TASK_CANCELLED');
       if (!Number.isSafeInteger(input.reservedCostMicroUsd) || input.reservedCostMicroUsd < 0) return reject('BUDGET_ESTIMATE_UNAVAILABLE');
       const settings = this.d.settings.effective();
       if (run.kind === 'autonomous' || run.kind === 'keepwarm') {
-        if (!settings[run.kind].enabled) return reject(run.kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED');
+        const control=backgroundControl(run.kind,task.origin);
+        if (!settings[control].enabled) return reject(control==='keepwarm'?'KEEPWARM_DISABLED':control==='free_activity'?'FREE_ACTIVITY_DISABLED':'AUTONOMOUS_DISABLED');
         if (run.kind === 'keepwarm') {
           const sleep = keepwarmSleepState(settings.keepwarm.sleep_window, nowMs);
           if (sleep.blocked) return reject(sleep.code!);
         }
         const gate = budgetGate({
-          kind: run.kind, settings, dispatchKind: input.dispatchKind === 'tool' ? 'tool' : 'model', nowMs,
+          kind: control, settings, dispatchKind: input.dispatchKind === 'tool' ? 'tool' : 'model', nowMs,
           nextRequestCostMicroUsd: input.reservedCostMicroUsd,
           run: { model_requests_started: run.model_requests_started, tool_calls_started: run.tool_calls_started,
             output_tokens_observed: 0, startedAtMs: run.first_dispatch_started_at ? Date.parse(run.first_dispatch_started_at) : nowMs,
-            reserved_cost_micro_usd: this.dailyOccupiedMicroUsd(run.kind, this.budgetDayNow(nowMs)), known_cost_micro_usd: 0, unknown_cost_count: 0 },
+            reserved_cost_micro_usd: this.dailyOccupiedMicroUsd(control, this.budgetDayNow(nowMs)), known_cost_micro_usd: 0, unknown_cost_count: 0 },
         });
         if (!gate.allowed) return reject(gate.code);
       } else if (!settings.reminders.enabled) return reject('REMINDERS_DISABLED');
@@ -365,12 +366,13 @@ export class BackgroundScheduler {
 
   /** §10.1 日占用：settled 按 actual、未结算（reserved/started/unknown）按预占；
    *  cancelled_before_send 不计；跨该 kind 全部 run 聚合（B-02）。 */
-  dailyOccupiedMicroUsd(kind: 'autonomous' | 'keepwarm', budgetDay: string): number {
+  dailyOccupiedMicroUsd(kind: ModelBackgroundControl, budgetDay: string): number {
     const row = this.d.db.prepare(
       `SELECT COALESCE(SUM(CASE WHEN bd.state = 'settled' THEN bd.actual_cost_micro_usd ELSE bd.reserved_cost_micro_usd END), 0) AS occ
-       FROM background_dispatches bd JOIN background_runs r ON r.id = bd.run_id
-       WHERE bd.budget_day = ? AND r.kind = ? AND bd.state != 'cancelled_before_send'`,
-    ).get(budgetDay, kind) as { occ: number };
+       FROM background_dispatches bd JOIN background_runs r ON r.id=bd.run_id JOIN background_tasks t ON t.id=r.task_id
+       WHERE bd.budget_day=? AND r.kind=? AND (?='keepwarm' OR (t.origin='self_schedule')=?)
+       AND bd.state!='cancelled_before_send'`,
+    ).get(budgetDay,kind==='free_activity'?'autonomous':kind,kind,kind==='autonomous'?1:0) as { occ: number };
     return row?.occ ?? 0;
   }
 

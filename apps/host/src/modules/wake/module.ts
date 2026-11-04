@@ -9,7 +9,7 @@ export const WAKEMANAGE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'wake_manage',
-      description: '给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
+      description: '给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。预约唤醒、额外自由活动和心跳分别控制；预约关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
       parameters: {
         type: 'object',
         properties: {
@@ -19,7 +19,7 @@ export const WAKEMANAGE_DEFINITION: HostToolSpec = {
           at: { type: 'string', description: '目标时间（RFC3339，必须带 Z 或 ±hh:mm 时区）' },
           delay_seconds: { type: 'integer', minimum: 1, description: '从现在起的秒数（首次受理时解析为绝对时间）' },
           task_id: { type: 'string', minLength: 1, maxLength: 64 },
-          expected_revision: { type: 'integer', minimum: 1 },
+          expected_revision: { type: 'integer', minimum: 1,description:'update/cancel 必填：list 中该任务的 revision 或上次成功回执；冲突后读回' },
           cursor: { type: 'string' },
           limit: { type: 'integer', minimum: 1, maximum: 100 },
         },

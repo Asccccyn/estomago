@@ -2,6 +2,7 @@
 // 从 app-context 内联 executeRun 逐字迁移。依赖仅：任务设置读取、正式提醒发布、
 // 单会话执行入口（enqueueBackground/runBackgroundTurn）、逐派发记录；不把整个 Host 传入。
 // 价格校验与预占在每个实际派发时发生一次（P06.4）；用户停止/睡眠窗口/让位沿现行位置（P06.2）。
+import { backgroundControl } from '../runtime/background-policy.ts';
 import type { BackgroundScheduler } from '../runtime/background-scheduler.ts';
 import type { BackgroundSettingsService } from '../runtime/background-settings.ts';
 import type { MessageService } from '../messages/service.ts';
@@ -38,8 +39,9 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
         // Price validation and reservation occur once at every actual dispatch.
         const kind = input.kind as 'autonomous' | 'keepwarm';
         const es = bgSettings.effective();
-        if (!es[kind].enabled) return Promise.resolve({ outcome: 'noop' as const, result_code: kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED' });
-        if (es[kind].daily_cost_cap_usd === null) return Promise.resolve({ outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' });
+        const control=backgroundControl(kind,input.origin);
+        if (!es[control].enabled) return Promise.resolve({ outcome: 'noop' as const, result_code: control==='keepwarm'?'KEEPWARM_DISABLED':control==='free_activity'?'FREE_ACTIVITY_DISABLED':'AUTONOMOUS_DISABLED' });
+        if (es[control].daily_cost_cap_usd === null) return Promise.resolve({ outcome: 'failed' as const, result_code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' });
         return supervisor.runBackgroundTurn({
           kind, runId: input.runId, conversationId: input.conversationId, payload: input.payload,
           isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,

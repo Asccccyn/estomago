@@ -7,6 +7,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
+import { backgroundControl } from './background-policy.ts';
 import type { BackgroundSettingsService } from './background-settings.ts';
 
 const RFC3339_TZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -186,7 +187,7 @@ export class BackgroundTaskService {
     const scope = { actorId: opts.actorId, conversationId: opts.conversationId, action: 'wake_update', operationId: opts.operationId };
     const prior = this.replay(scope, params);
     if (prior) return this.receipt(prior);
-    if (row.kind === 'autonomous' && !this.settings.effective().autonomous.enabled) return { ok: false, code: 'SELF_WAKE_DISABLED', httpStatus: 422 };
+    if (row.kind === 'autonomous' && !this.settings.effective()[backgroundControl('autonomous',row.origin)].enabled) return { ok: false, code: row.origin==='self_schedule'?'SELF_WAKE_DISABLED':'FREE_ACTIVITY_DISABLED', httpStatus: 422 };
     const nowMs = this.now();
     let dueIso: string | null = null;
     if (hasAt) {
@@ -201,7 +202,7 @@ export class BackgroundTaskService {
       dueIso = new Date(relative).toISOString();
     }
     const idem = this.once(scope, params, () => {
-      if (row.kind === 'autonomous' && !this.settings.effective().autonomous.enabled) return { code: 'SELF_WAKE_DISABLED', httpStatus: 422 };
+      if (row.kind === 'autonomous' && !this.settings.effective()[backgroundControl('autonomous',row.origin)].enabled) return { code: row.origin==='self_schedule'?'SELF_WAKE_DISABLED':'FREE_ACTIVITY_DISABLED', httpStatus: 422 };
       const nowIso = this.nowIso();
       let sets = 'revision = revision + 1, updated_at = ?';
       const args: Array<string | number | null> = [nowIso];

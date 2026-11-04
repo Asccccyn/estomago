@@ -1,6 +1,6 @@
 # 记忆接口与自主工具包施工记录
 
-本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。当前已完成 P0–P4 的主要代码与针对性隔离验证，P5 解耦及上线核验尚未完成，未部署、未调用真实模型。
+本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。P0–P5 代码与离线验收完成；生产发布与设置结果单列于本文最后，不以离线结果冒充部署。没有发起真实模型试用。
 
 ## P0 基线与链路
 
@@ -18,7 +18,7 @@
 | E→M | integrations/mariposa/client.ts；POST /api/capability/<name>，arguments 信封；默认 legacy HTTP data（没有 compact_v1） |
 | M | capabilities/input_schemas.py → registry.invoke → 各领域服务；HTTP 返回与 compact MCP 分开 |
 | 模型结果 | modules/memory/projection.ts；失败 runtime/model-results.ts |
-| 出站 | API supervisor 工具循环；SDK sdk-mcp.ts / sdk-host-query.ts / sdk-history.ts（P3 待补图像） |
+| 出站 | API supervisor 工具循环；SDK sdk-mcp.ts / sdk-host-query.ts / sdk-history.ts（P3 已补真实图块和回放） |
 
 P1 动作链：emotion → emotion.context.get；trace → memory.relations.trace；plans_read(include_links) → plan.get；plan_link → plan.memory.correct；item_history → i.item.history → i.item.relations.correct；分类 → memory.hold；里程碑 → IdentityMilestoneService → IdentityService。
 
@@ -88,3 +88,65 @@ M 正本提交 `c52739d`，制品提交 `db3669f`；原 export_contracts.py 现�
 ## 后续明确裁定
 
 用户要求启用自设预约唤醒与心跳、关闭额外自由活动；明确选择“只关闭额外自主任务，预约和心跳仍可自主行动”，其余能力/行为不变。若共用开关应解耦。费用此前指示暂不设日上限，将以明确 unlimited 状态表达，保留 null=未配置及既有次数、时长、报价和权限门。生产设置尚未修改；不创建测试预约、不执行真实模型实验。
+
+
+## P5：只关闭额外自由活动
+
+保留 `autonomous` 既有接口含义（`origin=self_schedule` 的预约），增加 `free_activity` 控制其余自主任务，`keepwarm` 保持独立。选择由现有任务 `kind/origin` 派生，同一调度器、执行器、账本和运行限制；无新任务类型或数据库表。关闭自由活动不会取消正在执行的预约。醒来后的工具资格、正式发言出口、心跳睡眠时段、提醒、同会话排队均保持原规则。
+
+按用户“暂时不设置上限”，费用字段新增明确字符串 `unlimited`；`null` 仍表示未配置。报价、权限、每轮模型/工具次数、运行时限照旧。页面只增加对应控制和无日上限选项，按原流程构建 dist。正式修改仍使用设置 HTTP 服务、If-Match 与幂等键，未直接写生产数据库。
+
+离线闭环使用现有 `verify-mariposa-bootstrap.py --case autonomy-loop` 与 `scripts/audit/background-product.ts`：普通回合经完整 C 定义预约→受控时钟到期→真实临时 M 的 recall/hold→领域生成的星回包发送桩→正式 chat_send_text→Siren 邀请发送桩→再次预约→background_complete→重启→第二次 noop。第一轮 7 次工具、2 次模型请求，未提高生产单轮限制；结束当前任务不删除下一任务，没有无限循环。全部 C 定义和 T 定义由真实 API 请求投影记录已发送证据。发送桩不证明真实模型选择或外部消息投递。
+
+收尾补修两个既有出口：M 长事件分页用 `fragment` 交付正文，E 原投影漏掉该结构；现保留片段、来源版本及不完整标识，真实 HTTP 长正文逐字拼回。oído 图块链路已接通，成功回包改为图片引用，删除误称“ui_only”的文案，字节仍仅在出站物化。
+
+最终包（完整 Host.create 装配）：40 C、7 D、2 T，新目录 49 项，另保留 6 个旧窗薄别名。C 定义文本 39,539 B，D 索引 607 B，发现入口 877 B，集中规则增量 105 B，总计 **41,128 UTF-8 B**，约 40.2 KiB。基线 49 定义 compact JSON 43,904 B；新完整目录 compact JSON 45,273 B。前者不是原本实际预载体积；不与 initial 文本重复相加。没有可信 tokenizer/费用实测。
+
+生成材料在本轮 `evidence/final-package/`：完整 `tool-package.json`、`initial-tools.txt`、`tool-matrix.md`、逐字段 `copy-and-schema-diff.json` 与 `copy-review.md`。M 共用合同源提交 c52739d，生成提交 db3669f；E 消费固定副本，--check 检出过期。共享字段、引用选择与宿主身份适配的范围见 P4，未复制整份 M schema 充当 E 参数。
+
+### A01–A23 证据索引
+
+证据均为本轮 workspace/evidence 下的合成数据；含真实临时领域 HTTP，不含真实私密正文。路径是实验结果，不是供应商网络抓包。
+
+| 编号 | 实施后证据与范围 |
+| --- | --- |
+| A01 | final-http-fragments-verified：emotion 经 frozen schema/bridge/实际 HTTP/toModel，词表、0、false 保留 |
+| A02 | 同上 trace 默认 5/上界 10/越界拒绝；M p1-mariposa.log 的分支/环/深度测试 |
+| A03 | 同上从 plan.get links、I item_history 取真实 ID，纠错后读回 |
+| A04 | 同上普通多选和 diary 通过，隔离混选拒绝；P1 M 验证无半条写入 |
+| A05 | p1-unit.log / p1-schema.log：覆盖比较、重复项、严格布尔、版本未改 |
+| A06 | frozen-schema-validation、shared-tool-contract；p4-regression.log / p4-contract-and-surface.log，实际动作分支与恢复投影 |
+| A07 | p2-mariposa-first.log / p2-regression.log；final-http-fragments-verified 长正文分页逐字拼回 |
+| A08 | M test_memory_delivery_20261104.py：真实证据进入 JEV 边界（fake HTTP），旧证据缓存不复用 |
+| A09 | final-http-fragments-verified：已发送 recall 引用→原 detail reader；仅一次 detail HTTP，无新 recall/JEV/open |
+| A10 | E 仅执行未发送拒绝；M 未翻页/预算裁掉/伪造/主体来源门，p2-regression.log |
+| A11 | M test_memory_delivery_20261104.py：首读变化标记、分页 stale、word/source 授权层级 |
+| A12 | final-http-fragments-verified 的 next 原样调用，raw 25 来源页；M 零命中理由/门/低负分 rank_only |
+| A13 | p3-media.log / final-p5-regression.log：多页、同时间 ID、新插入、scope 游标 |
+| A14 | final-p5-regression.log：真实 MCP image 块、API image、SDK 历史 tool_result image；草稿与撤销拒读，日志仅类型/字节计数 |
+| A15 | p4-package-final.log：真实 Host fake SDK 直接调用全部 40 C、D 实际发送后可用；P5 T 经正式 invoke 完成 |
+| A16 | p4-window-unit.log / frozen-tool-package / p5-autonomy-loop-final：热配置、重启、旧动作单次薄映射 |
+| A17 | frozen-tool-package：M bootstrap 503 不吞 C；后端不可用如实返回 |
+| A18 | p5-autonomy-loop-final、p5-http-product.log：真实宿主/临时 M、发送桩、再次预约/重启/noop；用户可见发言只经正式工具 |
+| A19 | p4-wishstar-final.log：领域源码生成 DTO；5 读分支、request_id、打开星正文/状态/不确定回包 |
+| A20 | final-package.log + final-package/：完整生产装配、49 名称、40/7/2、41,128 B；tokenizer 未实测 |
+| A21 | p4-window-unit.log / final-http-fragments-verified：新合并分支各调用原服务一次，旧名仍可用；原价格键/通话资格保留 |
+| A22 | p4-m-contract.log / shared-tool-contract / --check；final-http-fragments-verified 的 quotes/source_ranges/mood 与 recall 阶段适配 |
+| A23 | final-package/copy-review.md + copy-and-schema-diff.json；下述隔离场景。实际模型可读性尚未实测 |
+
+### 运行命令与未解决项
+
+每条测试前台串行、临时 ESTOMAGO_HOME。测试命令/输出保存在日志；失败后先核对实际合同：旧 SQL 夹具缺真实 task/origin、启用心跳后多一条系统任务、长事件载体实际为 evidence_snippet。这些夹具已修正并针对性复跑，未改业务去迎合错误预期。
+
+- `npm test -- --unit --file=tests/unit/wake-keepwarm.test.ts --file=tests/unit/exec-v1-wp4-background.test.ts` → p5-controls-unit.log，退出 0。
+- `npm test` 指定 keepwarm-sleep、full-audit-background-ledger、full-audit-background-failures → p5-existing-unit.log 中这三文件退出 0；同批旧夹具失败由前项复核。
+- `npm test` 指定 background-product-chain → p5-http-product.log，该文件退出 0；HTTP management 首次预期未计心跳系统任务，后在 p5-final-targeted.log 退出 0。
+- `npm test` 指定 oído façade / recall projection / background management → p5-final-targeted.log，退出 0。
+- `npm test` 指定 executor / wake-wire / wake / background-controls-model / catalog golden / album-image-delivery 六文件 → final-p5-regression.log，退出 0。
+- `python3 scripts/verify-mariposa-bootstrap.py --mariposa-repo ../mariposa --python <M .venv/bin/python> --case autonomy-loop --port 18884 --output ../evidence/p5-autonomy-loop-final` → 退出 0。
+- 同一命令 `--case memory-tools --output ../evidence/final-http-fragments-verified` → 退出 0。
+- `npm run typecheck`、`npm run typecheck:web` → 退出 0；`npm run build:web` 初次 Vite 临时缓存写权限拒绝，获工具沙箱授权后按原命令成功（p5-web-build-verified.log），没有改变构建流程。
+
+旧窗兼容只在该窗冻结目录允许时使用：memory_correct 旧日常动作和 episode_list/get、许愿星四旧读名直接调用同一业务函数，不二次 bridge/计费/双写。只有没有未结束窗口再引用旧名/旧动作后才能清理；审计历史不删除。覆盖安全修复立即生效，旧 schema 不能以无 confirm_overwrite 绕过保护。
+
+工程合同已验证，实际模型可读性尚未实测。没有向char发消息、没有真实 Claude/OR/JEV/TTS 试验。普通召回 rank_only、原文第二轮 gate、详情不等于明确打开、通话期 memory_only、原预算和权限/来源策略均未放宽。

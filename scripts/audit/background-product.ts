@@ -27,6 +27,8 @@ let modelActive=0;
 let maximumModelActive=0;
 function content(p:J):string{return (p.messages??[]).map((m:J)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');}
 function definition(p:J,name:string):string{
+  const initial=content(p).match(new RegExp(`- ${name}（definition_id: (td_[a-f0-9]+)）`));
+  if(initial)return initial[1];
   const values=(p.messages??[]).filter((m:J)=>m.role==='tool').map((m:J)=>{try{return JSON.parse(m.content)}catch{return {}}});
   return values.findLast((v:J)=>v.name===name&&v.definition_id)?.definition_id??'';
 }
@@ -45,7 +47,24 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
     const isWake=String(hostTail?.content).includes('Host self-wake');
     const isKeepalive=String(hostTail?.content).includes('Cache keepalive (host event');
     let calls:J[]=[];let text='合成回复：青禾';let delay=0;
-    if(isWake){
+    if(c.name==='autonomy-loop'&&isKeepalive)text='1';
+    else if(c.name==='autonomy-loop'){
+      const round=isWake?c.wakeRound++:c.chatRound++;
+      if(isWake){
+        assert.equal((p.messages.filter((m:J)=>m.role==='system').map((m:J)=>m.content).join('\n').match(/definition_id: td_/g)??[]).length,40);
+        assert.ok(definition(p,'background_complete'),'T definition supplied by the trusted host task');
+        if(round===0)calls=c.noop?[invoke(p,'background_complete',{outcome:'noop'})]:[
+          invoke(p,'memory_recall',{query:'合成事件',lexical_terms:['合成事件']}),
+          invoke(p,'memory_hold',{original_title:'合成醒来记录',text:'合成自主回合的经历与感受。',categories:['daily','sweet'],creation_mode:'contemporaneous'}),
+          invoke(p,'wishstar_write_star',{content:'SYNTHETIC_MY_STAR AbC  原生空格。',visibility:'hidden',idempotency_key:'loop-star'}),
+          invoke(p,'chat_send_text',{text:'合成自醒正式消息：autonomy-loop',idempotency_key:'loop-message'}),
+          invoke(p,'call_control',{action:'invite'}),
+          invoke(p,'wake_manage',{operation:'schedule',operation_id:'loop-next',note:'合成下一次预约',delay_seconds:3600}),
+          invoke(p,'background_complete',{outcome:'done'}),
+        ];
+      }else if(round===0)calls=[invoke(p,'wake_manage',{operation:'schedule',operation_id:'loop-first',note:'合成首次预约',delay_seconds:2})];
+      text='合成内部结束';
+    }else if(isWake){
       c.first_model_at??=new Date(started).toISOString();
       if(!definition(p,'chat_send_text')||!definition(p,'background_complete'))calls=[call('tool_define',{name:'chat_send_text'}),call('tool_define',{name:'background_complete'})];
       else if(!toolResults(p).some((r:J)=>r.published===true||r.message_id))calls=[invoke(p,'chat_send_text',{text:`合成自醒正式消息：${c.name}`,idempotency_key:`wake-${c.name}`}),invoke(p,'background_complete',{outcome:'done'})];
@@ -94,7 +113,20 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
   }
   const parsed=new URL(url);
   if(parsed.hostname!=='127.0.0.1'&&parsed.hostname!=='localhost')throw new Error(`AUDIT_NETWORK_FORBIDDEN:${parsed.hostname}`);
-  return originalFetch(input,init);
+  if(context?.name==='autonomy-loop'&&parsed.origin==='http://127.0.0.1:19876'){
+    assert.equal(parsed.pathname,'/api/stars');assert.equal(init?.method,'POST');
+    const fixture=JSON.parse(fs.readFileSync('tests/fixtures/wishstar-domain-responses.json','utf8')).responses.wishstar_write_star;
+    assert.equal(JSON.parse(String(init.body)).content,fixture.content);
+    context.starWrites++;return Response.json(fixture);
+  }
+  if(context?.name==='autonomy-loop'&&parsed.origin==='http://127.0.0.1:19877'){
+    assert.equal(parsed.pathname,'/v1/invites');assert.equal(init?.method,'POST');
+    assert.equal(JSON.parse(String(init.body)).conversation_id,'primary');context.invites++;
+    return Response.json({invite_id:'synthetic-invite',expires_at:Date.now()+45000});
+  }
+  const response=await originalFetch(input,init);
+  if(context?.name==='autonomy-loop'&&parsed.origin===process.env.CROSS_MARIPOSA_URL)context.mariposa.push({path:parsed.pathname,status:response.status,body:await response.clone().json()});
+  return response;
 };
 
 function sourceFactory(base:string,token:string,c:J){return (url:string)=>{
@@ -114,7 +146,8 @@ function sourceFactory(base:string,token:string,c:J){return (url:string)=>{
 };}
 async function startHost(root:string,c:J){
   const patch=readyRuntimePatch();
-  const config=buildConfig({...patch,runtime:{...patch.runtime as object,provider:'deepseek',tool_schema_mode:'deferred'},deepseek:{model:'deepseek-flash',api_key_env:'AUDIT_SYNTHETIC_DS_TOKEN',max_output_tokens:2048,retry_max_attempts_after_initial:0},openrouter:{model:null},deployment:{port:0},background:{autonomous:{max_model_requests_per_run:5,max_tool_calls_per_run:12,daily_cost_cap_usd:10,max_run_ms:120000},keepwarm:{sleep_window:{enabled:false}}}});
+  const config=buildConfig({...patch,runtime:{...patch.runtime as object,provider:'deepseek',tool_schema_mode:'deferred'},deepseek:{model:'deepseek-flash',api_key_env:'AUDIT_SYNTHETIC_DS_TOKEN',max_output_tokens:2048,retry_max_attempts_after_initial:0},openrouter:{model:null},deployment:{port:0},background:{autonomous:{max_model_requests_per_run:c.name==='autonomy-loop'?4:5,max_tool_calls_per_run:c.name==='autonomy-loop'?8:12,daily_cost_cap_usd:10,max_run_ms:120000},keepwarm:{sleep_window:{enabled:false}}},
+    ...(c.name==='autonomy-loop'?{integrations:{mariposa:{base_url:process.env.CROSS_MARIPOSA_URL,credential_ref:'ESTOMAGO_TEST_MARIPOSA_TOKEN'},siren:{base_url:'http://127.0.0.1:19877',credential_ref:'AUDIT_SYNTHETIC_DS_TOKEN'}},wishstar:{enabled:true,base_url:'http://127.0.0.1:19876',jiaming_token_env:'AUDIT_SYNTHETIC_DS_TOKEN'}}:{})});
   host=await Host.create({stateRoot:root,config,logDir:null,bind:'127.0.0.1',port:0});
   const enqueue=host.supervisor.enqueueBackground.bind(host.supervisor);
   host.supervisor.enqueueBackground=(conversation,fn)=>{c.enqueued_at??=new Date().toISOString();return enqueue(conversation,()=>{c.execution_slot_at??=new Date().toISOString();return fn();});};
@@ -125,6 +158,7 @@ async function startHost(root:string,c:J){
   await host.start();c.host_started_at=new Date().toISOString();
   const base=`http://127.0.0.1:${host.port}`;const token=fs.readFileSync(path.join(root,'config/auth.token'),'utf8').trim();
   host.db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES ('or_model_price',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify({input_micro_per_token:1,output_micro_per_token:2,cache_write_micro_per_token:1}),new Date().toISOString());
+  if(c.name==='autonomy-loop')host.db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES ('background_tool_prices',?,'now') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(Object.fromEntries(['memory_recall','memory_hold','wishstar_write_star','call_control'].map(name=>[name,{max_cost_micro_usd:1}]))));
   const request=async(url:string,method='GET',body?:unknown,key='fixture',revision=0)=>{const response=await originalFetch(base+'/api/v1'+url,{method,headers:{Authorization:`Bearer ${token}`,Origin:base,'Content-Type':'application/json','Idempotency-Key':key,'If-Match':`"${revision}"`},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await response.json() as J;if(!response.ok)throw Error(JSON.stringify({url,status:response.status,data}));return data;};
   const makeClient=()=>{const client=new EstomagoClient({fetch:(input,init)=>originalFetch(base+String(input),{...init,headers:{...Object.fromEntries(new Headers(init?.headers)),Authorization:`Bearer ${token}`,Origin:base}}),eventSource:sourceFactory(base,token,c),redirect:()=>{throw Error('unexpected auth redirect')}});clients.push(client);client.subscribe(()=>{if(client.snapshot.messages.some(m=>m.text===`合成自醒正式消息：${c.name}`))c.frontend_consumed_at??=new Date().toISOString();});return client;};
   return {base,token,request,makeClient};
@@ -223,8 +257,53 @@ async function runHeartbeat(){
   c.passed=true;c.timing='controlled scheduler/supervisor clock +50 minutes; no wall-time or real cache TTL claim';c.next_user_payload=bodies.at(-1)!.payload;
   results.push(c);fs.writeFileSync(path.join(out,'heartbeat.json'),JSON.stringify(c,null,2));console.log(JSON.stringify({scenario:'heartbeat',passed:true,cases:c.cases.map((r:J)=>({mode:r.mode,requests:r.request_count,retention:r.run.retention}))}));
 }
+async function runAutonomyLoop(){
+  assert.ok(process.env.CROSS_MARIPOSA_URL,'use the isolated cross-project runner');
+  const c:J={name:'autonomy-loop',chatRound:0,wakeRound:0,starWrites:0,invites:0,mariposa:[],sse_events:[],sse_errors:[]};context=c;
+  stateRoot=process.env.ESTOMAGO_HOME!;writeApprovedIdentity(stateRoot);
+  let env=await startHost(stateRoot,c);
+  const before=await env.request('/background/settings');
+  await env.request('/background/settings','PUT',{autonomous:{enabled:true,daily_cost_cap_usd:'unlimited'},keepwarm:{enabled:true,daily_cost_cap_usd:'unlimited'},free_activity:{enabled:false}},'loop-enable',before.revision);
+  c.settings=await env.request('/background/settings');
+  assert.deepEqual(c.settings.reminders,before.reminders);
+  await env.request('/conversations/primary/messages','POST',{content:'合成普通回合：预约一次未来唤醒。',client_message_id:'loop-seed'},'loop-seed');await host!.supervisor.waitIdle();
+  const task=host!.db.prepare("SELECT * FROM background_tasks WHERE origin='self_schedule'").get() as J;
+  assert.ok(task,'normal chat scheduled through the frozen C definition');
+  const due=(ms:number)=>{(host!.scheduler as any).d.now=()=>ms;(host!.supervisor as any).d.now=()=>ms;};
+  due(Date.parse(task.scheduled_at)+1);await host!.scheduler!.tick();await host!.supervisor.waitIdle();
+  const run=host!.db.prepare('SELECT * FROM background_runs WHERE task_id=?').get(task.id) as J;
+  const outputs=bodies.filter(b=>b.kind==='wake').flatMap(b=>toolResults(b.payload));
+  c.first_run=run;c.tool_receipts=outputs;
+  assert.equal(run.state,'completed',JSON.stringify({run,outputs}));
+  assert.ok(outputs.length>=7);assert.ok(outputs.every(r=>!r.error_code),JSON.stringify(outputs));
+  assert.ok(outputs.some(r=>r.saved===true&&r.memory_id));
+  assert.ok(outputs.some(r=>r.candidates?.some((m:J)=>m.memory_ref)));
+  assert.equal(c.invites,1);
+  assert.equal(c.starWrites,1,'real adapter consumed the domain-generated star DTO once');
+  const next=host!.db.prepare("SELECT * FROM background_tasks WHERE origin='self_schedule' AND id<>?").get(task.id) as J;
+  assert.ok(next);assert.equal(next.enabled,1,'ending current run does not delete the next task');
+  assert.ok(c.mariposa.some((r:J)=>r.path.endsWith('/memory.hold')&&r.status===200));
+  assert.ok(c.mariposa.some((r:J)=>r.path.endsWith('/memory.recall.start')&&r.status===200));
+  assert.equal((host!.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(run.turn_id) as J).n,1);
+  const window=host!.windows.activeWindow('primary')!;
+  const frozen=host!.db.prepare('SELECT catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(window.id);
+  c.sent_proofs=host!.db.prepare('SELECT purpose,tool_context_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL').all(run.id);
+  assert.ok(c.sent_proofs.some((p:J)=>JSON.parse(p.tool_context_json).some((d:J)=>d.name==='background_complete')));
+  await host!.stop();host=null;
+  env=await startHost(stateRoot,c);c.noop=true;c.wakeRound=0;
+  assert.deepEqual(host!.db.prepare('SELECT catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(window.id),frozen);
+  due(Date.parse(next.scheduled_at)+1);await host!.scheduler!.tick();await host!.supervisor.waitIdle();
+  const noop=host!.db.prepare('SELECT * FROM background_runs WHERE task_id=?').get(next.id) as J;c.noop_run=noop;
+  assert.equal(noop.state,'noop',JSON.stringify(noop));
+  assert.equal((host!.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(noop.turn_id) as J).n,0);
+  assert.equal((host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get() as J).n,2,'no automatic infinite scheduling');
+  c.passed=true;results.push(c);fs.writeFileSync(path.join(out,'autonomy-loop.json'),JSON.stringify(c,null,2));
+  console.log(JSON.stringify({scenario:c.name,passed:true,first_run:run.state,next_after_restart:noop.state,star_writes:c.starWrites}));
+}
 try{
-  if(process.argv.includes('--heartbeat')){
+  if(process.argv.includes('--autonomy-loop')){
+    await runAutonomyLoop();
+  }else if(process.argv.includes('--heartbeat')){
     await runHeartbeat();
   }else if(process.argv.includes('--serve')){
     context={name:'browser',managementDone:true,sse_events:[],sse_errors:[]};
