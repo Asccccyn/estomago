@@ -40,7 +40,7 @@ export const CHATSENDTEXT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'chat_send_text',
-      description: '以char身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。',
+      description: '以你的身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。',
       parameters: {
         type: 'object',
         properties: {
@@ -57,7 +57,7 @@ export const CHATSENDATTACHMENT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'chat_send_attachment',
-      description: '以char当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
+      description: '以你当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
       parameters: {
         type: 'object',
         properties: {

@@ -10,7 +10,7 @@ export const CONTENTPOSTCREATE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'content_post_create',
-      description: '以char身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。',
+      description: '以你的身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。',
       parameters: {
         type: 'object',
         properties: {
@@ -66,7 +66,7 @@ export const CREATIONSAVEARTIFACT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'creation_save_artifact',
-      description: '保存char写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。',
+      description: '保存你写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。',
       parameters: {
         type: 'object',
         properties: {

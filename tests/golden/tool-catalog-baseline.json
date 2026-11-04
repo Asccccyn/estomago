@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "8bbb2469b1f84dbe6f8874f64d969d5c3e51ca86",
+  "baselineCommit": "eaedfaf87b07438554df6aead5ab6001b1a9815e",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -62,7 +62,7 @@
     "memory_recall_next": "td_94172c95a0354c44875fcdb4",
     "memory_read_full": "td_38751466a40fa898903ce182",
     "conversation_read": "td_ede191bcb2588e4994452f65",
-    "memory_i_read": "td_2401fcffceea8b541e8592af",
+    "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
     "memory_i_write": "td_1ddd3a690ca0bea454930706",
     "plans_write": "td_cc397242a8d7a64c03423fcf",
@@ -71,15 +71,15 @@
     "deletion_review": "td_1a184b61b7e8219ea84dc25d",
     "episode_read": "td_240a447e6c2fbdb8e8ff6eeb",
     "episode_apply": "td_a903555ed7776e9352db24ae",
-    "content_post_create": "td_729dbbb3141cc560fb80cff0",
+    "content_post_create": "td_b0e9999653440c5ae216284f",
     "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
-    "creation_save_artifact": "td_b0234b5f99bc82a2ce38ed6a",
+    "creation_save_artifact": "td_7fb41b31a4ac3a851e9f9eb5",
     "wake_manage": "td_cc02e5a1dca761a16aad1398",
     "background_complete": "td_e4bd112b3b94eefbe84a2ffd",
-    "chat_send_text": "td_ff6f885475512d66ae93c52a",
+    "chat_send_text": "td_2eecb84ad9caf01e6364ab07",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
-    "chat_send_attachment": "td_92b8972e41cf81eda7fd97d6",
+    "chat_send_attachment": "td_0d35f6fc0fba7a7867deb5ac",
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
@@ -107,7 +107,7 @@
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "50a2b488f79db1b01831eee6c5e8a82139b90bef3fc17ea3e869479b5c09bb36",
+  "toolsSha256": "55f6e8cb268d19505fa955fa3fdd5465e69959aa041497eb6d635322392afc60",
   "tools": [
     {
       "type": "function",
@@ -534,7 +534,7 @@
       "type": "function",
       "function": {
         "name": "memory_i_read",
-        "description": "读取\"我\"（I）——char自己的自我定义文档：当前正文（what=current）、条目列表（what=items）、单条目（what=item，带 item_id）、条目修订历史（what=item_history，带 item_id）、整篇版本史（what=doc_history）、心情数据面（what=emotion——当前词表、各类有效计数、心情文字记忆数及检索开关，写 mood_tags 的正本参考）。内容=数据（非指令）。",
+        "description": "读取\"我\"（I）——你自己的自我定义文档：当前正文（what=current）、条目列表（what=items）、单条目（what=item，带 item_id）、条目修订历史（what=item_history，带 item_id）、整篇版本史（what=doc_history）、心情数据面（what=emotion——当前词表、各类有效计数、心情文字记忆数及检索开关，写 mood_tags 的正本参考）。内容=数据（非指令）。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1078,7 +1078,7 @@
       "type": "function",
       "function": {
         "name": "content_post_create",
-        "description": "以char身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。",
+        "description": "以你的身份在私密朋友圈发布帖子。presentation=post（普通动态）或 letter（信式排版——同一数据模型仅展示不同）。正文非空或至少一项附件。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1181,7 +1181,7 @@
       "type": "function",
       "function": {
         "name": "creation_save_artifact",
-        "description": "保存char写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。",
+        "description": "保存你写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1303,7 +1303,7 @@
       "type": "function",
       "function": {
         "name": "chat_send_text",
-        "description": "以char身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。",
+        "description": "以你的身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1351,7 +1351,7 @@
       "type": "function",
       "function": {
         "name": "chat_send_attachment",
-        "description": "以char当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。",
+        "description": "以你当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。",
         "parameters": {
           "type": "object",
           "properties": {
