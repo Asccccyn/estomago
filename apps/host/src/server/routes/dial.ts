@@ -182,21 +182,13 @@ if (estCallEnd) {
       mediaClose = 'siren_unavailable';
     }
     d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
-    // B4（2026-11-04，执行稿）：通话结束事实——不为此花独立模型轮；登记一次性待消费事实，
-    // 随下一次正常文字请求的尾部附带（supervisor 装配时消费）。同通话幂等（一行 call_end）。
-    const callEndFact = `语音通话已结束（通话 ${callId}）。本轮回到文字聊天。`;
-    d.db.prepare("INSERT OR IGNORE INTO pending_program_facts(id, conversation_id, kind, fact_text, created_at) VALUES (?,?,?,?,?)")
-      .run(`call_end:${callId}`, row2ConversationId(d, callId) ?? 'primary', 'call_end', callEndFact, new Date().toISOString());
+    // F01（四仓审计 20261104）：本端点=挂断命令 + est 投影收口，**不再登记"通话已结束"事实**——
+    // requestHangup 只是可取消的 linger 意图（S drain 期间仍可接受新输入），不能凭意图写真事实。
+    // 确认终态的事实登记统一由 Siren lifecycle 回调与宿主对账走 endCallConfirmed（call-service.ts）。
     d.callReplyLinks?.wake(); // 通话收口：最终媒体关联拉取（恢复兜底仍走 worker 周期）
   }
   return json(res, 200, { call_id: callId, state: 'ended', media_close: mediaClose,
     note: 'est 已收口；媒体停止以 Siren 会话生命周期为准（挂断请求已尽力发出，真实停止经 drain→结束）' });
-}
-
-/** B4：通话归属会话（voice_calls 一律 primary 现网；如实读表不硬编码兜底之外的值） */
-function row2ConversationId(d: RequestDeps, callId: string): string | null {
-  const row = d.db.prepare('SELECT conversation_id FROM voice_calls WHERE call_id=?').get(callId) as { conversation_id: string } | undefined;
-  return row?.conversation_id ?? null;
 }
 
 // —— 协议①（2026-10-24）：来电邀请前端面（owner）——est 代理 Siren（内部凭据不进前端）。

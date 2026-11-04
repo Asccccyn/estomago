@@ -1,3 +1,4 @@
+import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';

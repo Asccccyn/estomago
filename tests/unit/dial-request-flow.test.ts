@@ -66,10 +66,10 @@ function compose(root: string, transport: OrTransport) {
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   const deps = { config, db, events, messages, supervisor, paths, logger: new Logger(path.join(root, 'logs')), auth: { isAuthorized: () => true, verifyToken: () => true, originAllowed: () => true } } as never;
-  const call = async (route: string, method = 'GET', body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
+  const call = async (route: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: Record<string, unknown> }> => {
     const res = new FakeRes();
     const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []) as Readable & { headers?: Record<string, string>; method?: string; url?: string };
-    req.headers = {}; req.method = method; req.url = route;
+    req.headers = headers; req.method = method; req.url = route;
     await handleRequest(req as never, res as never, deps);
     await new Promise((r) => setTimeout(r, 30));
     res.flushTail();
@@ -120,42 +120,62 @@ test('她发起→char收到事实轮并 decline_call：请求 declined+他同�
   } finally { await c.supervisor.stopAll(); c.close(); }
 });
 
-test('B4：通话结束事实——挂断登记一次性待消费，随下一次正常文字轮附带并核销', async () => {
+test('F01：通话结束事实归确认终态共同出口（S-first/UI-first/对账补齐/幂等/消费核销）', async () => {
   const prompts: string[] = [];
   const transport: OrTransport = async (payload: any) => {
     prompts.push(JSON.stringify(payload.messages));
     return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'ce', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) };
   };
   const c = compose(tempRoot('call-end-fact-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const lifecycle = (callId: string) => c.call(`/v1/calls/${callId}`, 'DELETE', undefined, { authorization: 'Bearer synthetic-ingress' });
+  const factRow = (callId: string) => c.db.prepare("SELECT kind, consumed_at FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string; consumed_at: string | null } | undefined;
   try {
-    // 场景直造：一通已建立的通话（voice_calls active）——挂断端点只依赖该行存在
-    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,analysis_mode) VALUES ('call-end-1','primary','active',?,'ordinary')").run(new Date().toISOString());
-    const end = await c.call('/api/v1/calls/call-end-1', 'DELETE');
-    assert.equal(end.status, 200);
-    assert.equal(end.body['state'], 'ended');
-    // 事实已登记（一次性，幂等键 call_end:call_id）
-    const pending = c.db.prepare("SELECT id, kind, consumed_at FROM pending_program_facts WHERE id='call_end:call-end-1'").get() as { kind: string; consumed_at: string | null };
-    assert.equal(pending.kind, 'call_end');
-    assert.equal(pending.consumed_at, null);
-    // 幂等：重复挂断不重复登记
-    await c.call('/api/v1/calls/call-end-1', 'DELETE');
-    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts").get() as { n: number }).n, 1);
-    // 下一次正常文字轮：事实随尾部附带
+    const now = new Date().toISOString();
+    // ── 场景 A（审计复现）：lifecycle 先到（Siren 确认终态），前端后到 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,analysis_mode) VALUES ('call-s-first','primary','active',?,'ordinary')").run(now);
+    assert.equal((await lifecycle('call-s-first')).status, 200);
+    assert.equal(factRow('call-s-first')?.kind, 'call_end', 'S-first：lifecycle 确认终态登记事实（旧实现此路径漏登记）');
+    await c.call('/api/v1/calls/call-s-first', 'DELETE'); // 前端后到
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id='call_end:call-s-first'").get() as { n: number }).n, 1, '重复到达不重复登记');
+    assert.equal((await lifecycle('call-s-first')).status, 200, 'lifecycle 幂等重放仍 200');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id='call_end:call-s-first'").get() as { n: number }).n, 1, '幂等：仍恰一条');
+
+    // ── 场景 B（真假事实修正）：前端挂断命令先到——意图不登记事实 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,analysis_mode) VALUES ('call-ui-first','primary','active',?,'ordinary')").run(now);
+    const ui = await c.call('/api/v1/calls/call-ui-first', 'DELETE');
+    assert.equal(ui.status, 200);
+    assert.equal(ui.body['state'], 'ended', '前端端点仍本端收口投影');
+    assert.equal(factRow('call-ui-first'), undefined, 'F01：挂断命令（linger 意图）不登记"通话已结束"事实');
+    await lifecycle('call-ui-first'); // S 稍后确认终态
+    assert.equal(factRow('call-ui-first')?.kind, 'call_end', '确认终态到达后补登记');
+
+    // ── 场景 C（回调丢失）：对账发现正本 ended → 补齐 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-reconcile','primary','active',?,?,'ordinary')").run(now, now);
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    const out = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false }) } as never);
+    assert.equal(out.ended, 1, '对账收口 call-reconcile');
+    assert.equal(factRow('call-reconcile')?.kind, 'call_end', '对账确认终态补登记事实');
+
+    // ── 消费链：事实随下一次正常文字轮附带并核销 ──
     const turn = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '回来了', clientMessageId: 'm-after-call' });
     c.supervisor.enqueue(turn.turnId);
     await c.supervisor.waitIdle();
-    assert.ok(prompts.length >= 1, '有真实派发');
-    assert.ok(prompts.some((p) => p.includes('[program_facts]') || p.includes('语音通话已结束')), '结束事实随正常轮附带');
-    // 派发后核销（真实派发证据）
-    const after = c.db.prepare("SELECT consumed_at FROM pending_program_facts WHERE id='call_end:call-end-1'").get() as { consumed_at: string | null };
-    assert.ok(after.consumed_at, '已派发即核销');
-    // 再一轮不重复附带：事实以历史轨迹的一部分恰好出现一次（无新增尾部副本）
+    assert.ok(prompts.some((p) => p.includes('语音通话已结束')), '结束事实随正常轮附带');
+    for (const id of ['call-s-first', 'call-ui-first', 'call-reconcile']) {
+      assert.ok(factRow(id)?.consumed_at, `已派发即核销：${id}`);
+    }
+    // 核销后不重复附带（历史轨迹恰一次）
     const turn2 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '嗯嗯', clientMessageId: 'm-after-call-2' });
     c.supervisor.enqueue(turn2.turnId);
     await c.supervisor.waitIdle();
     const occurrences = prompts.slice(-1)[0]!.split('语音通话已结束').length - 1;
-    assert.equal(occurrences, 1, `核销后仅历史留存一次（实际 ${occurrences}）`);
-  } finally { await c.supervisor.stopAll(); c.close(); }
+    assert.equal(occurrences, 3, `核销后仅历史留存（三通各一次，实际 ${occurrences}）`);
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
 });
 
 test('她取消后再 accept_call：DIAL_SUPERSEDED 如实（不建通话）', async () => {

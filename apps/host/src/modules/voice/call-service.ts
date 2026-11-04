@@ -7,6 +7,31 @@ import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/cont
 
 export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number };
 
+/** F01（四仓审计 20261104）：通话**确认终态**的共同出口——更新投影 + 登记同 call 幂等的
+ *  pending_program_facts 事实（随下一次正常文字轮附带，B4 合同）。
+ *  调用方限定两类：Siren lifecycle end 回调（正本确认结束）与宿主对账（正本 ended/
+ *  无此通话/孤儿收口）。前端面板挂断与模型 end 工具**不走这里**——requestHangup 只是
+ *  可取消的 linger 意图，S 仍可接受新输入，不能凭意图登记"通话已结束"（真假事实混用）。
+ *  幂等：投影只在 active→ended 时更新；事实主键 call_end:{callId}，INSERT OR IGNORE。 */
+export function endCallConfirmed(db: Db, callId: string): { ended: boolean } {
+  const now = new Date().toISOString();
+  const upd = db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(now, callId);
+  const ended = Number(upd.changes) === 1;
+  const conv = db.prepare("SELECT conversation_id FROM voice_calls WHERE call_id=? AND state='ended'").get(callId) as { conversation_id: string } | undefined;
+  if (conv) {
+    db.prepare('INSERT OR IGNORE INTO pending_program_facts(id, conversation_id, kind, fact_text, created_at) VALUES (?,?,?,?,?)')
+      .run(`call_end:${callId}`, conv.conversation_id, 'call_end', '语音通话已结束。本轮回到文字聊天。', now);
+  }
+  return { ended };
+}
+
+/** E02（四仓审计 20261104）：voice_calls active 判定的单一窄能力。
+ *  model-bridge（工具可见性/执行门）、executor（memory_only 最后边界）与
+ *  supervisor（B4 事实消费条件）共用同一判定；通用桥不再各自手写表结构 SQL。 */
+export function isVoiceCallActive(db: Db, conversationId: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(conversationId));
+}
+
 export class VoiceCallService {
   private readonly db: Db;
   private readonly sirenCall: SirenAdapter | null;

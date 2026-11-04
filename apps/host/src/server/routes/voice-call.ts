@@ -3,6 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
+import { endCallConfirmed } from '../../modules/voice/call-service.ts';
 
 /** B2（2026-10-24）：通话生命周期（专用 token 面）——POST /v1/calls 立册 active（memory_only 生效），
  *  DELETE /v1/calls/:id 挂断收口（幂等）。Siren CallSession 建立即调；未显式调用时首个电话轮自动立册。 */
@@ -37,7 +38,9 @@ export async function handleVoiceCallLifecycle(req: IncomingMessage, res: Server
   const callId = decodeURIComponent(m?.[1] ?? '');
   const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
   if (!row) return ndjsonError(404, 'call not found');
-  if (row.state === 'ended') return json(res, 200, { call_id: callId, state: 'ended' });
-  d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(nowIso, callId);
+  // F01（四仓审计 20261104）：Siren lifecycle end = 确认终态——统一走共同出口，包括投影
+  // 已被前端命令先收口的场景（早退分支不补登记=旧缺口，审计 S-first 复现已覆盖）。
+  // 幂等：投影 UPDATE 只在 active 生效；事实 INSERT OR IGNORE（恰一条）。
+  endCallConfirmed(d.db, callId);
   return json(res, 200, { call_id: callId, state: 'ended' });
 }

@@ -2,6 +2,7 @@
 // 工具生命周期外壳（start/result 事件、memory_only 通话门、背景准入记账、registry 路由）。
 // 自 runtime/host-tools.ts 整体迁入：路由只走 Registry（48 工具唯一路径），业务 handler
 // 在 modules/<域>/；unknown 恢复与引用核对委托 memory 域窄端口。
+import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { modelFailure } from '../runtime/model-results.ts';
@@ -49,7 +50,7 @@ export class ModelToolBridge {
   }
   /** JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=能力如实 unavailable） */
   private voiceCallActive(roomId: string): boolean {
-    return Boolean(this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(roomId));
+    return isVoiceCallActive(this.db, roomId); // E02：单一窄能力（voice/call-service），不再手写表结构 SQL
   }
 
   /** 协议①（2026-10-24）：通话控制——拨号动作的 est 授权入口（03 §2：复用延迟发现，

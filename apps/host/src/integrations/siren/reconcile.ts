@@ -10,6 +10,7 @@
 // 通知本身幂等（DELETE /v1/calls），对账只修正确定的终态。
 import type { Db } from '../../db/connection.ts';
 import type { SirenAdapter } from './adapter.ts';
+import { endCallConfirmed } from '../../modules/voice/call-service.ts';
 
 export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapter | null, signal?: AbortSignal): Promise<{ ended: number; kept: number; skipped: number }> {
   const out = { ended: 0, kept: 0, skipped: 0 };
@@ -27,7 +28,7 @@ export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapt
     if (signal?.aborted) break;
     const now = new Date().toISOString();
     if (status === null || status === 'not_found' || status.dbStatus === 'ended') {
-      db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(now, row.call_id);
+      endCallConfirmed(db, row.call_id); // F01：对账确认终态=共同出口（投影+事实），回调丢失在此补齐
       out.ended++;
       continue;
     }
@@ -35,7 +36,7 @@ export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapt
     const neverConnected = !row.connected_at;
     const reservationExpired = row.reserved_until !== null && Date.parse(row.reserved_until) <= Date.now();
     if (neverConnected && reservationExpired) {
-      db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(now, row.call_id);
+      endCallConfirmed(db, row.call_id); // F01：孤儿收口同走共同出口（事实登记幂等）
       out.ended++;
       continue;
     }
