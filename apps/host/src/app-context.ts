@@ -291,6 +291,9 @@ export class Host {
       attachmentsClient: opts.config.archive.enabled ? archiveMariposaClient : null,
       streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
       logger,
+      // B2（2026-11-04）：附件绑定成功→message.media.updated（复用 EventService 持久/分发/回放链）
+      events,
+      getMessage: (id: string) => messages.getMessage(id) as unknown as Record<string, unknown> | null,
     });
     // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。

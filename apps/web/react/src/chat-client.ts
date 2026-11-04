@@ -2,7 +2,7 @@ import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -245,7 +245,17 @@ export class EstomagoClient {
         &&['completed','failed','blocked','interrupted'].includes(previous.state)&&['pending','running'].includes(next.state)
       const mutation=old.mutation_status?.reason==='MESSAGE_ALREADY_DISPATCHED'?old.mutation_status:(dto.mutation_status??old.mutation_status)
       const reply=next&&!regresses?next:previous
-      if(JSON.stringify(previous)!==JSON.stringify(reply)||JSON.stringify(old.mutation_status)!==JSON.stringify(mutation)){this.raw.set(dto.id,{...old,reply_status:reply,mutation_status:mutation});return true}
+      // B2（2026-11-04）：同修订号附件合并——晚到的通话回复音频不改正文，只补附件。
+      // 迟到旧快照的空附件数组不能撤销已合并的附件（空≠已删除；删除走修订/既有删除合同）。
+      const oldAtt=old.revision.attachments??[]
+      const dtoAtt=Array.isArray(dto.revision.attachments)?dto.revision.attachments:null
+      const attChanged=dtoAtt&&dtoAtt.length>0&&JSON.stringify(oldAtt)!==JSON.stringify(dtoAtt)
+      if(JSON.stringify(previous)!==JSON.stringify(reply)||JSON.stringify(old.mutation_status)!==JSON.stringify(mutation)||attChanged){
+        this.raw.set(dto.id,{...old,reply_status:reply,mutation_status:mutation,
+          revision:{...old.revision,attachments:attChanged?dtoAtt:oldAtt},
+          late_media:attChanged?true:old.late_media})
+        return true
+      }
       return false
     }
     this.raw.set(dto.id,dto)
@@ -289,7 +299,7 @@ export class EstomagoClient {
       ]
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
         time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
-        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,
+        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
         replyState:m.reply_status?.state,
         canEdit:m.speaker==='owner'&&m.mutation_status?.can_edit===true,
         canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
@@ -326,7 +336,7 @@ export class EstomagoClient {
       if(current&&terminalStates.has(current.state)&&(!attempt||attempt===current.attempt)&&['running','pending'].includes(state))return
       if(state)this.turnStates.set(id,{attempt:attempt??current?.attempt,state})
     }
-    if(['message.persisted','message.published','message.edited'].includes(data.kind)&&data.message){
+    if(['message.persisted','message.published','message.edited','message.media.updated'].includes(data.kind)&&data.message){
       const message=data.message
       const visible=this.raw.has(message.id)
       const min=Math.min(...[...this.raw.values()].map(m=>m.sequence))
@@ -334,7 +344,7 @@ export class EstomagoClient {
       if(visible||(this.snapshot.historyMode==='latest'&&(!Number.isFinite(min)||message.sequence>=min))){
         if(this.absorb(message))this.render()
         if(message.speaker==='owner')void this.refreshReply(message.id)
-      }else if(data.kind!=='message.edited'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
+      }else if(data.kind!=='message.edited'&&data.kind!=='message.media.updated'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
     }
     if(id&&data.kind==='turn.started'){this.running.add(id);this.markReplyState(id,'running',data.attempt_id);this.render()}
     if(id&&data.kind==='turn.status'){
