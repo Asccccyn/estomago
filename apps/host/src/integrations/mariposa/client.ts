@@ -419,8 +419,9 @@ export class MariposaClient {
     if (Array.isArray(args.relations)) payload.relations = args.relations;
     return this.transport('i.item.revise', payload);
   }
-  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string }): Promise<MariposaCallResult> {
-    const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision, expected_revision: args.expectedRevision };
+  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string; relations?: unknown[] }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision,
+      ...(args.relations !== undefined ? { relations: args.relations } : {}), expected_revision: args.expectedRevision };
     if (args.changeReason) payload.change_reason = args.changeReason;
     return this.transport('i.item.restore', payload);
   }

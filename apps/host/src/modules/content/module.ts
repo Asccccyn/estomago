@@ -1,4 +1,5 @@
 // modules/content/module.ts（P04.7）：content 域 4 项能力登记。
+import { CONTENT_ALBUMS } from '../../../../../packages/contracts/src/content.ts';
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
 import type { HostToolSpec } from '../../capabilities/contracts.ts';
@@ -78,6 +79,16 @@ export const CREATIONSAVEARTIFACT_DEFINITION: HostToolSpec = {
     }
   };
 
+export const CONTENTALBUMSREAD_DEFINITION: HostToolSpec = {
+  type:'function',function:{name:'content_albums_read',description:'浏览当前身份可读的相册和条目。不带 album 列相册；带 album 分页读条目，可按说明文字或完整来源引用过滤。条目仅给图片引用，用 media_view 实际看图。',parameters:{type:'object',properties:{
+    album:{type:'string',enum:CONTENT_ALBUMS.map(a=>a.album),description:'相册列表中的 album'},
+    cursor:{type:'string',minLength:1,description:'同相册同查询上一页 next_cursor'},
+    limit:{type:'integer',minimum:1,maximum:100,description:'每页数量，默认 20'},
+    q:{type:'string',description:'按标题/说明文字查询，不依赖向量索引'},
+    source_service:{type:'string',minLength:1},source_kind:{type:'string',minLength:1},source_id:{type:'string',minLength:1,description:'可选完整来源三元组，与 source_service/source_kind 同时提供'},
+  },additionalProperties:false,dependencies:{cursor:['album'],q:['album'],source_service:['album','source_kind','source_id'],source_kind:['album','source_service','source_id'],source_id:['album','source_service','source_kind']}}},
+};
+
 export type ContentModuleDeps = {
   contentClient?: import('../../integrations/content/client.ts').ContentClient | null;
   media?: import('../../media/assets.ts').MediaService | null;
@@ -105,8 +116,12 @@ export function registerContentCapabilities(registry: { register(d: CapabilityDe
   }));
   registry.register(toolCapability({
     owner: 'content',
-    id: 'creation_save_artifact', baselineOrder: 19, free: true, definition: () => CREATIONSAVEARTIFACT_DEFINITION, memoryOnlyAllowed: false, label: '保存小作品',
+    id: 'creation_save_artifact', group: 'D', baselineOrder: 19, free: true, definition: () => CREATIONSAVEARTIFACT_DEFINITION, memoryOnlyAllowed: false, label: '保存小作品',
     run: (input: Record<string, unknown>, ctx) => service.creationSaveArtifact(input as never, ctx),
     toModel: (value) => value,
   }));
+  registry.register(toolCapability({owner:'content',id:'content_albums_read',baselineOrder:51,definition:CONTENTALBUMSREAD_DEFINITION,memoryOnlyAllowed:false,free:true,label:'浏览相册',
+    run:(input:Record<string,unknown>,ctx)=>service.contentAlbumsRead(input,ctx),toModel:value=>value,
+  }));
+
 }

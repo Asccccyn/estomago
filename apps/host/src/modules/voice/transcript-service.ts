@@ -23,13 +23,11 @@ export class VoiceTranscriptService {
   }
 
   read(args: TranscriptReadInput, ctx: ToolExecContext): CapabilityOutcome<Record<string, unknown>> {
-    const audioRef = args.audio_ref ?? (() => {
+    let audioRef = args.audio_ref;
+    if (audioRef === undefined) {
       const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
-      return resolved.kind === 'unique' ? `est:${resolved.assetId}` : null;
-    })();
-    if (!audioRef) {
-      const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
-      return { ok: false, error: { error_code: 'VOICE_REF_REQUIRED', message: `当前无法唯一确定目标语音；请从这些里指定 audio_ref：${candidateLocator(resolved.candidates)}` } };
+      if (resolved.kind === 'ambiguous') return { ok: false, error: { error_code: 'VOICE_REF_REQUIRED', message: `当前无法唯一确定目标语音；请从这些里指定 audio_ref：${candidateLocator(resolved.candidates)}` } };
+      audioRef = `est:${resolved.assetId}`;
     }
     const assetId = audioRef.slice('est:'.length);
     const row = this.db.prepare(

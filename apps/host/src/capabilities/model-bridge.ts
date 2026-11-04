@@ -6,7 +6,6 @@ import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { modelFailure } from '../runtime/model-results.ts';
 import { buildDeferredTools, storedToolset, definitionId, definitionWasSeen, effectiveToolName } from '../runtime/tool-discovery.ts';
-import { initialDefinitionSeen, initialVisibleTools } from '../runtime/tool-initial-visible.ts';
 import { DISCOVERY_NAMES } from '../runtime/tool-discovery.ts';
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from './contracts.ts';
@@ -17,7 +16,6 @@ import { DISCOVERY_META, isDiscoveryFree, toolPresentation } from './model-bridg
 
 export class ModelToolBridge {
   private db: Db;
-  private lastMoodVocabRefreshAt = 0;
 
   constructor(deps: { db: Db; events?: import('../events/service.ts').EventService | null }) {
     this.db = deps.db;
@@ -36,6 +34,9 @@ export class ModelToolBridge {
   /** P04：换窗评审的未知写结果恢复——窄委托 memory 域服务（P06 收口执行边界）。 */
   private memoryRecovery: { recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> } | null = null;
   setMemoryRecovery(s: { recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> } | null): void { this.memoryRecovery = s; }
+  async prepareWindowDefinitions(signal?: AbortSignal): Promise<void> {
+    await (this.memoryRecovery as {prepareDefinitions?: (signal?:AbortSignal)=>Promise<void>} | null)?.prepareDefinitions?.(signal);
+  }
   async recoverUnknownEffects(conversationId: string, windowId: string): Promise<{ resolved: number; stillUnknown: number }> {
     if (!this.memoryRecovery) throw new Error('MEMORY_RECOVERY_NOT_WIRED');
     return this.memoryRecovery.recoverUnknownEffects(conversationId, windowId);
@@ -156,8 +157,7 @@ export class ModelToolBridge {
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
-    const initialSeen = initialVisibleTools(this.db).includes(spec.function.name) && initialDefinitionSeen(this.db, ctx.windowId, spec);
-    if (args.definition_id !== definitionId(spec) || (!definitionWasSeen(this.db,ctx,spec) && !initialSeen)) return deny('TOOL_DEFINITION_NOT_SEEN');
+    if (args.definition_id !== definitionId(spec) || !definitionWasSeen(this.db,ctx,spec)) return deny('TOOL_DEFINITION_NOT_SEEN');
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);

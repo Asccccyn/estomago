@@ -50,6 +50,19 @@ export class ContentToolsService {
   }
 
 
+  async contentAlbumsRead(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED',detail:'相册服务未装配'}};
+    const { contentForward } = await import('../../integrations/content/client.ts');
+    const params = new URLSearchParams();
+    for (const key of ['cursor','limit','q','source_service','source_kind','source_id']) if (args[key] !== undefined) params.set(key,String(args[key]));
+    const endpoint = args.album ? `/albums/${encodeURIComponent(String(args.album))}/entries?${params}` : '/albums';
+    const response = await contentForward(this.contentClient,{method:'GET',actor:'jiaming',path:'/api/v1/content'+endpoint});
+    if (response.status !== 200) return {ok:false,output:{error_code:'ALBUM_READ_FAILED',detail:JSON.stringify(response.body)}};
+    const body = response.body as {albums?: unknown[];items?: Array<Record<string,unknown>>;next_cursor?:string|null;has_more?:boolean};
+    if (!args.album) return {ok:true,output:{albums:body.albums ?? []}};
+    return {ok:true,output:{items:(body.items ?? []).map(item=>({id:item.id,asset_ref:`est:${item.asset_id}`,caption:item.caption,meaning:item.meaning,created_at:item.created_at})),next_cursor:body.next_cursor,has_more:body.has_more}};
+  }
+
   async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     const mime = args.format === 'svg' ? 'image/svg+xml' : 'text/html';

@@ -12,6 +12,9 @@ import type { CapabilityDescriptor } from './registry.ts';
 
 export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   id: string;
+  group?: import('./registry.ts').ToolGroup;
+  legacyOnly?: boolean;
+  replacedBy?: string;
   baselineOrder: number;
   /** 定义或定义工厂（唯一来源；动态词表传工厂）。 */
   definition: HostToolSpec | (() => HostToolSpec);
@@ -25,7 +28,7 @@ export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   toModel: (value: O, input: I) => Record<string, unknown>;
   /** 免费资格声明（模块所有；仅现有已核免费事实，不按名字/只读/本地猜）。 */
   free?: boolean;
-  quote?: (db: Db) => BackgroundToolQuote;
+  quote?: (db: Db, input?: I) => BackgroundToolQuote;
 };
 
 function isCapabilityOutcome<O>(r: CapabilityOutcome<O> | ToolExecResult): r is CapabilityOutcome<O> {
@@ -40,6 +43,9 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
   return {
     id: o.id,
     owner: o.owner,
+    group: o.group ?? 'C',
+    legacyOnly: o.legacyOnly ?? false,
+    replacedBy: o.replacedBy,
     baselineOrder: o.baselineOrder,
     definition: defFactory,
     memoryOnlyAllowed: o.memoryOnlyAllowed,

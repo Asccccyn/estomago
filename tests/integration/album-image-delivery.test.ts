@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { makeDb } from '../helpers.ts';
+import { makeDb, assembleTestTools } from '../helpers.ts';
 import { ContentServer } from '../../apps/content/src/service.ts';
 import { contentForward } from '../../apps/host/src/integrations/content/client.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
@@ -13,7 +13,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { createEstSdkMcp } from '../../apps/host/src/runtime/sdk-mcp.ts';
 import { SdkHistoryReplay } from '../../apps/host/src/runtime/sdk-history.ts';
-import { buildDeferredTools } from '../../apps/host/src/runtime/tool-discovery.ts';
+import { buildDeferredTools, freezeWindowTools, storedToolset, definitionId, recordToolContext } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { materializeEnvelope, toolResultContent } from '../../apps/host/src/media/model-input.ts';
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBz0AAAAASUVORK5CYII=', 'base64');
@@ -65,16 +65,29 @@ test('相册/朋友圈多页稳定倒序；真实图片进入 MCP、API 与历�
   assert.deepEqual((await svc.readImage(draft.id,'room')).bytes,PNG);
   await assert.rejects(svc.readImage(draft.id,'other-room'),(e:any)=>e.code==='ASSET_NOT_READABLE');
 
+  const submitted=messages.submitUserMessageWithTurn({conversationId:'room',content:'合成看图',clientMessageId:'view-request'});
+  db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('image-window','room','ACTIVE','now','now')").run();
+  const {tools,registry}=assembleTestTools({db,media,messages,contentClient:client});
+  const spec=freezeWindowTools(db,'image-window',registry.currentCatalog(),'deferred',registry.currentGroups());
+  const snapshot=storedToolset(db,'image-window')!;
+  const requestMessages=[{role:'system',content:snapshot.initialText},{role:'user',content:'合成看图'}];
+  db.prepare("INSERT INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,sent_at,created_at) VALUES('image-request','image-window',?,?,'chat','[]',?,'now','now')").run(submitted.attemptId,submitted.turnId,JSON.stringify({tools:spec,messages:requestMessages}));
+  recordToolContext(db,'image-request','image-window',requestMessages);
+  const context={roomId:'room',windowId:'image-window',requestId:'image-request',turnId:submitted.turnId,purpose:'chat' as const,seenMessages:[],seenSequence:0,activeReviewId:null};
+  const defineId=(name:string)=>definitionId(snapshot.catalog.find(s=>s.function.name===name)!);
+  const album=await tools.execute('tool_invoke',{name:'content_albums_read',definition_id:defineId('content_albums_read'),arguments:{album:'important_photos'}},context);
+  assert.equal(album.ok,true,JSON.stringify(album));
+  const readable=(album.output.items as any[]).find(entry=>entry.asset_ref===`est:${image}`);
+  assert.ok(readable);
   let stored:any;
-  const spec = buildDeferredTools();
-  const mcp = createEstSdkMcp(spec,async () => {
-    const result = await svc.mediaView({asset_ref:`est:${image}`},{roomId:'room'} as any);
+  const mcp = createEstSdkMcp(spec,async (name,args) => {
+    const result = await tools.execute(name,args,context);
     return {...result,recordDelivery:(delivered:any)=>{stored=toolResultContent(delivered);}};
   }, id => svc.readImage(id,'room'));
   const [a,b] = InMemoryTransport.createLinkedPair();
   const sdk = new Client({name:'synthetic',version:'1'});
   await mcp.instance.connect(b); await sdk.connect(a);
-  const result = await sdk.callTool({name:'tool_invoke',arguments:{name:'media_view',definition_id:'synthetic',arguments:{asset_ref:`est:${image}`}}});
+  const result = await sdk.callTool({name:'tool_invoke',arguments:{name:'media_view',definition_id:defineId('media_view'),arguments:{asset_ref:readable.asset_ref}}});
   assert.equal(result.isError,false);
   assert.ok((result.content as any[]).some(c=>c.type==='image'&&c.mimeType==='image/png'&&Buffer.from(c.data,'base64').equals(Buffer.concat([PNG,Buffer.from([0])]))));
   await sdk.close();

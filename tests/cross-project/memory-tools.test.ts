@@ -4,6 +4,10 @@ import fs from 'node:fs';
 import { assembleTestTools, makeDb } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
+import { ArchiveSyncService } from '../../apps/host/src/integrations/mariposa/archive-sync.ts';
+import { EventService } from '../../apps/host/src/events/service.ts';
+import { Logger } from '../../apps/host/src/observability/logging.ts';
+import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { freezeWindowTools, definitionId } from '../../apps/host/src/runtime/tool-discovery.ts';
@@ -23,17 +27,19 @@ globalThis.fetch = async (input, init) => {
 };
 const { db } = makeDb();
 try {
-  const messages = new MessageService(db); messages.ensureConversation('c1');
-  db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w1','c1','ACTIVE','now','now')").run();
-  const sub = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成上下文', clientMessageId: 'fixture' });
+  const messages = new MessageService(db); messages.ensureConversation('primary');
+  db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w1','primary','ACTIVE','now','now')").run();
+  const sub = messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '合成原话 AbC  原生空格。第二句“引号”。', clientMessageId: 'fixture' });
   const client = new MariposaClient({ baseUrl: base, credentialEnv: 'ESTOMAGO_TEST_MARIPOSA_TOKEN' });
-  const { tools, registry } = assembleTestTools({ db, messages, media: {} as never, mariposa: client,
+  const archiveSync = new ArchiveSyncService({db,events:new EventService(db),logger:new Logger(null),client:new MariposaClient({baseUrl:base,credentialEnv:'ESTOMAGO_TEST_MARIPOSA_WORKER_TOKEN'}),config:buildConfig({integrations:{mariposa:{base_url:base}},archive:{enabled:true,source_scope:'estomago-primary-live'}})});
+  const synced = await archiveSync.drainOnce(); assert.equal(synced.acked,1,JSON.stringify(synced));
+  const { tools, registry } = assembleTestTools({ db, messages, media: {} as never, mariposa: client, archiveSync,
     reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const catalog = registry.currentCatalog();
-  const frozen = freezeWindowTools(db, 'w1', catalog, 'deferred');
-  const history: any[] = [];
-  const ctx = { roomId: 'c1', windowId: 'w1', turnId: sub.turnId, requestId: 'req1', purpose: 'chat' as const,
-    activeReviewId: null, seenSequence: sub.message.sequence, seenMessages: [] };
+  const frozen = freezeWindowTools(db, 'w1', catalog, 'deferred',registry.currentGroups());
+  const history: any[] = [{role:'user',content:'[1] 合成原话 AbC  原生空格。第二句“引号”。'}];
+  const ctx = { roomId: 'primary', windowId: 'w1', turnId: sub.turnId, requestId: 'req1', purpose: 'chat' as const,
+    activeReviewId: null, seenSequence: sub.message.sequence, seenMessages: [{id:sub.message.id,revision:1}] };
   let count = 0;
   async function invoke(name: string, args: Record<string, unknown>) {
     const spec = catalog.find(s => s.function.name === name)!;
@@ -54,8 +60,22 @@ try {
   assert.equal(emotion.output.retrieval_enabled, false);
   assert.ok(Object.values(emotion.output.mood_tag_counts as object).every(v => v === 0));
 
+  const iReadChecks:Record<string,(out:any)=>void>={
+    current:out=>assert.ok(out.content || Array.isArray(out.items)),
+    items:out=>assert.ok(Array.isArray(out.items)),
+    item:out=>assert.equal(out.item_id,expected.item.item_id),
+    item_history:out=>assert.ok(Array.isArray(out.revisions)),
+    doc_history:out=>assert.ok(Array.isArray(out.versions)),
+    emotion:out=>assert.equal(typeof out.retrieval_enabled,'boolean'),
+  };
+  const iEnum=(catalog.find(s=>s.function.name==='memory_i_read')!.function.parameters.properties as any).what.enum;
+  assert.deepEqual([...iEnum].sort(),Object.keys(iReadChecks).sort(),'new read actions need a real HTTP projection case');
+  for(const [what,check] of Object.entries(iReadChecks)){
+    const out=await invoke('memory_i_read',{what,...(['item','item_history'].includes(what)?{item_id:expected.item.item_id}:{})});
+    assert.equal(out.ok,true,JSON.stringify(out));check(out.output);
+  }
   for (const depth of [undefined, 10]) {
-    const r = await invoke('memory_correct', { action: 'trace', memory_id: expected.memories[11], ...(depth ? { max_depth: depth } : {}) });
+    const r = await invoke('memory_relations', { action: 'trace', memory_id: expected.memories[11], ...(depth ? { max_depth: depth } : {}) });
     assert.equal(r.ok, true, JSON.stringify(r));
     assert.equal(r.output.max_depth, depth ?? 5);
     assert.equal((r.output.earlier as unknown[]).length, depth ?? 5);
@@ -64,7 +84,7 @@ try {
   }
   for (const max_depth of [0, 11, 1.5, '10']) {
     const before = wire.length;
-    assert.equal((await invoke('memory_correct', { action: 'trace', memory_id: expected.memories[11], max_depth })).ok, false);
+    assert.equal((await invoke('memory_relations', { action: 'trace', memory_id: expected.memories[11], max_depth })).ok, false);
     assert.equal(wire.length, before, 'schema rejects before HTTP');
   }
   const planArgs = { plan_id: expected.plan.plan_id, include_links: true };
@@ -120,6 +140,55 @@ try {
   assert.equal(refine.arguments.query,'合成分类');
   assert.equal((await invoke(refine.tool,refine.arguments)).ok,true,'next.arguments invoked verbatim');
 
+
+  history.push({role:'assistant',tool_calls:[{id:'page-sent',function:{name:'tool_invoke',arguments:JSON.stringify({name:'memory_recall_next',arguments:next.arguments})}}]},
+    {role:'tool',tool_call_id:'page-sent',content:JSON.stringify(page.output)});
+  const wordBucket = all.find(c=>c.memory_id===expected.memories[0]);
+  const wordDetail = await invoke('memory_read_full',{memory_ref:wordBucket.memory_ref});
+  assert.equal(wordDetail.ok,true,JSON.stringify(wordDetail));
+  assert.ok((wordDetail.output.our_words as any[])[0].word_id,'word IDs must be readable');
+  const held = await invoke('memory_hold',{original_title:'合成引用',categories:['daily','sweet'],text:'合成经历与感受正文',creation_mode:'contemporaneous',quotes:[{seq:1,from:1,to:1}],source_ranges:[{start_seq:1,end_seq:1}],mood_note:'合成心情文字'});
+  assert.equal(held.ok,true,JSON.stringify(held));assert.ok(Array.isArray(held.output.source_selections));
+  const holdWire = wire.findLast(call=>call.capability==='memory.hold').request.arguments;
+  assert.equal(holdWire.our_words[0].speaker,'qiaosheng');
+  assert.equal(holdWire.our_words[0].text,'合成原话 AbC  原生空格。');
+  assert.equal(holdWire.mood.text,'合成心情文字');
+  assert.ok(holdWire.event_source_ranges[0].members[0].content_hash);
+  assert.equal(wire.findLast(call=>call.capability==='memory.hold').response.data.binding_ids.length,1);
+  const episode = await invoke('episode_apply',{action:'start',label:'合成事件线',reason_code:'tracking_requested',source_selections:held.output.source_selections});
+  assert.equal(episode.ok,true,JSON.stringify(episode));
+  let beforeEpisode=wire.length;
+  const episodeList=await invoke('episode_read',{});
+  assert.equal(episodeList.ok,true,JSON.stringify(episodeList));
+  assert.equal(wire.length,beforeEpisode+1);
+  const episodeId=(episodeList.output.episodes as any[])[0].episode_id;
+  beforeEpisode=wire.length;
+  const episodeDetail=await invoke('episode_read',{episode_id:episodeId});
+  assert.equal(episodeDetail.ok,true,JSON.stringify(episodeDetail));
+  assert.equal(wire.length,beforeEpisode+1);
+  assert.ok(episodeDetail.output.source_selections);
+
+  const added = await invoke('memory_words_write',{action:'add',memory_id:held.output.memory_id,refs:[{seq:1,from:2,to:2}]});
+  assert.equal(added.ok,true,JSON.stringify(added));assert.equal(added.output.action,'add');
+  const revised = await invoke('memory_words_write',{action:'revise',memory_id:held.output.memory_id,word_id:(added.output.word_ids as string[])[0],refs:[{seq:1,from:1,to:1}]});
+  assert.equal(revised.ok,true,JSON.stringify(revised));
+  for (const args of [
+    {creation_mode:'retrospective'},
+    {creation_mode:'retrospective',memory_date:'2026-10-01',mood_note:'不应保存'},
+    {creation_mode:'contemporaneous',quotes:[{seq:1,from:1}]},
+  ]) {
+    const before=wire.length;
+    const bad = await invoke('memory_hold',{original_title:'合成非法边界',categories:['daily'],text:'合成',...args});
+    assert.equal(bad.ok,false);assert.equal(wire.length,before,'invalid host parameters never reach M');
+  }
+  const revisedI=await invoke('memory_i_write',{action:'revise',item_id:expected.item.item_id,expected_revision:expected.item.revision,content:'合成 I 新修订'});
+  assert.equal(revisedI.ok,true,JSON.stringify(revisedI));
+  const restoredI=await invoke('memory_i_write',{action:'restore',item_id:expected.item.item_id,expected_revision:revisedI.output.revision,restore_revision:expected.item.revision,relations:[{memory_id:expected.memories[1],relation_type:'related_to'}]});
+  assert.equal(restoredI.ok,true,JSON.stringify(restoredI));
+  const restoredHistory=await invoke('memory_i_read',{what:'item_history',item_id:expected.item.item_id});
+  assert.equal((restoredHistory.output.revisions as any[]).at(-1).relations[0].memory_id,expected.memories[1]);
+  const retrospective=await invoke('memory_hold',{original_title:'合成补记',categories:['daily'],text:'合成过去事件',creation_mode:'retrospective',memory_date:'2026-10-01'});
+  assert.equal(retrospective.ok,true,JSON.stringify(retrospective));
   // A real M first round is supplied as synthetic context; its stored plan has
   // completed lexical retrieval. E's normal semantic path is tested above.
   let raw = await invoke('memory_recall',{query:expected.raw_first.continuation.query,deep_search:true,

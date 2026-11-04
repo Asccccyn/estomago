@@ -15,7 +15,7 @@ import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
 import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import {
-  estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, surfaceItemKey,
+  estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, SURFACE_HOST_NOTICE, surfaceItemKey,
   type FrozenAugmentation, type SurfaceItem,
 } from './contracts.ts';
 import {
@@ -256,7 +256,7 @@ export class SurfacingService {
    *  （触发消息+其近文窗）的原文回声——是则该送达没有提供任何历史
    *  证据，不构成"需要已满足"。逐字精确匹配（确切重复），只回溯评价
    *  那一次送达自身，不影响未来检索（T05 安全线内）。 */
-  private echoDeliveryOf(conversationId: string, previous: { sourceMessageId: string; sourceSequence: number | null; items: Array<{ text?: string }> }): boolean {
+  private echoDeliveryOf(conversationId: string, previous: { sourceMessageId: string; sourceSequence: number | null; items: SurfaceItem[] }): boolean {
     if (!previous.items || previous.items.length === 0) return false;
     const row = this.db.prepare(
       'SELECT m.sequence, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.id=?',
@@ -265,7 +265,7 @@ export class SurfacingService {
     const triggerText = effectiveRevisionText(this.db, previous.sourceMessageId, row.revision, row.content);
     const contextTexts = new Set<string>([triggerText]);
     for (const m of this.recentDialogue(conversationId, row.sequence, triggerText)) contextTexts.add(m.text);
-    return previous.items.every(it => typeof it.text === 'string' && contextTexts.has(it.text));
+    return previous.items.every(it => { const text = projectSurfacedMemory(it).text; return typeof text === 'string' && contextTexts.has(text); });
   }
 
   private current(job: JobRow): boolean {
@@ -359,7 +359,7 @@ export class SurfacingService {
     const need = { sources: [...needSources.values()].sort((a, b) => a.message_id.localeCompare(b.message_id)) };
     this.repo.transition(job.id, ['preparing'], 'preparing', { sol_plan_json: JSON.stringify({ ...plan, need }) });
     let previous = this.repo.completedNeed(job.conversation_id, need);
-    if (previous && previous.outcome === 'delivered' && previous.sourceMessageId && this.echoDeliveryOf(job.conversation_id, previous)) {
+    if (previous && previous.outcome === 'delivered' && previous.sourceMessageId && this.echoDeliveryOf(job.conversation_id, {...previous,sourceMessageId:previous.sourceMessageId})) {
       // C5（RECALL_SOURCE_BOUNDARY 2026-11-01）：回声送达不满足历史需要——
       // 13:11 类错误交付（items 全为该 job 自身输入上下文的原文）不再占用
       // 同需去重；审计行原样保留（不改历史数据、不补发），本次需要照常检索。

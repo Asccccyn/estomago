@@ -90,15 +90,15 @@ test('计划①：不带 plan_id → plan.list（states 筛选透传）', async 
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'plan.list');
   assert.deepEqual(calls[0]!.payload, {}, '无筛选=空参');
-  const out2 = await tools.execute('plans_read', { states: ['planned', 'in_progress'] }, CTX);
+  const out2 = await tools.execute('plans_read', { states: ['planned', 'active'] }, CTX);
   assert.equal(out2.ok, true);
-  assert.deepEqual((calls[1]!.payload as { states?: string[] }).states, ['planned', 'in_progress'], '状态筛选透传');
+  assert.deepEqual((calls[1]!.payload as { states?: string[] }).states, ['planned', 'active'], '状态筛选透传');
   db.close();
 });
 
 test('计划②：带 plan_id → plan.get（薄实现入口），明细穿透', async () => {
   const calls: string[] = [];
-  const mariposa: MariposaTransport = async (cap) => { calls.push(cap); return { ok: true, result: { plan_id: 'p9', state: 'in_progress', content: '十月看海' } }; };
+  const mariposa: MariposaTransport = async (cap) => { calls.push(cap); return { ok: true, result: { plan_id: 'p9', state: 'active', content: '十月看海' } }; };
   const { tools, db } = makeTools(mariposa);
   const out = await tools.execute('plans_read', { plan_id: 'p9' }, CTX);
   assert.equal(out.ok, true);

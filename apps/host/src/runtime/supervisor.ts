@@ -45,6 +45,7 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
+import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
@@ -58,7 +59,7 @@ import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBoot
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { lastCacheEvidence } from './cache-observation.ts';
-import { renderInitialVisibleText } from './tool-initial-visible.ts';
+import { renderToolContext, resolveToolGroups } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
@@ -114,7 +115,7 @@ export type SupervisorDeps = {
   // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
   surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
   // RR-04：观察「已用于本轮」的真实派发边界回填（observations.markDispatched）。
-  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection'> | null;
+  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection' | 'awaitReadyForDispatch'> | null;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
@@ -434,6 +435,9 @@ export class TurnSupervisor {
       lines.push('You may use available tools and choose whether to speak.');
       tailNote = lines.join('\n');
     }
+    this.windowTools(window.id);
+    const taskDefinition = taskDefinitionContext(storedToolset(d.db,window.id)!, 'background_complete', opts.runId);
+    if (taskDefinition) tailNote += '\n' + taskDefinition;
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
     const baseMessages: OrMessage[] = [
       ...traj.messages,
@@ -723,6 +727,7 @@ export class TurnSupervisor {
       const fingerprintJson = contextFingerprintJson({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
       d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
         .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
+      recordToolContext(d.db,prqId,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
       if (capacityNow !== null) {
@@ -787,6 +792,7 @@ export class TurnSupervisor {
             .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
+        recordToolContext(d.db,lastPrqId!,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
         requestContext.requestId = lastPrqId;
         requestContext.responseModel = null;
         requestContext.provider = transportKind === 'deepseek' ? 'deepseek' : null;
@@ -1046,6 +1052,7 @@ export class TurnSupervisor {
             JSON.stringify(messages.map(m => ({ role: m.role }))), JSON.stringify(envelope),
             contextFingerprintJson({ round, tools: envelope.tools, messages, boundaries: envelope.boundaries }),
             'sdk_projection_v1', at, at, 0, o.background?.runId ?? null, dispatchId);
+          recordToolContext(d.db,requestId,o.windowId,messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
           requestContext.requestId = requestId;
           requestContext.responseModel = null;
           recordRequestExecution(d.db, requestContext, o.background?.runId);
@@ -1491,11 +1498,6 @@ export class TurnSupervisor {
         else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
         const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
-        // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
-        // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
-        // P01.4：定义快照由装配方显式传入（tool-initial-visible 不再反向依赖 host-tools）
-        const initialTools = renderInitialVisibleText(d.db, this.toolCatalogSource().currentCatalog());
-        if (initialTools !== null) seg.push(initialTools);
         if (seg.length === 1) {
           // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
           if (gaps.length > 0) report(gaps);
@@ -1537,12 +1539,18 @@ export class TurnSupervisor {
     return this.d.toolCatalog ?? this.d.tools?.getCapabilityRegistry() ?? (() => { throw new Error('TOOL_CATALOG_NOT_WIRED'); })();
   }
 
+  private async prepareWindowTools(windowId: string, signal?: AbortSignal): Promise<void> {
+    if (storedToolset(this.d.db,windowId)) return;
+    await this.d.tools?.prepareWindowDefinitions(signal ?? AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS));
+    this.windowTools(windowId);
+  }
+
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
     let t = this.frozenToolsByWindow.get(windowId);
     if (!t) {
       // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
       // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
-      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
+      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode, this.toolCatalogSource().currentGroups?.() ?? {}) as unknown as import('./or-payload.ts').OrTool[];
       this.frozenToolsByWindow.set(windowId, t);
     }
     return t;
@@ -1587,9 +1595,17 @@ export class TurnSupervisor {
     // R11（复审 2026-10-07）：B（开窗资料）作为独立 system 数据块——显式
     // A/B 缓存分界（cache-plan 的 B 点分支要求 systemMessageCount>=2），
     // 不把外部资料并入 A 段升级成高优先级指令
-    if (o.bootText && o.bootText.length > 0) {
-      messages.push({ role: 'system', content: [{ type: 'text', text: o.bootText }] });
+    let localTools: string | null;
+    if (o.windowId) {
+      this.windowTools(o.windowId);
+      localTools = storedToolset(this.d.db,o.windowId)?.initialText ?? null;
+    } else {
+      const source = this.toolCatalogSource(), catalog = source.currentCatalog();
+      localTools = this.d.config.runtime.tool_schema_mode === 'deferred'
+        ? renderToolContext(catalog,resolveToolGroups(this.d.db,catalog,source.currentGroups?.() ?? {})) : null;
     }
+    const bootstrapText = [o.bootText,localTools].filter(Boolean).join('\n');
+    if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
     let selected: typeof o.dialogue = [];
     if (o.selectedMessages) {
       // WP3：人工选集——顺序=服务端 sequence（已由选集服务排好）；
@@ -1859,7 +1875,9 @@ export class TurnSupervisor {
     const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
-    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
+    this.windowTools(o.window.id);
+    const reviewDefinition = taskDefinitionContext(storedToolset(d.db,o.window.id)!, 'context_review_complete', review.id);
+    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: [buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }),reviewDefinition].filter(Boolean).join('\n') }] }];
     const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: fixedSystemCount(reviewMessages), prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
     if (reviewGDropped) {
@@ -2362,6 +2380,7 @@ export class TurnSupervisor {
         // D2（她批准 2026-10-06）：新窗轨迹初始化时装入开窗资料（缓存点 B）——
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
+        await this.prepareWindowTools(window.id, prepSignal);
         const boot0 = await this.windowBootstrap(window.id, prepSignal);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
@@ -2395,6 +2414,7 @@ export class TurnSupervisor {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
+            await this.prepareWindowTools(window.id, prepSignal);
             const bootR = await this.windowBootstrap(window.id, prepSignal);
             if (stoppedDuringPreparation()) return;
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务

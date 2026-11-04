@@ -1,22 +1,17 @@
 // modules/memory/mood-vocab.ts（P04.5）：心情词表状态与受控刷新（memory catalog 正本）。
 // 从 host-tools 原样迁移：mariposa memory.mood.vocab 为正本，本地快照仅离线回退；
-// 词表变更通过装配回调失效目录缓存（host-tools buildHostTools 注册该回调），不反向依赖宿主。
+// 仅在新窗解析时刷新，现有窗口始终使用其已冻结枚举。
+import { HOLD_INPUT } from './hold-contract.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 
-let moodCategories: string[] = ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'];
+let moodCategories: string[] = [...HOLD_INPUT.properties.mood.properties.tags.items.enum];
 let moodVocabVersion: string | null = null;
-let onCategoriesChanged: (() => void) | null = null;
 
 export function currentMoodCategories(): readonly string[] {
   return moodCategories;
 }
 
-/** 装配根注册目录缓存失效回调（词表变更时由本模块调用）。 */
-export function setMoodCategoriesChangedCallback(cb: (() => void) | null): void {
-  onCategoriesChanged = cb;
-}
-
-/** best-effort 拉词表（幂等、失败保快照）；变更后失效工具集缓存（经装配回调）。
+/** 新窗拉取领域词表；失败保留已知快照，实际写入仍由领域服务校验。
  *  需绑定白名单含 memory.mood.vocab（estómago builtin 已含）。 */
 export async function refreshMoodCategories(client: MariposaClient): Promise<boolean> {
   try {
@@ -25,7 +20,6 @@ export async function refreshMoodCategories(client: MariposaClient): Promise<boo
       if (r.categories.join('\u0000') !== moodCategories.join('\u0000') || r.version !== moodVocabVersion) {
         moodCategories = [...r.categories];
         moodVocabVersion = r.version ?? null;
-        onCategoriesChanged?.();
       }
       return true;
     }

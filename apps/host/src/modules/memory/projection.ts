@@ -31,7 +31,7 @@ function keep(v: Obj): Obj {
 function episode(v: Obj): Obj {
   const out=select(v,['episode_id','label','state','revision','current_revision','current_state','last_reason_code']);
   const ref=(x:Obj)=>select(x,['source_message_id','content_hash','char_offset']);
-  if(list(v.source_selections).length)out.source_selections=v.source_selections.map((x:Obj)=>({
+  if(Array.isArray(v.source_selections))out.source_selections=v.source_selections.map((x:Obj)=>({
     ...select(x,['conversation_id','start_char_offset','end_char_offset']),
     members:list(x.members).map(ref),
   }));
@@ -40,8 +40,9 @@ function episode(v: Obj): Obj {
   return out;
 }
 
-function plan(v: Obj): Obj {
+function plan(v: Obj, detail=false): Obj {
   const out = select(v,['plan_id','version','title','content','state','starts_at','due_at','date_start','date_end','timezone','all_day','weight','link_memory_ids']);
+  if (detail && v.content !== undefined) out.content=v.content;
   if (Array.isArray(v.links)) out.links = v.links.map((x: Obj) => select(x, ['link_id','plan_id','memory_id','relation_type']));
   if (!out.plan_id && v.id) out.plan_id=v.id;
   if (out.version === undefined && v.current_version_no !== undefined) out.version=v.current_version_no;
@@ -50,7 +51,7 @@ function plan(v: Obj): Obj {
 function identity(v: Obj, history=false): Obj {
   const out=select(v,['item_id','revision','current_revision','content','change_reason','informed_by_revision','restored_from_revision','is_current']);
   if (history) Object.assign(out,select(v,['authored_by','created_at','change_type','based_on_revision','version_no']));
-  if (list(v.relations).length) out.relations=v.relations.map(relation);
+  if (Array.isArray(v.relations)) out.relations=v.relations.map(relation);
   return out;
 }
 export function candidates(v: any[]): Obj[] {
@@ -110,7 +111,7 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
     if(v.next_cursor)out.next_cursor=structuredClone(v.next_cursor);
     return out;
   }
-  if(name==='plans_read')return Array.isArray(v.plans)?{plans:v.plans.map(plan)}:plan(v);
+  if(name==='plans_read')return Array.isArray(v.plans)?{plans:v.plans.map((p:Obj)=>plan(p))}:plan(v,true);
   if(name==='plans_write')return select(v,['plan_id','version','state']);
   if(name==='memory_i_write')return select(v,['item_id','revision']);
   if(name==='memory_i_read'){

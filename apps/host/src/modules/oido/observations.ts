@@ -125,7 +125,7 @@ export class VoiceObservationService {
     this.wake(); // 等待者确保被等待的分析确在驱动（丢醒防御，非重复分析——幂等键去重）
     const deadline = Date.now() + budgetMs;
     const pending = this.db.prepare("SELECT COUNT(*) AS n FROM voice_observations WHERE message_id=? AND revision=? AND status IN ('pending','processing')");
-    while (pending.get(messageId, revision).n > 0 && Date.now() < deadline) {
+    while ((pending.get(messageId, revision) as {n:number}).n > 0 && Date.now() < deadline) {
       await new Promise(resolve => setTimeout(resolve, 200));
     }
   }

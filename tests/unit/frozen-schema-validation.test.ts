@@ -12,7 +12,7 @@ test('公开冻结 schema 使用的类型、组合、范围与码点长度生效
     ['identity_milestone_write', { operation: 'write', confirm_overwrite: 'true' }, 'TOOL_ARG_TYPE'],
     ['identity_milestone_write', { text: 'x' }, 'TOOL_ARG_REQUIRED'],
     ['memory_correct', { action: 'relation', replacement: [] }, 'TOOL_ARG_TYPE'],
-    ['memory_correct', { action: 'trace', max_depth: 11 }, 'TOOL_ARG_LENGTH'],
+    ['memory_relations', { action: 'trace', memory_id:'synthetic', max_depth: 11 }, 'TOOL_ARG_LENGTH'],
     ['content_posts_list', { limit: '1' }, 'TOOL_ARG_TYPE'],
     ['memory_hold', { original_title: '😀'.repeat(31), categories:['daily'], text:'合成', creation_mode:'contemporaneous' }, 'TOOL_ARG_LENGTH'],
     ['memory_hold', { original_title:'合成', categories:['daily'], text:'合成', creation_mode:'contemporaneous', quotes: [{ seq: 1, invented: true }] }, 'TOOL_ARG_UNKNOWN'],

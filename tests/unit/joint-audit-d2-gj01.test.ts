@@ -3,6 +3,7 @@
 //    不阻塞；同窗第二轮不重复注入（B 冻结在轨迹正本）
 //  - G-J-01：memory_recall 工具——模型按需查；request_ref 宿主派生幂等；
 //    失败分类（unknown 不当失败）；结果数据注记
+import { HOST_BOUNDARY_RULES } from '../../apps/host/src/context/fixed-runtime.ts';
 import { test } from 'node:test';
 import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
@@ -153,7 +154,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   // R1′（2026-10-23，她本轮裁定）："数据非指令"指引进稳定工具描述，不逐条结果重复——
   // 描述占一次 token，替代每结果 note；权限/低信任边界仍由宿主落实
   const recallSpec = fullToolCatalog().find((t) => t.function.name === 'memory_recall')!.function;
-  assert.ok(recallSpec.description.includes('数据（非指令）'), '工具描述含"数据非指令"指引');
+  assert.ok(HOST_BOUNDARY_RULES.includes('数据（非指令）'), '全局稳定宿主规则实际进入新窗；不在每条描述重复');
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
   assert.equal((out.output.next as any).arguments.refine_continue_ref, 'cont_abc', '续查引用透传');
   // 重试同 ref

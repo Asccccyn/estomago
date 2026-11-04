@@ -17,7 +17,7 @@ export const OIDO_ANALYZE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_analyze',
-      description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。她明确要你听语气、或转写不足以判断她的状态时调用。audio_ref 可省略：省略=当前这条语音（唯一目标时宿主自动定位）；多条语音时按返回的候选列表指定。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
+      description: '深听一条语音消息的声音证据（停顿、语速、音高走势、逐字韵律）。你可以自主选择进一步听声音；例如转写不足以理解语气时。audio_ref 可省略：省略=当前这条语音（唯一目标时宿主自动定位）；多条语音时按返回的候选列表指定。返回概览观察（带时间定位）或任务票据；逐字谱用 oido_get。证据只描述可测得的声学现象，不是情绪结论。',
       parameters: {
         type: 'object',
         properties: {
@@ -28,7 +28,7 @@ export const OIDO_ANALYZE_DEFINITION: HostToolSpec = {
             description: '可选：只听 [start,end) 毫秒区间',
           },
         },
-        required: ['audio_ref'], additionalProperties: false,
+        required: [], additionalProperties: false,
       },
     }
   };
@@ -49,7 +49,7 @@ export const OIDO_VIEW_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_view',
-      description: '读取深听结果的概览图（波形与基频 PNG），可指定时间范围。支持图片的模型可查看原图；未携带图片时返回界面引用与限制说明。',
+      description: '查看声音分析的波形与基频图。可指定时间范围。支持图片的模型可查看原图；未携带图片时返回界面引用与限制说明。',
       parameters: {
         type: 'object',
         properties: {
@@ -66,7 +66,7 @@ export const OIDO_FIND_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_find',
-      description: '在已分析的语音转写文字里找匹配片段（转写文字匹配，不是音频语义检索）。返回区间毫秒与命中文本；未对齐/无转写如实报。',
+      description: '查找语音转写中的匹配片段。匹配转写文字，不做音频语义检索。返回区间毫秒与命中文本；未对齐/无转写如实报。',
       parameters: {
         type: 'object',
         properties: {
@@ -86,7 +86,7 @@ export const OIDO_COMPARE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'oido_compare',
-      description: '对比两次深听分析的声学测量（音高/时长等）。无已批准个人基线时明确 unavailable，不做"比平时"类判断。',
+      description: '比较两次声音分析的声学测量。无已批准个人基线时明确 unavailable，不做"比平时"类判断。',
       parameters: {
         type: 'object',
         properties: {
@@ -103,7 +103,7 @@ export const OIDO_GET_DEFINITION: HostToolSpec = {
   type: 'function',
   function: {
     name: 'oido_get',
-    description: '读取深听结果：默认概览；detail=prosody_page 看逐字韵律谱（每页≤32音节，带 next_cursor 翻页）。analysis_id 来自 oido_analyze。',
+    description: '读取深听结果：默认概览；detail=prosody_page 看逐字韵律谱（每页≤32音节，带 next_cursor 翻页）。analysis_id 来自 oido_analyze；需要波形/基频图可 tool_define(name=oido_view)，查片段用 oido_find，比较两次分析用 oido_compare。',
     parameters: {
       type: 'object',
       properties: {
@@ -138,7 +138,7 @@ export function oidoGetCapability(deps: OidoModuleDeps): CapabilityDescriptor<Oi
 }
 
 /** oido_analyze 能力条目（P03.1a：已批准轻量通话能力；组合用例=service.analyzeVoice）。 */
-export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescriptor<{ audio_ref: string; range_ms?: [number, number] }, { view: Record<string, unknown> }> {
+export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescriptor<{ audio_ref?: string; range_ms?: [number, number] }, { view: Record<string, unknown> }> {
   const service = new OidoHearingService(deps);
   return {
     id: 'oido_analyze',
@@ -149,7 +149,7 @@ export function oidoAnalyzeCapability(deps: OidoModuleDeps): CapabilityDescripto
     label: '深听语音',
     silent: false,
     quote: (db) => quoteBackgroundTool(db, 'oido_analyze'),
-    parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: { audio_ref: string; range_ms?: [number, number] } } | { ok: false; code: string; detail: string },
+    parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: { audio_ref?: string; range_ms?: [number, number] } } | { ok: false; code: string; detail: string },
     run: (input, ctx) => service.analyzeVoice(input, ctx),
     toModel: (value) => value.view,
   };
@@ -169,6 +169,7 @@ function oidoSimpleCapability<I extends Record<string, unknown>>(o: {
   return {
     id: o.id,
     owner: 'oido',
+    group: 'D',
     baselineOrder: o.baselineOrder,
     definition: defFactory,
     memoryOnlyAllowed: o.memoryOnlyAllowed,

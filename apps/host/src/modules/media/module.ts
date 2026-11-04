@@ -37,6 +37,10 @@ export const MEDIASEARCH_DEFINITION: HostToolSpec = {
     }
   };
 
+export const MEDIAVIEW_DEFINITION: HostToolSpec = {
+  type:'function',function:{name:'media_view',description:'查看一个已有合法图片引用对应的图片。引用来自 media_search 的已发布聊天图片，或 content_albums_read 的可读相册条目。结果须实际附图片块；URL、ID 或文字说明不等于已看到图片。',parameters:{type:'object',properties:{asset_ref:{type:'string',pattern:'^est:[A-Za-z0-9_-]{1,128}$',description:'按读取结果原样传回 asset_ref'}},required:['asset_ref'],additionalProperties:false}},
+};
+
 export type MediaModuleDeps = {
   db?: import('../../db/connection.ts').Db;
   contentClient?: import('../../integrations/content/client.ts').ContentClient | null;
@@ -57,6 +61,9 @@ export function registerMediaCapabilities(registry: { register(d: CapabilityDesc
     id: 'media_search', baselineOrder: 27, definition: () => MEDIASEARCH_DEFINITION, memoryOnlyAllowed: false, label: '找图',
     run: (input: { query: string; limit?: number }, ctx) => service.mediaSearch(input, ctx),
     toModel: (value) => value,
+  }));
+  registry.register(toolCapability({owner:'media',id:'media_view',baselineOrder:52,definition:MEDIAVIEW_DEFINITION,memoryOnlyAllowed:false,free:true,label:'看图',
+    run:(input:{asset_ref:string},ctx)=>service.mediaView(input,ctx),toModel:value=>value,
   }));
   return service;
 }

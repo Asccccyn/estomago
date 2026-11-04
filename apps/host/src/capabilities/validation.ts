@@ -9,6 +9,9 @@ export type SchemaShape = Record<string, unknown>;
 export function validateArgsAgainstSchema(args: Record<string, unknown>, schema: SchemaShape):
   { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string } {
   const validate = ajv.compile(schema as AnySchema);
+  // Frozen specs are deserialized per invocation; do not retain every temporary
+  // schema object in Ajv's process-wide cache.
+  ajv.removeSchema(schema as AnySchema);
   if (validate(args)) return { ok: true, value: args };
   const errors = validate.errors!;
   // Report a useful branch error instead of the enclosing anyOf/if failure.

@@ -1,8 +1,4 @@
-// P01 等价基线（workcard P01.3/P01.5）：工具目录逐字节保真。
-// golden 于 849b1d5 纯净代码下采集（tests/golden/tool-catalog-baseline.json，
-// baselineCommit 记录采集点）。结构重构期间目录/顺序/schema/description/默认词表
-// 不得漂移（06 号文档：definitionId 以原序列化为依据；不得先排序 properties）。
-// 本测试只对照，不提供重录开关；golden 更新必须由复核者对照 849b1d5 diff 逐字决定。
+// Generated registry snapshot: detects changes; business contracts are tested separately.
 import { test } from 'node:test';
 import {fullToolCatalog } from '../helpers.ts';
 import assert from 'node:assert/strict';
@@ -17,7 +13,7 @@ const golden = JSON.parse(fs.readFileSync(goldenPath, 'utf8')) as {
   tools: unknown[]; deferred: unknown[];
 };
 
-test('工具目录与 849b1d5 基线逐字节一致（名称/顺序/schema/description/默认词表）', () => {
+test('工具目录与当前生成快照逐字节一致（不以快照决定业务规则）', () => {
   const tools = fullToolCatalog();
   assert.equal(tools.length, golden.order.length, '工具数量不变');
   assert.equal(

@@ -9,7 +9,7 @@ export const WAKEMANAGE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'wake_manage',
-      description: '给自己预约未来的自主唤醒（一次性；可有多个并存任务）。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
+      description: '给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。独立开关：自主预约唤醒关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。',
       parameters: {
         type: 'object',
         properties: {
@@ -59,7 +59,7 @@ export function registerWakeCapabilities(registry: { register(d: CapabilityDescr
   }));
   registry.register(toolCapability({
     owner: 'wake',
-    id: 'background_complete', baselineOrder: 21, free: true, definition: () => BACKGROUNDCOMPLETE_DEFINITION, memoryOnlyAllowed: false, label: '结束自主活动', silent: true,
+    id: 'background_complete', group: 'T', baselineOrder: 21, free: true, definition: () => BACKGROUNDCOMPLETE_DEFINITION, memoryOnlyAllowed: false, label: '结束自主活动', silent: true,
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.backgroundComplete(input as never, ctx)),
     toModel: (value) => value,
   }));

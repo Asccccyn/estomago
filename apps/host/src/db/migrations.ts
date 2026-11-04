@@ -1430,4 +1430,10 @@ ALTER TABLE surfacing_jobs ADD COLUMN m_prompt_revision TEXT;
 `,
 });
 
+MIGRATIONS.push({version:53,name:'frozen-tool-groups-and-delivery',sql:`
+ALTER TABLE window_toolsets ADD COLUMN groups_json TEXT;
+ALTER TABLE window_toolsets ADD COLUMN initial_text TEXT;
+ALTER TABLE provider_requests ADD COLUMN tool_context_json TEXT;
+`});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -35,7 +35,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
   type: 'function',
   function: {
     name: 'call_control',
-    description: '通话控制（协议①2026-10-24）：action=invite 给当前会话的她发出来电邀请（她页面会显示来电；她可以接听或拒接——拒接就是拒接，不自动补打）。邀请过期由服务端管理；她没接≠她拒绝。action=status 查询当前邀请状态。普通聊天与通话内均可用于接通相关控制；不能用于其他业务动作。',
+    description: '发起、接听或管理当前房间的通话。invite 可主动邀请；拒接不自动重拨，后续明确再次邀请仍按原通话规则处理。未接、拒接和过期各按真实状态返回。',
     parameters: {
       type: 'object',
       properties: {
@@ -55,7 +55,7 @@ export const CHAT_SEND_VOICE_DEFINITION: HostToolSpec = {
   type: 'function',
   function: {
     name: 'chat_send_voice',
-    description: '把一句话用你的语音发给她（生成真实语音消息，她会听到你的声音）。只在两种情况使用：她明确说想听你说/听这条内容；你自己决定这句话用语音说更合适。普通回复默认文字，不要每条都用。text=她将看到的正文（与语音一致）。',
+    description: '向当前房间发送一条真实语音消息。可回应她想听语音的请求，也可自主选择语音表达；普通回复默认文字。text 是消息正文，tts_script 可补充合成表达。',
     parameters: {
       type: 'object',
       properties: {

@@ -1,6 +1,6 @@
 # 记忆接口与自主工具包施工记录
 
-本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。当前已完成 P0–P3 的代码与针对性隔离验证，P4/P5 未完成，未部署、未调用真实模型。
+本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。当前已完成 P0–P4 的主要代码与针对性隔离验证，P5 解耦及上线核验尚未完成，未部署、未调用真实模型。
 
 ## P0 基线与链路
 
@@ -59,3 +59,32 @@ SDK MCP 返回真实 image 块，成功/失败投递结果同轨迹；轨迹只�
 - 既有 b1-view-native-image、exec-v1-wp3-model、sdk-host-continuity、exec-v1-wp5-content，4 文件退出 0。
 - 类型检查本批未新增错误；SDK 媒体相关旧类型错误已随真实图片块类型收口。剩余浮现/oído/voice 与 supervisor 的基线类型问题仍记录，不称类型检查通过。
 - 新模型入口在 P4 注册；本批没有真实模型调用、发图或生产相册变更。
+
+
+## P4 目录、冻结和共享契约
+
+真实 registry 现有 49 个新窗工具：40 C、7 D、2 T。额外注册的 6 个旧只读名仅供持久旧窗，直接复用同一领域服务；旧 memory_correct 日常动作仍由同一业务函数处理，新 schema 只留纠错。没有二次 ModelToolBridge、重复计费或双写。
+
+E migration 53 扩展既有 window_toolsets（groups_json、initial_text）和 provider_requests（tool_context_json）。初始包独立于 M bootstrap；冻结 schema/分组/文本只在新窗解析。旧字段只能由已有真实交付恢复。任务定义追加到既有宿主任务尾部，可信来源与 sent_at 共同参与 invoke/define 的同一已见判定。普通聊天复制完整定义或仅提 ID、未发送的 define，都不能建立资格。
+
+M 正本提交 `c52739d`，制品提交 `db3669f`；原 export_contracts.py 现导出实际 input_schema、QueryPlan 字段/默认/限制及来源提交/文件指纹。分类/隔离类、心情、关系类型和 trace 深度来自领域正本；E 构建时显式同步制品，运行时仅新窗沿现有 vocab 链刷新动态词表。宿主 seq/句区间、事件范围、说话人、来源哈希与操作身份适配保留。旧源码正则对照及无实际边界覆盖的历史测试已移除，改用生成制品过期检测及两仓 HTTP 验收；独立序列化字节验证保留。
+
+新增可执行前门已贯通：memory_words_write、memory_relations、content_albums_read、media_view、episode_read、wishstar_read。hold 绑定成功回包保留已核实 source_selections，供 episode_apply 使用；全文 words 保留 word_id/source_binding_version；I restore 透传其已声明的 relations，空关系列表和单计划显式空正文保留。核对还发现 emotion 的文字数量原来把仅有标签的行算入，现只计确有文字的行。
+
+许愿星读取按用户后续明确裁定增加 what=requests：原四分支外接入现有 GET /api/requests，不增加工具名。实际领域合成 DTO 验证拆星/收星正文、请求定位和状态字段；已提交但回包缺正文或网络结果未知时不宣称未执行。字数上限从实际领域源码生成；没有改第三仓。保留原状态、主体、通话资格和原费用键。
+
+验证：
+
+- 完整 Host.create + fake SDK + 实际 MCP/桥接：40 C 均从真实请求直接 invoke；D 执行 define 但未发送时拒绝，实际进入下一请求后可调用；bootstrap 故障仍包含本地包；热配置及重启不改旧窗。
+- 任务定义单测通过正式 invoke 完成真实隔离 review；无活动 review 仍拒绝；后台 T 的调度贯穿留在 P5 验证。
+- 旧窗 6 名/旧 trace 动作逐个调用一次原服务；新窗不重复列旧名，原始快照字节不变。
+- M 共享契约/现有查询/详情/计划合同 30 项通过；新增心情计数与有效负分 rank_only 案例分别通过。E 共享制品过期检测、许愿星各分支、媒体前门及相关回归通过；9 个相关旧回归文件通过。类型检查退出 0。
+- 既有浮现恢复分支读了 SurfaceItem 不存在的 text 字段，类型检查暴露此错配；改为复用 projectSurfacedMemory，未新增调度门。语音目标改为只解析一次，其余 SQLite/Pick 类型与实际实现一致。
+
+当前生成包：C 定义文本 39,400 B，D 索引 607 B，三个发现入口 877 B，集中宿主规则增量 105 B，共 40,989 UTF-8 B（约 40.0 KiB）。高于执行稿设计样稿；实际合同补充了条件、真实定位/恢复路径与新增参数，未为凑体积删除能力或提高窗口预算。最终值会在 P5 后重新生成。没有 tokenizer 实测。
+
+纯 description 差异与参数结构变化由 scripts/export-tool-package.mjs 分开生成；当前生成的模型材料和差异见本轮 evidence/p4-package。工程合同已验证，实际模型可读性尚未实测。
+
+## 后续明确裁定
+
+用户要求启用自设预约唤醒与心跳、关闭额外自由活动；明确选择“只关闭额外自主任务，预约和心跳仍可自主行动”，其余能力/行为不变。若共用开关应解耦。费用此前指示暂不设日上限，将以明确 unlimited 状态表达，保留 null=未配置及既有次数、时长、报价和权限门。生产设置尚未修改；不创建测试预约、不执行真实模型实验。

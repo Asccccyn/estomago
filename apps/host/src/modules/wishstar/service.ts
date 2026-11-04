@@ -3,6 +3,11 @@
 // 写操作回执瘦身、错误如实上抛。不得因同前缀给任意 wishstar_* 放行——注册表逐项显式登记。
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 
+export const WISHSTAR_READ_ACTIONS = {
+  hidden:'wishstar_hidden_stars', dates:'wishstar_special_dates',
+  offers:'wishstar_list_offers', notifications:'wishstar_notifications', requests:'wishstar_requests',
+} as const;
+
 export class WishstarService {
   private readonly wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
 
@@ -28,16 +33,20 @@ export class WishstarService {
       wishstar_list_offers: { method: 'GET', path: '/api/offers', write: false },
       wishstar_accept_offer: { method: 'POST', path: `/api/offers/${encodeURIComponent(String(args.offer_id))}/accept`, write: true },
       wishstar_notifications: { method: 'GET', path: '/api/notifications', write: false },
+      wishstar_requests: { method: 'GET', path: '/api/requests', write: false },
     };
     const call = calls[name];
     if (!call) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
     const r = await this.wishstar.forward(call.method, call.path, call.body, call.write ? opKey : undefined);
+    if (call.write && (r.status === 0 || r.status >= 500) && r.body.error_code !== 'WISHSTAR_NOT_CONFIGURED') {
+      return {ok:false,output:{error_code:'WISHSTAR_OUTCOME_UNKNOWN',detail:'结果未知，可能已经提交。先用相关读取核对，不要把本次当成未执行另发一次。'}};
+    }
+    if (['wishstar_take_star','wishstar_accept_offer'].includes(name) && r.status >= 200 && r.status < 300 && typeof r.body.content !== 'string') {
+      return {ok:false,output:{error_code:'WISHSTAR_OUTCOME_UNKNOWN',detail:'操作可能已提交，但回包缺打开的星正文；先核对状态，不要再次执行打开操作。'}};
+    }
     if (r.status === 0 || r.status === 503) return { ok: false, output: { error_code: 'WISHSTAR_UNAVAILABLE', detail: String((r.body as { detail?: string }).detail ?? '许愿星服务不可用') } };
     if (r.status >= 400) return { ok: false, output: { error_code: `WISHSTAR_${r.status}`, detail: JSON.stringify(r.body).slice(0, 300) } };
-    const out = call.write
-      ? Object.fromEntries(Object.entries(r.body).filter(([k]) => ['id', 'star_id', 'session_id', 'status', 'state', 'request_id', 'offer_id'].includes(k)))
-      : r.body;
-    return { ok: true, output: out };
+    return { ok: true, output: r.body };
   }
 
 }
