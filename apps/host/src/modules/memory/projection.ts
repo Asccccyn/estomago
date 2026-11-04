@@ -42,6 +42,7 @@ function episode(v: Obj): Obj {
 
 function plan(v: Obj): Obj {
   const out = select(v,['plan_id','version','title','content','state','starts_at','due_at','date_start','date_end','timezone','all_day','weight','link_memory_ids']);
+  if (Array.isArray(v.links)) out.links = v.links.map((x: Obj) => select(x, ['link_id','plan_id','memory_id','relation_type']));
   if (!out.plan_id && v.id) out.plan_id=v.id;
   if (out.version === undefined && v.current_version_no !== undefined) out.version=v.current_version_no;
   return out;
@@ -109,6 +110,7 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
   if(name==='plans_write')return select(v,['plan_id','version','state']);
   if(name==='memory_i_write')return select(v,['item_id','revision']);
   if(name==='memory_i_read'){
+    if(args.what==='emotion')return select(v,['vocabulary','mood_tag_counts','mood_text_memories','retrieval_enabled']);
     const history=['item_history','doc_history'].includes(args.what);
     if(Array.isArray(v.items) && v.items.length) {
       const out:Obj={items:v.items.map((x:Obj)=>identity(x))};
@@ -136,6 +138,8 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
     }
   }
   if(name==='memory_correct'){
+    if(args.action==='trace')return select(v,['memory_id','earlier','later','visited','truncated','max_depth']);
+    if(args.action==='plan_link')return {...select(v,['action','removed_link_id','correction_id']),replacement_link_id:v.replacement_link_id ?? null};
     if(args.action==='relations')return {relations:list(v.relations).map(relation)};
     // Explicit history is a distinct contract, including the human correction reason.
     if(args.action==='corrections')return {corrections:list(v.corrections).map(x=>{const r=select(x,['correction_id','domain','original_instance_id','endpoint_a','endpoint_b','replacement_instance_id','original_created_by','original_created_at','corrected_by','corrected_at','reason_code','note']);if(x.original_meta)r.original_meta=select(x.original_meta,['relation_type','custom_label','reverse_label','source_ref','conversation_id','start_message_id','end_message_id','start_char_offset','end_char_offset','bind_confidence']);return r;})};

@@ -33,6 +33,7 @@ def main():
     ap.add_argument('--python',type=Path)
     ap.add_argument('--port',type=int,default=18882)
     ap.add_argument('--output',type=Path)
+    ap.add_argument('--case', choices=['bootstrap', 'memory-tools'], default='bootstrap')
     args=ap.parse_args()
     mariposa=args.mariposa_repo.resolve()
     python=args.python or mariposa/'.venv/bin/python'
@@ -43,7 +44,7 @@ def main():
     with socket.socket() as check:check.bind(('127.0.0.1',args.port))
     output=(args.output or Path(tempfile.mkdtemp(prefix='mariposa-cross-result-'))).resolve();output.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='est-mariposa-contract-') as tmp:
-        base=Path(tmp);fixture=ROOT/'tests/cross-project/mariposa_bootstrap_fixture.py'
+        base=Path(tmp);fixture=ROOT/'tests/cross-project'/('mariposa_bootstrap_fixture.py' if args.case == 'bootstrap' else 'mariposa_tools_fixture.py')
         env={key:os.environ[key] for key in ('PATH','HOME','TMPDIR','LANG','LC_ALL') if key in os.environ}
         env.update(ESTOMAGO_TEST_MODE='1',ESTOMAGO_HOME=str(base/'estomago'),CROSS_PROJECT_TEMP_ROOT=str(base),
                    PYTHONPATH=str(mariposa/'backend'),PYTHONDONTWRITEBYTECODE='1',MARIPOSA_ROOT=str(base/'mariposa'),MARIPOSA_ALLOW_CREATE='1',
@@ -63,7 +64,7 @@ def main():
                             if response.status==200:break
                     except OSError:time.sleep(.05)
                 else:raise TimeoutError('Isolated Mariposa did not become ready')
-                child=subprocess.Popen(['node','tests/cross-project/bootstrap-pagination.test.ts'],env=env,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+                child=subprocess.Popen(['node','tests/cross-project/'+('bootstrap-pagination.test.ts' if args.case == 'bootstrap' else 'memory-tools.test.ts')],env=env,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
                 try:
                     text,_=child.communicate(timeout=90)
                     (output/'test.log').write_text(text);print(text)

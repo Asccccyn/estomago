@@ -398,8 +398,8 @@ export class MariposaClient {
     if (Array.isArray(states) && states.length > 0) args.states = states;
     return this.transport('plan.list', args);
   }
-  async planGet(planId: string): Promise<MariposaCallResult> {
-    return this.transport('plan.get', { plan_id: planId });
+  async planGet(planId: string, includeLinks?: boolean): Promise<MariposaCallResult> {
+    return this.transport('plan.get', { plan_id: planId, ...(includeLinks === true ? { include_links: true } : {}) });
   }
 
   /** I/计划写入批（2026-10-10）：M 的 i.item.create/revise/restore 与

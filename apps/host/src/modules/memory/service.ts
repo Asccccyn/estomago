@@ -317,13 +317,13 @@ export class MemoryToolsService {
     } catch {
       // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
       this.reviews.settleEffect(effectId, 'unknown', false, null);
-      return { ok: false, output: { error_code: 'HOLD_OUTCOME_UNKNOWN', note: '结果未知≠失败——勿重发同一 hold；宿主会在换窗前核查状态（holdStatus），以核查结论为准' } };
+      return { ok: false, output: { error_code: 'HOLD_OUTCOME_UNKNOWN', detail: '结果未知≠失败——勿重发同一 hold；宿主会在换窗前核查状态（holdStatus），以核查结论为准' } };
     }
     if (!r.ok) {
       // 审计 F10：结果不明（传输/5xx/429/回执形状无效）≠ 失败——标 unknown，不盲重试也不当没写（§3.3）
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT') || r.code === 'RECEIPT_SHAPE_INVALID';
       this.reviews.settleEffect(effectId, unknown ? 'unknown' : 'failed_resolved', false, null);
-      return { ok: false, output: { error_code: unknown ? 'HOLD_OUTCOME_UNKNOWN' : `HOLD_${r.code}` } };
+      return { ok: false, output: { error_code: unknown ? 'HOLD_OUTCOME_UNKNOWN' : `HOLD_${r.code}`, ...(unknown ? { detail: '结果未知；不要自行重复提交。宿主沿既有 holdStatus 机制核对。' } : {}) } };
     }
     const receipt = r.receipt!;
     // 审计 F10：错操作号的收据不被信任——远端回执必须对应宿主派生的同一 operation_id
@@ -649,7 +649,8 @@ export class MemoryToolsService {
     const states = Array.isArray(args.states) ? (args.states as unknown[]).filter((x): x is string => typeof x === 'string' && x.length > 0) : undefined;
     let r: Awaited<ReturnType<MariposaClient['planList'] | MariposaClient['planGet']>>;
     try {
-      if (planId) r = await m.planGet(planId);
+      if (args.include_links === true && !planId) return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: 'include_links=true 必须带 plan_id' } };
+      if (planId) r = await m.planGet(planId, args.include_links === true);
       else r = await m.planList(states);
     } catch {
       return { ok: false, output: { error_code: 'PLANS_READ_OUTCOME_UNKNOWN' } };

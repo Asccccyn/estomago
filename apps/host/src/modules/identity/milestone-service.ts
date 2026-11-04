@@ -16,7 +16,7 @@ export class IdentityMilestoneService {
     this.identity = deps.identity ?? null;
   }
 
-  identityMilestoneWrite(args: { operation?: string; text?: string; item?: number; change_reason?: string; idempotency_key?: string }, ctx: ToolExecContext): ToolExecResult {
+  identityMilestoneWrite(args: { operation?: string; confirm_overwrite?: boolean; text?: string; item?: number; change_reason?: string; idempotency_key?: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.identity) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '身份服务未装配' } };
     const op = args.operation === 'read' || args.operation === 'add' || args.operation === 'revise' || args.operation === 'remove' ? args.operation : 'write';
     if (op === 'read') {
@@ -43,6 +43,20 @@ export class IdentityMilestoneService {
     let written: { file: string; version: string; hash: string; byteSize: number; entries?: number };
     try {
       if (op === 'write') {
+        // Compare a multiset: renumbering is harmless; losing one of two equal
+        // entries is still a deletion. Only comparison strips the ordinal.
+        const content = (line: string) => line.replace(/^\s*\d+[.、）)]\s*/, '');
+        const remaining = IdentityServiceStatic.entryLines(args.text!).map(e => content(e.line));
+        const missing = IdentityServiceStatic.entryLines(this.identity.readMilestone().text).filter(e => {
+          const at = remaining.indexOf(content(e.line));
+          if (at < 0) return true;
+          remaining.splice(at, 1);
+          return false;
+        });
+        if (missing.length && args.confirm_overwrite !== true) {
+          return { ok: false, output: { error_code: 'MILESTONE_OVERWRITE_CONFIRMATION_REQUIRED',
+            detail: `新版遗漏以下条目：${missing.map(e => e.line).join('\n')}\n保留这些内容，或显式 confirm_overwrite=true。旧窗无此参数时使用已支持的 add/revise/remove；否则保留待写正文并按现有流程换窗。` } };
+        }
         written = this.identity.updateMilestone(args.text!);
       } else {
         const r = this.identity.applyMilestoneEntryOp(op, op === 'add' ? null : (typeof args.item === 'number' ? args.item : 0), op === 'remove' ? null : args.text ?? null);
