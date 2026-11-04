@@ -1,6 +1,8 @@
 # estómago
 
-- 2026-11-04（本提交，P5 代码与离线验收）：独立控制预约/心跳/自由活动，明确无日上限，保留其余限制；真实隔离宿主完成再次预约与重启 noop，长正文分片保真。[本轮证据](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+- 2026-11-04（已核对运行实例）：E/Content `8bbb246`、M `db3669f`；正式设置 revision 1，预约与心跳开启、额外自由活动关闭，日费用为明确 unlimited。旧 42 项窗/历史不改；新窗包 40 C/7 D/2 T 的生产请求尚未实测，现有后台报价门保持。[发布与限制](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+
+- 2026-11-04（`8bbb246`，P5 已部署）：独立控制预约/心跳/自由活动，明确无日上限，保留其余限制；真实隔离宿主完成再次预约与重启 noop，长正文分片保真。[本轮证据](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
 
 - 2026-11-04（`ae95541`，P4）：registry 生成 40 C/7 D/2 T 冻结目录、同源 M 合同和日常前门；五分支许愿星读取含已批准 requests，旧窗薄兼容。
 

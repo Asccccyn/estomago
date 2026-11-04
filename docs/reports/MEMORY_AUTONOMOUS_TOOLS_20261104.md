@@ -1,6 +1,6 @@
 # 记忆接口与自主工具包施工记录
 
-本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。P0–P5 代码与离线验收完成；生产发布与设置结果单列于本文最后，不以离线结果冒充部署。没有发起真实模型试用。
+本文件记录实施证据；唯一业务裁定为宿主用户本轮 2026-11-04 执行稿。P0–P5 代码与离线验收完成，已部署 E 8bbb246 / M db3669f。预约唤醒和心跳已开启、自由活动关闭；生产证据与剩余限制见末节。没有发起真实模型试用。
 
 ## P0 基线与链路
 
@@ -150,3 +150,37 @@ M 正本提交 `c52739d`，制品提交 `db3669f`；原 export_contracts.py 现�
 旧窗兼容只在该窗冻结目录允许时使用：memory_correct 旧日常动作和 episode_list/get、许愿星四旧读名直接调用同一业务函数，不二次 bridge/计费/双写。只有没有未结束窗口再引用旧名/旧动作后才能清理；审计历史不删除。覆盖安全修复立即生效，旧 schema 不能以无 confirm_overwrite 绕过保护。
 
 工程合同已验证，实际模型可读性尚未实测。没有向char发消息、没有真实 Claude/OR/JEV/TTS 试验。普通召回 rank_only、原文第二轮 gate、详情不等于明确打开、通话期 memory_only、原预算和权限/来源策略均未放宽。
+
+
+## 生产发布与核验（2026-11-04，Asia/Shanghai）
+
+已按原固定发布目录 + LaunchAgent 流程部署，未改网络/隧道/凭据。设置通过正式 HTTP PUT、If-Match=0、专用幂等键提交，回执 revision=1。备份目录为 `/Users/owner/Backups/pre-memory-autonomy-20261104-8bbb246`，包含 5 个 SQLite 快照、原启动脚本、plist 和 E config。系统 Python 读取 M SQLite 失败后，使用实际 M venv 的 SQLite 3.53.4 完成有时限备份；未借此改库格式或覆盖正式文件。
+
+| 核对项 | 实测 |
+| --- | --- |
+| E/Content 进程 cwd | `/Users/owner/Projects/estomago-releases/memory-autonomy-20261104-8bbb246` |
+| E 代码提交 | `8bbb2469b1f84dbe6f8874f64d969d5c3e51ca86`，schema 53 |
+| M 进程 cwd | `/Users/owner/Projects/mariposa-releases/memory-autonomy-20261104-db3669f` |
+| M 代码提交 | `db3669f215e3ed417a3cdd75fe42d899c624c4ba`，runtime schema 19 |
+| 健康 | E ready=true / degraded=[]；M health 200；Content 实际只读 albums 返回三种现有相册 |
+| 预约 | autonomous.enabled=true，daily_cost_cap_usd=unlimited，executor_ready=true |
+| 心跳 | keepwarm.enabled=true，daily_cost_cap_usd=unlimited，executor_ready=true |
+| 自由活动 | free_activity.enabled=false，未配置的费用字段仍为 null |
+| 保持原值 | reminders.enabled=true；睡眠 23:00–08:00 Asia/Shanghai；原单轮次数/运行时限、报价、通话和权限门 |
+| 当前旧窗 | 42 项冻结目录；SHA-256 `01474414caec077f8dc75835c9b0a061163f131f8d95dc6388522d9908002d6a` |
+| 历史不改 | messages / revisions / windows / trajectories / 原 toolsets 列 / provider_requests 的发布前后指纹一致，模型请求仍 923 条 |
+| 正式记忆不改 | 16 个相关正式表与发布前备份比较一致，含正文版本、词句、来源绑定、关系和向量；无全库重写 |
+
+生产证据：本轮 `evidence/deployment-verified.json`、`deployment-domain-readback.json`、`deployment-cutover.json`。真实业务夹具写入为 0；没有为了验收发消息、拨号、写星、hold 或建立预约。开启心跳后的正常到期执行属于用户授权功能，不是本轮人为推理试验。
+
+代码、窗口和开关分别核验：当前旧窗没有新字段冻结资料，其旧目录/历史保留不动；正常新窗才解析新的 40/7/2。尚未取得生产新窗已发送的完整定义请求，不能称为“生产新窗自主工具包已实测可用”。隔离请求经过真实 SDK/API 适配，但不宣称是供应商逐字节网络证据。
+
+生产 `background_tool_prices` 未配置。按“其他什么都不变”保留已有报价门，因此受该门约束的后台记忆/许愿星/通话等调用可能返回 BUDGET_ESTIMATE_UNAVAILABLE。没有擅自编造费用、标记免费或用 unlimited 绕过它。预约通道与心跳开关已实际可用；完整后台业务动作的真实效果仍依赖既有运行条件和正常使用反馈。
+
+补充字节对照：用原仓真实 renderInitialVisibleText 和完整基线目录测得，旧默认单项里程碑文本 1,884 B，加发现入口 877 B 为 2,761 B，且只在原 bootstrap 成功注入条件成立时存在；不能把这个条件值当当前旧窗已经收到的包。新离线完整快照为 41,128 B。动态心情词表在新窗实际解析时冻结，最终生产请求仍需按该窗快照核算，未虚报目标 tokenizer 数字。
+
+实现提交：E P1 `69364ad`、P2 `f76d13f`、P3 `a6b915d`、P4 `ae95541`、P5 `8bbb246`；M P1 `223e087`、P2 `0d684d0`、P4 `c52739d` 与生成制品 `db3669f`。实现保存在两仓 worktree 的 `fix/autonomous-tools-20261104`；没有 push。原 E 工作树的两份未提交 dist 和 M 的 docs/drafts 均原样保留，发布不依赖或覆盖它们。
+
+回退沿原流程：先经当前正式设置接口恢复保存的开关/预算（用当时最新 revision；不要把 unlimited 留给不认识它的旧预算代码），再恢复备份启动脚本/content plist 并重启对应 LaunchAgent。保留增量迁移与新业务记录，不用旧库快照覆盖运行数据。恢复点和发布路径已提供，不新增长期路由或版本分发系统。
+
+隔离评审材料：`evidence/final-package/review-scenarios.md`，配套同目录完整定义、矩阵、文案与 schema 差异。**工程合同已验证，实际模型可读性尚未实测。**
