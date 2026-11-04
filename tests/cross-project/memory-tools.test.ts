@@ -92,6 +92,47 @@ try {
     if (success) assert.equal(r.output.saved, true);
     else assert.equal(r.output.error_code, 'HOLD_EXCLUSIVE_CATEGORY');
   }
-  fs.writeFileSync(process.env.CROSS_MARIPOSA_RESULT!, JSON.stringify({ evidence: 'A01-A04 frozen schema → ModelToolBridge → actual HTTP legacy profile → domain → toModel', wire }, null, 2));
-  console.log('A01-A04: actual HTTP contract passed; synthetic data only');
+
+  const recalled = await invoke('memory_recall', { query:'合成事件', lexical_terms:['合成事件'] });
+  assert.equal(recalled.ok, true, JSON.stringify(recalled));
+  const ref = (recalled.output.candidates as any[])[0].memory_ref;
+  assert.ok(ref);
+  const notSent = await invoke('memory_read_full', { memory_ref:ref });
+  assert.equal(notSent.output.error_code, 'DETAIL_REF_NOT_SEEN');
+  history.push({role:'assistant',tool_calls:[{id:'recall-sent',function:{name:'tool_invoke',arguments:JSON.stringify({name:'memory_recall',arguments:{query:'合成事件'}})}}]},
+    {role:'tool',tool_call_id:'recall-sent',content:JSON.stringify(recalled.output)});
+  const beforeRead = wire.length;
+  const full = await invoke('memory_read_full', {memory_ref:ref});
+  assert.equal(full.ok,true,JSON.stringify(full));
+  assert.match(String(full.output.text), /AbC  原生空格。\n第二行/);
+  assert.deepEqual(wire.slice(beforeRead).map(x=>x.capability),['memory.detail.read'],'no recall/JEV/open for full read');
+  const next = recalled.output.next as {tool:string;arguments:Record<string,unknown>};
+  assert.equal(next.tool,'memory_recall_next');
+  const page = await invoke(next.tool,next.arguments);
+  assert.equal(page.ok,true,JSON.stringify(page));
+  const all = [...recalled.output.candidates as any[],...page.output.candidates as any[]];
+  assert.equal(new Set(all.map(c=>c.resource_ref)).size,12);
+  const finalNext = page.output.next;
+  assert.equal(finalNext,undefined);
+  const prior = await invoke('memory_recall',{query:'合成分类',lexical_terms:['合成分类']});
+  const refine = prior.output.next as {tool:string;arguments:Record<string,unknown>};
+  assert.equal(refine.tool,'memory_recall');
+  assert.equal(refine.arguments.query,'合成分类');
+  assert.equal((await invoke(refine.tool,refine.arguments)).ok,true,'next.arguments invoked verbatim');
+
+  // A real M first round is supplied as synthetic context; its stored plan has
+  // completed lexical retrieval. E's normal semantic path is tested above.
+  let raw = await invoke('memory_recall',{query:expected.raw_first.continuation.query,deep_search:true,
+    refine_session_id:expected.raw_first.recall_session_id,deep_reason:expected.raw_first.continuation.reason});
+  const rawRefs = new Set<string>();
+  for (let step=0;step<5;step++) {
+    assert.equal(raw.ok,true,JSON.stringify(raw));
+    for (const card of raw.output.candidates as any[]) rawRefs.add(card.resource_ref);
+    const next = raw.output.next as {tool:string;arguments:Record<string,unknown>} | undefined;
+    if (!next) break;
+    raw = await invoke(next.tool,next.arguments);
+  }
+  assert.equal(rawRefs.size,25,'frozen result pages and raw continuation remain distinct, no skipped source rows');
+  fs.writeFileSync(process.env.CROSS_MARIPOSA_RESULT!, JSON.stringify({ evidence: 'A01-A04/A09/A10/A12 frozen schema → ModelToolBridge → actual HTTP legacy profile → domain → toModel', wire }, null, 2));
+  console.log('P1/P2: actual HTTP, delivered detail and structured continuation contracts passed; synthetic data only');
 } finally { globalThis.fetch = nativeFetch; db.close(); }

@@ -148,7 +148,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
     // WP-04（C10）：judge_mode 恒在信封（M 现行契约——夹具对齐）
     judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
     candidates: [{ memory_id: '00001' }],
-    continuation: { continue_request_ref: 'cont_abc', for_revision: 1 },
+    continuation: { query: '中秋', channel: 'event', continue_request_ref: 'cont_abc', for_revision: 1 },
   };
   const mariposa: MariposaTransport = async (cap, payload) => {
     calls.push({ cap, payload: payload as Record<string, unknown> });
@@ -160,7 +160,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, CTX);
   let plan = (calls[0]!.payload as { query_plan: Record<string, unknown> }).query_plan;
   assert.equal(plan.semantic_query, '上次聊中秋看月亮', '自然语言显式进语义通道（服务端只认显式值）');
-  assert.equal(plan.lexical_terms, undefined, '不带词项=纯语义');
+  assert.equal(plan.lexical_terms, undefined, '省略词项交由 M 既有查询计划处理');
   await tools.execute('memory_recall', { query: '中秋', lexical_terms: ['中秋', '月亮'] }, CTX);
   plan = (calls[1]!.payload as { query_plan: Record<string, unknown> }).query_plan;
   assert.deepEqual(plan.lexical_terms, ['中秋', '月亮'], '模型可补精确词项');
@@ -172,7 +172,7 @@ test('R02：召回带语义查询与词项；续查走 refine 回原会话；提
   const p3 = calls[2]!.payload as Record<string, unknown>;
   assert.equal(p3.session_id, 'rs_1');
   assert.equal((p3.query_plan as Record<string, unknown>).request_ref, 'cont_abc', '服务端续查引用透传');
-  assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('refine_session_id'), '续查提示如实（不再宣称另起=会话延续）');
+  assert.equal((out.output.next as any).arguments.refine_session_id, 'rs_1');
   // 只带一半续查参数 → 拒
   const half = await tools.execute('memory_recall', { query: 'x', refine_session_id: 'rs_1' }, CTX);
   assert.equal(half.ok, false, '续查参数必须成对');

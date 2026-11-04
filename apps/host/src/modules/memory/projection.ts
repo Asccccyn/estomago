@@ -63,6 +63,9 @@ export function candidates(v: any[]): Obj[] {
     // 按工具声明原样回传它——不能因 memory_id/word_id 在场而删（此前事件卡
     // 只剩 memory_id/excerpt，模型无法回传任何合法引用）。
     if(c.resource_ref)out.resource_ref=c.resource_ref;
+    if(c.memory_ref)out.memory_ref=c.memory_ref;
+    if(c.content_complete !== undefined)out.content_complete=c.content_complete;
+    Object.assign(out,select(c,['start_char','end_char']));
     if (out.original_title) { if (!out.title) out.title=out.original_title; delete out.original_title; }
     const evidence=list(c.evidence).map(e=>{
       const x=select(e,['field','snippet','source_ref']);
@@ -73,7 +76,7 @@ export function candidates(v: any[]): Obj[] {
     });
     if(evidence.length)out.evidence=evidence;
     if(out.excerpt && evidence[0]?.snippet===out.excerpt)delete out.excerpt;
-    if(c.truncated===true)out.truncated=true;
+    if(c.truncated===true || (Array.isArray(c.budget_flags) && c.budget_flags.length))out.truncated=true;
     if(c.judge && c.judge.evaluation_status!=='evaluated')out.judgement='unconfirmed';
     return out;
   });
@@ -81,12 +84,13 @@ export function candidates(v: any[]): Obj[] {
 function recall(v: Obj): Obj {
   const out: Obj={candidates:candidates(list(v.candidates))};
   // Existing argument contracts require session plus continuation reference/channel.
-  Object.assign(out,select(v,['recall_session_id','continuation_note','missing']));
+  Object.assign(out,select(v,['recall_session_id','continuation_note','next','missing']));
   if(v.judge_mode==='off')out.judgement='unjudged';
   else if(v.judgement_status && !['evaluated','complete'].includes(v.judgement_status))out.judgement=v.judgement_status;
   const coverage=obj(v.retrieval_coverage);
   if(coverage.truncated===true || coverage.retrieval_scope_exhaustive===false)out.coverage='incomplete';
   if(list(v.invalidated).length)out.invalidated=true;
+  if(v.budget_truncated===true)out.truncated=true;
   const p=obj(v.pagination);
   // R1′（2026-10-23）：块内恒带 has_more:true——旧冻结描述（读 pagination.has_more）与
   // 新描述（读块存在性）同一形状都成立；块不存在=本次固定结果集已尽（非全库穷尽）。

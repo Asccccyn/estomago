@@ -368,8 +368,9 @@ export class MariposaClient {
   /** 找话第二批（2026-10-10）：Round2 原文深搜——M 的独立入口
    *  （S13 门服务端核验：reason 闭集+Round1 完成回执+政策纪元一致）。
    *  operationId 由宿主派生（同 tool_call 重试同幂等身份）。 */
-  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string; continuationToken?: string }): Promise<MariposaCallResult> {
     return this.transport('memory.recall.round2', {
+      ...(args.continuationToken ? { continuation_token: args.continuationToken } : {}),
       session_id: args.sessionId,
       reason: args.reason,
       operation_id: args.operationId,

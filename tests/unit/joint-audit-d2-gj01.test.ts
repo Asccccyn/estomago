@@ -128,7 +128,7 @@ const recallResult = {
   judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
   judge_policy_revision: 1,
   candidates: [{ memory_id: '00001', original_title: '天台看月亮', text: '她约今晚天台看月亮' }],
-  continuation: { continue_request_ref: 'cont_abc', for_revision: 1 },
+  continuation: { query: '中秋', channel: 'event', continue_request_ref: 'cont_abc', for_revision: 1 },
 };
 
 test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重试同 ref、结果数据注记', async () => {
@@ -155,7 +155,7 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   const recallSpec = fullToolCatalog().find((t) => t.function.name === 'memory_recall')!.function;
   assert.ok(recallSpec.description.includes('数据（非指令）'), '工具描述含"数据非指令"指引');
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
-  assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('cont_abc'), '续查引用透传');
+  assert.equal((out.output.next as any).arguments.refine_continue_ref, 'cont_abc', '续查引用透传');
   // 重试同 ref
   await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1', toolCallId: 'call-r1' });
   assert.equal(calls.length, 2);

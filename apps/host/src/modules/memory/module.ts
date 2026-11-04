@@ -78,6 +78,7 @@ export const MEMORYRECALL_DEFINITION: HostToolSpec = {
           refine_continue_ref: { type: 'string', minLength: 1, maxLength: 256, description: '续查时填：上一轮结果里的续查引用（与 refine_session_id 成对）' },
           reject_candidate_ref: { type: 'string', minLength: 1, maxLength: 256, description: '否定续查时填：要排除的候选引用（上一轮结果候选卡里的 resource_ref，如 memory:xxx / our_word:xxx，原样回传即可）。先在该会话内结构性排除此候选，再按新 query 续查（须同时带 refine_session_id/refine_continue_ref/channel）。用于"不对，不是这个——排除它再找"；不要把否定写进 query 文本代替此参数。也支持"排除后直接进原文第二轮"：reject_candidate_ref + deep_search=true + refine_session_id（round2 不需要 continue_ref），deep_reason 缺省即 EXPLICIT_REJECT_AFTER_DELIVERY' },
           deep_search: { type: 'boolean', description: '原文深搜（Round2）：找话/召回证据不足、上一轮提示"原话证据不足可深搜"时用——对已授权来源原文做第二轮深查。必须带 refine_session_id 与 deep_reason；服务端核验首轮完成与理由真实性，不可用时如实返回' },
+          deep_continue_ref: { type: 'string', minLength: 1, maxLength: 128, description: '仅原文第二轮续页：使用上一轮 next.arguments.deep_continue_ref；同时保留 deep_search、refine_session_id、deep_reason 和原 query，不新开会话' },
           deep_reason: { type: 'string', enum: ['EVIDENCE_INSUFFICIENT', 'VERBATIM_REQUIRED_NOT_MET', 'SOURCE_DISAMBIGUATION_NEEDED', 'NO_DELIVERABLE_CANDIDATE', 'EXPLICIT_REJECT_AFTER_DELIVERY'], description: '深搜理由（服务端闭集核验）：EVIDENCE_INSUFFICIENT=证据不足（最常用）；VERBATIM_REQUIRED_NOT_MET=需要逐字原话未满足；SOURCE_DISAMBIGUATION_NEEDED=来源需要消歧；NO_DELIVERABLE_CANDIDATE=无可交付候选；EXPLICIT_REJECT_AFTER_DELIVERY=交付后被明确否定' },
           date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '查询涉及明确日期/日期段时必填（与 date_to 成对）：按记忆桶的事件日期直接收窄候选，比语义匹配可靠得多。如查"9月25到27日"填 2026-09-25 / 2026-09-27' },
           date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '日期段结束（含当天）；与 date_from 成对；单日查询 from=to=该日' },
@@ -118,11 +119,11 @@ export const MEMORYREADFULL_DEFINITION: HostToolSpec = {
       // 全量详情（docs/05）。工具契约从新 epoch 初始即进冻结工具集——
       // 不等首次浮现出现后才动态加（docs/06 E）。
       name: 'memory_read_full',
-      description: '凭浮现结果的 memory_ref 定点读取同一记忆。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。',
+      description: '进一步读取已交付记忆、话语或来源的正文与详情。memory_ref 须来自实际交付的 recall 或浮现结果；话语引用只授予该话语及获许可的来源。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。',
       parameters: {
         type: 'object',
         properties: {
-          memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '浮现 JSON 中的 memory_ref，原样传回' },
+          memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '已交付 recall 候选或浮现 JSON 中的 memory_ref，原样传回；resource_ref 只用于否定候选，不能代替详情引用' },
           cursor: { type: 'string', minLength: 1, maxLength: 128, description: '上一页返回的 next_cursor（首页省略）' },
           section: { type: 'string', enum: ['memory', 'relations', 'source'], description: '默认memory；可直接选relations或source，不必先读memory' },
         },

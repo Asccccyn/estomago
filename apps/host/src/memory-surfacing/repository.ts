@@ -357,7 +357,7 @@ export class SurfacingRepository {
     return out;
   }
 
-  refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string } | null {
+  refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string; origin?: 'recall' } | null {
     // Only the exact confirmed provider request establishes visibility, including
     // the first tool loop before the successful trajectory is retained.
     const request = this.db.prepare(`SELECT p.payload_wire_json, p.payload_json FROM provider_requests p
@@ -366,10 +366,30 @@ export class SurfacingRepository {
         AND p.sent_at IS NOT NULL ORDER BY p.created_at DESC LIMIT 1`)
       .get(scope.requestId, scope.windowId, scope.roomId) as { payload_wire_json: string | null; payload_json: string } | undefined;
     if (!request) return null;
-    let messages: Array<{ content?: unknown }>;
+    let messages: Array<{ role?: string; content?: unknown; tool_calls?: any[]; tool_call_id?: string }>;
     try { messages = JSON.parse(request.payload_wire_json ?? request.payload_json).messages; }
     catch { return null; }
     if (!Array.isArray(messages)) return null;
+    const recallCalls = new Set<string>();
+    for (const message of messages) {
+      if (message.role === 'assistant') for (const call of message.tool_calls ?? []) {
+        let name = call.function?.name;
+        if (name === 'tool_invoke') {
+          try { name = JSON.parse(call.function.arguments).name; } catch { continue; }
+        }
+        if (name === 'memory_recall' || name === 'memory_recall_next') recallCalls.add(call.id);
+      }
+      if (message.role !== 'tool' || !recallCalls.has(message.tool_call_id ?? '')) continue;
+      const text = typeof message.content === 'string' ? message.content
+        : Array.isArray(message.content) ? message.content.filter(b => b?.type === 'text').map(b => b.text).join('') : '';
+      try {
+        const result = JSON.parse(text);
+        if (typeof result.recall_session_id === 'string' && Array.isArray(result.candidates)
+          && result.candidates.some((candidate: any) => candidate.memory_ref === memoryRef)) {
+          return { detail_ref: memoryRef, origin: 'recall' };
+        }
+      } catch { /* A malformed result cannot establish a delivered reference. */ }
+    }
     const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
       : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
     const rows = this.db.prepare(`SELECT d.selected_refs_json, d.payload_text FROM surfacing_deliveries d

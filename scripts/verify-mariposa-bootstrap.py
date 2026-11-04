@@ -51,6 +51,8 @@ def main():
                    MARIPOSA_SEMANTIC_PROVIDER='',MARIPOSA_RECALL_JUDGE_PROVIDER='disabled',
                    ESTOMAGO_TEST_MARIPOSA_TOKEN='synthetic-est-bootstrap',CROSS_MARIPOSA_URL=f'http://127.0.0.1:{args.port}',
                    CROSS_MARIPOSA_PYTHON=str(python),CROSS_MARIPOSA_FIXTURE=str(fixture),CROSS_MARIPOSA_EXPECTED=str(base/'expected.json'),CROSS_MARIPOSA_RESULT=str(output/'result.json'))
+        if args.case == 'memory-tools':
+            env.update(MARIPOSA_RECALL_ENABLED='1', MARIPOSA_WORDS_RECALL_ENABLED='1', MARIPOSA_RAW_FALLBACK_ENABLED='1')
         if baseline:env['CROSS_ESTOMAGO_BASELINE']=str(baseline)
         subprocess.run(['node','scripts/test-guard.mjs'],cwd=ROOT,env=env,check=True,timeout=10)
         subprocess.run([str(python),'-B',str(fixture),'seed'],cwd=ROOT,env=env,check=True,timeout=30)
