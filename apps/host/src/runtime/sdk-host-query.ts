@@ -9,6 +9,7 @@ import type { OrMessage } from './or-payload.ts';
 import { sha256Hex } from '../util/id.ts';
 import { proxyOnlySdkSpawn } from './sdk-network.ts';
 import { effectiveToolName } from './tool-discovery.ts';
+import { materializeImage, toolResultContent, type ModelImageBlock } from '../media/model-input.ts';
 import { SdkHistoryReplay } from './sdk-history.ts';
 
 export type SdkQueryFactory = (request: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
@@ -47,14 +48,14 @@ export async function runSdkHostQuery(
   // SDKUserMessage）支持 image 内容块。asset_image 引用块在发送边界物化为 SDK image 块；
   // 仅进本 prompt 流，messages 账本/lastSent/持久化保持引用形态（§6.2 Base64 不入库）。
   // 无 readImage（无媒体服务）或未知块型 → 维持未核实门，不静默丢图。
-  const content: Array<{ type: 'text'; text: string } | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }> = [];
+  const content: Array<{type:'text';text:string} | ModelImageBlock> = [];
   for (const message of tail) {
     if (typeof message.content === 'string') content.push({ type: 'text', text: message.content });
     else for (const block of message.content) {
       if (block.type === 'text') content.push({ type: 'text', text: block.text ?? '' });
       else if (block.type === 'asset_image' && host.readImage) {
-        const { bytes, mime } = host.readImage(block.asset_id);
-        content.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+        if (typeof block.asset_id !== 'string') throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
+        content.push(await materializeImage(block.asset_id, host.readImage));
       }
       else return { outcome: 'error', errorCode: 'SDK_MEDIA_TRANSPORT_UNVERIFIED', errorClassified: null, errorMessage: 'SDK 原生媒体投影尚未验证', sessionId: null, requestId: null };
     }
@@ -101,22 +102,20 @@ export async function runSdkHostQuery(
     if (host.purpose === 'pre_rotate_review' && effectiveToolName(name, args) === 'context_review_complete') {
       deferredReview.push({ name, args, id });
       const pending = { error_code: 'REVIEW_COMPLETION_PENDING', detail: '本批工具结束后由宿主核验；尚未完成检查。' };
-      messages.push({ role: 'tool', tool_call_id: id, content: JSON.stringify(pending) });
-      return { ok: false, output: pending };
+      return { ok: false, output: pending, recordDelivery: result => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(result)}); } };
     }
     executing.add(id);
     try {
       const result = await host.executeTool(name, args, id, round);
-      messages.push({ role: 'tool', tool_call_id: id, content: JSON.stringify(result.output) });
       executing.delete(id);
-      return result;
+      return { ...result, recordDelivery: delivered => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)}); } };
     } catch (error) {
       failure = 'TOOL_EXECUTION_OUTCOME_UNKNOWN';
       messages.push({ role: 'tool', tool_call_id: id, content: '{"error_code":"TOOL_EXECUTION_OUTCOME_UNKNOWN"}' });
       run?.close();
       throw error;
     }
-  });
+  }, host.readImage);
   let releaseInput!: (allowed: boolean) => void;
   const admitted = new Promise<boolean>(resolve => { releaseInput = resolve; });
   let finishInput!: () => void;

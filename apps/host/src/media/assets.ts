@@ -142,6 +142,13 @@ export class MediaService {
     };
   }
 
+  publishedImageInRoom(assetId: string, roomId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM message_attachments a
+      JOIN messages m ON m.id=a.message_id AND m.current_revision=a.revision
+      WHERE a.asset_id=? AND m.conversation_id=? AND m.published_at IS NOT NULL
+      AND a.presentation IN ('image','sticker') LIMIT 1`).get(assetId, roomId));
+  }
+
   /** 授权读取字节（storage_key 由宿主管理，不暴露绝对路径）。 */
   readContent(id: string): { bytes: Buffer; mime: string } {
     const row = this.db.prepare('SELECT storage_key, mime_type, state FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string } | undefined;

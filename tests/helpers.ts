@@ -213,7 +213,7 @@ export function assembleTestTools(deps: TestToolDeps): {
   registerWishstarCapabilitiesInstance(registry, { wishstar: (deps.wishstar ?? null) as never });
   registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never });
   registerWakeCapabilitiesInstance(registry, { db, taskService: (deps.taskService ?? null) as never });
-  registerMediaCapabilitiesInstance(registry, { media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
+  registerMediaCapabilitiesInstance(registry, { db, contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });
   registerContextReviewCapabilitiesInstance(registry, { db, reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never });
   // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall

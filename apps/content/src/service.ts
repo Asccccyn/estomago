@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
+import { CONTENT_ALBUMS } from '../../../packages/contracts/src/content.ts';
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
@@ -224,7 +225,7 @@ export class ContentServer {
 
   private decodeCursor(c: string | null): Record<string, string> | null {
     if (!c) return null;
-    try { return JSON.parse(Buffer.from(c, 'base64url').toString('utf8')) as Record<string, string>; } catch { throw new ContentError(400, 'CURSOR_INVALID', '游标非法'); }
+    try { const value = JSON.parse(Buffer.from(c, 'base64url').toString('utf8')); if (!value || Array.isArray(value) || typeof value !== 'object' || Object.values(value).some(v => typeof v !== 'string')) throw Error('shape'); return value; } catch { throw new ContentError(400, 'CURSOR_INVALID', '游标非法'); }
   }
 
   private async dispatch(route: string, actor: Actor, url: URL, body: Record<string, unknown>, req: IncomingMessage, res: ServerResponse): Promise<{ status: number; body: unknown } | undefined> {
@@ -237,11 +238,13 @@ export class ContentServer {
       const cursor = this.decodeCursor(url.searchParams.get('cursor'));
       const presentation = url.searchParams.get('presentation');
       const rows = this.db.prepare(`SELECT * FROM feed_posts WHERE deleted_at IS NULL ${presentation === 'post' || presentation === 'letter' ? 'AND presentation = ?' : ''} ORDER BY published_at DESC, id DESC`).all(...(presentation === 'post' || presentation === 'letter' ? [presentation] : [])) as Array<Record<string, unknown>>;
-      const after = cursor?.after ?? null; // 首读上界固定；翻页不吞新增（§3.2）
-      const filtered = after !== null ? rows.filter((r) => String(r.published_at) > after || (String(r.published_at) === after && String(r.id) > (cursor!.id ?? ''))) : rows;
+      const scope = JSON.stringify(['posts', presentation ?? null]);
+      if (cursor && (cursor.scope !== scope || !cursor.after || !cursor.id)) throw new ContentError(400, 'CURSOR_INVALID', '游标与查询不匹配，请重新读取首页');
+      const after = cursor?.after ?? null;
+      const filtered = after !== null ? rows.filter((r) => String(r.published_at) < after || (String(r.published_at) === after && String(r.id) < (cursor!.id ?? ''))) : rows;
       const page = filtered.slice(0, limit);
       const hasMore = filtered.length > limit;
-      return { status: 200, body: { items: page.map((r) => this.postDto(r)), next_cursor: hasMore && page.length > 0 ? Buffer.from(JSON.stringify({ after: String(page[page.length - 1]!.published_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: hasMore } };
+      return { status: 200, body: { items: page.map((r) => this.postDto(r)), next_cursor: hasMore && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.published_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: hasMore } };
     }
     let m = /^GET \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
     if (m) return { status: 200, body: this.postDto(this.postRow(String(m[1])), true) };
@@ -338,9 +341,16 @@ export class ContentServer {
     }
 
     // —— 相册（§5）——
-    m = /^GET \/api\/v1\/content\/albums\/(chat_screenshots|important_photos|stickers)\/entries$/.exec(route);
+    if (route === 'GET /api/v1/content/albums') {
+      const assetId = url.searchParams.get('asset_id');
+      const albums = CONTENT_ALBUMS.filter(a => !assetId || Boolean(this.db.prepare('SELECT 1 FROM album_entries WHERE kind=? AND asset_id=? LIMIT 1').get(a.album, assetId)));
+      return { status: 200, body: { albums } };
+    }
+
+    m = /^GET \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
     if (m) {
       const kind = m[1]!;
+      if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
       const limit = this.limitOf(url);
       const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
       const ss = url.searchParams.get('source_service');
@@ -353,12 +363,17 @@ export class ContentServer {
         rows = rows.filter((r) => refIds.has(String(r.id)));
       }
       if (q.length > 0) rows = rows.filter((r) => `${r.caption ?? ''} ${r.meaning ?? ''}`.toLowerCase().includes(q));
+      const cursor = this.decodeCursor(url.searchParams.get('cursor'));
+      const scope = JSON.stringify([kind, q, ss, sk, sid]);
+      if (cursor && (cursor.scope !== scope || !cursor.after || !cursor.id)) throw new ContentError(400, 'CURSOR_INVALID', '游标与相册或查询不匹配，请重新读取首页');
+      if (cursor) rows = rows.filter(r => String(r.created_at) < cursor.after! || (String(r.created_at) === cursor.after && String(r.id) < cursor.id!));
       const page = rows.slice(0, limit);
-      return { status: 200, body: { items: page.map((r) => this.albumDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
+      return { status: 200, body: { items: page.map((r) => this.albumDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page.at(-1)!.created_at), id: String(page.at(-1)!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
-    m = /^POST \/api\/v1\/content\/albums\/(chat_screenshots|important_photos|stickers)\/entries$/.exec(route);
+    m = /^POST \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
     if (m) {
       const kind = m[1]!;
+      if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
       return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, kind }), () => {
         if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
         const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ?').get(kind, body.asset_id) as Record<string, unknown> | undefined;

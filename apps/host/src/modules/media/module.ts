@@ -38,11 +38,13 @@ export const MEDIASEARCH_DEFINITION: HostToolSpec = {
   };
 
 export type MediaModuleDeps = {
+  db?: import('../../db/connection.ts').Db;
+  contentClient?: import('../../integrations/content/client.ts').ContentClient | null;
   media?: import('../../media/assets.ts').MediaService | null;
   mediaIndex?: import('../../media/index/service.ts').MediaIndexService | null;
 };
 
-export function registerMediaCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: MediaModuleDeps): void {
+export function registerMediaCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: MediaModuleDeps): MediaToolsService {
   const service = new MediaToolsService(deps);
   registry.register(toolCapability({
     owner: 'media',
@@ -56,4 +58,5 @@ export function registerMediaCapabilities(registry: { register(d: CapabilityDesc
     run: (input: { query: string; limit?: number }, ctx) => service.mediaSearch(input, ctx),
     toModel: (value) => value,
   }));
+  return service;
 }

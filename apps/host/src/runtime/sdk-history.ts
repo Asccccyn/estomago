@@ -1,31 +1,30 @@
 import { randomUUID } from 'node:crypto';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { OrMessage } from './or-payload.ts';
+import { materializeImage, type AssetImageRefBlock, type ModelImageBlock, type ReadModelImage } from '../media/model-input.ts';
 import { sdkToolName } from './sdk-mcp.ts';
 
 type TextBlock = { type: 'text'; text: string };
-// 2026-10-31 她批：历史回放的 asset_image 同样在发送边界物化为 SDK image 块（§6.2 不入账本）
-type ImageBlock = { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
-type ReadImage = (assetId: string) => { bytes: Buffer; mime: string };
-type HistoryBlock = TextBlock | ImageBlock
+type ImageBlock = ModelImageBlock;
+type ReadImage = ReadModelImage;
+type HistoryBlock = TextBlock | ImageBlock | AssetImageRefBlock
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: TextBlock[] };
+  | { type: 'tool_result'; tool_use_id: string; content: Array<TextBlock | ImageBlock | AssetImageRefBlock> };
 type HistoryFrame = {
   type: 'user' | 'assistant'; uuid: string;
   message: { role: 'user' | 'assistant'; content: HistoryBlock[] };
   parent_tool_use_id: null; shouldQuery?: false; client_composed?: true;
 };
 
-function textBlocks(content: OrMessage['content'], readImage?: ReadImage): Array<TextBlock | ImageBlock> {
+function textBlocks(content: OrMessage['content']): Array<TextBlock | AssetImageRefBlock> {
   if (content == null || content === '') return [];
   if (typeof content === 'string') return [{ type: 'text', text: content }];
   if (!Array.isArray(content)) throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
-  const out: Array<TextBlock | ImageBlock> = [];
+  const out: Array<TextBlock | AssetImageRefBlock> = [];
   for (const b of content) {
     if (b.type === 'text' && typeof b.text === 'string') { out.push({ type: 'text', text: b.text }); continue; }
-    if (b.type === 'asset_image' && readImage) {
-      const { bytes, mime } = readImage(b.asset_id);
-      out.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+    if (b.type === 'asset_image' && typeof b.asset_id === 'string') {
+      out.push({type:'asset_image',asset_id:b.asset_id,projection_version:'v1'});
       continue;
     }
     throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
@@ -42,18 +41,20 @@ export class SdkHistoryReplay {
   private pending: ((ok: boolean) => void) | null = null;
   private closed = false;
   private signal: AbortSignal;
+  private readImage?: ReadImage;
   completed = false;
 
   constructor(history: OrMessage[], signal: AbortSignal, readImage?: ReadImage) {
     this.signal = signal;
+    this.readImage = readImage;
     this.frames = [];
     for (const message of history) {
       if (!['user', 'assistant', 'tool'].includes(message.role)) throw Error('SDK_HISTORY_ROLE_UNSUPPORTED');
       const role = message.role === 'assistant' ? 'assistant' : 'user';
-      let content: HistoryBlock[] = textBlocks(message.content, readImage);
+      let content: HistoryBlock[] = textBlocks(message.content);
       if (message.role === 'tool') {
         if (typeof message.tool_call_id !== 'string') throw Error('SDK_HISTORY_TOOL_ID_MISSING');
-        content = [{ type: 'tool_result', tool_use_id: message.tool_call_id, content: content as TextBlock[] }];
+        content = [{ type: 'tool_result', tool_use_id: message.tool_call_id, content: content as Array<TextBlock | AssetImageRefBlock> }];
       } else if (message.tool_calls !== undefined) {
         if (role !== 'assistant' || !Array.isArray(message.tool_calls)) throw Error('SDK_HISTORY_TOOL_CALL_INVALID');
         for (const call of message.tool_calls) {
@@ -85,7 +86,15 @@ export class SdkHistoryReplay {
       // Runtime 2.1.283 accepts assistant replay frames on stream-json input;
       // the SDK's prompt iterable type only names user frames. This cast is
       // confined to that measured transport boundary, with no fabricated usage.
-      yield frame as unknown as SDKUserMessage;
+      const materialize = async (block: HistoryBlock): Promise<HistoryBlock> => {
+        if (block.type === 'asset_image') {
+          if (!this.readImage) throw Error('SDK_MEDIA_TRANSPORT_UNVERIFIED');
+          return materializeImage(block.asset_id, this.readImage);
+        }
+        if (block.type === 'tool_result') return {...block,content:await Promise.all(block.content.map(materialize)) as Array<TextBlock | ImageBlock>};
+        return block;
+      };
+      yield {...frame,message:{...frame.message,content:await Promise.all(frame.message.content.map(materialize))}} as unknown as SDKUserMessage;
       if (completion && !(await completion)) return;
     }
     this.completed = true;

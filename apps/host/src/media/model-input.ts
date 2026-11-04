@@ -6,6 +6,7 @@
 //    append-only 断言在物化形态上执行（§6.2：不拿未含图旧对象与新多模态对象比较后忽略失败）。
 // 视觉能力门：所选型号未核实支持图片 → MODEL_VISION_UNAVAILABLE（消息保存、回复明确阻断，
 // 不静默丢图、不切模型）。语音：无转写不空输入唤起模型（MEDIA_TRANSCRIPTION_FAILED）。
+import type { ToolExecResult } from '../capabilities/contracts.ts';
 import type { MediaService } from './assets.ts';
 
 /** 内部引用块（不直接传给 Provider；持久形态） */
@@ -118,29 +119,39 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
   return { blocks, hasImage, hasVoiceWithoutTranscript };
 }
 
-/** 发送物化：asset_image → Provider（Anthropic 族）图像块。确定性：同资产同字节同输出。 */
-export function materializeBlocks(blocks: ProjectedBlock[], media: MediaService): Array<Record<string, unknown>> {
+export type ReadModelImage = (assetId: string) => { bytes: Buffer; mime: string } | Promise<{ bytes: Buffer; mime: string }>;
+export type ModelImageBlock = { type: 'image'; source: { type:'base64'; media_type:'image/png'|'image/jpeg'|'image/gif'|'image/webp'; data:string } };
+
+export async function materializeImage(assetId: string, readImage: ReadModelImage): Promise<ModelImageBlock> {
+  const { bytes, mime } = await readImage(assetId);
+  if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/gif' && mime !== 'image/webp') throw Error('ASSET_TYPE_UNSUPPORTED');
+  return { type:'image', source:{type:'base64',media_type:mime,data:bytes.toString('base64')} };
+}
+
+/** Persist only references; image bytes belong to SDK/API send boundaries. */
+export function toolResultContent(result: ToolExecResult): string | ProjectedBlock[] {
+  const text = JSON.stringify(result.output);
+  return result.ok && result.imageRefs?.length
+    ? [{ type:'text', text }, ...result.imageRefs.map(asset_id => ({type:'asset_image' as const,asset_id,projection_version:PROJECTION_VERSION}))]
+    : text;
+}
+
+export async function materializeBlocks(blocks: ProjectedBlock[], media: MediaService, readImage: ReadModelImage = id => media.readContent(id)): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = [];
-  for (const b of blocks) {
-    if (b.type === 'text') { out.push({ type: 'text', text: b.text }); continue; }
-    const { bytes, mime } = media.readContent(b.asset_id);
-    out.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+  for (const block of blocks) {
+    if (block.type === 'text') out.push({type:'text',text:block.text});
+    else out.push(await materializeImage(block.asset_id, readImage));
   }
   return out;
 }
 
-/** 物化整个信封消息（深替换 content 数组中的 asset_image）。 */
-export function materializeEnvelope<T extends { messages: Array<{ role: string; content: unknown }> }>(envelope: T, media: MediaService): T {
-  return {
-    ...envelope,
-    messages: envelope.messages.map((m) => {
-      if (!Array.isArray(m.content)) return m;
-      const needs = (m.content as Array<Record<string, unknown>>).some((b) => b && b.type === 'asset_image');
-      if (!needs) return m;
-      const blocks = (m.content as Array<Record<string, unknown>>).map((b) => (b && b.type === 'asset_image' ? { type: 'asset_image', asset_id: b.asset_id, projection_version: b.projection_version } as AssetImageRefBlock : b as unknown as ProjectedBlock));
-      return { ...m, content: materializeBlocks(blocks, media) };
-    }),
-  };
+export async function materializeEnvelope<T extends { messages: Array<{ role: string; content: unknown }> }>(envelope: T, media: MediaService, readImage?: ReadModelImage): Promise<T> {
+  const messages = [];
+  for (const message of envelope.messages) {
+    if (!Array.isArray(message.content) || !message.content.some(b => b?.type === 'asset_image')) messages.push(message);
+    else messages.push({...message, content: await materializeBlocks(message.content as ProjectedBlock[],media,readImage)});
+  }
+  return {...envelope,messages};
 }
 
 /** 存储脱敏（§6.2 不把 Base64 复制进数据库）：wire 证据里 image source.data → sha256 指纹。 */

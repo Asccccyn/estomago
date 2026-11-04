@@ -64,7 +64,7 @@ import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
-import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
+import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 import { storedToolset } from './tool-discovery.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 
@@ -97,6 +97,7 @@ export type SupervisorDeps = {
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
+  mediaTools?: Pick<import('../modules/media/service.ts').MediaToolsService, 'readImage'>;
   media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
   // JOINT-VOICE-20261022（04）：oído 听觉可用（=配置声明：integrations.oido 已配凭据）。
   // true 时当前输入无转写语音以结构化引用进入模型（可调 oido_analyze）；未注入/false 保持阻断语义。
@@ -741,8 +742,8 @@ export class TurnSupervisor {
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
       // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
       // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
-      const matEnv = (env: typeof envelope): typeof envelope => projectModelHistory(d.media ? materializeEnvelope(env, d.media) as typeof envelope : env);
-      const runEnvelope = matEnv(envelope);
+      const matEnv = async (env: typeof envelope): Promise<typeof envelope> => projectModelHistory(d.media ? await materializeEnvelope(env, d.media, d.mediaTools ? id => d.mediaTools!.readImage(id, o.conversationId) : undefined) as typeof envelope : env);
+      const runEnvelope = await matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
@@ -823,7 +824,7 @@ export class TurnSupervisor {
           }
         }
       };
-      let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(matEnv(prevEnvelope), transportKind) : null;
+      let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(await matEnv(prevEnvelope), transportKind) : null;
       // 整合（2026-10-24）：轨迹本轮重建（懒初始化）=合法新基线——旧 wire 锚不再可比，豁免
       if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn && !orFallback) {
         const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
@@ -972,10 +973,9 @@ export class TurnSupervisor {
         // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
         // 图未随正文携带，模型不得声称已看图）
         const modelSupportsImages = visionSupportCached(envelope.model) === true;
-        const imageBlocks = modelSupportsImages && exec.imageRefs && exec.imageRefs.length > 0
-          ? exec.imageRefs.map((id) => ({ type: 'asset_image', asset_id: id, projection_version: 'v1' as const }))
-          : [];
-        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, ...(imageBlocks.length > 0 ? { content: [{ type: 'text', text: JSON.stringify(exec.output) }, ...imageBlocks] } : { content: JSON.stringify(exec.output) }) } as unknown as OrMessage] };
+        if (exec.ok && exec.imageRefs?.length && !modelSupportsImages) exec = {ok:false,output:{error_code:'MODEL_VISION_UNAVAILABLE',detail:'工具已执行，但当前型号未核实支持图片，图片未交付。'}};
+        envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
+
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
@@ -1014,7 +1014,7 @@ export class TurnSupervisor {
         windowId: o.windowId, purpose: o.purpose, envelope: o.envelope, maxModelRequests: MAX_TOOL_ROUNDS + 1,
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
-        ...(d.media ? { readImage: (assetId: string) => d.media!.readContent(assetId) } : {}),
+        ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContent(assetId) } : {}),
         beforeModel: async (messages, round) => {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
           if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);

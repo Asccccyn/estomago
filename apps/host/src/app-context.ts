@@ -309,11 +309,12 @@ export class Host {
     (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
     (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media });
     (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
-    (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { media, mediaIndex });
+    const mediaTools = (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { db, media, mediaIndex, contentClient });
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
     (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
     tools.setMemoryRecovery(memoryService);
     const supervisor = new TurnSupervisor({
+      mediaTools,
       wishstar,
       voiceObservations: voiceObsService,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
