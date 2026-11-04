@@ -1435,5 +1435,19 @@ ALTER TABLE window_toolsets ADD COLUMN groups_json TEXT;
 ALTER TABLE window_toolsets ADD COLUMN initial_text TEXT;
 ALTER TABLE provider_requests ADD COLUMN tool_context_json TEXT;
 `});
+// 54（2026-11-04，执行稿 B4）：pending_program_facts——一次性程序事实待消费
+// （首个用例：通话结束事实，随下一次正常文字请求附带，不为此花独立模型轮）。
+// 消费=该事实随本轮尾部装配发出（onBeforeDispatch 后置 consumed）；崩溃/取消保留待重试。
+MIGRATIONS.push({version:54,name:'pending-program-facts',sql:`
+CREATE TABLE pending_program_facts(
+ id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ kind TEXT NOT NULL,
+ fact_text TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ consumed_at TEXT
+);
+CREATE INDEX idx_pending_facts_conv ON pending_program_facts(conversation_id, consumed_at);
+`});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

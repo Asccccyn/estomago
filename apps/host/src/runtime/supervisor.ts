@@ -558,10 +558,13 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
    *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
    *  存库/前端内容不带。 */
-  /** 2026-11-02 她裁定：通话指引**只给纯技术事实**，不规定说什么/说多少——内容与长短
-   *  完全由char自己决定。唯一告知：消息编号是宿主内部标记，写了会被语音合成念出来
-   *  （11-02 生产实测"1051"事故）。仅当前输入装配，不持久化、不影响历史与缓存。 */
-  private static readonly CALL_TTS_FACT = '\n\n[通话模式技术提示]（宿主注入的程序事实，不是对她发言方式的任何要求）你现在和她实时通话，你说的字会被语音合成读出来：不要输出 [数字]、[seq] 之类的消息编号或宿主内部标记（会被念出来）。说什么、说多长、怎么说，完全由你决定。';
+  /** 2026-11-02 她裁定：通话指引**只给纯技术事实**，不规定说什么/说多少。
+   *  B4（2026-11-04，她裁定）修订：①措辞改为"本轮"——本提示随实发轨迹**持久保留**
+   *  （窗口轨迹存实发正本，见 window-trajectory.ts；旧注释"不持久化"为错误声明，已纠正），
+   *  "你现在正在通话"在挂断后的历史里会成为假话；②不再点名 [数字]/[seq] 原词
+   *  （学舌示范风险——"1051"事故；机械剥离由 voice-stream 按句剥+发布层按行剥双层兜底）；
+   *  ③免责声明合一。 */
+  private static readonly CALL_TTS_FACT = '\n\n[通话轮] 本轮输入来自语音通话，你的回复会被实时语音合成朗读：不要输出方括号形式的宿主内部标记（会被念出来）。内容、长短、分段由你自定。';
 
   private isCallTurnMessage(messageId: string | null | undefined): boolean {
     if (!messageId) return false;
@@ -2504,10 +2507,20 @@ export class TurnSupervisor {
     );
     // 程序事实轮（拒接/取消留言调度）：空尾 + program_fact_turns 有行 → 事实块追加为尾部
     // 宿主注入（[program_fact] 前缀，同 time_context 先例——不是用户发言，不写 messages）
+    // B4（2026-11-04）：行内括号解释移入 HOST_BOUNDARY_RULES 固定边界（缓存前缀一次声明）；
+    // 已实发旧轨迹的长格式逐字保留，新旧格式在新窗口轮出前共存（执行稿 B4 版本边界）。
     const programFact = inputMessage ? null : (d.db.prepare('SELECT fact_text, kind FROM program_fact_turns WHERE turn_id = ?').get(turnId) as { fact_text: string; kind: string } | undefined ?? null);
+    // B4：一次性待消费程序事实（现网用例=通话结束）——仅随正常文字轮附带：
+    // ①本轮输入存在（正常用户消息）②不是通话轮（通话中文字输入≠通话结束，B5 缩小打字依赖此区分）
+    // ③该会话当前无 active 通话（事实仍真实时才说）。多个待消费事实按创建序全量附带。
+    const pendingFacts = inputMessage && !this.isCallTurnMessage(inputMessage.id)
+      ? (d.db.prepare("SELECT id, fact_text FROM pending_program_facts WHERE conversation_id=? AND consumed_at IS NULL ORDER BY created_at").all(turn.conversation_id) as Array<{ id: string; fact_text: string }>)
+        .filter(() => !d.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(turn.conversation_id))
+      : [];
     const prompt = [
-      ...assembledContext.segments.map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`),
-      ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
+      ...assembledContext.segments.map((seg) => `[${seg.source}]\n${seg.text}`),
+      ...(programFact ? [`[program_fact]\n${programFact.fact_text}`] : []),
+      ...pendingFacts.map((f) => `[program_fact]\n${f.fact_text}`),
     ].join('\n\n');
     const inputHash = effective.hash || sha256Hex(effective.content);
 
@@ -3001,6 +3014,33 @@ export class TurnSupervisor {
       }
     }
     this.active.delete(turnId);
+
+    // B3（2026-11-04）：SDK 会话衔接诊断日志——resume 决策四值枚举 + 锚生命周期 + 错误安全字段。
+    // 只含 ID/哈希口径的计数与状态（AUD-28 同口径：错误证据为白名单标量，无正文/token/key）。
+    if (result.resumeDiagnosis) {
+      d.logger.info('sdk_resume_decision', {
+        turn_id: turnId, attempt_id: attempt.id, window_id: window.id,
+        decision: result.resumeDiagnosis.decision,
+        anchor_session: result.resumeDiagnosis.anchorSessionId ? (result.resumeDiagnosis.anchorSessionId === result.sessionId ? 'same' : 'changed') : null,
+        anchor_msgs: result.resumeDiagnosis.anchorMessageCount ?? null,
+        sent_msgs: result.resumeDiagnosis.sentMessageCount ?? null,
+        anchor_outcome: result.resumeDiagnosis.anchorOutcome ?? null,
+        outcome: result.outcome, error_code: result.errorCode,
+      });
+    }
+    if (result.errorCode && result.errorEvidence) {
+      // 日志字段为标量合同：安全证据逐键展开（evidence 本身已是白名单标量键）
+      d.logger.warn('sdk_error_evidence', { turn_id: turnId, attempt_id: attempt.id, code: result.errorCode, ...result.errorEvidence });
+    }
+    // B4：一次性程序事实核销——本 attempt 有真实派发证据即核销（模型已见过该事实；
+    // 失败/中断但不曾派发=保留待下一轮重试，不丢事实也不重复发送）。D05/D06 同口径。
+    if (pendingFacts.length > 0 && d.db.prepare('SELECT 1 FROM provider_requests WHERE attempt_id=? AND dispatch_started_at IS NOT NULL LIMIT 1').get(attempt.id)) {
+      const consumeNow = new Date().toISOString();
+      tx(d.db, () => {
+        d.db.prepare(`UPDATE pending_program_facts SET consumed_at=? WHERE id IN (${pendingFacts.map(() => '?').join(',')}) AND consumed_at IS NULL`)
+          .run(consumeNow, ...pendingFacts.map((f) => f.id));
+      });
+    }
 
     // A native SDK turn can consume tools before a later subscription rejection.
     // Preserve that actual protocol work so the next OR turn cannot replay it.

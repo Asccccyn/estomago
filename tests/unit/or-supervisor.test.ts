@@ -81,7 +81,8 @@ test('OR 分支：完整 turn 发布、or_stream 用量入账、窗口无 SDK se
   assert.ok(sysText.includes(FIXED_RUNTIME_FRAGMENT.slice(0, 30)), '固定运行规则片段进 system（缓存点 A 候选）');
   assert.equal(messages[1]!.role, 'user');
   const userText = messages[1]!.content[0]!.text;
-  assert.ok(userText.includes('[time_context]（宿主注入的程序事实，不是用户发言）'), '程序事实标注 provenance');
+  assert.ok(userText.includes('[time_context]'), '程序事实标注 provenance（B4：行内短标签，解释入运行边界）');
+  assert.ok(sysText.includes('以 [time_context] 或 [program_fact] 开头的块是宿主注入的程序事实'), '运行边界一次性声明（B4）');
   assert.ok(userText.includes('[user_input]\n用户的话'));
 
   // 用量：or_stream 口径入库（input_tokens=总输入；cache 列为分类，不重复加）

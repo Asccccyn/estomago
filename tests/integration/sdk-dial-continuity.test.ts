@@ -16,6 +16,7 @@ import { tempRoot, writeApprovedIdentity, readyRuntimePatch, fullToolCatalog } f
 
 // The live window predates voice registration. Exercise that supported old-window
 // state and the owner's scoped catalog repair through real HTTP, MCP and handlers.
+// B3（2026-11-04）追加断言：接听工具轮完成后，下一轮文字请求 resume 锚连续不重建。
 test('SDK dial in an old deferred window can accept after voice tools are explicitly enabled without rotating history', async () => {
   const root = tempRoot('sdk-dial-continuity-');
   const oldHome = process.env.ESTOMAGO_HOME;
@@ -24,6 +25,7 @@ test('SDK dial in an old deferred window can accept after voice tools are explic
   process.env.ESTOMAGO_HOME = root;
   process.env[credentialName] = 'synthetic-siren-credential';
   writeApprovedIdentity(root);
+  const seenTurns: Array<{ resume: string | null; session: string }> = [];
   let creates = 0;
   const siren = http.createServer(async (req, res) => {
     if (req.method === 'POST' && req.url === '/v1/calls') {
@@ -44,9 +46,10 @@ test('SDK dial in an old deferred window can accept after voice tools are explic
   const toolResults: Array<{ mode: string; name: string; value: any }> = [];
   const query = (input: any) => {
     const session = input.options.resume ?? randomUUID();
+    seenTurns.push({ resume: input.options.resume ?? null, session });
     const iterator = (async function* () {
       if (!(yield* scriptedSdkInput(input, session, () => {}))) return;
-      if (mode !== 'seed') {
+      if (mode === 'missing' || mode === 'enabled') {
         const client = new Client({ name: 'synthetic-sdk', version: '1' });
         const [a, b] = InMemoryTransport.createLinkedPair();
         await input.options.mcpServers.est.instance.connect(b); await client.connect(a);
@@ -112,6 +115,14 @@ test('SDK dial in an old deferred window can accept after voice tools are explic
     assert.equal(host.db.prepare('SELECT count(*) n FROM context_selections').get()?.n, 0);
     assert.equal(host.db.prepare("SELECT count(*) n FROM messages WHERE speaker='owner'").get()?.n, 1);
     assert.equal(toolResults.filter(r => r.name === 'tool_invoke').length, 1);
+    // B3：接听工具轮结束后，下一轮文字请求的 resume 锚连续（拨号轮 → 第一句不重建会话）
+    mode = 'seed';
+    const after = await fetch(base + '/api/v1/conversations/primary/messages', { method: 'POST', headers, body: JSON.stringify({ content: 'SYNTHETIC_AFTER_CALL', client_message_id: randomUUID() }) });
+    assert.equal(after.status, 201); await host.supervisor.waitIdle();
+    assert.ok(seenTurns.length >= 3, `至少三轮 SDK 请求（实际 ${seenTurns.length}）`);
+    assert.equal(seenTurns[0]!.resume, null, '首轮无锚');
+    assert.equal(seenTurns[1]!.resume, seenTurns[0]!.session, '拨号轮 resume 沿用首轮会话');
+    assert.equal(seenTurns[seenTurns.length - 1]!.resume, seenTurns[seenTurns.length - 2]!.session, '接听后的下一轮 resume 锚连续（不重建）');
     await fetch(base + '/api/v1/calls/synthetic-call', { method: 'DELETE', headers });
   } finally {
     await host.stop(); await new Promise<void>(resolve => siren.close(() => resolve()));

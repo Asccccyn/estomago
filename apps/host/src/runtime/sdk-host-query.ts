@@ -36,8 +36,23 @@ export async function runSdkHostQuery(
   const tools = host.envelope.tools as unknown as HostToolSpec[];
   const prefixHash = sha256Hex(JSON.stringify([req.options.options.systemPrompt, tools, host.envelope.model]));
   const previous = sessions.get(host.windowId);
-  const resume = previous && previous.prefixHash === prefixHash
-    && previous.messagesHash === sha256Hex(JSON.stringify(messages.slice(0, previous.messageCount))) ? previous : null;
+  // B3（2026-11-04）：衔接诊断——四值枚举如实区分"没锚/前缀变/历史变/命中"。
+  // 纯日志信号（supervisor 落 launchd 日志），不新建会话状态机、不影响行为。
+  let resumeDecision: 'resume_hit' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' = 'anchor_missing';
+  const resume = (() => {
+    if (!previous) return null;
+    if (previous.prefixHash !== prefixHash) { resumeDecision = 'prefix_changed'; return null; }
+    const currentPrefixHash = sha256Hex(JSON.stringify(messages.slice(0, previous.messageCount)));
+    if (previous.messagesHash !== undefined && previous.messagesHash !== currentPrefixHash) { resumeDecision = 'history_mismatch'; return null; }
+    resumeDecision = 'resume_hit';
+    return previous;
+  })();
+  const resumeDiagnosis: NonNullable<import('./runner.ts').RunnerRunResult['resumeDiagnosis']> = {
+    decision: resumeDecision,
+    anchorSessionId: previous?.sessionId ?? null,
+    anchorMessageCount: previous?.messageCount ?? null,
+    sentMessageCount: messages.length,
+  };
   // A restart, edit, rotation or OR interval rebuilds from est's current ledger.
   // No synthetic SessionStore entries or mutation of the runtime's private format.
   const inputMessages = messages.slice(resume?.messageCount ?? 0).filter(m => m.role !== 'system');
@@ -66,6 +81,7 @@ export async function runSdkHostQuery(
   let activityStarted = false;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
+  let errorEvidence: Record<string, unknown> | null = null; // B3：错误事件脱敏安全字段（白名单键）
   let round = 0;
   let attempts = 0;
   let requestUsage: RawUsage | null = null;
@@ -213,6 +229,15 @@ export async function runSdkHostQuery(
       }
       if (event.type === 'assistant' && event.error) {
         failure ??= event.error === 'authentication_failed' ? 'SDK_SUBSCRIPTION_AUTH_REQUIRED' : `SDK_${event.error.toUpperCase()}`;
+        // B3：留错误证据的安全标量字段（不含消息正文/工具内容——隐私纪律与 AUD-28 同口径）
+        errorEvidence ??= {
+          sdk_error: event.error,
+          ...(typeof (event as Record<string, unknown>)['subtype'] === 'string' ? { subtype: (event as Record<string, unknown>)['subtype'] } : {}),
+          ...(typeof event.session_id === 'string' ? { session_id: event.session_id } : {}),
+          ...(event.message?.id ? { provider_message_id: event.message.id } : {}),
+          ...(event.message?.model ? { model: event.message.model } : {}),
+          ...(event.request_id ? { request_id: event.request_id } : {}),
+        } as Record<string, unknown>;
         continue;
       }
       if (event.type === 'stream_event') {
@@ -287,21 +312,27 @@ export async function runSdkHostQuery(
       }
     }
     if (host.purpose !== 'cache_keepalive') {
-      if (outcome === 'completed' && normalizer.sessionId) sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
-        messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
-      else sessions.delete(host.windowId);
+      if (outcome === 'completed' && normalizer.sessionId) {
+        sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
+          messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
+        resumeDiagnosis.anchorOutcome = 'saved';
+      } else {
+        sessions.delete(host.windowId);
+        resumeDiagnosis.anchorOutcome = 'deleted';
+      }
     }
     return {
       outcome, errorCode: failure && /^[A-Z][A-Z0-9_]+$/.test(failure) ? failure : outcome === 'error' ? 'SDK_ERROR' : null,
       errorClassified: failure && /network|timeout|fetch|ECONN/i.test(failure) ? 'network' : outcome === 'error' ? 'unknown' : null,
       errorMessage: failure, sessionId: normalizer.sessionId, requestId: null,
       subscriptionLimit: limit, activityStarted, attempts, finalMessages: messages, lastSentMessages,
+      resumeDiagnosis, errorEvidence,
     };
   }
 }
 
 // SDK counters are nullable; absent is unknown, never an observed zero.
-function sdkUsageFields(usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; output_tokens_details?: { thinking_tokens?: number | null } | null }): RawUsage {
+function sdkUsageFields(usage: { input_tokens?: number | null; output_tokens?: number | null; cache_read_input_tokens?: number | null; cache_creation_input_tokens?: number | null; output_tokens_details?: { thinking_tokens?: number | null } | null; cache_creation?: { ephemeral_5m_input_tokens?: number | null; ephemeral_1h_input_tokens?: number | null } | null }): RawUsage {
   const result: RawUsage = {};
   for (const key of ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'] as const) {
     const value = usage[key];
@@ -309,5 +340,15 @@ function sdkUsageFields(usage: { input_tokens?: number | null; output_tokens?: n
   }
   const thinking = usage.output_tokens_details?.thinking_tokens;
   if (typeof thinking === 'number') result.reasoning_tokens = thinking;
+  // B3（2026-11-04）：保留缓存写入的 5m/1h 拆分（存在时）——经 raw_json 落 usage_observations.raw_usage_json；
+  // 字段缺失=未知，不补零、不推断（供应商/线路未回传时保持不可见）。
+  const e5 = usage.cache_creation?.ephemeral_5m_input_tokens;
+  const e1 = usage.cache_creation?.ephemeral_1h_input_tokens;
+  if (typeof e5 === 'number' || typeof e1 === 'number') {
+    result.raw_json = JSON.stringify({ cache_creation_split: {
+      ...(typeof e5 === 'number' ? { ephemeral_5m_input_tokens: e5 } : {}),
+      ...(typeof e1 === 'number' ? { ephemeral_1h_input_tokens: e1 } : {}),
+    } });
+  }
   return result;
 }

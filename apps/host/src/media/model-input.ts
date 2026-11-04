@@ -81,7 +81,9 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       // 4 字节/转义字符同样受 8192B 预算约束；续读提示只在本窗工具确有 transcript_read 时
       // 给出（旧冻结窗无此工具=如实受限提示，不宣传不存在的读取能力、不静默丢正文）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        const sourceLine = `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]`;
+        // B4（2026-11-04）：标记精简——"转写/来源/非亲笔"三信息保留，长度减半；
+        // "派生文字非亲笔"的解释收进 HOST_BOUNDARY_RULES 固定边界（[语音转写] 行一次声明）。
+        const sourceLine = `[语音转写|${a.derived_source ?? 'unspecified'}|非亲笔]`;
         // P2 §6.5：audio_ref 不再入默认投影（宿主保管；oido_analyze/transcript_read 缺省即本条）
         const tailLine = hearing && isCurrentInput ? `\n[原声 ${durText} 已保留；语气/声音证据须用 oido_analyze 查询（不带编号即默认本条），转写不含语气]` : '';
         if (withDefaults.transcriptContinuationAvailable === true) {

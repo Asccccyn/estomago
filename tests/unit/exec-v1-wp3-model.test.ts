@@ -207,7 +207,7 @@ test('MEDIA-08/门：语音无转写→不空输入唤起模型（MEDIA_TRANSCRI
   const p1 = projectRevisionBlocks('hi', [{ asset_id: 'a', presentation: 'voice', caption: null, derived_text: null, derived_source: null }]);
   assert.ok((p1.blocks[1] as { text: string }).text.includes('无转写'));
   const p2 = projectRevisionBlocks('hi', [{ asset_id: 'a', presentation: 'voice', caption: null, derived_text: '我说的话', derived_source: 'siren:transcribe' }]);
-  assert.ok((p2.blocks[1] as { text: string }).text.includes('语音消息转写') && (p2.blocks[1] as { text: string }).text.includes('siren:transcribe'));
+  assert.ok((p2.blocks[1] as { text: string }).text.includes('[语音转写|siren:transcribe|非亲笔]'), '转写短标记含来源与非亲笔（B4）');
 });
 
 test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息）；media_import 错误码如实（不冒充成功）', async () => {

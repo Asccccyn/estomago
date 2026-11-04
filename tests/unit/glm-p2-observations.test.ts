@@ -323,7 +323,9 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
     // A06：派发不等观察——SDK 驱动真实 prompt 含转写、不含未就绪的观察投影
     assert.equal(prompts.length, 1);
     assert.ok(prompts[0]!.includes('SDK 的原声转写。'));
-    assert.ok(prompts[0]!.includes('[通话模式技术提示]'), '通话轮注入技术事实（禁编号）');
+    assert.ok(prompts[0]!.includes('[语音转写|siren:call|非亲笔]'), '通话轮转写带精简来源标记（B4）');
+    assert.ok(prompts[0]!.includes('[通话轮] 本轮输入来自语音通话'), '通话轮注入技术事实（禁编号；B4 时态/措辞修订）');
+    assert.ok(!prompts[0]!.includes('[seq]'), '不示范违禁标记原词（B4：学舌风险）');
     assert.ok(!prompts[0]!.includes('一次说一两句'), '不规定说话长度/风格（她 11-02 裁定）');
     assert.ok(!prompts[0]!.includes('声音观察'), 'A06：派发请求不含未就绪观察');
     await new Promise((r) => setTimeout(r, 120));
