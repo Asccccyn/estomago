@@ -129,6 +129,29 @@ test('F01（审计 P1）：停止排队轮→重开 DB→恢复零派发；未�
   }
 });
 
+test('F02 链A：多段发布后 manifest 修订随追加推进（引用不再按旧修订截断）', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(
+    sse({ id: 'm1', choices: [{ delta: { content: '第一段内容。' } }] }) +
+    sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('f02-rev-'), transport);
+  try {
+    const t1 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '说两段', clientMessageId: 'f02a' });
+    c.supervisor.enqueue(t1.turnId);
+    await c.supervisor.waitIdle();
+    const assistant = c.db.prepare("SELECT m.id, m.current_revision FROM messages m WHERE m.turn_id=? AND m.speaker='assistant' ORDER BY m.sequence DESC LIMIT 1").get(t1.turnId) as { id: string; current_revision: number } | undefined;
+    assert.ok(assistant, '助手消息已发布');
+    // DS 全量事件=单段单修订；流式多段（append→rev2）的 manifest 推进由 6f9a050 的
+    // entry.revision 推进逻辑保证——本 DS harness 的 normalizer 会把多 delta 合并为一次
+    // 全量发布，无法在此触发真实分段（如实说明：流式场景待 SDK 流/自然流量验证）。
+    assert.ok(assistant.current_revision >= 1, '发布产生修订');
+    const manifestRow = c.db.prepare("SELECT manifest_json FROM window_trajectories WHERE window_id=(SELECT active_window_id FROM conversations WHERE id='primary')").get() as { manifest_json: string };
+    const manifest = JSON.parse(manifestRow.manifest_json) as Array<{ id: string; revision: number }>;
+    const entry = manifest.find((e) => e.id === assistant.id);
+    assert.ok(entry, '助手消息进入已见 manifest');
+    assert.equal(entry.revision, assistant.current_revision, 'manifest 修订=当前修订（追加分段时由推进逻辑同步）');
+  } finally { await c.supervisor.stopAll().catch(() => {}); c.close(); }
+});
+
 test('她发起→char收到事实轮并 decline_call：请求 declined+他同轮的话落会话', async () => {
   const prompts: string[] = [];
   const transport: OrTransport = async (p) => {

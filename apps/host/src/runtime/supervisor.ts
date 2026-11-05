@@ -2725,10 +2725,16 @@ export class TurnSupervisor {
         if (turnAssistantMessageId === null) {
           msg = d.messages.publishAssistantMessage({ conversationId: turn.conversation_id, turnId, content: seg });
           turnAssistantMessageId = msg.id;
-          turnManifestAdditions.push({ id: msg.id, revision: 1, seq: msg.sequence, origin: 'dialogue', visible: true });
+          turnManifestAdditions.push({ id: msg.id, revision: msg.current_revision, seq: msg.sequence, origin: 'dialogue', visible: true });
         } else {
           msg = d.messages.appendAssistantPublication(turnAssistantMessageId, seg);
           if (msg === null) continue;
+          // F02（四仓联合审计 20261104，链A）：追加段使消息修订增长——manifest 的"实际已见"
+          // 证据必须同步推进，否则下一轮请求已含完整两段而 manifest 仍记首段修订，
+          // resolveQuoteRefs 按旧修订读取导致引用截断（审计实测：storedRevision=2、
+          // manifestRevision=1，引用只有第一段）。同消息单条 entry，原地推进修订。
+          const entry = turnManifestAdditions.find((e) => e.id === msg!.id);
+          if (entry && msg.current_revision > entry.revision) entry.revision = msg.current_revision;
         }
         d.events.publish('message.published', {
           conversationId: turn.conversation_id, turnId, entityRef: msg.id, entityRevision: msg.sequence,

@@ -119,7 +119,12 @@ export class MemoryToolsService {
 
 
   resolveQuoteRefs(roomId: string, seenMessages: ReadonlyArray<SeenRef>, refs: Array<{ seq: number; from?: number; to?: number }>): MatchedQuote[] | { error: string; index: number; detail?: string } {
-    const candidates = new Map<number, { id: string; sequence: number; speaker: string; revision: number; content: string; range: [number, number] | null }>();
+    // F02（四仓联合审计 20261104，链B）：同消息同修订的已见片段**合并**（旧实现按 seq
+    // 整条覆盖——分页回读 [0,3000)/[3000,6000)/[6000,6005) 只剩末片，已交付首句被误判
+    // QUOTE_REF_RANGE_NOT_SEEN）；任一片段无区间=完整已见；同消息不同修订不混拼区间
+    // （取最新已见修订，旧修订片段不得把权限拼到新正文上）。
+    type Cand = { id: string; sequence: number; speaker: string; revision: number; content: string; ranges: Array<[number, number]> | 'full' };
+    const candidates = new Map<number, Cand>();
     for (const s of seenMessages) {
       const row = this.db.prepare(
         'SELECT m.id, m.sequence, m.speaker, r.revision, r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
@@ -129,13 +134,32 @@ export class MemoryToolsService {
       if (row && (row.speaker === 'owner' || row.speaker === 'assistant')) {
         const content = this.effectiveTextOf(row.id, row.revision, row.content);
         if (content.length > 0) {
-          const range = typeof s.char_start === 'number' && typeof s.char_end === 'number'
+          const pair = typeof s.char_start === 'number' && typeof s.char_end === 'number'
             ? ([s.char_start, s.char_end] as [number, number])
             : null;
-          candidates.set(row.sequence, { ...row, content, range });
+          const prev = candidates.get(row.sequence);
+          if (prev && prev.id === row.id && prev.revision === row.revision) {
+            if (prev.ranges !== 'full') {
+              if (pair) prev.ranges.push(pair); else prev.ranges = 'full';
+            }
+          } else if (!prev || row.revision > prev.revision) {
+            candidates.set(row.sequence, { ...row, content, ranges: pair ? [pair] : 'full' });
+          }
         }
       }
     }
+    const rangeOf = (c: Cand): Array<[number, number]> | null => {
+      if (c.ranges === 'full') return null;
+      // 合并重叠/相邻区间为最小覆盖集
+      const sorted = [...c.ranges].sort((a, b) => a[0] - b[0]);
+      const merged: Array<[number, number]> = [];
+      for (const r of sorted) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+      }
+      return merged;
+    };
     const consumed = new Map<string, Array<[number, number]>>(); // messageId → 已消费码点区间
     const matched: MatchedQuote[] = [];
     for (let qi = 0; qi < refs.length; qi++) {
@@ -165,8 +189,9 @@ export class MemoryToolsService {
         endCp = startCp + Array.from(joined).length;
       }
       if (fragment.trim().length === 0) return { error: 'QUOTE_EMPTY', index: qi };
-      if (row.range !== null && !(startCp >= row.range[0] && endCp <= row.range[1])) {
-        return { error: 'QUOTE_REF_RANGE_NOT_SEEN', index: qi }; // O06：落在未读区域
+      const seenRanges = rangeOf(row);
+      if (seenRanges !== null && !seenRanges.some(([rs, re]) => startCp >= rs && endCp <= re)) {
+        return { error: 'QUOTE_REF_RANGE_NOT_SEEN', index: qi }; // O06：落在未读区域（F02：区间并集内均可）
       }
       const spans = consumed.get(row.id) ?? [];
       if (spans.some(([s, e]) => startCp < e && endCp > s)) {
