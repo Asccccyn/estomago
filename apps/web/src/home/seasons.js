@@ -16,16 +16,36 @@
   const ANIMAL_WIDTH_IN_PAIR = .55;
   const SPRITE_WIDTH = PAIR_WIDTH * ANIMAL_WIDTH_IN_PAIR;
   const COMPANION_OFFSET = PAIR_WIDTH * (1 - ANIMAL_WIDTH_IN_PAIR) / 2;
+  const FOOT_ANCHOR = .88;
+  // Cell padding differs by animal and pose; the visible paws share one ground anchor.
+  const CHARACTER_FEET = {
+    otter: { prone: .845, sit: .876, walk: .876, sleep: .847 },
+    raccoon: { prone: .797, sit: .840, walk: .844, sleep: .844 },
+  };
+  const ROLLING_FEET = {
+    otter: [.740, .760, .765, .762, .738, .762],
+    raccoon: [.735, .738, .751, .754, .738, .746],
+  };
+  const POSE_COLUMNS = { prone: '0%', sit: '33.333333%', walk: '66.666667%', sleep: '100%' };
+  const AUTUMN_PATH = [
+    { x: .08, y: .465, offset: .24, scale: .27 },
+    { x: .30, y: .445, offset: .28, scale: .25 },
+    { x: .48, y: .420, offset: .32, scale: .23 },
+    { x: .55, y: .410, offset: .35, scale: .21 },
+    { x: .47, y: .395, offset: .38, scale: .19 },
+    { x: .36, y: .382, offset: .41, scale: .17 },
+    { x: .46, y: .370, offset: .44, scale: .15 },
+    { x: .59, y: .355, offset: .48, scale: .13 },
+  ];
   viewport.style.setProperty('--pair-width', `${PAIR_WIDTH * 100}%`);
   viewport.style.setProperty('--animal-width-in-pair', `${ANIMAL_WIDTH_IN_PAIR * 100}%`);
   viewport.style.setProperty('--pair-aspect', String(1 / ANIMAL_WIDTH_IN_PAIR));
   const resting = [
-    { x: .48, y: .65, pose: 'prone' },
-    { x: .49, y: .62, pose: 'sit' },
-    { x: .50, y: .64, pose: 'sit' },
-    { x: .48, y: .69, pose: 'prone' },
+    { x: .44, groundY: .81, pose: 'prone', groundOffsets: [0, 0] },
+    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012] },
+    { x: .44, groundY: .84, pose: 'sit', groundOffsets: [0, -.018] },
+    { x: .53, groundY: .80, pose: 'prone', groundOffsets: [0, 0] },
   ];
-  const authoredRestY = resting.map(({ y }) => y);
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
     [
@@ -61,6 +81,9 @@
     node.className = `animal ${className}`;
     node.dataset.animal = kind;
     node.dataset.pose = pose;
+    const sourceFoot = CHARACTER_FEET[kind][pose];
+    node.style.setProperty('--foot-shift', `${(FOOT_ANCHOR - sourceFoot) * 100}%`);
+    node.style.setProperty('--foot-origin', `${sourceFoot * 100}%`);
     const sprite = document.createElement('span');
     sprite.className = 'animal-sprite';
     node.append(sprite);
@@ -94,7 +117,6 @@
     pair.className = 'animal-pair';
     pair.setAttribute('aria-label', `${seasonLabels[season]}的水獭和小浣熊，前往${seasonLabels[(season + 1) % 4]}`);
     pair.style.left = `${resting[season].x * 100}%`;
-    pair.style.top = `${resting[season].y * 100}%`;
     pair.append(animal('otter', resting[season].pose), animal('raccoon', resting[season].pose));
     pair.addEventListener('click', () => advance(season));
     scene.append(pair);
@@ -124,8 +146,13 @@
     cameraY = (viewport.clientHeight - height) / 2;
     const visibleBottom = (viewport.clientHeight - cameraY - 44) / height;
     for (let i = 0; i < resting.length; i++) {
-      resting[i].y = Math.min(authoredRestY[i], visibleBottom - panelWidth * SPRITE_WIDTH / 2 / height);
+      const spriteSize = panelWidth * SPRITE_WIDTH;
+      const centerY = resting[i].groundY - (FOOT_ANCHOR - .5) * spriteSize / height;
+      resting[i].y = Math.min(centerY, visibleBottom - spriteSize / 2 / height);
       pairs[i].style.top = `${resting[i].y * 100}%`;
+      for (let animalIndex = 0; animalIndex < 2; animalIndex++) {
+        pairs[i].children[animalIndex].style.top = `${resting[i].groundOffsets[animalIndex] * height}px`;
+      }
     }
     const flowers = actions[1].find(({ target }) => target === 'flowers');
     scenes[1].querySelector('[data-target="flowers"]').style.top = `${Math.min(flowers.y, visibleBottom - flowers.h / 2) * 100}%`;
@@ -158,15 +185,26 @@
     const size = panelWidth * SPRITE_WIDTH;
     return `translate3d(${panelWidth * (season + x) - size / 2}px, ${height * y - size / 2}px, 0) rotate(${rotation}deg) scale(${scale})`;
   }
+  function groundPoint(season, x, groundY, scale = 1) {
+    const footRise = (FOOT_ANCHOR - .5) * panelWidth * SPRITE_WIDTH * scale / height;
+    return point(season, x, groundY - footRise, 0, scale);
+  }
   function footprints(season, duration) {
-    for (let i = 0; i < 12; i++) {
-      const mark = document.createElement('i');
-      mark.className = 'footprint';
-      const t = i / 12;
-      mark.style.left = `${(season + .43 + t * .27 + (i % 2 ? .035 : -.035)) * panelWidth}px`;
-      mark.style.top = `${(resting[season].y + .015 - t * (resting[season].y - .485)) * height}px`;
-      travelLayer.append(mark);
-      animate(mark, [{ opacity: 0 }, { opacity: .30, offset: .1 }, { opacity: .22, offset: .65 }, { opacity: 0 }], { duration: duration * .60, delay: i * duration * .035 });
+    for (let segment = 0; segment < AUTUMN_PATH.length - 1; segment++) {
+      const from = AUTUMN_PATH[segment];
+      const to = AUTUMN_PATH[segment + 1];
+      const angle = Math.atan2((to.y - from.y) * height, (to.x - from.x) * panelWidth) * 180 / Math.PI;
+      for (const progress of [.25, .75]) {
+        const mark = document.createElement('i');
+        mark.className = 'footprint';
+        const scale = from.scale + (to.scale - from.scale) * progress;
+        const offset = from.offset + (to.offset - from.offset) * progress;
+        mark.style.left = `${(season + from.x + (to.x - from.x) * progress) * panelWidth}px`;
+        mark.style.top = `${(from.y + (to.y - from.y) * progress) * height}px`;
+        mark.style.transform = `translate(-50%, -50%) rotate(${angle}deg) scale(${scale})`;
+        travelLayer.append(mark);
+        animate(mark, [{ opacity: 0 }, { opacity: .30, offset: .1 }, { opacity: .22, offset: .65 }, { opacity: 0 }], { duration: duration * .45, delay: duration * offset });
+      }
     }
   }
 
@@ -200,8 +238,8 @@
       const offset = index ? COMPANION_OFFSET : -COMPANION_OFFSET;
       const start = resting[from];
       const finish = resting[to];
-      const startY = start.y;
-      const finishY = finish.y;
+      const startY = start.y + start.groundOffsets[index];
+      const finishY = finish.y + finish.groundOffsets[index];
       let frames;
       if (from === 0) {
         frames = [
@@ -228,9 +266,8 @@
       } else if (from === 2) {
         frames = [
           { transform: point(from, start.x + offset, startY), offset: 0 },
-          { transform: point(from, .55 + offset * .65, startY - .08, -3, .78), offset: .18 },
-          { transform: point(from, .64 + offset * .40, startY - .17, 2, .54), offset: .34 },
-          { transform: point(from, .74 + offset * .20, .37, -2, .30), offset: .48 },
+          { transform: groundPoint(from, .16 + offset * .35, .64, .55), offset: .12 },
+          ...AUTUMN_PATH.map(stop => ({ transform: groundPoint(from, stop.x, stop.y, stop.scale), offset: stop.offset })),
           { transform: point(from, .91 + offset * .35, .49, 2, .43), offset: .60 },
           { transform: point(to, .13 + offset * .55, .64, -2, .65), offset: .75 },
           { transform: point(to, finish.x + offset, finishY, 0, 1), offset: 1 },
@@ -253,15 +290,29 @@
       journeys.push(journey);
       const row = index ? '100%' : '0%';
       const poseFrames = from === 3
-        ? [[0, '0%'], [.13, '33.333333%'], [.24, '66.666667%'], [.57, '33.333333%'], [1, '33.333333%']]
+        ? [[0, 'prone'], [.13, 'sit'], [.24, 'walk'], [.57, 'sit'], [1, 'sit']]
         : from === 0
-          ? [[0, '0%'], [.98, '33.333333%'], [1, '33.333333%']]
+          ? [[0, 'prone'], [.98, 'sit'], [1, 'sit']]
           : from === 2
-            ? [[0, '66.666667%'], [.96, '0%'], [1, '0%']]
-            : [[0, '66.666667%'], [.88, '0%'], [.96, '33.333333%'], [1, '33.333333%']];
-      journeys.push(animate(traveler.firstElementChild, poseFrames.map(([offset, column]) => ({
-        offset, backgroundPosition: `${column} ${row}`, easing: 'steps(1, end)',
-      })), { duration, delay: index * 180 }));
+            ? [[0, 'walk'], [.96, 'prone'], [1, 'prone']]
+            : [[0, 'walk'], [.88, 'prone'], [.96, 'sit'], [1, 'sit']];
+      journeys.push(animate(traveler.firstElementChild, poseFrames.map(([offset, pose]) => {
+        const sourceFoot = CHARACTER_FEET[kind][pose];
+        return {
+          offset, backgroundPosition: `${POSE_COLUMNS[pose]} ${row}`,
+          translate: `0 ${(FOOT_ANCHOR - sourceFoot) * 100}%`,
+          transformOrigin: `50% ${sourceFoot * 100}%`, easing: 'steps(1, end)',
+        };
+      }), { duration, delay: index * 180 }));
+      if (from === 2) {
+        journeys.push(animate(traveler.firstElementChild, [
+          { offset: 0, scale: '-1 1', easing: 'steps(1, end)' },
+          { offset: .24, scale: '1 1', easing: 'steps(1, end)' },
+          { offset: .35, scale: '-1 1', easing: 'steps(1, end)' },
+          { offset: .41, scale: '1 1', easing: 'steps(1, end)' },
+          { offset: 1, scale: '1 1' },
+        ], { duration, delay: index * 180 }));
+      }
       if (from === 0) {
         const rolling = document.createElement('span');
         rolling.className = 'rolling-sprite';
@@ -274,9 +325,14 @@
           offset, opacity: 1 - opacity, easing: 'steps(1, end)',
         })), { duration, delay: index * 180 }));
         // Each column is a drawn body perspective, so no flat-image rotation is needed.
-        animate(rolling, [0, 20, 40, 60, 80, 100, 0].map((column, frame) => ({
-          offset: frame / 6, backgroundPosition: `${column}% ${row}`, easing: 'steps(1, end)',
-        })), { duration: 720, iterations: Infinity, delay: index * 180 + duration * .06 });
+        animate(rolling, [0, 20, 40, 60, 80, 100, 0].map((column, frame) => {
+          const sourceFoot = ROLLING_FEET[kind][frame % 6];
+          const shift = FOOT_ANCHOR - (.75 + (sourceFoot - .75) * .93);
+          return {
+            offset: frame / 6, backgroundPosition: `${column}% ${row}`,
+            transform: `translateY(${shift * 100}%) scale(.93)`, easing: 'steps(1, end)',
+          };
+        }), { duration: 720, iterations: Infinity, delay: index * 180 + duration * .06 });
       }
     }
     if (from !== 3 && !desktopQuery.matches) {

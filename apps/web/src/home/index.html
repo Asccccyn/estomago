@@ -21,6 +21,36 @@
       <canvas id="atmosphere" aria-hidden="true"></canvas>
       <div id="season-scenes"></div>
       <div id="travelers" aria-hidden="true"></div>
+      <!-- Foreground contours reuse the approved painting in its original 1706×922 coordinates. -->
+      <svg id="field-foreground" class="scene-foreground" viewBox="0 0 1706 922" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <filter id="field-edge"><feGaussianBlur stdDeviation=".45"/></filter>
+          <mask id="field-matte" maskUnits="userSpaceOnUse" x="0" y="0" width="1706" height="922">
+            <g fill="white" filter="url(#field-edge)">
+              <g transform="translate(426 650) scale(.333333)">
+                <path d="M427 382 C407 374 387 358 400 347 C412 336 432 347 438 359 C444 336 462 332 474 344 C483 357 474 374 466 382 C492 378 507 389 502 404 C495 418 475 420 460 409 C455 432 440 444 427 430 C416 417 421 401 427 394 C407 410 391 403 391 390 C392 376 410 376 427 382Z M438 424 C420 485 397 548 367 610 L362 607 C386 542 412 475 434 422Z"/>
+                <path d="M305 253 C279 255 250 238 260 219 C272 201 291 215 304 228 C294 200 310 185 327 192 C341 198 342 221 333 238 C352 219 376 221 384 238 C390 258 370 274 345 276 C363 295 348 321 329 314 C312 306 310 286 313 278 C289 301 269 286 276 269Z"/>
+                <path d="M556 670 C594 535 638 357 744 245 C693 375 632 561 590 690Z M962 740 C978 560 1040 340 1120 256 C1074 460 1025 630 997 753Z M813 660 C835 518 867 354 932 270 C912 406 884 566 848 675Z M720 700 C742 550 768 438 813 360 C793 480 782 605 755 722Z"/>
+              </g>
+              <g transform="translate(853 650) scale(.333333)">
+                <path d="M585 480 C617 383 648 300 704 252 C751 212 805 188 871 182 C847 209 837 225 808 237 C806 261 787 281 761 290 C756 319 738 343 714 353 C707 385 689 416 657 432 C642 459 613 478 585 480Z M587 477 C520 592 466 700 421 815 L430 815 C473 701 530 591 596 480Z"/>
+                <path d="M210 482 C265 392 325 305 409 244 L417 249 C346 334 285 422 233 498Z M30 352 C110 332 175 350 241 443 C161 396 90 376 30 366Z"/>
+              </g>
+              <path d="M1068 307 L1108 260 L1155 267 L1191 307 L1186 331 L1075 334Z"/>
+            </g>
+          </mask>
+        </defs>
+        <image href="/home/assets/seasons/desktop-panorama.png" width="1706" height="922" mask="url(#field-matte)"/>
+      </svg>
+      <svg id="bedding-foreground" class="scene-foreground" viewBox="0 0 1706 922" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <filter id="bedding-edge"><feGaussianBlur stdDeviation=".65"/></filter>
+          <mask id="bedding-matte" maskUnits="userSpaceOnUse" x="0" y="0" width="1706" height="922">
+            <path fill="white" filter="url(#bedding-edge)" d="M1310 775 C1360 768 1390 752 1420 738 C1440 728 1458 732 1475 745 C1500 757 1530 752 1560 739 C1585 727 1618 730 1648 747 L1706 785 L1706 922 L1279 922Z"/>
+          </mask>
+        </defs>
+        <image href="/home/assets/seasons/desktop-panorama.png" width="1706" height="922" mask="url(#bedding-matte)"/>
+      </svg>
     </div>
     <div id="season-veil" aria-hidden="true"></div>
   </main>

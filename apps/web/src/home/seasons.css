@@ -6,7 +6,10 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 #season-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 #panorama, #atmosphere, #season-scenes, #travelers { position: absolute; inset: 0; width: 100%; height: 100%; }
 #panorama { display: block; user-select: none; pointer-events: none; }
-#atmosphere { pointer-events: none; }
+#atmosphere { z-index: 1; pointer-events: none; }
+.scene-foreground { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#field-foreground { z-index: 5; }
+#bedding-foreground { z-index: 3; }
 #season-scenes { z-index: 2; }
 .season-scene { position: absolute; top: 0; width: 25%; height: 100%; }
 .scene-hotspot, .animal-pair { position: absolute; display: block; margin: 0; padding: 0; border: 0; background: transparent; cursor: pointer; color: transparent; transform: translate(-50%, -50%); touch-action: manipulation; }
@@ -18,7 +21,7 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .animal-pair .animal { position: absolute; top: 0; width: var(--animal-width-in-pair); aspect-ratio: 1; }
 .animal-pair .animal:first-child { left: 0; }
 .animal-pair .animal:last-child { right: 0; }
-.animal-sprite { display: block; width: 100%; height: 100%; background-image: url('/home/assets/seasons/characters.png'); background-size: 400% 200%; background-repeat: no-repeat; background-position: var(--pose, 0%) var(--animal, 0%); transform-origin: 50% 76%; }
+.animal-sprite { display: block; width: 100%; height: 100%; background-image: url('/home/assets/seasons/characters.png'); background-size: 400% 200%; background-repeat: no-repeat; background-position: var(--pose, 0%) var(--animal, 0%); translate: 0 var(--foot-shift, 0%); transform-origin: 50% var(--foot-origin, 88%); }
 .rolling-sprite { position: absolute; inset: 0; background-image: url('/home/assets/seasons/rolling.png'); background-size: 600% 200%; background-repeat: no-repeat; background-position: 0% var(--animal, 0%); opacity: 0; transform: translateY(10%) scale(.93); transform-origin: 50% 75%; }
 .animal[data-animal="raccoon"] { --animal: 100%; }
 .animal[data-pose="prone"] { --pose: 0%; }
