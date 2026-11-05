@@ -14,9 +14,10 @@ export class ContentToolsService {
 
   async contentPostCreate(args: { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
-    const { contentForward } = await import('../../integrations/content/client.ts');
-    const r = await contentForward(this.contentClient, {
-      method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
+    // F06（四仓审计 20261104）：模型发帖改走资产代理面——与浏览器入口同一验证+引用登记
+    // （旧实现直连 contentForward，帖子引用的资产不进删除守卫，仍被使用的图可被标删）。
+    const { contentProxyWithAssets } = await import('../../integrations/content/client.ts');
+    const r = await contentProxyWithAssets({ client: this.contentClient, media: this.media, db: null as never, method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
       body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
       headers: { 'Idempotency-Key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
     });

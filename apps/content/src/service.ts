@@ -197,7 +197,10 @@ export class ContentServer {
     res.end(JSON.stringify(body));
   }
 
-  /** §3.2 幂等回执：同 actor+key 同指纹=原结果；同键异指纹=冲突；无键的新写操作=参数错误。 */
+  /** §3.2 幂等回执：同 actor+key 同指纹=原结果；同键异指纹=冲突；无键的新写操作=参数错误。
+   *  F08（四仓联合审计 20261104）：业务写入与回执**同一事务**——旧实现无事务，
+   *  相册条目先 INSERT 后校验 refs，422 后条目残留（审计实测 0→1）；现在任何
+   *  校验异常整体回滚（回执不写=失败零副作用）。所有多语句写共享此原子边界。 */
   private withReceipt(actor: Actor, key: string | null, requestHashSource: string, fn: () => { status: number; body: unknown }): { status: number; body: unknown } {
     if (!key) throw new ContentError(400, 'MISSING_IDEMPOTENCY_KEY', '写请求必须带 Idempotency-Key');
     const hash = simpleHash(requestHashSource);
@@ -206,11 +209,23 @@ export class ContentServer {
       if (prior.request_hash !== hash) throw new ContentError(409, 'IDEMPOTENCY_CONFLICT', '同幂等键对应不同请求');
       return { status: prior.status, body: JSON.parse(prior.response_json) };
     }
-    const out = fn();
-    this.db.prepare('INSERT INTO content_receipts(actor, idem_key, request_hash, status, response_json, created_at) VALUES (?,?,?,?,?,?)').run(actor, key, hash, out.status, JSON.stringify(out.body), new Date().toISOString());
-    return out;
+    this.db.exec('BEGIN');
+    try {
+      const out = fn();
+      this.db.prepare('INSERT INTO content_receipts(actor, idem_key, request_hash, status, response_json, created_at) VALUES (?,?,?,?,?,?)').run(actor, key, hash, out.status, JSON.stringify(out.body), new Date().toISOString());
+      this.db.exec('COMMIT');
+      return out;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
+  /** F07（四仓审计 20261104）：幂等指纹=**请求原始 If-Match**（稳定身份）——旧指纹含加载时
+   *  的当前修订，编辑成功后重放原请求（同键同 body 同 If-Match）会因修订已变而被误判
+   *  IDEMPOTENCY_CONFLICT（审计实测 200 后重放 409）。CAS 判定仍按加载修订执行；
+   *  新的旧版本编辑照旧被 ifMatch 拒绝。旧回执指纹格式不同，升级前成功请求的重放
+   *  会得到冲突提示（刷新后带新 If-Match 重试），如实说明不迁移。 */
   private ifMatch(req: IncomingMessage, currentRevision: unknown): void {
     const v = String(req.headers['if-match'] ?? '').replace(/"/g, '');
     if (!v || !/^\d+$/.test(v)) throw new ContentError(428, 'PRECONDITION_REQUIRED', '必须带 If-Match: "<revision>"');
@@ -269,7 +284,7 @@ export class ContentServer {
       const row = this.postRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人帖子');
       if (row.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '帖子已删除');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         const text = typeof body.body === 'string' ? body.body : String(row.body ?? '');
         const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : (row.title as string | null);
@@ -287,7 +302,7 @@ export class ContentServer {
     if (m) {
       const row = this.postRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人帖子');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         // §4.3.3：不级联删除他人评论——保留占位与既有评论；不再接受新评论
         this.db.prepare('UPDATE feed_posts SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
@@ -321,7 +336,7 @@ export class ContentServer {
     if (m) {
       const row = this.commentRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         const text = typeof body.body === 'string' ? body.body.trim() : '';
         if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
@@ -333,7 +348,7 @@ export class ContentServer {
     if (m) {
       const row = this.commentRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE feed_comments SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
         return { status: 200, body: { id: row.id, deleted: true } };
@@ -392,7 +407,7 @@ export class ContentServer {
     m = /^PUT \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
     if (m) {
       const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, now(), String(row.id));
@@ -402,7 +417,7 @@ export class ContentServer {
     m = /^DELETE \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
     if (m) {
       const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         // §10.3：移除归档=解除该归档及关联；不删外部原文/全局原文件（est 资产引用保护另行）
         this.db.prepare('DELETE FROM album_entry_refs WHERE entry_id = ?').run(String(row.id));
@@ -439,7 +454,7 @@ export class ContentServer {
     if (m) {
       const row = this.creationRow(m[1]!);
       if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         const workAsset = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : (row.work_asset_id as string | null);
         const workKind = typeof body.work_kind === 'string' ? body.work_kind : (row.work_kind as string | null);
@@ -453,7 +468,7 @@ export class ContentServer {
     if (m) {
       const row = this.creationRow(m[1]!);
       if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE creations SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
         return { status: 200, body: { id: row.id, deleted: true } };
@@ -485,7 +500,7 @@ export class ContentServer {
     if (m) {
       const row = this.noteRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE future_notes SET title = COALESCE(?, title), body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.body === 'string' ? body.body : String(row.body ?? ''), now(), String(row.id));
@@ -496,7 +511,7 @@ export class ContentServer {
     if (m) {
       const row = this.noteRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, rev: row.revision }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE future_notes SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
         return { status: 200, body: { id: row.id, deleted: true } };

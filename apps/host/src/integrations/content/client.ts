@@ -58,10 +58,21 @@ export async function contentProxyWithAssets(opts: {
   headers?: Record<string, string>;
 }): Promise<{ status: number; body: unknown }> {
   const { client, media, method, path, actor, body, headers } = opts;
-  // 写请求含 asset_ids 时先验证（§06.5.3：资产校验在 est，content 只收引用）
-  if (media && (method === 'POST' || method === 'PUT') && body && Array.isArray(body.asset_ids)) {
-    for (const assetId of body.asset_ids) {
-      if (typeof assetId !== 'string' || !assetId) continue;
+  // F06（四仓联合审计 20261104）：资产引用字段=现行 content 全集——数组 asset_ids 与
+  // 单值 asset_id/icon_asset_id/work_asset_id（旧实现只认数组：相册条目/creation 的
+  // 单值引用既不验证也不登记，仍在使用的资产可被 DELETE /assets 标删——审计实测）。
+  const assetRefs: string[] = [];
+  if (body && typeof body === 'object') {
+    const b = body as Record<string, unknown>;
+    if (Array.isArray(b.asset_ids)) for (const a of b.asset_ids) if (typeof a === 'string' && a) assetRefs.push(a);
+    for (const k of ['asset_id', 'icon_asset_id', 'work_asset_id'] as const) {
+      if (typeof b[k] === 'string' && b[k]) assetRefs.push(b[k] as string);
+    }
+  }
+  const uniqueRefs = [...new Set(assetRefs)];
+  // 写请求含资产引用时先验证（§06.5.3：资产校验在 est，content 只收引用）
+  if (media && (method === 'POST' || method === 'PUT') && uniqueRefs.length > 0) {
+    for (const assetId of uniqueRefs) {
       try {
         const a = media.getAsset(assetId);
         if (a.state !== 'available') {
@@ -75,10 +86,9 @@ export async function contentProxyWithAssets(opts: {
   }
   const result = await contentForward(client, { method, path, actor, body, headers });
   // POST/PUT 成功后：对 body 中引用的 asset 登记保护引用（est 侧防误删）
-  if (media && (result.status === 201 || result.status === 200) && body && Array.isArray(body.asset_ids)) {
+  if (media && (result.status === 201 || result.status === 200) && uniqueRefs.length > 0) {
     const objId = (result.body as { id?: string })?.id;
-    for (const assetId of body.asset_ids) {
-      if (typeof assetId !== 'string' || !assetId) continue;
+    for (const assetId of uniqueRefs) {
       try {
         media.registerReference({ assetId, ownerService: 'content', ownerType: path.includes('/posts') ? 'post' : path.includes('/albums') ? 'album_entry' : path.includes('/creations') ? 'creation' : path.includes('/future-notes') ? 'future_note' : 'unknown', ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${assetId}` });
       } catch { /* 引用登记失败不阻塞内容保存——保护引用可后补 */ }
