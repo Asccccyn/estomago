@@ -90,9 +90,41 @@ export async function contentProxyWithAssets(opts: {
     const objId = (result.body as { id?: string })?.id;
     for (const assetId of uniqueRefs) {
       try {
-        media.registerReference({ assetId, ownerService: 'content', ownerType: path.includes('/posts') ? 'post' : path.includes('/albums') ? 'album_entry' : path.includes('/creations') ? 'creation' : path.includes('/future-notes') ? 'future_note' : 'unknown', ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${assetId}` });
+        media.registerReference({ assetId, ownerService: 'content', ownerType: ownerTypeOf(path), ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${assetId}` });
       } catch { /* 引用登记失败不阻塞内容保存——保护引用可后补 */ }
     }
   }
+  // R2（复审 b137e98）：内容删除/替换后释放引用——content 的 DELETE 响应携带被删对象
+  // 引用的 asset（asset_id / asset_ids）；PUT 替换时 body 中的新集合已登记，响应中的
+  // 旧集合（previous_asset_ids，如有）里不在新集合的释放。解除后资产删除守卫按
+  // 剩余有效引用如实判定（最后一条引用解除→可删；多引用删一个→仍拒）。
+  if (media && result.status === 200) {
+    const objId = (result.body as { id?: string })?.id ?? 'unknown';
+    const released: Array<{ assetId: string; ownerType: string }> = [];
+    const rb = result.body as { asset_id?: unknown; asset_ids?: unknown; previous_asset_ids?: unknown };
+    if (method === 'DELETE') {
+      if (typeof rb.asset_id === 'string' && rb.asset_id) released.push({ assetId: rb.asset_id, ownerType: ownerTypeOf(path) });
+      if (Array.isArray(rb.asset_ids)) for (const a of rb.asset_ids) if (typeof a === 'string' && a) released.push({ assetId: a, ownerType: ownerTypeOf(path) });
+    }
+    if (method === 'PUT' && Array.isArray(rb.previous_asset_ids)) {
+      for (const a of rb.previous_asset_ids) {
+        if (typeof a === 'string' && a && !uniqueRefs.includes(a)) released.push({ assetId: a, ownerType: ownerTypeOf(path) });
+      }
+    }
+    for (const r of released) {
+      try { media.releaseReferencesByOwner({ assetId: r.assetId, ownerService: 'content', ownerType: r.ownerType, ownerId: objId }); }
+      catch { /* 释放失败留待下次内容删除重放（幂等）或资产删除时的守卫如实报告 */ }
+    }
+  }
   return result;
+}
+
+/** R2：content 路径→引用 ownerType（登记与释放共用同一映射） */
+function ownerTypeOf(path: string): string {
+  // 注意 album 单数形态：创建走 /albums/:kind/entries，单条操作走 /album-entries/:id——同 ownerType
+  if (path.includes('/posts') || path.includes('/comments')) return 'post';
+  if (path.includes('/albums') || path.includes('/album-entries')) return 'album_entry';
+  if (path.includes('/creations')) return 'creation';
+  if (path.includes('/future-notes')) return 'future_note';
+  return 'unknown';
 }

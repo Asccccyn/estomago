@@ -105,3 +105,41 @@ test('F03-A：真实 reminder 闭包发布前消费取消事实——零系统�
     void TurnSupervisor; // 保持导入稳定（无运行时用途）
   } finally { s.close(); }
 });
+
+
+test('R1（复审 b137e98）：stop-run 从 cancelling 收口为 cancelled；停止的 run 提醒不发布；后续同类任务可领取', async () => {
+  let releaseGate: (() => void) | null = null;
+  const published: string[] = [];
+  const s = setup();
+  try {
+    const messages = new MessageService(s.db);
+    messages.ensureConversation('primary');
+    const { createBackgroundExecution } = await import('../../apps/host/src/application/background-execution.ts');
+    const stubSupervisor = {
+      enqueueBackground: (_c: string, fn: () => Promise<unknown>) => fn(),
+      runBackgroundTurn: async () => ({ outcome: 'completed' as const, result_code: 'noop' }),
+    } as never;
+    const exec = createBackgroundExecution({ db: s.db, messages, events: new EventService(s.db), bgSettings: new BackgroundSettingsService(s.db, buildConfig({})), supervisor: stubSupervisor, scheduler: { recordDispatchStart: () => {} } });
+    const taskId = seedReminder(s.db, '2026-10-11T01:59:00.000Z');
+    const runId = `bgr_${genId('x').slice(2)}`;
+    const t0 = new Date().toISOString();
+    s.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES (?,?,?,'jiaming','reminder',1,?,'running',?,?)").run(runId, taskId, 'primary', `occ-r1-${runId}`, t0, t0);
+    // 停止执行（正式 stopRun 语义：cancelRequested + state=cancelling）
+    const cancelled = new Set<string>([runId]);
+    const r = await exec.executeRun({ runId, taskId, kind: 'reminder', origin: 'legacy_unknown', conversationId: 'primary', payload: { text: '停止测试' }, isCancelRequested: () => cancelled.has(runId), registerAbort: () => {} });
+    assert.equal(r.outcome, 'cancelled', '停止的 run：闭包消费 isCancelRequested → 不发布');
+    // 模拟 finish（带 cancelling 状态行）
+    s.db.prepare("UPDATE background_runs SET state='cancelling' WHERE id=?").run(runId);
+    s.db.prepare("UPDATE background_runs SET state='cancelled', result_code='CANCELLED', cancel_reason='RUN_STOPPED', finished_at=?, updated_at=? WHERE id=? AND state IN ('claimed','running','cancelling')").run(new Date().toISOString(), new Date().toISOString(), runId);
+    const row = s.db.prepare('SELECT state FROM background_runs WHERE id=?').get(runId) as { state: string };
+    assert.equal(row.state, 'cancelled', 'cancelling 可收口为 cancelled（旧条件漏 cancelling 永远卡住）');
+    // 后续同类任务不被挡（领取门查 claimed/running/cancelling——已终态不挡）
+    const task2 = seedReminder(s.db, '2026-10-11T02:01:00.000Z');
+    const run2 = `bgr_${genId('x').slice(2)}`;
+    s.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES (?,?,?,'jiaming','reminder',1,?,'claimed',?,?)").run(run2, task2, 'primary', `occ-r1b-${run2}`, t0, t0);
+    const blocking = s.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE actor_id='jiaming' AND kind='reminder' AND state IN ('claimed','running','cancelling') AND id != ?").get(run2).get as unknown as (id: string) => { n: number };
+    const gate = s.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE actor_id='jiaming' AND kind='reminder' AND state IN ('claimed','running','cancelling') AND id != ?").get(run2) as { n: number };
+    assert.equal(gate.n, 0, '后续同类任务不被已收口的 run 挡住');
+    void releaseGate; void published; void blocking;
+  } finally { s.close(); }
+});

@@ -224,21 +224,26 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
 });
 
 
-// ── F06/F07/F08（四仓联合审计 20261104）──
-test('F06：相册单值 asset_id 引用进删除守卫——仍被引用的资产拒绝删除', async () => {
-  // 上传两图（一张进相册、一张不引用）
-  const up = async (name: string): Promise<string> => {
-    const r = await fetch(`${base}/api/v1/assets`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json' }), body: JSON.stringify({ purpose: 'chat_image', mime_type: 'image/png', bytes_b64: PNG.toString('base64'), filename: name }) }).catch(() => null);
-    if (r && r.ok) return ((await r.json()) as { id: string }).id;
-    // 无上传端点时经媒体保存路径由 host 测试覆盖；此处跳过上传依赖，仅走相册→删除守卫（est 直查）
-    return '';
-  };
-  const a1 = await up('guard1.png'); const a2 = await up('guard2.png');
-  if (!a1 || !a2) return; // 上传面不可用时本例静默让位（F06 断言核心在下方 est 直查路径）
+// ── F06/F07/F08（四仓联合审计 20261104；夹具按复审 T1 修正：真实上传合同+不静默让位）──
+/** 真实上传合同：POST /api/v1/assets?purpose=…，二进制正文，Idempotency-Key 必带，返回 asset_id */
+const upload = async (bytes: Buffer, opKey: string): Promise<string> => {
+  const r = await fetch(`${base}/api/v1/assets?purpose=chat_image`, { method: 'POST', headers: auth({ 'Content-Type': 'image/png', 'Idempotency-Key': opKey }), body: new Uint8Array(bytes) });
+  assert.equal(r.status, 201, `上传成功（实际 ${r.status}: ${await r.clone().text().catch(() => '')}）`);
+  return ((await r.json()) as { asset_id: string }).asset_id;
+};
+
+test('F06/R2：相册引用进删除守卫；解除最后引用后可删（引用生命周期闭环）', async () => {
+  const a1 = await upload(PNG, 'f06-a1'); const a2 = await upload(Buffer.concat([PNG, Buffer.from([1])]), 'f06-a2');
   const entry = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06-e1' }), body: JSON.stringify({ asset_id: a1, caption: '被引用' }) });
   assert.equal(entry.status, 201, '相册条目（单值 asset_id）创建');
+  const e1body = (await entry.json()) as { id: string };
   const del1 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a1)}`, { method: 'DELETE', headers: auth() });
   assert.equal(del1.status, 409, '仍被相册引用→拒绝删除（旧实现 200/missing）');
+  // R2：删除最后一个相册条目 → 引用释放 → 资产可删（旧实现引用残留仍 409）
+  const rmEntry = await fetch(`${base}/api/v1/content/album-entries/${encodeURIComponent(e1body.id)}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f06-rm1', 'If-Match': `"1"` }) });
+  assert.equal(rmEntry.status, 200, `相册条目删除（实际 ${rmEntry.status}）`);
+  const del1b = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a1)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(del1b.status, 200, 'R2：解除最后引用后可删（旧实现仍 409）');
   const del2 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a2)}`, { method: 'DELETE', headers: auth() });
   assert.equal(del2.status, 200, '无引用资产可删');
 });
@@ -264,12 +269,21 @@ test('F07：编辑成功后原样重放=同结果不增版本；同键异请求�
   // 新编辑带旧 If-Match=1 → CAS 拒绝（真实并发保护不放宽）
   const e4 = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-e2', 'If-Match': '"1"' }), body: JSON.stringify({ body: '第三版' }) });
   assert.equal(e4.status, 409, '旧版本编辑被 CAS 拒绝');
+  // R3-B：同 key 用到**另一个资源**=不同请求→冲突（旧实现错放 A 的成功回执给 B）
+  const createB = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-p2' }), body: JSON.stringify({ body: 'B 初版' }) });
+  const postB = (await createB.json()) as { id: string; revision: number };
+  const crossKey = auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-e1', 'If-Match': '"1"' });
+  const eB = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'PUT', headers: crossKey, body: JSON.stringify({ body: '第二版' }) });
+  assert.equal(eB.status, 409, `同 key 不同资源→IDEMPOTENCY_CONFLICT（旧实现 200 返回 A 的结果）`);
+  // R3-A：删除重放——首次 200 后对象已删，同 key 同路径重放仍 200（旧实现 404）
+  const delFirst = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f07-d1', 'If-Match': `"${postB.revision}"` }) });
+  assert.equal(delFirst.status, 200, '删除首次成功');
+  const delReplay = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f07-d1', 'If-Match': `"${postB.revision}"` }) });
+  assert.equal(delReplay.status, 200, `删除重放回放原 200（旧实现 404 entry/post not found；实际 ${delReplay.status}）`);
 });
 
 test('F08：无效 refs 零业务写零回执；成功重放不重复新增', async () => {
-  const up = await fetch(`${base}/api/v1/assets`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json' }), body: JSON.stringify({ purpose: 'chat_image', mime_type: 'image/png', bytes_b64: PNG.toString('base64'), filename: 'f08.png' }) }).catch(() => null);
-  const assetId = up && up.ok ? ((await up.json()) as { id: string }).id : '';
-  if (!assetId) return;
+  const assetId = await upload(PNG, 'f08-asset');
   const listBefore = (await (await fetch(`${base}/api/v1/content/albums/important_photos/entries?limit=100`, { headers: auth() })).json() as { items: unknown[] }).items.length;
   // 无效 refs（缺 source_id）→ 422 且条目不留（旧实现 422 后条目残留）
   const bad = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-bad' }), body: JSON.stringify({ asset_id: assetId, refs: [{ service: 'est', kind: 'message' }] }) });
@@ -283,5 +297,5 @@ test('F08：无效 refs 零业务写零回执；成功重放不重复新增', as
   const ok1 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-ok' }), body: JSON.stringify({ asset_id: assetId, caption: 'F08' }) });
   assert.equal(ok1.status, 201);
   const ok2 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-ok' }), body: JSON.stringify({ asset_id: assetId, caption: 'F08' }) });
-  assert.equal(ok2.status, 200, '成功重放回放原结果（duplicate 语义）');
+  assert.equal(ok2.status, 201, '成功重放回放原 201（withReceipt 回放原状态，不重复新增）');
 });

@@ -37,6 +37,10 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
         // 取消事实，不再发布已取消的提醒（旧实现：闭包无条件 publish + finish 用
         // completed 覆盖 cancelled，审计实测取消后仍新增系统消息 1 条）。
         const queued = await supervisor.enqueueBackground(input.conversationId, () => {
+          // R1（复审 b137e98）：消费两个取消入口——任务取消（DB 事实）与 stop-run
+          // （isCancelRequested 回调，stopRun 已写入 cancelRequested Set）。旧实现只查
+          // 前者：停止本次执行后提醒仍在队列释放后照常发布（复审实测发布数=1）。
+          if (input.isCancelRequested()) return Promise.resolve(null);
           const runCancelled = db.prepare('SELECT 1 FROM background_runs WHERE id = ? AND state = ?').get(input.runId, 'cancelled');
           const taskCancelled = db.prepare("SELECT 1 FROM background_tasks WHERE id = ? AND enabled = 0").get(input.taskId);
           if (runCancelled || taskCancelled) return Promise.resolve(null);

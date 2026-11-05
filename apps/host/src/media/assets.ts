@@ -268,6 +268,17 @@ export class MediaService {
     return { referenceId: opts.referenceId, revision: row.revision + 1, state: 'released' };
   }
 
+  /** R2（复审 b137e98）：按 owner 解除该资产的全部有效引用（content 删除/替换后释放）。
+   *  幂等：已 released 的行不动；引用不存在=无操作。不触碰其他资产的引用。 */
+  releaseReferencesByOwner(opts: { assetId: string; ownerService: string; ownerType: string; ownerId: string }): void {
+    const rows = this.db.prepare(
+      "SELECT id, revision FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND state IN ('protected','committed')",
+    ).all(opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId) as Array<{ id: string; revision: number }>;
+    for (const r of rows) {
+      this.releaseReference({ referenceId: r.id, expectedRevision: r.revision, operationId: `release:${r.id}` });
+    }
+  }
+
   /** 有效引用查询（§4.4）：历史消息附件 ∪ protected/committed 外部引用。删除守卫的唯一依据。 */
   isAssetReferenced(assetId: string): { referenced: boolean; by_message_revisions: number; by_external_refs: number } {
     const byMsg = (this.db.prepare('SELECT COUNT(*) n FROM message_attachments WHERE asset_id = ?').get(assetId) as { n: number }).n;

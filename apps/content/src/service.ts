@@ -226,6 +226,16 @@ export class ContentServer {
    *  IDEMPOTENCY_CONFLICT（审计实测 200 后重放 409）。CAS 判定仍按加载修订执行；
    *  新的旧版本编辑照旧被 ifMatch 拒绝。旧回执指纹格式不同，升级前成功请求的重放
    *  会得到冲突提示（刷新后带新 If-Match 重试），如实说明不迁移。 */
+  /** R3（复审 b137e98）：按稳定指纹查既有回执——命中即回放（对象已删除/修订已变的
+   *  **同操作重放**不再被存在性检查 404/409 挡住）。未命中返回 undefined 走正常执行。 */
+  private lookupReceipt(actor: Actor, key: string | null, requestHashSource: string): { status: number; body: unknown } | undefined {
+    if (!key) return undefined;
+    const hash = simpleHash(requestHashSource);
+    const prior = this.db.prepare('SELECT status, response_json, request_hash FROM content_receipts WHERE actor = ? AND idem_key = ?').get(actor, key) as { status: number; response_json: string; request_hash: string } | undefined;
+    if (prior && prior.request_hash === hash) return { status: prior.status, body: JSON.parse(prior.response_json) };
+    return undefined;
+  }
+
   private ifMatch(req: IncomingMessage, currentRevision: unknown): void {
     const v = String(req.headers['if-match'] ?? '').replace(/"/g, '');
     if (!v || !/^\d+$/.test(v)) throw new ContentError(428, 'PRECONDITION_REQUIRED', '必须带 If-Match: "<revision>"');
@@ -281,33 +291,46 @@ export class ContentServer {
     }
     m = /^PUT \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
     if (m) {
+      // R3（复审 b137e98）：①指纹加资源身份（同 key 不同资源=不同请求→冲突，不再错放成功回执）；
+      // ②回执查询先于存在性——删除后重放不再被 postRow 404 挡住（lookupReceipt 命中即回放）。
+      const fpPut = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayPut = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpPut);
+      if (replayPut) return replayPut;
       const row = this.postRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人帖子');
       if (row.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '帖子已删除');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpPut, () => {
         this.ifMatch(req, Number(row.revision));
         const text = typeof body.body === 'string' ? body.body : String(row.body ?? '');
         const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : (row.title as string | null);
         const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
         if (text.trim().length === 0 && (assetIds ?? []).length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
+        // R2：替换前的旧附件集合随响应带出——est 代理据此释放不再引用的资产
+        const previousAssetIds = (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
         this.db.prepare('UPDATE feed_posts SET body = ?, title = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, title, now(), String(row.id));
         if (assetIds !== null) {
           this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
           for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(String(row.id), assetIds[i]!, i, null);
         }
-        return { status: 200, body: this.postDto(this.postRow(String(row.id))) };
+        return { status: 200, body: { ...this.postDto(this.postRow(String(row.id))), previous_asset_ids: previousAssetIds } };
       });
     }
     m = /^DELETE \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
     if (m) {
+      // R3：回执先于存在性——同 key 同资源的删除重放（对象已删）直接回放原 200
+      const fpDel = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayDel = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpDel);
+      if (replayDel) return replayDel;
       const row = this.postRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人帖子');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
+      // R2：响应携带帖子的 asset_ids——est 代理据此释放引用
+      const priorAssets = (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpDel, () => {
         this.ifMatch(req, Number(row.revision));
         // §4.3.3：不级联删除他人评论——保留占位与既有评论；不再接受新评论
         this.db.prepare('UPDATE feed_posts SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
         this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true } };
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: priorAssets } };
       });
     }
     m = /^GET \/api\/v1\/content\/posts\/([^/]+)\/comments$/.exec(route);
@@ -416,13 +439,17 @@ export class ContentServer {
     }
     m = /^DELETE \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
     if (m) {
+      // R3：回执先于存在性；R2：响应带 asset_id 供代理释放
+      const fpAe = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayAe = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpAe);
+      if (replayAe) return replayAe;
       const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpAe, () => {
         this.ifMatch(req, Number(row.revision));
         // §10.3：移除归档=解除该归档及关联；不删外部原文/全局原文件（est 资产引用保护另行）
         this.db.prepare('DELETE FROM album_entry_refs WHERE entry_id = ?').run(String(row.id));
         this.db.prepare('DELETE FROM album_entries WHERE id = ?').run(String(row.id));
-        return { status: 200, body: { id: row.id, removed: true } };
+        return { status: 200, body: { id: row.id, removed: true, asset_id: String(row.asset_id) } };
       });
     }
 

@@ -270,7 +270,9 @@ export class BackgroundScheduler {
       if (waiting) state = 'claimed';
       // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
       // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
-      const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
+      // R1（复审 b137e98）：cancelling（stop-run 的待收尾活态）必须可被收口——
+      // 旧条件漏掉它导致 run 永远 cancelling，同 actor+kind 的后续任务被领取门挡住。
+      const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
       this.aborts.delete(runId);
       this.cancelRequested.delete(runId);
       this.cancelReasons.delete(runId);
