@@ -17,34 +17,44 @@
   const SPRITE_WIDTH = PAIR_WIDTH * ANIMAL_WIDTH_IN_PAIR;
   const COMPANION_OFFSET = PAIR_WIDTH * (1 - ANIMAL_WIDTH_IN_PAIR) / 2;
   const FOOT_ANCHOR = .88;
-  // Cell padding differs by animal and pose; the visible paws share one ground anchor.
-  const CHARACTER_FEET = {
-    otter: { prone: .845, sit: .876, walk: .876, sleep: .847 },
-    raccoon: { prone: .797, sit: .840, walk: .844, sleep: .844 },
+  // Each sheet has different transparent padding; visible paws share one ground anchor.
+  const POSE_FEET = {
+    otter: { prone: .845, sit: .876, awake: .7831, frontSit: .8357 },
+    raccoon: { prone: .797, sit: .840, awake: .7703, frontSit: .8150 },
+  };
+  const WALK_FEET = {
+    otter: [.743094, .743094, .745856, .748619, .748619, .751381],
+    raccoon: [.743094, .737569, .737569, .737569, .740331, .743094],
   };
   const ROLLING_FEET = {
     otter: [.740, .760, .765, .762, .738, .762],
     raccoon: [.735, .738, .751, .754, .738, .746],
   };
-  const POSE_COLUMNS = { prone: '0%', sit: '33.333333%', walk: '66.666667%', sleep: '100%' };
+  const POSE_SHEETS = {
+    prone: { image: '/home/assets/seasons/characters.png', columns: 4, column: 0 },
+    sit: { image: '/home/assets/seasons/characters.png', columns: 4, column: 1 },
+    awake: { image: '/home/assets/seasons/season-poses.png', columns: 2, column: 0 },
+    frontSit: { image: '/home/assets/seasons/season-poses.png', columns: 2, column: 1 },
+    walk: { image: '/home/assets/seasons/walk-cycle.png', columns: 6 },
+  };
   const AUTUMN_PATH = [
-    { x: .08, y: .465, offset: .24, scale: .27 },
-    { x: .30, y: .445, offset: .28, scale: .25 },
-    { x: .48, y: .420, offset: .32, scale: .23 },
-    { x: .55, y: .410, offset: .35, scale: .21 },
-    { x: .47, y: .395, offset: .38, scale: .19 },
-    { x: .36, y: .382, offset: .41, scale: .17 },
-    { x: .46, y: .370, offset: .44, scale: .15 },
-    { x: .59, y: .355, offset: .48, scale: .13 },
+    { x: .08, y: .465, offset: .30, scale: .27 },
+    { x: .30, y: .445, offset: .42, scale: .25 },
+    { x: .48, y: .420, offset: .53, scale: .23 },
+    { x: .55, y: .410, offset: .60, scale: .21 },
+    { x: .47, y: .395, offset: .67, scale: .19 },
+    { x: .36, y: .382, offset: .75, scale: .17 },
+    { x: .46, y: .370, offset: .83, scale: .15 },
+    { x: .59, y: .355, offset: .91, scale: .13 },
   ];
   viewport.style.setProperty('--pair-width', `${PAIR_WIDTH * 100}%`);
   viewport.style.setProperty('--animal-width-in-pair', `${ANIMAL_WIDTH_IN_PAIR * 100}%`);
   viewport.style.setProperty('--pair-aspect', String(1 / ANIMAL_WIDTH_IN_PAIR));
   const resting = [
-    { x: .44, groundY: .81, pose: 'prone', groundOffsets: [0, 0] },
-    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012] },
-    { x: .44, groundY: .84, pose: 'sit', groundOffsets: [0, -.018] },
-    { x: .53, groundY: .80, pose: 'prone', groundOffsets: [0, 0] },
+    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], bodySizes: [1, 1] },
+    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], bodySizes: [1, 1.1] },
+    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], bodySizes: [1, 1.1] },
+    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], bodySizes: [1, 1] },
   ];
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
@@ -76,17 +86,31 @@
   const scenes = [];
   const pairs = [];
 
-  function animal(kind, pose, className = '') {
+  function poseStyle(kind, pose, frame = 0) {
+    const sheet = POSE_SHEETS[pose];
+    const column = pose === 'walk' ? frame : sheet.column;
+    const foot = pose === 'walk' ? WALK_FEET[kind][frame] : POSE_FEET[kind][pose];
+    return {
+      backgroundImage: `url('${sheet.image}')`,
+      backgroundSize: `${sheet.columns * 100}% 200%`,
+      backgroundPosition: `${column * 100 / (sheet.columns - 1)}% ${kind === 'raccoon' ? '100%' : '0%'}`,
+      translate: `0 ${(FOOT_ANCHOR - foot) * 100}%`,
+      transformOrigin: `50% ${foot * 100}%`,
+    };
+  }
+  function animal(kind, pose, className = '', bodySize = 1) {
     const node = document.createElement('span');
     node.className = `animal ${className}`;
     node.dataset.animal = kind;
     node.dataset.pose = pose;
-    const sourceFoot = CHARACTER_FEET[kind][pose];
-    node.style.setProperty('--foot-shift', `${(FOOT_ANCHOR - sourceFoot) * 100}%`);
-    node.style.setProperty('--foot-origin', `${sourceFoot * 100}%`);
+    const size = document.createElement('span');
+    size.className = 'animal-size';
+    size.style.transform = `scale(${bodySize})`;
     const sprite = document.createElement('span');
     sprite.className = 'animal-sprite';
-    node.append(sprite);
+    Object.assign(sprite.style, poseStyle(kind, pose));
+    size.append(sprite);
+    node.append(size);
     return node;
   }
 
@@ -117,7 +141,7 @@
     pair.className = 'animal-pair';
     pair.setAttribute('aria-label', `${seasonLabels[season]}的水獭和小浣熊，前往${seasonLabels[(season + 1) % 4]}`);
     pair.style.left = `${resting[season].x * 100}%`;
-    pair.append(animal('otter', resting[season].pose), animal('raccoon', resting[season].pose));
+    pair.append(animal('otter', resting[season].pose, '', resting[season].bodySizes[0]), animal('raccoon', resting[season].pose, '', resting[season].bodySizes[1]));
     pair.addEventListener('click', () => advance(season));
     scene.append(pair);
     sceneLayer.append(scene);
@@ -208,6 +232,33 @@
     }
   }
 
+  function playCycle(node, kind, mode, start, end, duration, delay) {
+    const size = node.querySelector('.animal-size');
+    const sprite = size.querySelector('.animal-sprite');
+    const layer = document.createElement('span');
+    layer.className = `animal-cycle ${mode === 'roll' ? 'rolling-sprite' : 'walking-sprite'}`;
+    size.append(layer);
+    const visibility = [[0, 0], [start, 1], [end, 0], [1, 0]];
+    const finished = Promise.all([
+      animate(layer, visibility.map(([offset, opacity]) => ({ offset, opacity, easing: 'steps(1, end)' })), { duration, delay }),
+      animate(sprite, visibility.map(([offset, opacity]) => ({ offset, opacity: 1 - opacity, easing: 'steps(1, end)' })), { duration, delay }),
+    ]);
+    const frames = [0, 1, 2, 3, 4, 5, 0].map((frame, index) => {
+      if (mode === 'walk') return { offset: index / 6, ...poseStyle(kind, 'walk', frame), easing: 'steps(1, end)' };
+      const shift = FOOT_ANCHOR - (.75 + (ROLLING_FEET[kind][frame] - .75) * .93);
+      return {
+        offset: index / 6,
+        backgroundImage: "url('/home/assets/seasons/rolling.png')",
+        backgroundSize: '600% 200%',
+        backgroundPosition: `${frame * 20}% ${kind === 'raccoon' ? '100%' : '0%'}`,
+        transform: `translateY(${shift * 100}%) scale(.93)`,
+        transformOrigin: '50% 75%', easing: 'steps(1, end)',
+      };
+    });
+    animate(layer, frames, { duration: mode === 'roll' ? 720 : 700, iterations: Infinity, delay: delay + duration * start });
+    return { layer, finished };
+  }
+
   async function advance(from) {
     if (busy) return;
     const to = (from + 1) % 4;
@@ -216,7 +267,10 @@
     busy = true;
     updateAccessibleScenes();
     if (reducedMotion.matches) {
+      pairs[from].hidden = true;
+      pairs[to].hidden = false;
       current = to;
+      destination = null;
       busy = false;
       world.style.transform = cameraTransform(current);
       updateAccessibleScenes();
@@ -224,146 +278,147 @@
     }
     pairs[from].hidden = true;
     pairs[to].hidden = true;
+    travelLayer.dataset.journey = seasonNames[from];
     travelLayer.style.clipPath = from === 3 && desktopQuery.matches ? 'inset(0 0 0 75%)' : '';
     activeAnimations = [];
-    const duration = [3800, 4100, 6200, 3900][from];
+    const duration = [4200, 5200, 8800, 3300][from];
     const journeys = [];
-    if (from === 2) footprints(from, duration);
-    for (let index = 0; index < 2; index++) {
-      const kind = index ? 'raccoon' : 'otter';
-      const pose = from === 0 || from === 3 ? 'prone' : 'walk';
-      const traveler = animal(kind, pose, 'traveler');
-      traveler.style.width = `${panelWidth * SPRITE_WIDTH}px`;
-      travelLayer.append(traveler);
-      const offset = index ? COMPANION_OFFSET : -COMPANION_OFFSET;
-      const start = resting[from];
-      const finish = resting[to];
-      const startY = start.y + start.groundOffsets[index];
-      const finishY = finish.y + finish.groundOffsets[index];
-      let frames;
-      if (from === 0) {
-        frames = [
-          { transform: point(from, start.x + offset, startY), offset: 0 },
-          { transform: point(from, .66 + offset, startY - .002), offset: .24 },
-          { transform: point(from, 1.02 + offset, startY), offset: .50 },
-          { transform: point(to, .20 + offset, finishY - .002), offset: .75 },
-          { transform: point(to, finish.x + offset, finishY), offset: 1 },
-        ];
-      } else if (from === 1) {
-        frames = [];
-        for (let step = 0; step <= 12; step++) {
-          const t = step / 12;
-          const x = start.x + offset + t * (1 + finish.x - start.x - .10);
-          const jump = Math.abs(Math.sin(t * Math.PI * 3)) * .075;
-          frames.push({ offset: t * .80, transform: point(from, x, startY + (finishY - startY) * t - jump, Math.sin(t * Math.PI * 6) * 9) });
+    let revealVeil = false;
+
+    if (from === 3) {
+      // Both sleeping animals remain one composition throughout the close-up.
+      const group = pairs[from].cloneNode(true);
+      group.hidden = false;
+      group.tabIndex = -1;
+      group.removeAttribute('aria-label');
+      group.classList.add('winter-zoom');
+      const centerX = (from + resting[from].x) * panelWidth;
+      const centerY = resting[from].y * height;
+      const moveX = (from + .5) * panelWidth - centerX;
+      const moveY = viewport.clientHeight * .60 - cameraY - centerY;
+      group.style.left = `${centerX}px`;
+      group.style.top = `${centerY}px`;
+      group.style.width = `${PAIR_WIDTH * panelWidth}px`;
+      travelLayer.append(group);
+      journeys.push(animate(group, [
+        { offset: 0, transform: 'translate(-50%, -50%) translate3d(0, 0, 0) scale(1)', opacity: 1 },
+        { offset: .42, transform: `translate(-50%, -50%) translate3d(${moveX * .4}px, ${moveY * .4}px, 0) scale(1.7)`, opacity: 1 },
+        { offset: .80, transform: `translate(-50%, -50%) translate3d(${moveX * .8}px, ${moveY * .8}px, 0) scale(3.2)`, opacity: 1 },
+        { offset: 1, transform: `translate(-50%, -50%) translate3d(${moveX}px, ${moveY}px, 0) scale(4)`, opacity: desktopQuery.matches ? 0 : 1 },
+      ], { duration, easing: 'ease-in-out' }));
+      if (!desktopQuery.matches) {
+        revealVeil = true;
+        journeys.push(animate(veil, [{ opacity: 0 }, { opacity: 0, offset: .76 }, { opacity: 1 }], { duration, easing: 'ease-in' }));
+      }
+    } else {
+      if (from === 2) footprints(from, duration);
+      for (let index = 0; index < 2; index++) {
+        const kind = index ? 'raccoon' : 'otter';
+        const start = resting[from];
+        const finish = resting[to];
+        const traveler = animal(kind, start.pose, 'traveler', start.bodySizes[index]);
+        traveler.style.width = `${panelWidth * SPRITE_WIDTH}px`;
+        travelLayer.append(traveler);
+        const size = traveler.querySelector('.animal-size');
+        const sprite = traveler.querySelector('.animal-sprite');
+        const offset = index ? COMPANION_OFFSET : -COMPANION_OFFSET;
+        const delay = index * 180;
+        const startY = start.y + start.groundOffsets[index];
+        const finishY = finish.y + finish.groundOffsets[index];
+        const footRise = (FOOT_ANCHOR - .5) * panelWidth * SPRITE_WIDTH / height;
+        const startGround = startY + footRise;
+        const finishGround = finishY + footRise;
+        let frames;
+        let poses;
+        let cycle;
+        if (from === 0) {
+          frames = [
+            { offset: 0, transform: point(from, start.x + offset, startY) },
+            { offset: .24, transform: groundPoint(from, .72 + offset, startGround + (finishGround - startGround) * .24) },
+            { offset: .50, transform: groundPoint(from, 1.02 + offset, startGround + (finishGround - startGround) * .50) },
+            { offset: .76, transform: groundPoint(to, .20 + offset, startGround + (finishGround - startGround) * .80) },
+            { offset: .96, transform: point(to, finish.x + offset, finishY) },
+            { offset: 1, transform: point(to, finish.x + offset, finishY) },
+          ];
+          poses = [[0, 'awake'], [.92, 'sit'], [1, 'sit']];
+          cycle = playCycle(traveler, kind, 'roll', .06, .92, duration, delay);
+        } else if (from === 1) {
+          frames = [
+            { offset: 0, transform: point(from, start.x + offset, startY) },
+            { offset: .12, transform: point(from, start.x + offset, startY) },
+            { offset: .43, transform: groundPoint(from, .93 + offset, startGround + (finishGround - startGround) * .40) },
+            { offset: .72, transform: groundPoint(to, .17 + offset, startGround + (finishGround - startGround) * .75) },
+            { offset: .94, transform: point(to, finish.x + offset, finishY) },
+            { offset: 1, transform: point(to, finish.x + offset, finishY) },
+          ];
+          poses = [[0, 'sit'], [.94, 'frontSit'], [1, 'frontSit']];
+          cycle = playCycle(traveler, kind, 'walk', .10, .94, duration, delay);
+        } else {
+          frames = [
+            { offset: 0, transform: point(from, start.x + offset, startY), opacity: 1 },
+            { offset: .04, transform: point(from, start.x + offset, startY), opacity: 1 },
+            { offset: .15, transform: groundPoint(from, .16 + offset * .35, .64, .55), opacity: 1 },
+            ...AUTUMN_PATH.map(stop => ({ offset: stop.offset, transform: groundPoint(from, stop.x, stop.y, stop.scale), opacity: 1 })),
+            { offset: .96, transform: groundPoint(from, .59, .355, .10), opacity: 0 },
+            { offset: 1, transform: groundPoint(from, .59, .355, .10), opacity: 0 },
+          ];
+          poses = [[0, 'frontSit'], [1, 'frontSit']];
+          cycle = playCycle(traveler, kind, 'walk', .04, .98, duration, delay);
+          journeys.push(animate(cycle.layer, [
+            { offset: 0, scale: '-1 1', easing: 'steps(1, end)' },
+            { offset: .30, scale: '1 1', easing: 'steps(1, end)' },
+            { offset: .60, scale: '-1 1', easing: 'steps(1, end)' },
+            { offset: .75, scale: '1 1', easing: 'steps(1, end)' },
+            { offset: 1, scale: '1 1' },
+          ], { duration, delay }));
         }
-        frames.push(
-          { offset: .85, transform: point(to, finish.x + offset, finishY - .065, -12) },
-          { offset: .90, transform: point(to, finish.x + offset + .025, finishY + .015, 28, .92) },
-          { offset: .95, transform: point(to, finish.x + offset + .01, finishY + .010, -7, .95) },
-          { offset: 1, transform: point(to, finish.x + offset, finishY) },
-        );
-      } else if (from === 2) {
-        frames = [
-          { transform: point(from, start.x + offset, startY), offset: 0 },
-          { transform: groundPoint(from, .16 + offset * .35, .64, .55), offset: .12 },
-          ...AUTUMN_PATH.map(stop => ({ transform: groundPoint(from, stop.x, stop.y, stop.scale), offset: stop.offset })),
-          { transform: point(from, .91 + offset * .35, .49, 2, .43), offset: .60 },
-          { transform: point(to, .13 + offset * .55, .64, -2, .65), offset: .75 },
-          { transform: point(to, finish.x + offset, finishY, 0, 1), offset: 1 },
-        ];
-      } else {
-        frames = [
-          { transform: point(from, start.x + offset, startY), offset: 0 },
-          { transform: point(from, start.x + offset, startY - .018, 0, 1.04), offset: .16 },
-          { transform: point(from, .49 + offset * .85, .81, index ? 3 : -3, 1), offset: .31 },
-          { transform: point(from, .49 + offset, .87, index ? 2 : -2, 1.05), offset: .45 },
-          { transform: point(from, .49 + offset * 1.1, .85, index ? 3 : -3, 1.45), offset: .57 },
-          { transform: point(from, .49 + offset * 1.5, startY - .04, index ? 5 : -5, 2.8), offset: .78 },
-          { transform: point(from, .49 + offset * 2.1, startY - .15, index ? 6 : -6, 5.8), offset: 1 },
-        ];
+        journeys.push(cycle.finished);
+        journeys.push(animate(traveler, frames, { duration, delay, easing: from === 0 ? 'ease-in-out' : 'linear' }));
+        journeys.push(animate(sprite, poses.map(([offset, pose]) => ({ offset, ...poseStyle(kind, pose), easing: 'steps(1, end)' })), { duration, delay }));
+        const finalSize = from === 2 ? start.bodySizes[index] : finish.bodySizes[index];
+        journeys.push(animate(size, [{ transform: `scale(${start.bodySizes[index]})` }, { transform: `scale(${finalSize})` }], { duration, delay, easing: 'ease-in-out' }));
       }
-      if (from === 3 && desktopQuery.matches) {
-        frames.forEach(frame => { frame.opacity = frame.offset === 1 ? 0 : 1; });
-      }
-      const journey = animate(traveler, frames, { duration, delay: index * 180, easing: from === 2 ? 'linear' : 'ease-in-out' });
-      journeys.push(journey);
-      const row = index ? '100%' : '0%';
-      const poseFrames = from === 3
-        ? [[0, 'prone'], [.13, 'sit'], [.24, 'walk'], [.57, 'sit'], [1, 'sit']]
-        : from === 0
-          ? [[0, 'prone'], [.98, 'sit'], [1, 'sit']]
-          : from === 2
-            ? [[0, 'walk'], [.96, 'prone'], [1, 'prone']]
-            : [[0, 'walk'], [.88, 'prone'], [.96, 'sit'], [1, 'sit']];
-      journeys.push(animate(traveler.firstElementChild, poseFrames.map(([offset, pose]) => {
-        const sourceFoot = CHARACTER_FEET[kind][pose];
-        return {
-          offset, backgroundPosition: `${POSE_COLUMNS[pose]} ${row}`,
-          translate: `0 ${(FOOT_ANCHOR - sourceFoot) * 100}%`,
-          transformOrigin: `50% ${sourceFoot * 100}%`, easing: 'steps(1, end)',
-        };
-      }), { duration, delay: index * 180 }));
-      if (from === 2) {
-        journeys.push(animate(traveler.firstElementChild, [
-          { offset: 0, scale: '-1 1', easing: 'steps(1, end)' },
-          { offset: .24, scale: '1 1', easing: 'steps(1, end)' },
-          { offset: .35, scale: '-1 1', easing: 'steps(1, end)' },
-          { offset: .41, scale: '1 1', easing: 'steps(1, end)' },
-          { offset: 1, scale: '1 1' },
-        ], { duration, delay: index * 180 }));
-      }
-      if (from === 0) {
-        const rolling = document.createElement('span');
-        rolling.className = 'rolling-sprite';
-        traveler.append(rolling);
-        const visibility = [[0, 0], [.06, 1], [.94, 0], [1, 0]];
-        journeys.push(animate(rolling, visibility.map(([offset, opacity]) => ({
-          offset, opacity, easing: 'steps(1, end)',
-        })), { duration, delay: index * 180 }));
-        journeys.push(animate(traveler.firstElementChild, visibility.map(([offset, opacity]) => ({
-          offset, opacity: 1 - opacity, easing: 'steps(1, end)',
-        })), { duration, delay: index * 180 }));
-        // Each column is a drawn body perspective, so no flat-image rotation is needed.
-        animate(rolling, [0, 20, 40, 60, 80, 100, 0].map((column, frame) => {
-          const sourceFoot = ROLLING_FEET[kind][frame % 6];
-          const shift = FOOT_ANCHOR - (.75 + (sourceFoot - .75) * .93);
-          return {
-            offset: frame / 6, backgroundPosition: `${column}% ${row}`,
-            transform: `translateY(${shift * 100}%) scale(.93)`, easing: 'steps(1, end)',
-          };
-        }), { duration: 720, iterations: Infinity, delay: index * 180 + duration * .06 });
+      if (from < 2 && !desktopQuery.matches) {
+        journeys.push(animate(world, [
+          { transform: cameraTransform(from), offset: 0 },
+          { transform: cameraTransform(from), offset: .25 },
+          { transform: cameraTransform(to), offset: .90 },
+          { transform: cameraTransform(to), offset: 1 },
+        ], { duration: duration + 180, easing: 'ease-in-out' }));
       }
     }
-    if (from !== 3 && !desktopQuery.matches) {
-      journeys.push(animate(world, [
-        { transform: cameraTransform(from), offset: 0 },
-        { transform: cameraTransform(from), offset: from === 2 ? .48 : .25 },
-        { transform: cameraTransform(to), offset: .90 },
-        { transform: cameraTransform(to), offset: 1 },
-      ], { duration: duration + 180, easing: 'ease-in-out' }));
-    }
-    if (from === 3 && !desktopQuery.matches) {
-      journeys.push(animate(veil, [{ opacity: 0 }, { opacity: 0, offset: .77 }, { opacity: 1 }], { duration: duration + 180, easing: 'ease-in' }));
-    }
+
     await Promise.all(journeys);
+    if (from === 2 && !desktopQuery.matches && current === from) {
+      // The doorway grows only after both animals have disappeared inside it.
+      const door = AUTUMN_PATH[AUTUMN_PATH.length - 1];
+      const zoom = 2.6;
+      const x = viewport.clientWidth / 2 - (from + door.x) * panelWidth * zoom;
+      const y = viewport.clientHeight * .52 - door.y * height * zoom;
+      revealVeil = true;
+      await Promise.all([
+        animate(world, [{ transform: cameraTransform(from) }, { transform: `translate3d(${x}px, ${y}px, 0) scale(${zoom})` }], { duration: 1100, easing: 'ease-in-out' }),
+        animate(veil, [{ opacity: 0 }, { opacity: 0, offset: .35 }, { opacity: 1 }], { duration: 1100, easing: 'ease-in' }),
+      ]);
+    }
+    if (current !== from) revealVeil = false;
     current = to;
     world.style.transform = cameraTransform(current);
     activeAnimations.forEach(animation => animation.cancel());
     activeAnimations = [];
     travelLayer.replaceChildren();
     travelLayer.style.clipPath = '';
-    pairs.forEach(pair => { pair.hidden = false; });
-    if (from === 3 && !desktopQuery.matches) {
-      await animate(veil, [{ opacity: 1 }, { opacity: 0 }], { duration: 800, easing: 'ease-out' });
-      activeAnimations.forEach(animation => animation.cancel());
-      activeAnimations = [];
+    delete travelLayer.dataset.journey;
+    pairs[to].hidden = false;
+    if (revealVeil) {
+      await animate(veil, [{ opacity: 1 }, { opacity: 0 }], { duration: 650, easing: 'ease-out' });
+    } else if (from === 2 || from === 3) {
+      await animate(pairs[to], [{ opacity: 0 }, { opacity: 1 }], { duration: 650, easing: 'ease-out' });
     } else {
-      const arrival = pairs[to];
-      await animate(arrival, [{ transform: 'translate(-50%, -50%) scale(1.04, .94)' }, { transform: 'translate(-50%, -50%) scale(1, 1)' }], { duration: 450, easing: 'ease-out' });
-      activeAnimations.forEach(animation => animation.cancel());
-      activeAnimations = [];
+      await animate(pairs[to], [{ transform: 'translate(-50%, -50%) scale(1, .985)' }, { transform: 'translate(-50%, -50%) scale(1, 1)' }], { duration: 260, easing: 'ease-out' });
     }
+    activeAnimations.forEach(animation => animation.cancel());
+    activeAnimations = [];
     busy = false;
     destination = null;
     updateAccessibleScenes();

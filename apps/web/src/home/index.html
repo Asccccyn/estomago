@@ -10,6 +10,8 @@
   <link rel="preload" href="/home/assets/seasons/desktop-panorama.png" as="image">
   <link rel="preload" href="/home/assets/seasons/characters.png" as="image">
   <link rel="preload" href="/home/assets/seasons/rolling.png" as="image">
+  <link rel="preload" href="/home/assets/seasons/season-poses.png" as="image">
+  <link rel="preload" href="/home/assets/seasons/walk-cycle.png" as="image">
   <link rel="stylesheet" href="/home/seasons.css">
   <script src="/home/home-navigation.js" defer></script>
   <script src="/home/seasons.js" defer></script>
@@ -46,7 +48,7 @@
         <defs>
           <filter id="bedding-edge"><feGaussianBlur stdDeviation=".65"/></filter>
           <mask id="bedding-matte" maskUnits="userSpaceOnUse" x="0" y="0" width="1706" height="922">
-            <path fill="white" filter="url(#bedding-edge)" d="M1310 775 C1360 768 1390 752 1420 738 C1440 728 1458 732 1475 745 C1500 757 1530 752 1560 739 C1585 727 1618 730 1648 747 L1706 785 L1706 922 L1279 922Z"/>
+            <path fill="white" transform="translate(0 25)" filter="url(#bedding-edge)" d="M1310 775 C1360 768 1390 752 1420 738 C1440 728 1458 732 1475 745 C1500 757 1530 752 1560 739 C1585 727 1618 730 1648 747 L1706 785 L1706 922 L1279 922Z"/>
           </mask>
         </defs>
         <image href="/home/assets/seasons/desktop-panorama.png" width="1706" height="922" mask="url(#bedding-matte)"/>

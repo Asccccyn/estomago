@@ -7,6 +7,8 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
   ["/home/assets/seasons/summer.png", { file: "home/assets/seasons/summer.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/autumn.png", { file: "home/assets/seasons/autumn.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/winter.png", { file: "home/assets/seasons/winter.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/season-poses.png", { file: "home/assets/seasons/season-poses.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/walk-cycle.png", { file: "home/assets/seasons/walk-cycle.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/rolling.png", { file: "home/assets/seasons/rolling.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/characters.png", { file: "home/assets/seasons/characters.png", type: "image/png", cache: "no-cache" }],
   [
