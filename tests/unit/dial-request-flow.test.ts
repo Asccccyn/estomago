@@ -80,6 +80,55 @@ function compose(root: string, transport: OrTransport) {
 
 const ctx = (over: Partial<ToolExecContext> = {}): ToolExecContext => ({ roomId: 'primary', windowId: 'w', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'dial', ...over });
 
+test('F01（审计 P1）：停止排队轮→重开 DB→恢复零派发；未停 pending 正常恢复', async () => {
+  let transportCalls = 0;
+  let releaseFirst: (() => void) | null = null;
+  const transport: OrTransport = async () => {
+    transportCalls++;
+    if (transportCalls === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'f01', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) };
+  };
+  const root = tempRoot('f01-stop-');
+  const c = compose(root, transport);
+  try {
+    const t1 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '第一轮', clientMessageId: 'f01a' });
+    c.supervisor.enqueue(t1.turnId);
+    await pause(150); // 第一轮占用执行位（transport 挂起或准备中——不影响排队事实）
+    const t2 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '将被停止', clientMessageId: 'f01b' });
+    c.supervisor.enqueue(t2.turnId); // 排队（attempt=pending，串行链未到达）
+    await pause(60);
+    assert.equal(c.supervisor.stop(t2.turnId).stopped, true, 'stop 确认');
+    assert.equal((c.db.prepare("SELECT state FROM turns WHERE id=?").get(t2.turnId) as { state: string }).state, 'failed', '停止即持久终态');
+    const before = transportCalls;
+    c.db.close(); // 进程退出（不释放队列——审计复现口径）
+    // ── 重启：同一 DB 新进程 ──
+    const c2 = compose(root, transport);
+    try {
+      const { TurnSupervisor } = await import('../../apps/host/src/runtime/supervisor.ts');
+      TurnSupervisor.recoveryPass(c2.db, c2.supervisor['d'] ? (c2.supervisor['d'] as { logger: never }).logger : (c2.supervisor as unknown as { d: { logger: never } }).d.logger);
+      const redispatched = TurnSupervisor.recoverSchedule({ db: c2.db, supervisor: c2.supervisor, logger: (c2.supervisor as unknown as { d: { logger: never } }).d.logger } as never);
+      assert.equal(redispatched.redispatched, 0, '已停止排队轮不再被恢复派发（旧实现=1，审计复现）');
+      await pause(200);
+      assert.equal(transportCalls, before, '恢复后零新增模型派发');
+      const a = c2.db.prepare("SELECT state, blocked_reason FROM attempts WHERE turn_id=?").get(t2.turnId) as { state: string; blocked_reason: string };
+      assert.equal(a.state, 'failed');
+      assert.equal(a.blocked_reason, 'CANCELLED_BEFORE_DISPATCH', '停止原因持久');
+      assert.ok(c2.messages.getMessage(t2.message.id), '用户输入仍保存（不丢话）');
+      // 对照：未停止的新轮正常完成（恢复/执行能力未被误伤）
+      releaseFirst?.();
+      await c2.supervisor.waitIdle();
+      const t3 = c2.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '不停的一轮', clientMessageId: 'f01c' });
+      c2.supervisor.enqueue(t3.turnId);
+      await c2.supervisor.waitIdle();
+      assert.equal((c2.db.prepare("SELECT state FROM turns WHERE id=?").get(t3.turnId) as { state: string }).state, 'completed', '未停止轮正常完成');
+    } finally { releaseFirst?.(); await c2.supervisor.stopAll().catch(() => {}); c2.close(); }
+  } finally {
+    releaseFirst?.();
+    await c.supervisor.stopAll().catch(() => {});
+    try { c.close(); } catch { /* db 已在"进程退出"步骤手动关闭 */ }
+  }
+});
+
 test('她发起→char收到事实轮并 decline_call：请求 declined+他同轮的话落会话', async () => {
   const prompts: string[] = [];
   const transport: OrTransport = async (p) => {

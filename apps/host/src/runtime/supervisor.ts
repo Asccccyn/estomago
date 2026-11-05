@@ -266,10 +266,21 @@ export class TurnSupervisor {
   stop(turnId: string): { stopped: boolean; generation: number | null } {
     const run = this.active.get(turnId);
     if (!run) {
-      // 排队中（无活动代）：登记取消；链到达即拒发。若 turn 已完成/从未入队，无害空集。
+      // 排队中（无活动代）。F01（四仓审计 20261104，P1）：停止确认**直接持久落终态**
+      // （RE-03 同语义：CANCELLED_BEFORE_DISPATCH）——旧实现只写内存 Set，进程在队列
+      // 释放前退出则 Set 丢失，重启 recoverSchedule 按 pending 重新派发，已停止的输入
+      // 复活并产生模型/工具费用（审计隔离复现：redispatched=1、模型调用=1）。
+      // 持久终态使队列与恢复只消费数据库事实；在途链到达时 claim（只认 pending attempt）
+      // 失败即早退，无需 Set 配合。若 turn 已终态/从未入队，failTurnQuietly 的条件
+      // UPDATE 不生效，无害。
       const queued = this.d.db.prepare("SELECT 1 FROM turns WHERE id = ? AND state IN ('queued','running','pending')").get(turnId);
       if (queued) {
-        this.cancelledBeforeRun.add(turnId);
+        const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
+        if (conv) {
+          this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
+          this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
+          this.voiceTaps.delete(turnId);
+        }
         return { stopped: true, generation: null };
       }
       return { stopped: false, generation: null };
