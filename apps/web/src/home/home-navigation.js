@@ -1,7 +1,8 @@
-/* Confirmed actions are handed to the existing authenticated host.
-   wishes（她 2026-10-18）：跳站内许愿星页——页面她自己做，先占位。 */
+/* Only existing pages navigate here. Other home:action events remain available
+   to the calendar, reading, anniversary, moments, album, voice and upstairs integrations. */
 (() => {
   document.addEventListener('home:action', event => {
+    if (event.defaultPrevented) return;
     const action = event.detail?.action;
     if (action === 'chat') { event.preventDefault(); window.top.location.assign('/chat'); }
     if (action === 'wishes') { event.preventDefault(); window.top.location.assign('/wishstar'); }

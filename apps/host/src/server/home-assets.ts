@@ -1,5 +1,13 @@
 // Public homepage assets only; no user files or state-directory traversal.
 export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cache: string }]> = [
+  ["/home/seasons.css", { file: "home/seasons.css", type: "text/css; charset=utf-8", cache: "no-cache" }],
+  ["/home/seasons.js", { file: "home/seasons.js", type: "text/javascript; charset=utf-8", cache: "no-cache" }],
+  ["/home/assets/seasons/panorama.png", { file: "home/assets/seasons/panorama.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/summer.png", { file: "home/assets/seasons/summer.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/autumn.png", { file: "home/assets/seasons/autumn.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/winter.png", { file: "home/assets/seasons/winter.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/rolling.png", { file: "home/assets/seasons/rolling.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/characters.png", { file: "home/assets/seasons/characters.png", type: "image/png", cache: "no-cache" }],
   [
     "/home/app.css",
     {
