@@ -53,7 +53,11 @@ export class MediaToolsService {
 
   async mediaImport(args: { source_url: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '媒体服务未装配' } };
-    const operationId = `tool-media-import:${ctx.turnId ?? 'noturn'}:${ctx.requestId}`;
+    // F05（四仓联合审计 20261104）：操作身份含 toolCallId——旧键 turnId:requestId 在同一
+    // 模型请求的两个 media_import 调用（不同 tool_call_id/URL）间共用，第二个直接命中
+    // 第一个的幂等缓存返回第一张图（审计实测两次 asset_id 相同）。同调用重放（同
+    // toolCallId）仍稳定复用；内容寻址去重由资产层另行保留。
+    const operationId = `tool-media-import:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
     try {
       const a = await this.media.importFromUrl({ sourceUrl: args.source_url, operationId, createdBy: 'jiaming' });
       return { ok: true, output: { asset_id: a.id, mime_type: a.mime_type, byte_size: a.byte_size, imported: true } };

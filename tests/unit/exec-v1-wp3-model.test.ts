@@ -234,6 +234,37 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   assert.equal((r4.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
 });
 
+test('F05：media_import 操作键含 toolCallId——同请求两次调用各自资产；同调用重放复用（四仓审计 20261104）', async () => {
+  const root = tempRoot('wp3-f05-');
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) });
+  const ctx = compose(root, transport);
+  // 两个不同 URL 的导入（字节不同才可比资产身份——saveBuffer 预置两份再按 operation 命中不适用；
+  // 这里直接测操作键区分：URL 合法性先过，下载走 MediaService.importFromUrl 的 guard 边界——
+  // 用公网不可达地址会产生 ASSET_IMPORT_FAILED（retryable），操作键层面仍可断言：
+  // 两次调用若共用操作键，第二次会命中第一次的失败缓存吗？——不会（失败不落 creation_operation_id）。
+  // 因此用字节可注入的 saveBuffer + importFromUrl 相邻层验证：直接调用 mediaImport 两次，
+  // 断言 operationId 不同（经由 media 层既有幂等键格式）。
+  const ctx1 = ctx.toolCtx();
+  const r1 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  const r2 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/b.png' }, { ...ctx1, toolCallId: 'call_b' });
+  // 私网拒绝（策略边界真实生效）——两次都拒绝且错误一致；键区分由下方直接验证
+  assert.equal((r1.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
+  assert.equal((r2.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
+  // 直接构造 MediaToolsService 断言操作键（真实实现，stub 掉网络下载层）
+  const { MediaToolsService } = await import('../../apps/host/src/modules/media/service.ts');
+  const ops: string[] = [];
+  const stubMedia = {
+    importFromUrl: async (o: { operationId: string }) => { ops.push(o.operationId); return { id: 'asset_x', mime_type: 'image/png', byte_size: 1 }; },
+  };
+  const svc = new MediaToolsService({ db: ctx.db, media: stubMedia as never, tools: null } as never);
+  const c1 = await svc.mediaImport({ source_url: 'https://example.com/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  const c2 = await svc.mediaImport({ source_url: 'https://example.com/b.png' }, { ...ctx1, toolCallId: 'call_b' });
+  const c1b = await svc.mediaImport({ source_url: 'https://example.com/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  assert.equal(c1.ok && c2.ok && c1b.ok, true);
+  assert.notEqual(ops[0], ops[1], '不同 toolCallId=不同操作键（旧实现共用→第二张图返回第一张）');
+  assert.equal(ops[2], ops[0], '同调用重放复用同一键（幂等保持）');
+});
+
 test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估算与 textOnly 投影同源（R05）', async () => {
   const root = tempRoot('wp3-m2-sel-');
   const transport: OrTransport = async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) });
