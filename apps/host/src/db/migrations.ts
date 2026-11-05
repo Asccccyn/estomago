@@ -1449,5 +1449,12 @@ CREATE TABLE pending_program_facts(
 );
 CREATE INDEX idx_pending_facts_conv ON pending_program_facts(conversation_id, consumed_at);
 `});
+// 55（2026-11-04，四仓联合审计 F04）：analysis_input_digest——快观察键复用时的输入
+// 版本快照（转写文本摘要；'-'=无转写）。修复：E 把分析操作键永久绑定音频资产，
+// 迟到转写改变 O 输入 digest 后同键 409，提示"重新发起"但下一次仍取旧键→永远失败。
+// 旧行 digest=NULL 视为不匹配→不复用快键（保守自愈，走 legacy 新键）。
+MIGRATIONS.push({version:55,name:'oido-analysis-input-digest',sql:`
+ALTER TABLE oido_ingest_receipts ADD COLUMN analysis_input_digest TEXT;
+`});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

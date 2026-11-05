@@ -3,6 +3,7 @@
 // UNCONFIGURED → 绑定（analysis+roomId）→ 源授权 → 取消检查 → overview/prosody_page 分支
 // → 调用后取消/权限重检 → analysis_id 一致性 → 唯一模型投影（oidoModelView 在原 try 内
 // 恰一次执行，错误映射不变；条目 toModel 为正式边界透传）。abort→CANCELLED，其余沿现行截短错误码。
+import { sha256Hex } from '../../util/id.ts';
 import type { Db } from '../../db/connection.ts';
 import type { OidoAdapter } from '../../integrations/oido/adapter.ts';
 import { oidoModelView } from '../../integrations/oido/model-view.ts';
@@ -109,11 +110,15 @@ export class OidoHearingService {
       // 时复用通话快观察的分析任务（oído 同 digest 去重返回同一分析，RE-13d：已完成
       // 返回概览）——快观察与深听不再对同一段音频各跑一次 DSP。带 range=不同语义
       // 身份（可能裁剪），照旧新键新分析。
-      const quickKey = args.range_ms ? null : this.sources.quickAnalysisKey(assetId);
+      // F04：输入版本摘要（转写文本→sha；无转写='-'）——键复用与 O 的输入 digest 同变量
+      const inputDigest = transcript ? `${transcript.source}:${sha256Hex(transcript.text)}` : '-';
+      const quickKey = args.range_ms ? null : this.sources.quickAnalysisKey(assetId, inputDigest);
       const idemKey = quickKey ?? legacyKey;
-      if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey);
+      if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey, inputDigest);
       const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal: ctx.signal }).catch((err: Error) => {
         if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
+          // F04：同键异 digest=输入版本已变——失效旧键，让"重新发起"的重试生成新键新分析
+          this.sources.invalidateAnalysisKey(assetId);
           throw new Error('OIDO_CONTRACT_CHANGED');
         }
         throw err;

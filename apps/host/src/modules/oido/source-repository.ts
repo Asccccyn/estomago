@@ -44,13 +44,23 @@ export class OidoSourceRepository {
 
   /** R6′：导入回执持久化——est asset ↔ oído audio_id 映射（幂等 upsert，deduplicated 指向既有资产时如实更新） */
   /** JV-17（03§4.2）：通话快观察留档的幂等键（无=该资产未经快观察）。 */
-  quickAnalysisKey(estAssetId: string): string | null {
-    const row = this.db.prepare('SELECT analysis_key FROM oido_ingest_receipts WHERE est_asset_id=?').get(estAssetId) as { analysis_key: string | null } | undefined;
-    return row?.analysis_key ?? null;
+  /** F04（四仓联合审计 20261104）：快键复用=键存在 **且** 输入版本一致（转写摘要）。
+   *  迟到转写改变了 O 的输入 digest——旧键对 O 已是异 digest（409），必须走新键。
+   *  旧行 digest=NULL 视为不匹配（保守自愈：不复用，走 legacy 新键）。 */
+  quickAnalysisKey(estAssetId: string, inputDigest: string): string | null {
+    const row = this.db.prepare('SELECT analysis_key, analysis_input_digest FROM oido_ingest_receipts WHERE est_asset_id=?').get(estAssetId) as { analysis_key: string | null; analysis_input_digest: string | null } | undefined;
+    if (!row?.analysis_key) return null;
+    return row.analysis_input_digest === inputDigest ? row.analysis_key : null;
   }
 
-  rememberAnalysisKey(estAssetId: string, key: string): void {
-    this.db.prepare('UPDATE oido_ingest_receipts SET analysis_key=COALESCE(analysis_key,?) WHERE est_asset_id=?').run(key, estAssetId);
+  rememberAnalysisKey(estAssetId: string, key: string, inputDigest: string): void {
+    this.db.prepare('UPDATE oido_ingest_receipts SET analysis_key=?, analysis_input_digest=? WHERE est_asset_id=?').run(key, inputDigest, estAssetId);
+  }
+
+  /** F04：409（同键异 digest）→ 失效已记快键：错误提示"重新发起"后重试真正可恢复
+   *  （下一次生成新键新分析），不再永久卡在旧键上。 */
+  invalidateAnalysisKey(estAssetId: string): void {
+    this.db.prepare('UPDATE oido_ingest_receipts SET analysis_key=NULL, analysis_input_digest=NULL WHERE est_asset_id=?').run(estAssetId);
   }
 
   recordIngestReceipt(estAssetId: string, contentSha256: string, oidoAudioId: string, deduplicated: boolean): void {
