@@ -10,6 +10,8 @@
   const ctx = canvas.getContext('2d');
   const desktopQuery = matchMedia('(min-width: 900px)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+  const adjusting = new URLSearchParams(location.search).get('adjust') === '1';
+  const isDesktop = () => desktopQuery.matches && !viewport.classList.contains('editor-phone');
   const seasonNames = ['spring', 'summer', 'autumn', 'winter'];
   const seasonLabels = ['春天', '夏天', '秋天', '冬天'];
   const PAIR_WIDTH = .82;
@@ -19,12 +21,12 @@
   const FOOT_ANCHOR = .88;
   // Each sheet has different transparent padding; visible paws share one ground anchor.
   const POSE_FEET = {
-    otter: { prone: .845, sit: .876, awake: .7831, frontSit: .8357 },
-    raccoon: { prone: .797, sit: .840, awake: .7703, frontSit: .8150 },
+    otter: { prone: .845, sit: .876, awake: .786284, frontSit: .840510 },
+    raccoon: { prone: .797, sit: .840, awake: .773525, frontSit: .818182 },
   };
   const WALK_FEET = {
-    otter: [.743094, .743094, .745856, .748619, .748619, .751381],
-    raccoon: [.743094, .737569, .737569, .737569, .740331, .743094],
+    otter: [.745856, .745856, .748619, .751381, .751381, .754144],
+    raccoon: [.743094, .740331, .743094, .740331, .743094, .743094],
   };
   const ROLLING_FEET = {
     otter: [.740, .760, .765, .762, .738, .762],
@@ -51,10 +53,10 @@
   viewport.style.setProperty('--animal-width-in-pair', `${ANIMAL_WIDTH_IN_PAIR * 100}%`);
   viewport.style.setProperty('--pair-aspect', String(1 / ANIMAL_WIDTH_IN_PAIR));
   const resting = [
-    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], bodySizes: [1, 1] },
-    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], bodySizes: [1, 1.1] },
-    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], bodySizes: [1, 1.1] },
-    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], bodySizes: [1, 1] },
+    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], xOffsets: [.065, -.035], bodySizes: [1.05, 1] },
+    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], xOffsets: [0, 0], bodySizes: [1.05, 1] },
+    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1.06, 1] },
+    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1, 1] },
   ];
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
@@ -129,7 +131,7 @@
       button.setAttribute('aria-label', detail.label);
       Object.assign(button.style, { left: `${detail.x * 100}%`, top: `${detail.y * 100}%`, width: `${detail.w * 100}%`, height: `${detail.h * 100}%` });
       button.addEventListener('click', () => {
-        if (busy) return;
+        if (busy || adjusting) return;
         const payload = { action: detail.action, season: seasonNames[season], target: detail.target };
         if (detail.subject) payload.subject = detail.subject;
         document.dispatchEvent(new CustomEvent('home:action', { detail: payload, bubbles: true, cancelable: true }));
@@ -150,20 +152,20 @@
   }
 
   function cameraX(season) {
-    return desktopQuery.matches ? (viewport.clientWidth - width) / 2 : (viewport.clientWidth - panelWidth) / 2 - panelWidth * season;
+    return isDesktop() ? (viewport.clientWidth - width) / 2 : (viewport.clientWidth - panelWidth) / 2 - panelWidth * season;
   }
   function cameraTransform(season) {
     return `translate3d(${cameraX(season)}px, ${cameraY}px, 0)`;
   }
   function updateAccessibleScenes() {
-    for (let i = 0; i < 4; i++) scenes[i].inert = busy || (!desktopQuery.matches && i !== current);
+    for (let i = 0; i < 4; i++) scenes[i].inert = busy || (!isDesktop() && i !== current);
     viewport.dataset.season = seasonNames[current];
     viewport.dataset.busy = String(busy);
   }
   function layout() {
     // The artwork and every hit area share this single cover transform.
     const ratio = 24 / 13;
-    const visibleRatio = desktopQuery.matches ? ratio : ratio / 4;
+    const visibleRatio = isDesktop() ? ratio : ratio / 4;
     height = Math.max(viewport.clientHeight, viewport.clientWidth / visibleRatio);
     width = height * ratio;
     panelWidth = width / 4;
@@ -174,8 +176,13 @@
       const centerY = resting[i].groundY - (FOOT_ANCHOR - .5) * spriteSize / height;
       resting[i].y = Math.min(centerY, visibleBottom - spriteSize / 2 / height);
       pairs[i].style.top = `${resting[i].y * 100}%`;
+      pairs[i].style.left = `${resting[i].x * 100}%`;
       for (let animalIndex = 0; animalIndex < 2; animalIndex++) {
-        pairs[i].children[animalIndex].style.top = `${resting[i].groundOffsets[animalIndex] * height}px`;
+        const actor = pairs[i].children[animalIndex];
+        actor.style.top = `${resting[i].groundOffsets[animalIndex] * height}px`;
+        actor.style.left = `${((animalIndex ? COMPANION_OFFSET * 2 : 0) + resting[i].xOffsets[animalIndex]) * panelWidth}px`;
+        actor.style.right = 'auto';
+        actor.querySelector('.animal-size').style.transform = `scale(${resting[i].bodySizes[animalIndex]})`;
       }
     }
     const flowers = actions[1].find(({ target }) => target === 'flowers');
@@ -260,7 +267,7 @@
   }
 
   async function advance(from) {
-    if (busy) return;
+    if (busy || adjusting) return;
     const to = (from + 1) % 4;
     current = from;
     destination = to;
@@ -279,7 +286,7 @@
     pairs[from].hidden = true;
     pairs[to].hidden = true;
     travelLayer.dataset.journey = seasonNames[from];
-    travelLayer.style.clipPath = from === 3 && desktopQuery.matches ? 'inset(0 0 0 75%)' : '';
+    travelLayer.style.clipPath = from === 3 && isDesktop() ? 'inset(0 0 0 75%)' : '';
     activeAnimations = [];
     const duration = [4200, 5200, 8800, 3300][from];
     const journeys = [];
@@ -304,9 +311,9 @@
         { offset: 0, transform: 'translate(-50%, -50%) translate3d(0, 0, 0) scale(1)', opacity: 1 },
         { offset: .42, transform: `translate(-50%, -50%) translate3d(${moveX * .4}px, ${moveY * .4}px, 0) scale(1.7)`, opacity: 1 },
         { offset: .80, transform: `translate(-50%, -50%) translate3d(${moveX * .8}px, ${moveY * .8}px, 0) scale(3.2)`, opacity: 1 },
-        { offset: 1, transform: `translate(-50%, -50%) translate3d(${moveX}px, ${moveY}px, 0) scale(4)`, opacity: desktopQuery.matches ? 0 : 1 },
+        { offset: 1, transform: `translate(-50%, -50%) translate3d(${moveX}px, ${moveY}px, 0) scale(4)`, opacity: isDesktop() ? 0 : 1 },
       ], { duration, easing: 'ease-in-out' }));
-      if (!desktopQuery.matches) {
+      if (!isDesktop()) {
         revealVeil = true;
         journeys.push(animate(veil, [{ opacity: 0 }, { opacity: 0, offset: .76 }, { opacity: 1 }], { duration, easing: 'ease-in' }));
       }
@@ -318,10 +325,13 @@
         const finish = resting[to];
         const traveler = animal(kind, start.pose, 'traveler', start.bodySizes[index]);
         traveler.style.width = `${panelWidth * SPRITE_WIDTH}px`;
+        if (from === 0 && index === 0) traveler.style.zIndex = '1';
         travelLayer.append(traveler);
         const size = traveler.querySelector('.animal-size');
         const sprite = traveler.querySelector('.animal-sprite');
         const offset = index ? COMPANION_OFFSET : -COMPANION_OFFSET;
+        const startOffset = offset + start.xOffsets[index];
+        const finishOffset = offset + finish.xOffsets[index];
         const delay = index * 180;
         const startY = start.y + start.groundOffsets[index];
         const finishY = finish.y + finish.groundOffsets[index];
@@ -333,30 +343,30 @@
         let cycle;
         if (from === 0) {
           frames = [
-            { offset: 0, transform: point(from, start.x + offset, startY) },
+            { offset: 0, transform: point(from, start.x + startOffset, startY) },
             { offset: .24, transform: groundPoint(from, .72 + offset, startGround + (finishGround - startGround) * .24) },
             { offset: .50, transform: groundPoint(from, 1.02 + offset, startGround + (finishGround - startGround) * .50) },
             { offset: .76, transform: groundPoint(to, .20 + offset, startGround + (finishGround - startGround) * .80) },
-            { offset: .96, transform: point(to, finish.x + offset, finishY) },
-            { offset: 1, transform: point(to, finish.x + offset, finishY) },
+            { offset: .96, transform: point(to, finish.x + finishOffset, finishY) },
+            { offset: 1, transform: point(to, finish.x + finishOffset, finishY) },
           ];
           poses = [[0, 'awake'], [.92, 'sit'], [1, 'sit']];
           cycle = playCycle(traveler, kind, 'roll', .06, .92, duration, delay);
         } else if (from === 1) {
           frames = [
-            { offset: 0, transform: point(from, start.x + offset, startY) },
-            { offset: .12, transform: point(from, start.x + offset, startY) },
+            { offset: 0, transform: point(from, start.x + startOffset, startY) },
+            { offset: .12, transform: point(from, start.x + startOffset, startY) },
             { offset: .43, transform: groundPoint(from, .93 + offset, startGround + (finishGround - startGround) * .40) },
             { offset: .72, transform: groundPoint(to, .17 + offset, startGround + (finishGround - startGround) * .75) },
-            { offset: .94, transform: point(to, finish.x + offset, finishY) },
-            { offset: 1, transform: point(to, finish.x + offset, finishY) },
+            { offset: .94, transform: point(to, finish.x + finishOffset, finishY) },
+            { offset: 1, transform: point(to, finish.x + finishOffset, finishY) },
           ];
           poses = [[0, 'sit'], [.94, 'frontSit'], [1, 'frontSit']];
           cycle = playCycle(traveler, kind, 'walk', .10, .94, duration, delay);
         } else {
           frames = [
-            { offset: 0, transform: point(from, start.x + offset, startY), opacity: 1 },
-            { offset: .04, transform: point(from, start.x + offset, startY), opacity: 1 },
+            { offset: 0, transform: point(from, start.x + startOffset, startY), opacity: 1 },
+            { offset: .04, transform: point(from, start.x + startOffset, startY), opacity: 1 },
             { offset: .15, transform: groundPoint(from, .16 + offset * .35, .64, .55), opacity: 1 },
             ...AUTUMN_PATH.map(stop => ({ offset: stop.offset, transform: groundPoint(from, stop.x, stop.y, stop.scale), opacity: 1 })),
             { offset: .96, transform: groundPoint(from, .59, .355, .10), opacity: 0 },
@@ -378,7 +388,7 @@
         const finalSize = from === 2 ? start.bodySizes[index] : finish.bodySizes[index];
         journeys.push(animate(size, [{ transform: `scale(${start.bodySizes[index]})` }, { transform: `scale(${finalSize})` }], { duration, delay, easing: 'ease-in-out' }));
       }
-      if (from < 2 && !desktopQuery.matches) {
+      if (from < 2 && !isDesktop()) {
         journeys.push(animate(world, [
           { transform: cameraTransform(from), offset: 0 },
           { transform: cameraTransform(from), offset: .25 },
@@ -389,7 +399,7 @@
     }
 
     await Promise.all(journeys);
-    if (from === 2 && !desktopQuery.matches && current === from) {
+    if (from === 2 && !isDesktop() && current === from) {
       // The doorway grows only after both animals have disappeared inside it.
       const door = AUTUMN_PATH[AUTUMN_PATH.length - 1];
       const zoom = 2.6;
@@ -424,12 +434,37 @@
     updateAccessibleScenes();
   }
 
+  if (adjusting) {
+    viewport.dataset.adjusting = 'true';
+    // This API exists only in the temporary editor; normal visits use the committed layout.
+    window.estomagoPositionEditor = {
+      read: () => resting.map(({ x, groundY, groundOffsets, xOffsets, bodySizes }) => ({
+        x, groundY, groundOffsets: [...groundOffsets], xOffsets: [...xOffsets], bodySizes: [...bodySizes],
+      })),
+      update(configs) {
+        configs.forEach((config, index) => Object.assign(resting[index], config));
+        layout();
+      },
+      select(season) {
+        current = season;
+        pairs.forEach(pair => { pair.hidden = false; });
+        world.style.transform = cameraTransform(current);
+        updateAccessibleScenes();
+      },
+      preview(mode) {
+        viewport.classList.toggle('editor-phone', mode === 'phone');
+        layout();
+      },
+      dimensions: () => ({ panelWidth, height }),
+    };
+  }
+
   const petals = Array.from({ length: 23 }, (_, i) => ({ x: (i * .381966) % 1, y: (i * .618034) % 1, speed: .012 + (i % 5) * .002, phase: i * 1.7 }));
   const lights = Array.from({ length: 33 }, (_, i) => ({ x: .10 + ((i * .618034) % .82), y: .40 + ((i * .381966) % .49), phase: i * 2.3 }));
   const stars = Array.from({ length: 28 }, (_, i) => ({ x: .13 + ((i * .381966) % .73), y: .035 + ((i * .618034) % .38), phase: i * 1.3 }));
   function drawAtmosphere(time) {
     ctx.clearRect(0, 0, width, height);
-    const visible = season => desktopQuery.matches || season === current || (busy && season === destination);
+    const visible = season => isDesktop() || season === current || (busy && season === destination);
     const unit = panelWidth / 426;
     if (visible(0)) {
       for (const petal of petals) {
