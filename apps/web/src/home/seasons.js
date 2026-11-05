@@ -35,11 +35,11 @@
     ],
     [{ action: 'moments', label: '朋友圈', x: .73, y: .46, w: .35, h: .14, target: 'wheat' }],
     [
-      { action: 'album', label: '水獭相册', x: .48, y: .48, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
+      { action: 'album', label: '水獭相册', x: .42, y: .49, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
       { action: 'album', label: '小浣熊相册', x: .77, y: .15, w: .16, h: .13, target: 'dried-flowers', subject: 'raccoon' },
       { action: 'album', label: '小猫相册', x: .92, y: .15, w: .14, h: .18, target: 'wind-chime', subject: 'cat' },
       { action: 'voice', label: '语音', x: .79, y: .22, w: .18, h: .10, target: 'wooden-birds' },
-      { action: 'upstairs', label: '二楼', x: .38, y: .135, w: .14, h: .13, target: 'red-thread' },
+      { action: 'upstairs', label: '二楼', x: .27, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];
   let current = 0;
@@ -393,11 +393,11 @@
       ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(3.15 * panelWidth, height * .16, panelWidth * .25, height * .27);
+      ctx.rect(3.04 * panelWidth, height * .22, panelWidth * .25, height * .27);
       ctx.clip();
       for (let i = 0; i < 15; i++) {
-        const sx = (3.15 + ((i * .618034 + Math.sin(time * .3 + i) * .01) % .25)) * panelWidth;
-        const sy = (.16 + ((i * .381966 + time * .023) % .27)) * height;
+        const sx = (3.04 + ((i * .618034 + Math.sin(time * .3 + i) * .01) % .25)) * panelWidth;
+        const sy = (.22 + ((i * .381966 + time * .023) % .27)) * height;
         ctx.fillStyle = 'rgba(250,252,255,.66)';
         ctx.beginPath();
         ctx.arc(sx, sy, (1 + i % 2) * unit, 0, Math.PI * 2);

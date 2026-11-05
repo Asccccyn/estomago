@@ -6,8 +6,6 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 #season-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 #panorama, #atmosphere, #season-scenes, #travelers { position: absolute; inset: 0; width: 100%; height: 100%; }
 #panorama { display: block; user-select: none; pointer-events: none; }
-.season-backdrop { position: absolute; top: 0; width: 25%; height: 100%; pointer-events: none; user-select: none; }
-@media (min-width: 900px) { .season-backdrop { mask-image: linear-gradient(to right, transparent, #000 3%); } }
 #atmosphere { pointer-events: none; }
 #season-scenes { z-index: 2; }
 .season-scene { position: absolute; top: 0; width: 25%; height: 100%; }
