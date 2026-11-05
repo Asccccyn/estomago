@@ -24,7 +24,7 @@ import { settleBackgroundRun } from './background-ledger.ts';
 
 export type BackgroundExecutor = {
   /** 执行一次已领取的 run（在会话串行链内被调用——executor 负责取得执行位）。scheduler 负责状态/记账框架。 */
-  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }>;
+  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown' | 'cancelled'; result_code?: string }>;
 };
 
 export type SchedulerDeps = {
@@ -268,12 +268,14 @@ export class BackgroundScheduler {
       const dispatched = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id=?').get(runId) as { n: number }).n;
       const waiting = task.kind === 'autonomous' && dispatched === 0 && ((cancelReason === 'HOST_STOPPED') || (cancelReason === null && (resultCode === 'NO_ACTIVE_WINDOW' || resultCode === 'CONTEXT_SELECTION_REQUIRED')));
       if (waiting) state = 'claimed';
-      this.d.db.prepare('UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ?').run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId);
+      // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
+      // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
+      const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
       this.aborts.delete(runId);
       this.cancelRequested.delete(runId);
       this.cancelReasons.delete(runId);
       this.yieldRequested.delete(runId);
-      if (waiting) return;
+      if (waiting || finished === 0) return;
       if (state === 'cancelled' && task.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
       this.finalizeTaskAfterRun(task, state, nowIso);
     };

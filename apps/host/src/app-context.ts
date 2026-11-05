@@ -364,7 +364,7 @@ export class Host {
     const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
       executor: (await import('./application/background-execution.ts')).createBackgroundExecution({
-        messages, events, bgSettings, supervisor,
+        db, messages, events, bgSettings, supervisor,
         // 构造期 scheduler 尚未就绪——经 schedulerRef 惰性转发（调用发生在 tick 之后）
         scheduler: { recordDispatchStart: (...args: Parameters<BackgroundScheduler['recordDispatchStart']>) => schedulerRef!.recordDispatchStart(...args) },
       }),

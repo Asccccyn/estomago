@@ -19,19 +19,31 @@ export type BackgroundExecutionDeps = {
   };
   /** 调度器回写（recordDispatchStart 绑定；启动期装配，非循环依赖面）。 */
   scheduler: Pick<BackgroundScheduler, 'recordDispatchStart'>;
+  /** F03：发布前消费任务/run 取消事实（只读查询） */
+  db: import('../db/connection.ts').Db;
 };
 
 export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
-  executeRun(input: Parameters<import('../runtime/background-scheduler.ts').BackgroundExecutor['executeRun']>[0]): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }>;
+  executeRun(input: Parameters<import('../runtime/background-scheduler.ts').BackgroundExecutor['executeRun']>[0]): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown' | 'cancelled'; result_code?: string }>;
 } {
-  const { messages, events, bgSettings, supervisor, scheduler } = deps;
+  const { messages, events, bgSettings, supervisor, scheduler, db } = deps;
   return {
     async executeRun(input) {
       if (input.kind === 'reminder') {
         // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
         const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
-        const msg = await supervisor.enqueueBackground(input.conversationId, () => Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` })));
-        events.publish('message.persisted', { conversationId: input.conversationId, entityRef: msg.id, entityRevision: msg.sequence, scope: 'private', payload: { message: msg } });
+        // F03（四仓联合审计 20261104）：排队等待期间任务可能被取消（cancel 的
+        // supersedeOpenRuns 已把零派发 run 置 cancelled）——**真正发布前**消费这份
+        // 取消事实，不再发布已取消的提醒（旧实现：闭包无条件 publish + finish 用
+        // completed 覆盖 cancelled，审计实测取消后仍新增系统消息 1 条）。
+        const queued = await supervisor.enqueueBackground(input.conversationId, () => {
+          const runCancelled = db.prepare('SELECT 1 FROM background_runs WHERE id = ? AND state = ?').get(input.runId, 'cancelled');
+          const taskCancelled = db.prepare("SELECT 1 FROM background_tasks WHERE id = ? AND enabled = 0").get(input.taskId);
+          if (runCancelled || taskCancelled) return Promise.resolve(null);
+          return Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` }));
+        });
+        if (queued === null) return { outcome: 'cancelled' as const, result_code: 'TASK_CANCELLED' };
+        events.publish('message.persisted', { conversationId: input.conversationId, entityRef: queued.id, entityRevision: queued.sequence, scope: 'private', payload: { message: queued } });
         return { outcome: 'completed', result_code: 'delivered' };
       }
       return supervisor.enqueueBackground(input.conversationId, () => {
