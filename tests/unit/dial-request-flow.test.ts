@@ -218,6 +218,59 @@ test('F01-R1/R2 复核返修：UI先收口+回调丢失→对账补事实；未�
   }
 });
 
+test('生命周期重构 R3：register 丢失但真实话轮/结束回调/S 权威事实——结束事实不漏记（整链）', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'r3', choices: [{ delta: { content: '在' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-r3-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  const lifecycle = (callId: string) => c.call(`/v1/calls/${callId}`, 'DELETE', undefined, { authorization: 'Bearer synthetic-ingress' });
+  // 正式建呼入口的产物=预留行（SirenAdapter 未配置时 POST /api/v1/calls 会 503——
+  // 预留行字段与 dial.ts/call-service 建呼写入一致；connected_at 留空=register 丢失）
+  const reserve = (callId: string) => c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,'primary','active',?,?,'ordinary')").run(callId, new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  const realTurn = async (callId: string, turnKey: string) => {
+    await c.call('/v1/chat/stream', 'POST', { conversation_id: 'primary', call_id: callId, turn_id: turnKey, modality: 'voice_call', text: '喂？能听到吗？' }, { authorization: 'Bearer synthetic-ingress', 'content-type': 'application/x-ndjson' }).catch(() => null);
+    await c.supervisor.waitIdle();
+  };
+  try {
+    // ── 链1（R3 主场景）：register 丢失 → 真实话轮 → 结束回调 → 事实恰一条 ──
+    reserve('call-r3a');
+    await realTurn('call-r3a', 't1');
+    assert.equal(c.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='call-r3a' AND turn_key='t1'").get()?.state, 'completed', '真实话轮完成');
+    assert.equal((await lifecycle('call-r3a')).status, 200, '结束回调到达');
+    assert.equal(factRow('call-r3a')?.kind, 'call_end', 'R3：真实话轮+结束回调→事实登记（旧实现漏记）');
+    await lifecycle('call-r3a');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id LIKE 'call_end:call-r3a%'").get() as { n: number }).n, 1, '重复回调仍恰一条');
+
+    // ── 链2（R3+恢复）：register 丢失 → 真实话轮 → UI 先收口 → 回调也丢 → 对账按 S 权威事实补记 ──
+    reserve('call-r3b');
+    await realTurn('call-r3b', 't1');
+    const ui = await c.call('/api/v1/calls/call-r3b', 'DELETE');
+    assert.equal(ui.body['state'], 'ended');
+    assert.equal(factRow('call-r3b'), undefined, '挂断命令不登记（意图≠终态）');
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    const out = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: 1793800000000 }) } as never);
+    assert.equal(factRow('call-r3b')?.kind, 'call_end', '对账按 S started_at 补记（本地无 register 证据）');
+
+    // ── 链3（零话轮零 register 的真实会话）：仅 S 权威事实证明 ──
+    reserve('call-r3c');
+    await c.call('/api/v1/calls/call-r3c', 'DELETE'); // UI 收口（无证据）
+    await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: 1793800000001 }) } as never);
+    assert.equal(factRow('call-r3c')?.kind, 'call_end', 'S 说会话真实建立过→登记');
+
+    // ── 链4（R2 保留）：未连接预留到期，S 无会话事实 → 零事实 ──
+    c.db.prepare("UPDATE voice_calls SET reserved_until=? WHERE call_id='call-r3d'").run(new Date(Date.now() - 1000).toISOString()) ;
+    reserve('call-r3d');
+    c.db.prepare("UPDATE voice_calls SET reserved_until=? WHERE call_id='call-r3d'").run(new Date(Date.now() - 1000).toISOString());
+    const out2 = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: null }) } as never);
+    assert.equal(out2.ended >= 1, true, '孤儿预留仍收口');
+    assert.equal(factRow('call-r3d'), undefined, 'R2：未连接预留零结束事实');
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
 test('她取消后再 accept_call：DIAL_SUPERSEDED 如实（不建通话）', async () => {
   const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
   const c = compose(tempRoot('dial-cancel-'), transport);

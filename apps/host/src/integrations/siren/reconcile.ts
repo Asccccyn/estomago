@@ -15,14 +15,16 @@ import { endCallConfirmed } from '../../modules/voice/call-service.ts';
 export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapter | null, signal?: AbortSignal): Promise<{ ended: number; kept: number; skipped: number }> {
   const out = { ended: 0, kept: 0, skipped: 0 };
   if (!sirenCall) return out;
-  // R1（复核 20261104）：候选除 active 外，还包括"已收口(ended)、确实连接过、但缺 call_end
-  // 事实"的行——前端先收口后 lifecycle 通知丢失的场景（ended 行被旧查询筛掉=对账永远
-  // 不查 S、事实永远缺失）。这些行只补事实：正本确认 ended/无此通话才登记（幂等）；
-  // 正本仍 sessionActive=保留不补（通话可能还在）。never-connected 的行由 R2 出口规则
-  // 天然不产事实，无须在此排除。
+  // R1/R3（复核 20261104 生命周期重构）：候选除 active 外，还包括"已收口(ended)但缺
+  // call_end 事实"的行——**不再以本地 connected_at 预筛**（register 通知可丢，为空不等于
+  // 从未连接；R3 复现：真实话轮完成+结束回调到达仍被漏记）。是否真有会话由 S 权威
+  // started_at + 本地证据（connected_at/真实话轮）在共同出口统一判定（callHadRealSession）。
+  // 终态确认（ended/无此通话）才登记；sessionActive=保留不补。
+  // 有界性：ended 缺事实的候选限定近 7 天（收口已久且无事实的预留行不再反复查 S；
+  // 真实通话的事实缺失会在首个对账周期内补齐，不受此限影响）。
   const rows = db.prepare(`SELECT vc.call_id, vc.connected_at, vc.reserved_until FROM voice_calls vc
     WHERE vc.state='active'
-       OR (vc.state='ended' AND vc.connected_at IS NOT NULL
+       OR (vc.state='ended' AND vc.ended_at > datetime('now', '-7 days')
            AND NOT EXISTS (SELECT 1 FROM pending_program_facts f WHERE f.id = 'call_end:' || vc.call_id))`)
     .all() as Array<{ call_id: string; connected_at: string | null; reserved_until: string | null }>;
   for (const row of rows) {
@@ -37,15 +39,20 @@ export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapt
     if (signal?.aborted) break;
     const now = new Date().toISOString();
     if (status === null || status === 'not_found' || status.dbStatus === 'ended') {
-      endCallConfirmed(db, row.call_id); // F01/R1：对账确认终态=共同出口（投影+事实），回调丢失在此补齐
+      // R3：S 权威 started_at 作为证据传入——register 丢失但 S 会话真实建立过的通话由此补记
+      endCallConfirmed(db, row.call_id, { sirenStartedAt: status && status !== 'not_found' ? status.startedAt : null });
       out.ended++;
       continue;
     }
     if (status.sessionActive) { out.kept++; continue; }
-    const neverConnected = !row.connected_at;
+    // 孤儿判定（R2/R3 统一）：本地与 S 均无真实会话证据（连接/话轮/started_at）且预留
+    // 时效已过 → 收口投影（无事实）。register 丢失但有真实话轮/连接的行不会被误清。
+    const hasSessionEvidence = row.connected_at !== null
+      || Boolean(db.prepare('SELECT 1 FROM voice_stream_turns WHERE call_id=? LIMIT 1').get(row.call_id))
+      || status.startedAt != null;
     const reservationExpired = row.reserved_until !== null && Date.parse(row.reserved_until) <= Date.now();
-    if (neverConnected && reservationExpired) {
-      endCallConfirmed(db, row.call_id); // F01：孤儿收口同走共同出口（事实登记幂等）
+    if (!hasSessionEvidence && reservationExpired) {
+      endCallConfirmed(db, row.call_id); // 孤儿预留收口：无证据→共同出口不登记事实（R2 保留）
       out.ended++;
       continue;
     }

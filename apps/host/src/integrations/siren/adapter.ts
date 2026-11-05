@@ -284,7 +284,7 @@ export class SirenAdapter {
    *  db_status 来自 Siren 持久正本（ended=已收口），session_active=WS 会话仍在；
    *  est 启动对账据此纠正 voice_calls 投影。404=正本无此通话（返回 null 之外的
    *  三态由调用方区分：throw=不可达）。 */
-  async callStatus(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ dbStatus: 'active' | 'ended'; sessionActive: boolean } | 'not_found' | null> {
+  async callStatus(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ dbStatus: 'active' | 'ended'; sessionActive: boolean; startedAt: number | null } | 'not_found' | null> {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
@@ -295,10 +295,12 @@ export class SirenAdapter {
     } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
     if (res.status === 404) return 'not_found';
     if (!res.ok) throw new SirenTranscriptionError('SIREN_CALL_STATUS_FAILED');
-    const data = await res.json() as { db_status?: unknown; session_active?: unknown };
+    const data = await res.json() as { db_status?: unknown; session_active?: unknown; started_at?: unknown };
     return {
       dbStatus: data.db_status === 'ended' ? 'ended' : 'active',
       sessionActive: data.session_active === true,
+      // 生命周期重构（20261104）：S 权威"会话真实建立过"事实；旧 Siren 不回传=null（未知，不当证据）
+      startedAt: typeof data.started_at === 'number' ? data.started_at : null,
     };
   }
 

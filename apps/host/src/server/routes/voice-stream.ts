@@ -66,6 +66,9 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   if (!d.db.prepare('SELECT 1 FROM voice_calls WHERE call_id=?').get(callId)) {
     d.db.prepare("INSERT OR IGNORE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(callId, conversationId, nowIso);
   }
+  // 生命周期重构（R3，20261104）：真实话轮经通话 WS 抵达=会话确已建立的本地硬证据
+  // （register 通知可丢，不能作唯一凭证）——回填 connected_at，供结束事实统一判定。
+  d.db.prepare('UPDATE voice_calls SET connected_at=COALESCE(connected_at, ?) WHERE call_id=?').run(nowIso, callId);
   if (input.interrupted_turn !== undefined && (typeof input.interrupted_turn !== 'object' || input.interrupted_turn === null)) {
     return ndjsonError(422, 'interrupted_turn must be an object');
   }

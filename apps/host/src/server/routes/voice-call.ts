@@ -41,6 +41,6 @@ export async function handleVoiceCallLifecycle(req: IncomingMessage, res: Server
   // F01（四仓审计 20261104）：Siren lifecycle end = 确认终态——统一走共同出口，包括投影
   // 已被前端命令先收口的场景（早退分支不补登记=旧缺口，审计 S-first 复现已覆盖）。
   // 幂等：投影 UPDATE 只在 active 生效；事实 INSERT OR IGNORE（恰一条）。
-  endCallConfirmed(d.db, callId);
+  endCallConfirmed(d.db, callId, { lifecycleEnd: true }); // R3：end 回调源自 onDestroyed=真实会话的独立正向证据
   return json(res, 200, { call_id: callId, state: 'ended' });
 }

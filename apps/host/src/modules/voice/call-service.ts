@@ -7,21 +7,38 @@ import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/cont
 
 export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number };
 
+/** 生命周期重构（复核 20261104 R3）："是否真实建立过通话"的**统一证据解释器**。
+ *  根因修正：connected_at 只证明"register 通知到达过"，为空不等于从未连接（通知可丢）。
+ *  证据（任一成立即视为真实通话）：
+ *  a) connected_at 非空——register 通知到达，或真实话轮到达时回填（voice-stream）；
+ *  b) 该 call 有真实接纳的语音话轮（voice_stream_turns）——话轮经通话 WS 抵达，是硬证据；
+ *  c) S 权威事实 started_at（对账/查询路径传入，来自 S call_sessions 持久行）；
+ *  d) lifecycle end 回调（onDestroyed 仅真实会话触发，回调路径显式传入）。
+ *  三/四皆无的收口（未连接预留到期）不产生结束事实（R2 语义保留）。 */
+export type RealSessionEvidence = { sirenStartedAt?: number | null; lifecycleEnd?: boolean };
+export function callHadRealSession(db: Db, callId: string, external?: RealSessionEvidence): boolean {
+  const row = db.prepare('SELECT connected_at FROM voice_calls WHERE call_id=?').get(callId) as { connected_at: string | null } | undefined;
+  if (!row) return false;
+  if (row.connected_at !== null) return true;
+  if (external?.lifecycleEnd === true) return true;
+  if (external?.sirenStartedAt != null) return true;
+  return Boolean(db.prepare('SELECT 1 FROM voice_stream_turns WHERE call_id=? LIMIT 1').get(callId));
+}
+
 /** F01（四仓审计 20261104）：通话**确认终态**的共同出口——更新投影 + 登记同 call 幂等的
  *  pending_program_facts 事实（随下一次正常文字轮附带，B4 合同）。
  *  调用方限定两类：Siren lifecycle end 回调（正本确认结束）与宿主对账（正本 ended/
  *  无此通话）。前端面板挂断与模型 end 工具**不走这里**——requestHangup 只是
  *  可取消的 linger 意图，S 仍可接受新输入，不能凭意图登记"通话已结束"（真假事实混用）。
  *  幂等：投影只在 active→ended 时更新；事实主键 call_end:{callId}，INSERT OR IGNORE。
- *  R2（复核 20261104）：从未连接的建呼预留（connected_at IS NULL）收口**不登记**
- *  "通话已结束"事实——预留失效≠已建立通话的结束。仅真正连接过的通话产生该事实。 */
-export function endCallConfirmed(db: Db, callId: string): { ended: boolean; factRegistered: boolean } {
+ *  是否登记事实由 callHadRealSession 统一判定（证据见其注释）。 */
+export function endCallConfirmed(db: Db, callId: string, external?: RealSessionEvidence): { ended: boolean; factRegistered: boolean } {
   const now = new Date().toISOString();
   const upd = db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=? AND state='active'").run(now, callId);
   const ended = Number(upd.changes) === 1;
-  const conv = db.prepare("SELECT conversation_id, connected_at FROM voice_calls WHERE call_id=? AND state='ended'").get(callId) as { conversation_id: string; connected_at: string | null } | undefined;
+  const conv = db.prepare("SELECT conversation_id FROM voice_calls WHERE call_id=? AND state='ended'").get(callId) as { conversation_id: string } | undefined;
   let factRegistered = false;
-  if (conv && conv.connected_at !== null) {
+  if (conv && callHadRealSession(db, callId, external)) {
     db.prepare('INSERT OR IGNORE INTO pending_program_facts(id, conversation_id, kind, fact_text, created_at) VALUES (?,?,?,?,?)')
       .run(`call_end:${callId}`, conv.conversation_id, 'call_end', '语音通话已结束。本轮回到文字聊天。', now);
     factRegistered = true;
