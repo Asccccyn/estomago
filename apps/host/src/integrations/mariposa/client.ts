@@ -498,6 +498,14 @@ export class MariposaClient {
     if (args.replacement) payload.replacement = args.replacement;
     return this.transport('memory.our_words.source.correct', payload);
   }
+  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection): Promise<MariposaCallResult> {
+    return this.transport('source.binding.bind', {
+      memory_id: memoryId, conversation_id: selection.conversation_id,
+      start_message_id: selection.members[0]!.source_message_id,
+      end_message_id: selection.members.at(-1)!.source_message_id,
+      members: selection.members, event_scope: true,
+    });
+  }
   async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { binding_id: args.bindingId, correction_action: args.correctionAction, operation_id: args.operationId };
     if (args.replacement) payload.replacement = args.replacement;

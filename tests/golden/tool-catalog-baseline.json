@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "eaedfaf87b07438554df6aead5ab6001b1a9815e",
+  "baselineCommit": "c117055423b9247494e38bf0293af37fdaf0fefd",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -48,6 +48,7 @@
     "context_review_complete",
     "memory_words_write",
     "memory_relations",
+    "memory_source_bind",
     "content_albums_read",
     "media_view"
   ],
@@ -57,7 +58,7 @@
     "tool_invoke"
   ],
   "definitionIds": {
-    "memory_hold": "td_6138605d493ea50bff0df19f",
+    "memory_hold": "td_682b4310a6cd9b73fd800c51",
     "memory_recall": "td_3c97452a110827ff34c62d69",
     "memory_recall_next": "td_94172c95a0354c44875fcdb4",
     "memory_read_full": "td_38751466a40fa898903ce182",
@@ -70,7 +71,7 @@
     "memory_correct": "td_c58dab638b2edcb5855b7450",
     "deletion_review": "td_1a184b61b7e8219ea84dc25d",
     "episode_read": "td_240a447e6c2fbdb8e8ff6eeb",
-    "episode_apply": "td_a903555ed7776e9352db24ae",
+    "episode_apply": "td_1e10dda24f7cec9d85422be4",
     "content_post_create": "td_b0e9999653440c5ae216284f",
     "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
@@ -102,18 +103,19 @@
     "wishstar_offer_star": "td_bb605a24b331b6dc1c2d88f8",
     "wishstar_accept_offer": "td_fe061dcebb331f5a2c2a00ce",
     "context_review_complete": "td_80e678ecb6056243f20c0d26",
-    "memory_words_write": "td_1fc54ccae5063698ec298988",
+    "memory_words_write": "td_f4823cf6cf38cf650274b504",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
+    "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "55f6e8cb268d19505fa955fa3fdd5465e69959aa041497eb6d635322392afc60",
+  "toolsSha256": "54772e8f0aac5829d3f0f665e9d9f3e312185b50a067874196ef0cb7ed358cec",
   "tools": [
     {
       "type": "function",
       "function": {
         "name": "memory_hold",
-        "description": "保存一件事为正式记忆。你可自主选择记录或不记录；quotes 与 source_ranges 独立。source_status=unbound 表示已保存但未绑定原文。仅 contemporaneous 可写当下心情；mood_tags 或 mood_note 任一出现都是写心情，两者都省略才是不写。",
+        "description": "直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成；需要时另用 memory_source_bind 绑定原文、memory_words_write 补写原话，也可由她以后补绑定。仅 contemporaneous 可写当下心情；mood_tags 或 mood_note 任一出现都是写心情，两者都省略才是不写。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -147,67 +149,6 @@
               "type": "string",
               "minLength": 1,
               "description": "自主选择保存，一条一事；正文可叙述经历和感受，逐字引语须有原文依据。"
-            },
-            "source_ranges": {
-              "type": "array",
-              "minItems": 1,
-              "maxItems": 20,
-              "description": "完整事件原文的 [start_seq,end_seq] 消息闭区间，按 [N] 序号取；可跨日/窗，分散事件用多段。先 conversation_read 读全；无法核实时可省略。",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "start_seq",
-                  "end_seq"
-                ],
-                "properties": {
-                  "start_seq": {
-                    "type": "integer",
-                    "minimum": 1
-                  },
-                  "end_seq": {
-                    "type": "integer",
-                    "minimum": 1
-                  }
-                }
-              }
-            },
-            "quotes": {
-              "type": "array",
-              "maxItems": 10,
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "seq"
-                ],
-                "properties": {
-                  "seq": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "已读消息的 [N] 序号"
-                  },
-                  "from": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "起始句，1 起算"
-                  },
-                  "to": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "结束句（含）；与 from 成对"
-                  }
-                },
-                "dependencies": {
-                  "from": [
-                    "to"
-                  ],
-                  "to": [
-                    "from"
-                  ]
-                }
-              },
-              "description": "勾选已读原话，系统逐字录入并标说话人。from/to 均省略取整条，否则取句子闭区间。例如 [{\"seq\":12,\"from\":1,\"to\":2}]；缺原文先 conversation_read。"
             },
             "plan_ids": {
               "type": "array",
@@ -1039,7 +980,7 @@
               "type": "array",
               "minItems": 1,
               "maxItems": 16,
-              "description": "原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_hold 回执里的来源身份"
+              "description": "原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_source_bind 回执里的来源身份"
             },
             "terminal_source_ref": {
               "type": "object",
@@ -2120,7 +2061,7 @@
                   ]
                 }
               },
-              "description": "已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间，规则同 hold.quotes"
+              "description": "已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间"
             }
           },
           "required": [
@@ -2235,6 +2176,39 @@
               }
             }
           ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_source_bind",
+        "description": "可选：给已有记忆补绑定一段聊天原文，不创建或改写记忆正文。按真实消息序号指定闭区间；多段分别绑定。无需先调用 conversation_read；不确定范围时可先读，也可留给她以后补绑。绑定失败不影响已保存记忆，不能因此重新写记忆。",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "memory_id",
+            "start_seq",
+            "end_seq"
+          ],
+          "properties": {
+            "memory_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "已有记忆 ID，来自写入回执或查询结果"
+            },
+            "start_seq": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "当前会话原文起始消息序号（含）"
+            },
+            "end_seq": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "当前会话原文结束消息序号（含）"
+            }
+          }
         }
       }
     },

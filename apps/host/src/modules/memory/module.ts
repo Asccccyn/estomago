@@ -18,26 +18,13 @@ export function memoryHoldDefinition(): HostToolSpec {
     type: 'function',
     function: {
       name: 'memory_hold',
-      // 写作口径（她批准 2026-10-18）：一条一事拆开记；正文=text 字段说明；
-      // quotes=我们的话，可挑着压缩（仍一字不差，核对规则不进文案）
-      description: '保存一件事为正式记忆。你可自主选择记录或不记录；quotes 与 source_ranges 独立。source_status=unbound 表示已保存但未绑定原文。'+HOLD_MOOD_RULE,
+      description: '直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成；需要时另用 memory_source_bind 绑定原文、memory_words_write 补写原话，也可由她以后补绑定。'+HOLD_MOOD_RULE,
       parameters: {
         type: 'object',
         properties: {
           original_title: { ...HOLD_INPUT.properties.original_title, description:'记忆标题（长度按 Unicode 码点计）' },
           categories: {type:HOLD_INPUT.properties.categories.type,items:HOLD_INPUT.properties.categories.items,minItems:1,description:HOLD_INPUT.properties.categories.description},
           text: { ...HOLD_INPUT.properties.text, description: HOLD_INPUT.properties.text.description },
-          source_ranges: {
-            type: 'array', minItems: 1, maxItems: 20,
-            description: '完整事件原文的 [start_seq,end_seq] 消息闭区间，按 [N] 序号取；可跨日/窗，分散事件用多段。先 conversation_read 读全；无法核实时可省略。',
-            items: { type: 'object', additionalProperties: false, required: ['start_seq', 'end_seq'],
-              properties: { start_seq: { type: 'integer', minimum: 1 }, end_seq: { type: 'integer', minimum: 1 } } },
-          },
-          quotes: {
-            type: 'array', maxItems: 10,
-            items: QUOTE_SELECTION,
-            description: '勾选已读原话，系统逐字录入并标说话人。from/to 均省略取整条，否则取句子闭区间。例如 [{"seq":12,"from":1,"to":2}]；缺原文先 conversation_read。',
-          },
           plan_ids: { ...HOLD_INPUT.properties.plan_ids,description:'plan 分类必填；使用 plans_read 或已有成功回执的 plan_id' },
           creation_mode: { ...HOLD_INPUT.properties.creation_mode },
           memory_date: { type:'string', description:HOLD_INPUT.properties.memory_date.description },
@@ -53,6 +40,21 @@ export function memoryHoldDefinition(): HostToolSpec {
     }
   }
 }
+
+export const MEMORYSOURCEBIND_DEFINITION: HostToolSpec = {
+  type: 'function', function: {
+    name: 'memory_source_bind',
+    description: '可选：给已有记忆补绑定一段聊天原文，不创建或改写记忆正文。按真实消息序号指定闭区间；多段分别绑定。无需先调用 conversation_read；不确定范围时可先读，也可留给她以后补绑。绑定失败不影响已保存记忆，不能因此重新写记忆。',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['memory_id', 'start_seq', 'end_seq'],
+      properties: {
+        memory_id: { type: 'string', minLength: 1, description: '已有记忆 ID，来自写入回执或查询结果' },
+        start_seq: { type: 'integer', minimum: 1, description: '当前会话原文起始消息序号（含）' },
+        end_seq: { type: 'integer', minimum: 1, description: '当前会话原文结束消息序号（含）' },
+      },
+    },
+  },
+};
 
 /** memory_recall 定义唯一正本（原 host-tools 域工厂内该块逐字搬迁）。 */
 export const MEMORYRECALL_DEFINITION: HostToolSpec = {
@@ -261,7 +263,7 @@ const memoryEditFields: Record<string, any> = {
           refs: {
             type: 'array', minItems: 1, maxItems: 10,
             items: QUOTE_SELECTION,
-            description: 'word_add/word_revise 必填：勾选的新原话（同 hold 的 quotes 规则）',
+            description: 'word_add/word_revise 必填：勾选的新原话（按消息序号和句子范围）',
           },
 };
 const correctionActions = ['relation','word_source','binding','plan_link','i_relation','corrections'];
@@ -272,7 +274,7 @@ export const MEMORYCORRECT_DEFINITION: HostToolSpec = {
 };
 export const MEMORYWORDSWRITE_DEFINITION: HostToolSpec = {
   type:'function',function:{name:'memory_words_write',description:'向已有记忆补写或替换已核对的原话。add 补话；revise 替换一条已存话语。只勾选已读消息，系统逐字录入并解析说话人；缺原文先 conversation_read。目标版本由服务内部读取并 CAS，无需重复获取版本。',parameters:{
-    type:'object',properties:{action:{type:'string',enum:['add','revise']},memory_id:{...memoryEditFields.memory_id,description:'目标记忆 ID，来自 recall/hold 回执'},word_id:{type:'string',minLength:1,description:'revise 必填；memory_read_full 的 our_words 或 memory_recall(channel=words) 返回的 word_id'},refs:{...memoryEditFields.refs,description:'已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间，规则同 hold.quotes'}},required:['action','memory_id','refs'],additionalProperties:false,
+    type:'object',properties:{action:{type:'string',enum:['add','revise']},memory_id:{...memoryEditFields.memory_id,description:'目标记忆 ID，来自 recall/hold 回执'},word_id:{type:'string',minLength:1,description:'revise 必填；memory_read_full 的 our_words 或 memory_recall(channel=words) 返回的 word_id'},refs:{...memoryEditFields.refs,description:'已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间'}},required:['action','memory_id','refs'],additionalProperties:false,
     allOf:[{if:{properties:{action:{const:'revise'}},required:['action']},then:{required:['word_id']}}],
   }},
 };
@@ -339,7 +341,7 @@ export const EPISODEAPPLY_DEFINITION: HostToolSpec = {
           label: { type: 'string', minLength: 1, maxLength: 80, description: '仅 start：短标签（≤80 字，导航用）' },
           episode_id: { type: 'string', minLength: 1, maxLength: 256, description: '除 start 外必填；由 episode_read 列表取得 episode_id' },
           expected_revision: { type: 'integer', description: '除 start 外必填：episode_read 详情中的当前修订号（CAS）；冲突时读回，不猜版本' },
-          source_selections: { type: 'array', minItems: 1, maxItems: 16, description: '原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_hold 回执里的来源身份' },
+          source_selections: { type: 'array', minItems: 1, maxItems: 16, description: '原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_source_bind 回执里的来源身份' },
           terminal_source_ref: { type: 'object', description: 'close 必填：截至何处的原文锚点' },
           decision_source_refs: { type: 'array', minItems: 1, maxItems: 16, description: 'close/correct 必填：判断依据原文引用' },
           corrected_state: { type: 'string', enum: ['OPEN', 'QUIESCENT', 'CLOSED'], description: '仅 correct：纠正后的状态' },
@@ -471,6 +473,12 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     id: 'episode_get', legacyOnly: true, replacedBy: 'episode_read', baselineOrder: 15, definition: () => EPISODEGET_DEFINITION, memoryOnlyAllowed: true, label: '看事件',
     run: (input: Record<string, unknown>, ctx) => svc.episodeGet(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('episode_get', input as Record<string, unknown>, value as Record<string, unknown>),
+  }));
+  registry.register(toolCapability({
+    owner: 'memory', id: 'memory_source_bind', baselineOrder: 51, definition: MEMORYSOURCEBIND_DEFINITION,
+    memoryOnlyAllowed: true, label: '绑定记忆原文',
+    run: (input: Record<string, unknown>, ctx) => svc.memorySourceBind(input as never, ctx),
+    toModel: (value) => value as Record<string, unknown>,
   }));
   registry.register(toolCapability({owner:'memory',id:'memory_words_write',baselineOrder:49,definition:MEMORYWORDSWRITE_DEFINITION,memoryOnlyAllowed:true,label:'补写原话',
     quote:db=>quoteBackgroundTool(db,'memory_correct'),

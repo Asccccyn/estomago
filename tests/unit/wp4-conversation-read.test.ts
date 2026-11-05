@@ -4,7 +4,7 @@
 //  - O03：长中文分片逐字拼回、版本/hash 对齐、进度严格前进
 //  - O04：sync_state 如实（outbox 状态映射）；指定修订读不到如实拒（不冒充）
 //  - O05：片段实际进入下一请求才算已见（未发出的 pending 不入 manifest）
-//  - O06：已读片段可被 hold 引用；同消息未读片段不放行（码点范围门）
+//  - O06：已读片段可被 memory_words_write 摘录；同消息未读片段不放行（码点范围门）
 //  - O07：多次回读零副作用（消息/修订/outbox/书签计数不变）
 //  - O08：无 include_cot 参数（思考不可请求）；协议继续态回归随全套件
 import { test } from 'node:test';
@@ -185,7 +185,8 @@ test('O06（单元）：片段级已见——已读范围可引用，未读片�
   const root = tempRoot('wp4-o06-');
   const holdCalls: unknown[] = [];
   const mariposa: MariposaTransport = async (cap, payload) => {
-    if (cap === 'memory.hold') {
+    if (cap === 'memory.get') return {ok:true,result:{version:1}};
+    if (cap === 'memory.update') {
       holdCalls.push(payload);
       const n = Array.isArray(payload.source_selections) ? (payload.source_selections as unknown[]).length : 0;
       return { ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: Array.from({ length: n }, (_, i) => `msb-x-${i}`), committed_at: new Date().toISOString() } };
@@ -200,20 +201,20 @@ test('O06（单元）：片段级已见——已读范围可引用，未读片�
   // 已读片段=码点 [0, 11)（"前半段可引用的原文。"共 11 码点）
   const readCpEnd = [...'前半段可引用的原文。'].length;
   const holdArgs = {
-    original_title: '测试', categories: ['daily'], text: '事件正文', creation_mode: 'contemporaneous',
-    quotes: [{ seq: 1, from: 1, to: 1 }],
+    action: 'add', memory_id: 'mem-x',
+    refs: [{ seq: 1, from: 1, to: 1 }],
   };
   const okCtx = { ...CTX, seenMessages: [{ id: 'm1', revision: 1, char_start: 0, char_end: readCpEnd }] };
-  const good = await executor.execute('memory_hold', { ...holdArgs }, okCtx);
+  const good = await executor.execute('memory_words_write', { ...holdArgs }, okCtx);
   assert.equal(good.ok, true, JSON.stringify(good.output).slice(0, 200));
   assert.equal(holdCalls.length, 1, '已读句段可勾选，hold 发出');
   // 未读句段（在后半段）→ QUOTE_REF_RANGE_NOT_SEEN，零副作用
-  const badHold = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1, from: 2, to: 2 }] }, okCtx);
+  const badHold = await executor.execute('memory_words_write', { ...holdArgs, refs: [{ seq: 1, from: 2, to: 2 }] }, okCtx);
   assert.equal(badHold.ok, false);
   assert.equal((badHold.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   assert.equal(holdCalls.length, 1, '未读句段不放行——不因同消息其他句段已读而整条放行');
   // 整条勾选（含未读后半）同样不放行
-  const badWhole = await executor.execute('memory_hold', { ...holdArgs, quotes: [{ seq: 1 }] }, okCtx);
+  const badWhole = await executor.execute('memory_words_write', { ...holdArgs, refs: [{ seq: 1 }] }, okCtx);
   assert.equal((badWhole.output as { error_code?: string }).error_code, 'QUOTE_REF_RANGE_NOT_SEEN');
   db.close();
 });
@@ -315,7 +316,7 @@ test('O05：回读片段进入下一请求→入已见清单；未发出（下�
   ctxB.db.close();
 });
 
-test('O06（集成）：回读片段进入请求后，同回合 hold 可引用该片段', async () => {
+test('O06（集成）：回读片段进入请求后，同回合补话通过已读检查', async () => {
   const root = tempRoot('wp4-o06i-');
   const holdCalls: unknown[] = [];
   let gen = 0;
@@ -329,9 +330,9 @@ test('O06（集成）：回读片段进入请求后，同回合 hold 可引用�
     }
     if (toolResults.length === 1) {
       // 第 2 轮：回读结果已在请求里——hold 引用已读片段
-      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-hold', 'memory_hold', {
-        original_title: '引用测试', categories: ['daily'], text: '事件正文', creation_mode: 'contemporaneous',
-        quotes: [{ seq: 2, from: 1, to: 1 }],
+      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-hold', 'memory_words_write', {
+        action: 'add', memory_id: 'mem-x',
+        refs: [{ seq: 2, from: 1, to: 1 }],
       })) };
     }
     return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '记好了')) };
@@ -347,7 +348,8 @@ test('O06（集成）：回读片段进入请求后，同回合 hold 可引用�
   // 第 2 轮请求（含回读工具结果）真实发出 + 第 2 轮的 hold 已可用回读片段视野
   const payloads = (ctx.db.prepare("SELECT payload_json FROM provider_requests WHERE purpose = 'chat' ORDER BY created_at").all() as Array<{ payload_json: string }>).map((r) => r.payload_json);
   assert.ok(payloads.some((p) => p.includes('久远的可引用片段。')), '回读结果真实进入了下一请求');
-  const holdPr = payloads.find((p) => p.includes('memory_hold'));
-  assert.ok(holdPr, 'hold 请求存在');
+  const holdPr = payloads.find((p) => p.includes('memory_words_write'));
+  assert.ok(holdPr, '补话请求存在');
+  assert.ok(payloads.some(p => p.includes('QUOTE_NOT_SYNCED')), '已读检查通过后才到来源同步检查；不能以工具参数错误冒充引用成功');
   ctx.db.close();
 });

@@ -192,82 +192,6 @@ export class MemoryToolsService {
     // 宿主直调无 id 时与旧全局为 null 的行为一致（空串派生）。
     const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
 
-    // —— 引用先收口（零副作用阶段）：勾选序号 → 已见原文直接抄录 → 来源收据齐备（收据缺失先补一发同步再核） ——
-    let ourWords: Array<{ speaker: 'qiaosheng' | 'jiaming'; text: string; source_ref: string }> = [];
-    const eventSelections: Array<{ conversation_id: string; members: Array<{ source_message_id: string; content_hash: string }> }> = [];
-    const rawQuotes = Array.isArray(args.quotes) ? (args.quotes as Array<{ seq: number; from?: number; to?: number }>) : [];
-    if (rawQuotes.length > 0) {
-      const resolved = this.resolveQuoteRefs(ctx.roomId, ctx.seenMessages, rawQuotes);
-      if ('error' in resolved) {
-        const hint = resolved.error === 'QUOTE_REF_SEQ_NOT_SEEN'
-          ? `序号 ${String(rawQuotes[resolved.index]?.seq ?? '?')} 不在已见消息里——只能勾选你真实看过（含 conversation_read 读过）的消息`
-          : resolved.error === 'QUOTE_REF_RANGE_INVALID'
-            ? `第 ${String(resolved.index + 1)} 条勾选的句范围无效（${('detail' in resolved && typeof resolved.detail === 'string') ? resolved.detail : '检查 from/to'}）`
-            : resolved.error === 'QUOTE_REF_RANGE_NOT_SEEN'
-              ? `第 ${String(resolved.index + 1)} 条勾选的句子落在未读区域——先用 conversation_read 读到它`
-              : `第 ${String(resolved.index + 1)} 条勾选与前面重叠（同一句不能录两次）`;
-        return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: hint } };
-      }
-      // 每条被引消息必须有正式来源收据（estómago↔mariposa 同步回执）：没有就先 drain 一次再核
-      const missing = resolved.filter((q) => !this.receiptOf(q.messageId, q.revision));
-      if (missing.length > 0 && this.archiveSync) {
-        await this.archiveSync.drainOnce().catch(() => {});
-      }
-      for (const q of resolved) {
-        const receipt = this.receiptOf(q.messageId, q.revision);
-        if (!receipt) {
-          return { ok: false, output: { error_code: 'QUOTE_NOT_SYNCED', quote_index: resolved.indexOf(q), error: `被引消息（seq=${q.sequence}）尚未完成正式来源同步——稍后重试或去掉该引用` } };
-        }
-        ourWords.push({
-          speaker: q.speaker === 'owner' ? 'qiaosheng' : 'jiaming',
-          text: q.fragment,
-          // F-J-01（联合审计 2026-10-06）：mariposa provenance 收紧（2026-10-04 裁定）只认
-          // source_msg:<已发布 source 消息 id>，本地 msg id 永远解析不到——此前带 quotes 的
-          // hold 被整单 INVALID_SOURCE_REF 拒。正式身份=本次同步收据的 source_message_id。
-          source_ref: `source_msg:${receipt.source_message_id}`,
-        });
-
-      }
-    }
-
-    // Semantic boundaries are selected by the caller; the host only verifies them.
-    const sourceRanges = (args.source_ranges ?? []) as Array<{ start_seq: number; end_seq: number }>;
-    if (sourceRanges.length && this.archiveSync) await this.archiveSync.drainOnce().catch(() => {});
-    const used = new Set<string>();
-    for (const range of sourceRanges) {
-      if (range.end_seq < range.start_seq) return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
-      const rows = this.db.prepare(`SELECT m.id, m.sequence, m.current_revision AS revision, r.content
-        FROM messages m LEFT JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
-        WHERE m.conversation_id=? AND m.sequence BETWEEN ? AND ?
-        AND ((m.speaker='owner' AND m.kind IN ('text','multimodal','sticker','voice')) OR (m.speaker='assistant' AND m.published_at IS NOT NULL))
-        ORDER BY m.sequence LIMIT 501`).all(ctx.roomId, range.start_seq, range.end_seq) as Array<{ id: string; sequence: number; revision: number; content: string }>;
-      if (!rows.length || rows.length > 500 || rows[0]!.sequence !== range.start_seq || rows.at(-1)!.sequence !== range.end_seq) {
-        return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
-      }
-      let conversationId: string | null = null;
-      const members: Array<{ source_message_id: string; content_hash: string }> = [];
-      for (const row of rows) {
-        if (typeof row.content !== 'string') return { ok: false, output: { error_code: 'EVENT_SOURCE_REVISION_MISSING' } };
-        // G3-F08（2026-11-03）：语音有效正文=可信转写（归档投影同一份）——
-        // 覆盖度/收据 hash 核对都按这份文本，已归档语音不再被误报未同步
-        const content = this.effectiveTextOf(row.id, row.revision, row.content);
-        // All messages must have actually been read at this revision, including long-message fragments.
-        const spans = ctx.seenMessages.filter((x) => x.id === row.id && x.revision === row.revision)
-          .map((x) => [x.char_start ?? 0, x.char_end ?? [...content].length]).sort((a,b) => a[0]! - a[0]!);
-        let covered = 0;
-        for (const span of spans) { if (span[0]! > covered) break; covered = Math.max(covered, span[1]!); }
-        if (!spans.length || covered < [...content].length) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SEEN', seq: row.sequence } };
-        if (used.has(row.id)) return { ok: false, output: { error_code: 'EVENT_SOURCE_OVERLAP' } };
-        used.add(row.id);
-        const receipt = this.receiptOf(row.id, row.revision);
-        if (!receipt || receipt.content_hash !== sha256Hex(content)) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SYNCED', seq: row.sequence } };
-        if (conversationId && receipt.source_conversation_id !== conversationId) return { ok: false, output: { error_code: 'EVENT_SOURCE_CONVERSATION_MISMATCH' } };
-        conversationId = receipt.source_conversation_id;
-        members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
-      }
-      eventSelections.push({ conversation_id: conversationId!, members });
-    }
-
     const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
     const holdPayload: Record<string, unknown> = { original_title: args.original_title, categories: args.categories, text: args.text };
@@ -292,7 +216,6 @@ export class MemoryToolsService {
         ...(typeof args.mood_note === 'string' ? { text: args.mood_note } : {}),
       };
     }
-    if (ourWords.length > 0) holdPayload.our_words = ourWords;
     // WP-04（JFA-C05）：同窗存在结果未知的 hold 时，先逐个核查服务端状态
     //（复用 recoverUnknownEffects 的对账路径）——盲重发会造重复记忆
     //（核查后仍未知=阻断本工具调用，如实提示等待）
@@ -308,7 +231,7 @@ export class MemoryToolsService {
     }
     let r: Awaited<ReturnType<MariposaClient['memoryHold']>>;
     try {
-      r = await m.memoryHold({ operationId, holdPayload, eventSourceRanges: eventSelections.length > 0 ? eventSelections : null });
+      r = await m.memoryHold({ operationId, holdPayload });
     } catch {
       // 审计 F08：transport 抛出=结果不明（不是失败）——effect 收口为 unknown，绝不留 running
       this.reviews.settleEffect(effectId, 'unknown', false, null);
@@ -326,13 +249,6 @@ export class MemoryToolsService {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
       return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH' } };
     }
-    // F-J-54（联合审计 2026-10-06）：mariposa 对每条 source_selection 恰好建一个绑定
-    // （registry._hold 逐 frag bind 后 append，1:1）。带选集而回执绑定数不符=回执可疑——
-    // 按结果不明收口（unknown），恢复走原 op 查 hold.status，不换 op 重写桶。
-    if (receipt.binding_ids.length !== eventSelections.length) {
-      this.reviews.settleEffect(effectId, 'unknown', false, null);
-      return { ok: false, output: { error_code: 'HOLD_RECEIPT_BINDING_MISMATCH', expected: eventSelections.length, got: receipt.binding_ids.length } };
-    }
     this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
     try {
@@ -348,9 +264,53 @@ export class MemoryToolsService {
       // 书签推进被拒（旧窗收据/收据错配等）——hold 本身已成功，不因书签失败回滚写入；
       // 冲突留在 checkpoint 查询层如实呈现
     }
-    return { ok: true, output: { saved: true, memory_id: receipt.memory_id, ...(eventSelections.length ? { source_selections: eventSelections } : { source_status: 'unbound' }) } };
+    // 已冻结的旧窗口仍可能传附件参数；保存照常完成，并明确告知附件没有执行。
+    return { ok: true, output: {
+      saved: true, memory_id: receipt.memory_id, source_status: 'unbound',
+      ...((args.source_ranges !== undefined || args.quotes !== undefined) ? {
+        note: '记忆已保存；旧参数中的原文绑定和摘录未执行。需要时另行绑定原文或补写原话，不要重写这条记忆。',
+      } : {}),
+    } };
   }
 
+
+  async memorySourceBind(args: { memory_id: string; start_seq: number; end_seq: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE' } };
+    if (args.end_seq < args.start_seq) return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
+    if (this.archiveSync) await this.archiveSync.drainOnce().catch(() => {});
+    const rows = this.db.prepare(`SELECT m.id, m.sequence, m.current_revision AS revision, r.content
+      FROM messages m LEFT JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      WHERE m.conversation_id=? AND m.sequence BETWEEN ? AND ?
+      AND ((m.speaker='owner' AND m.kind IN ('text','multimodal','sticker','voice')) OR (m.speaker='assistant' AND m.published_at IS NOT NULL))
+      ORDER BY m.sequence LIMIT 501`).all(ctx.roomId, args.start_seq, args.end_seq) as Array<{ id: string; sequence: number; revision: number; content: string }>;
+    if (!rows.length || rows.length > 500 || rows[0]!.sequence !== args.start_seq || rows.at(-1)!.sequence !== args.end_seq) {
+      return { ok: false, output: { error_code: 'EVENT_SOURCE_RANGE_INVALID' } };
+    }
+    let conversationId: string | null = null;
+    const members: Array<{ source_message_id: string; content_hash: string }> = [];
+    for (const row of rows) {
+      if (typeof row.content !== 'string') return { ok: false, output: { error_code: 'EVENT_SOURCE_REVISION_MISSING' } };
+      // 语音来源 hash 与归档使用同一份可信转写。
+      const content = this.effectiveTextOf(row.id, row.revision, row.content);
+      const receipt = this.receiptOf(row.id, row.revision);
+      if (!receipt || receipt.content_hash !== sha256Hex(content)) return { ok: false, output: { error_code: 'EVENT_SOURCE_NOT_SYNCED', seq: row.sequence } };
+      if (conversationId && receipt.source_conversation_id !== conversationId) return { ok: false, output: { error_code: 'EVENT_SOURCE_CONVERSATION_MISMATCH' } };
+      conversationId = receipt.source_conversation_id;
+      members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
+    }
+    const selection = { conversation_id: conversationId!, members };
+    let result: Awaited<ReturnType<MariposaClient['sourceBindingBind']>>;
+    try {
+      result = await this.mariposa.withSignal(ctx.signal).sourceBindingBind(args.memory_id, selection);
+    } catch {
+      return { ok: false, output: { error_code: 'SOURCE_BIND_OUTCOME_UNKNOWN', memory_id: args.memory_id, detail: '绑定结果未知，请先核对该记忆的原文绑定；不要重新写记忆。' } };
+    }
+    if (!result.ok) {
+      const unknown = result.code.startsWith('HTTP_5') || result.code === 'HTTP_429' || result.code.startsWith('TRANSPORT');
+      return { ok: false, output: { error_code: unknown ? 'SOURCE_BIND_OUTCOME_UNKNOWN' : result.code, memory_id: args.memory_id, detail: '本次仅操作原文绑定，不影响记忆正文；不要重新写记忆。' } };
+    }
+    return { ok: true, output: { ...result.result as Record<string, unknown>, source_selections: [selection] } };
+  }
 
   async memoryRecall(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
@@ -734,7 +694,7 @@ export class MemoryToolsService {
     type CorAction = typeof actions[number];
     const action = actions.includes(args.action as CorAction) ? args.action as CorAction : '';
     if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 relation/word_source/binding/plan_link/i_relation/link/relations/trace/corrections/word_add/word_revise' } };
-    // —— 我们的话新增/修改（勾选式；与 hold quotes 同一解析门）——
+    // —— 我们的话新增/修改（独立勾选式操作）——
     if (action === 'word_add' || action === 'word_revise') {
       const memoryId = typeof args.memory_id === 'string' ? args.memory_id : '';
       const wordId = typeof args.word_id === 'string' ? args.word_id : '';
@@ -748,7 +708,7 @@ export class MemoryToolsService {
       if ('error' in resolved) {
         return { ok: false, output: { error_code: resolved.error, quote_index: resolved.index, error: '勾选未通过（序号未见过/句范围无效/落在未读区域/重复）——只能勾选你真实看过的原文' } };
       }
-      // 来源收据（与 hold 同门：被引消息必须已同步）
+      // 来源收据（被引消息必须已同步）
       const missing = resolved.filter((q) => !this.receiptOf(q.messageId, q.revision));
       if (missing.length > 0 && this.archiveSync) {
         await this.archiveSync.drainOnce().catch(() => {});
