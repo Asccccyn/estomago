@@ -305,14 +305,18 @@ export class ContentServer {
         const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : (row.title as string | null);
         const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
         if (text.trim().length === 0 && (assetIds ?? []).length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
-        // R2：替换前的旧附件集合随响应带出——est 代理据此释放不再引用的资产
-        const previousAssetIds = (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+        // R2/F06-A（复审 e45f01f）：previous_asset_ids 仅在请求**显式提供** asset_ids 时携带
+        // （=显式替换语义）——字段缺席=保留原附件，代理不得释放（旧实现把缺席当空集合，
+        // 只改文字也会误释放在用图片的保护，复审实测正文仍引用 A 但图片可删）。
+        const previousAssetIds = assetIds !== null
+          ? (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
+          : undefined;
         this.db.prepare('UPDATE feed_posts SET body = ?, title = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, title, now(), String(row.id));
         if (assetIds !== null) {
           this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
           for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(String(row.id), assetIds[i]!, i, null);
         }
-        return { status: 200, body: { ...this.postDto(this.postRow(String(row.id))), previous_asset_ids: previousAssetIds } };
+        return { status: 200, body: { ...this.postDto(this.postRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
       });
     }
     m = /^DELETE \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
@@ -359,7 +363,7 @@ export class ContentServer {
     if (m) {
       const row = this.commentRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
         this.ifMatch(req, Number(row.revision));
         const text = typeof body.body === 'string' ? body.body.trim() : '';
         if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
@@ -429,8 +433,12 @@ export class ContentServer {
     }
     m = /^PUT \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
     if (m) {
+      // F07：指纹含资源身份（同 key 跨资源=冲突）；回执先于存在性
+      const fpAeP = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayAeP = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpAeP);
+      if (replayAeP) return replayAeP;
       const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpAeP, () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, now(), String(row.id));
@@ -481,24 +489,35 @@ export class ContentServer {
     if (m) {
       const row = this.creationRow(m[1]!);
       if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
+      const fpCr = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayCr = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpCr);
+      if (replayCr) return replayCr;
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpCr, () => {
         this.ifMatch(req, Number(row.revision));
         const workAsset = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : (row.work_asset_id as string | null);
         const workKind = typeof body.work_kind === 'string' ? body.work_kind : (row.work_kind as string | null);
         if ((workAsset === null || workAsset === undefined) !== (workKind === null || workKind === undefined)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
+        // F06-C：work 替换（显式提供时）previous 带出（icon 不可替换）
+        const prevWork = typeof body.work_asset_id === 'string' && body.work_asset_id && body.work_asset_id !== (row.work_asset_id as string | null)
+          ? [row.work_asset_id as string] : undefined;
         this.db.prepare('UPDATE creations SET title = COALESCE(?, title), work_asset_id = ?, work_kind = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, workAsset ?? null, workKind ?? null, now(), String(row.id));
-        return { status: 200, body: this.creationDto(this.creationRow(String(row.id))) };
+        return { status: 200, body: { ...this.creationDto(this.creationRow(String(row.id))), ...(prevWork !== undefined ? { previous_asset_ids: prevWork } : {}) } };
       });
     }
     m = /^DELETE \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
     if (m) {
+      const fpCrD = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayCrD = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpCrD);
+      if (replayCrD) return replayCrD;
       const row = this.creationRow(m[1]!);
       if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
+      // F06-C：删除响应带 icon/work 资产
+      const crAssets = [row.icon_asset_id, row.work_asset_id].filter((a): a is string => typeof a === 'string' && !!a);
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpCrD, () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE creations SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true } };
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: crAssets } };
       });
     }
 
@@ -527,21 +546,39 @@ export class ContentServer {
     if (m) {
       const row = this.noteRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
+      const fpFn = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayFn = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpFn);
+      if (replayFn) return replayFn;
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpFn, () => {
         this.ifMatch(req, Number(row.revision));
+        // F06-C：留言附件替换（显式提供时）——previous 带出供代理释放
+        const newAssets = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
+        const previousAssetIds = newAssets !== null
+          ? (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
+          : undefined;
         this.db.prepare('UPDATE future_notes SET title = COALESCE(?, title), body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.body === 'string' ? body.body : String(row.body ?? ''), now(), String(row.id));
-        return { status: 200, body: this.noteDto(this.noteRow(String(row.id))) };
+        if (newAssets !== null) {
+          this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
+          for (let i = 0; i < newAssets.length; i++) this.db.prepare('INSERT INTO future_note_assets(note_id, asset_id, position) VALUES (?,?,?)').run(String(row.id), newAssets[i]!, i);
+        }
+        return { status: 200, body: { ...this.noteDto(this.noteRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
       });
     }
     m = /^DELETE \/api\/v1\/content\/future-notes\/([^/]+)$/.exec(route);
     if (m) {
+      const fpFnD = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
+      const replayFnD = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpFnD);
+      if (replayFnD) return replayFnD;
       const row = this.noteRow(m[1]!);
       if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
+      // F06-C：删除响应带 asset_ids——est 代理释放（复审实测未来留言删除后引用残留 409）
+      const noteAssets = (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+      return this.withReceipt(actor, header(req, 'idempotency-key'), fpFnD, () => {
         this.ifMatch(req, Number(row.revision));
         this.db.prepare('UPDATE future_notes SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true } };
+        this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: noteAssets } };
       });
     }
     return { status: 404, body: { error: { code: 'not_found', message: `未知路由：${route}` } } };

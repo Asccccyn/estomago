@@ -87,10 +87,15 @@ export async function contentProxyWithAssets(opts: {
   const result = await contentForward(client, { method, path, actor, body, headers });
   // POST/PUT 成功后：对 body 中引用的 asset 登记保护引用（est 侧防误删）
   if (media && (result.status === 201 || result.status === 200) && uniqueRefs.length > 0) {
-    const objId = (result.body as { id?: string })?.id;
+    const rb = result.body as { id?: string; revision?: number };
+    const objId = rb?.id;
+    // F06-B（复审 e45f01f）：操作键含对象当前修订——A→B→A 时第三次引用是**新修订的新引用**，
+    // 新操作行生效（旧键命中已 released 行直接返回 released、不恢复保护，复审实测 A 可被误删）。
+    // 同一请求重放：对象与修订未变→同键→幂等命中原行，不重复写。
+    const rev = typeof rb?.revision === 'number' ? rb.revision : null;
     for (const assetId of uniqueRefs) {
       try {
-        media.registerReference({ assetId, ownerService: 'content', ownerType: ownerTypeOf(path), ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${assetId}` });
+        media.registerReference({ assetId, ownerService: 'content', ownerType: ownerTypeOf(path), ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${rev ?? 'r0'}:${assetId}` });
       } catch { /* 引用登记失败不阻塞内容保存——保护引用可后补 */ }
     }
   }

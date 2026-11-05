@@ -248,6 +248,53 @@ test('F06/R2：相册引用进删除守卫；解除最后引用后可删（引�
   assert.equal(del2.status, 200, '无引用资产可删');
 });
 
+test('F06-A（复审 e45f01f）：只改正文不释放附件保护；F06-B：A→B→A 后保护恢复', async () => {
+  const imgA = await upload(PNG, 'f06a-A'); const imgB = await upload(Buffer.concat([PNG, Buffer.from([9])]), 'f06a-B');
+  // 帖子引用 A
+  const pc = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-p1' }), body: JSON.stringify({ body: '带图', asset_ids: [imgA] }) });
+  const post = (await pc.json()) as { id: string; revision: number };
+  // ── A：只改文字（不传 asset_ids）→ 保护保留 ──
+  const textOnly = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t1', 'If-Match': `"${post.revision}"` }), body: JSON.stringify({ body: '只改文字' }) });
+  assert.equal(textOnly.status, 200);
+  const delA1 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA1.status, 409, 'F06-A：字段缺席=保留附件→仍受保护（旧返修误释放）');
+  // ── B：A→B（显式替换）→ A 释放；再 B→A → A 保护恢复（新修订新引用行）──
+  const rev1 = ((await textOnly.json()) as { revision: number }).revision;
+  const toB = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t2', 'If-Match': `"${rev1}"` }), body: JSON.stringify({ body: '换成B', asset_ids: [imgB] }) });
+  assert.equal(toB.status, 200);
+  const delA2 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA2.status, 200, 'A 被真实替换→释放→可删');
+  // B→A：A 已被删（missing 状态）——上传同字节会 dedup 指回 missing 资产……用新字节重新生成 A'
+  const imgA2 = await upload(Buffer.concat([PNG, Buffer.from([7])]), 'f06a-A2');
+  const rev2 = ((await toB.json()) as { revision: number }).revision;
+  const backToA = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t3', 'If-Match': `"${rev2}"` }), body: JSON.stringify({ body: '换回A', asset_ids: [imgA2] }) });
+  assert.equal(backToA.status, 200);
+  const delA2b = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA2)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA2b.status, 409, 'F06-B：重新引用的 A2 恢复保护（旧实现命中 released 行→不保护）');
+});
+
+test('F06-C（复审 e45f01f）：未来留言删除释放引用；F07：留言编辑回执含资源身份', async () => {
+  const img = await upload(PNG, 'f06c-img');
+  // 未安排投递的留言带图
+  const nc = await fetch(`${base}/api/v1/content/future-notes`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-n1' }), body: JSON.stringify({ body: '给未来的话', asset_ids: [img] }) });
+  assert.equal(nc.status, 201, '留言创建（带附件）');
+  const note = (await nc.json()) as { id: string; revision: number };
+  // F07：同 key 跨资源（先建 B 留言）
+  const ncB = await fetch(`${base}/api/v1/content/future-notes`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-n2' }), body: JSON.stringify({ body: 'B 留言' }) });
+  const noteB = (await ncB.json()) as { id: string; revision: number };
+  const editHeaders = auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-e1', 'If-Match': '"1"' });
+  const eA = await fetch(`${base}/api/v1/content/future-notes/${note.id}`, { method: 'PUT', headers: editHeaders, body: JSON.stringify({ body: '编辑A' }) });
+  assert.equal(eA.status, 200, '留言 A 编辑成功');
+  const noteAfterEdit = (await eA.json()) as { revision: number };
+  const eB = await fetch(`${base}/api/v1/content/future-notes/${noteB.id}`, { method: 'PUT', headers: editHeaders, body: JSON.stringify({ body: '编辑A' }) });
+  assert.equal(eB.status, 409, `F07：同 key 跨资源→冲突（旧实现 200 返回 A 的结果；实际 ${eB.status}）`);
+  // F06-C：删除留言 → 引用释放 → 图片可删
+  const dn = await fetch(`${base}/api/v1/content/future-notes/${note.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f06c-d1', 'If-Match': `"${noteAfterEdit.revision}"` }) });
+  assert.equal(dn.status, 200, '留言删除');
+  const delImg = await fetch(`${base}/api/v1/assets/${encodeURIComponent(img)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delImg.status, 200, 'F06-C：解除最后引用后图片可删（旧实现仍 409）');
+});
+
 test('F07：编辑成功后原样重放=同结果不增版本；同键异请求冲突；旧版本编辑被 CAS 拒', async () => {
   const create = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-p1' }), body: JSON.stringify({ body: '初版' }) });
   const post = (await create.json()) as { id: string; revision: number };
