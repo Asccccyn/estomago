@@ -15,7 +15,16 @@ import { endCallConfirmed } from '../../modules/voice/call-service.ts';
 export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapter | null, signal?: AbortSignal): Promise<{ ended: number; kept: number; skipped: number }> {
   const out = { ended: 0, kept: 0, skipped: 0 };
   if (!sirenCall) return out;
-  const rows = db.prepare("SELECT call_id, connected_at, reserved_until FROM voice_calls WHERE state='active'").all() as Array<{ call_id: string; connected_at: string | null; reserved_until: string | null }>;
+  // R1（复核 20261104）：候选除 active 外，还包括"已收口(ended)、确实连接过、但缺 call_end
+  // 事实"的行——前端先收口后 lifecycle 通知丢失的场景（ended 行被旧查询筛掉=对账永远
+  // 不查 S、事实永远缺失）。这些行只补事实：正本确认 ended/无此通话才登记（幂等）；
+  // 正本仍 sessionActive=保留不补（通话可能还在）。never-connected 的行由 R2 出口规则
+  // 天然不产事实，无须在此排除。
+  const rows = db.prepare(`SELECT vc.call_id, vc.connected_at, vc.reserved_until FROM voice_calls vc
+    WHERE vc.state='active'
+       OR (vc.state='ended' AND vc.connected_at IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM pending_program_facts f WHERE f.id = 'call_end:' || vc.call_id))`)
+    .all() as Array<{ call_id: string; connected_at: string | null; reserved_until: string | null }>;
   for (const row of rows) {
     if (signal?.aborted) break;
     let status: Awaited<ReturnType<SirenAdapter['callStatus']>>;
@@ -28,7 +37,7 @@ export async function reconcileVoiceCallsOnStartup(db: Db, sirenCall: SirenAdapt
     if (signal?.aborted) break;
     const now = new Date().toISOString();
     if (status === null || status === 'not_found' || status.dbStatus === 'ended') {
-      endCallConfirmed(db, row.call_id); // F01：对账确认终态=共同出口（投影+事实），回调丢失在此补齐
+      endCallConfirmed(db, row.call_id); // F01/R1：对账确认终态=共同出口（投影+事实），回调丢失在此补齐
       out.ended++;
       continue;
     }

@@ -2516,7 +2516,7 @@ export class TurnSupervisor {
     // ③该会话当前无 active 通话（事实仍真实时才说）。多个待消费事实按创建序全量附带。
     const pendingFacts = inputMessage && !this.isCallTurnMessage(inputMessage.id)
       ? (d.db.prepare("SELECT id, fact_text FROM pending_program_facts WHERE conversation_id=? AND consumed_at IS NULL ORDER BY created_at").all(turn.conversation_id) as Array<{ id: string; fact_text: string }>)
-        .filter(() => !d.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(turn.conversation_id))
+        .filter(() => !isVoiceCallActive(d.db, turn.conversation_id)) // E02：窄能力（与 model-bridge/executor 同源判定）
       : [];
     const prompt = [
       ...assembledContext.segments.map((seg) => `[${seg.source}]\n${seg.text}`),

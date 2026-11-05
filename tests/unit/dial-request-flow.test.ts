@@ -134,7 +134,7 @@ test('F01：通话结束事实归确认终态共同出口（S-first/UI-first/对
   try {
     const now = new Date().toISOString();
     // ── 场景 A（审计复现）：lifecycle 先到（Siren 确认终态），前端后到 ──
-    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,analysis_mode) VALUES ('call-s-first','primary','active',?,'ordinary')").run(now);
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-s-first','primary','active',?,?,'ordinary')").run(now, now);
     assert.equal((await lifecycle('call-s-first')).status, 200);
     assert.equal(factRow('call-s-first')?.kind, 'call_end', 'S-first：lifecycle 确认终态登记事实（旧实现此路径漏登记）');
     await c.call('/api/v1/calls/call-s-first', 'DELETE'); // 前端后到
@@ -143,7 +143,7 @@ test('F01：通话结束事实归确认终态共同出口（S-first/UI-first/对
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id='call_end:call-s-first'").get() as { n: number }).n, 1, '幂等：仍恰一条');
 
     // ── 场景 B（真假事实修正）：前端挂断命令先到——意图不登记事实 ──
-    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,analysis_mode) VALUES ('call-ui-first','primary','active',?,'ordinary')").run(now);
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-ui-first','primary','active',?,?,'ordinary')").run(now, now);
     const ui = await c.call('/api/v1/calls/call-ui-first', 'DELETE');
     assert.equal(ui.status, 200);
     assert.equal(ui.body['state'], 'ended', '前端端点仍本端收口投影');
@@ -172,6 +172,46 @@ test('F01：通话结束事实归确认终态共同出口（S-first/UI-first/对
     await c.supervisor.waitIdle();
     const occurrences = prompts.slice(-1)[0]!.split('语音通话已结束').length - 1;
     assert.equal(occurrences, 3, `核销后仅历史留存（三通各一次，实际 ${occurrences}）`);
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
+test('F01-R1/R2 复核返修：UI先收口+回调丢失→对账补事实；未连接预留到期→零事实', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'r12', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-end-r1r2-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  try {
+    const now = new Date().toISOString();
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    let statusCalls = 0;
+    const siren = { callStatus: async () => { statusCalls++; return { dbStatus: 'ended', sessionActive: false }; } } as never;
+
+    // ── R1：UI 先收口（真实前端 DELETE）→ lifecycle 通知丢失（无调用）→ 对账补齐 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-r1','primary','active',?,?,'ordinary')").run(now, now);
+    const ui = await c.call('/api/v1/calls/call-r1', 'DELETE');
+    assert.equal(ui.body['state'], 'ended');
+    assert.equal(factRow('call-r1'), undefined, '挂断命令不登记事实');
+    const before = statusCalls;
+    const out1 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(statusCalls - before, 1, 'R1：ended 缺事实的行**确有**被对账查询（旧实现=0）');
+    assert.equal(factRow('call-r1')?.kind, 'call_end', '对账确认 S 终态后补登记');
+    // 补齐后不再重复查（幂等收敛）
+    const out2 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(out2.ended, 0, '已补事实行不再进入候选');
+
+    // ── R2：未连接预留到期 → 投影收口但零结束事实 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES ('call-r2','primary','active',?,?,'ordinary')").run(now, new Date(Date.now() - 1000).toISOString());
+    const out3 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(out3.ended, 1, '孤儿预留仍被收口（投影清理保留）');
+    assert.equal(factRow('call-r2'), undefined, 'R2：未连接预留**不产生**通话结束事实');
+    // 对照：真正连接过的通话结束=恰一条
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-r2b','primary','active',?,?,'ordinary')").run(now, now);
+    await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(factRow('call-r2b')?.kind, 'call_end', '连接过的通话结束=恰一条');
   } finally {
     if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
     await c.supervisor.stopAll(); c.close();
