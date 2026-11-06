@@ -2,6 +2,105 @@
   'use strict';
   const api = window.estomagoPositionEditor;
   if (!api) return;
+  if (api.signature && new URLSearchParams(location.search).get('adjust') === 'signature') {
+    const signature = document.querySelector('.spring-signature');
+    const panel = document.createElement('aside');
+    panel.id = 'position-editor';
+    panel.setAttribute('aria-label', '水印位置与大小调整');
+    panel.innerHTML = `
+      <header><strong>摆一摆水印</strong><button type="button" id="position-fold" aria-expanded="true">收起</button></header>
+      <div id="position-controls">
+        <p>直接拖动水印调整位置，拖动下方滑杆改大小。调好后点“保存调整”。</p>
+        <label class="position-size"><span>水印大小</span><input id="position-scale" type="range" min="30" max="100" step="1"><output id="position-scale-value"></output></label>
+        <div class="position-row position-nudge"><span>微调</span><button type="button" data-dx="-2" data-dy="0" aria-label="水印向左微调">←</button><button type="button" data-dx="0" data-dy="-2" aria-label="水印向上微调">↑</button><button type="button" data-dx="0" data-dy="2" aria-label="水印向下微调">↓</button><button type="button" data-dx="2" data-dy="0" aria-label="水印向右微调">→</button></div>
+        <div class="position-row"><button type="button" id="position-reset">恢复默认</button><button type="button" id="position-save">保存调整</button></div>
+        <div class="position-row"><button type="button" id="position-preview">查看效果</button></div>
+        <p id="position-status" role="status">调整时不会触发页面跳转，查看效果会先保存。</p>
+        <details><summary>复制水印位置给我</summary><textarea id="position-data" aria-label="水印位置数据" readonly spellcheck="false"></textarea><button type="button" id="position-copy">复制位置数据</button></details>
+      </div>`;
+    document.body.append(panel);
+    document.documentElement.dataset.positionEditor = 'true';
+    document.documentElement.dataset.signatureEditor = 'true';
+    const status = panel.querySelector('#position-status');
+    const slider = panel.querySelector('#position-scale');
+    const data = panel.querySelector('#position-data');
+    const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
+    let position = api.signature.read();
+    function render(message) {
+      const { panelWidth, height } = api.dimensions();
+      const halfWidth = position.width / 2;
+      const halfHeight = position.width * panelWidth / 3 / height / 2;
+      position.x = clamp(position.x, halfWidth, 1 - halfWidth);
+      position.y = clamp(position.y, halfHeight, 1 - halfHeight);
+      api.signature.update(position);
+      const percent = Math.round(position.width * 100);
+      slider.value = percent;
+      panel.querySelector('#position-scale-value').textContent = `${percent}%`;
+      data.value = JSON.stringify(position, null, 2);
+      if (message) status.textContent = message;
+    }
+    let drag = null;
+    signature.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = { x: event.clientX, y: event.clientY, start: { ...position }, ...api.dimensions() };
+      signature.setPointerCapture(event.pointerId);
+    });
+    signature.addEventListener('pointermove', event => {
+      if (!drag) return;
+      position = { ...drag.start, x: drag.start.x + (event.clientX - drag.x) / drag.panelWidth, y: drag.start.y + (event.clientY - drag.y) / drag.height };
+      render('位置已调整，还没有保存。');
+    });
+    signature.addEventListener('pointerup', () => { drag = null; });
+    signature.addEventListener('pointercancel', () => { drag = null; });
+    signature.addEventListener('lostpointercapture', () => { drag = null; });
+    slider.addEventListener('input', () => {
+      position.width = Number(slider.value) / 100;
+      render('大小已调整，还没有保存。');
+    });
+    panel.querySelectorAll('[data-dx]').forEach(button => button.addEventListener('click', () => {
+      const { panelWidth, height } = api.dimensions();
+      position.x += Number(button.dataset.dx) / panelWidth;
+      position.y += Number(button.dataset.dy) / height;
+      render('位置已调整，还没有保存。');
+    }));
+    panel.querySelector('#position-reset').addEventListener('click', () => {
+      position = { ...api.signature.defaults };
+      render('已恢复默认位置和大小，点保存可更新。');
+    });
+    panel.querySelector('#position-save').addEventListener('click', async () => {
+      try {
+        await api.signature.save();
+        status.textContent = '水印位置和大小已保存，普通预览会使用这组调整。';
+      } catch { status.textContent = '此浏览器无法保存，请展开下方数据并复制给我。'; }
+    });
+    panel.querySelector('#position-preview').addEventListener('click', async () => {
+      try {
+        await api.signature.save();
+        location.assign('/home/index.html?season=spring&preview=phone');
+      } catch { status.textContent = '暂时无法保存，未切换预览。请复制下方位置数据。'; }
+    });
+    panel.querySelector('#position-copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.value);
+        status.textContent = '水印位置已复制，可以粘贴到聊天里。';
+      } catch {
+        data.focus();
+        data.select();
+        status.textContent = '数据已选中，请长按复制或按 ⌘C / Ctrl+C。';
+      }
+    });
+    panel.querySelector('#position-fold').addEventListener('click', event => {
+      const controls = panel.querySelector('#position-controls');
+      controls.hidden = !controls.hidden;
+      event.currentTarget.textContent = controls.hidden ? '展开' : '收起';
+      event.currentTarget.setAttribute('aria-expanded', String(!controls.hidden));
+    });
+    api.preview('phone');
+    api.select(0);
+    render();
+    return;
+  }
   const storageKey = 'estomago-position-draft-v1';
   const names = ['spring', 'summer', 'autumn', 'winter'];
   const labels = ['春天', '夏天', '秋天', '冬天'];

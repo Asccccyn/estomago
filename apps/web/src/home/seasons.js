@@ -12,7 +12,7 @@
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const pageParams = new URLSearchParams(location.search);
   if (pageParams.get('preview') === 'phone') viewport.classList.add('editor-phone');
-  const adjusting = pageParams.get('adjust') === '1';
+  const adjusting = ['1', 'signature'].includes(pageParams.get('adjust'));
   const isDesktop = () => desktopQuery.matches && !viewport.classList.contains('editor-phone');
   const seasonNames = ['spring', 'summer', 'autumn', 'winter'];
   const seasonLabels = ['春天', '夏天', '秋天', '冬天'];
@@ -78,6 +78,18 @@
       { action: 'upstairs', label: '二楼', x: .41, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];
+  const signatureStorageKey = 'estomago-signature-layout-v1';
+  const signatureDefaults = { x: .61, y: .93, width: .72 };
+  const signatureLayout = { ...signatureDefaults };
+  try {
+    const stored = JSON.parse(localStorage.getItem(signatureStorageKey));
+    if (stored?.version === 1 && Number.isFinite(stored.x) && stored.x >= 0 && stored.x <= 1 &&
+        Number.isFinite(stored.y) && stored.y >= 0 && stored.y <= 1 &&
+        Number.isFinite(stored.width) && stored.width >= .3 && stored.width <= 1) {
+      Object.assign(signatureLayout, { x: stored.x, y: stored.y, width: stored.width });
+    }
+  } catch {}
+  let springSignature = null;
   const requestedSeason = seasonNames.indexOf(pageParams.get('season'));
   let current = requestedSeason < 0 ? 0 : requestedSeason;
   let destination = null;
@@ -130,6 +142,7 @@
     scene.style.left = `${season * 25}%`;
     const signature = season === 0 ? document.createElement('nav') : null;
     if (signature) {
+      springSignature = signature;
       signature.className = 'spring-signature';
       signature.setAttribute('aria-label', '春天水彩导航');
       const image = document.createElement('img');
@@ -190,6 +203,9 @@
     width = height * ratio;
     panelWidth = width / 4;
     cameraY = (viewport.clientHeight - height) / 2;
+    Object.assign(springSignature.style, {
+      left: `${signatureLayout.x * 100}%`, top: `${signatureLayout.y * 100}%`, width: `${signatureLayout.width * 100}%`,
+    });
     const visibleBottom = (viewport.clientHeight - cameraY - 44) / height;
     for (let i = 0; i < resting.length; i++) {
       const spriteSize = panelWidth * SPRITE_WIDTH;
@@ -521,7 +537,7 @@
 
   if (adjusting) {
     viewport.dataset.adjusting = 'true';
-    // This API exists only in the temporary editor; normal visits use the committed layout.
+    // Editing methods are exposed only here; saved signature layouts also apply to normal visits.
     window.estomagoPositionEditor = {
       read: () => resting.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }) => ({
         x, groundY, groundOffsets: [...groundOffsets], xOffsets: [...xOffsets], bodySizes: [...bodySizes],
@@ -540,6 +556,17 @@
       preview(mode) {
         viewport.classList.toggle('editor-phone', mode === 'phone');
         layout();
+      },
+      signature: {
+        defaults: { ...signatureDefaults },
+        read: () => ({ ...signatureLayout }),
+        update(config) {
+          Object.assign(signatureLayout, config);
+          layout();
+        },
+        save() {
+          localStorage.setItem(signatureStorageKey, JSON.stringify({ version: 1, ...signatureLayout }));
+        },
       },
       dimensions: () => ({ panelWidth, height }),
     };
