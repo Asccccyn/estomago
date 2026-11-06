@@ -27,7 +27,6 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .animal-pair .animal-sprite { animation: breathe 4.9s ease-in-out infinite; }
 .animal-pair .animal:last-child .animal-sprite { animation-delay: -2.7s; animation-duration: 5.8s; }
 #travelers { z-index: 4; pointer-events: none; }
-#travelers[data-journey="winter"] { z-index: 2; }
 .traveler { position: absolute; left: 0; top: 0; aspect-ratio: 1; transform-origin: center; will-change: transform; }
 #season-veil { position: absolute; inset: 0; z-index: 5; background: #e7d5b6; opacity: 0; pointer-events: none; }
 #seasons[data-busy="true"] .scene-hotspot, #seasons[data-busy="true"] .animal-pair { pointer-events: none; }
@@ -39,3 +38,8 @@ html[data-home-hidden="true"] .animal-sprite { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .animal-sprite { animation: none !important; } .animal-pair { transition: none; } }
 
 #seasons.editor-phone { width: min(100vw, calc(100dvh * 430 / 932)); margin-inline: auto; }
+
+#window-transition { position: absolute; inset: 0; z-index: 6; overflow: hidden; pointer-events: none; clip-path: inset(0); opacity: 1; }
+.window-spring-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.window-panorama, .window-scene-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+.window-scene-layer { z-index: 2; }

@@ -82,6 +82,7 @@
   let panelWidth = 0;
   let cameraY = 0;
   let activeAnimations = [];
+  let windowTransition = null;
   let ambientFrame = 0;
   let lastFrame = 0;
   let elapsed = 0;
@@ -197,6 +198,9 @@
     if (busy) {
       current = destination;
       activeAnimations.forEach(animation => animation.cancel());
+      windowTransition?.remove();
+      windowTransition = null;
+      pairs[current].hidden = false;
       world.style.transform = cameraTransform(current);
     }
     const density = Math.min(devicePixelRatio || 1, 1.5);
@@ -286,45 +290,89 @@
       updateAccessibleScenes();
       return;
     }
-    pairs[from].hidden = true;
+    pairs[from].hidden = from !== 3;
     pairs[to].hidden = true;
     travelLayer.dataset.journey = seasonNames[from];
-    travelLayer.style.clipPath = from === 3 && isDesktop() ? 'inset(0 0 0 75%)' : '';
     activeAnimations = [];
-    const duration = [4200, 5200, 8800, 3300][from];
+    const duration = [4200, 5200, 8800, 5200][from];
     const journeys = [];
     let revealVeil = false;
 
     if (from === 3) {
-      // Both sleeping animals remain one composition throughout the close-up.
-      const group = pairs[from].cloneNode(true);
-      group.hidden = false;
-      group.tabIndex = -1;
-      group.removeAttribute('aria-label');
-      group.classList.add('winter-zoom');
-      const centerX = (from + resting[from].x) * panelWidth;
-      const centerY = resting[from].y * height;
-      group.style.left = `${centerX}px`;
-      group.style.top = `${centerY}px`;
-      group.style.width = `${PAIR_WIDTH * panelWidth}px`;
-      travelLayer.append(group);
-      const groupBounds = group.getBoundingClientRect();
-      const bodies = [...group.querySelectorAll('.animal-size')].map(node => node.getBoundingClientRect());
-      const anchorX = (Math.min(...bodies.map(rect => rect.left)) + Math.max(...bodies.map(rect => rect.right))) / 2 - groupBounds.left;
-      const anchorY = (Math.min(...bodies.map(rect => rect.top)) + Math.max(...bodies.map(rect => rect.bottom))) / 2 - groupBounds.top;
-      group.style.transformOrigin = `${anchorX}px ${anchorY}px`;
-      const moveX = (from + .5) * panelWidth - (centerX - groupBounds.width / 2 + anchorX);
-      const moveY = viewport.clientHeight * .60 - cameraY - (centerY - groupBounds.height / 2 + anchorY);
-      journeys.push(animate(group, [
-        { offset: 0, transform: 'translate(-50%, -50%) translate3d(0, 0, 0) scale(1)', opacity: 1 },
-        { offset: .42, transform: `translate(-50%, -50%) translate3d(${moveX * .4}px, ${moveY * .4}px, 0) scale(1.7)`, opacity: 1 },
-        { offset: .80, transform: `translate(-50%, -50%) translate3d(${moveX * .8}px, ${moveY * .8}px, 0) scale(3.2)`, opacity: 1 },
-        { offset: 1, transform: `translate(-50%, -50%) translate3d(${moveX}px, ${moveY}px, 0) scale(4)`, opacity: isDesktop() ? 0 : 1 },
-      ], { duration, easing: 'ease-in-out' }));
-      if (!isDesktop()) {
-        revealVeil = true;
-        journeys.push(animate(veil, [{ opacity: 0 }, { opacity: 0, offset: .76 }, { opacity: 1 }], { duration, easing: 'ease-in' }));
+      const portal = document.createElement('div');
+      portal.id = 'window-transition';
+      portal.setAttribute('aria-hidden', 'true');
+      portal.inert = true;
+      const outside = document.createElement('div');
+      outside.className = 'window-spring-world';
+      Object.assign(outside.style, { width: `${width}px`, height: `${height}px`, transform: cameraTransform(0) });
+      const painting = panorama.cloneNode();
+      painting.removeAttribute('id');
+      painting.className = 'window-panorama';
+      const springScenes = sceneLayer.cloneNode(true);
+      springScenes.removeAttribute('id');
+      springScenes.className = 'window-scene-layer';
+      springScenes.querySelectorAll('.scene-hotspot').forEach(node => node.remove());
+      springScenes.querySelectorAll('.animal-pair').forEach((pair, index) => {
+        pair.hidden = index === 0 ? false : index === 3 ? true : pairs[index].hidden;
+        pair.tabIndex = -1;
+      });
+      outside.append(painting, springScenes);
+      for (const id of ['field-foreground', 'bedding-foreground']) {
+        const foreground = document.getElementById(id).cloneNode(true);
+        foreground.removeAttribute('id');
+        foreground.querySelector('defs').remove();
+        foreground.style.zIndex = id === 'field-foreground' ? '5' : '3';
+        outside.append(foreground);
       }
+      portal.append(outside);
+      viewport.append(portal);
+      windowTransition = portal;
+
+      // The six clear panes preserve the painted curtain, snow sill and mullions as foreground.
+      const panes = [
+        [[1382, 126], [1405, 131], [1408, 212], [1360, 209]],
+        [[1420, 136], [1475, 145], [1478, 221], [1421, 215]],
+        [[1352, 231], [1407, 236], [1408, 304], [1353, 302]],
+        [[1421, 241], [1477, 248], [1479, 309], [1421, 307]],
+        [[1353, 324], [1408, 327], [1409, 421], [1353, 417]],
+        [[1422, 332], [1480, 333], [1481, 424], [1423, 425]],
+      ];
+      const focus = { x: width * 1380 / 1706, y: height * 267 / 922 };
+      const through = Math.max(viewport.clientWidth / (width * 48 / 1706), viewport.clientHeight / (height * 58 / 922)) * 1.18;
+      const cameras = [
+        { offset: 0, scale: 1, x: cameraX(from), y: cameraY, easing: 'ease-in-out' },
+        ...Array.from({ length: 11 }, (_, index) => {
+          const progress = index / 10;
+          const scale = 2.15 * (through / 2.15) ** progress;
+          return { offset: .26 + .50 * progress, scale, x: viewport.clientWidth / 2 - focus.x * scale, y: viewport.clientHeight / 2 - focus.y * scale, easing: index === 10 ? 'ease-in-out' : 'linear' };
+        }),
+        { offset: 1, scale: through, x: viewport.clientWidth / 2 - focus.x * through, y: viewport.clientHeight / 2 - focus.y * through },
+      ];
+      const easing = 'linear';
+      journeys.push(animate(world, cameras.map(camera => ({
+        offset: camera.offset, easing: camera.easing, transform: `translate3d(${camera.x}px, ${camera.y}px, 0) scale(${camera.scale})`,
+        filter: camera.offset >= .72 ? 'blur(1.2px)' : 'blur(0px)',
+      })), { duration, easing }));
+      journeys.push(animate(portal, cameras.map(camera => ({
+        offset: camera.offset, easing: camera.easing,
+        clipPath: `path("${panes.map(pane => pane.map(([x, y], index) => `${index ? 'L' : 'M'}${camera.x + x / 1706 * width * camera.scale} ${camera.y + y / 922 * height * camera.scale}`).join(' ') + ' Z').join(' ')}")`,
+      })), { duration, easing }));
+      journeys.push(animate(portal, [{ opacity: 0 }, { offset: .22, opacity: 0 }, { offset: .46, opacity: 1 }, { opacity: 1 }], { duration, easing: 'ease-in-out' }));
+      journeys.push(animate(outside, cameras.map(camera => {
+        const left = Math.max(0, camera.x + 1352 / 1706 * width * camera.scale);
+        const right = Math.min(viewport.clientWidth, camera.x + 1481 / 1706 * width * camera.scale);
+        const top = Math.max(0, camera.y + 126 / 922 * height * camera.scale);
+        const bottom = Math.min(viewport.clientHeight, camera.y + 425 / 922 * height * camera.scale);
+        const scale = Math.max((right - left) / panelWidth, (bottom - top) / height) * 1.1;
+        const x = (left + right) / 2 - panelWidth * .5 * scale;
+        const y = (top + bottom) / 2 - height * .5 * scale;
+        return {
+          offset: camera.offset, easing: camera.easing,
+          transform: camera.offset === 1 ? cameraTransform(0) : `translate3d(${x}px, ${y}px, 0) scale(${scale})`,
+          filter: camera.offset === 0 ? 'blur(1px)' : 'blur(0px)',
+        };
+      }), { duration, easing }));
     } else {
       if (from === 2) footprints(from, duration);
       for (let index = 0; index < 2; index++) {
@@ -427,18 +475,22 @@
     }
     if (current !== from) revealVeil = false;
     current = to;
+    pairs[from].hidden = true;
+    pairs[to].hidden = false;
     world.style.transform = cameraTransform(current);
     activeAnimations.forEach(animation => animation.cancel());
     activeAnimations = [];
     travelLayer.replaceChildren();
-    travelLayer.style.clipPath = '';
     delete travelLayer.dataset.journey;
-    pairs[to].hidden = false;
-    if (revealVeil) {
+    if (windowTransition) {
+      await animate(windowTransition, [{ opacity: 1 }, { opacity: 0 }], { duration: 350, easing: 'ease-out' });
+      windowTransition?.remove();
+      windowTransition = null;
+    } else if (revealVeil) {
       await animate(veil, [{ opacity: 1 }, { opacity: 0 }], { duration: 650, easing: 'ease-out' });
-    } else if (from === 2 || from === 3) {
+    } else if (from === 2) {
       await animate(pairs[to], [{ opacity: 0 }, { opacity: 1 }], { duration: 650, easing: 'ease-out' });
-    } else {
+    } else if (from !== 3) {
       await animate(pairs[to], [{ transform: 'translate(-50%, -50%) scale(1, .985)' }, { transform: 'translate(-50%, -50%) scale(1, 1)' }], { duration: 260, easing: 'ease-out' });
     }
     activeAnimations.forEach(animation => animation.cancel());
