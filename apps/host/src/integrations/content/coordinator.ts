@@ -66,15 +66,17 @@ export class ContentOperationCoordinator {
 
     // ⓪ 本地已接受身份边界（RF02，复审 20261106）：pending/unknown 意图=操作已被本宿主
     // 接受（意图+pin 已持久、结果未收口）。此时同键异参不得借“远端尚无回执”改写已
-    // 接受操作——拒 409；同参重试按已持久原意图继续（不经资产重检：原 pin 仍在保护，
-    // 不因资产状态变化阻挡已接受操作的重放）。
+    // 接受操作——拒 409；同参重试与恢复 tick 走同一条“推进已接受操作”路径
+    // （RF2-01，复审 20261106 第二轮：先核对原操作事实再重放/确认，不再有绕过
+    // 结果核对的直达 dispatch 快速路径——HTTP 状态不是原操作事实）。
     const accepted = this.db.prepare("SELECT state, payload_ref FROM outbox WHERE target = ? AND operation_key = ? AND state IN ('pending','unknown_outcome')").get(CONTENT_OPERATION_TARGET, opKey) as { state: string; payload_ref: string } | undefined;
     if (accepted) {
       const persisted = JSON.parse(accepted.payload_ref) as IntentPayload;
       if (intentFingerprint(persisted) !== intentFingerprint(currentIntent)) {
         return { status: 409, body: { error: { code: 'content_operation_conflict', message: '该幂等键已有未收口的已接受操作（参数不同）。原操作已持久并将按原身份收口；新操作请换幂等键。' } } };
       }
-      return this.dispatchPinned(opKey, persisted);
+      const advanced = await this.advanceAccepted(opKey);
+      return advanced ?? { status: 504, body: { error: { code: 'content_write_unknown', message: '内容服务响应未知；操作已持久，将按原身份恢复收口（同键重试安全）' } } };
     }
 
     // ① 同操作回查：旧成功回放原回执——不做资产校验（HOST_REPLAY_ORDER：不能被旧 unavailable 挡住）
@@ -112,7 +114,39 @@ export class ContentOperationCoordinator {
     return this.dispatchPinned(opKey, this.intentOf(opKey) ?? currentIntent);
   }
 
-  /** 已有意图的提交与收口（write ④-⑥ 与恢复消费者共用）。调用前提：意图+pin 已持久。 */
+  /** RF2-01（复审 20261106 第二轮）：推进一个已接受操作——HTTP 同参重试与恢复 tick
+   *  共用同一条路径：先核对原操作事实（resolve），回执在则确认收口、确无回执才重放；
+   *  身份不一致标待核；本次传输/鉴权失败只推进 attempt，不改变原操作状态。
+   *  返回推进结果供 HTTP 调用方如实回执；null=意图已不在（被并发收口）。 */
+  private async advanceAccepted(opKey: string): Promise<ContentWriteResult | null> {
+    const row = this.db.prepare('SELECT id, payload_ref FROM outbox WHERE target = ? AND operation_key = ?').get(CONTENT_OPERATION_TARGET, opKey) as { id: string; payload_ref: string } | undefined;
+    if (!row) return null;
+    const p = JSON.parse(row.payload_ref) as IntentPayload;
+    const idem = opKey.slice(`content:${p.actor}:`.length);
+    try {
+      const resolved = await resolveContentOperation(this.client, { actor: p.actor, method: p.method, path: p.path, body: p.body, idempotencyKey: idem, ifMatch: p.if_match });
+      if (resolved.outcome === 'replay') {
+        // 原操作已提交：确认映射收口（快照不可达=保留，下轮再试）
+        await this.confirmOperation(opKey, { status: resolved.status, body: resolved.body });
+        return { status: resolved.status, body: resolved.body };
+      }
+      if (resolved.outcome === 'new') {
+        // 原操作确未提交（content 业务与回执同事务）→ 按原身份重放一次并走同一收口
+        return await this.dispatchPinned(opKey, p);
+      }
+      // conflict/legacy_unresolved：身份与原意图不一致——保留意图与 pin，标错误待人工
+      this.db.prepare("UPDATE outbox SET last_error = ?, updated_at = ? WHERE id = ?").run(`resolve:${resolved.outcome}`, new Date().toISOString(), row.id);
+      return { status: resolved.status, body: resolved.body };
+    } catch (err) {
+      // 本次核对不可达/鉴权失败＝推进失败，不是原操作事实：保持原状态（unknown 由
+      // 恢复消费者按原身份继续收口），有界累计 attempt
+      this.markUnknown(opKey, err as Error);
+      this.logger.warn('content_advance_failed', { operation: opKey, code: stableErrorCode(err) });
+      return { status: 503, body: { error: { code: 'content_unreachable', message: '内容服务本次不可达/拒绝凭据；原操作已持久并将按原身份恢复收口（同键重试安全）', detail: String((err as Error).message ?? err).slice(0, 140) } } };
+    }
+  }
+
+  /** 已有意图的提交与收口（advanceAccepted 与恢复消费者共用）。调用前提：意图+pin 已持久。 */
   private async dispatchPinned(opKey: string, intent: IntentPayload): Promise<ContentWriteResult> {
     const idemKey = opKey.slice(`content:${intent.actor}:`.length);
     let result: ContentWriteResult;
@@ -129,8 +163,15 @@ export class ContentOperationCoordinator {
       this.markUnknown(opKey, new Error(`content ${result.status}`));
       return result;
     }
+    if (result.status === 401 || result.status === 403) {
+      // RF2-01：鉴权层失败≠业务回执——本次请求未获准不证明原操作未提交（resolve 与
+      // dispatch 之间凭据可失效）。保持 unknown 与 pin，由恢复消费者按原身份收口。
+      this.markUnknown(opKey, new Error(`content auth ${result.status}`));
+      return { status: 503, body: { error: { code: 'content_auth_rejected', message: '内容服务拒绝本次请求凭据；原操作状态未变（已持久，将按原身份恢复收口）', detail: JSON.stringify(result.body).slice(0, 140) } } };
+    }
     if (result.status >= 400) {
-      // content 4xx=业务未提交（业务与回执同事务，失败零副作用）→ 定局：释放本次 pin
+      // content 业务 4xx=业务未提交（业务与回执同事务，失败零副作用）→ 定局：释放本次 pin。
+      // 仅达此处的前提是 resolve 刚确认无回执（advanceAccepted/新写①），非鉴权层失败。
       this.finishFailed(opKey, `content ${result.status}`);
       return result;
     }
@@ -247,23 +288,8 @@ export class ContentOperationCoordinator {
       const rows = this.db.prepare("SELECT id, operation_key, payload_ref, state, attempt FROM outbox WHERE target = ? AND state IN ('pending','unknown_outcome') AND attempt <= ? ORDER BY created_at LIMIT ?")
         .all(CONTENT_OPERATION_TARGET, MAX_ATTEMPTS, limit) as Array<OutboxRow>;
       for (const row of rows) {
-        const p = JSON.parse(row.payload_ref) as IntentPayload;
-        const idem = row.operation_key.slice(`content:${p.actor}:`.length);
-        try {
-          const resolved = await resolveContentOperation(this.client, { actor: p.actor, method: p.method, path: p.path, body: p.body, idempotencyKey: idem, ifMatch: p.if_match });
-          if (resolved.outcome === 'replay') {
-            // 原操作已提交：确认映射收口（快照不可达=保留，下轮再试）
-            await this.confirmOperation(row.operation_key, { status: resolved.status, body: resolved.body });
-          } else if (resolved.outcome === 'new') {
-            // 原操作确未提交（content 业务与回执同事务）→ 按原身份重放一次并走同一收口
-            await this.dispatchPinned(row.operation_key, p);
-          } else {
-            // conflict/legacy_unresolved：身份与原意图不一致——保留意图与 pin，标错误待人工
-            this.db.prepare("UPDATE outbox SET last_error = ?, updated_at = ? WHERE id = ?").run(`resolve:${resolved.outcome}`, new Date().toISOString(), row.id);
-          }
-        } catch (err) {
-          this.db.prepare("UPDATE outbox SET attempt = attempt + 1, last_error = ?, updated_at = ? WHERE id = ?").run(String((err as Error).message).slice(0, 120), new Date().toISOString(), row.id);
-        }
+        // RF2-01：恢复 tick 与 HTTP 同参重试共用同一条推进路径（advanceAccepted）
+        await this.advanceAccepted(row.operation_key);
       }
       return rows.length;
     })();

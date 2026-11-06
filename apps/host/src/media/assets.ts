@@ -239,14 +239,23 @@ export class MediaService {
   //     （正式 committed 关系按 owner+asset 唯一；非当前成员的同 owner 关系同事务释放；
   //     本次操作 pin 收口）。消息附件引用在 message_attachments，独立于本表，不受影响。 ——
 
-  /** 操作前置 pin：资产在内容提交前先进入保护（删除守卫计入 protected）。幂等。 */
+  /** 操作前置 pin：资产在内容提交前先进入保护（删除守卫计入 protected）。幂等。
+   *  RF2-02（复审 20261106 第二轮）：同一操作的意图按现有合同可失败后重开（重试换参
+   *  场景）——重开即重新接受，必须重新取得有效保护：旧 released 行恢复 protected，
+   *  不能凭"行存在"当已保护（旧实现重开后 pin 仍 released，提交成功后资产可删）。 */
   pinAssetForOperation(opts: { assetId: string; operationKey: string }): void {
     this.getAsset(opts.assetId); // ASSET_NOT_FOUND 如实
     const existing = this.db.prepare(
-      "SELECT id FROM asset_external_refs WHERE asset_id = ? AND owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ?",
-    ).get(opts.assetId, opts.operationKey, opts.operationKey) as { id: string } | undefined;
-    if (existing) return;
+      "SELECT id, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ?",
+    ).get(opts.assetId, opts.operationKey, opts.operationKey) as { id: string; state: string } | undefined;
     const nowIso = new Date().toISOString();
+    if (existing) {
+      if (existing.state === 'released') {
+        this.db.prepare("UPDATE asset_external_refs SET state = 'protected', revision = revision + 1, released_at = NULL WHERE id = ?")
+          .run(existing.id);
+      }
+      return; // protected/committed：已有效保护
+    }
     this.db.prepare(
       `INSERT INTO asset_external_refs(id, asset_id, owner_service, owner_type, owner_id, owner_revision, revision, operation_id, state, created_at)
        VALUES (?, ?, 'content', 'content_operation', ?, NULL, 1, ?, 'protected', ?)`,
