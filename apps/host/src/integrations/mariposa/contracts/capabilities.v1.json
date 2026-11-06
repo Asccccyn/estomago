@@ -1,10 +1,10 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "c52739df9a1976236ac310e59aba9a2266ba64a3",
+  "source_commit": "5a7281aa65da6feb1fb85359c7c7687032536e5c",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "d4d39197471f6a09f65e4b6b49cc8d00fffee084d402696a690d6b5ea6d5767f",
-    "backend/mariposa/capabilities/input_schemas.py": "0942907715c075ceb86257909dc55552348b73c0ae1ab6b8f76132b0dbdaeef4",
+    "backend/mariposa/capabilities/registry.py": "a69a66f2375caafd8f6695b992b536123776640caf1b09f179babe744b5ee4eb",
+    "backend/mariposa/capabilities/input_schemas.py": "8de694faa6162d9e2eb219d6d7ce978f0e5cad69f0f2ba1d4f026d6c61e85cf4",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "7df8ba21c80704bfac203a2d97dc958cdccb655f3d053d1073d23da4360395c5",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
@@ -364,6 +364,11 @@
             "type": "string",
             "minLength": 1
           },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "change_reason": {
             "type": "string"
           },
@@ -514,6 +519,11 @@
             "type": "string",
             "minLength": 1
           },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "restore_revision": {
             "type": "integer",
             "minimum": 1
@@ -577,6 +587,11 @@
           "item_id": {
             "type": "string",
             "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
           },
           "content": {
             "type": "string",

@@ -142,3 +142,45 @@ test('开窗注入：临近纪念日出现在 B 文本头段；无临近=无行�
   assert.ok(degraded?.includes('I 前缀'), '提醒失败不阻塞其余开窗资料');
   assert.equal(warned.filter((k) => k === 'context.warning').length, 1, '一次警告');
 });
+
+// —— RT02（复审 20261106）：body 取消纳入同一结果边界，不吞成成功空对象 ——
+
+test('RT02：真实 200 头+部分 JSON 后取消——客户端返回未知，不是成功空对象', async () => {
+  const http = await import('node:http');
+  const { WishstarClient } = await import('../../apps/host/src/integrations/wishstar/client.ts');
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.write('{"id":"star_1","con');
+    req.on('close', () => { try { res.destroy(); } catch { /* 已断 */ } });
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+  const port = (server.address() as { port: number }).port;
+  process.env.WS_RT02_TOKEN = 'synthetic-rt02';
+  try {
+    const client = new WishstarClient({ base_url: `http://127.0.0.1:${port}`, readonly_token_env: 'WS_RT02_RO', jiaming_token_env: 'WS_RT02_TOKEN' });
+    const controller = new AbortController();
+    const promise = client.forward('POST', '/api/stars', { content: 'x' }, 'op-rt02', controller.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    controller.abort();
+    const r = await promise;
+    assert.equal(r.status, 0, '已发写的 body 取消=未知（不是 200）');
+    assert.equal(r.body.error_code, 'WISHSTAR_CANCELLED_UNKNOWN');
+    // 对照：GET body 不可读=本次读取不可用（可重试），不冒充成功
+    const r2 = await client.forward('GET', '/api/stars', undefined, undefined);
+    assert.equal(r2.status, 0);
+    assert.equal(r2.body.error_code, 'WISHSTAR_BODY_UNREADABLE');
+  } finally {
+    delete process.env.WS_RT02_TOKEN;
+    server.close();
+  }
+});
+
+test('RT02：服务层把 body 取消未知映射为 WISHSTAR_OUTCOME_UNKNOWN（模型不见成功空对象）', async () => {
+  const calls: ForwardCall[] = [];
+  const { tools, db } = makeTools(calls, () => ({ status: 0, body: { error_code: 'WISHSTAR_CANCELLED_UNKNOWN', detail: '响应体未读完' } }));
+  try {
+    const out = await tools.execute('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-rt02b' }, CTX as never);
+    assert.equal(out.ok, false, '不成功');
+    assert.equal(out.output.error_code, 'WISHSTAR_OUTCOME_UNKNOWN', '复审反例：曾 ok:true/output:{}——现为未知，沿幂等键核对');
+  } finally { db.close(); }
+});

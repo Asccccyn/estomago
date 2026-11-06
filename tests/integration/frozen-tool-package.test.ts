@@ -51,8 +51,11 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
       if(n===1){
         const system=Array.isArray(input.options.systemPrompt)?input.options.systemPrompt.join('\n'):input.options.systemPrompt;
         const ids=Object.fromEntries([...system.matchAll(/- ([a-z_]+)（definition_id: (td_[a-f0-9]+)）/g)].map((m:any)=>[m[1],m[2]]));
-        assert.equal(Object.keys(ids).length,41); // 41C：content_albums_read/media_view 入 C 组后目录 41 项
-        assert.deepEqual(Object.keys(ids).sort(),Object.keys(examples).sort());
+        // RT01（复审 20261106）：41C 全量 + 7D 完整定义都随窗预送——直接执行需要参数事实，
+        // 不再只给 D 组一行摘要（旧 41 断言= D 组无完整定义的旧合同）
+        const D7=['memory_correct','deletion_review','creation_save_artifact','oido_capabilities','oido_view','oido_find','oido_compare'];
+        assert.equal(Object.keys(ids).length,48,'41C + 7D 全部带 definition（完整定义随窗）');
+        assert.deepEqual([...Object.keys(examples),...D7].sort(),Object.keys(ids).sort());
         const [a,b]=InMemoryTransport.createLinkedPair(); const client=new Client({name:'fake-sdk',version:'1'});
         await input.options.mcpServers.est.instance.connect(b);await client.connect(a);
         let index=0;

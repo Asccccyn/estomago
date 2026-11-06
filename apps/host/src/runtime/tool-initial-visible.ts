@@ -24,12 +24,15 @@ export function renderToolContext(specs: readonly HostToolSpec[], groups: Record
   const deferred = specs.filter(spec => groups[spec.function.name] === 'D');
   const lines: string[] = [];
   if (initial.length) {
-    lines.push('[tools/initial：以下工具完整定义随本窗提供；实际收到后可直接 tool_invoke，携带 definition_id]');
+    lines.push('[tools/initial：以下工具完整定义随本窗提供；可直接 tool_invoke（definition_id 可选，沿已读定义调用时携带）]');
     lines.push(...initial.map(renderDefinition));
   }
   if (deferred.length) {
-    lines.push('[tools/deferred：需要时可直接 tool_define(name)，取得完整定义后再调用]');
-    lines.push(...deferred.map(spec => `- ${spec.function.name}：${spec.function.description.split(/[。\n]/)[0]}。`));
+    // RT01（复审 20261106）：执行已允许不读定义直接调用——广告与执行事实一致要求
+    // 参数事实随窗可得，不再只给一行摘要（模型无法凭摘要正确组参）。
+    // tool_define 保留为同一定义的显式读取/版本核对入口，不是解锁条件。
+    lines.push('[tools/deferred：以下工具完整定义同样随本窗提供；可直接 tool_invoke（definition_id 可选）；tool_define 可随时重新读取该定义]');
+    lines.push(...deferred.map(renderDefinition));
   }
   return lines.length ? lines.join('\n') : null;
 }

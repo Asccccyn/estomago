@@ -26,9 +26,12 @@ function fixture(t:any){
  return {db,tools,registry,ctx,persist,invoke,calls,reviews,sub};
 }
 
-test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪造版本拒绝',async t=>{
+test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪造版本拒绝；公开 schema 与执行事实一致',async t=>{
  const f=fixture(t);freezeWindowTools(f.db,'w1',f.registry.currentCatalog(),'deferred',f.registry.currentGroups());
  const set=storedToolset(f.db,'w1')!;
+ // RT01（复审 20261106）：新窗公开 schema 不再必填 definition_id——与直接执行事实一致
+ const invokeSpec=set.tools.find(s=>s.function.name==='tool_invoke')!;
+ assert.deepEqual(invokeSpec.function.parameters.required,['name','arguments'],'tool_invoke 公开 schema：definition_id 可选');
  // 无任何交付（B 段未发送、define 未做）：直接执行（参数仍按冻结 schema 校验）
  assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).ok,true,'未读定义直接执行');
  // 不带 definition_id 同样直接执行
@@ -40,7 +43,9 @@ test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪�
  // define 交付仍工作（可选说明，不是 unlock）；B 段交付后 already_available
  f.persist([{role:'system',content:set.initialText}]);
  assert.equal((await f.tools.execute('tool_define',{name:'memory_i_read'},f.ctx)).output.already_available,true);
- assert.equal((await f.invoke('memory_correct',{action:'corrections'})).ok!==false||true,true,'执行资格与阅读解耦');
+ // D 组工具不经 define 直接执行（真实断言——替换旧恒真 `!==false||true`）
+ const direct=await f.tools.execute('tool_invoke',{name:'memory_correct',arguments:{action:'corrections'}},f.ctx);
+ assert.equal(direct.ok,true,'D 组工具未读定义直接执行——阅读与执行解耦');
 });
 
 test('T 可信任务附加与 define 共用已见谓词；真正完成仍核验活动检查',async t=>{

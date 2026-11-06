@@ -59,8 +59,19 @@ export class WishstarClient {
           ...(signal ? { signal } : {}),
         },
       );
-      const data = await r.json().catch(() => ({})) as Record<string, unknown>;
-      return { status: r.status, body: data };
+      let data: Record<string, unknown> | null;
+      try {
+        data = await r.json() as Record<string, unknown> | null;
+      } catch {
+        // RT02（复审 20261106）：响应头已到但 body 读取中断/断流/不可解析——不是
+        // 成功空对象。已发写（POST）＝结果未知（提交可能已发生），取消走同一未知
+        // 出口，调用方沿幂等键核对；读（GET）＝本次读取不可用，按不可用重试处理。
+        if (signal?.aborted || method === 'POST') {
+          return { status: 0, body: { error_code: signal?.aborted ? 'WISHSTAR_CANCELLED_UNKNOWN' : 'WISHSTAR_BODY_UNREADABLE_UNKNOWN', detail: '响应体未读完：请求可能已发出、结果未知——同幂等键核对后再决定是否重试' } };
+        }
+        return { status: 0, body: { error_code: 'WISHSTAR_BODY_UNREADABLE', detail: '响应体不可读（读取中断/非 JSON）' } };
+      }
+      return { status: r.status, body: data ?? {} };
     } catch (err) {
       // 发出后取消/断开=结果未知（写可能已提交）——与不可达区分，调用方沿幂等键核对
       if (signal?.aborted) return { status: 0, body: { error_code: 'WISHSTAR_CANCELLED_UNKNOWN', detail: '本地取消：请求可能已发出，结果未知——同幂等键核对后再决定是否重试' } };

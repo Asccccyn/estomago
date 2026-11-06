@@ -10,7 +10,11 @@ export function buildDeferredTools(): HostToolSpec[] {
   return [
     {type:'function',function:{name:'tool_catalog',description:'列出可用工具的简短目录，不含参数定义。',parameters:{type:'object',properties:{},additionalProperties:false}}},
     {type:'function',function:{name:'tool_define',description:'需要使用某个工具时，按目录中的名称读取它的完整参数定义。',parameters:{type:'object',properties:{name:{type:'string'}},required:['name'],additionalProperties:false}}},
-    {type:'function',function:{name:'tool_invoke',description:'按已读取的定义调用工具；沿用返回的definition_id，不得猜参数。',parameters:{type:'object',properties:{name:{type:'string'},definition_id:{type:'string'},arguments:{type:'object',additionalProperties:true}},required:['name','definition_id','arguments'],additionalProperties:false}}},
+    // RT01（复审 20261106）：公开 schema 与执行事实一致——P6 起允许不读定义直接
+    // invoke（执行侧按冻结业务 schema/权限校验）；definition_id 仅在沿已读定义
+    // 调用时携带（宿主核其版本，过期拒 TOOL_DEFINITION_STALE）。旧描述"按已读取
+    // 的定义调用、不得猜参数"+必填 definition_id 与直接执行事实矛盾。
+    {type:'function',function:{name:'tool_invoke',description:'调用工具。可直接按目录名称和 arguments 调用（参数以 tool_define 读取的完整定义为准）；若此前读过该工具的定义，携带返回的 definition_id 以便版本核对。',parameters:{type:'object',properties:{name:{type:'string'},definition_id:{type:'string',description:'可选：沿已读定义调用时携带（tool_define 返回值）；缺省=直接调用'},arguments:{type:'object',additionalProperties:true}},required:['name','arguments'],additionalProperties:false}}},
   ];
 }
 export type WindowToolset = { protocol:'legacy'|'deferred'; tools:HostToolSpec[]; catalog:HostToolSpec[]; groups:Record<string,ToolGroup>; initialText:string|null; legacyGroups:boolean };
