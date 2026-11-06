@@ -47,7 +47,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
   },
 };
 
-export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService };
+export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService; surfacing?: import('../../memory-surfacing/service.ts').SurfacingService | null };
 
 /** chat_send_voice 定义唯一正本（GLM_VOICE_UNIFICATION 04§5.3，A05）：
  *  char主动决定用语音说某句时的唯一出口（P08：不自动朗读文字）。 */

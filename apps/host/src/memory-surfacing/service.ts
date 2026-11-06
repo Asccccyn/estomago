@@ -10,6 +10,7 @@
 import { executeMemoryReadFull } from './detail-tool.ts';
 import { syncedSourceIdsFor, windowContextMessageIds } from './source-boundary.ts';
 import type { Db } from '../db/connection.ts';
+import { isCallActivityActive } from '../modules/voice/call-service.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
@@ -135,10 +136,12 @@ export class SurfacingService {
   }): void {
     if (!this.cfg.enabled) return;
     if (!o.content || o.content.trim().length === 0) return;
-    // P3（四仓审计 20261106，U05/T05）：通话话轮不登记自动浮现——普通/深听电话期间
-    // Sol 自动调用数为 0；结束不补扫，下一新非通话聊天恢复正常触发
+    // P3（四仓审计 20261106，U05/T05）+RB01（复审 20261106）：通话话轮与通话活动期间
+    // （响铃/准备/已建立）的普通文字都不登记自动浮现——通话期间 Sol 自动调用数为 0；
+    // 结束不补扫，下一新非通话聊天恢复正常触发。活动事实用统一判定（call-service），
+    // 不据 voice 字符串或单一路由猜测。
     const callTurn = this.db.prepare("SELECT 1 FROM messages WHERE id=? AND client_message_id LIKE 'voice:%'").get(o.messageId);
-    if (callTurn) return;
+    if (callTurn || isCallActivityActive(this.db, o.conversationId)) return;
     // SOL_RECALL_REFACTOR：旧 P1 regex 意图门退役——每条正式用户消息都登记
     // 作业，语义判断（none/observe/recall）在提交后由 Sol 完成。这里不做
     // 任何网络调用；Sol 网络请求只出现在事务提交后的 preparePhase。
@@ -203,10 +206,8 @@ export class SurfacingService {
     for (const job of jobs) {
       if (this.running >= this.cfg.worker_concurrency) break;
       if (this.roomRunning.has(job.conversation_id)) continue;
-      // P3（U05）：请求前准入复核——会话有活动通话时不发起 Sol（作业收口为取消，
-      // 不迟到注入通话；结束后由下一条新非通话消息按规则重新触发）
-      const callActive = this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(job.conversation_id);
-      if (callActive && this.repo.transition(job.id, ['pending'], 'cancelled', { reason_code: 'CALL_ACTIVE' })) {
+      // P3（U05）+RB01：调度期复核（真正的请求门在 preparePhase——drain 只负责调度）
+      if (isCallActivityActive(this.db, job.conversation_id) && this.repo.transition(job.id, ['pending'], 'cancelled', { reason_code: 'CALL_ACTIVE' })) {
         this.log?.info('surface_job_call_gated', { job: job.id, conversation: job.conversation_id });
         continue;
       }
@@ -318,6 +319,13 @@ export class SurfacingService {
     this.noteStage(job.id, 'firstRun');
     if (!this.current(job)) {
       this.repo.transition(job.id, ['pending'], 'expired', { reason_code: 'SURFACE_BINDING_INVALID' });
+      return;
+    }
+    // RB01（复审 20261106）：Sol 真正请求门——augmentFor 装配路径不经 drain，必须在
+    // 请求入口复核通话活动（响铃/准备/已建立统一事实）；活动即取消，不发起 Sol。
+    if (isCallActivityActive(this.db, job.conversation_id)) {
+      this.repo.transition(job.id, ['pending'], 'cancelled', { reason_code: 'CALL_ACTIVE' });
+      this.log?.info('surface_job_call_gated', { job: job.id, conversation: job.conversation_id, entry: 'prepare' });
       return;
     }
     if (!this.repo.transition(job.id, ['pending'], 'preparing')) return;
@@ -555,6 +563,16 @@ export class SurfacingService {
 
   async augmentFor(input: AugmentInput): Promise<AugmentResult | null> {
     if (!this.cfg.enabled || this.stopped) return null;
+    // RB01（复审 20261106）：最终装配准入同享通话门——通话活动期间不装配浮现块
+    // （目标消息是通话期间文字时按同事实取消；下一新非通话消息恢复）。
+    if (isCallActivityActive(this.db, input.conversationId)) {
+      const gated = this.repo.nextPreparedForTarget(input.conversationId, input.message.id);
+      if (gated) {
+        this.repo.transition(gated.id, ['pending', 'preparing', 'prepared', 'target_bound', 'validating', 'ready'], 'cancelled', { reason_code: 'CALL_ACTIVE' });
+        this.log?.info('surface_job_call_gated', { job: gated.id, conversation: input.conversationId, entry: 'augment' });
+      }
+      return null;
+    }
     let job = this.repo.nextPreparedForTarget(input.conversationId, input.message.id);
     if (!job || job.target_revision !== input.message.revision || !this.current(job)) return null;
     const deadline = this.deadline(job);
@@ -676,6 +694,12 @@ export class SurfacingService {
     const job = this.repo.jobById(aug.jobId);
     if (!job) return null;
     if (job.state === 'dispatch_started') return aug;
+    // RB01（复审 20261106）：冻结到最终装配之间通话开始——同一活动事实收口，
+    // 不把已冻结块注入通话期间的装配。
+    if (isCallActivityActive(this.db, input.conversationId)) {
+      this.log?.info('surface_job_call_gated', { job: job.id, conversation: input.conversationId, entry: 'final_admit' });
+      return this.repo.dropAtFinalAdmission(job.id);
+    }
     if (!this.current(job) || Date.now() >= this.deadline(job)
       || job.conversation_id !== input.conversationId
       || job.state !== 'reserved'

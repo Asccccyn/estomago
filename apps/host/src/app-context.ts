@@ -362,6 +362,8 @@ export class Host {
     // voice 域能力与同一消息/媒体服务装配。
     (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
       db, sirenCall, media, messages, events,
+      // RB01（复审 20261106）：accept_call 建呼也走统一 Sol 作业失效触发
+      surfacing: surfacing.enabled ? surfacing : null,
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {

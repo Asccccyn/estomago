@@ -27,11 +27,16 @@ export async function handleVoiceCallLifecycle(req: IncomingMessage, res: Server
       // 复审二 R-03B：Siren WS 会话注册=该通话真实建立连接的事实——记录 connected_at。
       // 连接 token 过期只影响新握手、不结束通话；接听重放的收口判定以此事实为据。
       d.db.prepare('UPDATE voice_calls SET connected_at=COALESCE(connected_at, ?) WHERE call_id=?').run(nowIso, body.call_id);
+      // RB01（复审 20261106）：通话活动事实写入处统一触发 Sol 作业失效——
+      // S register 建立的新通话也要中止在途 preparing 浮现（复审反例4）
+      d.surfacing?.cancelForActiveCall?.(body.conversation_id);
       return json(res, 200, { call_id: body.call_id, state: 'active' });
     }
     if (existing?.state === 'ended') return ndjsonError(409, 'call already ended (new call needs a new call_id)');
     // 调用方=Siren lifecycle register（WS 会话注册）：立册即已连接
     d.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at) VALUES (?,?,\'active\',?,?)".replace("\\'", "'")).run(body.call_id, body.conversation_id, nowIso, nowIso);
+    // RB01（复审 20261106）：同上——活动事实写入处触发 Sol 作业失效
+    d.surfacing?.cancelForActiveCall?.(body.conversation_id);
     return json(res, 200, { call_id: body.call_id, state: 'active', memory_only: true });
   }
   const m = /^DELETE \/v1\/calls\/([^/]+)$/.exec(route);

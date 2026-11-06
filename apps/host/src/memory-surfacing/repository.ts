@@ -113,13 +113,21 @@ export class SurfacingRepository {
   }
 
   /** 消息编辑撤销尚未保留的旧修订作业；已发送交付事实保持原样。 */
-  /** P3（U05）：会话级取消全部未终态作业（通话开始时调用）。返回取消行数。 */
+  /** P3（U05）+RB01（复审 20261106）：会话级取消全部未终态作业（通话活动开始时调用）。
+   *  与 cancelJobsForRevision 同一收尾出口：逐行 emitState 状态事件（SSE 投影），
+   *  不绕过 repo 状态事件直接裸 UPDATE。返回取消行数。 */
   cancelJobsForConversation(conversationId: string, reasonCode: string): number {
-    const result = this.db.prepare(
-      `UPDATE surfacing_jobs SET state='cancelled', updated_at=CURRENT_TIMESTAMP, reason_code=?
+    const affected = this.db.prepare(
+      `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
+    ).all(conversationId) as Array<{ id: string; state: SurfacingJobState }>;
+    const r = this.db.prepare(
+      `UPDATE surfacing_jobs SET state='cancelled', updated_at=?, reason_code=?
        WHERE conversation_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
-    ).run(reasonCode, conversationId);
-    return Number(result.changes);
+    ).run(new Date().toISOString(), reasonCode, conversationId);
+    for (const row of affected) {
+      this.emitState(row.id, row.state, 'cancelled', { reason_code: reasonCode });
+    }
+    return Number(r.changes);
   }
 
   cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {

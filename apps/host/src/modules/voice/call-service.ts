@@ -54,13 +54,24 @@ export function isVoiceCallActive(db: Db, conversationId: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(conversationId));
 }
 
+/** RB01（复审 20261106）：通话域"活动"统一事实——响铃（dial_requests pending）、
+ *  准备/预留与已建立（voice_calls active）都算活动。Sol 浮现的登记门、请求门
+ * （prepare/augment/finalAdmit）与作业失效触发共用本判定；不据 voice 字符串、
+ *  前端开关或单一入口路由猜测活动。 */
+export function isCallActivityActive(db: Db, conversationId: string): boolean {
+  return isVoiceCallActive(db, conversationId)
+    || Boolean(db.prepare("SELECT 1 FROM dial_requests WHERE conversation_id=? AND state='pending' LIMIT 1").get(conversationId));
+}
+
 export class VoiceCallService {
   private readonly db: Db;
   private readonly sirenCall: SirenAdapter | null;
+  private readonly surfacing: import('../../memory-surfacing/service.ts').SurfacingService | null | undefined;
 
-  constructor(deps: { db: Db; sirenCall: SirenAdapter | null }) {
+  constructor(deps: { db: Db; sirenCall: SirenAdapter | null; surfacing?: import('../../memory-surfacing/service.ts').SurfacingService | null }) {
     this.db = deps.db;
     this.sirenCall = deps.sirenCall;
+    this.surfacing = deps.surfacing;
   }
 
   /** 协议①（2026-10-24）：通话控制。逐字迁移（含备注文案与错误码）。 */
@@ -99,6 +110,8 @@ export class VoiceCallService {
         if (upd.changes === 0) return { ok: false, error: { error_code: 'DIAL_SUPERSEDED', detail: '她已取消或请求已过期' } };
         // P1：模式沿用她发起 dial 时的选择（NULL=历史未记录→ordinary）
         this.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)").run(created.callId, ctx.roomId, new Date().toISOString(), created.expiresAt ?? null, req.analysis_mode === 'deep_listen' ? 'deep_listen' : 'ordinary');
+        // RB01（复审 20261106）：接听建呼=通话活动事实写入——统一触发 Sol 浮现作业失效
+        this.surfacing?.cancelForActiveCall(ctx.roomId);
         return { ok: true, value: { request_id: req.id, state: 'accepted', call_id: created.callId, note: '已接听；她那边的电话面板马上会接通，正常和她说话即可。' } };
       }
       if (args.action === 'cancel') {

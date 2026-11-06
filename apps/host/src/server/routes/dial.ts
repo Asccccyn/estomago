@@ -45,6 +45,8 @@ if (route === 'POST /api/v1/calls/dial') {
   const id = `dial_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const nowIso = new Date().toISOString();
   d.db.prepare("INSERT INTO dial_requests(id,conversation_id,state,ttl_ms,analysis_mode,created_at,updated_at) VALUES (?,'primary','pending',?,?,?,?)").run(id, DIAL_DEFAULT_TTL_MS, dialMode, nowIso, nowIso);
+  // RB01（复审 20261106）：响铃即通话活动开始——统一触发 Sol 浮现作业失效（含在途 preparing 中止）
+  d.surfacing?.cancelForActiveCall?.('primary');
   // 告诉char（程序事实轮，同串行链；他闲着就立刻收到）
   try {
     // B5（联合审计 2026-10-27，A08）：提示去掉无依据的强制说明——拒绝后说与否由他自主决定
