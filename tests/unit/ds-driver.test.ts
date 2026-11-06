@@ -89,9 +89,9 @@ test('身份映射隔离：dsSessionId 与 orSessionId 命名空间独立；指�
   const base = { runtime: { provider: 'openrouter', sdk_version: null, setting_sources: [], builtin_tools: [], mcp_servers_allowlist: [] }, openrouter: { model: 'anthropic/claude-test-1', max_output_tokens: 8192, provider_only: ['anthropic'], reasoning: null } };
   const fOr = contextFingerprint(base as never, manifest);
   const fDs = contextFingerprint({ ...base, runtime: { ...base.runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat', max_output_tokens: 8192 } } as never, manifest);
-  assert.notEqual(fOr, fDs, 'OR↔DS 切换改变上下文指纹（CONTEXT_STALE 强制换窗）');
+  assert.equal(fOr, fDs, '现行合同：驱动不在边界指纹内（unified 驱动统一后跨驱动共享窗口）');
   const fDs2 = contextFingerprint({ ...base, runtime: { ...base.runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-reasoner', max_output_tokens: 8192 } } as never, manifest);
-  assert.notEqual(fDs, fDs2, 'DS 型号变化改变指纹');
+  assert.equal(fDs, fDs2, '2026-10-08 裁定：型号不在指纹内（换模型不换窗）');
 });
 
 test('deepSeekSelection：型号未配置/凭据缺失如实阻断；齐全则 ok', () => {
@@ -214,13 +214,17 @@ test('中止：中断收口且已到计量帧照记（F20 同款抢救）', asyn
 test('append-only 断言：DS payload 前缀被改写 → 确定性错误不发', async () => {
   const prev = buildDeepSeekPayload(req().envelope);
   const tamperedReq = req({ previousPayload: prev });
-  // 篡改当前消息（历史前缀之外的尾部不同不影响；这里改 model 触发 profile 变化类错误）
-  const tampered = { ...tamperedReq, envelope: { ...tamperedReq.envelope, model: 'deepseek-reasoner' } } as OrRunRequest;
+  // 2026-10-08 裁定后 model 变化合法（换模型不换窗）——改用真实前缀篡改：
+  // 历史消息内容被改写（WIRE_TRAJECTORY_DIVERGED:content）
+  const msgs = [...tamperedReq.envelope.messages];
+  const lastIdx = msgs.length - 1;
+  msgs[lastIdx] = { ...msgs[lastIdx]!, content: '被改写的历史内容' } as typeof msgs[number];
+  const tampered = { ...tamperedReq, envelope: { ...tamperedReq.envelope, messages: msgs } } as OrRunRequest;
   const body = sse({ id: 'g', choices: [{ delta: { content: 'x' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + DONE;
   const { transport, calls } = fakeTransport([{ body }]);
   const result = await runOnce(transport, [], tampered);
   assert.equal(result.outcome, 'error');
-  assert.ok(String(result.errorCode).includes('PREFIX_PROFILE_CHANGED'), `profile 变化拦截（得到 ${result.errorCode}）`);
+  assert.ok(String(result.errorCode).includes('WIRE_TRAJECTORY_DIVERGED'), `前缀改写拦截（得到 ${result.errorCode}）`);
   assert.equal(calls.length, 0, '断言失败不发送');
   // 前缀一致 + 尾部追加 → 断言通过
   const okEnvelope = { ...req().envelope, messages: [...req().envelope.messages, { role: 'assistant', content: '上一轮回复' }] };

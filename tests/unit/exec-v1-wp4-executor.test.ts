@@ -330,11 +330,14 @@ test('C-02/K-12：心跳调用工具→实质执行+续轮（旧零工具封锁�
   nowRef.nowMs = L + 3_000_001;
   await sched.tick();
   const run = ctx.db.prepare('SELECT state, result_code, model_requests_started, tool_calls_started, published_message_count, retention FROM background_runs WHERE task_id = ?').get(kwTask) as { state: string; result_code: string | null; model_requests_started: number; tool_calls_started: number; published_message_count: number; retention: string };
-  assert.ok(run.model_requests_started >= 2, '工具续轮发生（不再单请求截断）');
+  // P5（四仓审计 20261106，T17/C09）：background_complete=业务结束决定——同批工具结果
+  // 按已发协议收尾后不再开启新模型请求（旧断言"complete 后仍续轮回 1"按新裁定退役；
+  // 多步能力=complete 之前的任意工具轮）。旧零工具封锁退役断言保留。
   assert.ok(run.tool_calls_started >= 1, '工具真实执行（不再零工具封锁）');
   assert.equal(run.published_message_count, 1, 'C-02：心跳正式发言发布一次');
-  assert.equal(run.retention, 'retained', 'K-12：工具后即使最终回1也 retained（不走纯回执丢弃）');
+  assert.equal(run.retention, 'retained', 'K-12：有工具的回合 retained（不走纯回执丢弃）');
   assert.equal(run.state, 'completed');
+  assert.equal(run.result_code, 'complete:done', 'complete 决定生效');
   // 取消后新派发被挡（旧 CW-15 后半保留）
   const runId = (ctx.db.prepare('SELECT id FROM background_runs WHERE task_id = ?').get(kwTask) as { id: string }).id;
   const stop = sched.stopRun(runId);

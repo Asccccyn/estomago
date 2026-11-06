@@ -720,14 +720,17 @@ export class TurnSupervisor {
     };
     try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
-      // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
-      // 不再开启新的模型请求；本批已发生的工具结果按已发协议正常收尾（不标失败）
-      if (round > 0 && o.background) {
-        const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(o.background.runId) as { result_code: string | null } | undefined;
-        if (rcDone?.result_code?.startsWith('complete:') === true) break;
-      }
       pendingCalls = [];
       pendingAssistantIndex = -1;
+      // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
+      // 不再开启新的模型请求；本批已发生的工具结果已并入 envelope，按自然完成语义
+      // 收口（与"最终回复无工具调用"同一出口：finalMessages=envelope，不标失败）
+      if (round > 0 && o.background) {
+        const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(o.background.runId) as { result_code: string | null } | undefined;
+        if (rcDone?.result_code?.startsWith('complete:') === true) {
+          return { result: { outcome: 'completed', errorClassified: null, errorCode: null, errorMessage: null, sessionId: null, requestId: null }, finalMessages: envelope.messages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
+        }
+      }
       const captured: MatchedCompleteBlock[] = [];
       let lastText = null as string | null; // 闭包内赋值（wrapped）：外层流分析按声明类型读（F-J-31）
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;

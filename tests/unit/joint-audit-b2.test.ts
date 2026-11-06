@@ -46,7 +46,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 24_000 /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -96,15 +96,10 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
 
 test('F-J-09：同窗工具 epoch 冻结——turn2 词表刷新（返回含新类）后 turn3 的 tools 仍为 turn1 快照', async () => {
   const payloadLog: PayloadLog = [];
+  // 20261106 现行合同：mood 词表已冻结进 hold schema（静态 enum），不再运行时
+  // memory.mood.vocab 拉取——epoch 冻结成为结构性保证；本测试保留跨轮 tools 恒定断言。
   let vocabCalls = 0;
-  const vocabChanging: MariposaTransport = async (capability, payload) => {
-    if (capability === 'memory.mood.vocab') {
-      vocabCalls++;
-      const cats = vocabCalls === 1 ? ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'] : ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安', '新类'];
-      return { ok: true, result: { categories: cats, version: `mood-vocab-${vocabCalls}` } };
-    }
-    return mariposaOk(capability, payload);
-  };
+  const vocabChanging: MariposaTransport = mariposaOk;
   const root = tempRoot('jab2-tools-');
   let gen = 0;
   const transport: OrTransport = async (payload) => {
@@ -118,7 +113,7 @@ test('F-J-09：同窗工具 epoch 冻结——turn2 词表刷新（返回含新�
   await say(ctx, '第一条', 't1', T0);
   await say(ctx, '第二条要记事', 't2', new Date(Date.parse(T0) + 60_000).toISOString());
   await say(ctx, '第三条', 't3', new Date(Date.parse(T0) + 120_000).toISOString());
-  assert.ok(vocabCalls >= 1, '词表确实被拉取过（触发缓存失效）');
+  void vocabCalls;
   const chatPayloads = payloadLog;
   assert.ok(chatPayloads.length >= 3, `应有≥3 个聊天请求（实际 ${chatPayloads.length}）`);
   const toolsJson1 = JSON.stringify(chatPayloads[0]!.tools);
@@ -197,7 +192,9 @@ test('F-J-38：retrospective + mood_tags 在宿主预拒（不落服务端）', 
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_hold', { original_title: '补记心情', categories: ['daily'], text: 'x', creation_mode: 'retrospective', memory_date: '2026-09-01', mood_tags: ['开心'] }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r38' });
   assert.equal(out.ok, false, '补记+当时心情=整单拒');
-  assert.equal(out.output.error_code, 'HOLD_MOOD_WINDOW_REQUIRED');
+  // 20261106 现行合同：schema 条件（mood⇒creation_mode=const contemporaneous）在宿主
+  // 参数门前置拦截——HOLD_MOOD_WINDOW_REQUIRED 语义由 TOOL_ARG_ENUM 承载，仍零远端调用
+  assert.equal(out.output.error_code, 'TOOL_ARG_ENUM');
   assert.equal(calls.length, 0, '未发远端（宿主前置拦截省一次调用）');
   db.close();
 });

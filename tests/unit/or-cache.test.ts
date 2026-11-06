@@ -50,7 +50,7 @@ function recordingTransport(log: Array<Record<string, unknown>>, failChatWith?: 
 
 function compose(root: string, orTransport: OrTransport) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: 'deferred' }, openrouter: { model: MODEL } }); // deferred：B 段（tools/initial）覆盖需要
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);

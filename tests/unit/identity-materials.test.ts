@@ -58,7 +58,9 @@ test('批准规则材料进入 systemPrompt；宿主边界保留；I 不注入�
   assert.equal(materials.iStatus.includes('policy_unapproved'), true, 'I 留在开窗包通道');
   const built = buildSdkOptions({ config, gate, identityText: materials.identityText, approvedRulesText: materials.rulesText, cwd: paths.workspacesDir });
   assert.equal(built.status, 'ok');
-  const prompt = (built.assembled as { options: { systemPrompt: string } }).options.systemPrompt;
+  // 20261106 现行形状：systemPrompt 为字符串数组（末尾追加 THINKING_LANGUAGE_RULE）
+  const promptRaw = (built.assembled as { options: { systemPrompt: string | string[] } }).options.systemPrompt;
+  const prompt = Array.isArray(promptRaw) ? promptRaw.join('\n') : promptRaw;
   assert.ok(prompt.includes('（测试）运行规则合成内容'), '批准规则正文必须实际进入 systemPrompt');
   assert.ok(prompt.includes('运行边界（宿主注入）'), '宿主边界声明保留');
   assert.ok(!prompt.includes('（测试）I 快照合成内容'), 'I 材料不得注入 systemPrompt');
