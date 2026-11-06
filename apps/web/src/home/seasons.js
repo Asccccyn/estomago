@@ -79,7 +79,7 @@
     ],
   ];
   const signatureStorageKey = 'estomago-signature-layout-v1';
-  const signatureDefaults = { x: .61, y: .93, width: .72 };
+  const signatureDefaults = {"x": 0.615, "y": 0.9384465459788169, "width": 0.77};
   const signatureLayout = { ...signatureDefaults };
   try {
     const stored = JSON.parse(localStorage.getItem(signatureStorageKey));
@@ -153,6 +153,18 @@
       image.draggable = false;
       signature.append(image);
       scene.append(signature);
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'scene-hotspot signature-toggle';
+      toggle.setAttribute('aria-label', '隐藏水印');
+      toggle.setAttribute('aria-expanded', 'true');
+      toggle.addEventListener('click', () => {
+        if (busy || adjusting) return;
+        signature.hidden = !signature.hidden;
+        toggle.setAttribute('aria-expanded', String(!signature.hidden));
+        toggle.setAttribute('aria-label', signature.hidden ? '显示水印' : '隐藏水印');
+      });
+      scene.append(toggle);
     }
     for (const detail of actions[season]) {
       const button = document.createElement('button');
