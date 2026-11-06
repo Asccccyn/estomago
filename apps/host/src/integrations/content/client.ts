@@ -2,11 +2,11 @@
 // 浏览器/模型都经 est 认证后由适配器调 content（loopback+服务凭据+宿主派生 actor）；
 // content 不反调 est；凭据值只在 transport 头读取处，不落日志/DB。
 // 资产校验在 est 侧（媒体服务正本），content 只收 asset_id 引用。
+// P1（四仓合并审计 20261106，F06/F07）：写路径改经 coordinator（先解析原操作、
+// HTTP 前持久意图+pin、成功后按权威快照确认映射）；本文件只保留纯转发与两个
+// 只读面：同操作回查（resolve）与当前引用快照（references）。
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Db } from '../../db/connection.ts';
-import type { MediaService } from '../../media/assets.ts';
-import { MediaError } from '../../media/assets.ts';
 
 export type ContentClient = {
   baseUrl: string;
@@ -23,13 +23,14 @@ export function contentClientFor(stateRoot: string, port: number, enabled: boole
   return { baseUrl: `http://127.0.0.1:${port}`, token };
 }
 
-/** 转发请求到 content——est 唯一写通道。actor 从可信上下文派生，不从请求体。 */
+/** 转发请求到 content——est 唯一通道。actor 从可信上下文派生，不从请求体。 */
 export async function contentForward(client: ContentClient, opts: {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string; // /api/v1/content/...
   actor: 'qiaosheng' | 'jiaming';
   body?: unknown;
   headers?: Record<string, string>; // Idempotency-Key / If-Match 透传
+  timeoutMs?: number;
 }): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${client.baseUrl}${opts.path}`, {
     method: opts.method,
@@ -40,96 +41,60 @@ export async function contentForward(client: ContentClient, opts: {
       ...opts.headers,
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: AbortSignal.timeout(5000),
+    signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
   });
   const body = await res.json().catch(() => ({}));
   return { status: res.status, body };
 }
 
-/** est 薄代理的通用处理：验证资产引用（存在/available）→ 转发 → 成功后登记保护引用。 */
-export async function contentProxyWithAssets(opts: {
-  client: ContentClient;
-  media: MediaService | null;
-  db: Db;
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE';
-  path: string;
-  actor: 'qiaosheng' | 'jiaming';
-  body?: Record<string, unknown>;
-  headers?: Record<string, string>;
-}): Promise<{ status: number; body: unknown }> {
-  const { client, media, method, path, actor, body, headers } = opts;
-  // F06（四仓联合审计 20261104）：资产引用字段=现行 content 全集——数组 asset_ids 与
-  // 单值 asset_id/icon_asset_id/work_asset_id（旧实现只认数组：相册条目/creation 的
-  // 单值引用既不验证也不登记，仍在使用的资产可被 DELETE /assets 标删——审计实测）。
-  const assetRefs: string[] = [];
-  if (body && typeof body === 'object') {
-    const b = body as Record<string, unknown>;
-    if (Array.isArray(b.asset_ids)) for (const a of b.asset_ids) if (typeof a === 'string' && a) assetRefs.push(a);
-    for (const k of ['asset_id', 'icon_asset_id', 'work_asset_id'] as const) {
-      if (typeof b[k] === 'string' && b[k]) assetRefs.push(b[k] as string);
-    }
-  }
-  const uniqueRefs = [...new Set(assetRefs)];
-  // 写请求含资产引用时先验证（§06.5.3：资产校验在 est，content 只收引用）
-  if (media && (method === 'POST' || method === 'PUT') && uniqueRefs.length > 0) {
-    for (const assetId of uniqueRefs) {
-      try {
-        const a = media.getAsset(assetId);
-        if (a.state !== 'available') {
-          return { status: 422, body: { error: { code: 'asset_not_ready', message: `资产 ${assetId} 状态 ${a.state}` } } };
-        }
-      } catch (err) {
-        if (err instanceof MediaError) return { status: err.httpStatus, body: { error: { code: err.code.toLowerCase(), message: err.message } } };
-        throw err;
-      }
-    }
-  }
-  const result = await contentForward(client, { method, path, actor, body, headers });
-  // POST/PUT 成功后：对 body 中引用的 asset 登记保护引用（est 侧防误删）
-  if (media && (result.status === 201 || result.status === 200) && uniqueRefs.length > 0) {
-    const rb = result.body as { id?: string; revision?: number };
-    const objId = rb?.id;
-    // F06-B（复审 e45f01f）：操作键含对象当前修订——A→B→A 时第三次引用是**新修订的新引用**，
-    // 新操作行生效（旧键命中已 released 行直接返回 released、不恢复保护，复审实测 A 可被误删）。
-    // 同一请求重放：对象与修订未变→同键→幂等命中原行，不重复写。
-    const rev = typeof rb?.revision === 'number' ? rb.revision : null;
-    for (const assetId of uniqueRefs) {
-      try {
-        media.registerReference({ assetId, ownerService: 'content', ownerType: ownerTypeOf(path), ownerId: objId ?? 'unknown', operationId: `content:${objId ?? 'new'}:${rev ?? 'r0'}:${assetId}` });
-      } catch { /* 引用登记失败不阻塞内容保存——保护引用可后补 */ }
-    }
-  }
-  // R2（复审 b137e98）：内容删除/替换后释放引用——content 的 DELETE 响应携带被删对象
-  // 引用的 asset（asset_id / asset_ids）；PUT 替换时 body 中的新集合已登记，响应中的
-  // 旧集合（previous_asset_ids，如有）里不在新集合的释放。解除后资产删除守卫按
-  // 剩余有效引用如实判定（最后一条引用解除→可删；多引用删一个→仍拒）。
-  if (media && result.status === 200) {
-    const objId = (result.body as { id?: string })?.id ?? 'unknown';
-    const released: Array<{ assetId: string; ownerType: string }> = [];
-    const rb = result.body as { asset_id?: unknown; asset_ids?: unknown; previous_asset_ids?: unknown };
-    if (method === 'DELETE') {
-      if (typeof rb.asset_id === 'string' && rb.asset_id) released.push({ assetId: rb.asset_id, ownerType: ownerTypeOf(path) });
-      if (Array.isArray(rb.asset_ids)) for (const a of rb.asset_ids) if (typeof a === 'string' && a) released.push({ assetId: a, ownerType: ownerTypeOf(path) });
-    }
-    if (method === 'PUT' && Array.isArray(rb.previous_asset_ids)) {
-      for (const a of rb.previous_asset_ids) {
-        if (typeof a === 'string' && a && !uniqueRefs.includes(a)) released.push({ assetId: a, ownerType: ownerTypeOf(path) });
-      }
-    }
-    for (const r of released) {
-      try { media.releaseReferencesByOwner({ assetId: r.assetId, ownerService: 'content', ownerType: r.ownerType, ownerId: objId }); }
-      catch { /* 释放失败留待下次内容删除重放（幂等）或资产删除时的守卫如实报告 */ }
-    }
-  }
-  return result;
+/** P1：content 当前权威引用快照——宿主确认映射与存量对账的唯一当前状态来源。
+ *  404/不可达不是“已删除且可释放”的证据，由调用方如实处理。 */
+export type ContentReferenceSnapshot = {
+  owner_service: 'content';
+  owner_type: 'post' | 'comment' | 'album_entry' | 'creation' | 'future_note';
+  owner_id: string;
+  owner_revision: number;
+  deleted: boolean;
+  asset_ids: string[];
+};
+
+export async function fetchReferenceSnapshot(client: ContentClient, ownerType: string, ownerId: string): Promise<ContentReferenceSnapshot | null> {
+  const r = await contentForward(client, { method: 'GET', path: `/api/v1/content/references/${encodeURIComponent(ownerType)}/${encodeURIComponent(ownerId)}`, actor: 'qiaosheng' });
+  if (r.status !== 200) return null;
+  return r.body as ContentReferenceSnapshot;
 }
 
-/** R2：content 路径→引用 ownerType（登记与释放共用同一映射） */
-function ownerTypeOf(path: string): string {
+/** P1：同操作回查——不执行，只解析该 actor+key 的既有回执对当前命令的含义。 */
+export type ContentResolveOutcome =
+  | { outcome: 'replay'; status: number; body: unknown }
+  | { outcome: 'new' }
+  | { outcome: 'conflict' | 'legacy_unresolved'; status: number; body: unknown };
+
+export async function resolveContentOperation(client: ContentClient, opts: {
+  actor: 'qiaosheng' | 'jiaming';
+  method: 'POST' | 'PUT' | 'DELETE';
+  path: string;
+  body?: Record<string, unknown>;
+  idempotencyKey: string;
+  ifMatch?: string;
+}): Promise<ContentResolveOutcome> {
+  const r = await contentForward(client, {
+    method: 'POST', path: '/api/v1/content/operations/resolve', actor: opts.actor,
+    body: { method: opts.method, path: opts.path, body: opts.body ?? {}, idempotency_key: opts.idempotencyKey, if_match: opts.ifMatch ?? '' },
+  });
+  if (r.status !== 200) throw new Error(`content resolve failed: ${r.status}`);
+  return r.body as ContentResolveOutcome;
+}
+
+/** P1：content 写路径→引用 ownerType（快照读取与意图记录共用同一映射）。 */
+export function ownerTypeOf(path: string): string {
+  const p = path.split('?')[0]!;
+  // 评论两条路径（/posts/:id/comments 与 /comments/:id）都含 /comments，先于 /posts 判定
+  if (p.includes('/comments')) return 'comment';
+  if (p.includes('/posts')) return 'post';
   // 注意 album 单数形态：创建走 /albums/:kind/entries，单条操作走 /album-entries/:id——同 ownerType
-  if (path.includes('/posts') || path.includes('/comments')) return 'post';
-  if (path.includes('/albums') || path.includes('/album-entries')) return 'album_entry';
-  if (path.includes('/creations')) return 'creation';
-  if (path.includes('/future-notes')) return 'future_note';
+  if (p.includes('/albums') || p.includes('/album-entries')) return 'album_entry';
+  if (p.includes('/creations')) return 'creation';
+  if (p.includes('/future-notes')) return 'future_note';
   return 'unknown';
 }

@@ -31,7 +31,6 @@ import type { SystemAlertService } from '../observability/system-alerts.ts';
 import type { MediaService, IngestPurpose } from '../media/assets.ts';
 import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
-import { contentProxyWithAssets } from '../integrations/content/client.ts';
 import { buildCalendarMonth, buildCalendarDayItems, shanghaiDayRange, type CalendarSource } from './calendar-routes.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
@@ -79,6 +78,7 @@ export type RequestDeps = {
   taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
   activity?: import('../runtime/wake-activity.ts').ConversationActivityService; // WAKE_KEEPWARM_V1：活动投影/保温状态派生
   contentClient?: import('../integrations/content/client.ts').ContentClient | null; // EXEC_V1 WP5：内容服务薄代理
+  contentOps?: import('../integrations/content/coordinator.ts').ContentOperationCoordinator | null; // P1（F06/F07 20261106）：内容写协调（浏览器/模型/恢复共用）
   surfacing?: import('../memory-surfacing/service.ts').SurfacingService | null; // 自动浮现（默认 disabled）
   auth: AuthService;
   archiveSync?: {

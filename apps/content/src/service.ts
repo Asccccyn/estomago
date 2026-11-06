@@ -3,6 +3,13 @@
 // 朋友圈（post/letter 同一数据模型）+ 评论 + 三类相册归档 + 纪念作品 + 未来留言正文。
 // 不拥有：桶/计划/星星正本（稳定引用）、媒体字节（asset_id 引用）、投递调度（est 调度器）。
 // est 只经 HTTP 薄代理访问本服务（浏览器不得直连；body 无任何作者字段——作者只来自可信头）。
+//
+// P1（四仓合并审计 20261106，F06/F07）：全部 15 条写路由共用类型化命令身份
+// {fingerprint_version, actor, resource_type, action, target, original_expected_revision, params}；
+// 回执解析先于存在性/作者/CAS（新操作才做这些校验）；历史回执（指纹版本 0）经受限
+// 兼容入口解析——旧算法哈希与回执资源形状都能对上才回放，否则待核冲突，不换 key 重建。
+// 权威当前状态经 GET /references/:type/:id 快照独立提供（含相册最小墓碑与零集合版本锚），
+// 回执只代表过去某次请求的结果，两者不得互相冒充。
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,10 +19,14 @@ import { CONTENT_ALBUMS } from '../../../packages/contracts/src/content.ts';
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
-export const CONTENT_SCHEMA_VERSION = 1;
+export const CONTENT_SCHEMA_VERSION = 2;
+export const CONTENT_FINGERPRINT_VERSION = 2;
 
 const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 100;
+
+export const CONTENT_RESOURCE_TYPES = ['post', 'comment', 'album_entry', 'creation', 'future_note'] as const;
+export type ResourceType = (typeof CONTENT_RESOURCE_TYPES)[number];
 
 export class ContentError extends Error {
   readonly status: number;
@@ -30,6 +41,7 @@ function openDb(stateRoot: string): Db {
   const db = new DatabaseSync(path.join(stateRoot, 'content.sqlite3'));
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA foreign_keys=ON');
+  db.exec('PRAGMA busy_timeout=5000');
   db.exec(`CREATE TABLE IF NOT EXISTS content_schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`);
   const have = (db.prepare('SELECT version FROM content_schema_migrations').all() as Array<{ version: number }>).map((r) => r.version);
   if (!have.includes(1)) {
@@ -129,18 +141,101 @@ CREATE TABLE content_receipts(
 `);
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (1, ?)').run(new Date().toISOString());
   }
+  if (!have.includes(2)) {
+    // v2（F06/F07 P1）：①回执记录类型化命令身份（旧 13 条行为指纹版本 0，原样保留）；
+    // ②相册最小墓碑——删除递增 revision 软删，UNIQUE(kind,asset_id) 只约束有效行，
+    // 移除后可重新归档（新 ID）。换表需在 FK 关闭下重建（album_entry_refs 引用旧表）。
+    db.exec('PRAGMA foreign_keys=OFF');
+    try {
+      db.exec(`
+ALTER TABLE content_receipts ADD COLUMN fingerprint_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE content_receipts ADD COLUMN resource_type TEXT;
+ALTER TABLE content_receipts ADD COLUMN action TEXT;
+ALTER TABLE content_receipts ADD COLUMN target_json TEXT;
+CREATE TABLE album_entries_v2(
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('chat_screenshots','important_photos','stickers')),
+  asset_id TEXT NOT NULL,
+  added_by_actor TEXT NOT NULL CHECK (added_by_actor IN ('qiaosheng','jiaming')),
+  caption TEXT,
+  meaning TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT
+);
+INSERT INTO album_entries_v2(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision, deleted_at)
+  SELECT id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision, NULL FROM album_entries;
+DROP TABLE album_entries;
+ALTER TABLE album_entries_v2 RENAME TO album_entries;
+CREATE UNIQUE INDEX idx_album_entries_live ON album_entries(kind, asset_id) WHERE deleted_at IS NULL;
+`);
+    } finally {
+      db.exec('PRAGMA foreign_keys=ON');
+    }
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (2, ?)').run(new Date().toISOString());
+  }
   return db;
 }
 
-const sha = (s: string): string => randomBytes(0).toString('hex') || simpleHash(s);
 function simpleHash(s: string): string {
   let h1 = 0x811c9dc5, h2 = 0x01000193;
   for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = Math.imul(h1, 0x01000193) >>> 0; h2 ^= (s.charCodeAt(i) + i) & 0xff; h2 = Math.imul(h2, 0x85ebca6b) >>> 0; }
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 const genId = (p: string): string => `${p}_${Date.now().toString(36)}${randomBytes(4).toString('hex')}`;
+const ID_PREFIX: Record<ResourceType, string> = { post: 'post_', comment: 'cmt_', album_entry: 'ae_', creation: 'crt_', future_note: 'fn_' };
 
 export type ContentServerOptions = { stateRoot: string; port: number; token?: string };
+
+/** P1.2：一次写请求的类型化命令身份（唯一入口，resolve 与执行共用）。 */
+export type WriteCommand = {
+  resourceType: ResourceType;
+  action: 'create' | 'update' | 'delete';
+  target: string | null; // 对象 ID（update/delete）；评论=父 post ID；相册创建=kind；其余 create=null
+  expectedRevision: string | null; // 原始 If-Match 头（原样，含引号；创建=null）
+  params: Record<string, unknown>; // 原始 body（指纹用规范化副本，业务校验读原值）
+};
+
+function canonicalJson(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonicalJson);
+  if (v !== null && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = canonicalJson((v as Record<string, unknown>)[k]);
+    return out;
+  }
+  return v;
+}
+
+/** v2 指纹：资源类型/动作/目标/原 If-Match/规范化参数 + actor。字段缺席与显式清空、
+ *  有意义的附件顺序都在 params 原样保留（规范化只排序对象键，不动数组顺序）。 */
+export function commandFingerprint(actor: Actor, cmd: WriteCommand): string {
+  return simpleHash(JSON.stringify({
+    v: CONTENT_FINGERPRINT_VERSION, actor,
+    rt: cmd.resourceType, a: cmd.action, t: cmd.target ?? null,
+    er: cmd.expectedRevision ?? null, p: canonicalJson(cmd.params),
+  }));
+}
+
+/** 旧指纹算法（指纹版本 0）按原始路由逐字重建——只用于既有回执的兼容解析。 */
+function legacyFingerprint(actor: Actor, cmd: WriteCommand): string | null {
+  const b = cmd.params;
+  const im = cmd.expectedRevision ?? '';
+  if (cmd.action === 'create') {
+    if (cmd.resourceType === 'post' || cmd.resourceType === 'creation' || cmd.resourceType === 'future_note') return JSON.stringify({ body: b, actor });
+    if (cmd.resourceType === 'comment') return JSON.stringify({ body: b, actor, post: cmd.target });
+    if (cmd.resourceType === 'album_entry') return JSON.stringify({ body: b, actor, kind: cmd.target });
+    return null;
+  }
+  if (cmd.action === 'update') return JSON.stringify({ op: 'put', path: cmd.target, body: b, actor, im });
+  if (cmd.action === 'delete') {
+    if (cmd.resourceType === 'comment') return JSON.stringify({ actor, del: cmd.target, im });
+    return JSON.stringify({ op: 'del', path: cmd.target, actor, im });
+  }
+  return null;
+}
+
+type ReceiptRow = { status: number; response_json: string; request_hash: string; fingerprint_version: number; resource_type: string | null; action: string | null; target_json: string | null };
 
 export class ContentServer {
   readonly db: Db;
@@ -197,22 +292,46 @@ export class ContentServer {
     res.end(JSON.stringify(body));
   }
 
-  /** §3.2 幂等回执：同 actor+key 同指纹=原结果；同键异指纹=冲突；无键的新写操作=参数错误。
-   *  F08（四仓联合审计 20261104）：业务写入与回执**同一事务**——旧实现无事务，
-   *  相册条目先 INSERT 后校验 refs，422 后条目残留（审计实测 0→1）；现在任何
-   *  校验异常整体回滚（回执不写=失败零副作用）。所有多语句写共享此原子边界。 */
-  private withReceipt(actor: Actor, key: string | null, requestHashSource: string, fn: () => { status: number; body: unknown }): { status: number; body: unknown } {
-    if (!key) throw new ContentError(400, 'MISSING_IDEMPOTENCY_KEY', '写请求必须带 Idempotency-Key');
-    const hash = simpleHash(requestHashSource);
-    const prior = this.db.prepare('SELECT status, response_json, request_hash FROM content_receipts WHERE actor = ? AND idem_key = ?').get(actor, key) as { status: number; response_json: string; request_hash: string } | undefined;
-    if (prior) {
-      if (prior.request_hash !== hash) throw new ContentError(409, 'IDEMPOTENCY_CONFLICT', '同幂等键对应不同请求');
-      return { status: prior.status, body: JSON.parse(prior.response_json) };
+  // —— P1.2 统一写入口：回执解析先于一切新操作校验；业务与回执同事务 ——
+  private receiptRow(actor: Actor, key: string): ReceiptRow | undefined {
+    return this.db.prepare('SELECT status, response_json, request_hash, fingerprint_version, resource_type, action, target_json FROM content_receipts WHERE actor = ? AND idem_key = ?').get(actor, key) as ReceiptRow | undefined;
+  }
+
+  /** 解析该 actor+key 的既有回执对当前命令的含义：replay=回放原结果；conflict=同键异请求；
+   *  legacy_unresolved=旧回执但旧算法/资源形状对不上（待核，保留原结果）；new=无回执。 */
+  resolveReceipt(actor: Actor, key: string, cmd: WriteCommand): { outcome: 'replay'; status: number; body: unknown } | { outcome: 'new' } | { outcome: 'conflict' | 'legacy_unresolved'; status: number; body: unknown } {
+    const prior = this.receiptRow(actor, key);
+    if (!prior) return { outcome: 'new' };
+    if (prior.fingerprint_version >= CONTENT_FINGERPRINT_VERSION) {
+      if (prior.request_hash === commandFingerprint(actor, cmd)) return { outcome: 'replay', status: prior.status, body: JSON.parse(prior.response_json) };
+      return { status: 409, outcome: 'conflict', body: { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } } };
     }
+    // 旧回执（指纹版本 0）：旧算法哈希命中且回执资源形状/ID 前缀与当前命令一致才回放
+    const legacy = legacyFingerprint(actor, cmd);
+    if (legacy !== null && simpleHash(legacy) === prior.request_hash) {
+      let responseShape: Record<string, unknown>;
+      try { responseShape = JSON.parse(prior.response_json) as Record<string, unknown>; } catch { responseShape = {}; }
+      const inferred = inferResourceTypeFromResponse(responseShape);
+      const responseId = typeof responseShape.id === 'string' ? responseShape.id : null;
+      const targetOk = cmd.action === 'create'
+        ? inferred === null || inferred === cmd.resourceType // 创建回执应是对应 DTO；判不出时按哈希命中放行（存量全部为 creation，DTO 可判）
+        : responseId === cmd.target && (inferred === null || inferred === cmd.resourceType);
+      const prefixOk = cmd.action === 'create' || (cmd.target !== null && (cmd.target.startsWith(ID_PREFIX[cmd.resourceType]) || cmd.resourceType === 'album_entry' /* 路由改版前相册 ID 也无前缀约束 */));
+      if (targetOk && prefixOk) return { outcome: 'replay', status: prior.status, body: responseShape };
+    }
+    return { outcome: 'legacy_unresolved', status: 409, body: { error: { code: 'legacy_receipt_unresolved', message: '同幂等键存在历史回执，但无法确认与当前请求同源（保留原结果，请用新键或人工核对）' } } };
+  }
+
+  private runWrite(actor: Actor, key: string | null, cmd: WriteCommand, business: () => { status: number; body: unknown }): { status: number; body: unknown } {
+    if (!key) throw new ContentError(400, 'MISSING_IDEMPOTENCY_KEY', '写请求必须带 Idempotency-Key');
+    const resolved = this.resolveReceipt(actor, key, cmd);
+    if (resolved.outcome === 'replay') return { status: resolved.status, body: resolved.body };
+    if (resolved.outcome !== 'new') return { status: resolved.status, body: resolved.body };
     this.db.exec('BEGIN');
     try {
-      const out = fn();
-      this.db.prepare('INSERT INTO content_receipts(actor, idem_key, request_hash, status, response_json, created_at) VALUES (?,?,?,?,?,?)').run(actor, key, hash, out.status, JSON.stringify(out.body), new Date().toISOString());
+      const out = business();
+      this.db.prepare('INSERT INTO content_receipts(actor, idem_key, request_hash, status, response_json, created_at, fingerprint_version, resource_type, action, target_json) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(actor, key, commandFingerprint(actor, cmd), out.status, JSON.stringify(out.body), new Date().toISOString(), CONTENT_FINGERPRINT_VERSION, cmd.resourceType, cmd.action, JSON.stringify(cmd.target ?? null));
       this.db.exec('COMMIT');
       return out;
     } catch (err) {
@@ -221,19 +340,284 @@ export class ContentServer {
     }
   }
 
-  /** F07（四仓审计 20261104）：幂等指纹=**请求原始 If-Match**（稳定身份）——旧指纹含加载时
-   *  的当前修订，编辑成功后重放原请求（同键同 body 同 If-Match）会因修订已变而被误判
-   *  IDEMPOTENCY_CONFLICT（审计实测 200 后重放 409）。CAS 判定仍按加载修订执行；
-   *  新的旧版本编辑照旧被 ifMatch 拒绝。旧回执指纹格式不同，升级前成功请求的重放
-   *  会得到冲突提示（刷新后带新 If-Match 重试），如实说明不迁移。 */
-  /** R3（复审 b137e98）：按稳定指纹查既有回执——命中即回放（对象已删除/修订已变的
-   *  **同操作重放**不再被存在性检查 404/409 挡住）。未命中返回 undefined 走正常执行。 */
-  private lookupReceipt(actor: Actor, key: string | null, requestHashSource: string): { status: number; body: unknown } | undefined {
-    if (!key) return undefined;
-    const hash = simpleHash(requestHashSource);
-    const prior = this.db.prepare('SELECT status, response_json, request_hash FROM content_receipts WHERE actor = ? AND idem_key = ?').get(actor, key) as { status: number; response_json: string; request_hash: string } | undefined;
-    if (prior && prior.request_hash === hash) return { status: prior.status, body: JSON.parse(prior.response_json) };
-    return undefined;
+  /** P1.2 路由→命令映射（resolve 与 dispatch 共用，保证指纹一致）。返回 null=非写路由。 */
+  private matchWrite(actor: Actor, method: string, pathname: string, body: Record<string, unknown>, req: IncomingMessage): { cmd: WriteCommand; business: () => { status: number; body: unknown } } | null {
+    const ifm = typeof req.headers['if-match'] === 'string' ? req.headers['if-match'] : null;
+    const er = ifm !== null && ifm.length > 0 ? ifm : null;
+    const now = () => new Date().toISOString();
+    let m: RegExpExecArray | null;
+
+    const cmd = (resourceType: ResourceType, action: WriteCommand['action'], target: string | null): WriteCommand => ({ resourceType, action, target, expectedRevision: er, params: body });
+
+    // —— 朋友圈 posts ——
+    if (method === 'POST' && pathname === '/api/v1/content/posts') {
+      const c = cmd('post', 'create', null);
+      return { cmd: c, business: () => {
+        const presentation = body.presentation === 'letter' ? 'letter' : 'post';
+        const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : null;
+        const text = typeof body.body === 'string' ? body.body : '';
+        const assetIds = Array.isArray(body.asset_ids) ? body.asset_ids.filter((a): a is string => typeof a === 'string' && a.length > 0) : [];
+        if (text.trim().length === 0 && assetIds.length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
+        if (text.length > 40000) throw new ContentError(422, 'BODY_TOO_LONG', '正文超过 40000 字符');
+        const id = genId('post');
+        const t = now();
+        this.db.prepare('INSERT INTO feed_posts(id, author_actor, presentation, title, body, created_at, published_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(id, actor, presentation, title, text, t, t, t);
+        const unique = [...new Set(assetIds)];
+        for (let i = 0; i < unique.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(id, unique[i], i, null);
+        return { status: 201, body: this.postDto(this.postRow(id)!) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/posts\/([^/]+)$/.exec(pathname)) !== null && method === 'PUT') {
+    const id = m[1]!;
+      const c = cmd('post', 'update', id);
+      return { cmd: c, business: () => {
+        const row = this.postRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人帖子');
+        if (row.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '帖子已删除');
+        this.ifMatch(req, Number(row.revision));
+        const text = typeof body.body === 'string' ? body.body : String(row.body ?? '');
+        const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : (row.title as string | null);
+        const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
+        if (text.trim().length === 0 && (assetIds ?? []).length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
+        const previousAssetIds = assetIds !== null
+          ? (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
+          : undefined;
+        this.db.prepare('UPDATE feed_posts SET body = ?, title = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, title, now(), String(row.id));
+        if (assetIds !== null) {
+          this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
+          for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(String(row.id), assetIds[i], i, null);
+        }
+        return { status: 200, body: { ...this.postDto(this.postRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/posts\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+    const id = m[1]!;
+      const c = cmd('post', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.postRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人帖子');
+        this.ifMatch(req, Number(row.revision));
+        const priorAssets = (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+        // §4.3.3：不级联删除他人评论——保留占位与既有评论；不再接受新评论
+        this.db.prepare('UPDATE feed_posts SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
+        this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: priorAssets, revision: Number(row.revision) + 1 } };
+      } };
+    }
+    // —— comments ——
+    if ((m = /^\/api\/v1\/content\/posts\/([^/]+)\/comments$/.exec(pathname)) !== null && method === 'POST') {
+    const id = m[1]!;
+      const c = cmd('comment', 'create', id);
+      return { cmd: c, business: () => {
+        const post = this.postRow(id); // 帖子必须存在（含已删占位——评论作者仍可查看自己的评论）
+        if (post.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '原帖已删除，不再接受新评论');
+        const text = typeof body.body === 'string' ? body.body.trim() : '';
+        if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
+        if (text.length > 10000) throw new ContentError(422, 'COMMENT_TOO_LONG', '评论超过 10000 字符');
+        const cmtId = genId('cmt');
+        this.db.prepare('INSERT INTO feed_comments(id, post_id, author_actor, body, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,1)').run(cmtId, id, actor, text, now(), now());
+        return { status: 201, body: this.commentDto(this.db.prepare('SELECT * FROM feed_comments WHERE id = ?').get(cmtId) as Record<string, unknown>) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/comments\/([^/]+)$/.exec(pathname)) !== null && method === 'PUT') {
+    const id = m[1]!;
+      const c = cmd('comment', 'update', id);
+      return { cmd: c, business: () => {
+        const row = this.commentRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人评论');
+        this.ifMatch(req, Number(row.revision));
+        const text = typeof body.body === 'string' ? body.body.trim() : '';
+        if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
+        this.db.prepare('UPDATE feed_comments SET body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, now(), String(row.id));
+        return { status: 200, body: this.commentDto(this.db.prepare('SELECT * FROM feed_comments WHERE id = ?').get(String(row.id)) as Record<string, unknown>) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/comments\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+    const id = m[1]!;
+      const c = cmd('comment', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.commentRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人评论');
+        this.ifMatch(req, Number(row.revision));
+        this.db.prepare('UPDATE feed_comments SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
+        return { status: 200, body: { id: row.id, deleted: true, revision: Number(row.revision) + 1 } };
+      } };
+    }
+    // —— 相册 album_entries ——
+    if ((m = /^\/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(pathname)) !== null && method === 'POST') {
+    const id = m[1]!;
+      const c = cmd('album_entry', 'create', id);
+      return { cmd: c, business: () => {
+        const kind = id;
+        if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
+        if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
+        const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ? AND deleted_at IS NULL').get(kind, body.asset_id) as Record<string, unknown> | undefined;
+        if (existing) return { status: 200, body: this.albumDto(existing), duplicate: true }; // §5：同 (kind,asset) 幂等返回既有（有效行；墓碑可重新归档=新 ID）
+        const entryId = genId('ae');
+        const t = now();
+        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(entryId, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t);
+        const refs = Array.isArray(body.refs) ? body.refs : [];
+        for (const r of refs as Array<Record<string, unknown>>) {
+          if (typeof r?.service !== 'string' || typeof r?.kind !== 'string' || typeof r?.source_id !== 'string') throw new ContentError(422, 'REF_INVALID', '关联引用必须含 service/kind/source_id（任一校验失败则本次写入失败）');
+          this.db.prepare('INSERT INTO album_entry_refs(id, entry_id, service, kind, source_id, created_at) VALUES (?,?,?,?,?,?)').run(genId('aer'), entryId, r.service, r.kind, r.source_id, t);
+        }
+        return { status: 201, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(entryId) as Record<string, unknown>) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/album-entries\/([^/]+)$/.exec(pathname)) !== null && method === 'PUT') {
+    const id = m[1]!;
+      const c = cmd('album_entry', 'update', id);
+      return { cmd: c, business: () => {
+        const row = this.albumRow(id);
+        this.ifMatch(req, Number(row.revision));
+        this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?')
+          .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, now(), String(row.id));
+        return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(row.id)) as Record<string, unknown>) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/album-entries\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+    const id = m[1]!;
+      const c = cmd('album_entry', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.albumRow(id);
+        this.ifMatch(req, Number(row.revision));
+        // §10.3 + P1.1：移除归档=最小墓碑（revision+1 软删、清关联引用）——零集合有可定序版本，
+        // 不删外部原文/全局原文件；同 (kind,asset) 可重新归档（新 ID）。
+        this.db.prepare('DELETE FROM album_entry_refs WHERE entry_id = ?').run(String(row.id));
+        this.db.prepare('UPDATE album_entries SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
+        return { status: 200, body: { id: row.id, removed: true, asset_id: String(row.asset_id), revision: Number(row.revision) + 1 } };
+      } };
+    }
+    // —— creations ——
+    if (method === 'POST' && pathname === '/api/v1/content/creations') {
+      const c = cmd('creation', 'create', null);
+      return { cmd: c, business: () => {
+        if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）');
+        if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
+        const workAsset: string | null = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : null;
+        const workKind: string | null = workAsset !== null && typeof body.work_kind === 'string' ? body.work_kind : null;
+        if ((workAsset === null) !== (workKind === null)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
+        if (workKind !== null && !['image', 'video', 'html'].includes(String(workKind))) throw new ContentError(422, 'WORK_KIND_INVALID', 'work_kind 必须是 image|video|html');
+        const id = genId('crt');
+        const t = now();
+        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa', String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
+        this.db.prepare('INSERT INTO creations(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,?,?,1)').run(...args);
+        return { status: 201, body: this.creationDto(this.creationRow(id)) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/creations\/([^/]+)$/.exec(pathname)) !== null && method === 'PUT') {
+    const id = m[1]!;
+      const c = cmd('creation', 'update', id);
+      return { cmd: c, business: () => {
+        const row = this.creationRow(id);
+        if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
+        this.ifMatch(req, Number(row.revision));
+        const workAsset = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : (row.work_asset_id as string | null);
+        const workKind = typeof body.work_kind === 'string' ? body.work_kind : (row.work_kind as string | null);
+        if ((workAsset === null || workAsset === undefined) !== (workKind === null || workKind === undefined)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
+        const prevWork = typeof body.work_asset_id === 'string' && body.work_asset_id && body.work_asset_id !== (row.work_asset_id as string | null)
+          ? [row.work_asset_id as string] : undefined;
+        this.db.prepare('UPDATE creations SET title = COALESCE(?, title), work_asset_id = ?, work_kind = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
+          .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, workAsset ?? null, workKind ?? null, now(), String(row.id));
+        return { status: 200, body: { ...this.creationDto(this.creationRow(String(row.id))), ...(prevWork !== undefined ? { previous_asset_ids: prevWork } : {}) } };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/creations\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+    const id = m[1]!;
+      const c = cmd('creation', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.creationRow(id);
+        if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
+        this.ifMatch(req, Number(row.revision));
+        this.db.prepare('UPDATE creations SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
+        const crAssets = [row.icon_asset_id, row.work_asset_id].filter((a): a is string => typeof a === 'string' && !!a);
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: crAssets, revision: Number(row.revision) + 1 } };
+      } };
+    }
+    // —— future_notes ——
+    if (method === 'POST' && pathname === '/api/v1/content/future-notes') {
+      const c = cmd('future_note', 'create', null);
+      return { cmd: c, business: () => {
+        const text = typeof body.body === 'string' ? body.body : '';
+        const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : [];
+        if (text.trim().length === 0 && assetIds.length === 0) throw new ContentError(422, 'EMPTY_NOTE', '留言必须至少有非空正文或一项附件');
+        const id = genId('fn');
+        const t = now();
+        this.db.prepare('INSERT INTO future_notes(id, author_actor, title, body, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,1)').run(id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, text, t, t);
+        for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO future_note_assets(note_id, asset_id, position) VALUES (?,?,?)').run(id, assetIds[i], i);
+        return { status: 201, body: this.noteDto(this.noteRow(id)) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/future-notes\/([^/]+)$/.exec(pathname)) !== null && method === 'PUT') {
+    const id = m[1]!;
+      const c = cmd('future_note', 'update', id);
+      return { cmd: c, business: () => {
+        const row = this.noteRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
+        this.ifMatch(req, Number(row.revision));
+        const newAssets = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
+        const previousAssetIds = newAssets !== null
+          ? (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
+          : undefined;
+        this.db.prepare('UPDATE future_notes SET title = COALESCE(?, title), body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
+          .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.body === 'string' ? body.body : String(row.body ?? ''), now(), String(row.id));
+        if (newAssets !== null) {
+          this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
+          for (let i = 0; i < newAssets.length; i++) this.db.prepare('INSERT INTO future_note_assets(note_id, asset_id, position) VALUES (?,?,?)').run(String(row.id), newAssets[i], i);
+        }
+        return { status: 200, body: { ...this.noteDto(this.noteRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/future-notes\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+    const id = m[1]!;
+      const c = cmd('future_note', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.noteRow(id);
+        if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
+        this.ifMatch(req, Number(row.revision));
+        const noteAssets = (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+        this.db.prepare('UPDATE future_notes SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
+        this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
+        return { status: 200, body: { id: row.id, deleted: true, asset_ids: noteAssets, revision: Number(row.revision) + 1 } };
+      } };
+    }
+    return null;
+  }
+
+  /** P1.1：按对象真实版本给出当前完整去重成员集合的权威快照（与回执分离）。
+   *  deleted=true 时集合恒为空且 owner_revision 是删除版本（零集合版本锚）。未知对象 404——
+   *  不得把 404 猜成带版本的删除。creation 墓碑保留的 icon/work 字段不算有效引用。 */
+  referenceSnapshot(rt: ResourceType, id: string): { owner_service: 'content'; owner_type: ResourceType; owner_id: string; owner_revision: number; deleted: boolean; asset_ids: string[] } {
+    switch (rt) {
+      case 'post': {
+        const row = this.postRow(id);
+        const deleted = row.deleted_at != null;
+        const assets = deleted ? [] : (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ? ORDER BY position').all(id) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: dedupeAssetIds(assets) };
+      }
+      case 'comment': {
+        const row = this.commentRow(id);
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted: row.deleted_at != null, asset_ids: [] };
+      }
+      case 'album_entry': {
+        const row = this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        if (!row) throw new ContentError(404, 'ENTRY_NOT_FOUND', '相册条目不存在');
+        const deleted = row.deleted_at != null;
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: deleted ? [] : [String(row.asset_id)] };
+      }
+      case 'creation': {
+        const row = this.creationRow(id);
+        const deleted = row.deleted_at != null;
+        const assets = deleted ? [] : [row.icon_asset_id, row.work_asset_id].filter((a): a is string => typeof a === 'string' && !!a);
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: dedupeAssetIds(assets) };
+      }
+      case 'future_note': {
+        const row = this.noteRow(id);
+        const deleted = row.deleted_at != null;
+        const assets = deleted ? [] : (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ? ORDER BY position').all(id) as Array<{ asset_id: string }>).map((a) => a.asset_id);
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: dedupeAssetIds(assets) };
+      }
+    }
   }
 
   private ifMatch(req: IncomingMessage, currentRevision: unknown): void {
@@ -256,8 +640,36 @@ export class ContentServer {
   private async dispatch(route: string, actor: Actor, url: URL, body: Record<string, unknown>, req: IncomingMessage, res: ServerResponse): Promise<{ status: number; body: unknown } | undefined> {
     const now = () => new Date().toISOString();
     void res;
+    const pathname = url.pathname;
+    const method = req.method ?? 'GET';
 
-    // —— 朋友圈：posts / comments ——
+    // —— P1 统一写入口：全部 15 条写路由共用（回执解析→新操作校验→同事务提交） ——
+    const write = this.matchWrite(actor, method, pathname, body, req);
+    if (write) return this.runWrite(actor, header(req, 'idempotency-key'), write.cmd, write.business);
+
+    // —— P1 宿主同操作回查：不执行，只解析回执（Host 据此决定重放或准备新写） ——
+    if (route === 'POST /api/v1/content/operations/resolve') {
+      const m = body.method, p = typeof body.path === 'string' ? body.path : '';
+      if (m !== 'POST' && m !== 'PUT' && m !== 'DELETE') return { status: 400, body: { error: { code: 'bad_resolve_request', message: 'method/path 必填（写操作）' } } };
+      const fakeReq = { headers: { 'if-match': typeof body.if_match === 'string' ? body.if_match : '', 'idempotency-key': typeof body.idempotency_key === 'string' ? body.idempotency_key : '' } } as unknown as IncomingMessage;
+      const match = this.matchWrite(actor, m, p, (body.body && typeof body.body === 'object' && !Array.isArray(body.body)) ? body.body as Record<string, unknown> : {}, fakeReq);
+      if (!match) return { status: 400, body: { error: { code: 'not_a_write_route', message: '该路径不是写路由' } } };
+      if (typeof body.idempotency_key !== 'string' || !body.idempotency_key) return { status: 400, body: { error: { code: 'missing_idempotency_key', message: '写请求必须带 Idempotency-Key' } } };
+      const resolved = this.resolveReceipt(actor, body.idempotency_key, match.cmd);
+      if (resolved.outcome === 'replay') return { status: 200, body: { outcome: 'replay', status: resolved.status, body: resolved.body } };
+      if (resolved.outcome === 'new') return { status: 200, body: { outcome: 'new' } };
+      return { status: 200, body: { outcome: resolved.outcome, status: resolved.status, body: resolved.body } };
+    }
+
+    // —— P1.1 权威快照（宿主确认映射与存量对账共用；404=未知对象，不是删除证据） ——
+    let m2 = /^GET \/api\/v1\/content\/references\/([^/]+)\/([^/]+)$/.exec(route);
+    if (m2) {
+      const rt = decodeURIComponent(m2[1]!) as ResourceType;
+      if (!(CONTENT_RESOURCE_TYPES as readonly string[]).includes(rt)) return { status: 400, body: { error: { code: 'bad_resource_type', message: `resource_type 必须是 ${CONTENT_RESOURCE_TYPES.join('|')}` } } };
+      return { status: 200, body: this.referenceSnapshot(rt, decodeURIComponent(m2[2]!)) };
+    }
+
+    // —— 朋友圈：posts / comments（读） ——
     if (route === 'GET /api/v1/content/posts') {
       const limit = this.limitOf(url);
       const cursor = this.decodeCursor(url.searchParams.get('cursor'));
@@ -271,136 +683,35 @@ export class ContentServer {
       const hasMore = filtered.length > limit;
       return { status: 200, body: { items: page.map((r) => this.postDto(r)), next_cursor: hasMore && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.published_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: hasMore } };
     }
-    let m = /^GET \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
-    if (m) return { status: 200, body: this.postDto(this.postRow(String(m[1])), true) };
-    if (route === 'POST /api/v1/content/posts') {
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor }), () => {
-        const presentation = body.presentation === 'letter' ? 'letter' : 'post';
-        const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : null;
-        const text = typeof body.body === 'string' ? body.body : '';
-        const assetIds = Array.isArray(body.asset_ids) ? body.asset_ids.filter((a): a is string => typeof a === 'string' && a.length > 0) : [];
-        if (text.trim().length === 0 && assetIds.length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
-        if (text.length > 40000) throw new ContentError(422, 'BODY_TOO_LONG', '正文超过 40000 字符');
-        const id = genId('post');
-        const t = now();
-        this.db.prepare('INSERT INTO feed_posts(id, author_actor, presentation, title, body, created_at, published_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(id, actor, presentation, title, text, t, t, t);
-        const unique = [...new Set(assetIds)];
-        for (let i = 0; i < unique.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(id, unique[i], i, null);
-        return { status: 201, body: this.postDto(this.postRow(id)!) };
-      });
-    }
-    m = /^PUT \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
-    if (m) {
-      // R3（复审 b137e98）：①指纹加资源身份（同 key 不同资源=不同请求→冲突，不再错放成功回执）；
-      // ②回执查询先于存在性——删除后重放不再被 postRow 404 挡住（lookupReceipt 命中即回放）。
-      const fpPut = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayPut = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpPut);
-      if (replayPut) return replayPut;
-      const row = this.postRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人帖子');
-      if (row.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '帖子已删除');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpPut, () => {
-        this.ifMatch(req, Number(row.revision));
-        const text = typeof body.body === 'string' ? body.body : String(row.body ?? '');
-        const title = typeof body.title === 'string' && body.title.length > 0 ? body.title.slice(0, 200) : (row.title as string | null);
-        const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
-        if (text.trim().length === 0 && (assetIds ?? []).length === 0) throw new ContentError(422, 'EMPTY_POST', '帖子必须至少有非空正文或一项附件');
-        // R2/F06-A（复审 e45f01f）：previous_asset_ids 仅在请求**显式提供** asset_ids 时携带
-        // （=显式替换语义）——字段缺席=保留原附件，代理不得释放（旧实现把缺席当空集合，
-        // 只改文字也会误释放在用图片的保护，复审实测正文仍引用 A 但图片可删）。
-        const previousAssetIds = assetIds !== null
-          ? (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
-          : undefined;
-        this.db.prepare('UPDATE feed_posts SET body = ?, title = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, title, now(), String(row.id));
-        if (assetIds !== null) {
-          this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
-          for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO feed_post_assets(post_id, asset_id, position, alt_text) VALUES (?,?,?,?)').run(String(row.id), assetIds[i]!, i, null);
-        }
-        return { status: 200, body: { ...this.postDto(this.postRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
-      });
-    }
-    m = /^DELETE \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
-    if (m) {
-      // R3：回执先于存在性——同 key 同资源的删除重放（对象已删）直接回放原 200
-      const fpDel = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayDel = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpDel);
-      if (replayDel) return replayDel;
-      const row = this.postRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人帖子');
-      // R2：响应携带帖子的 asset_ids——est 代理据此释放引用
-      const priorAssets = (this.db.prepare('SELECT asset_id FROM feed_post_assets WHERE post_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpDel, () => {
-        this.ifMatch(req, Number(row.revision));
-        // §4.3.3：不级联删除他人评论——保留占位与既有评论；不再接受新评论
-        this.db.prepare('UPDATE feed_posts SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        this.db.prepare('DELETE FROM feed_post_assets WHERE post_id = ?').run(String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true, asset_ids: priorAssets } };
-      });
-    }
-    m = /^GET \/api\/v1\/content\/posts\/([^/]+)\/comments$/.exec(route);
-    if (m) {
-      this.postRow(String(m[1])); // 帖子必须存在（含已删占位——评论作者仍可查看自己的评论）
+    m2 = /^GET \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
+    if (m2) return { status: 200, body: this.postDto(this.postRow(String(m2[1])), true) };
+    m2 = /^GET \/api\/v1\/content\/posts\/([^/]+)\/comments$/.exec(route);
+    if (m2) {
+      this.postRow(String(m2[1])); // 帖子必须存在（含已删占位——评论作者仍可查看自己的评论）
       const limit = this.limitOf(url);
-      const rows = this.db.prepare('SELECT * FROM feed_comments WHERE post_id = ? ORDER BY created_at ASC, id ASC').all(String(m[1])) as Array<Record<string, unknown>>;
+      const rows = this.db.prepare('SELECT * FROM feed_comments WHERE post_id = ? ORDER BY created_at ASC, id ASC').all(String(m2[1])) as Array<Record<string, unknown>>;
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.commentDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
-    m = /^POST \/api\/v1\/content\/posts\/([^/]+)\/comments$/.exec(route);
-    if (m?.[1] !== undefined) {
-      const postId = m[1];
-      const post = this.postRow(m[1]!);
-      if (post.deleted_at != null) throw new ContentError(409, 'POST_DELETED', '原帖已删除，不再接受新评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, post: postId }), () => {
-        const text = typeof body.body === 'string' ? body.body.trim() : '';
-        if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
-        if (text.length > 10000) throw new ContentError(422, 'COMMENT_TOO_LONG', '评论超过 10000 字符');
-        const id = genId('cmt');
-        this.db.prepare('INSERT INTO feed_comments(id, post_id, author_actor, body, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,1)').run(id, postId, actor, text, now(), now());
-        return { status: 201, body: this.commentDto(this.db.prepare('SELECT * FROM feed_comments WHERE id = ?').get(id) as Record<string, unknown>) };
-      });
-    }
-    m = /^PUT \/api\/v1\/content\/comments\/([^/]+)$/.exec(route);
-    if (m) {
-      const row = this.commentRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能编辑本人评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') }), () => {
-        this.ifMatch(req, Number(row.revision));
-        const text = typeof body.body === 'string' ? body.body.trim() : '';
-        if (text.length === 0) throw new ContentError(422, 'EMPTY_COMMENT', '评论正文不能为空');
-        this.db.prepare('UPDATE feed_comments SET body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(text, now(), String(row.id));
-        return { status: 200, body: this.commentDto(this.db.prepare('SELECT * FROM feed_comments WHERE id = ?').get(String(row.id)) as Record<string, unknown>) };
-      });
-    }
-    m = /^DELETE \/api\/v1\/content\/comments\/([^/]+)$/.exec(route);
-    if (m) {
-      const row = this.commentRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '只能删除本人评论');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ actor, del: row.id, im: String(req.headers['if-match'] ?? '') }), () => {
-        this.ifMatch(req, Number(row.revision));
-        this.db.prepare('UPDATE feed_comments SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true } };
-      });
-    }
 
-    // —— 相册（§5）——
+    // —— 相册（§5，读） ——
     if (route === 'GET /api/v1/content/albums') {
       const assetId = url.searchParams.get('asset_id');
-      const albums = CONTENT_ALBUMS.filter(a => !assetId || Boolean(this.db.prepare('SELECT 1 FROM album_entries WHERE kind=? AND asset_id=? LIMIT 1').get(a.album, assetId)));
+      const albums = CONTENT_ALBUMS.filter(a => !assetId || Boolean(this.db.prepare('SELECT 1 FROM album_entries WHERE kind=? AND asset_id=? AND deleted_at IS NULL LIMIT 1').get(a.album, assetId)));
       return { status: 200, body: { albums } };
     }
-
-    m = /^GET \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
-    if (m) {
-      const kind = m[1]!;
+    m2 = /^GET \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
+    if (m2) {
+      const kind = m2[1]!;
       if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
       const limit = this.limitOf(url);
       const q = (url.searchParams.get('q') ?? '').trim().toLowerCase();
       const ss = url.searchParams.get('source_service');
       const sk = url.searchParams.get('source_kind');
       const sid = url.searchParams.get('source_id');
-      let rows = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? ORDER BY created_at DESC, id DESC').all(kind) as Array<Record<string, unknown>>;
+      let rows = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND deleted_at IS NULL ORDER BY created_at DESC, id DESC').all(kind) as Array<Record<string, unknown>>;
       if (ss && sk && sid) {
-        // §5 反查：our_words 专道得到真实 source_id → 引用反查截图归档
+        // §5 反查：our_words 专道得到真实 source_id → 引用反查截图归档（已删条目排除）
         const refIds = new Set((this.db.prepare('SELECT entry_id FROM album_entry_refs WHERE service = ? AND kind = ? AND source_id = ?').all(ss, sk, sid) as Array<{ entry_id: string }>).map((r) => r.entry_id));
         rows = rows.filter((r) => refIds.has(String(r.id)));
       }
@@ -412,175 +723,27 @@ export class ContentServer {
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.albumDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page.at(-1)!.created_at), id: String(page.at(-1)!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
-    m = /^POST \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
-    if (m) {
-      const kind = m[1]!;
-      if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor, kind }), () => {
-        if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
-        const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ?').get(kind, body.asset_id) as Record<string, unknown> | undefined;
-        if (existing) return { status: 200, body: this.albumDto(existing), duplicate: true }; // §5：同 (kind,asset) 幂等返回既有
-        const id = genId('ae');
-        const t = now();
-        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(id, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t);
-        const refs = Array.isArray(body.refs) ? body.refs : [];
-        for (const r of refs as Array<Record<string, unknown>>) {
-          if (typeof r?.service !== 'string' || typeof r?.kind !== 'string' || typeof r?.source_id !== 'string') throw new ContentError(422, 'REF_INVALID', '关联引用必须含 service/kind/source_id（任一校验失败则本次写入失败）');
-          this.db.prepare('INSERT INTO album_entry_refs(id, entry_id, service, kind, source_id, created_at) VALUES (?,?,?,?,?,?)').run(genId('aer'), id, r.service, r.kind, r.source_id, t);
-        }
-        return { status: 201, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(id) as Record<string, unknown>) };
-      });
-    }
-    m = /^PUT \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
-    if (m) {
-      // F07：指纹含资源身份（同 key 跨资源=冲突）；回执先于存在性
-      const fpAeP = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayAeP = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpAeP);
-      if (replayAeP) return replayAeP;
-      const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpAeP, () => {
-        this.ifMatch(req, Number(row.revision));
-        this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?')
-          .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, now(), String(row.id));
-        return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(row.id)) as Record<string, unknown>) };
-      });
-    }
-    m = /^DELETE \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
-    if (m) {
-      // R3：回执先于存在性；R2：响应带 asset_id 供代理释放
-      const fpAe = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayAe = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpAe);
-      if (replayAe) return replayAe;
-      const row = this.albumRow(m[1]!);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpAe, () => {
-        this.ifMatch(req, Number(row.revision));
-        // §10.3：移除归档=解除该归档及关联；不删外部原文/全局原文件（est 资产引用保护另行）
-        this.db.prepare('DELETE FROM album_entry_refs WHERE entry_id = ?').run(String(row.id));
-        this.db.prepare('DELETE FROM album_entries WHERE id = ?').run(String(row.id));
-        return { status: 200, body: { id: row.id, removed: true, asset_id: String(row.asset_id) } };
-      });
-    }
 
-    // —— 纪念作品（§6）——
+    // —— 纪念作品（§6，读） ——
     if (route === 'GET /api/v1/content/creations') {
       const limit = this.limitOf(url);
       const rows = this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all() as Array<Record<string, unknown>>;
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.creationDto(r)), next_cursor: null, has_more: rows.length > limit } };
     }
-    m = /^GET \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
-    if (m) return { status: 200, body: this.creationDto(this.creationRow(m[1]!)) };
-    if (route === 'POST /api/v1/content/creations') {
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor }), () => {
-        if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）');
-        if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
-        const workAsset: string | null = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : null;
-        const workKind: string | null = workAsset !== null && typeof body.work_kind === 'string' ? body.work_kind : null;
-        if ((workAsset === null) !== (workKind === null)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
-        if (workKind !== null && !['image', 'video', 'html'].includes(String(workKind))) throw new ContentError(422, 'WORK_KIND_INVALID', 'work_kind 必须是 image|video|html');
-        const id = genId('crt');
-        const t = now();
-        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa', String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
-        this.db.prepare('INSERT INTO creations(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,?,?,1)').run(...args);
-        return { status: 201, body: this.creationDto(this.creationRow(id)) };
-      });
-    }
-    m = /^PUT \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
-    if (m) {
-      const row = this.creationRow(m[1]!);
-      if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      const fpCr = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayCr = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpCr);
-      if (replayCr) return replayCr;
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpCr, () => {
-        this.ifMatch(req, Number(row.revision));
-        const workAsset = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : (row.work_asset_id as string | null);
-        const workKind = typeof body.work_kind === 'string' ? body.work_kind : (row.work_kind as string | null);
-        if ((workAsset === null || workAsset === undefined) !== (workKind === null || workKind === undefined)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
-        // F06-C：work 替换（显式提供时）previous 带出（icon 不可替换）
-        const prevWork = typeof body.work_asset_id === 'string' && body.work_asset_id && body.work_asset_id !== (row.work_asset_id as string | null)
-          ? [row.work_asset_id as string] : undefined;
-        this.db.prepare('UPDATE creations SET title = COALESCE(?, title), work_asset_id = ?, work_kind = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
-          .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, workAsset ?? null, workKind ?? null, now(), String(row.id));
-        return { status: 200, body: { ...this.creationDto(this.creationRow(String(row.id))), ...(prevWork !== undefined ? { previous_asset_ids: prevWork } : {}) } };
-      });
-    }
-    m = /^DELETE \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
-    if (m) {
-      const fpCrD = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayCrD = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpCrD);
-      if (replayCrD) return replayCrD;
-      const row = this.creationRow(m[1]!);
-      if (String(row.creator_actor) !== actor) throw new ContentError(403, 'NOT_CREATOR', '默认由创建者操作');
-      // F06-C：删除响应带 icon/work 资产
-      const crAssets = [row.icon_asset_id, row.work_asset_id].filter((a): a is string => typeof a === 'string' && !!a);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpCrD, () => {
-        this.ifMatch(req, Number(row.revision));
-        this.db.prepare('UPDATE creations SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true, asset_ids: crAssets } };
-      });
-    }
+    m2 = /^GET \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
+    if (m2) return { status: 200, body: this.creationDto(this.creationRow(m2[1]!)) };
 
-    // —— 未来留言正文（§8.1：正文归 content；投递时间/状态归 est 调度器——此处无 deliver_at）——
+    // —— 未来留言正文（§8.1，读） ——
     if (route === 'GET /api/v1/content/future-notes') {
       const limit = this.limitOf(url);
       const rows = this.db.prepare('SELECT * FROM future_notes WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all() as Array<Record<string, unknown>>;
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.noteDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
-    m = /^GET \/api\/v1\/content\/future-notes\/([^/]+)$/.exec(route);
-    if (m) return { status: 200, body: this.noteDto(this.noteRow(m[1]!)) };
-    if (route === 'POST /api/v1/content/future-notes') {
-      return this.withReceipt(actor, header(req, 'idempotency-key'), stable({ body, actor }), () => {
-        const text = typeof body.body === 'string' ? body.body : '';
-        const assetIds = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : [];
-        if (text.trim().length === 0 && assetIds.length === 0) throw new ContentError(422, 'EMPTY_NOTE', '留言必须至少有非空正文或一项附件');
-        const id = genId('fn');
-        const t = now();
-        this.db.prepare('INSERT INTO future_notes(id, author_actor, title, body, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,1)').run(id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, text, t, t);
-        for (let i = 0; i < assetIds.length; i++) this.db.prepare('INSERT INTO future_note_assets(note_id, asset_id, position) VALUES (?,?,?)').run(id, assetIds[i], i);
-        return { status: 201, body: this.noteDto(this.noteRow(id)) };
-      });
-    }
-    m = /^PUT \/api\/v1\/content\/future-notes\/([^/]+)$/.exec(route);
-    if (m) {
-      const row = this.noteRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      const fpFn = stable({ op: 'put', path: m[1]!, body, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayFn = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpFn);
-      if (replayFn) return replayFn;
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpFn, () => {
-        this.ifMatch(req, Number(row.revision));
-        // F06-C：留言附件替换（显式提供时）——previous 带出供代理释放
-        const newAssets = Array.isArray(body.asset_ids) ? dedupeAssetIds(body.asset_ids.filter((a): a is string => typeof a === 'string')) : null;
-        const previousAssetIds = newAssets !== null
-          ? (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id)
-          : undefined;
-        this.db.prepare('UPDATE future_notes SET title = COALESCE(?, title), body = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')
-          .run(typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.body === 'string' ? body.body : String(row.body ?? ''), now(), String(row.id));
-        if (newAssets !== null) {
-          this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
-          for (let i = 0; i < newAssets.length; i++) this.db.prepare('INSERT INTO future_note_assets(note_id, asset_id, position) VALUES (?,?,?)').run(String(row.id), newAssets[i]!, i);
-        }
-        return { status: 200, body: { ...this.noteDto(this.noteRow(String(row.id))), ...(previousAssetIds !== undefined ? { previous_asset_ids: previousAssetIds } : {}) } };
-      });
-    }
-    m = /^DELETE \/api\/v1\/content\/future-notes\/([^/]+)$/.exec(route);
-    if (m) {
-      const fpFnD = stable({ op: 'del', path: m[1]!, actor, im: String(req.headers['if-match'] ?? '') });
-      const replayFnD = this.lookupReceipt(actor, header(req, 'idempotency-key'), fpFnD);
-      if (replayFnD) return replayFnD;
-      const row = this.noteRow(m[1]!);
-      if (String(row.author_actor) !== actor) throw new ContentError(403, 'NOT_AUTHOR', '默认仅本人管理正文');
-      // F06-C：删除响应带 asset_ids——est 代理释放（复审实测未来留言删除后引用残留 409）
-      const noteAssets = (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ?').all(String(row.id)) as Array<{ asset_id: string }>).map((a) => a.asset_id);
-      return this.withReceipt(actor, header(req, 'idempotency-key'), fpFnD, () => {
-        this.ifMatch(req, Number(row.revision));
-        this.db.prepare('UPDATE future_notes SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), String(row.id));
-        this.db.prepare('DELETE FROM future_note_assets WHERE note_id = ?').run(String(row.id));
-        return { status: 200, body: { id: row.id, deleted: true, asset_ids: noteAssets } };
-      });
-    }
+    m2 = /^GET \/api\/v1\/content\/future-notes\/([^/]+)$/.exec(route);
+    if (m2) return { status: 200, body: this.noteDto(this.noteRow(m2[1]!)) };
+    void now;
     return { status: 404, body: { error: { code: 'not_found', message: `未知路由：${route}` } } };
   }
 
@@ -613,7 +776,8 @@ export class ContentServer {
     return { id: r.id, post_id: r.post_id, author: r.author_actor, body: deleted ? null : r.body, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, deleted, deleted_at: r.deleted_at ?? null };
   }
   private albumRow(id: string): Record<string, unknown> {
-    const row = this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    // 写路径只接纳有效行（墓碑=不存在）；快照读取走 referenceSnapshot 直查
+    const row = this.db.prepare('SELECT * FROM album_entries WHERE id = ? AND deleted_at IS NULL').get(id) as Record<string, unknown> | undefined;
     if (!row) throw new ContentError(404, 'ENTRY_NOT_FOUND', '相册条目不存在');
     return row;
   }
@@ -645,7 +809,17 @@ function header(req: IncomingMessage, name: string): string | null {
   const v = req.headers[name];
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
-function stable(o: unknown): string { return JSON.stringify(o); }
 function dedupeAssetIds(ids: string[]): string[] { return [...new Set(ids)]; }
 
-export function sha256ish(s: string): string { return sha(s); }
+/** 旧回执响应形状→资源类型推断（兼容解析的“类型/目标一致”证据；判不出=null）。 */
+function inferResourceTypeFromResponse(body: Record<string, unknown>): ResourceType | null {
+  if (typeof body.removed === 'boolean') return 'album_entry';
+  if (body.bucket_ref !== undefined || body.icon_asset_id !== undefined) return 'creation';
+  if (body.post_id !== undefined) return 'comment';
+  if (body.presentation !== undefined) return 'post';
+  if (body.refs !== undefined && body.kind !== undefined) return 'album_entry';
+  if (body.author !== undefined && body.asset_ids !== undefined && typeof body.deleted === 'boolean') return 'future_note';
+  return null;
+}
+
+export function sha256ish(s: string): string { return simpleHash(s); }

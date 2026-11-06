@@ -182,7 +182,7 @@ export type TestToolDeps = {
   mariposa?: unknown; surfaceDetailClient?: unknown;
   reviews?: unknown; checkpoint?: unknown; archiveSync?: unknown;
   media?: unknown; messages?: unknown; events?: unknown;
-  contentClient?: unknown; identity?: unknown; wishstar?: unknown;
+  contentClient?: unknown; contentOps?: unknown; identity?: unknown; wishstar?: unknown;
   taskService?: unknown; oido?: unknown; mediaIndex?: unknown;
   sirenCall?: unknown; tz?: unknown;
 };
@@ -211,7 +211,7 @@ export function assembleTestTools(deps: TestToolDeps): {
     archiveSync: (deps.archiveSync ?? null) as never,
   });
   registerWishstarCapabilitiesInstance(registry, { wishstar: (deps.wishstar ?? null) as never });
-  registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never });
+  registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, contentOps: (deps.contentOps ?? null) as never });
   registerWakeCapabilitiesInstance(registry, { db, taskService: (deps.taskService ?? null) as never });
   registerMediaCapabilitiesInstance(registry, { db, contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });

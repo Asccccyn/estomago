@@ -145,41 +145,19 @@ if (assetContent) {
     throw err;
   }
 }
+// —— P1.4（四仓合并审计 20261106，F06/F07）：引用登记/解除 HTTP 入口已收回。
+// 仓内无生产消费者（Host 适配器走同进程 MediaService；前端/模型/脚本均未调用），
+// 且该入口允许已登录浏览器任意写引用账本、解除不校验 assetId 绑定（审计实测
+// REFERENCE_ASSET_TARGET：B 的 URL 可解除 A 的引用并令 A 可删）。内容引用的
+// 登记与释放现在唯一由 ContentOperationCoordinator 按权威快照维护。若未来确有
+// 仓外受控消费者，按真实服务身份+assetId/referenceId 绑定+原回执重放另立合同。
 const refPost = /^POST \/api\/v1\/assets\/([^/]+)\/references$/.exec(route);
 if (refPost) {
-  // §03.10.2：受控服务接口——调用方身份由宿主配置映射，不接受浏览器自报 owner_service 扩权
-  if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-  const opKey = String(req.headers['idempotency-key'] ?? '');
-  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-  const body = (await readJson(req, d)) as { owner_service?: unknown; owner_type?: unknown; owner_id?: unknown; owner_revision?: unknown };
-  // 允许的内容域（WP5 接线前静态注册；浏览器可用但仅限登记引用，不构成授权扩面）
-  const ALLOWED_OWNERS: Record<string, string[]> = { content: ['album_entry', 'post', 'creation', 'future_note'] };
-  const os = String(body.owner_service ?? '');
-  const ot = String(body.owner_type ?? '');
-  if (!(os in ALLOWED_OWNERS) || !ALLOWED_OWNERS[os]!.includes(ot)) return json(res, 403, { error: { code: 'owner_not_allowed', message: '不允许的引用域' } });
-  if (typeof body.owner_id !== 'string' || !body.owner_id) return json(res, 400, { error: { code: 'bad_owner_id', message: 'owner_id 必填' } });
-  try {
-    const r = d.media.registerReference({ assetId: decodeURIComponent(refPost[1]!), ownerService: os, ownerType: ot, ownerId: body.owner_id, ownerRevision: typeof body.owner_revision === 'number' ? body.owner_revision : null, operationId: `ref:${opKey}` });
-    return json(res, 201, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-  } catch (err) {
-    if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-    throw err;
-  }
+  return json(res, 410, { error: { code: 'reference_api_retired', message: '引用登记入口已收回：内容引用由宿主按 content 权威快照统一维护' } });
 }
 const refDelete = /^DELETE \/api\/v1\/assets\/([^/]+)\/references\/([^/]+)$/.exec(route);
 if (refDelete) {
-  if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-  const opKey = String(req.headers['idempotency-key'] ?? '');
-  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-  const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
-  if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '解除引用必须带 If-Match: "<revision>"（请刷新后重试）' } });
-  try {
-    const r = d.media.releaseReference({ referenceId: decodeURIComponent(refDelete[2]!), expectedRevision: Number(ifMatch), operationId: `unref:${opKey}` });
-    return json(res, 200, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-  } catch (err) {
-    if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-    throw err;
-  }
+  return json(res, 410, { error: { code: 'reference_api_retired', message: '引用解除入口已收回：内容引用由宿主按 content 权威快照统一维护' } });
 }
 
 // —— RE-12c（2026-10-24）：资产删除正式入口——markAssetMissing 的真实产品消费者。

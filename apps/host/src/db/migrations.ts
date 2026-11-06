@@ -1456,5 +1456,20 @@ CREATE INDEX idx_pending_facts_conv ON pending_program_facts(conversation_id, co
 MIGRATIONS.push({version:55,name:'oido-analysis-input-digest',sql:`
 ALTER TABLE oido_ingest_receipts ADD COLUMN analysis_input_digest TEXT;
 `});
+// 56（2026-11-06，四仓合并审计 F06/F07 P1）：content owner 已应用版本锚——
+// 每个内容对象最近一次按权威快照确认到的 owner_revision 与成员集合（含删除/零集合）。
+// 迟到旧确认按单调准入跳过；零集合完成版本不依赖活跃引用行（旧确认不能复活删除）。
+// 确认事务 = 本表 + asset_external_refs 映射 + outbox(content.operation) ack 同步维护。
+MIGRATIONS.push({version:56,name:'content-owner-applied-state',sql:`
+CREATE TABLE IF NOT EXISTS content_owner_state(
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  applied_revision INTEGER NOT NULL,
+  deleted INTEGER NOT NULL,
+  asset_ids_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (owner_type, owner_id)
+);
+`});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -1,8 +1,10 @@
 // server/routes/content.ts（P07.2 第二批）：content 薄代理路由组。
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序（外层 est 认证已过）/响应与错误码逐字保持。
+// P1（四仓合并审计 20261106，F06/F07）：写路径经 ContentOperationCoordinator（同操作回查→
+// 意图+pin→提交→权威快照确认）；GET 纯读直转发，不进写协调。模型写工具与浏览器共用同一实例。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
-import { contentProxyWithAssets } from '../../integrations/content/client.ts';
+import { contentForward } from '../../integrations/content/client.ts';
 import type { RequestDeps } from '../http.ts';
 
 /** EXEC_V1 §06.4/5（WP5）：content 薄代理——浏览器经 est 认证→派生 qiaosheng→转发 loopback。 */
@@ -16,10 +18,13 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
     const v = req.headers[h];
     if (typeof v === 'string' && v) fwdHeaders[h] = v;
   }
-  let fwdBody: Record<string, unknown> | undefined;
-  if (method === 'POST' || method === 'PUT') {
-    try { fwdBody = (await readJson(req, d)) as Record<string, unknown>; } catch { fwdBody = {}; }
+  if (method === 'GET') {
+    const result = await contentForward(d.contentClient, { method, path: url.pathname + url.search, actor });
+    return json(res, result.status, result.body);
   }
-  const result = await contentProxyWithAssets({ client: d.contentClient, media: d.media ?? null, db: d.db, method, path: url.pathname + url.search, actor, body: fwdBody, headers: fwdHeaders });
+  if (!d.contentOps) return json(res, 503, { error: { code: 'content_unavailable', message: '内容写协调器未装配（聊天不受影响）' } });
+  let fwdBody: Record<string, unknown> | undefined;
+  try { fwdBody = (await readJson(req, d)) as Record<string, unknown>; } catch { fwdBody = {}; }
+  const result = await d.contentOps.write({ method, path: url.pathname, actor, body: fwdBody, headers: fwdHeaders });
   return json(res, result.status, result.body);
 }

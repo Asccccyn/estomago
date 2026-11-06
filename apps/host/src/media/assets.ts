@@ -234,49 +234,72 @@ export class MediaService {
     });
   }
 
-  // —— §4.3/§10.2 引用登记：protected pin → committed；解除 released ——
-  registerReference(opts: { assetId: string; ownerService: string; ownerType: string; ownerId: string; ownerRevision?: number | null; operationId: string }): { referenceId: string; revision: number; state: string } {
+  // —— §4.3/§10.2 引用保护（P1·F06/F07 重构 20261106）：一次内容写操作的持久生命周期 =
+  //     HTTP 前 protected pin（按操作隔离）→ 提交成功后按 content 权威快照原子确认
+  //     （正式 committed 关系按 owner+asset 唯一；非当前成员的同 owner 关系同事务释放；
+  //     本次操作 pin 收口）。消息附件引用在 message_attachments，独立于本表，不受影响。 ——
+
+  /** 操作前置 pin：资产在内容提交前先进入保护（删除守卫计入 protected）。幂等。 */
+  pinAssetForOperation(opts: { assetId: string; operationKey: string }): void {
     this.getAsset(opts.assetId); // ASSET_NOT_FOUND 如实
     const existing = this.db.prepare(
-      'SELECT id, revision, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND operation_id = ?',
-    ).get(opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId, opts.operationId) as { id: string; revision: number; state: string } | undefined;
-    if (existing) return { referenceId: existing.id, revision: existing.revision, state: existing.state }; // 幂等
-    const id = genId('aref');
+      "SELECT id FROM asset_external_refs WHERE asset_id = ? AND owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ?",
+    ).get(opts.assetId, opts.operationKey, opts.operationKey) as { id: string } | undefined;
+    if (existing) return;
     const nowIso = new Date().toISOString();
     this.db.prepare(
       `INSERT INTO asset_external_refs(id, asset_id, owner_service, owner_type, owner_id, owner_revision, revision, operation_id, state, created_at)
-       VALUES (?,?,?,?,?,?,1,?, 'protected', ?)`,
-    ).run(id, opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId, opts.ownerRevision ?? null, opts.operationId, nowIso);
-    return { referenceId: id, revision: 1, state: 'protected' };
+       VALUES (?, ?, 'content', 'content_operation', ?, NULL, 1, ?, 'protected', ?)`,
+    ).run(genId('aref'), opts.assetId, opts.operationKey, opts.operationKey, nowIso);
   }
 
-  confirmReference(referenceId: string): { referenceId: string; revision: number; state: string } {
-    const row = this.db.prepare('SELECT id, revision, state FROM asset_external_refs WHERE id = ?').get(referenceId) as { id: string; revision: number; state: string } | undefined;
-    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '引用不存在');
-    if (row.state === 'committed') return { referenceId: row.id, revision: row.revision, state: row.state };
-    this.db.prepare("UPDATE asset_external_refs SET state = 'committed' WHERE id = ?").run(referenceId);
-    return { referenceId, revision: row.revision, state: 'committed' };
-  }
-
-  /** 解除引用（幂等键=operationId；If-Match 校验引用自身 revision）。历史消息附件引用不在此表，不受此操作影响。 */
-  releaseReference(opts: { referenceId: string; expectedRevision: number; operationId: string }): { referenceId: string; revision: number; state: string } {
-    const row = this.db.prepare('SELECT id, revision, state FROM asset_external_refs WHERE id = ?').get(opts.referenceId) as { id: string; revision: number; state: string } | undefined;
-    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '引用不存在');
-    if (row.revision !== opts.expectedRevision) throw new MediaError('REVISION_CONFLICT', 412, '引用 revision 不匹配（If-Match）');
-    if (row.state === 'released') return { referenceId: row.id, revision: row.revision, state: 'released' }; // 幂等重放
-    this.db.prepare("UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ? WHERE id = ?").run(new Date().toISOString(), opts.referenceId);
-    return { referenceId: opts.referenceId, revision: row.revision + 1, state: 'released' };
-  }
-
-  /** R2（复审 b137e98）：按 owner 解除该资产的全部有效引用（content 删除/替换后释放）。
-   *  幂等：已 released 的行不动；引用不存在=无操作。不触碰其他资产的引用。 */
-  releaseReferencesByOwner(opts: { assetId: string; ownerService: string; ownerType: string; ownerId: string }): void {
-    const rows = this.db.prepare(
-      "SELECT id, revision FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND state IN ('protected','committed')",
-    ).all(opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId) as Array<{ id: string; revision: number }>;
-    for (const r of rows) {
-      this.releaseReference({ referenceId: r.id, expectedRevision: r.revision, operationId: `release:${r.id}` });
+  /** 按权威快照确认映射（调用方包同一本地事务）：
+   *  ① 快照成员逐个落正式 committed 关系（owner+asset 唯一；曾 released 的重新引用即恢复）；
+   *  ② 该 owner 名下不在当前成员集合的 committed/protected 关系释放（不动其他 owner、
+   *     其他操作的 pin、message_attachments）；
+   *  ③ 本次操作的 protected pin 全部收口。
+   *  返回实际新增/释放计数，供对账与测试断言。 */
+  commitContentSnapshot(owner: { type: string; id: string }, snapshot: { ownerRevision: number; assetIds: string[] }, operationKey: string): { committed: number; released: number; pinsReleased: number } {
+    const nowIso = new Date().toISOString();
+    const ownerOpId = `owner:${owner.type}:${owner.id}`;
+    let committed = 0;
+    for (const assetId of snapshot.assetIds) {
+      this.getAsset(assetId); // 资产行缺失=如实抛错（整事务回滚，不假收口）
+      const existing = this.db.prepare(
+        'SELECT id, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND operation_id = ?',
+      ).get(assetId, 'content', owner.type, owner.id, ownerOpId) as { id: string; state: string } | undefined;
+      if (existing && existing.state === 'committed') {
+        this.db.prepare('UPDATE asset_external_refs SET owner_revision = ? WHERE id = ?').run(snapshot.ownerRevision, existing.id);
+      } else if (existing) {
+        this.db.prepare("UPDATE asset_external_refs SET state = 'committed', owner_revision = ?, revision = revision + 1 WHERE id = ?").run(snapshot.ownerRevision, existing.id);
+        committed++;
+      } else {
+        this.db.prepare(
+          `INSERT INTO asset_external_refs(id, asset_id, owner_service, owner_type, owner_id, owner_revision, revision, operation_id, state, created_at)
+           VALUES (?, ?, 'content', ?, ?, ?, 1, ?, 'committed', ?)`,
+        ).run(genId('aref'), assetId, owner.type, owner.id, snapshot.ownerRevision, ownerOpId, nowIso);
+        committed++;
+      }
     }
+    const placeholders = snapshot.assetIds.length > 0 ? snapshot.assetIds.map(() => '?').join(',') : "''";
+    const released = this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = ? AND owner_id = ? AND operation_id = ?
+         AND state IN ('protected','committed') AND asset_id NOT IN (${placeholders})`,
+    ).run(nowIso, owner.type, owner.id, ownerOpId, ...snapshot.assetIds).changes as number;
+    const pinsReleased = this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ? AND state = 'protected'`,
+    ).run(nowIso, operationKey, operationKey).changes as number;
+    return { committed, released, pinsReleased };
+  }
+
+  /** 定局失败（content 4xx=业务未提交）时释放本次操作的全部 pin。不动任何正式关系。 */
+  releaseOperationPins(operationKey: string): number {
+    return this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ? AND state = 'protected'`,
+    ).run(new Date().toISOString(), operationKey, operationKey).changes as number;
   }
 
   /** 有效引用查询（§4.4）：历史消息附件 ∪ protected/committed 外部引用。删除守卫的唯一依据。 */

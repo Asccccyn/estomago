@@ -118,7 +118,7 @@ test('CHAT-04：编辑正文→新修订沿用同一套附件；旧修订附件�
   db.close();
 });
 
-test('MEDIA-10：引用守卫——消息修订引用+protected/committed 引用都挡物理删除；released 不挡；If-Match 校验', async () => {
+test('MEDIA-10：引用守卫——消息修订引用+操作 pin/committed 关系都挡物理删除；released 不挡', async () => {
   const { db, media, messages } = svc();
   messages.ensureConversation('c1');
   const img = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-r1', createdBy: 'qiaosheng', origin: 'upload' });
@@ -127,18 +127,19 @@ test('MEDIA-10：引用守卫——消息修订引用+protected/committed 引用
   // 消息绑定引用
   messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'x', clientMessageId: 'r1', attachments: [{ asset_id: img.id, presentation: 'image' }] });
   assert.equal(media.isAssetReferenced(img.id).by_message_revisions, 1);
-  // 外部引用：protected → committed → released
-  const ref = media.registerReference({ assetId: img.id, ownerService: 'content', ownerType: 'album_entry', ownerId: 'entry-1', operationId: 'op-ref-1' });
-  assert.equal(ref.state, 'protected');
+  // 内容操作引用（P1·F06/F07 20261106）：HTTP 前 protected pin → 按权威快照 committed → 非成员 released
+  media.pinAssetForOperation({ assetId: img.id, operationKey: 'op-ref-1' });
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1, 'protected pin 挡物理删除（提交丢响应窗口）');
+  media.pinAssetForOperation({ assetId: img.id, operationKey: 'op-ref-1' }); // 幂等：同操作不重复 pin
   assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1);
-  assert.deepEqual(media.confirmReference(ref.referenceId), { referenceId: ref.referenceId, revision: 1, state: 'committed' });
-  // 幂等重放：同 operation 再登记=原引用
-  assert.deepEqual(media.registerReference({ assetId: img.id, ownerService: 'content', ownerType: 'album_entry', ownerId: 'entry-1', operationId: 'op-ref-1' }).referenceId, ref.referenceId);
-  // 解除：revision 不匹配 → 拒；匹配 → released；released 后不再保护
-  assert.throws(() => media.releaseReference({ referenceId: ref.referenceId, expectedRevision: 99, operationId: 'op-un-1' }), (e: MediaError) => e.code === 'REVISION_CONFLICT');
-  const rel = media.releaseReference({ referenceId: ref.referenceId, expectedRevision: 1, operationId: 'op-un-1' });
-  assert.equal(rel.state, 'released');
-  assert.equal(rel.revision, 2);
+  const confirmed = media.commitContentSnapshot({ type: 'album_entry', id: 'entry-1' }, { ownerRevision: 2, assetIds: [img.id] }, 'op-ref-1');
+  assert.equal(confirmed.committed, 1, '快照成员落正式 committed 关系');
+  assert.equal(confirmed.pinsReleased, 1, '本次操作 pin 收口');
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1, 'committed 仍挡');
+  // 零成员快照：同 owner 非成员关系释放 → 不再挡
+  const emptied = media.commitContentSnapshot({ type: 'album_entry', id: 'entry-1' }, { ownerRevision: 3, assetIds: [] }, 'op-x');
+  assert.equal(emptied.released, 1);
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 0, 'released 不挡');
   assert.equal(media.isAssetReferenced(img.id).by_message_revisions, 1, '消息修订引用仍在——内容删除不解除聊天引用');
   db.close();
 });

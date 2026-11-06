@@ -92,6 +92,7 @@ export const CONTENTALBUMSREAD_DEFINITION: HostToolSpec = {
 export type ContentModuleDeps = {
   contentClient?: import('../../integrations/content/client.ts').ContentClient | null;
   media?: import('../../media/assets.ts').MediaService | null;
+  contentOps?: import('../../integrations/content/coordinator.ts').ContentOperationCoordinator | null;
 };
 
 export function registerContentCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ContentModuleDeps): void {

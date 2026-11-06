@@ -42,6 +42,7 @@ import { runMediaBackfillTick } from './media/index/backfill.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
+import { ContentOperationCoordinator } from './integrations/content/coordinator.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
 import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION } from './memory-surfacing/sol-provider.ts';
 
@@ -85,6 +86,8 @@ export class Host {
   readonly archiveSync: ArchiveSyncService;
   private readonly voiceObservations: import('./modules/oido/observations.ts').VoiceObservationService | null;
   private readonly callReplyLinks: import('./modules/voice/call-links.ts').CallReplyLinkService | null;
+  /** P1（F06/F07 20261106）：内容写协调器——意图/pin/确认/恢复；浏览器、模型与启动恢复共用 */
+  private readonly contentOps: ContentOperationCoordinator | null;
   private callReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private callReconcileWork: Promise<void> | null = null;
   private readonly callReconcileAbort = new AbortController();
@@ -124,6 +127,7 @@ export class Host {
     this.archiveSync = archiveSync;
     this.voiceObservations = deps.voiceObservations ?? null;
     this.callReplyLinks = deps.callReplyLinks ?? null;
+    this.contentOps = deps.contentOps ?? null;
     this.server = server;
   }
 
@@ -264,6 +268,10 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     // EXEC_V1 WP5：content 薄代理（content.enabled=true 且凭据文件存在才装配）
     const contentClient = contentClientFor(paths.stateRoot, opts.config.content.port, opts.config.content.enabled);
+    // P1（F06/F07 20261106）：内容写协调器——先解析原操作、HTTP 前持久意图+pin、
+    // 成功后按权威快照确认映射、未知结果由恢复消费者按原身份收口。同一实例装给
+    // 浏览器代理、模型写工具与 Host 启动恢复。
+    const contentOps = contentClient ? new ContentOperationCoordinator({ db, client: contentClient, media, logger }) : null;
     // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
     const { WishstarClient } = await import('./integrations/wishstar/client.ts');
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
@@ -310,7 +318,7 @@ export class Host {
     tools.setMemoryRecovery(memoryService);
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
     (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
-    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media });
+    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media, contentOps });
     (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
     const mediaTools = (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { db, media, mediaIndex, contentClient });
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
@@ -405,6 +413,7 @@ export class Host {
       taskService,
       activity,
       contentClient,
+      contentOps,
       voice,
       surfacing,
     };
@@ -462,6 +471,9 @@ export class Host {
     this.mediaBackfillTimer.unref?.();
     // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
     this.oidoLifecycle?.start();
+    // P1（F06/F07）：内容写恢复消费者——启动清一遍崩溃遗留的 pending/unknown 意图，
+    // 运行中有界重试；不调用模型、不碰消息归档消费者。
+    this.contentOps?.start();
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
@@ -512,11 +524,12 @@ export class Host {
     this.callReconcileAbort.abort();
     const observationsStopped = this.voiceObservations?.stop();
     const linksStopped = this.callReplyLinks?.stop();
+    const contentOpsStopped = this.contentOps?.stop(); // P1：停内容写恢复（在途轮收口，不再派新）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
-    await Promise.all([serverStopped, oidoStopped, observationsStopped, linksStopped, this.callReconcileWork, this.archiveSync.stop()]);
+    await Promise.all([serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();
   }
