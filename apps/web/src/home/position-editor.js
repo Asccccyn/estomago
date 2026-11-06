@@ -8,7 +8,8 @@
   const defaults = api.read();
   let positions = structuredClone(defaults);
   let season = 0;
-  let target = 'together';
+  let target = 'otter';
+  let together = false;
   let preview = 'phone';
   let savedMessage = '拖动小动物，调整后点“保存位置”。';
   const inRange = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
@@ -33,7 +34,13 @@
     <div id="position-controls">
       <div class="position-row" aria-label="预览画面"><button type="button" data-preview="phone" aria-pressed="true">手机</button><button type="button" data-preview="desktop" aria-pressed="false">全景</button></div>
       <div class="position-row" aria-label="选择季节">${labels.map((label, index) => `<button type="button" data-season-index="${index}" aria-pressed="false">${label}</button>`).join('')}</div>
-      <div class="position-row" aria-label="移动对象"><button type="button" data-target="otter" aria-pressed="false">水獭</button><button type="button" data-target="raccoon" aria-pressed="false">小浣熊</button><button type="button" data-target="together" aria-pressed="true">一起</button></div>
+      <p class="position-prompt">先选一只，再拖动它的位置</p>
+      <div class="position-characters" aria-label="选择小动物">
+        <button type="button" data-target="otter" aria-pressed="true"><span class="position-portrait" aria-hidden="true"></span><strong>水獭</strong><small>单独调整</small></button>
+        <button type="button" data-target="raccoon" aria-pressed="false"><span class="position-portrait" aria-hidden="true"></span><strong>小浣熊</strong><small>单独调整</small></button>
+      </div>
+      <label class="position-together"><input id="position-together" type="checkbox"> 同时调整两只（移动和缩放）</label>
+      <p id="position-selection" role="status"></p>
       <div class="position-row position-nudge"><span>微调</span><button type="button" data-dx="-2" data-dy="0" aria-label="向左微调">←</button><button type="button" data-dx="0" data-dy="-2" aria-label="向上微调">↑</button><button type="button" data-dx="0" data-dy="2" aria-label="向下微调">↓</button><button type="button" data-dx="2" data-dy="0" aria-label="向右微调">→</button></div>
       <label class="position-size"><span id="position-scale-label">一起缩放</span> <input id="position-scale" type="range" min="50" max="160" step="1" value="100"><output id="position-scale-value">100%</output></label>
       <div class="position-row"><button type="button" id="position-reset">恢复本季</button><button type="button" id="position-save">保存位置</button></div>
@@ -50,12 +57,24 @@
   function render(message) {
     api.update(positions);
     panel.querySelectorAll('[data-season-index]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.seasonIndex) === season)));
-    panel.querySelectorAll('[data-target]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.target === target)));
+    panel.querySelectorAll('[data-target]').forEach(button => {
+      const selected = button.dataset.target === target;
+      button.setAttribute('aria-pressed', String(selected));
+      button.querySelector('small').textContent = selected ? '已选中' : '单独调整';
+      const sprite = document.querySelector(`.season-scene[data-season="${names[season]}"] [data-animal="${button.dataset.target}"] .animal-sprite`);
+      const portrait = button.querySelector('.position-portrait');
+      for (const property of ['backgroundImage', 'backgroundSize', 'backgroundPosition']) portrait.style[property] = sprite.style[property];
+    });
+    panel.querySelector('#position-together').checked = together;
+    panel.querySelector('#position-selection').textContent = together ? '正在调整：两只一起' : `正在调整：${target === 'otter' ? '水獭' : '小浣熊'} · 另一只保持原位`;
+    document.querySelectorAll('.animal-pair .animal').forEach(node => {
+      node.dataset.editSelected = String(together || node.dataset.animal === target);
+    });
     panel.querySelectorAll('[data-preview]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.preview === preview)));
     const relativeSizes = positions[season].bodySizes.map((size, index) => size / defaults[season].bodySizes[index]);
-    const scale = target === 'together' ? Math.sqrt(relativeSizes[0] * relativeSizes[1]) : relativeSizes[target === 'otter' ? 0 : 1];
+    const scale = together ? Math.sqrt(relativeSizes[0] * relativeSizes[1]) : relativeSizes[target === 'otter' ? 0 : 1];
     const percent = Math.round(scale * 100);
-    panel.querySelector('#position-scale-label').textContent = target === 'together' ? '一起缩放' : target === 'otter' ? '水獭大小' : '小浣熊大小';
+    panel.querySelector('#position-scale-label').textContent = together ? '一起缩放' : target === 'otter' ? '水獭大小' : '小浣熊大小';
     slider.value = percent;
     panel.querySelector('#position-scale-value').textContent = `${percent}%`;
     data.value = JSON.stringify({ version: 1, seasons: positions }, null, 2);
@@ -63,7 +82,7 @@
   }
   function move(dx, dy, start = positions[season]) {
     const next = structuredClone(start);
-    if (target === 'together') {
+    if (together) {
       next.x = round(clamp(start.x + dx, .05, .95));
       next.groundY = round(clamp(start.groundY + dy, .15, .95));
     } else {
@@ -86,8 +105,13 @@
   }));
   panel.querySelectorAll('[data-target]').forEach(button => button.addEventListener('click', () => {
     target = button.dataset.target;
+    together = false;
     render();
   }));
+  panel.querySelector('#position-together').addEventListener('change', event => {
+    together = event.target.checked;
+    render();
+  });
   panel.querySelectorAll('[data-dx]').forEach(button => button.addEventListener('click', () => {
     const { panelWidth, height } = api.dimensions();
     move(Number(button.dataset.dx) / panelWidth, Number(button.dataset.dy) / height);
@@ -95,7 +119,7 @@
   slider.addEventListener('input', () => {
     const scale = Number(slider.value) / 100;
     const sizes = positions[season].bodySizes;
-    if (target === 'together') {
+    if (together) {
       const relativeSizes = sizes.map((size, index) => size / defaults[season].bodySizes[index]);
       const currentScale = Math.sqrt(relativeSizes[0] * relativeSizes[1]);
       const ratio = clamp(scale / currentScale, Math.max(...relativeSizes.map(size => .5 / size)), Math.min(...relativeSizes.map(size => 1.6 / size)));
@@ -138,7 +162,6 @@
       if (event.button !== 0) return;
       event.preventDefault();
       season = names.indexOf(node.closest('.season-scene').dataset.season);
-      if (target !== 'together') target = node.dataset.animal;
       api.select(season);
       drag = { x: event.clientX, y: event.clientY, start: structuredClone(positions[season]), ...api.dimensions() };
       node.setPointerCapture(event.pointerId);

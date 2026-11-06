@@ -21,3 +21,16 @@ html[data-position-editor="true"] .animal:active { cursor: grabbing; }
 html[data-position-editor="true"] .animal-size { pointer-events: none; }
 html[data-position-editor="true"] .animal-sprite { animation-play-state: paused; }
 html[data-position-editor="true"] .scene-hotspot { pointer-events: none; }
+
+#position-editor .position-characters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+#position-editor .position-characters button { display: flex; flex-direction: column; align-items: center; padding: 3px 8px 8px; background: #fffdf5; color: #705944; }
+#position-editor .position-characters button[aria-pressed="true"] { border: 2px solid #7c8f68; padding: 2px 7px 7px; background: #edf2e4; }
+#position-editor .position-portrait { display: block; width: 66px; height: 66px; background-repeat: no-repeat; }
+#position-editor .position-characters small { font-size: 11px; color: #667b51; }
+#position-editor .position-together { display: flex; align-items: center; gap: 4px; margin-top: 10px; font-size: 12px; }
+#position-editor .position-together input { accent-color: #7c8f68; }
+#position-editor #position-selection { color: #5a7149; }
+html[data-position-editor="true"] .animal-pair,
+html[data-position-editor="true"] .animal { pointer-events: none; }
+html[data-position-editor="true"] .animal[data-edit-selected="true"],
+html[data-position-editor="true"] .animal[data-edit-selected="true"] .animal-size { pointer-events: auto; }
