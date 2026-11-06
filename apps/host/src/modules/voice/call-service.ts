@@ -13,8 +13,9 @@ export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' 
  *  a) connected_at 非空——register 通知到达，或真实话轮到达时回填（voice-stream）；
  *  b) 该 call 有真实接纳的语音话轮（voice_stream_turns）——话轮经通话 WS 抵达，是硬证据；
  *  c) S 权威事实 started_at（对账/查询路径传入，来自 S call_sessions 持久行）；
- *  d) lifecycle end 回调（onDestroyed 仅真实会话触发，回调路径显式传入）。
- *  三/四皆无的收口（未连接预留到期）不产生结束事实（R2 语义保留）。 */
+ *  d) lifecycle end 回调携带的 had_session 正本事实（RV02 复审 20261106：onDestroyed=true、
+ *     预留终止=started_at null——从未连接的预留取消不再被任何 end 通知冒充真实会话）。
+ *  四皆无的收口（未连接预留到期）不产生结束事实（R2 语义保留）。 */
 export type RealSessionEvidence = { sirenStartedAt?: number | null; lifecycleEnd?: boolean };
 export function callHadRealSession(db: Db, callId: string, external?: RealSessionEvidence): boolean {
   const row = db.prepare('SELECT connected_at FROM voice_calls WHERE call_id=?').get(callId) as { connected_at: string | null } | undefined;

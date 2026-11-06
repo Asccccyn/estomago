@@ -343,6 +343,41 @@ test('生命周期重构 R3：register 丢失但真实话轮/结束回调/S 权�
   }
 });
 
+test('RV02 复审：end 回调按 S 正本 had_session 判定——未连接预留取消不产生真实通话结束事实', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'rv02', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-rv02-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  const lifecycle = (callId: string, body?: unknown) => c.call(`/v1/calls/${callId}`, 'DELETE', body, { authorization: 'Bearer synthetic-ingress' });
+  const reserve = (callId: string) => c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,'primary','active',?,?,'ordinary')").run(callId, new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  try {
+    // ── 反例（复审 siren-reaudit 见证）：从未连 WS 的预留取消，S end 通知 had_session=false ──
+    reserve('call-rv02a');
+    const ended = await lifecycle('call-rv02a', { had_session: false });
+    assert.equal(ended.status, 200, '终态收口照常');
+    assert.equal((c.db.prepare("SELECT state FROM voice_calls WHERE call_id='call-rv02a'").get() as { state: string }).state, 'ended', '投影收口');
+    assert.equal(factRow('call-rv02a'), undefined, 'RV02：未连接预留取消不登记"真实通话已结束"事实');
+
+    // ── 对照1：真实会话 onDestroyed（had_session=true）→ 事实登记（register 丢失也有正本事实） ──
+    reserve('call-rv02b');
+    await lifecycle('call-rv02b', { had_session: true });
+    assert.equal(factRow('call-rv02b')?.kind, 'call_end', 'S 正本会话事实→登记');
+
+    // ── 对照2：无 body 旧形态（无 had_session）→ 不凭 end 通知冒充；connected_at 证据仍生效 ──
+    reserve('call-rv02c');
+    await lifecycle('call-rv02c');
+    assert.equal(factRow('call-rv02c'), undefined, '无事实的 end 通知不单独登记');
+    c.db.prepare("UPDATE voice_calls SET state='active' WHERE call_id='call-rv02c'").run();
+    c.db.prepare('UPDATE voice_calls SET connected_at=? WHERE call_id=?').run(new Date().toISOString(), 'call-rv02c');
+    await lifecycle('call-rv02c');
+    assert.equal(factRow('call-rv02c')?.kind, 'call_end', 'connected_at 真实连接证据→登记');
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
 test('她取消后再 accept_call：DIAL_SUPERSEDED 如实（不建通话）', async () => {
   const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'g', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
   const c = compose(tempRoot('dial-cancel-'), transport);

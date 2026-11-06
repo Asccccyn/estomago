@@ -38,9 +38,15 @@ export async function handleVoiceCallLifecycle(req: IncomingMessage, res: Server
   const callId = decodeURIComponent(m?.[1] ?? '');
   const row = d.db.prepare('SELECT state FROM voice_calls WHERE call_id=?').get(callId) as { state: string } | undefined;
   if (!row) return ndjsonError(404, 'call not found');
+  // RV02（复审 20261106）：end 通知体携带 S 正本 had_session 事实（onDestroyed=真实会话；
+  // 预留终止=started_at 为 null）。缺席（旧形态/无 body）按 false——真实通话的证据仍由
+  // connected_at/voice_stream_turns/对账 started_at 提供，不靠任何 end 通知冒充。
+  let endBody: { had_session?: unknown } = {};
+  try { endBody = (await readJson(req, d, 64 * 1024)) as typeof endBody; } catch { /* 无 body=旧形态，按 false */ }
+  const hadSession = endBody.had_session === true;
   // F01（四仓审计 20261104）：Siren lifecycle end = 确认终态——统一走共同出口，包括投影
   // 已被前端命令先收口的场景（早退分支不补登记=旧缺口，审计 S-first 复现已覆盖）。
   // 幂等：投影 UPDATE 只在 active 生效；事实 INSERT OR IGNORE（恰一条）。
-  endCallConfirmed(d.db, callId, { lifecycleEnd: true }); // R3：end 回调源自 onDestroyed=真实会话的独立正向证据
+  endCallConfirmed(d.db, callId, { lifecycleEnd: hadSession }); // 终态收口照常；事实登记按正本会话事实
   return json(res, 200, { call_id: callId, state: 'ended' });
 }
