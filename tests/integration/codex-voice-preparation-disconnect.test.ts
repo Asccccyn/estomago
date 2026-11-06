@@ -130,7 +130,7 @@ async function runPhone(scenario: 'control' | 'disconnect-audio' | 'disconnect-a
     const result = {
       scenario, abortedAtRelease, ingests, analyses, analysesDispatched, modelRequests,
       receipts: host.db.prepare('SELECT est_asset_id,oido_audio_id FROM oido_ingest_receipts').all(),
-      observation: host.db.prepare('SELECT direction,status,model_projection,dispatched_turn_id FROM voice_observations LIMIT 1').get() as Record<string, unknown> | undefined,
+      observation: host.db.prepare('SELECT direction,status,error_code,model_projection,dispatched_turn_id,analysis_id FROM voice_observations LIMIT 1').get() as Record<string, unknown> | undefined,
       messages: host.db.prepare('SELECT speaker, COUNT(*) AS count FROM messages GROUP BY speaker ORDER BY speaker').all(),
       stream: host.db.prepare('SELECT state FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get('audit-call', 'audit-turn'),
       turns: host.db.prepare('SELECT state FROM turns').all(),
@@ -209,21 +209,25 @@ function assertSavedNotDispatched(result: Record<string, any>, shape: 'text' | '
   assert.equal(m.admission_linked, 1, '接纳记录指向该 turn（通话记录可反查这句话）');
 }
 
-/** A06（联合审计 2026-10-27）：断线发生在持久分析任务进行中——交互停止（至多一次模型请求，
- *  替身即时返回时可能先于断开完成），但 deep_listen 的合法持久任务不随交互取消（B4.6）：
- *  分析晚到完成、只写观察行（无投影冻结/不改已派发历史）；消息仍唯一正式保留。 */
+/** A06（联合审计 2026-10-27）+ RV01（复审 20261106）：断线发生在持久分析任务进行中——
+ *  交互停止（至多一次模型请求），O 侧持久任务自然完成（B4.6：ingest/分析回执保留）；
+ *  但断线取消＝该轮观察资格终结（abandoned）：迟到成功不写可消费 ready 行（RV01
+ *  复审要求——取消/停止路径共同关闭同一资格），迟到 analysis_id 归属原操作并补发
+ *  O cancel；消息仍唯一正式保留。 */
 function assertLateAnalysisAfterDisconnect(result: Record<string, any>): void {
   assert.equal(result.ingests, 1, '持久分析任务的 ingest 已发生（回执保留）');
   assert.equal(result.analysesDispatched, 1, '分析由持久 worker 派发一次');
-  assert.equal(result.analyses, 1, '分析晚到完成——交互断开不取消合法持久任务（B4.6）');
+  assert.equal(result.analyses, 1, '分析晚到完成——O 侧任务不随交互强制销毁（B4.6）');
   assert.equal(result.receipts.length, 1, '数据库确实保留导入回执');
   assert.equal(result.receipts[0].oido_audio_id, 'aud_audit');
   assert.ok(result.modelRequests <= 1, '在途停止：模型请求至多一次（替身即时返回时可能先于断开完成）');
   assert.equal(result.stream?.state, 'cancelled', '接纳流收口为 cancelled');
   assert.equal(result.observation?.direction, 'user');
-  assert.equal(result.observation?.status, 'ready', '晚到分析写入观察行');
+  assert.equal(result.observation?.status, 'failed', 'RV01：断线取消＝资格终结，迟到成功不写可消费 ready');
+  assert.equal(result.observation?.error_code, 'QUALIFICATION_CLOSED');
+  assert.ok(result.observation?.analysis_id, 'RV01：迟到 analysis_id 归入同一已知操作（保留取消责任）');
   assert.equal(result.observation?.dispatched_turn_id, null, 'A06：迟到观察不改已派发历史');
-  assert.equal(result.observation?.model_projection, null, 'A06：迟到结果只持久化/显示');
+  assert.equal(result.observation?.model_projection, null, 'A06：迟到结果不产生模型投影');
   assert.equal(result.owner.length, 1, '唯一正式消息保留');
   assert.equal(result.owner[0].kind, 'voice');
   assert.equal(result.owner[0].archive_intents, 1, '归档意图随消息落库');

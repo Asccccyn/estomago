@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "c117055423b9247494e38bf0293af37fdaf0fefd",
+  "baselineCommit": "59b7b9346d8ced12fbb38c1dbf1f95313402c433",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -2343,7 +2343,7 @@
       "type": "function",
       "function": {
         "name": "tool_invoke",
-        "description": "按已读取的定义调用工具；沿用返回的definition_id，不得猜参数。",
+        "description": "调用工具。可直接按目录名称和 arguments 调用（参数以 tool_define 读取的完整定义为准）；若此前读过该工具的定义，携带返回的 definition_id 以便版本核对。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2351,7 +2351,8 @@
               "type": "string"
             },
             "definition_id": {
-              "type": "string"
+              "type": "string",
+              "description": "可选：沿已读定义调用时携带（tool_define 返回值）；缺省=直接调用"
             },
             "arguments": {
               "type": "object",
@@ -2360,7 +2361,6 @@
           },
           "required": [
             "name",
-            "definition_id",
             "arguments"
           ],
           "additionalProperties": false

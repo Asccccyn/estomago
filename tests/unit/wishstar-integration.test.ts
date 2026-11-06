@@ -150,6 +150,10 @@ test('RT02：真实 200 头+部分 JSON 后取消——客户端返回未知，�
   const { WishstarClient } = await import('../../apps/host/src/integrations/wishstar/client.ts');
   const server = http.createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.method === 'GET') {
+      res.end('not-json-at-all'); // 完整到达但不可解析：读取失败≠成功空对象（响应正常结束，不悬挂）
+      return;
+    }
     res.write('{"id":"star_1","con');
     req.on('close', () => { try { res.destroy(); } catch { /* 已断 */ } });
   });
