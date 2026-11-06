@@ -70,7 +70,7 @@
       { action: 'wishes', label: '许愿星', x: (783 - 426.5) / 426.5, y: 23 / 922, guide: 'star', target: 'stars' },
       { action: 'album', label: '相册', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
       { action: 'anniversaries', label: '纪念日', x: .24, y: .89, w: .31, h: .10, target: 'flowers' },
-      { action: 'chat', label: '水流与湿云，进入聊天', x: .18, y: .8, w: .34, h: .38, target: 'signature-chat', signature: true },
+      { action: 'chat', label: '星潮印记，进入聊天', x: .18, y: .5, w: .34, h: .9, target: 'signature-chat', signature: true },
       { action: 'calendar', label: '全世界的水都会重逢，进入日历', x: .675, y: .5, w: .65, h: .9, target: 'signature-calendar', signature: true },
     ],
     [{ action: 'moments', label: '朋友圈', x: (1231 - 853) / 426.5, y: 150 / 922, point: true, target: 'maple-leaf' }],
@@ -88,8 +88,8 @@
     },
     {
       season: 1, storageKey: 'estomago-signature-layout-summer-v1',
-      defaults: { x: .53, y: .935, width: .84 }, aspectRatio: 3.2,
-      image: '/home/assets/seasons/summer-water-reunion.png', imageSize: [2172, 724],
+      defaults: { x: .5, y: .52, width: .88 }, aspectRatio: 3.2,
+      image: '/home/assets/seasons/summer-water-reunion.png?v=20261106-tide2', imageSize: [2172, 724],
       poem: [
         'All the waters of the world',
         'will meet again.',

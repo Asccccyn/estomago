@@ -67,14 +67,9 @@ html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="tru
 .season-signature .scene-hotspot { pointer-events: auto; z-index: 2; }
 .spring-signature { left: 61.5%; top: 93.84465459788169%; width: 77%; aspect-ratio: 3 / 1; animation: signature-float 7.2s ease-in-out infinite; }
 @keyframes signature-float { 0%, 100% { translate: 0 0; opacity: .96; } 50% { translate: 0 -2px; opacity: 1; } }
-.summer-signature { left: 53%; top: 93.5%; width: 84%; aspect-ratio: 3.2 / 1; container-type: inline-size; }
-.summer-signature img { object-fit: contain; filter: saturate(1.18) drop-shadow(0 .6px .5px rgba(40, 67, 103, .28)); transform-origin: 20% 78%; animation: summer-water-flow 8.6s ease-in-out infinite; }
-.summer-signature .signature-poem { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; z-index: 0; color: #2f4966; font-family: 'Snell Roundhand', 'Apple Chancery', cursive; font-size: 2.8cqw; font-weight: 400; line-height: 1.08; letter-spacing: 0; word-spacing: 0; pointer-events: none; }
-.summer-signature .signature-poem span { position: absolute; display: block; white-space: nowrap; }
-.summer-signature .signature-poem span:nth-child(1) { left: 41%; top: 47%; }
-.summer-signature .signature-poem span:nth-child(2) { left: 62%; top: 60%; }
-.summer-signature .signature-poem span:nth-child(3) { left: 38%; top: 73%; }
-.summer-signature .signature-poem span:nth-child(4) { left: 44%; top: 86%; }
+.summer-signature { left: 50%; top: 52%; width: 88%; aspect-ratio: 3.2 / 1; }
+.summer-signature img { object-fit: contain; transform-origin: 30% 55%; animation: summer-water-flow 8.6s ease-in-out infinite; }
+.summer-signature .signature-poem { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
 .summer-signature .scene-hotspot { min-width: 44px; min-height: 44px; }
 @keyframes summer-water-flow { 0%, 100% { translate: 0 0; scale: 1; opacity: .98; } 50% { translate: 1px -1px; scale: 1.006; opacity: 1; } }
 .signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .78; pointer-events: auto; }
