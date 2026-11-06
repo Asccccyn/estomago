@@ -63,15 +63,13 @@
     [{ action: 'calendar', label: '日历与记忆', x: .50, y: .24, w: .96, h: .46, target: 'blossoms' }],
     [
       { action: 'wishes', label: '许愿星', x: (783 - 426.5) / 426.5, y: 23 / 922, guide: 'star', target: 'stars' },
-      { action: 'reading', label: '共读', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
+      { action: 'album', label: '相册', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
       { action: 'anniversaries', label: '纪念日', x: .24, y: .89, w: .31, h: .10, target: 'flowers' },
     ],
     [{ action: 'moments', label: '朋友圈', x: (1231 - 853) / 426.5, y: 150 / 922, point: true, target: 'maple-leaf' }],
     [
-      { action: 'album', label: '水獭相册', x: .56, y: .49, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
-      { action: 'album', label: '小浣熊相册', x: .90, y: .15, w: .16, h: .13, target: 'dried-flowers', subject: 'raccoon' },
-      { action: 'album', label: '小猫相册', x: .89, y: .34, w: .17, h: .13, target: 'mantel-vase', subject: 'cat' },
-      { action: 'voice', label: '语音', x: .92, y: .22, w: .18, h: .10, target: 'wooden-birds' },
+      { action: 'reading', label: '共读', x: (1563 - 1279.5) / 426.5, y: .31, w: .14, h: .22, target: 'bookshelf' },
+      { action: 'voice', label: '语音深听', x: (1412 - 1279.5) / 426.5, y: 292 / 922, w: 124 / 426.5, h: 124 / 922, target: 'snow-window' },
       { action: 'upstairs', label: '二楼', x: .41, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];

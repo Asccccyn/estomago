@@ -73,11 +73,11 @@ test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接�
   assert.deepEqual(routes, ['/chat', '/wishstar']);
   const pending = [
     { action: 'calendar', season: 'spring' },
-    { action: 'reading', season: 'summer' },
+    { action: 'reading', season: 'winter', target: 'bookshelf' },
     { action: 'anniversaries', season: 'summer' },
     { action: 'moments', season: 'autumn' },
-    { action: 'album', season: 'winter', subject: 'otter' },
-    { action: 'voice', season: 'winter' },
+    { action: 'album', season: 'summer', target: 'fireflies' },
+    { action: 'voice', season: 'winter', target: 'snow-window' },
     { action: 'upstairs', season: 'winter' },
   ];
   const received: unknown[] = [];
@@ -92,7 +92,7 @@ test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接�
     '/home/feature.html?feature=reading',
     '/home/feature.html?feature=anniversaries',
     '/home/feature.html?feature=moments',
-    '/home/feature.html?feature=album&subject=otter',
+    '/home/feature.html?feature=album',
     '/home/feature.html?feature=voice',
     '/home/feature.html?feature=upstairs',
   ];

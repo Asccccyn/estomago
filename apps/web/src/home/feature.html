@@ -30,11 +30,11 @@
       const params = new URLSearchParams(window.location.search);
       const pages = {
         calendar: { title: '日历与记忆', season: 'spring' },
-        reading: { title: '共读', season: 'summer' },
+        reading: { title: '共读', season: 'winter' },
         anniversaries: { title: '纪念日', season: 'summer' },
         moments: { title: '朋友圈', season: 'autumn' },
-        album: { title: '相册', season: 'winter' },
-        voice: { title: '语音', season: 'winter' },
+        album: { title: '相册', season: 'summer' },
+        voice: { title: '语音深听', season: 'winter' },
         upstairs: { title: '二楼', season: 'winter' },
       };
       const requestedFeature = params.get('feature');
