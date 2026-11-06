@@ -28,13 +28,14 @@ function setup() {
   const settings = new BackgroundSettingsService(db, config);
   const messages = new MessageService(db);
   messages.ensureConversation('primary');
-  const sched = new BackgroundScheduler({ db, config, settings, alerts: new SystemAlertService(db, events), executor: { async executeRun() { return { outcome: 'noop' }; } }, now: () => Date.parse('2026-11-06T02:00:00.000Z'), tickMs: 3_600_000 });
   const exec = createBackgroundExecution({
     messages, events, bgSettings: settings,
     supervisor: { enqueueBackground: async <T,>(_cid: string, run: () => Promise<T>) => run(), runBackgroundTurn: (async () => ({ outcome: 'completed' as const })) as never },
     scheduler: { recordDispatchStart: (async () => ({ allowed: true, dispatchId: 'd1' })) as never },
     db,
   });
+  // T16/RB04：真实执行器接进调度器（领取→执行→finish→once 收尾走真实链，不再直调 executeRun 绕过收尾）
+  const sched = new BackgroundScheduler({ db, config, settings, alerts: new SystemAlertService(db, events), executor: exec, now: () => Date.parse('2026-11-06T02:00:00.000Z'), tickMs: 3_600_000 });
   const seedReminder = (dueAt: string): string => {
     const id = `bgt_${genId('x').slice(2)}`;
     const now = new Date().toISOString();
@@ -47,21 +48,38 @@ function setup() {
   return { root, db, sched, exec, messages, seedReminder, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
-test('T16：同一提醒两次执行（不同 run，同一 due）只递交一条系统消息', async () => {
+test('T16/RB04：真实领取→崩溃→恢复→重放只递交一条系统消息；once 提醒收口不再伪 scheduled', async () => {
   const f = setup();
   try {
-    const taskId = f.seedReminder('2026-11-06T01:59:00.000Z');
-    const mkRun = (rid: string): Parameters<typeof f.exec.executeRun>[0] => ({
-      runId: rid, taskId, kind: 'reminder', origin: 'legacy_unknown', conversationId: 'primary',
-      payload: { text: '体检提醒' }, isCancelRequested: () => false, registerAbort: () => {},
-    });
-    const first = await f.exec.executeRun(mkRun('run_a'));
-    assert.equal(first.outcome, 'completed');
-    // 崩溃重放：发布后未及 finish → 恢复重新领取（新 run），task.next_due_at 未推进
-    const replay = await f.exec.executeRun(mkRun('run_b'));
-    assert.equal(replay.outcome, 'completed');
-    const n = (f.db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id='primary' AND client_message_id LIKE 'reminder:%'").get() as { n: number }).n;
-    assert.equal(n, 1, '投递身份按 task+due 稳定——重放幂等（旧实现按 run 计 → SIGKILL 后重复递交）');
+    const due = '2026-11-06T01:59:00.000Z';
+    const taskId = f.seedReminder(due);
+    // 崩溃现场：已领取（claimed，冻结 scheduled_for=due）、零派发、发布未发生
+    const stuckRun = `run_${genId('x').slice(2)}`;
+    const nowIso = new Date().toISOString();
+    f.db.prepare(
+      `INSERT INTO background_runs(id, task_id, task_revision, kind, state, occurrence_key, scheduled_for, conversation_id, actor_id, created_at, updated_at)
+       VALUES (?,?,1,'reminder','claimed',?,?,'primary','jiaming',?,?)`,
+    ).run(stuckRun, taskId, `${taskId}:1:${due}`, due, nowIso, nowIso);
+    // 重启：start 内含恢复——零派发=释放 occurrence key，任务保持可领取（本次机会不丢）
+    f.sched.start();
+    try {
+      assert.equal((f.db.prepare('SELECT state FROM background_runs WHERE id=?').get(stuckRun) as { state: string }).state, 'skipped', '零派发 claimed 恢复为 skipped');
+      // 下一 tick 重新领取本次 due 并真实执行投递
+      await f.sched.tick();
+      const n1 = (f.db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id='primary' AND client_message_id LIKE 'reminder:%'").get() as { n: number }).n;
+      assert.equal(n1, 1, '恢复重放按 task+冻结 due 幂等——恰一条系统消息');
+      // RB04：once 提醒投递后任务收口（旧实现 reminder 不在 finalize 范围：永远 enabled=1 伪 scheduled）
+      const task = f.db.prepare('SELECT enabled, next_due_at, control_reason FROM background_tasks WHERE id=?').get(taskId) as { enabled: number; next_due_at: string | null; control_reason: string | null };
+      assert.equal(task.enabled, 0, 'once 提醒完成后停用');
+      assert.equal(task.next_due_at, null, '不再保留过期 due');
+      assert.equal(task.control_reason, 'delivered');
+      // 再 tick：无候选可领（不再每 tick 空扫已消费任务），消息不重复
+      await f.sched.tick();
+      const n2 = (f.db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id='primary' AND client_message_id LIKE 'reminder:%'").get() as { n: number }).n;
+      assert.equal(n2, 1, '收口后不重复投递');
+      const runsAfter = (f.db.prepare('SELECT COUNT(*) n FROM background_runs WHERE task_id=? AND state IN (\'claimed\',\'running\')').get(taskId) as { n: number }).n;
+      assert.equal(runsAfter, 0, '无在途 run 残留');
+    } finally { f.sched.stop(); }
   } finally { f.close(); }
 });
 

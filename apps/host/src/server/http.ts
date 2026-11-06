@@ -284,8 +284,11 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
     // —— EXEC_V1 §04.11（WP4）+ WAKE_KEEPWARM_V1 §08：后台设置/任务/运行——P07.2 迁 server/routes/background.ts（逐字）。
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/background/* 子路径继续走链尾 404，不被前缀抢占。
+    // RB05（复审 20261106）：free-activity 显式入口接进分派（handler 已在 background.ts，
+    // 旧表漏列致正式 HTTP 404——功能不可达）。
     if (route === 'GET /api/v1/background/settings' || route === 'PUT /api/v1/background/settings'
       || route === 'GET /api/v1/background/tasks' || route === 'POST /api/v1/background/tasks'
+      || route === 'POST /api/v1/background/free-activity'
       || route === 'GET /api/v1/background/runs'
       || /^GET \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)
       || /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)

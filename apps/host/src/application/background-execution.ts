@@ -33,8 +33,10 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
         // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
         const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
         // P5（四仓审计 20261106，T16）：投递身份=task+到期时刻（非 run）——发布后
-        // 崩溃/停止恢复重放同一 occasion 时幂等去重，不再重复递交系统提醒
-        const dueIso = (db.prepare('SELECT next_due_at FROM background_tasks WHERE id = ?').get(input.taskId) as { next_due_at: string | null } | undefined)?.next_due_at;
+        // 崩溃/停止恢复重放同一 occasion 时幂等去重，不再重复递交系统提醒。
+        // RB04（复审 20261106）：到期时刻取**已领取冻结的 occasion**（run.scheduled_for）——
+        // daily 在领取时已推进 task.next_due_at（读到的是下一日），不用可变排程字段。
+        const dueIso = (db.prepare('SELECT scheduled_for FROM background_runs WHERE id = ?').get(input.runId) as { scheduled_for: string | null } | undefined)?.scheduled_for;
         const reminderMessageId = `reminder:${input.taskId}:${dueIso ?? input.runId}`;
         // F03（四仓联合审计 20261104）：排队等待期间任务可能被取消（cancel 的
         // supersedeOpenRuns 已把零派发 run 置 cancelled）——**真正发布前**消费这份

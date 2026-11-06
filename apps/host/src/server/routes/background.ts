@@ -128,6 +128,7 @@ if (route === 'POST /api/v1/background/free-activity') {
   }
   const id = genId('bgt');
   const nowIso = new Date().toISOString();
+  // RB05（复审 20261106）：接通正式分派后暴露并修正 INSERT 占位/参数错位（旧 404 不可达未被执行）
   d.db.prepare(
     `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, client_operation_key, created_at, updated_at)
      VALUES (?,?,'jiaming','autonomous',1,1,'once',?,?,?,?,NULL,?,'qiaosheng','free_activity',?,?,?)`,

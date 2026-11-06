@@ -1486,4 +1486,38 @@ CREATE TABLE IF NOT EXISTS voice_observation_decisions(
 );
 `});
 
+// RB05（复审 20261106）：free-activity 显式入口接通正式分派后，origin='free_activity'
+// 被 v33 的 CHECK 拒绝（handler 此前 404 不可达，从未真实执行）。backgroundControl 按
+// origin!=='self_schedule' 路由 free_activity 控制——补列值 CHECK 需整表重建
+//（SQLite 不能改 CHECK；background_runs 无 FK 引用本表，重建安全；索引重建）。
+MIGRATIONS.push({version:58,name:'background-task-origin-free-activity',sql:`
+CREATE TABLE background_tasks_v58(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('autonomous','keepwarm','reminder')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  revision INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('once','daily','interval','cache_idle')),
+  scheduled_at TEXT,
+  next_due_at TEXT,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  local_time TEXT,
+  interval_ms INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by_actor_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK (origin IN ('self_schedule','system_keepwarm','legacy_unknown','free_activity')),
+  control_reason TEXT,
+  client_operation_key TEXT
+);
+INSERT INTO background_tasks_v58(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,local_time,interval_ms,payload_json,created_by_actor_id,created_at,updated_at,origin,control_reason,client_operation_key)
+  SELECT id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,local_time,interval_ms,payload_json,created_by_actor_id,created_at,updated_at,origin,control_reason,client_operation_key FROM background_tasks;
+DROP TABLE background_tasks;
+ALTER TABLE background_tasks_v58 RENAME TO background_tasks;
+CREATE INDEX IF NOT EXISTS idx_bg_tasks_due ON background_tasks(enabled, next_due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bg_tasks_client_op ON background_tasks(conversation_id, client_operation_key) WHERE client_operation_key IS NOT NULL;
+`});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

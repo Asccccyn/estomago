@@ -2,6 +2,7 @@ import type { Options, Query, SDKUserMessage, SDKMessage, SDKRateLimitInfo } fro
 import { createEstSdkMcp, sdkToolName } from './sdk-mcp.ts';
 import { subscriptionAdmission, subscriptionRejected, sdkUsesExtraUsage } from './sdk-subscription.ts';
 import { SdkEventNormalizer } from './sdk-event-normalizer.ts';
+import { ContractError } from './or-contract.ts';
 import type { RawStreamEvent, RawUsage, SdkCostEstimate } from '../../../../packages/contracts/src/sdk-events.ts';
 import type { HostToolSpec } from '../capabilities/contracts.ts';
 import type { SdkRunRequest, RunnerRunResult } from './runner.ts';
@@ -81,6 +82,7 @@ export async function runSdkHostQuery(
   let activityStarted = false;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
+  let businessCompleted = false; // RB02（复审 20261106）：background_complete 后的合法停发——非异常
   let errorEvidence: Record<string, unknown> | null = null; // B3：错误事件脱敏安全字段（白名单键）
   let round = 0;
   let attempts = 0;
@@ -151,9 +153,10 @@ export async function runSdkHostQuery(
     extraArgs: { 'replay-user-messages': null },
     env: { ...req.options.options.env, CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(host.envelope.maxTokens) },
     abortController: req.abortController, ...(resume ? { resume: resume.sessionId } : {}),
-    // est discards a pure maintenance acknowledgement. A native fork warms the
-    // same prefix without appending that acknowledgement to the chat session.
-    ...(resume && host.purpose === 'cache_keepalive' ? { forkSession: true } : {}),
+    // RB03（复审 20261106）：维护轮不再 fork——纯1协议已被 est 正本保留（b779842），
+    // 维护 user/assistant 属于当前会话的合法继续态；成功后锚随真实最终会话前进，
+    // 下一次请求从实发前缀接续，不再向已含维护记录的会话重复重放。旧 fork 策略
+    // （为丢弃 ack 而设）与保留策略冲突，已统一到保留侧。
     mcpServers: { est: mcp },
     maxTurns: host.maxModelRequests,
     spawnClaudeCodeProcess: spawnProcess ?? proxyOnlySdkSpawn(req.options.options.env.HTTPS_PROXY),
@@ -183,7 +186,17 @@ export async function runSdkHostQuery(
           await beforeModel();
           return results.length ? { hookSpecificOutput: { hookEventName: 'PostToolBatch' as const, additionalContext: JSON.stringify({ review_results: results }) } } : {};
         }
-        catch (error) { failure = String((error as Error).message); return { continue: false, stopReason: failure }; }
+        catch (error) {
+          // RB02（复审 20261106）：background_complete 后的停发（宿主 beforeModel 的
+          // complete 门）是合法业务完成，不是异常——归一为共同控制结果，与 API 路径
+          // 的 complete 门同一出口；SDK 锚/协议投影/维护回执按成功收尾（不再 failed
+          // turn + 后半补 completed）。其余错误照旧为失败。
+          if (error instanceof ContractError && error.message === 'BACKGROUND_COMPLETED_STOP') {
+            businessCompleted = true;
+            return { continue: false, stopReason: 'EST_BACKGROUND_COMPLETED' };
+          }
+          failure = String((error as Error).message); return { continue: false, stopReason: failure };
+        }
       }] }],
       PreCompact: [{ hooks: [async () => ({ continue: false, stopReason: 'EST_OWNS_CONTEXT' })] }],
       PreModelSwitch: [{ hooks: [async () => ({ continue: false, stopReason: 'EST_OWNS_ROUTING' })] }],
@@ -293,7 +306,9 @@ export async function runSdkHostQuery(
     }
     if (req.abortController.signal.aborted) return finish('interrupted');
     if (failure) return finish('error');
-    return finish(normalizer.observedSuccess ? 'completed' : normalizer.lastErrorInfo ? 'error' : 'no_final_result');
+    // RB02：合法业务停发（background_complete）＝completed——即便原生循环没有最终
+    // result 事件（hook continue:false 收口），也按成功收尾，不落 no_final_result。
+    return finish(businessCompleted || normalizer.observedSuccess ? 'completed' : normalizer.lastErrorInfo ? 'error' : 'no_final_result');
   } catch (error) {
     failure ??= String((error as Error).message);
     return finish(req.abortController.signal.aborted ? 'interrupted' : 'error');
@@ -311,15 +326,15 @@ export async function runSdkHostQuery(
           : { error_code: 'EXECUTION_NOT_STARTED', executed: false }) });
       }
     }
-    if (host.purpose !== 'cache_keepalive') {
-      if (outcome === 'completed' && normalizer.sessionId) {
-        sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
-          messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
-        resumeDiagnosis.anchorOutcome = 'saved';
-      } else {
-        sessions.delete(host.windowId);
-        resumeDiagnosis.anchorOutcome = 'deleted';
-      }
+    if (outcome === 'completed' && normalizer.sessionId) {
+      // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
+      // 记录属于该会话）；失败/未完成不动锚，下一次请求按旧锚重放未确认部分。
+      sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
+        messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
+      resumeDiagnosis.anchorOutcome = 'saved';
+    } else {
+      sessions.delete(host.windowId);
+      resumeDiagnosis.anchorOutcome = 'deleted';
     }
     return {
       outcome, errorCode: failure && /^[A-Z][A-Z0-9_]+$/.test(failure) ? failure : outcome === 'error' ? 'SDK_ERROR' : null,

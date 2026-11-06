@@ -556,11 +556,8 @@ export class TurnSupervisor {
         }
       }
       if (loop.result.outcome !== 'completed') {
-        // P5（T17）：complete 后的停发=业务结束决定已落——正常完成，保留已发生协议工作
-        if (loop.result.errorCode === 'BACKGROUND_COMPLETED_STOP') {
-          const rcStopped = (d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null }).result_code;
-          return { outcome: 'completed', result_code: rcStopped ?? 'complete:done' };
-        }
+        // RB02（复审 20261106）：background_complete 的合法停发已在 runner 控制层归一为
+        // completed（sdk-host-query 与 API complete 门同一出口）——此处只剩真实失败/未知。
         if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
         if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
         if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
@@ -1170,7 +1167,9 @@ export class TurnSupervisor {
       },
     });
     if (requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run(result.outcome, requestId);
-    if (result.sessionId && o.purpose !== 'cache_keepalive') {
+    // RB03（复审 20261106）：维护轮（cache_keepalive）成功同样 rebind——协议保留后
+    // 维护记录属于当前 SDK 会话，宿主会话投影与原生锚同一事实。
+    if (result.sessionId) {
       const old = d.windows.get(o.windowId)?.sdk_session_id ?? null;
       d.windows.rebindSession(o.windowId, old, result.sessionId);
     }

@@ -118,7 +118,7 @@ export class BackgroundScheduler {
    */
   recoverOnStart(): void {
     const nowIso = new Date(this.now()).toISOString();
-    const rows = this.d.db.prepare("SELECT id, state, kind, occurrence_key FROM background_runs WHERE state IN ('claimed','running','cancelling','unknown')").all() as Array<{ id: string; state: RunState; kind: string; occurrence_key: string }>;
+    const rows = this.d.db.prepare("SELECT id, state, kind, occurrence_key, scheduled_for FROM background_runs WHERE state IN ('claimed','running','cancelling','unknown')").all() as Array<{ id: string; state: RunState; kind: string; occurrence_key: string; scheduled_for: string | null }>;
     for (const r of rows) {
       // Usage may have reached disk immediately before a crash. Recover its cost
       // without replaying the model or declaring an unknown external action done.
@@ -127,9 +127,20 @@ export class BackgroundScheduler {
       const dispo = restartDisposition({ state: r.state, dispatchCount, kind: r.kind as BackgroundKind });
       if (dispo.resultCode === 'UNCHANGED') continue;
       if (dispo.to === 'skipped' && dispatchCount === 0) {
-        // W-14：零派发=恢复同 occurrence——释放原 key（行留档），任务保持可领取
+        // W-14：零派发=恢复同 occasion——释放原 key（行留档），任务保持可领取
         this.d.db.prepare("UPDATE background_runs SET state = 'skipped', result_code = ?, occurrence_key = ?, finished_at = ?, updated_at = ? WHERE id = ?")
           .run(dispo.resultCode, `${r.occurrence_key}:recovered:${r.id}`, nowIso, nowIso, r.id);
+        // RB04（复审 20261106）：daily/interval 在领取时已推进 next_due_at——恢复必须把
+        // 本次已领取的 due 还原（任务修订未变时），下一 tick 重领本次机会；不凭下一日
+        // due 猜"本次已结束"（旧实现零派发中断即漏本次）。
+        if (r.scheduled_for !== null) {
+          this.d.db.prepare(
+            `UPDATE background_tasks SET next_due_at = ?, updated_at = ?
+             WHERE schedule_kind IN ('daily','interval') AND next_due_at IS NOT NULL AND next_due_at > ?
+               AND revision = (SELECT task_revision FROM background_runs WHERE id = ?)
+               AND id = (SELECT task_id FROM background_runs WHERE id = ?)`,
+          ).run(r.scheduled_for, nowIso, r.scheduled_for, r.id, r.id);
+        }
       } else {
         this.d.db.prepare('UPDATE background_runs SET state = ?, result_code = ?, finished_at = ?, updated_at = ? WHERE id = ?').run(dispo.to, dispo.resultCode, nowIso, nowIso, r.id);
         // unknown 的 once 任务标待核对（不自动重放，09 表）
@@ -291,15 +302,20 @@ export class BackgroundScheduler {
     }
   }
 
-  /** 领取≠消耗的收尾：once 任务只在成功（completed/noop）后终结；失败/未知→待核对（不自动重放）。 */
+  /** 领取≠消耗的收尾（RB04 复审 20261106 扩到全部 once 任务——reminder 同为 once，
+   *  旧实现只收口 autonomous：once 提醒投递后 task 永远 enabled=1/伪 scheduled，且
+   *  occurrence 唯一键已消耗=永不自动执行却每 tick 空扫）。
+   *  成功（completed/noop）=delivered 终结；失败/未知→待核对；取消→终态待核
+   *  （"待下一轮"不会来——唯一 occurrence 已消耗，如实停用并保留复核原因）。 */
   private finalizeTaskAfterRun(task: TaskRow, state: RunState, nowIso: string): void {
-    if (task.kind !== 'autonomous' || task.schedule_kind !== 'once') return;
+    if (task.schedule_kind !== 'once') return;
     if (state === 'completed' || state === 'noop') {
       this.d.db.prepare("UPDATE background_tasks SET enabled = 0, next_due_at = NULL, control_reason = 'delivered', updated_at = ? WHERE id = ? AND revision = ?").run(nowIso, task.id, task.revision);
     } else if (state === 'failed' || state === 'unknown') {
       this.d.db.prepare("UPDATE background_tasks SET control_reason = CASE WHEN ? = 'unknown' THEN 'unknown_needs_review' ELSE 'failed_needs_review' END, next_due_at = NULL, updated_at = ? WHERE id = ? AND revision = ?").run(state, nowIso, task.id, task.revision);
+    } else if (state === 'cancelled') {
+      this.d.db.prepare("UPDATE background_tasks SET enabled = 0, next_due_at = NULL, control_reason = COALESCE(control_reason, 'stopped_needs_review'), updated_at = ? WHERE id = ? AND revision = ?").run(nowIso, task.id, task.revision);
     }
-    // cancelled：显式取消已由 service 标记；宿主停止类取消保持任务待下一轮（开关/恢复决定）
   }
 
   /** 手动停止一次执行（§7.3：不关总开关）。返回实际状态。 */

@@ -95,6 +95,32 @@ async function boot(script: { mode: string }) {
 
 test.afterEach(() => { globalThis.fetch = originalFetch; auditNow = RealDate.now(); });
 
+test('RB05：自由活动正式 HTTP 入口可达——真实建窗/幂等/同键异参 409/真实调度执行一次', async () => {
+  const f = await boot({ mode: 'pure_ack' });
+  try {
+    await f.seed('rb05-seed');
+    // 自由活动预算门（backgroundControl('free_activity')→autonomous）
+    await f.request('/background/settings', 'PUT', { free_activity: { enabled: true, daily_cost_cap_usd: 2 } }, 'rb05-enable');
+    // 复审反例：正式 HTTP POST /api/v1/background/free-activity 曾 404（handler 未进分派）
+    const created = await f.request('/background/free-activity', 'POST', { note: '合成自由活动窗口' }, 'rb05-open');
+    assert.equal(created.origin, 'free_activity');
+    assert.ok(created.task_id, '返回任务 id');
+    // 同键同参=幂等重放；同键异参=409（不经 throwing helper）
+    const dup = await f.request('/background/free-activity', 'POST', { note: '合成自由活动窗口' }, 'rb05-open');
+    assert.equal(dup.duplicate, true);
+    assert.equal(dup.task_id, created.task_id);
+    const conflict = await originalFetch(`http://127.0.0.1:${f.host.port}/api/v1/background/free-activity`, { method: 'POST', headers: { Authorization: `Bearer ${fs.readFileSync(path.join(process.env.ESTOMAGO_HOME!, 'config/auth.token'), 'utf8').trim()}`, Origin: `http://127.0.0.1:${f.host.port}`, 'Content-Type': 'application/json', 'Idempotency-Key': 'rb05-open' }, body: JSON.stringify({ note: '不同的活动' }) });
+    assert.equal(conflict.status, 409, '同幂等键异参冲突');
+    // 真实调度：立即到期的 once 任务被领取执行并收口
+    await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
+    const runs = f.host.db.prepare('SELECT id,state,kind FROM background_runs WHERE task_id=?').all(created.task_id) as Array<{ id: string; state: string; kind: string }>;
+    assert.equal(runs.length, 1, '恰一次运行');
+    assert.equal(runs[0]!.state, 'completed', '自由活动窗口真实执行完成');
+    const task = f.host.db.prepare('SELECT enabled,next_due_at FROM background_tasks WHERE id=?').get(created.task_id) as { enabled: number; next_due_at: string | null };
+    assert.equal(task.enabled, 0, 'once 活动窗口执行后停用');
+  } finally { await f.shutdown(); }
+});
+
 test('C08：纯1心跳后下一普通输入完全接续已发协议（首差=-1），L 不推进', async () => {
   const f = await boot({ mode: 'pure_ack' });
   try {
