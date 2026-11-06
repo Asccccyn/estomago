@@ -190,7 +190,7 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
   return sched;
 }
 
-test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡；维护回执落投影；前缀稳定', async () => {
+test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进聊天原文/气泡/L；协议保留（C08）；维护回执落投影', async () => {
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
@@ -238,8 +238,12 @@ test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进轨迹/原文/气泡；维
   const kwPayload = JSON.stringify(payloads[2]);
   assert.ok(kwPayload.includes('Cache keepalive (host event, not Qiaosheng)'), '固定英文维护提示');
   // 轨迹不变、无新聊天气泡、无 owner 消息（C-12：纯1不污染）
+  // C08（四仓审计 20261106）：纯1**已发协议保留**——轨迹追加 host 事件与 assistant "1"
+  // （缓存前缀延续），但聊天原文/气泡/L/可见清单不变（旧"整段不入轨迹"语义退役）
   const trajAfter = (ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string }).messages_json;
-  assert.equal(trajAfter, trajBeforeHb, '纯1不推进规范轨迹（下一聊天从原 canonical 继续）');
+  assert.notEqual(trajAfter, trajBeforeHb, '纯1已发协议入轨迹（C08：下一请求从前缀接续）');
+  assert.ok(trajAfter.length > trajBeforeHb.length && trajAfter.startsWith(trajBeforeHb.slice(0, -1)), '轨迹为原前缀追加（append-only）');
+  assert.ok(trajAfter.includes('Cache keepalive (host event') && trajAfter.slice(trajBeforeHb.length - 2).includes('1'), '心跳事件与 assistant "1" 均保留');
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n, msgsBeforeHb, '无心跳气泡');
   // 维护回执已写投影（K-09 基础）
   const act = ctx.db.prepare('SELECT maintenance_request_id, maintenance_for_activity_revision FROM conversation_activity WHERE conversation_id = ?').get('c1') as { maintenance_request_id: string; maintenance_for_activity_revision: number };

@@ -436,14 +436,17 @@ export class TurnSupervisor {
     } else {
       const mergedPayload = { ...JSON.parse(taskRow.payload_json) as Record<string, unknown>, ...opts.payload };
       const note = typeof mergedPayload.note === 'string' ? mergedPayload.note : '';
-      const scheduledFor = typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null;
+      // C07（四仓审计 20261106）：包装时间从**冻结 task/run** 一次取得并原样携带——
+      // 设置时间（task 创建）、原 due（task.scheduled_at，相对时间首受理解析的冻结值）、
+      // 实际递交；续轮/恢复复用同一冻结文本，迟到只标注不重算 due、不改 system。
+      const taskFrozen = d.db.prepare('SELECT created_at, scheduled_at FROM background_tasks WHERE id = ?').get(runRow.task_id) as { created_at: string; scheduled_at: string } | undefined;
+      const scheduledFor = taskFrozen?.scheduled_at ?? (typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null);
       if (note.length > 8000) return { outcome: 'failed', result_code: 'WAKE_NOTE_INVALID', detail: '预约正文超长——报错不静默截断' };
       const lines = ['[Host self-wake; not a message from Qiaosheng]'];
+      if (taskFrozen) lines.push(`Set at: ${taskFrozen.created_at}`);
       if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
       lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
-      if (scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs()) {
-        lines.push(`Actual delivery: ${nowIso0} (late)`);
-      }
+      lines.push(`Actual delivery: ${nowIso0}${scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs() ? ' (late)' : ''}`);
       lines.push('You may use available tools and choose whether to speak.');
       tailNote = lines.join('\n');
     }
@@ -528,6 +531,20 @@ export class TurnSupervisor {
         d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
         d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
       }
+      // C09（四仓审计 20261106）：工具心跳（substantive）完成同样记维护回执——后继维护
+      // 安排与缓存证据独立成立（不记回执→occurrence key 永不变→后继永久停摆，审计实测
+      // 工具心跳后 next_run/model 增量=0）。缓存命中事实仍以真实 usage 为准（K-13 不冒充）。
+      if (opts.kind === 'keepwarm' && loop.result.outcome === 'completed' && d.activity && capturedActivityRevision !== null) {
+        const evAny = d.db.prepare(
+          `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
+           JOIN background_dispatches bd ON bd.provider_request_id = pr.id
+           WHERE bd.run_id = ? AND pr.outcome = 'completed' AND pr.dispatch_started_at IS NOT NULL
+           ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
+        ).get(opts.runId) as { rid: string; started: string } | undefined;
+        if (evAny) {
+          d.activity.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision, requestId: evAny.rid, windowId: window.id, dispatchStartedAtIso: evAny.started });
+        }
+      }
       if (loop.result.outcome !== 'completed') {
         // P5（T17）：complete 后的停发=业务结束决定已落——正常完成，保留已发生协议工作
         if (loop.result.errorCode === 'BACKGROUND_COMPLETED_STOP') {
@@ -546,7 +563,14 @@ export class TurnSupervisor {
       return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') ? loop.result.errorCode : completion === 'noop' ? 'complete:noop' : 'complete:done' };
     }
 
-    // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文与主轨迹。
+    // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文、不推进 L、
+    // 清单不加可见条目。C08（四仓审计 20261106）：**已发协议保留**——host 事件与
+    // assistant "1" 随轨迹提交（缓存前缀延续），下一普通输入/维护从实发前缀接续，
+    // 不再出现首差（旧实现整段丢弃→下一请求 messages[4] 起分叉）。
+    if (d.trajectory && loop.finalMessages !== null) {
+      d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), traj.manifest ?? []);
+      d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
+    }
     // A retained tool result from an earlier interrupted run may have entered
     // the model in this pure maintenance request. Promote only that source
     // evidence; the canonical messages and cache boundary remain untouched.

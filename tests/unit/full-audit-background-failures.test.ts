@@ -248,6 +248,9 @@ test('FA-F07 a pure heartbeat can confirm previously pending sources without app
  ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('second-pure','sleep-task','c1','jiaming','keepwarm',1,'second-pure','running','now','now')").run();
  phase='pure';const result=await ctx.supervisor.enqueueBackground('c1',()=>ctx.supervisor.runBackgroundTurn({kind:'keepwarm',runId:'second-pure',conversationId:'c1',payload:{},isCancelRequested:()=>false,registerAbort:()=>{},maxModelRequests:4,recordDispatch:info=>scheduler.recordDispatchStart({runId:'second-pure',...info,capabilityName:info.capabilityName??null})}));
  assert.equal(result.result_code,'ack_only');const after=ctx.trajectory.forWindow(win)!;
- assert.deepEqual(after.messages,before.messages);assert.deepEqual(after.lastBoundary,before.lastBoundary);
+ // C08（20261106）：纯1已发协议保留——messages 为原前缀**追加**心跳事件与 assistant "1"；
+ // 可见清单/boundary 语义不变（pending 转正仍只发生在 manifest），聊天原文不受影响。
+ assert.ok(after.messages.length>before.messages.length,'已发协议追加（C08）');
+ assert.deepEqual(after.messages.slice(0,before.messages.length),before.messages,'原前缀逐字不变（append-only）');
  assert.equal(after.pendingManifest.length,0);assert.equal(after.manifest?.find(m=>m.id===source.id)?.visible,true);
 });

@@ -240,8 +240,12 @@ async function runHeartbeat(){
     const activityAfter=host!.db.prepare("SELECT * FROM conversation_activity WHERE conversation_id='primary'").get() as J;
     assert.equal(run.state,'completed');
     if(mode==='pure_ack'){
+      // C08（四仓审计 20261106）：纯1已发协议保留——轨迹为原前缀追加（心跳事件+assistant"1"），
+      // 聊天原文/L/可见清单不变
       assert.equal(run.retention,'ephemeral_ack');assert.equal(run.result_code,'ack_only');assert.equal(bodies.length,requestBefore+1);
-      assert.equal(trajectoryAfter,trajectoryBefore);assert.equal(countAfter,countBefore);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision);assert.ok(activityAfter.maintenance_request_id);
+      assert.notEqual(trajectoryAfter,trajectoryBefore);assert.ok(trajectoryAfter.startsWith(trajectoryBefore.slice(0,-1)));
+      assert.ok(trajectoryAfter.slice(trajectoryBefore.length-2).includes('Cache keepalive')||trajectoryAfter.includes('Cache keepalive'));
+      assert.equal(countAfter,countBefore);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision);assert.ok(activityAfter.maintenance_request_id);
     }else if(mode==='catalog_define'){
       assert.equal(run.retention,'retained');assert.equal(run.tool_calls_observed,2);assert.notEqual(trajectoryAfter,trajectoryBefore);assert.equal(countAfter,countBefore);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision);
     }else{
@@ -253,7 +257,7 @@ async function runHeartbeat(){
   const before=bodies.length;
   await env.request('/conversations/primary/messages','POST',{content:'心跳后继续聊天，请确认青禾。',client_message_id:'heartbeat-followup'},'heartbeat-followup');await host!.supervisor.waitIdle();
   assert.equal(bodies.length,before+1);assert.ok(JSON.stringify(bodies.at(-1)!.payload).includes('合成心跳正式消息：青禾'));
-  const requests=bodies.at(-1)!.payload.messages;assert.equal(requests.filter((m:J)=>m.role==='user'&&String(m.content).includes('Cache keepalive (host event')).length,2,'only substantive heartbeat events persist');
+  const requests=bodies.at(-1)!.payload.messages;assert.equal(requests.filter((m:J)=>m.role==='user'&&String(m.content).includes('Cache keepalive (host event')).length,3,'C08：全部已发心跳事件（纯1+工具轮）均随前缀保留');
   c.passed=true;c.timing='controlled scheduler/supervisor clock +50 minutes; no wall-time or real cache TTL claim';c.next_user_payload=bodies.at(-1)!.payload;
   results.push(c);fs.writeFileSync(path.join(out,'heartbeat.json'),JSON.stringify(c,null,2));console.log(JSON.stringify({scenario:'heartbeat',passed:true,cases:c.cases.map((r:J)=>({mode:r.mode,requests:r.request_count,retention:r.run.retention}))}));
 }
