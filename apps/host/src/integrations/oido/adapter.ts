@@ -116,6 +116,18 @@ export class OidoAdapter {
     return body as unknown as OidoOverview;
   }
 
+  /** P2（四仓审计 20261106，V01）：宿主在资格终结时取消在途分析——O 的 DB fence
+   *  落 cancelled，阶段间检查点停推进，迟到提交被拒；已终态时 O 幂等如实返回。 */
+  async cancelAnalysis(analysisId: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cancel`, {
+        method: 'POST', redirect: 'error', headers: this.headers(), signal: AbortSignal.timeout(8000),
+      });
+    } catch {
+      // 取消失败不阻塞资格收口：分析留在 O 侧自然完成/过期，E 已不再消费其结果
+    }
+  }
+
   async getOverview(analysisId: string, signal?: AbortSignal): Promise<OidoOverview> {
     let res: Response;
     try {

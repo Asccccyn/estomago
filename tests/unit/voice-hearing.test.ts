@@ -57,8 +57,10 @@ test('V06: 无转写+听觉可用 → 结构化语音引用进入，不再阻断
     const r = projectRevisionBlocks('', [voiceAttachment('ast_voice1', null)], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice1', 2300]]) });
     assert.equal(r.hasVoiceWithoutTranscript, false, '门不再阻断');
     const text = r.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
-    assert.match(text, /audio_ref: est:ast_voice1/);
+    // P2 §6.5（现行合同）：audio_ref 不再入默认投影——宿主保管，oido_analyze 缺省即本条
+    assert.doesNotMatch(text, /audio_ref/);
     assert.match(text, /2300ms/);
+    assert.match(text, /原声已保留/);
     assert.match(text, /oido_analyze/);
   } finally { f.close(); }
 });
@@ -80,12 +82,13 @@ test('转写存在：只出现一次；听觉可用时附原声引用行（当�
     const r = projectRevisionBlocks('', [voiceAttachment('ast_voice3', '今天好累')], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice3', 4100]]) });
     const text = r.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
     assert.equal((text.match(/今天好累/g) ?? []).length, 1, '转写单份');
-    assert.match(text, /语音消息转写/);
-    assert.match(text, /audio_ref: est:ast_voice3/);
-    // 听觉不可用：不附引用行（工具不存在时引用是噪声）
+    assert.match(text, /\[语音转写\|siren:transcribe\|非亲笔\]/, 'B4 精简标记');
+    assert.doesNotMatch(text, /audio_ref/, 'P2 §6.5：audio_ref 不入默认投影');
+    assert.match(text, /oido_analyze/, '听觉可用时给按需深听指引');
+    // 听觉不可用：不附深听指引（工具不存在时引用是噪声）
     const r2 = projectRevisionBlocks('', [voiceAttachment('ast_voice3', '今天好累')], { isCurrentInput: true });
     const text2 = r2.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
-    assert.doesNotMatch(text2, /audio_ref/);
+    assert.doesNotMatch(text2, /oido_analyze/);
   } finally { f.close(); }
 });
 

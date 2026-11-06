@@ -107,10 +107,9 @@ test('A04/C01：回复音频→确切助手消息持久绑定+deep_listen assist
     // 附件行：正式助手消息挂 est 资产（records/归档/oído 源授权的既有消费者直接可见）
     const att_row = c.db.prepare("SELECT asset_id FROM message_attachments WHERE message_id=? AND presentation='voice'").get(assistantId) as { asset_id: string };
     assert.equal(att_row.asset_id, link['est_asset_id']);
-    // deep_listen：assistant 方向观察已登记（普通电话场景见下一用例）
-    const obs = c.db.prepare("SELECT direction,status FROM voice_observations WHERE message_id=?").get(assistantId) as { direction: string; status: string };
-    assert.equal(obs.direction, 'assistant');
-    assert.equal(obs.status, 'pending');
+    // P2（四仓审计 20261106，U03/V01）：assistant 自动深听已移除（其分析永远无法与该轮
+    // 首次模型输入同轮交付）——不登记 assistant 方向观察；原声绑定与 Source 同步照旧
+    assert.equal(c.db.prepare('SELECT COUNT(*) n FROM voice_observations WHERE message_id=?').get(assistantId)['n' as never] as unknown as number, 0, '零 assistant 观察');
     // Source 补同步：media 一次 + call 一次（basis=unknown），操作键稳定
     assert.deepEqual(att.ops.map((o) => o.kind).sort(), ['call', 'media']);
     const mediaOp = att.ops.find((o) => o.kind === 'media')!;
@@ -197,7 +196,6 @@ for (const failure of ['audio', 'call-sync'] as const) test(`回复关联恢复�
       assert.equal(before.link_state, 'pending');
       assert.equal(before.est_asset_id, null);
       assert.equal(accepted.length, 0, '音频尚未绑定，不提交完成的媒体事实');
-      assert.equal(c.db.prepare('SELECT 1 FROM voice_observations WHERE message_id=?').get(messageId), undefined);
     } else {
       assert.equal(before.link_state, 'linked');
       assert.deepEqual(accepted.map(a => a.kind), ['media']);
@@ -214,7 +212,8 @@ for (const failure of ['audio', 'call-sync'] as const) test(`回复关联恢复�
     assert.deepEqual(accepted.map(a => a.kind), ['media', 'call']);
     assert.equal(new Set(callKeys).size, 1, '同步恢复沿用原操作身份');
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM message_attachments WHERE message_id=? AND presentation='voice'").get(messageId) as { n: number }).n, 1);
-    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM voice_observations WHERE message_id=? AND direction='assistant'").get(messageId) as { n: number }).n, 1);
+    // P2（U03/V01 20261106）：assistant 自动深听移除——恢复流程也不再登记 assistant 观察
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM voice_observations WHERE message_id=? AND direction='assistant'").get(messageId) as { n: number }).n, 0);
     await svc.wake();
     assert.equal(accepted.length, 2);
     assert.equal(siren.fetchCalls, fetchedBefore + (failure === 'audio' ? 1 : 0));

@@ -67,7 +67,9 @@ export class CallReplyLinkService {
       do {
         this.requested = false;
         if (!signal.aborted) await this.pullPending(signal);
-        if (!signal.aborted) await this.registerAssistantObservations();
+        // P2（四仓审计 20261106，V01/U03）：助手回复音频的自动深听已移除——其分析永远无法
+        // 与该轮首次模型输入同轮交付（回复晚于派发），按"深听只允许同轮交付"裁定不再登记；
+        // 原声归档与 Source 媒体同步照旧（下方 syncPendingToSource）。
         if (!signal.aborted) await this.syncPendingToSource(signal);
       } while (this.requested && !signal.aborted);
     })().catch((error: unknown) => {
@@ -255,23 +257,6 @@ export class CallReplyLinkService {
     ).run(callId, turnKey, (this.deps.db.prepare('SELECT conversation_id FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get(callId, turnKey) as { conversation_id: string } | undefined)?.conversation_id ?? '', estTurnId, JSON.stringify({ basis: 'unavailable', reason }), now, now);
   }
 
-  /** B3-B.7：deep_listen 的正式助手回复音频登记 assistant 方向观察（普通电话 0 自动分析）。 */
-  private async registerAssistantObservations(): Promise<void> {
-    const { db, voiceObservations } = this.deps;
-    if (!voiceObservations?.configured) return;
-    const rows = db.prepare(
-      `SELECT l.call_id, l.turn_key, l.message_id, l.revision, l.est_asset_id, vc.analysis_mode
-       FROM voice_reply_links l JOIN voice_calls vc ON vc.call_id=l.call_id
-       WHERE l.link_state='linked' AND l.observation_registered=0 AND l.est_asset_id IS NOT NULL
-         AND l.message_id IS NOT NULL AND vc.analysis_mode='deep_listen' LIMIT 5`,
-    ).all() as Array<{ call_id: string; turn_key: string; message_id: string; revision: number; est_asset_id: string }>;
-    for (const row of rows) {
-      voiceObservations.registerAssistantObservation(row.message_id, row.revision, row.est_asset_id);
-      db.prepare('UPDATE voice_reply_links SET observation_registered=1, updated_at=? WHERE call_id=? AND turn_key=?')
-        .run(new Date().toISOString(), row.call_id, row.turn_key);
-    }
-    if (rows.length > 0) voiceObservations.wake();
-  }
 
   /** B3-B.9：已归档（有正式收据）且已绑定的回复链接补同步到 Source——media 一次（资产
    *  引用稳定），call 按播放事实 basis 演进各一次（unknown→drained/reported 是新事实）。

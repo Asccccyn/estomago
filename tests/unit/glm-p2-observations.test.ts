@@ -98,7 +98,7 @@ function fakeOidoAdapter(counts: { ingest: number; analyze: number; keys?: strin
     async analyze(args: { idempotencyKey?: string }): Promise<Record<string, unknown>> {
       counts.analyze++;
       counts.keys?.push(args.idempotencyKey ?? '');
-      if (opts.delayMs) await new Promise(r => setTimeout(r, opts.delayMs));
+      if (opts.delayMs) await new Promise(r => { const t = setTimeout(r, opts.delayMs); t.unref?.(); });
       // P2 §6.4：真实 oído 现随概览交付 readable 可读投影（projections.readable_overview）——
       // 外部边界替身同步该合同形态
       return { analysis_id: `an_${counts.analyze}`, revision: 1, state: 'ready', range_ms: [0, 5481],
@@ -214,14 +214,13 @@ test('P04/P2 深听话轮：快观察 ready 带投递事实；普通电话零 o�
     await c.supervisor.waitIdle();
     assert.equal(counts.ingest, 0, '普通电话 0 ingest');
     assert.equal(counts.analyze, 0, '普通电话 0 analyze');
-    // 深听电话：显式 deep_listen → 派发**不等**快观察（A06 联合审计 2026-10-27）；
-    // 后台机会观察完成同一分析只写 sidecar（不冻结投影、不补开模型）
+    // 深听电话：显式 deep_listen → 同轮语义（四仓审计 20261106 U04/V01）：派发在准备
+    // 预算内等观察；替身即时 ready，故请求含观察投影并随首发冻结资格
     const dl = await c.call('/api/v1/calls', 'POST', { conversation_id: 'primary', analysis_mode: 'deep_listen' });
     await c.call('/v1/chat/stream', 'POST', req(dl.body['call_id'] as string, 't-2'), { authorization: 'Bearer tok', 'content-type': 'application/x-ndjson' });
     await c.supervisor.waitIdle();
-    // A06 关键断言：正式模型请求在观察 ready 前已发出——派发请求不含观察投影
     const deepDispatch = JSON.parse(payloads.at(-1)!) as { messages: Array<{ content: string }> };
-    assert.ok(!deepDispatch.messages.some(m => String(m.content).includes('声音观察')), 'A06：派发不等待可选观察（请求不含观察投影）');
+    assert.ok(deepDispatch.messages.some(m => String(m.content).includes('声音观察')), '同轮交付：派发请求含就绪观察');
     await new Promise((r) => setTimeout(r, 120));
     assert.equal(counts.ingest, 1, '深听电话 1 ingest');
     const msgs = c.db.prepare("SELECT id FROM messages WHERE conversation_id='primary' AND speaker='owner' AND current_revision IS NOT NULL ORDER BY sequence DESC LIMIT 1").all() as Array<{ id: string }>;
@@ -229,8 +228,8 @@ test('P04/P2 深听话轮：快观察 ready 带投递事实；普通电话零 o�
     const rows = c.voiceObs.listForMessages([callMsgId]);
     assert.equal(rows.length, 1, '深听话轮 sidecar 登记一行');
     assert.equal(rows[0]!.status, 'ready', JSON.stringify(rows[0]));
-    assert.equal(rows[0]!.dispatched_turn_id, null, 'A06：晚到观察不改已派发历史（无投递事实）');
-    assert.equal(rows[0]!.model_projection, null, 'A06：迟到结果只持久化/显示，不回写投影');
+    assert.ok(rows[0]!.dispatched_turn_id !== null, '同轮交付：观察随首发冻结（有投递事实）');
+    assert.ok(rows[0]!.model_projection !== null, '观察投影随首次输入冻结');
     const quickKey = counts.keys[0]!;
     const again = await c.hearing!.analyzeVoice({ audio_ref: 'est:' + rows[0]!.asset_id }, ctx());
     assert.equal(again.ok, true);
@@ -327,12 +326,16 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
     assert.ok(prompts[0]!.includes('[通话轮] 本轮输入来自语音通话'), '通话轮注入技术事实（禁编号；B4 时态/措辞修订）');
     assert.ok(!prompts[0]!.includes('[seq]'), '不示范违禁标记原词（B4：学舌风险）');
     assert.ok(!prompts[0]!.includes('一次说一两句'), '不规定说话长度/风格（她 11-02 裁定）');
-    assert.ok(!prompts[0]!.includes('声音观察'), 'A06：派发请求不含未就绪观察');
+    // P2（四仓审计 20261106，U04/V01）：deep_listen 通话轮与聊天语音同语义——派发在准备
+    // 预算内等观察同轮交付；替身 analyze 即时 ready，故首次输入含声音观察。
+    assert.ok(prompts[0]!.includes('声音观察'), '同轮交付：派发请求含就绪观察');
     await new Promise((r) => setTimeout(r, 120));
     const row = c.db.prepare("SELECT status,model_projection,dispatched_turn_id FROM voice_observations").get() as { status: string; model_projection: string | null; dispatched_turn_id: string | null };
-    assert.equal(row.status, 'ready', '晚到分析写入观察行');
-    assert.equal(row.model_projection, null, '迟到结果不回写投影');
-    assert.equal(row.dispatched_turn_id, null, '无投递事实（未用于首发）');
+    assert.equal(row.status, 'ready', '分析就绪并随首发冻结');
+    assert.ok(row.model_projection !== null, '观察投影随首次输入冻结');
+    assert.ok(row.dispatched_turn_id !== null, '有投递事实');
+    const decision = c.db.prepare('SELECT decision FROM voice_observation_decisions').get() as { decision: string };
+    assert.equal(decision.decision, 'delivered', '资格随首次模型输入提交终结');
   } finally { await c.supervisor.stopAll(); await c.close(); stub.stop(); delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; }
 });
 

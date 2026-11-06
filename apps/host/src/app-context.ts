@@ -212,6 +212,8 @@ export class Host {
       archiveClient: opts.config.archive.enabled ? archiveMariposaClient : null,
       streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
       logger,
+      // P2（V01）：资格终结时取消 O 在途分析（fence 落 cancelled；取消失败不阻塞收口）
+      cancelAnalysis: (analysisId) => oido!.cancelAnalysis(analysisId),
     });
     const messages = new MessageService(db,
       // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口 + 语音观察登记）

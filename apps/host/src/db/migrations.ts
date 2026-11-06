@@ -1471,5 +1471,19 @@ CREATE TABLE IF NOT EXISTS content_owner_state(
   PRIMARY KEY (owner_type, owner_id)
 );
 `});
+// 57（2026-11-06，四仓审计 V01/P2）：语音观察资格终结——每个正式消息修订的深听
+// 采纳决定只落一次（delivered=随首次模型输入提交；abandoned=资格放弃）。决定之后：
+// 不再驱动分析、迟到结果不写行、UI/Source 不再消费新成功、在途 O 分析被取消。
+MIGRATIONS.push({version:57,name:'voice-observation-decisions',sql:`
+CREATE TABLE IF NOT EXISTS voice_observation_decisions(
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('delivered','abandoned')),
+  turn_id TEXT,
+  request_id TEXT,
+  decided_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, revision)
+);
+`});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
