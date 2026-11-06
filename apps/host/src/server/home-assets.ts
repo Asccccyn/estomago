@@ -1,5 +1,6 @@
 // Public homepage assets only; no user files or state-directory traversal.
 export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cache: string }]> = [
+  ["/home/feature.html", { file: "home/feature.html", type: "text/html; charset=utf-8", cache: "no-cache" }],
   ["/home/position-editor.css", { file: "home/position-editor.css", type: "text/css; charset=utf-8", cache: "no-cache" }],
   ["/home/position-editor.js", { file: "home/position-editor.js", type: "text/javascript; charset=utf-8", cache: "no-cache" }],
   ["/home/seasons.css", { file: "home/seasons.css", type: "text/css; charset=utf-8", cache: "no-cache" }],

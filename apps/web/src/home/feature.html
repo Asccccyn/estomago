@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f3e9">
+  <title>功能入口 · estómago</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: #f6f3e9; color: #536a57; }
+    body { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: max(32px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right)) max(32px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left)); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+    main { width: min(100%, 28rem); text-align: center; }
+    .brand { margin: 0 0 32px; font-size: 13px; letter-spacing: .12em; color: #81917b; }
+    h1 { margin: 0; font-size: clamp(26px, 5vw, 34px); font-weight: 500; }
+    .note { margin: 20px auto 32px; max-width: 22em; font-size: 15px; line-height: 1.8; color: #788473; }
+    .back { display: inline-block; padding: 12px 24px; border-radius: 999px; background: #e1e8d6; color: #405b47; font-size: 15px; text-decoration: none; }
+    .back:hover { background: #d5dfc7; }
+    .back:focus-visible { outline: 2px solid #71876a; outline-offset: 4px; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="brand">estómago</p>
+    <h1 id="feature-title">功能入口</h1>
+    <p class="note" id="feature-note">跳转入口已接通，完整功能页面待接入。</p>
+    <a class="back" id="back-to-seasons" href="/home/index.html?season=spring">返回四季</a>
+  </main>
+  <script>
+    (() => {
+      const params = new URLSearchParams(window.location.search);
+      const pages = {
+        calendar: { title: '日历与记忆', season: 'spring' },
+        reading: { title: '共读', season: 'summer' },
+        anniversaries: { title: '纪念日', season: 'summer' },
+        moments: { title: '朋友圈', season: 'autumn' },
+        album: { title: '相册', season: 'winter' },
+        voice: { title: '语音', season: 'winter' },
+        upstairs: { title: '二楼', season: 'winter' },
+      };
+      const requestedFeature = params.get('feature');
+      const feature = Object.hasOwn(pages, requestedFeature) ? requestedFeature : null;
+      const page = feature ? pages[feature] : { title: '功能入口', season: 'spring' };
+      const albumNames = { otter: '水獭相册', raccoon: '小浣熊相册', cat: '小猫相册' };
+      const requestedSubject = params.get('subject');
+      const subject = Object.hasOwn(albumNames, requestedSubject) ? requestedSubject : null;
+      const title = feature === 'album' && subject ? albumNames[subject] : page.title;
+      document.getElementById('feature-title').textContent = title;
+      document.getElementById('feature-note').textContent = '跳转入口已接通，完整功能页面待接入。';
+      document.getElementById('back-to-seasons').href = '/home/index.html?season=' + page.season;
+      document.title = title + ' · estómago';
+    })();
+  </script>
+</body>
+</html>

@@ -27,7 +27,7 @@ before(async () => {
 after(async () => { await host?.stop(); cookie = ''; fs.rmSync(root, { recursive: true, force: true }); });
 
 test('首页、聊天与保留的主页内嵌页都经过既有登录门', async () => {
-  for (const route of ['/', '/chat', '/home/scene.html']) {
+  for (const route of ['/', '/chat', '/home/scene.html', '/home/feature.html?feature=calendar']) {
     const response = await fetch(base + route, { redirect: 'manual' });
     assert.equal(response.status, 302, route);
     assert.equal(response.headers.get('location'), '/login', route);
@@ -61,7 +61,7 @@ test('所有主页白名单资源可取，未知文件及目录逃逸被拒绝',
     assert.equal(response.status, 404, route);
   }
 });
-test('已接页面通过真实导航脚本跳转，其余四季入口保留事件接口', async () => {
+test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接管事件', async () => {
   const source = await (await fetch(base + '/home/home-navigation.js', { headers: { Cookie: cookie } })).text();
   const document = new EventTarget();
   const routes: string[] = [];
@@ -83,13 +83,25 @@ test('已接页面通过真实导航脚本跳转，其余四季入口保留事�
   const received: unknown[] = [];
   document.addEventListener('home:action', event => received.push((event as CustomEvent).detail));
   for (const detail of pending) {
-    assert.equal(document.dispatchEvent(new CustomEvent('home:action', { detail, cancelable: true })), true);
+    assert.equal(document.dispatchEvent(new CustomEvent('home:action', { detail, cancelable: true })), false);
   }
   assert.deepEqual(received, pending);
-  assert.deepEqual(routes, ['/chat', '/wishstar']);
+  const expectedRoutes = [
+    '/chat', '/wishstar',
+    '/home/feature.html?feature=calendar',
+    '/home/feature.html?feature=reading',
+    '/home/feature.html?feature=anniversaries',
+    '/home/feature.html?feature=moments',
+    '/home/feature.html?feature=album&subject=otter',
+    '/home/feature.html?feature=voice',
+    '/home/feature.html?feature=upstairs',
+  ];
+  assert.deepEqual(routes, expectedRoutes);
 
   const intercepted = new CustomEvent('home:action', { detail: { action: 'wishes' }, cancelable: true });
   intercepted.preventDefault();
   document.dispatchEvent(intercepted);
-  assert.deepEqual(routes, ['/chat', '/wishstar']);
+  const unknown = new CustomEvent('home:action', { detail: { action: 'unknown-feature' }, cancelable: true });
+  assert.equal(document.dispatchEvent(unknown), true);
+  assert.deepEqual(routes, expectedRoutes);
 });

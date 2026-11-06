@@ -10,7 +10,8 @@
   const ctx = canvas.getContext('2d');
   const desktopQuery = matchMedia('(min-width: 900px)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
-  const adjusting = new URLSearchParams(location.search).get('adjust') === '1';
+  const pageParams = new URLSearchParams(location.search);
+  const adjusting = pageParams.get('adjust') === '1';
   const isDesktop = () => desktopQuery.matches && !viewport.classList.contains('editor-phone');
   const seasonNames = ['spring', 'summer', 'autumn', 'winter'];
   const seasonLabels = ['春天', '夏天', '秋天', '冬天'];
@@ -59,10 +60,10 @@
     {"x": 0.53, "groundY": 0.83, "groundOffsets": [-0.0982, -0.0947], "xOffsets": [0.0036, -0.0551], "bodySizes": [0.93, 0.89], "rotations": [0, 0], "frontAnimal": "raccoon", "pose": "prone"},
   ];
   const actions = [
-    [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
+    [{ action: 'calendar', label: '日历与记忆', x: .50, y: .24, w: .96, h: .46, target: 'blossoms' }],
     [
-      { action: 'wishes', label: '许愿星', x: .53, y: .20, w: .52, h: .26, target: 'stars' },
-      { action: 'reading', label: '共读', x: .68, y: .44, w: .30, h: .14, target: 'fireflies' },
+      { action: 'wishes', label: '许愿星', x: .52, y: .20, w: .90, h: .38, target: 'stars' },
+      { action: 'reading', label: '共读', x: .50, y: .54, w: .96, h: .28, target: 'fireflies' },
       { action: 'anniversaries', label: '纪念日', x: .24, y: .89, w: .31, h: .10, target: 'flowers' },
     ],
     [{ action: 'moments', label: '朋友圈', x: .73, y: .46, w: .35, h: .14, target: 'wheat' }],
@@ -74,7 +75,8 @@
       { action: 'upstairs', label: '二楼', x: .41, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];
-  let current = 0;
+  const requestedSeason = seasonNames.indexOf(pageParams.get('season'));
+  let current = requestedSeason < 0 ? 0 : requestedSeason;
   let destination = null;
   let busy = false;
   let width = 0;

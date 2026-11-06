@@ -1,10 +1,18 @@
-/* Only existing pages navigate here. Other home:action events remain available
-   to the calendar, reading, anniversary, moments, album, voice and upstairs integrations. */
 (() => {
+  const previews = ['calendar', 'reading', 'anniversaries', 'moments', 'album', 'voice', 'upstairs'];
   document.addEventListener('home:action', event => {
     if (event.defaultPrevented) return;
-    const action = event.detail?.action;
-    if (action === 'chat') { event.preventDefault(); window.top.location.assign('/chat'); }
-    if (action === 'wishes') { event.preventDefault(); window.top.location.assign('/wishstar'); }
+    const { action, subject } = event.detail ?? {};
+    let route;
+    if (action === 'chat') route = '/chat';
+    else if (action === 'wishes') route = '/wishstar';
+    else if (previews.includes(action)) {
+      route = `/home/feature.html?feature=${action}`;
+      if (action === 'album' && ['otter', 'raccoon', 'cat'].includes(subject)) route += `&subject=${subject}`;
+    }
+    if (route) {
+      event.preventDefault();
+      window.top.location.assign(route);
+    }
   });
 })();
