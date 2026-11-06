@@ -167,16 +167,22 @@ test('F10 消息历史保护：内容零成员/删除后，消息附件引用仍
   assert.equal(read.status, 200, '资产仍可读');
 });
 
-test('F11 同资产重新引用：退出后再引用保护恢复', async () => {
+test('F11 同资产重新引用：available 退出后可再引用且保护恢复；missing 不再可引用', async () => {
   const a = await uploadAsset('f11-a');
   const p1 = await contentWrite('POST', '/api/v1/content/posts', { body: 'F11-1', asset_ids: [a] }, { 'Idempotency-Key': 'f11-k1' });
   assert.equal((await deleteAsset(a)), 409);
   const d1 = await contentWrite('DELETE', `/api/v1/content/posts/${p1.body.id}`, undefined, { 'Idempotency-Key': 'f11-k2', 'If-Match': `"${p1.body.revision}"` });
   assert.equal(d1.status, 200);
-  assert.equal((await deleteAsset(a)), 200, '最后引用退出后可删（missing）');
-  // 同一资产（missing 状态）再被新对象引用——按新写候选核验应拒绝（available 才可引用）
+  // 同一 available 资产解除关系后再被新对象引用：候选核验应通过，保护恢复
   const p2 = await contentWrite('POST', '/api/v1/content/posts', { body: 'F11-2', asset_ids: [a] }, { 'Idempotency-Key': 'f11-k3' });
-  assert.equal(p2.status, 422, 'missing 资产不再可被新内容引用（不允许借旧字节复活）');
+  assert.equal(p2.status, 201, 'available 资产退出关系后可再引用');
+  assert.equal((await deleteAsset(a)), 409, '再引用后保护恢复');
+  // 彻底删除（最后关系退出→资产删成 missing）后，新引用按候选核验拒绝——不允许借旧字节复活
+  const d2 = await contentWrite('DELETE', `/api/v1/content/posts/${p2.body.id}`, undefined, { 'Idempotency-Key': 'f11-k4', 'If-Match': `"${p2.body.revision}"` });
+  assert.equal(d2.status, 200);
+  assert.equal((await deleteAsset(a)), 200, '最后引用退出后可删（missing）');
+  const p3 = await contentWrite('POST', '/api/v1/content/posts', { body: 'F11-3', asset_ids: [a] }, { 'Idempotency-Key': 'f11-k5' });
+  assert.equal(p3.status, 422, 'missing 资产不再可被新内容引用');
 });
 
 test('F12 多 owner：删一个对象保留其他 owner 的保护；最后合法关系退出才可删', async () => {
@@ -211,7 +217,7 @@ test('F13 零集合版本锚：删除形成带版本空集合；迟到重放不�
   assert.equal((await deleteAsset(a)), 200, '删除后零成员：资产不被复活保护卡住');
 });
 
-test('F14 模型写入口与浏览器共用同一身份语义（actor jiaming 直连协调器）', async () => {
+test('F14 身份语义（jiaming 直连协调器）：同 key 同参回放、异参冲突（真实模型续轮路径见 content-rf-recovery RF02B）', async () => {
   const p = await contentWrite('POST', '/api/v1/content/posts', { body: 'F14' }, { 'Idempotency-Key': 'f14-p1' });
   const media = new MediaService(host.db, mediaDir, config);
   const coord = new ContentOperationCoordinator({ db: host.db, client: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, media, logger: host.logger });
@@ -224,7 +230,7 @@ test('F14 模型写入口与浏览器共用同一身份语义（actor jiaming �
   assert.equal(other.status, 409, '同 key 异参冲突');
 });
 
-test('F03 提交丢响应：pin 在 HTTP 前持久；恢复消费者沿原身份确认，不重建业务', async () => {
+test('F03 提交丢响应（直连协调器收口面）：pin 在 HTTP 前持久；恢复沿原身份确认，不重建业务（真实 Host 周期消费者见 content-rf-recovery RF01）', async () => {
   const a = await uploadAsset('f03-a');
   // 黑洞代理：转发到真实 content，拿到响应后断开调用方连接（提交成功、响应丢失）
   const realBase = `http://127.0.0.1:${contentServer.port}`;
@@ -306,7 +312,7 @@ test('F04 登记写锁：意图持久失败=操作未提交；解锁后同 key �
   assert.equal((await deleteAsset(a)), 409, '保护成立');
 });
 
-test('F15 旧回执兼容：旧算法+资源形状对上才回放；不足则待核冲突，保留原结果', async () => {
+test('F15 旧回执兼容（手造 DTO 形状面）：旧算法+资源形状对上才回放；不足则待核冲突（真实旧库迁移/旧删除形状见 content-rf-recovery RF03）', async () => {
   const a = await uploadAsset('f15-a');
   const legacyBody = { bucket_id: 'bk-legacy', icon_asset_id: a, title: '旧作品' };
   const legacyHash = sha256ish(JSON.stringify({ body: legacyBody, actor: 'qiaosheng' })); // 旧创建指纹（逐字重建）

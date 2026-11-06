@@ -306,20 +306,33 @@ export class ContentServer {
       if (prior.request_hash === commandFingerprint(actor, cmd)) return { outcome: 'replay', status: prior.status, body: JSON.parse(prior.response_json) };
       return { status: 409, outcome: 'conflict', body: { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } } };
     }
-    // 旧回执（指纹版本 0）：旧算法哈希命中且回执资源形状/ID 前缀与当前命令一致才回放
+    // 旧回执（指纹版本 0）：旧算法哈希命中后还必须有**正面**资源类型/目标证据才回放
+    // （RF03，复审 20261106：旧删除回执 {id,deleted,asset_ids} 判不出类型≠可放行——
+    // 曾经可借 album 前缀豁免跨类型回放）。正面证据=回执形状可判同型，或真实域 ID
+    // 前缀+对象事实（含墓碑行）同型；证据不足按待核冲突处理，不自动换 key 重建。
     const legacy = legacyFingerprint(actor, cmd);
     if (legacy !== null && simpleHash(legacy) === prior.request_hash) {
       let responseShape: Record<string, unknown>;
       try { responseShape = JSON.parse(prior.response_json) as Record<string, unknown>; } catch { responseShape = {}; }
       const inferred = inferResourceTypeFromResponse(responseShape);
       const responseId = typeof responseShape.id === 'string' ? responseShape.id : null;
-      const targetOk = cmd.action === 'create'
-        ? inferred === null || inferred === cmd.resourceType // 创建回执应是对应 DTO；判不出时按哈希命中放行（存量全部为 creation，DTO 可判）
-        : responseId === cmd.target && (inferred === null || inferred === cmd.resourceType);
-      const prefixOk = cmd.action === 'create' || (cmd.target !== null && (cmd.target.startsWith(ID_PREFIX[cmd.resourceType]) || cmd.resourceType === 'album_entry' /* 路由改版前相册 ID 也无前缀约束 */));
-      if (targetOk && prefixOk) return { outcome: 'replay', status: prior.status, body: responseShape };
+      const shapeOk = inferred === cmd.resourceType;
+      const domainOk = cmd.action !== 'create' && cmd.target !== null
+        && cmd.target.startsWith(ID_PREFIX[cmd.resourceType])
+        && this.legacyDomainRowExists(cmd.resourceType, cmd.target);
+      const typeOk = shapeOk || domainOk;
+      const targetOk = cmd.action === 'create' ? typeOk : responseId === cmd.target && typeOk;
+      if (targetOk) return { outcome: 'replay', status: prior.status, body: responseShape };
     }
     return { outcome: 'legacy_unresolved', status: 409, body: { error: { code: 'legacy_receipt_unresolved', message: '同幂等键存在历史回执，但无法确认与当前请求同源（保留原结果，请用新键或人工核对）' } } };
+  }
+
+  /** RF03：旧回执兼容解析用的对象事实核对——ID 前缀判定类型后，在对应域表查该 ID
+   *  是否真实存在（含软删墓碑）。旧格式对象全部软删保留，硬删不存在；ID 无该类型
+   *  前缀或无对应行=类型证据不成立。 */
+  private legacyDomainRowExists(rt: ResourceType, id: string): boolean {
+    const table = { post: 'feed_posts', comment: 'feed_comments', album_entry: 'album_entries', creation: 'creations', future_note: 'future_notes' }[rt];
+    return this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? LIMIT 1`).get(id) !== undefined;
   }
 
   private runWrite(actor: Actor, key: string | null, cmd: WriteCommand, business: () => { status: number; body: unknown }): { status: number; body: unknown } {

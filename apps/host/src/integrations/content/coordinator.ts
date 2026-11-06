@@ -1,12 +1,16 @@
 // P1（四仓合并审计 20261106，F06/F07）：est→content 写路径的持久协调器。
-// 一次内容写 = ① 同操作回查（旧成功只回放原回执）→ ② 新操作先核候选资产可用 →
+// 一次内容写 = ⓪ 本地已接受身份边界（pending/unknown 意图下同键异参拒 409，同参按
+// 已持久原意图继续——RF02，复审 20261106）→ ① 同操作回查（旧成功只回放原回执）→
+// ② 新操作先核候选资产可用 →
 // ③ Host 本地事务持久意图（outbox target=content.operation）+ 逐资产 protected pin →
 // ④ HTTP 提交 content（业务与回执同事务）→ ⑤ 成功后按 content 权威快照在另一本地事务
 // 确认映射（正式 committed 关系按 owner+asset 唯一；版本单调准入；释放已退出成员；
 // 收口本次 pin）→ ⑥ 未知结果（超时/5xx/不可解析/快照不可达）保留意图与 pin，由
 // 恢复消费者按原身份有界重放收口；确定未提交（content 4xx）才释放本次 pin。
-// 不新建任务平台：outbox 现有 state 机（pending/unknown_outcome/acked/failed）即意图状态；
-// owner 已应用版本锚存 content_owner_state（含零集合/删除——不从活跃引用行推算）。
+// 恢复消费者启动清一遍+周期有界处理共用一条单飞链（完成后 finally 释放标记——RF01），
+// 不新增第二个 timer。不新建任务平台：outbox 现有 state 机（pending/unknown_outcome/
+// acked/failed）即意图状态；owner 已应用版本锚存 content_owner_state（含零集合/删除——
+// 不从活跃引用行推算）。
 import type { Db } from '../../db/connection.ts';
 import { tx } from '../../db/connection.ts';
 import type { MediaService } from '../../media/assets.ts';
@@ -57,6 +61,21 @@ export class ContentOperationCoordinator {
   }): Promise<ContentWriteResult> {
     const key = req.headers['idempotency-key'];
     if (!key) return { status: 400, body: { error: { code: 'missing_idempotency', message: '写请求必须带 Idempotency-Key' } } };
+    const opKey = `content:${req.actor}:${key}`;
+    const currentIntent: IntentPayload = { actor: req.actor, method: req.method, path: req.path.split('?')[0]!, body: req.body, if_match: req.headers['if-match'] };
+
+    // ⓪ 本地已接受身份边界（RF02，复审 20261106）：pending/unknown 意图=操作已被本宿主
+    // 接受（意图+pin 已持久、结果未收口）。此时同键异参不得借“远端尚无回执”改写已
+    // 接受操作——拒 409；同参重试按已持久原意图继续（不经资产重检：原 pin 仍在保护，
+    // 不因资产状态变化阻挡已接受操作的重放）。
+    const accepted = this.db.prepare("SELECT state, payload_ref FROM outbox WHERE target = ? AND operation_key = ? AND state IN ('pending','unknown_outcome')").get(CONTENT_OPERATION_TARGET, opKey) as { state: string; payload_ref: string } | undefined;
+    if (accepted) {
+      const persisted = JSON.parse(accepted.payload_ref) as IntentPayload;
+      if (intentFingerprint(persisted) !== intentFingerprint(currentIntent)) {
+        return { status: 409, body: { error: { code: 'content_operation_conflict', message: '该幂等键已有未收口的已接受操作（参数不同）。原操作已持久并将按原身份收口；新操作请换幂等键。' } } };
+      }
+      return this.dispatchPinned(opKey, persisted);
+    }
 
     // ① 同操作回查：旧成功回放原回执——不做资产校验（HOST_REPLAY_ORDER：不能被旧 unavailable 挡住）
     let resolved;
@@ -82,16 +101,15 @@ export class ContentOperationCoordinator {
     }
 
     // ③ HTTP 前持久意图 + pin（同一本地事务；失败=操作未被接受，不提交 content）
-    const opKey = `content:${req.actor}:${key}`;
     try {
-      tx(this.db, () => this.upsertIntent(opKey, { actor: req.actor, method: req.method, path: req.path.split('?')[0]!, body: req.body, if_match: req.headers['if-match'] }, candidates));
+      tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates));
     } catch (err) {
       this.logger.warn('content_intent_persist_failed', { code: stableErrorCode(err), detail: String((err as Error).message ?? err).slice(0, 140) });
       return { status: 503, body: { error: { code: 'content_intent_persist_failed', message: '本地意图登记失败，操作未提交（可原键重试）' } } };
     }
 
-    // ④ 提交
-    return this.dispatchPinned(opKey, { actor: req.actor, method: req.method, path: req.path.split('?')[0]!, body: req.body, if_match: req.headers['if-match'] });
+    // ④ 提交——只执行已持久且匹配的原意图（upsert 对 failed/acked 重开时即当前请求）
+    return this.dispatchPinned(opKey, this.intentOf(opKey) ?? currentIntent);
   }
 
   /** 已有意图的提交与收口（write ④-⑥ 与恢复消费者共用）。调用前提：意图+pin 已持久。 */
@@ -225,10 +243,10 @@ export class ContentOperationCoordinator {
   async recoverOnce(limit = RECOVER_BATCH): Promise<number> {
     if (this.recoverInFlight) return 0;
     const task = (async () => {
-      const rows = this.db.prepare("SELECT id, operation_key, payload_ref, state, attempt FROM outbox WHERE target = ? AND state IN ('pending','unknown_outcome') ORDER BY created_at LIMIT ?")
-        .all(CONTENT_OPERATION_TARGET, limit) as Array<OutboxRow>;
+      // MAX_ATTEMPTS 筛选在候选 SQL 里完成：超限行不再占用批次（保留意图与 pin 等待人工/对账）
+      const rows = this.db.prepare("SELECT id, operation_key, payload_ref, state, attempt FROM outbox WHERE target = ? AND state IN ('pending','unknown_outcome') AND attempt <= ? ORDER BY created_at LIMIT ?")
+        .all(CONTENT_OPERATION_TARGET, MAX_ATTEMPTS, limit) as Array<OutboxRow>;
       for (const row of rows) {
-        if (row.attempt > MAX_ATTEMPTS) continue; // 有界：保留意图与 pin，等待人工/后续对账
         const p = JSON.parse(row.payload_ref) as IntentPayload;
         const idem = row.operation_key.slice(`content:${p.actor}:`.length);
         try {
@@ -249,7 +267,10 @@ export class ContentOperationCoordinator {
       }
       return rows.length;
     })();
+    // RF01（复审 20261106）：单飞标记必须随本次完成真正释放（finally），否则 15 秒定时
+    // 消费者自第一批后永久被已完成的 promise 挡住——启动空批后的运行中故障无人收口。
     this.recoverInFlight = task.then(() => undefined, () => undefined);
+    void this.recoverInFlight.finally(() => { this.recoverInFlight = null; });
     return task;
   }
 }
@@ -265,4 +286,19 @@ export function candidateAssetIds(body: Record<string, unknown> | undefined): st
     }
   }
   return [...new Set(refs)];
+}
+
+/** 已接受意图与当前请求是否同一命令（RF02）：method/path/if_match 逐字，body 按键排序
+ *  规范化比较（JSON 往返丢 undefined，两侧统一 ?? null 归一）。 */
+function canonicalJson(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(canonicalJson);
+  if (v !== null && typeof v === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = canonicalJson((v as Record<string, unknown>)[k]);
+    return out;
+  }
+  return v;
+}
+function intentFingerprint(intent: IntentPayload): string {
+  return JSON.stringify({ m: intent.method, p: intent.path, im: intent.if_match ?? null, b: canonicalJson(intent.body) ?? null });
 }

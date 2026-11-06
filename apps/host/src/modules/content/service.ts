@@ -18,11 +18,14 @@ export class ContentToolsService {
   async contentPostCreate(args: { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
     // 模型发帖与浏览器入口同一协调面：资产前置保护、意图持久、回放与确认一致。
+    // RF02（复审 20261106）：业务幂等键绑定稳定主体（turn+模型显式 key），不含
+    // provider requestId/attempt——模型续轮重试复用原操作，不因换请求换身份重复发帖。
     const r = await this.contentOps.write({ method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
       body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
-      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
+      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
     });
     if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
+    if (isUnknownOutcome(r)) return unknownToolResult('CONTENT_POST_UNKNOWN', r);
     return { ok: false, output: { error_code: 'CONTENT_POST_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
   }
 
@@ -30,11 +33,13 @@ export class ContentToolsService {
   async contentCommentCreate(args: { post_id: string; body: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     // 评论无资产（无伪 pin），但操作身份/回放与浏览器写一致——不绕过回执规则。
+    // RF02：业务键不含 provider requestId（见 contentPostCreate）。
     const r = await this.contentOps.write({ method: 'POST', path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`, actor: 'jiaming',
       body: { body: args.body },
-      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}` },
+      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
     });
     if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
+    if (isUnknownOutcome(r)) return unknownToolResult('CONTENT_COMMENT_UNKNOWN', r);
     return { ok: false, output: { error_code: 'CONTENT_COMMENT_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
   }
 
@@ -79,5 +84,15 @@ export class ContentToolsService {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
     }
   }
+}
 
+
+/** RF02（复审 20261106）：未知结果 ≠ 确定失败——协调器已持久意图，将以原身份收口。
+ *  以普通失败文案回给模型会诱导换新身份重做（实际已提交→重复发帖）。 */
+function isUnknownOutcome(r: { status: number; body: unknown }): boolean {
+  const code = (r.body as { error?: { code?: string } } | null)?.error?.code;
+  return r.status === 504 && code === 'content_write_unknown';
+}
+function unknownToolResult(errorCode: string, r: { status: number; body: unknown }): ToolExecResult {
+  return { ok: false, output: { error_code: errorCode, detail: '提交结果未知：操作已持久，将以原身份恢复收口；用同一 idempotency_key 重试安全，勿换新键重做。', raw_status: r.status } };
 }
