@@ -70,6 +70,8 @@
       { action: 'wishes', label: '许愿星', x: (783 - 426.5) / 426.5, y: 23 / 922, guide: 'star', target: 'stars' },
       { action: 'album', label: '相册', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
       { action: 'anniversaries', label: '纪念日', x: .24, y: .89, w: .31, h: .10, target: 'flowers' },
+      { action: 'chat', label: '水流与湿云，进入聊天', x: .18, y: .8, w: .34, h: .38, target: 'signature-chat', signature: true },
+      { action: 'calendar', label: '全世界的水都会重逢，进入日历', x: .675, y: .5, w: .65, h: .9, target: 'signature-calendar', signature: true },
     ],
     [{ action: 'moments', label: '朋友圈', x: (1231 - 853) / 426.5, y: 150 / 922, point: true, target: 'maple-leaf' }],
     [
@@ -78,18 +80,35 @@
       { action: 'upstairs', label: '二楼', x: .41, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];
-  const signatureStorageKey = 'estomago-signature-layout-v1';
-  const signatureDefaults = {"x": 0.615, "y": 0.9384465459788169, "width": 0.77};
-  const signatureLayout = { ...signatureDefaults };
-  try {
-    const stored = JSON.parse(localStorage.getItem(signatureStorageKey));
-    if (stored?.version === 1 && Number.isFinite(stored.x) && stored.x >= 0 && stored.x <= 1 &&
-        Number.isFinite(stored.y) && stored.y >= 0 && stored.y <= 1 &&
-        Number.isFinite(stored.width) && stored.width >= .3 && stored.width <= 1) {
-      Object.assign(signatureLayout, { x: stored.x, y: stored.y, width: stored.width });
-    }
-  } catch {}
-  let springSignature = null;
+  const signatures = [
+    {
+      season: 0, storageKey: 'estomago-signature-layout-v1',
+      defaults: { x: .615, y: .9384465459788169, width: .77 }, aspectRatio: 3,
+      image: '/home/assets/seasons/spring-mariposa-signature.png', imageSize: [2172, 724],
+    },
+    {
+      season: 1, storageKey: 'estomago-signature-layout-summer-v1',
+      defaults: { x: .53, y: .935, width: .84 }, aspectRatio: 3.2,
+      image: '/home/assets/seasons/summer-water-reunion.png', imageSize: [2172, 724],
+      poem: [
+        'All the waters of the world',
+        'will meet again.',
+        'The Arctic Ocean and the Nile',
+        'will mingle in rain-laden clouds.',
+      ],
+    },
+  ];
+  for (const signature of signatures) {
+    signature.layout = { ...signature.defaults };
+    try {
+      const stored = JSON.parse(localStorage.getItem(signature.storageKey));
+      if (stored?.version === 1 && Number.isFinite(stored.x) && stored.x >= 0 && stored.x <= 1 &&
+          Number.isFinite(stored.y) && stored.y >= 0 && stored.y <= 1 &&
+          Number.isFinite(stored.width) && stored.width >= .3 && stored.width <= 1) {
+        Object.assign(signature.layout, { x: stored.x, y: stored.y, width: stored.width });
+      }
+    } catch {}
+  }
   const requestedSeason = seasonNames.indexOf(pageParams.get('season'));
   let current = requestedSeason < 0 ? 0 : requestedSeason;
   let destination = null;
@@ -105,6 +124,9 @@
   let elapsed = 0;
   const scenes = [];
   const pairs = [];
+  const signatureLayer = document.createElement('div');
+  signatureLayer.className = 'signature-layer';
+  world.append(signatureLayer);
 
   function poseStyle(kind, pose, frame = 0) {
     const sheet = POSE_SHEETS[pose];
@@ -140,31 +162,50 @@
     scene.dataset.season = seasonNames[season];
     scene.setAttribute('aria-label', seasonLabels[season]);
     scene.style.left = `${season * 25}%`;
-    const signature = season === 0 ? document.createElement('nav') : null;
+    const signatureConfig = signatures.find(config => config.season === season);
+    const signature = signatureConfig ? document.createElement('nav') : null;
     if (signature) {
-      springSignature = signature;
-      signature.className = 'spring-signature';
-      signature.setAttribute('aria-label', '春天水彩导航');
+      const signatureScene = document.createElement('div');
+      signatureScene.className = 'signature-scene';
+      signatureScene.style.left = `${season * 25}%`;
+      signatureConfig.scene = signatureScene;
+      signatureLayer.append(signatureScene);
+      signatureConfig.element = signature;
+      signature.className = `season-signature ${seasonNames[season]}-signature`;
+      signature.dataset.signatureSeason = seasonNames[season];
+      signature.style.aspectRatio = String(signatureConfig.aspectRatio);
+      signature.setAttribute('aria-label', `${seasonLabels[season]}水彩导航`);
       const image = document.createElement('img');
-      image.src = '/home/assets/seasons/spring-mariposa-signature.png';
+      image.src = signatureConfig.image;
       image.alt = '';
-      image.width = 2172;
-      image.height = 724;
+      [image.width, image.height] = signatureConfig.imageSize;
       image.draggable = false;
       signature.append(image);
-      scene.append(signature);
+      if (signatureConfig.poem) {
+        const poem = document.createElement('p');
+        poem.className = 'signature-poem';
+        signatureConfig.poem.forEach((line, index) => {
+          const row = document.createElement('span');
+          row.textContent = line + (index < signatureConfig.poem.length - 1 ? ' ' : '');
+          poem.append(row);
+        });
+        signature.append(poem);
+      }
+      signatureScene.append(signature);
       const toggle = document.createElement('button');
+      signatureConfig.toggle = toggle;
       toggle.type = 'button';
       toggle.className = 'scene-hotspot signature-toggle';
-      toggle.setAttribute('aria-label', '隐藏水印');
+      toggle.dataset.signatureSeason = seasonNames[season];
+      toggle.setAttribute('aria-label', `隐藏${seasonLabels[season]}水印`);
       toggle.setAttribute('aria-expanded', 'true');
       toggle.addEventListener('click', () => {
         if (busy || adjusting) return;
         signature.hidden = !signature.hidden;
         toggle.setAttribute('aria-expanded', String(!signature.hidden));
-        toggle.setAttribute('aria-label', signature.hidden ? '显示水印' : '隐藏水印');
+        toggle.setAttribute('aria-label', `${signature.hidden ? '显示' : '隐藏'}${seasonLabels[season]}水印`);
       });
-      scene.append(toggle);
+      signatureScene.append(toggle);
     }
     for (const detail of actions[season]) {
       const button = document.createElement('button');
@@ -204,6 +245,7 @@
   }
   function updateAccessibleScenes() {
     for (let i = 0; i < 4; i++) scenes[i].inert = busy || (!isDesktop() && i !== current);
+    for (const signature of signatures) signature.scene.inert = busy || (!isDesktop() && signature.season !== current);
     viewport.dataset.season = seasonNames[current];
     viewport.dataset.busy = String(busy);
   }
@@ -215,14 +257,17 @@
     width = height * ratio;
     panelWidth = width / 4;
     cameraY = (viewport.clientHeight - height) / 2;
-    Object.assign(springSignature.style, {
-      left: `${signatureLayout.x * 100}%`, top: `${signatureLayout.y * 100}%`, width: `${signatureLayout.width * 100}%`,
-    });
-    // The cover camera can crop the spring corner on desktop.
-    Object.assign(scenes[0].querySelector('.signature-toggle').style, {
-      left: `calc(max(8px, env(safe-area-inset-left)) + ${Math.max(0, -cameraX(0))}px)`,
-      bottom: `calc(max(12px, env(safe-area-inset-bottom)) + ${Math.max(0, -cameraY)}px)`,
-    });
+    for (const signature of signatures) {
+      Object.assign(signature.element.style, {
+        left: `${signature.layout.x * 100}%`, top: `${signature.layout.y * 100}%`, width: `${signature.layout.width * 100}%`,
+      });
+      // Keep each toggle inside its season's visible corner after the cover crop.
+      const sceneLeft = isDesktop() ? cameraX(0) + signature.season * panelWidth : (viewport.clientWidth - panelWidth) / 2;
+      Object.assign(signature.toggle.style, {
+        left: `calc(max(8px, env(safe-area-inset-left)) + ${Math.max(0, -sceneLeft)}px)`,
+        bottom: `calc(max(12px, env(safe-area-inset-bottom)) + ${Math.max(0, -cameraY)}px)`,
+      });
+    }
     const visibleBottom = (viewport.clientHeight - cameraY - 44) / height;
     for (let i = 0; i < resting.length; i++) {
       const spriteSize = panelWidth * SPRITE_WIDTH;
@@ -369,7 +414,9 @@
         pair.hidden = index === 0 ? false : index === 3 ? true : pairs[index].hidden;
         pair.tabIndex = -1;
       });
-      outside.append(painting, springScenes);
+      const springSignatures = signatureLayer.cloneNode(true);
+      springSignatures.querySelectorAll('.scene-hotspot').forEach(node => node.remove());
+      outside.append(painting, springScenes, springSignatures);
       for (const id of ['field-foreground', 'bedding-foreground']) {
         const foreground = document.getElementById(id).cloneNode(true);
         foreground.removeAttribute('id');
@@ -554,6 +601,7 @@
 
   if (adjusting) {
     viewport.dataset.adjusting = 'true';
+    const signature = signatures.find(config => config.season === requestedSeason) ?? signatures[0];
     // Editing methods are exposed only here; saved signature layouts also apply to normal visits.
     window.estomagoPositionEditor = {
       read: () => resting.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }) => ({
@@ -575,14 +623,18 @@
         layout();
       },
       signature: {
-        defaults: { ...signatureDefaults },
-        read: () => ({ ...signatureLayout }),
+        selector: `.${seasonNames[signature.season]}-signature`,
+        season: signature.season,
+        seasonName: seasonNames[signature.season],
+        aspectRatio: signature.aspectRatio,
+        defaults: { ...signature.defaults },
+        read: () => ({ ...signature.layout }),
         update(config) {
-          Object.assign(signatureLayout, config);
+          Object.assign(signature.layout, config);
           layout();
         },
         save() {
-          localStorage.setItem(signatureStorageKey, JSON.stringify({ version: 1, ...signatureLayout }));
+          localStorage.setItem(signature.storageKey, JSON.stringify({ version: 1, ...signature.layout }));
         },
       },
       dimensions: () => ({ panelWidth, height }),

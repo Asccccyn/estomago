@@ -58,17 +58,36 @@ html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="tru
 @media (prefers-reduced-motion: reduce) { .guide-hotspot::before, .guide-hotspot::after { animation: none; } }
 
 
-.spring-signature { position: absolute; left: 61.5%; top: 93.84465459788169%; width: 77%; transform: translate(-50%, -50%); aspect-ratio: 3 / 1; z-index: 4; pointer-events: none; }
-.spring-signature img { display: block; width: 100%; height: 100%; pointer-events: none; user-select: none; }
-.spring-signature .scene-hotspot { pointer-events: auto; }
-
-.spring-signature { animation: signature-float 7.2s ease-in-out infinite; }
+/* Navigation stays above the painted grass without lifting the animals. */
+.signature-layer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 6; pointer-events: none; }
+.signature-scene { position: absolute; top: 0; width: 25%; height: 100%; }
+.season-signature { position: absolute; transform: translate(-50%, -50%); z-index: 4; pointer-events: none; }
+.season-signature[hidden] { display: none; }
+.season-signature img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; user-select: none; z-index: 1; }
+.season-signature .scene-hotspot { pointer-events: auto; z-index: 2; }
+.spring-signature { left: 61.5%; top: 93.84465459788169%; width: 77%; aspect-ratio: 3 / 1; animation: signature-float 7.2s ease-in-out infinite; }
 @keyframes signature-float { 0%, 100% { translate: 0 0; opacity: .96; } 50% { translate: 0 -2px; opacity: 1; } }
-.signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .78; }
+.summer-signature { left: 53%; top: 93.5%; width: 84%; aspect-ratio: 3.2 / 1; container-type: inline-size; }
+.summer-signature img { object-fit: contain; filter: saturate(1.18) drop-shadow(0 .6px .5px rgba(40, 67, 103, .28)); transform-origin: 20% 78%; animation: summer-water-flow 8.6s ease-in-out infinite; }
+.summer-signature .signature-poem { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; z-index: 0; color: #2f4966; font-family: 'Snell Roundhand', 'Apple Chancery', cursive; font-size: 2.8cqw; font-weight: 400; line-height: 1.08; letter-spacing: 0; word-spacing: 0; pointer-events: none; }
+.summer-signature .signature-poem span { position: absolute; display: block; white-space: nowrap; }
+.summer-signature .signature-poem span:nth-child(1) { left: 41%; top: 47%; }
+.summer-signature .signature-poem span:nth-child(2) { left: 62%; top: 60%; }
+.summer-signature .signature-poem span:nth-child(3) { left: 38%; top: 73%; }
+.summer-signature .signature-poem span:nth-child(4) { left: 44%; top: 86%; }
+.summer-signature .scene-hotspot { min-width: 44px; min-height: 44px; }
+@keyframes summer-water-flow { 0%, 100% { translate: 0 0; scale: 1; opacity: .98; } 50% { translate: 1px -1px; scale: 1.006; opacity: 1; } }
+.signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .78; pointer-events: auto; }
 .signature-toggle::before { content: ''; position: absolute; left: 13px; top: 16px; width: 18px; height: 12px; border-radius: 65% 15% 65% 25%; background: radial-gradient(ellipse at 30% 25%, #f2b9cb, #b5758b); transform: rotate(-28deg); }
 .signature-toggle:hover, .signature-toggle:focus-visible, .signature-toggle[aria-expanded="false"] { opacity: .9; }
 .signature-toggle[aria-expanded="false"]::before { transform: rotate(18deg); }
-html[data-home-hidden="true"] .spring-signature, #seasons[data-busy="true"] .spring-signature { animation-play-state: paused; }
-html[data-position-editor="true"] .spring-signature { animation: none; }
+.signature-toggle[data-signature-season="summer"]::before { left: 15px; top: 14px; width: 14px; height: 16px; border-radius: 55% 55% 55% 15%; background: radial-gradient(ellipse at 35% 30%, #d4e8f7, #759cb8); transform: rotate(-45deg); }
+.signature-toggle[data-signature-season="summer"][aria-expanded="false"]::before { transform: rotate(-20deg); }
+html[data-home-hidden="true"] .season-signature,
+html[data-home-hidden="true"] .summer-signature img,
+#seasons[data-busy="true"] .season-signature,
+#seasons[data-busy="true"] .summer-signature img { animation-play-state: paused; }
+html[data-position-editor="true"] .season-signature,
+html[data-position-editor="true"] .season-signature img { animation: none; }
 html[data-position-editor="true"] .signature-toggle { display: none; }
-@media (prefers-reduced-motion: reduce) { .spring-signature { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .season-signature, .summer-signature img { animation: none; } }

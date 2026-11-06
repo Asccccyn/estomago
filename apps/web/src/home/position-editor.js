@@ -3,7 +3,7 @@
   const api = window.estomagoPositionEditor;
   if (!api) return;
   if (api.signature && new URLSearchParams(location.search).get('adjust') === 'signature') {
-    const signature = document.querySelector('.spring-signature');
+    const signature = document.querySelector(api.signature.selector);
     const panel = document.createElement('aside');
     panel.id = 'position-editor';
     panel.setAttribute('aria-label', '水印位置与大小调整');
@@ -29,7 +29,7 @@
     function render(message) {
       const { panelWidth, height } = api.dimensions();
       const halfWidth = position.width / 2;
-      const halfHeight = position.width * panelWidth / 3 / height / 2;
+      const halfHeight = position.width * panelWidth / api.signature.aspectRatio / height / 2;
       position.x = clamp(position.x, halfWidth, 1 - halfWidth);
       position.y = clamp(position.y, halfHeight, 1 - halfHeight);
       api.signature.update(position);
@@ -77,7 +77,7 @@
     panel.querySelector('#position-preview').addEventListener('click', async () => {
       try {
         await api.signature.save();
-        location.assign('/home/index.html?season=spring&preview=phone');
+        location.assign(`/home/index.html?season=${api.signature.seasonName}&preview=phone`);
       } catch { status.textContent = '暂时无法保存，未切换预览。请复制下方位置数据。'; }
     });
     panel.querySelector('#position-copy').addEventListener('click', async () => {
@@ -97,7 +97,7 @@
       event.currentTarget.setAttribute('aria-expanded', String(!controls.hidden));
     });
     api.preview('phone');
-    api.select(0);
+    api.select(api.signature.season);
     render();
     return;
   }

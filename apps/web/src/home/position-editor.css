@@ -39,9 +39,9 @@ html[data-position-editor="true"] .animal[data-edit-selected="true"] .animal-siz
 #position-editor #position-upright { flex: none; padding: 3px 6px; }
 #position-editor .position-layer-hint { margin-top: 4px; color: #8a755e; font-size: 11px; }
 
-html[data-signature-editor="true"] .spring-signature { pointer-events: auto; touch-action: none; cursor: grab; user-select: none; outline: 1px dashed rgba(112, 89, 68, .4); outline-offset: 4px; border-radius: 5px; }
-html[data-signature-editor="true"] .spring-signature:active { cursor: grabbing; }
-html[data-signature-editor="true"] .spring-signature .scene-hotspot,
+html[data-signature-editor="true"] .season-signature { pointer-events: auto; touch-action: none; cursor: grab; user-select: none; outline: 1px dashed rgba(112, 89, 68, .4); outline-offset: 4px; border-radius: 5px; }
+html[data-signature-editor="true"] .season-signature:active { cursor: grabbing; }
+html[data-signature-editor="true"] .season-signature .scene-hotspot,
 html[data-signature-editor="true"] .animal-pair,
 html[data-signature-editor="true"] .animal-pair .animal,
 html[data-signature-editor="true"] .animal-pair .animal-size { pointer-events: none; }

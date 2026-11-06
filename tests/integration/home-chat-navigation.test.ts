@@ -73,6 +73,7 @@ test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接�
   assert.deepEqual(routes, ['/chat', '/wishstar']);
   const pending = [
     { action: 'calendar', season: 'spring' },
+    { action: 'calendar', season: 'summer' },
     { action: 'reading', season: 'winter', target: 'bookshelf' },
     { action: 'anniversaries', season: 'summer' },
     { action: 'moments', season: 'autumn' },
@@ -89,6 +90,7 @@ test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接�
   const expectedRoutes = [
     '/chat', '/wishstar',
     '/home/feature.html?feature=calendar',
+    '/home/feature.html?feature=calendar&season=summer',
     '/home/feature.html?feature=reading',
     '/home/feature.html?feature=anniversaries',
     '/home/feature.html?feature=moments',

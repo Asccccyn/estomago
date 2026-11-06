@@ -46,7 +46,8 @@
       const title = feature === 'album' && subject ? albumNames[subject] : page.title;
       document.getElementById('feature-title').textContent = title;
       document.getElementById('feature-note').textContent = '跳转入口已接通，完整功能页面待接入。';
-      document.getElementById('back-to-seasons').href = '/home/index.html?season=' + page.season;
+      const returnSeason = feature === 'calendar' && params.get('season') === 'summer' ? 'summer' : page.season;
+      document.getElementById('back-to-seasons').href = '/home/index.html?season=' + returnSeason;
       document.title = title + ' · estómago';
     })();
   </script>
