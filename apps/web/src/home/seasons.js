@@ -11,6 +11,7 @@
   const desktopQuery = matchMedia('(min-width: 900px)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
   const pageParams = new URLSearchParams(location.search);
+  if (pageParams.get('preview') === 'phone') viewport.classList.add('editor-phone');
   const adjusting = pageParams.get('adjust') === '1';
   const isDesktop = () => desktopQuery.matches && !viewport.classList.contains('editor-phone');
   const seasonNames = ['spring', 'summer', 'autumn', 'winter'];
@@ -60,7 +61,11 @@
     {"x": 0.53, "groundY": 0.83, "groundOffsets": [-0.0982, -0.0947], "xOffsets": [0.0036, -0.0551], "bodySizes": [0.93, 0.89], "rotations": [0, 0], "frontAnimal": "raccoon", "pose": "prone"},
   ];
   const actions = [
-    [{ action: 'calendar', label: '日历与记忆', x: .50, y: .24, w: .96, h: .46, target: 'blossoms' }],
+    [
+      { action: 'calendar', label: '日历与记忆', x: .50, y: .24, w: .96, h: .46, target: 'blossoms' },
+      { action: 'chat', label: '樱花图标，进入聊天', x: .16, y: .50, w: .32, h: .92, target: 'signature-chat', signature: true },
+      { action: 'calendar', label: 'mariposa en el estomago，进入日历', x: .665, y: .50, w: .67, h: .92, target: 'signature-calendar', signature: true },
+    ],
     [
       { action: 'wishes', label: '许愿星', x: (783 - 426.5) / 426.5, y: 23 / 922, guide: 'star', target: 'stars' },
       { action: 'album', label: '相册', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
@@ -123,6 +128,19 @@
     scene.dataset.season = seasonNames[season];
     scene.setAttribute('aria-label', seasonLabels[season]);
     scene.style.left = `${season * 25}%`;
+    const signature = season === 0 ? document.createElement('nav') : null;
+    if (signature) {
+      signature.className = 'spring-signature';
+      signature.setAttribute('aria-label', '春天水彩导航');
+      const image = document.createElement('img');
+      image.src = '/home/assets/seasons/spring-mariposa-signature.png';
+      image.alt = '';
+      image.width = 2172;
+      image.height = 724;
+      image.draggable = false;
+      signature.append(image);
+      scene.append(signature);
+    }
     for (const detail of actions[season]) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -138,7 +156,7 @@
         if (detail.subject) payload.subject = detail.subject;
         document.dispatchEvent(new CustomEvent('home:action', { detail: payload, bubbles: true, cancelable: true }));
       });
-      scene.append(button);
+      (detail.signature ? signature : scene).append(button);
     }
     const pair = document.createElement('button');
     pair.type = 'button';

@@ -56,3 +56,8 @@ html[data-home-hidden="true"] .animal-sprite { animation-play-state: paused; }
 @keyframes guide-core { 0%, 100% { opacity: .72; transform: translate(-50%, -50%) scale(.95); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.13); } }
 html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="true"] .guide-hotspot::after { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .guide-hotspot::before, .guide-hotspot::after { animation: none; } }
+
+
+.spring-signature { position: absolute; left: 4.418605%; bottom: max(22px, env(safe-area-inset-bottom)); width: 91.162791%; aspect-ratio: 3 / 1; z-index: 4; pointer-events: none; }
+.spring-signature img { display: block; width: 100%; height: 100%; pointer-events: none; user-select: none; }
+.spring-signature .scene-hotspot { pointer-events: auto; }
