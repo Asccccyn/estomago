@@ -20,6 +20,8 @@
 
 - 2026-11-06（`9c49584`，未部署）：借参考视频前景掠过与远近视差节奏，冬转春改为靠近雪窗、玻璃内显现春景、穿窗后接回主页；保留全部插画和角色定稿，手机落到单春，桌面回四季。视口遮罩与相机同步，交接先恢复春景再淡出，resize取消恢复可用；浏览器逐帧/手机完整循环/缩放中断检查及4项隔离主页测试通过。
 
+- 2026-11-06（复审反例修复批 2：通话/深听/后台/SDK/工具合同，`99e9828`/`e4f3359`/`d529715`/`0106c78`/`291e6f6`，未部署）：RV02 S end 通知携带 had_session 正本事实、E 按"从未连接预留≠真实通话"判定（配套 S `87ff1d7`）；RB01 Sol 门控统一——活动事实单一判定（响铃+准备+已建立）贯穿登记/请求/装配三道门+事实写入触发在途失效；RV01 深听资格贯穿——迟到 analysis_id 归属+补发 cancel、get/view 消费门、编辑/停止/未派发/重启死轮各入口 abandoned 收口、cancelAnalysis 如实返回；RB02 SDK 完成工具在 runner 控制层归一 completed（不再 failed turn/跳过维护回执）；RB03 维护轮不再 fork、成功后锚前进（协议保留合同统一）；RB04 once 任务（含 reminder）真实收口+取消终态待核+投递身份取冻结 scheduled_for+零派发恢复还原 daily 本次 due；RB05 自由活动路由接通正式分派（修 INSERT 错位+origin CHECK 迁移 v58）并经真实调度验收；RT01 工具公开 schema 与直接执行事实一致（definition_id 可选+新窗 41C/7D 完整定义预送）；RT02 Wishstar body 取消纳入未知边界；RM02 E 合同副本同步 M 重生成正本。配套 M `f1f6908`（RM01 I 领域唯一 payload——真实 SIGKILL 后同请求恢复原成功不再 409；MT-05 暂存启动收尾）、O `f88d6c0`（RV03 临时文件受登记键约束，真实 fsync 后 SIGKILL 的 .tmp 由既有消费者回收）。
+
 - 2026-11-06（复审反例修复批 1：F06/F07 RF01/RF02/RF03，`7ff0b59`，未部署）：按 20261106 只读复审四个反例修复——恢复消费者单飞标记 finally 真正释放（启动空批后运行中未知提交由真实 15 秒 timer 收口）+MAX_ATTEMPTS 筛选下推 SQL；coordinator 本地已接受身份边界（pending/unknown 同键异参 409，不再因远端无回执改写已接受操作）；模型业务幂等键去 provider requestId（续轮重试复用原操作，未知提交回 CONTENT_POST_UNKNOWN）；旧回执兼容需正面类型证据（形状同型或域ID前缀+对象事实），删 album 豁免。新增 content-rf-recovery 4 反例回归（真实 Host/ef6698b 冻结夹具），F11 补 available 退出后再引用正例。
 
 - 2026-11-06（审计复核批：C07/C08/C09+O 补证+SDK 宿主侧，`b779842`/`3325b25`，未部署）：C07 自醒包装携带设置/原due/递交时间（迟到不重算）；C08 纯1心跳协议保留（探针首差 4→-1）；C09 工具心跳后继维护恢复（occurrence key 随维护回执变化，增量 0→1）；新增 cache-maintenance 集成测试与包内探针入库。O `3018b09`：DELETE 失败/写库崩溃/真实 SIGKILL 三故障形态隔离补证——均有既有消费者（幂等重入/cleanup_orphans），零产线改动、不新增启动清扫。C08-SDK 宿主侧 anchor/fork 本地验收（3325b25）；真实 SDK 序列与上游缓存计量单列外部。全量 226/226 零失败。
