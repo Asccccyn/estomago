@@ -4,6 +4,8 @@ export const HOME_STATIC_FILES: Array<[string, { file: string; type: string; cac
   ["/home/position-editor.js", { file: "home/position-editor.js", type: "text/javascript; charset=utf-8", cache: "no-cache" }],
   ["/home/seasons.css", { file: "home/seasons.css", type: "text/css; charset=utf-8", cache: "no-cache" }],
   ["/home/seasons.js", { file: "home/seasons.js", type: "text/javascript; charset=utf-8", cache: "no-cache" }],
+  ["/home/assets/seasons/desktop-panorama-autumn-room.png", { file: "home/assets/seasons/desktop-panorama-autumn-room.png", type: "image/png", cache: "no-cache" }],
+  ["/home/assets/seasons/autumn-peek.png", { file: "home/assets/seasons/autumn-peek.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/desktop-panorama.png", { file: "home/assets/seasons/desktop-panorama.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/panorama.png", { file: "home/assets/seasons/panorama.png", type: "image/png", cache: "no-cache" }],
   ["/home/assets/seasons/summer.png", { file: "home/assets/seasons/summer.png", type: "image/png", cache: "no-cache" }],

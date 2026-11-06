@@ -7,21 +7,22 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>estómago</title>
-  <link rel="preload" href="/home/assets/seasons/desktop-panorama.png" as="image">
+  <link rel="preload" href="/home/assets/seasons/desktop-panorama-autumn-room.png" as="image">
   <link rel="preload" href="/home/assets/seasons/characters.png" as="image">
   <link rel="preload" href="/home/assets/seasons/rolling.png" as="image">
   <link rel="preload" href="/home/assets/seasons/season-poses.png" as="image">
   <link rel="preload" href="/home/assets/seasons/walk-cycle.png" as="image">
-  <link rel="stylesheet" href="/home/seasons.css?v=20261106-rotation">
-  <link rel="stylesheet" href="/home/position-editor.css?v=20261106-rotation">
+  <link rel="preload" href="/home/assets/seasons/autumn-peek.png" as="image">
+  <link rel="stylesheet" href="/home/seasons.css?v=20261106-autumn-peek">
+  <link rel="stylesheet" href="/home/position-editor.css?v=20261106-autumn-peek">
   <script src="/home/home-navigation.js" defer></script>
-  <script src="/home/seasons.js?v=20261106-rotation" defer></script>
-  <script src="/home/position-editor.js?v=20261106-rotation" defer></script>
+  <script src="/home/seasons.js?v=20261106-autumn-peek" defer></script>
+  <script src="/home/position-editor.js?v=20261106-autumn-peek" defer></script>
 </head>
 <body>
   <main id="seasons" aria-label="水獭与小浣熊的四季">
     <div id="season-world">
-        <img id="panorama" src="/home/assets/seasons/desktop-panorama.png" alt="春日樱花、夏夜萤火、秋日麦田与冬日小屋相连的水彩画卷" width="1706" height="922" fetchpriority="high" draggable="false">
+        <img id="panorama" src="/home/assets/seasons/desktop-panorama-autumn-room.png" alt="春日樱花、夏夜萤火、秋日麦田与冬日小屋相连的水彩画卷" width="1706" height="922" fetchpriority="high" draggable="false">
       <canvas id="atmosphere" aria-hidden="true"></canvas>
       <div id="season-scenes"></div>
       <div id="travelers" aria-hidden="true"></div>
@@ -40,20 +41,22 @@
                 <path d="M585 480 C617 383 648 300 704 252 C751 212 805 188 871 182 C847 209 837 225 808 237 C806 261 787 281 761 290 C756 319 738 343 714 353 C707 385 689 416 657 432 C642 459 613 478 585 480Z M587 477 C520 592 466 700 421 815 L430 815 C473 701 530 591 596 480Z"/>
                 <path d="M210 482 C265 392 325 305 409 244 L417 249 C346 334 285 422 233 498Z M30 352 C110 332 175 350 241 443 C161 396 90 376 30 366Z"/>
               </g>
+              <!-- The foreground wheat covers shoulders and bodies, leaving the autumn faces above the stalks. -->
+              <path id="autumn-wheat-front" d="M877 671 C909 653 932 650 947 641 L960 615 Q957 635 955 646 L970 636 Q984 629 996 635 L1015 610 Q1007 634 1002 642 Q1015 650 1032 643 L1055 616 Q1048 641 1040 650 Q1064 657 1086 649 L1106 625 Q1100 647 1097 657 Q1115 661 1134 653 L1151 628 Q1149 649 1144 660 Q1160 665 1177 655 L1200 628 Q1194 650 1190 662 Q1213 672 1238 663 L1264 643 L1280 690 L1280 922 L877 922Z"/>
               <path d="M1068 307 L1108 260 L1155 267 L1191 307 L1186 331 L1075 334Z"/>
             </g>
           </mask>
         </defs>
-        <image href="/home/assets/seasons/desktop-panorama.png" width="1706" height="922" mask="url(#field-matte)"/>
+        <image href="/home/assets/seasons/desktop-panorama-autumn-room.png" width="1706" height="922" mask="url(#field-matte)"/>
       </svg>
       <svg id="bedding-foreground" class="scene-foreground" viewBox="0 0 1706 922" preserveAspectRatio="none" aria-hidden="true">
         <defs>
           <filter id="bedding-edge"><feGaussianBlur stdDeviation=".65"/></filter>
           <mask id="bedding-matte" maskUnits="userSpaceOnUse" x="0" y="0" width="1706" height="922">
-            <path fill="white" transform="translate(0 25)" filter="url(#bedding-edge)" d="M1310 775 C1360 768 1390 752 1420 738 C1440 728 1458 732 1475 745 C1500 757 1530 752 1560 739 C1585 727 1618 730 1648 747 L1706 785 L1706 922 L1279 922Z"/>
+            <path fill="white" transform="translate(54 25)" filter="url(#bedding-edge)" d="M1310 775 C1360 768 1390 752 1420 738 C1440 728 1458 732 1475 745 C1500 757 1530 752 1560 739 C1585 727 1618 730 1648 747 L1706 785 L1706 922 L1279 922Z"/>
           </mask>
         </defs>
-        <image href="/home/assets/seasons/desktop-panorama.png" width="1706" height="922" mask="url(#bedding-matte)"/>
+        <image href="/home/assets/seasons/desktop-panorama-autumn-room.png" width="1706" height="922" mask="url(#bedding-matte)"/>
       </svg>
     </div>
     <div id="season-veil" aria-hidden="true"></div>

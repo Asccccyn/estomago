@@ -21,8 +21,8 @@
   const FOOT_ANCHOR = .88;
   // Each sheet has different transparent padding; visible paws share one ground anchor.
   const POSE_FEET = {
-    otter: { prone: .845, sit: .876, awake: .786284, frontSit: .840510 },
-    raccoon: { prone: .797, sit: .840, awake: .773525, frontSit: .818182 },
+    otter: { prone: .845, sit: .876, awake: .786284, peek: .850056 },
+    raccoon: { prone: .797, sit: .840, awake: .773525, peek: .841037 },
   };
   const WALK_FEET = {
     otter: [.745856, .745856, .748619, .751381, .751381, .754144],
@@ -36,7 +36,7 @@
     prone: { image: '/home/assets/seasons/characters.png', columns: 4, column: 0 },
     sit: { image: '/home/assets/seasons/characters.png', columns: 4, column: 1 },
     awake: { image: '/home/assets/seasons/season-poses.png', columns: 2, column: 0 },
-    frontSit: { image: '/home/assets/seasons/season-poses.png', columns: 2, column: 1 },
+    peek: { image: '/home/assets/seasons/autumn-peek.png', columns: 1, column: 0 },
     walk: { image: '/home/assets/seasons/walk-cycle.png', columns: 6 },
   };
   const AUTUMN_PATH = [
@@ -53,10 +53,10 @@
   viewport.style.setProperty('--animal-width-in-pair', `${ANIMAL_WIDTH_IN_PAIR * 100}%`);
   viewport.style.setProperty('--pair-aspect', String(1 / ANIMAL_WIDTH_IN_PAIR));
   const resting = [
-    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], xOffsets: [.065, -.035], bodySizes: [1.05, 1], rotations: [0, 0], frontAnimal: 'otter' },
-    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], xOffsets: [0, 0], bodySizes: [1.05, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
-    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1.06, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
-    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
+    {"x": 0.4933, "groundY": 0.7754, "groundOffsets": [0.026, 0.0167], "xOffsets": [0.2673, -0.3213], "bodySizes": [1.2495, 1.31], "rotations": [0, 11], "frontAnimal": "raccoon", "pose": "awake"},
+    {"x": 0.4552, "groundY": 0.8608, "groundOffsets": [-0.117, -0.0817], "xOffsets": [0.1209, 0.006], "bodySizes": [1.0815, 1.03], "rotations": [0, 0], "frontAnimal": "raccoon", "pose": "sit"},
+    {"x": 0.5, "groundY": 0.72, "groundOffsets": [0, 0.018], "xOffsets": [0.015, -0.015], "bodySizes": [1.06, 1], "rotations": [0, 0], "frontAnimal": "raccoon", "pose": "peek"},
+    {"x": 0.53, "groundY": 0.83, "groundOffsets": [-0.0982, -0.0947], "xOffsets": [0.0036, -0.0551], "bodySizes": [0.93, 0.89], "rotations": [0, 0], "frontAnimal": "raccoon", "pose": "prone"},
   ];
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
@@ -67,11 +67,11 @@
     ],
     [{ action: 'moments', label: '朋友圈', x: .73, y: .46, w: .35, h: .14, target: 'wheat' }],
     [
-      { action: 'album', label: '水獭相册', x: .42, y: .49, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
-      { action: 'album', label: '小浣熊相册', x: .77, y: .15, w: .16, h: .13, target: 'dried-flowers', subject: 'raccoon' },
-      { action: 'album', label: '小猫相册', x: .92, y: .15, w: .14, h: .18, target: 'wind-chime', subject: 'cat' },
-      { action: 'voice', label: '语音', x: .79, y: .22, w: .18, h: .10, target: 'wooden-birds' },
-      { action: 'upstairs', label: '二楼', x: .27, y: .17, w: .14, h: .13, target: 'red-thread' },
+      { action: 'album', label: '水獭相册', x: .56, y: .49, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
+      { action: 'album', label: '小浣熊相册', x: .90, y: .15, w: .16, h: .13, target: 'dried-flowers', subject: 'raccoon' },
+      { action: 'album', label: '小猫相册', x: .89, y: .34, w: .17, h: .13, target: 'mantel-vase', subject: 'cat' },
+      { action: 'voice', label: '语音', x: .92, y: .22, w: .18, h: .10, target: 'wooden-birds' },
+      { action: 'upstairs', label: '二楼', x: .41, y: .17, w: .14, h: .13, target: 'red-thread' },
     ],
   ];
   let current = 0;
@@ -95,7 +95,7 @@
     return {
       backgroundImage: `url('${sheet.image}')`,
       backgroundSize: `${sheet.columns * 100}% 200%`,
-      backgroundPosition: `${column * 100 / (sheet.columns - 1)}% ${kind === 'raccoon' ? '100%' : '0%'}`,
+      backgroundPosition: `${sheet.columns === 1 ? 0 : column * 100 / (sheet.columns - 1)}% ${kind === 'raccoon' ? '100%' : '0%'}`,
       translate: `0 ${(FOOT_ANCHOR - foot) * 100}%`,
       transformOrigin: `50% ${foot * 100}%`,
     };
@@ -304,12 +304,17 @@
       group.classList.add('winter-zoom');
       const centerX = (from + resting[from].x) * panelWidth;
       const centerY = resting[from].y * height;
-      const moveX = (from + .5) * panelWidth - centerX;
-      const moveY = viewport.clientHeight * .60 - cameraY - centerY;
       group.style.left = `${centerX}px`;
       group.style.top = `${centerY}px`;
       group.style.width = `${PAIR_WIDTH * panelWidth}px`;
       travelLayer.append(group);
+      const groupBounds = group.getBoundingClientRect();
+      const bodies = [...group.querySelectorAll('.animal-size')].map(node => node.getBoundingClientRect());
+      const anchorX = (Math.min(...bodies.map(rect => rect.left)) + Math.max(...bodies.map(rect => rect.right))) / 2 - groupBounds.left;
+      const anchorY = (Math.min(...bodies.map(rect => rect.top)) + Math.max(...bodies.map(rect => rect.bottom))) / 2 - groupBounds.top;
+      group.style.transformOrigin = `${anchorX}px ${anchorY}px`;
+      const moveX = (from + .5) * panelWidth - (centerX - groupBounds.width / 2 + anchorX);
+      const moveY = viewport.clientHeight * .60 - cameraY - (centerY - groupBounds.height / 2 + anchorY);
       journeys.push(animate(group, [
         { offset: 0, transform: 'translate(-50%, -50%) translate3d(0, 0, 0) scale(1)', opacity: 1 },
         { offset: .42, transform: `translate(-50%, -50%) translate3d(${moveX * .4}px, ${moveY * .4}px, 0) scale(1.7)`, opacity: 1 },
@@ -345,15 +350,14 @@
         let poses;
         let cycle;
         if (from === 0) {
-          frames = [
-            { offset: 0, transform: point(from, start.x + startOffset, startY) },
-            { offset: .24, transform: groundPoint(from, .72 + offset, startGround + (finishGround - startGround) * .24) },
-            { offset: .50, transform: groundPoint(from, 1.02 + offset, startGround + (finishGround - startGround) * .50) },
-            { offset: .76, transform: groundPoint(to, .20 + offset, startGround + (finishGround - startGround) * .80) },
-            { offset: .96, transform: point(to, finish.x + finishOffset, finishY) },
-            { offset: 1, transform: point(to, finish.x + finishOffset, finishY) },
-          ];
-          poses = [[0, 'awake'], [.92, 'sit'], [1, 'sit']];
+          const startX = start.x + startOffset;
+          const distance = 1 + finish.x + finishOffset - startX;
+          frames = [0, .24, .50, .76, .96, 1].map(offset => {
+            const progress = Math.min(offset / .96, 1);
+            const lane = Math.sin(progress * Math.PI) * (index ? .025 : -.025);
+            return { offset, transform: groundPoint(from, startX + distance * progress, startGround + (finishGround - startGround) * progress + lane) };
+          });
+          poses = [[0, start.pose], [.92, finish.pose], [1, finish.pose]];
           cycle = playCycle(traveler, kind, 'roll', .06, .92, duration, delay);
         } else if (from === 1) {
           frames = [
@@ -364,7 +368,7 @@
             { offset: .94, transform: point(to, finish.x + finishOffset, finishY) },
             { offset: 1, transform: point(to, finish.x + finishOffset, finishY) },
           ];
-          poses = [[0, 'sit'], [.94, 'frontSit'], [1, 'frontSit']];
+          poses = [[0, start.pose], [.94, finish.pose], [1, finish.pose]];
           cycle = playCycle(traveler, kind, 'walk', .10, .94, duration, delay);
         } else {
           frames = [
@@ -375,7 +379,7 @@
             { offset: .96, transform: groundPoint(from, .59, .355, .10), opacity: 0 },
             { offset: 1, transform: groundPoint(from, .59, .355, .10), opacity: 0 },
           ];
-          poses = [[0, 'frontSit'], [1, 'frontSit']];
+          poses = [[0, start.pose], [1, start.pose]];
           cycle = playCycle(traveler, kind, 'walk', .04, .98, duration, delay);
           journeys.push(animate(cycle.layer, [
             { offset: 0, scale: '-1 1', easing: 'steps(1, end)' },
@@ -539,7 +543,7 @@
       }
     }
     if (visible(3)) {
-      const x = 3.86 * panelWidth;
+      const x = 3.98 * panelWidth;
       const y = .52 * height;
       const radius = panelWidth * .25;
       const a = .10 + Math.sin(time * 3.9) * .018 + Math.sin(time * 6.7) * .012;
@@ -550,10 +554,10 @@
       ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
       ctx.save();
       ctx.beginPath();
-      ctx.rect(3.04 * panelWidth, height * .22, panelWidth * .25, height * .27);
+      ctx.rect(3.19 * panelWidth, height * .22, panelWidth * .25, height * .27);
       ctx.clip();
       for (let i = 0; i < 15; i++) {
-        const sx = (3.04 + ((i * .618034 + Math.sin(time * .3 + i) * .01) % .25)) * panelWidth;
+        const sx = (3.19 + ((i * .618034 + Math.sin(time * .3 + i) * .01) % .25)) * panelWidth;
         const sy = (.22 + ((i * .381966 + time * .023) % .27)) * height;
         ctx.fillStyle = 'rgba(250,252,255,.66)';
         ctx.beginPath();

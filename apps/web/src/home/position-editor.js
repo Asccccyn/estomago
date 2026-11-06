@@ -16,14 +16,14 @@
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey));
     if (stored) {
-      const valid = stored.version === 1 && Array.isArray(stored.seasons) && stored.seasons.length === 4 && stored.seasons.every(item =>
+      const valid = (stored.version === 1 || stored.version === 2) && Array.isArray(stored.seasons) && stored.seasons.length === 4 && stored.seasons.every(item =>
         item && inRange(item.x, .05, .95) && inRange(item.groundY, .15, .95) &&
         ['groundOffsets', 'xOffsets', 'bodySizes'].every(key => Array.isArray(item[key]) && item[key].length === 2 &&
           item[key].every(value => inRange(value, key === 'bodySizes' ? .5 : -.4, key === 'bodySizes' ? 1.7 : .4))) &&
         (item.rotations === undefined || (Array.isArray(item.rotations) && item.rotations.length === 2 && item.rotations.every(value => inRange(value, -180, 180)))) &&
         (item.frontAnimal === undefined || ['otter', 'raccoon'].includes(item.frontAnimal)));
       if (valid) {
-        positions = stored.seasons.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }, index) => ({
+        positions = stored.seasons.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }, index) => stored.version === 1 && index === 2 ? structuredClone(defaults[2]) : ({
           x, groundY, groundOffsets, xOffsets, bodySizes, rotations: rotations ?? [0, 0], frontAnimal: frontAnimal ?? defaults[index].frontAnimal,
         }));
         savedMessage = '已恢复这个浏览器中保存的调整。';
@@ -90,7 +90,7 @@
     rotation.value = angle;
     panel.querySelector('#position-rotation-value').textContent = `${angle}°`;
     panel.querySelectorAll('[data-front]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.front === positions[season].frontAnimal)));
-    data.value = JSON.stringify({ version: 1, seasons: positions }, null, 2);
+    data.value = JSON.stringify({ version: 2, seasons: positions }, null, 2);
     if (message) status.textContent = message;
   }
   function move(dx, dy, start = positions[season]) {
