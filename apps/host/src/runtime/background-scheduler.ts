@@ -307,6 +307,17 @@ export class BackgroundScheduler {
     const row = this.d.db.prepare('SELECT id, state FROM background_runs WHERE id = ?').get(runId) as { id: string; state: RunState } | undefined;
     if (!row) return null;
     if (row.state === 'claimed' || row.state === 'running') {
+      // P5（四仓审计 20261106，T19）：已无在途执行者（等待派发的 claimed——如
+      // NO_ACTIVE_WINDOW/CONTEXT_SELECTION_REQUIRED 等待态、或领取后未起执行的
+      // 残留）直接收口为 cancelled，不落永久 cancelling（旧实现同 actor+kind 的
+      // 后续任务被领取门永久挡住）；有在途执行者才请求取消并等真实 finish。
+      if (!this.aborts.has(runId)) {
+        const nowIso = new Date(this.now()).toISOString();
+        this.d.db.prepare(
+          "UPDATE background_runs SET state = 'cancelled', result_code = 'CANCELLED', cancel_reason = 'RUN_STOPPED', finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running')",
+        ).run(nowIso, nowIso, runId);
+        return { state: 'cancelled' };
+      }
       this.cancelRequested.add(runId);
       this.cancelReasons.set(runId, 'RUN_STOPPED');
       this.aborts.get(runId)?.abort();

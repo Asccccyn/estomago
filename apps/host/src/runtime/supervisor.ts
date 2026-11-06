@@ -529,6 +529,11 @@ export class TurnSupervisor {
         d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
       }
       if (loop.result.outcome !== 'completed') {
+        // P5（T17）：complete 后的停发=业务结束决定已落——正常完成，保留已发生协议工作
+        if (loop.result.errorCode === 'BACKGROUND_COMPLETED_STOP') {
+          const rcStopped = (d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null }).result_code;
+          return { outcome: 'completed', result_code: rcStopped ?? 'complete:done' };
+        }
         if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
         if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
         if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
@@ -715,6 +720,12 @@ export class TurnSupervisor {
     };
     try {
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+      // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
+      // 不再开启新的模型请求；本批已发生的工具结果按已发协议正常收尾（不标失败）
+      if (round > 0 && o.background) {
+        const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(o.background.runId) as { result_code: string | null } | undefined;
+        if (rcDone?.result_code?.startsWith('complete:') === true) break;
+      }
       pendingCalls = [];
       pendingAssistantIndex = -1;
       const captured: MatchedCompleteBlock[] = [];
@@ -1038,6 +1049,11 @@ export class TurnSupervisor {
         ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContent(assetId) } : {}),
         beforeModel: async (messages, round) => {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+          // P5（T17）：background_complete 后不再开新模型请求（PostToolBatch 同一面）
+          if (round > 0 && o.background) {
+            const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id=?').get(o.background.runId) as { result_code: string | null } | undefined;
+            if (rcDone?.result_code?.startsWith('complete:') === true) throw new ContractError('BACKGROUND_COMPLETED_STOP');
+          }
           if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
           if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
           if (d.config.windows.model_context_capacity !== null) {

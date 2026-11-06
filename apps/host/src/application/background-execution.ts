@@ -32,6 +32,10 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
       if (input.kind === 'reminder') {
         // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
         const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';
+        // P5（四仓审计 20261106，T16）：投递身份=task+到期时刻（非 run）——发布后
+        // 崩溃/停止恢复重放同一 occasion 时幂等去重，不再重复递交系统提醒
+        const dueIso = (db.prepare('SELECT next_due_at FROM background_tasks WHERE id = ?').get(input.taskId) as { next_due_at: string | null } | undefined)?.next_due_at;
+        const reminderMessageId = `reminder:${input.taskId}:${dueIso ?? input.runId}`;
         // F03（四仓联合审计 20261104）：排队等待期间任务可能被取消（cancel 的
         // supersedeOpenRuns 已把零派发 run 置 cancelled）——**真正发布前**消费这份
         // 取消事实，不再发布已取消的提醒（旧实现：闭包无条件 publish + finish 用
@@ -44,7 +48,7 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
           const runCancelled = db.prepare('SELECT 1 FROM background_runs WHERE id = ? AND state = ?').get(input.runId, 'cancelled');
           const taskCancelled = db.prepare("SELECT 1 FROM background_tasks WHERE id = ? AND enabled = 0").get(input.taskId);
           if (runCancelled || taskCancelled) return Promise.resolve(null);
-          return Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: `reminder:${input.taskId}:${input.runId}` }));
+          return Promise.resolve(messages.publishSystemNotice({ conversationId: input.conversationId, content: `[定时提醒] ${text}`, clientMessageId: reminderMessageId }));
         });
         if (queued === null) return { outcome: 'cancelled' as const, result_code: 'TASK_CANCELLED' };
         events.publish('message.persisted', { conversationId: input.conversationId, entityRef: queued.id, entityRevision: queued.sequence, scope: 'private', payload: { message: queued } });

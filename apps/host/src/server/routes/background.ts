@@ -115,9 +115,18 @@ if (route === 'POST /api/v1/background/tasks') {
     // 普通提醒（无模型投递）保留直建；ID 由服务端生成（不再拼 Date.now，B14）
     const scheduleKind = body.schedule_kind ?? 'once';
     if (scheduleKind !== 'once' && scheduleKind !== 'daily') return json(res, 400, { error: { code: 'bad_schedule', message: 'reminder 的 schedule_kind 必须是 once|daily' } });
-    if (typeof body.scheduled_at !== 'string' || !body.scheduled_at) return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填（完整时间，不暗补当前时间）' } });
-    const prior = d.db.prepare('SELECT id FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(String(body.conversation_id ?? 'primary'), opKey) as { id: string } | undefined;
-    if (prior) return json(res, 200, { task_id: prior.id, duplicate: true });
+    if (typeof body.scheduled_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(body.scheduled_at) || Number.isNaN(Date.parse(body.scheduled_at))) {
+      return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填且为带 Z/offset 的 RFC3339 时间（不暗补当前时间）' } });
+    }
+    const prior = d.db.prepare('SELECT id, scheduled_at, payload_json FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(String(body.conversation_id ?? 'primary'), opKey) as { id: string; scheduled_at: string; payload_json: string } | undefined;
+    if (prior) {
+      // P5（四仓审计 20261106）：同 key 异参=冲突，不把另一请求的结果误当本请求完成
+      const wantedPayload = JSON.stringify(body.payload && typeof body.payload === 'object' ? body.payload : { text: String(body.text ?? '') });
+      let samePayload = false;
+      try { samePayload = JSON.stringify(JSON.parse(prior.payload_json)) === JSON.stringify(JSON.parse(wantedPayload)); } catch { samePayload = prior.payload_json === wantedPayload; }
+      if (prior.scheduled_at !== body.scheduled_at || !samePayload) return json(res, 409, { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } });
+      return json(res, 200, { task_id: prior.id, duplicate: true });
+    }
     const id = genId('bgt');
     const nowIso = new Date().toISOString();
     d.db.prepare(
