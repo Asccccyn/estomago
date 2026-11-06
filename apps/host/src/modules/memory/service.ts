@@ -879,13 +879,17 @@ export class MemoryToolsService {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'restore 必须带 restore_revision（要恢复到哪条历史修订——item_history 里有）' } };
     }
     let r: Awaited<ReturnType<MariposaClient['iItemCreate'] | MariposaClient['iItemRevise'] | MariposaClient['iItemRestore']>>;
+    // P4（四仓审计 20261106，T01/T03）：稳定操作身份（turn+request+toolCall 派生）——
+    // 同一工具调用的传输重试同 key 重放；I_WRITE_OUTCOME_UNKNOWN 后模型原样重试属
+    // 新操作（不按正文去重合法的两次写入）
+    const operationId = `i-${action}:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
     try {
       if (action === 'create') {
-        r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}) });
+        r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}), operationId });
       } else if (action === 'revise') {
-        r = await m.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}), ...(relations ? { relations } : {}) });
+        r = await m.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}), ...(relations ? { relations } : {}), operationId });
       } else {
-        r = await m.iItemRestore({ itemId, restoreRevision, ...(Array.isArray(args.relations) ? { relations: args.relations } : {}), expectedRevision: expected, ...(changeReason ? { changeReason } : {}) });
+        r = await m.iItemRestore({ itemId, restoreRevision, ...(Array.isArray(args.relations) ? { relations: args.relations } : {}), expectedRevision: expected, ...(changeReason ? { changeReason } : {}), operationId });
       }
     } catch {
       return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN' } };

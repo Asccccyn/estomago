@@ -406,23 +406,37 @@ export class MariposaClient {
   /** I/计划写入批（2026-10-10）：M 的 i.item.create/revise/restore 与
    *  plan.create/update/complete/cancel（complete/cancel 为薄实现入口）。
    *  M 侧按 jiaming 主体权限与 CAS（expected_revision/version）核验。 */
-  async iItemCreate(args: { content: string; changeReason?: string; relations?: unknown[] }): Promise<MariposaCallResult> {
+  async iItemCreate(args: { content: string; changeReason?: string; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { content: args.content };
     if (args.changeReason) payload.change_reason = args.changeReason;
     if (Array.isArray(args.relations)) payload.relations = args.relations;
+    // P4（四仓审计 20261106，G2-F07 同款）：operation_id 同时作信封级 idempotency_key，
+    // M 端领域事务同提交回执——提交丢响应重试同 key 重放，不重复建 I
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.create', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.create', payload);
   }
-  async iItemRevise(args: { itemId: string; content: string; expectedRevision: number; changeReason?: string; informedByRevision?: number; relations?: unknown[] }): Promise<MariposaCallResult> {
+  async iItemRevise(args: { itemId: string; content: string; expectedRevision: number; changeReason?: string; informedByRevision?: number; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { item_id: args.itemId, content: args.content, expected_revision: args.expectedRevision };
     if (args.changeReason) payload.change_reason = args.changeReason;
     if (typeof args.informedByRevision === 'number') payload.informed_by_revision = args.informedByRevision;
     if (Array.isArray(args.relations)) payload.relations = args.relations;
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.revise', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.revise', payload);
   }
-  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string; relations?: unknown[] }): Promise<MariposaCallResult> {
+  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision,
       ...(args.relations !== undefined ? { relations: args.relations } : {}), expected_revision: args.expectedRevision };
     if (args.changeReason) payload.change_reason = args.changeReason;
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.restore', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.restore', payload);
   }
   async planCreate(args: { title: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
