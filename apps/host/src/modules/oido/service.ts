@@ -9,6 +9,7 @@ import type { OidoAdapter } from '../../integrations/oido/adapter.ts';
 import { oidoModelView } from '../../integrations/oido/model-view.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 import { OidoSourceRepository } from './source-repository.ts';
+import { analysisRoundClosed, audioAnalysesAllDiscarded } from './observations.ts';
 import { resolveCurrentVoice, candidateLocator } from '../../media/voice-refs.ts';
 
 export type OidoGetInput = { analysis_id: string; detail?: string; cursor?: string };
@@ -43,22 +44,19 @@ export class OidoHearingService {
     this.artifacts = deps.artifacts ?? null;
   }
 
-  /** RV01（复审 20261106）：该分析是否属于已放弃（abandoned）轮次的自动观察——
-   *  被取消/未派发轮次的迟到分析结果不再被 get/view 读取当成功（delivered 轮次
-   *  的"稍后用 oido_analyze 查询"合法语义不受影响）。 */
-  private analysisAbandoned(analysisId: string): boolean {
-    const row = this.db.prepare('SELECT message_id, revision FROM voice_observations WHERE analysis_id=? LIMIT 1').get(analysisId) as { message_id: string; revision: number } | undefined;
-    if (!row) return false;
-    const d = this.db.prepare('SELECT decision FROM voice_observation_decisions WHERE message_id=? AND revision=?').get(row.message_id, row.revision) as { decision: string } | undefined;
-    return d?.decision === 'abandoned';
+  /** RV2-01（复审 20261106 第二轮）：统一消费资格端口（observations.analysisRoundClosed）
+   *  ——被放弃轮次、以及"消息已发但本轮未采纳该分析"（超时占位轮）的迟到结果，
+   *  都不再被读取当成功。已采纳分析（delivered+adopted）的后续查询不受影响。 */
+  private analysisClosed(analysisId: string): boolean {
+    return analysisRoundClosed(this.db, analysisId);
   }
 
   /** 读深听结果（概览/逐字谱分页）——原 HostToolExecutor.oidoGet 逐字迁移。 */
   async getEvidence(args: OidoGetInput, ctx: ToolExecContext): Promise<CapabilityOutcome<OidoGetEvidence>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    if (this.analysisClosed(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次未采纳它（超时/取消）；被丢弃的分析不再读取。' } };
     const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !this.analysisAbandoned(args.analysis_id);
-    if (this.analysisAbandoned(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次已取消（未随轮次交付）；被放弃轮次的迟到结果不再读取。' } };
+    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !analysisRoundClosed(this.db, args.analysis_id);
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听。' } };
     try {
       ctx.signal?.throwIfAborted();
@@ -123,7 +121,12 @@ export class OidoHearingService {
       // 身份（可能裁剪），照旧新键新分析。
       // F04：输入版本摘要（转写文本→sha；无转写='-'）——键复用与 O 的输入 digest 同变量
       const inputDigest = transcript ? `${transcript.source}:${sha256Hex(transcript.text)}` : '-';
-      const quickKey = args.range_ms ? null : this.sources.quickAnalysisKey(assetId, inputDigest);
+      // RV2-01：快键只在既有分析仍可消费时复用——该资产此前全部自动分析轮已被丢弃
+      // （delivered 未采纳/abandoned）时，显式 oido_analyze 是新操作：失效旧快键，
+      // 走 legacy 键新分析，不把被丢弃的分析回放给模型。
+      const quickDiscarded = args.range_ms ? false : audioAnalysesAllDiscarded(this.db, assetId);
+      if (quickDiscarded) this.sources.invalidateAnalysisKey(assetId);
+      const quickKey = args.range_ms || quickDiscarded ? null : this.sources.quickAnalysisKey(assetId, inputDigest);
       const idemKey = quickKey ?? legacyKey;
       if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey, inputDigest);
       const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal: ctx.signal }).catch((err: Error) => {
@@ -162,11 +165,11 @@ export class OidoHearingService {
    *  原 HostToolExecutor.oidoView 逐字迁移（前后 oidoAnalysisAllowed 复验、imageRefs 通道）。 */
   async view(args: { analysis_id: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    // RV01（复审 20261106）：被放弃轮次的迟到分析结果不进消费面（get/view 同门）
-    if (this.analysisAbandoned(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次已取消（未随轮次交付）；被放弃轮次的迟到结果不再读取。' } };
+    // RV2-01：get/view 同一消费资格端口
+    if (this.analysisClosed(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次未采纳它（超时/取消）；被丢弃的分析不再读取。' } };
     const allowed = (): boolean => {
       const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !this.analysisAbandoned(args.analysis_id));
+      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !analysisRoundClosed(this.db, args.analysis_id));
     };
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听' } };
     try {
@@ -211,6 +214,9 @@ export class OidoHearingService {
     const assetId = m[1]!;
     const sha = this.sources.assetSha(assetId);
     if (!sha || !this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM' } };
+    // RV2-01：find/compare 经同一消费资格端口——该资产全部自动分析已被丢弃时，
+    // 源搜索只会复活被丢弃的结果，如实拒绝（显式 oido_analyze 新分析不受影响）。
+    if (audioAnalysesAllDiscarded(this.db, assetId)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该音频的自动分析未随轮次采纳；请先显式 oido_analyze 发起新分析。' } };
     try {
       const result = await this.oido.find({ audioRef: args.audio_ref, query: args.query, mode: args.mode, limit: args.limit, cursor: args.cursor, signal: ctx.signal });
       // RE-06（2026-10-24 返修）：交付前复验——远端读取期间源被删除/撤权（等长改写亦换 sha）
@@ -233,6 +239,8 @@ export class OidoHearingService {
       const assetId = m[1]!;
       const sha = this.sources.assetSha(assetId);
       if (!sha || !this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM' } };
+      // RV2-01：同 find——被全部丢弃的自动分析不参与比较
+      if (audioAnalysesAllDiscarded(this.db, assetId)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该音频的自动分析未随轮次采纳；请先显式 oido_analyze 发起新分析。' } };
       shas.push([assetId, sha]);
     }
     try {

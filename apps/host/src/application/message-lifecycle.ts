@@ -42,8 +42,11 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
         // 编辑撤销：旧修订作业失效（未错过目标轮的可建新作业——浮现域判断）
         consumers.surfacing?.onUserMessageEdited({ conversationId: fact.conversationId, messageId: fact.messageId, supersededRevision: fact.supersededRevision });
       }
-      // P06：语音附件消息接纳即登记观察 sidecar（pending；oído 未配置=unsupported 如实）
-      consumers.voiceObservations?.ensureForMessage(fact.messageId, fact.revision, fact.conversationId);
+      // P06：语音附件消息接纳即登记观察 sidecar（pending；oído 未配置=unsupported 如实）。
+      // RV2（复审 20261106 第二轮）：只在**接纳为正式输入**（accepted，含显式改后重发）
+      // 时登记——revised 只作废旧修订的资格，不为一个可能永不派发的新修订开后台分析
+      //（旧实现"编辑即登记"，没有对应首次模型输入的修订也被分析）。
+      if (fact.kind === 'accepted') consumers.voiceObservations?.ensureForMessage(fact.messageId, fact.revision, fact.conversationId);
       // RV01（复审 20261106）：编辑取代旧修订＝旧修订观察资格终结；派发前已取消的输入
       // （dispatchable=false，如电话准备阶段挂断）接纳即终结——同一资格不悬空。
       if (fact.kind === 'revised') consumers.voiceObservations?.abandonRevision(fact.messageId, fact.supersededRevision);

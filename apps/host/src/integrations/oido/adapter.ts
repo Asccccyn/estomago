@@ -118,14 +118,18 @@ export class OidoAdapter {
 
   /** P2（四仓审计 20261106，V01）：宿主在资格终结时取消在途分析——O 的 DB fence
    *  落 cancelled，阶段间检查点停推进，迟到提交被拒；已终态时 O 幂等如实返回。
-   *  RV01（复审 20261106）：返回真实取消结果——非 2xx/网络失败不吞成已取消，
-   *  调用方保留关联并记录（消费面由资格门挡住，不重新分析）。 */
+   *  RV2-02（复审 20261106 第二轮）：读业务 body 的 cancelled 布尔——O 对已
+   *  succeeded/partial/failed 的取消也回 200 {cancelled:false}（分析本体已终态，
+   *  取消未发生）。HTTP 200 ≠ 取消成功；三种事实（执行已终态/请求被接纳/资格已
+   *  放弃）不得用状态码互相替代。网络失败同样未确认。 */
   async cancelAnalysis(analysisId: string): Promise<{ cancelled: boolean; status: number | null }> {
     try {
       const res = await fetch(`${this.baseUrl}/v1/analyses/${encodeURIComponent(analysisId)}/cancel`, {
         method: 'POST', redirect: 'error', headers: this.headers(), signal: AbortSignal.timeout(8000),
       });
-      return { cancelled: res.ok, status: res.status };
+      if (!res.ok) return { cancelled: false, status: res.status };
+      const body = await res.json().catch(() => null) as { cancelled?: unknown } | null;
+      return { cancelled: body?.cancelled === true, status: res.status };
     } catch {
       return { cancelled: false, status: null };
     }

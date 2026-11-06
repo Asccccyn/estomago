@@ -1520,4 +1520,29 @@ CREATE INDEX IF NOT EXISTS idx_bg_tasks_due ON background_tasks(enabled, next_du
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bg_tasks_client_op ON background_tasks(conversation_id, client_operation_key) WHERE client_operation_key IS NOT NULL;
 `});
 
+// RV2-01（复审 20261106 第二轮）：区分"消息已发"与"分析被本轮采纳"——观察行记录
+// 该次分析快照是否真正随首次模型输入采用（analysis_adopted）。未采纳的分析（超时
+// 占位轮的迟到结果）不得再被任何消费面当成功读取。历史行按"已用于派发且有模型
+// 投影"回填为已采纳。
+MIGRATIONS.push({version:59,name:'voice-observation-analysis-adopted',sql:`
+ALTER TABLE voice_observations ADD COLUMN analysis_adopted INTEGER NOT NULL DEFAULT 0;
+UPDATE voice_observations SET analysis_adopted = 1
+ WHERE status IN ('ready','partial') AND projection_request_id IS NOT NULL AND model_projection IS NOT NULL;
+`});
+
+// RB2-01（复审 20261106 第二轮）：模型主动邀请的宿主忠实投影——S 是邀请正本，
+// E 只保存同步准入（Sol 门/忙时判定）所需的活动事实；期限=S 的 expires_at，
+// 读时解释，不依赖前端轮询。接听/拒接/过期由 state=ended 收口。
+MIGRATIONS.push({version:60,name:'voice-invites-mirror',sql:`
+CREATE TABLE IF NOT EXISTS voice_invites(
+  invite_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','ended')),
+  expires_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_voice_invites_activity ON voice_invites(conversation_id, state, expires_at);
+`});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

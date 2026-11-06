@@ -84,6 +84,7 @@ test('T06/T07 同轮终结：delivered 决定冻结一切；迟到结果丢弃�
     const row2 = f.db.prepare('SELECT id FROM voice_observations WHERE message_id=?').get(sub2.message.id) as { id: string };
     f.db.prepare("UPDATE voice_observations SET analysis_id='an_inflight' WHERE id=?").run(row2.id);
     f.svc.commitProjection({ messageId: sub2.message.id, revision: 1 }, 'turn2', 'req2', []);
+    await new Promise((r) => setTimeout(r, 10)); // 取消经微任务出队（事务边界后）
     assert.ok(f.state.cancels.includes('an_inflight'), '资格终结取消在途 O 分析（E→O cancel 接线）');
     const row2b = f.db.prepare('SELECT status,error_code FROM voice_observations WHERE id=?').get(row2.id) as { status: string; error_code: string };
     assert.equal(row2b.status, 'failed');
@@ -219,14 +220,16 @@ test('RV01: 编辑取代旧修订/派发前取消输入 → 观察资格 abandon
     wired.editUserMessage(sub.message.id, '改口了，用文字说');
     const d = f.svc.decided(sub.message.id, 1);
     assert.equal(d?.decision, 'abandoned', '编辑取代＝旧修订观察资格终结');
+    await new Promise((r) => setTimeout(r, 10)); // 取消经微任务出队
     assert.ok(f.state.cancels.includes('an_edit_1'), '在途分析随资格终结取消');
-    // 新修订照常登记（未被旧修订决定挡住）
+    // RV2（第二轮复审）：仅编辑不重发＝没有对应首次模型输入，不为新修订开后台分析
+    //（显式改后重发走 accepted 事实登记）
     const n2 = (f.db.prepare('SELECT COUNT(*) n FROM voice_observations WHERE message_id=? AND revision=2').get(sub.message.id) as { n: number }).n;
-    assert.equal(n2, 1, '新修订正常登记观察');
+    assert.equal(n2, 0, 'revised 不自动登记观察（真实输入经 accepted 登记）');
   } finally { f.close(); }
 });
 
-test('RV01: 重启收口死轮——无在途轮的未决观察 abandoned；有在途轮的修订保留', async () => {
+test('RV2-03: 重启收口全部未决观察——恢复的消息按无分析继续（不按活轮保留旧分析）', async () => {
   const f = fixture();
   try {
     const a = await f.uploadVoice('rv01-dead');
@@ -241,8 +244,12 @@ test('RV01: 重启收口死轮——无在途轮的未决观察 abandoned；有�
     f.svc.start();
     await new Promise((r) => setTimeout(r, 50));
     assert.equal(f.svc.decided(sub.message.id, 1)?.decision, 'abandoned', '死轮未决观察重启即收口（不再续查/重发）');
+    await new Promise((r) => setTimeout(r, 10));
     assert.ok(f.state.cancels.includes('an_dead_1'), '死轮在途分析被取消');
-    assert.equal(f.svc.decided(sub2.message.id, 1), null, '仍在途轮的修订不被误收口');
+    // RV2-03（第二轮复审）：仍有 pending 轮的修订同样收口——"消息可恢复发送"不等于
+    // "旧分析可重算"（U03：恢复按无分析继续，或用故障前已封版快照）；重启恢复的轮
+    // 会带未就绪占位重新派发。
+    assert.equal(f.svc.decided(sub2.message.id, 1)?.decision, 'abandoned', '活轮未决观察同样收口（不复活旧分析）');
     await f.svc.stop();
   } finally { f.close(); }
 });
@@ -280,8 +287,11 @@ test('RV01: 被放弃轮次的分析不可被 get/view 读取当成功（消费�
     f.svc.ensureForMessage(sub2.message.id, 1, 'primary', true);
     f.db.prepare("UPDATE voice_observations SET analysis_id='an_gate_2', status='ready', evidence_json='{}' WHERE message_id=?").run(sub2.message.id);
     sources.bindAnalysis('an_gate_2', 'primary', c, shaC);
-    f.svc.commitProjection({ messageId: sub2.message.id, revision: 1 }, 't', 'r', []);
+    // RV2-01：真实采纳路径——ready 证据随输入发出（adopted=1）后，后续查询才合法
+    const snaps2 = f.svc.snapshotsForRevision(sub2.message.id, 1, true);
+    assert.equal(snaps2.length, 1, 'ready 证据在快照中');
+    f.svc.commitProjection({ messageId: sub2.message.id, revision: 1 }, 't', 'r', snaps2);
     const allowed = await hearingSvc.getEvidence({ analysis_id: 'an_gate_2' }, ctx);
-    assert.equal(allowed.ok, true, '已交付轮次的后续查询不受影响');
+    assert.equal(allowed.ok, true, '已采纳分析的后续查询不受影响');
   } finally { f.close(); }
 });

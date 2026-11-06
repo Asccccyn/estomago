@@ -23,7 +23,8 @@ export type VoiceObservationRow = {
   dispatched_turn_id: string | null; dispatched_at: string | null;
   analysis_id: string | null; error_code: string | null; updated_at: string;
 };
-export type VoiceObservationSnapshot = { id: string; assetId: string; text: string };
+/** RV2-01：快照是否携带真实分析证据（ready/partial 的 evidence），还是"尚未就绪"占位。 */
+export type VoiceObservationSnapshot = { id: string; assetId: string; text: string; adopted: boolean };
 
 /** P2（四仓审计 20261106，V01/U03）：深听资格同轮终结。
  *  每个正式消息修订的采纳决定只落一次（voice_observation_decisions）：
@@ -51,20 +52,17 @@ export class VoiceObservationService {
   start(): void {
     if (this.shutdown || !this.worker || (!this.worker.hearing && !this.worker.archiveClient)) return;
     this.shutdown = new AbortController();
-    // RV01（复审 20261106）：重启收口未封版轮次——上一进程遗留的未决 pending/processing
-    // 观察，若所属输入已无可再派发/恢复的轮（turns 无存活状态），资格按 abandoned 终结，
-    // 不再由新进程续查/重发；仍有存活轮的修订照常（重启恢复的轮会重新派发）。
-    // 存活集合＝turns 表 CHECK 内仍可能交付的状态（pending/running/route_owner_pending/
-    // blocked——blocked 含可恢复的上下文选择/轮换阻塞）。
+    // RV2-03（复审 20261106 第二轮）：重启收口**全部**未决 pending/processing 观察——
+    // 不按"仍有 pending/running 轮"保留（旧推断把消息可恢复当成旧分析可重算）。U03：
+    // 恢复的正式消息按无分析继续（未就绪占位→delivered 未采纳），或使用故障前已封版
+    // 的成功快照；旧未封版分析按 abandoned 终结并在 O 侧 fence，不重算。
     const stale = this.db.prepare(
       `SELECT DISTINCT v.message_id, v.revision FROM voice_observations v
        WHERE v.status IN ('pending','processing')
-         AND NOT EXISTS (SELECT 1 FROM voice_observation_decisions d WHERE d.message_id=v.message_id AND d.revision=v.revision)
-         AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.input_message_id=v.message_id AND t.state IN ('pending','running','route_owner_pending','blocked'))`,
+         AND NOT EXISTS (SELECT 1 FROM voice_observation_decisions d WHERE d.message_id=v.message_id AND d.revision=v.revision)`,
     ).all() as Array<{ message_id: string; revision: number }>;
     for (const row of stale) this.decideQualification({ messageId: row.message_id, revision: row.revision }, 'abandoned');
-    // P2：不做 processing→pending 复活。未决定修订的 processing 行由 runPending 直接续查
-    // （analysis_id 在手=同分析续查，不是重新发起）；已决定修订的残余在决定时已收口。
+    // P2：不做 processing→pending 复活。已决定修订的残余在决定时已收口。
     this.timer = setInterval(() => this.wake(), 30_000);
     this.timer.unref?.();
     this.wake();
@@ -121,7 +119,10 @@ export class VoiceObservationService {
       // 表 CHECK 无 closed 值：以 failed + 专属错误码承载"资格终结、无结果"（UI 如实显示未取得）
       this.db.prepare("UPDATE voice_observations SET status='failed', error_code='QUALIFICATION_CLOSED', updated_at=? WHERE id=?").run(new Date().toISOString(), row.id);
     }
-    for (const analysisId of toCancel) void this.cancelInFlight(analysisId);
+    // RV2（复审 20261106 第二轮）：网络取消经微任务出队——本方法会被消息生命周期的
+    // inTransaction 钩子在调用方事务内同步调用，DB 决定与外部取消边界分开（事务提交后
+    // 才发起 fetch），取消失败/未确认仍按 cancelInFlight 如实记录。
+    for (const analysisId of toCancel) queueMicrotask(() => this.cancelInFlight(analysisId));
   }
 
   private cancelInFlight(analysisId: string): void {
@@ -195,19 +196,19 @@ export class VoiceObservationService {
       'SELECT id,asset_id,status,evidence_json,model_projection,projection_request_id FROM voice_observations WHERE message_id=? AND revision=? ORDER BY asset_id',
     ).all(messageId, revision) as Array<{ id: string; asset_id: string; status: string; evidence_json: string | null; model_projection: string | null; projection_request_id: string | null }>;
     const awaitable = this.awaitableMessage(messageId);
-    return rows.flatMap(row => {
+    return rows.flatMap((row): VoiceObservationSnapshot[] => {
       // 重试/轨迹恢复只使用已经冻结的投影；未用于首发的迟到观察不补写历史。
       if (row.projection_request_id !== null) {
-        return row.model_projection ? [{ id: row.id, assetId: row.asset_id, text: row.model_projection }] : [];
+        return row.model_projection ? [{ id: row.id, assetId: row.asset_id, text: row.model_projection, adopted: true }] : [];
       }
       if (!currentInput) return [];
       if (row.status === 'ready' || row.status === 'partial') {
         if (!row.evidence_json) return [];
         const text = observationInputBlock(row.asset_id, JSON.parse(row.evidence_json) as Record<string, unknown>);
-        return [{ id: row.id, assetId: row.asset_id, text }];
+        return [{ id: row.id, assetId: row.asset_id, text, adopted: true }];
       }
       if (awaitable && (row.status === 'pending' || row.status === 'processing')) {
-        return [{ id: row.id, assetId: row.asset_id, text: OBSERVATION_NOT_READY_BLOCK }];
+        return [{ id: row.id, assetId: row.asset_id, text: OBSERVATION_NOT_READY_BLOCK, adopted: false }];
       }
       return [];
     });
@@ -215,13 +216,16 @@ export class VoiceObservationService {
 
   commitProjection(binding: { messageId: string; revision: number }, turnId: string, requestId: string, used: readonly VoiceObservationSnapshot[]): void {
     const usedText = new Map(used.map(snapshot => [snapshot.id, snapshot.text]));
+    // RV2-01：采纳事实按快照逐行落定——只有真实分析证据（adopted=true）才算本轮采纳；
+    // "尚未就绪"占位随输入发出但**不采纳**该分析（迟到结果不得再被消费面读取）。
+    const usedAdopted = new Map(used.map(snapshot => [snapshot.id, snapshot.adopted]));
     const rows = this.db.prepare('SELECT id FROM voice_observations WHERE message_id=? AND revision=? AND projection_request_id IS NULL').all(binding.messageId, binding.revision) as Array<{ id: string }>;
     const now = new Date().toISOString();
-    const update = this.db.prepare('UPDATE voice_observations SET projection_request_id=?,model_projection=?,dispatched_turn_id=?,dispatched_at=? WHERE id=? AND projection_request_id IS NULL');
+    const update = this.db.prepare('UPDATE voice_observations SET projection_request_id=?,model_projection=?,dispatched_turn_id=?,dispatched_at=?,analysis_adopted=? WHERE id=? AND projection_request_id IS NULL');
     tx(this.db, () => {
       for (const row of rows) {
         const text = usedText.get(row.id) ?? null;
-        update.run(requestId, text, text ? turnId : null, text ? now : null, row.id);
+        update.run(requestId, text, text ? turnId : null, text ? now : null, usedAdopted.get(row.id) === true ? 1 : 0, row.id);
       }
     });
     // P2：投影冻结＝主模型请求提交——同一时刻终结该修订资格并取消在途分析
@@ -289,9 +293,10 @@ export class VoiceObservationService {
   }
 
   async syncPendingAttachments(client: AttachmentsSyncClient, streamId: string, maxRows = 5, signal?: AbortSignal): Promise<void> {
-    // P2：只同步资格终结前已成立（ready/partial）的事实——closed/failed 行不补交
+    // P2 + RV2-01：只同步资格终结前成立且**被本轮采纳**（analysis_adopted）的事实——
+    // 被丢弃轮（delivered 未采纳/abandoned）的 ready/failed 行不补交。
     const rows = this.db.prepare(
-      "SELECT v.id,v.message_id,v.revision,v.direction,v.display_text,v.analysis_id FROM voice_observations v JOIN source_sync_receipts r ON r.origin_message_id=v.message_id AND r.revision=v.revision WHERE v.status IN ('ready','partial') AND v.attachment_synced_at IS NULL AND v.display_text IS NOT NULL ORDER BY v.updated_at,v.id LIMIT ?",
+      "SELECT v.id,v.message_id,v.revision,v.direction,v.display_text,v.analysis_id FROM voice_observations v JOIN source_sync_receipts r ON r.origin_message_id=v.message_id AND r.revision=v.revision WHERE v.status IN ('ready','partial') AND v.analysis_adopted = 1 AND v.attachment_synced_at IS NULL AND v.display_text IS NOT NULL ORDER BY v.updated_at,v.id LIMIT ?",
     ).all(maxRows) as Array<{ id: string; message_id: string; revision: number; direction: string; display_text: string; analysis_id: string | null }>;
     for (const row of rows) {
       if (signal?.aborted) break;
@@ -324,8 +329,37 @@ export function observationInputBlock(assetId: string, view: Record<string, unkn
     (readable ?? '本次分析未生成可读摘要（结果不完整）；需要声音证据时用 oido_analyze 查询。');
 }
 
-/** §6.6：转写已发而观察在准备期限内未就绪——如实短行，随首次派发一并冻结；迟到分析不回写。 */
-export const OBSERVATION_NOT_READY_BLOCK = '\n\n[声音观察（oído 测量）]\n尚未就绪，本条先不含声音观察；需要时稍后用 oido_analyze 查询。';
+/** RV2-01（复审 20261106 第二轮）：统一消费资格端口——get/view/analyze/find/compare
+ *  与 Source 归档共用，不各自复制状态 SQL。三件事实分开：消息已发（decision=delivered）
+ *  ≠ 分析被本轮采纳（analysis_adopted）≠ O 执行终态（O 自管）。
+ *  analysisRoundClosed：该分析所属修订资格已终结且该分析未被采纳（abandoned，或
+ *  delivered 未采纳——超时占位轮的迟到结果不得再被任何消费面当成功读取）。 */
+export function analysisRoundClosed(db: Db, analysisId: string): boolean {
+  const row = db.prepare(
+    `SELECT v.analysis_adopted, d.decision FROM voice_observations v
+     JOIN voice_observation_decisions d ON d.message_id=v.message_id AND d.revision=v.revision
+     WHERE v.analysis_id=? LIMIT 1`,
+  ).get(analysisId) as { analysis_adopted: number; decision: 'delivered' | 'abandoned' } | undefined;
+  if (!row) return false;
+  return row.decision === 'abandoned' || (row.decision === 'delivered' && row.analysis_adopted !== 1);
+}
+
+/** RV2-01：音频级消费资格（find/compare 源搜索用）——该资产的全部自动分析轮都已
+ *  终结且未被采纳（被丢弃的分析不能经源搜索复活）；无观察轮（模型显式新分析等）
+ *  不拦。 */
+export function audioAnalysesAllDiscarded(db: Db, assetId: string): boolean {
+  const rows = db.prepare(
+    `SELECT v.analysis_adopted, d.decision FROM voice_observations v
+     LEFT JOIN voice_observation_decisions d ON d.message_id=v.message_id AND d.revision=v.revision
+     WHERE v.asset_id=? AND v.analysis_id IS NOT NULL`,
+  ).all(assetId) as Array<{ analysis_adopted: number; decision: 'delivered' | 'abandoned' | null }>;
+  if (rows.length === 0) return false;
+  return rows.every(row => row.decision !== null && (row.decision === 'abandoned' || row.analysis_adopted !== 1));
+}
+
+/** §6.6：转写已发而观察在准备期限内未就绪——如实短行，随首次派发一并冻结。
+ *  RV2-01：未就绪＝本轮不带该分析（未采纳）；被丢弃的分析不得再被补查消费。 */
+export const OBSERVATION_NOT_READY_BLOCK = '\n\n[声音观察（oído 测量）]\n尚未就绪，本条不含声音观察；该轮未采用此分析，不要针对本条补查。';
 
 export function extractBriefObservation(view: Record<string, unknown> | null): string | null {
   if (!view || !Array.isArray(view.observations) || view.observations.length === 0) return null;
