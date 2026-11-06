@@ -64,8 +64,8 @@ html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="tru
 
 .spring-signature { animation: signature-float 7.2s ease-in-out infinite; }
 @keyframes signature-float { 0%, 100% { translate: 0 0; opacity: .96; } 50% { translate: 0 -2px; opacity: 1; } }
-.signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .62; }
-.signature-toggle::before { content: ''; position: absolute; left: 16px; top: 17px; width: 12px; height: 9px; border-radius: 65% 15% 65% 25%; background: radial-gradient(ellipse at 30% 25%, #f7ccd5, #c68f9f); transform: rotate(-28deg); }
+.signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .78; }
+.signature-toggle::before { content: ''; position: absolute; left: 13px; top: 16px; width: 18px; height: 12px; border-radius: 65% 15% 65% 25%; background: radial-gradient(ellipse at 30% 25%, #f2b9cb, #b5758b); transform: rotate(-28deg); }
 .signature-toggle:hover, .signature-toggle:focus-visible, .signature-toggle[aria-expanded="false"] { opacity: .9; }
 .signature-toggle[aria-expanded="false"]::before { transform: rotate(18deg); }
 html[data-home-hidden="true"] .spring-signature, #seasons[data-busy="true"] .spring-signature { animation-play-state: paused; }

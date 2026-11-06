@@ -218,6 +218,11 @@
     Object.assign(springSignature.style, {
       left: `${signatureLayout.x * 100}%`, top: `${signatureLayout.y * 100}%`, width: `${signatureLayout.width * 100}%`,
     });
+    // The cover camera can crop the spring corner on desktop.
+    Object.assign(scenes[0].querySelector('.signature-toggle').style, {
+      left: `calc(max(8px, env(safe-area-inset-left)) + ${Math.max(0, -cameraX(0))}px)`,
+      bottom: `calc(max(12px, env(safe-area-inset-bottom)) + ${Math.max(0, -cameraY)}px)`,
+    });
     const visibleBottom = (viewport.clientHeight - cameraY - 44) / height;
     for (let i = 0; i < resting.length; i++) {
       const spriteSize = panelWidth * SPRITE_WIDTH;
