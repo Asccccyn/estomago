@@ -43,11 +43,22 @@ export class OidoHearingService {
     this.artifacts = deps.artifacts ?? null;
   }
 
+  /** RV01（复审 20261106）：该分析是否属于已放弃（abandoned）轮次的自动观察——
+   *  被取消/未派发轮次的迟到分析结果不再被 get/view 读取当成功（delivered 轮次
+   *  的"稍后用 oido_analyze 查询"合法语义不受影响）。 */
+  private analysisAbandoned(analysisId: string): boolean {
+    const row = this.db.prepare('SELECT message_id, revision FROM voice_observations WHERE analysis_id=? LIMIT 1').get(analysisId) as { message_id: string; revision: number } | undefined;
+    if (!row) return false;
+    const d = this.db.prepare('SELECT decision FROM voice_observation_decisions WHERE message_id=? AND revision=?').get(row.message_id, row.revision) as { decision: string } | undefined;
+    return d?.decision === 'abandoned';
+  }
+
   /** 读深听结果（概览/逐字谱分页）——原 HostToolExecutor.oidoGet 逐字迁移。 */
   async getEvidence(args: OidoGetInput, ctx: ToolExecContext): Promise<CapabilityOutcome<OidoGetEvidence>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256);
+    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !this.analysisAbandoned(args.analysis_id);
+    if (this.analysisAbandoned(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次已取消（未随轮次交付）；被放弃轮次的迟到结果不再读取。' } };
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听。' } };
     try {
       ctx.signal?.throwIfAborted();
@@ -151,9 +162,11 @@ export class OidoHearingService {
    *  原 HostToolExecutor.oidoView 逐字迁移（前后 oidoAnalysisAllowed 复验、imageRefs 通道）。 */
   async view(args: { analysis_id: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    // RV01（复审 20261106）：被放弃轮次的迟到分析结果不进消费面（get/view 同门）
+    if (this.analysisAbandoned(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次已取消（未随轮次交付）；被放弃轮次的迟到结果不再读取。' } };
     const allowed = (): boolean => {
       const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256));
+      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !this.analysisAbandoned(args.analysis_id));
     };
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听' } };
     try {

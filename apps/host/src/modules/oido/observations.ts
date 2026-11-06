@@ -10,8 +10,10 @@ type AttachmentsSyncClient = {
   attachmentsSync(args: { stream_id: string; origin_message_id: string; revision: number; kind: 'observation'; payload: Record<string, unknown>; operation_id: string }, signal?: AbortSignal): Promise<{ ok: boolean }>;
 };
 type Hearing = Pick<OidoHearingService, 'analyzeVoice' | 'getEvidence'>;
-/** P2（四仓审计 20261106，V01）：资格终结时取消 O 在途分析（fence 落 cancelled）。 */
-type CancelAnalysis = (analysisId: string) => Promise<void>;
+/** P2（四仓审计 20261106，V01）：资格终结时取消 O 在途分析（fence 落 cancelled）。
+ *  RV01（复审 20261106）：返回真实取消结果——非 2xx/网络失败不得吞成"已取消"；
+ *  调用方保留操作关联并记录，供必要清理交接。 */
+type CancelAnalysis = (analysisId: string) => Promise<{ cancelled: boolean; status: number | null }>;
 type WorkerDeps = { hearing: Hearing | null; archiveClient: AttachmentsSyncClient | null; streamId: string; logger?: Logger; cancelAnalysis?: CancelAnalysis };
 
 export type VoiceObservationStatus = 'pending' | 'processing' | 'ready' | 'partial' | 'failed' | 'unsupported';
@@ -49,6 +51,18 @@ export class VoiceObservationService {
   start(): void {
     if (this.shutdown || !this.worker || (!this.worker.hearing && !this.worker.archiveClient)) return;
     this.shutdown = new AbortController();
+    // RV01（复审 20261106）：重启收口未封版轮次——上一进程遗留的未决 pending/processing
+    // 观察，若所属输入已无可再派发/恢复的轮（turns 无存活状态），资格按 abandoned 终结，
+    // 不再由新进程续查/重发；仍有存活轮的修订照常（重启恢复的轮会重新派发）。
+    // 存活集合＝turns 表 CHECK 内仍可能交付的状态（pending/running/route_owner_pending/
+    // blocked——blocked 含可恢复的上下文选择/轮换阻塞）。
+    const stale = this.db.prepare(
+      `SELECT DISTINCT v.message_id, v.revision FROM voice_observations v
+       WHERE v.status IN ('pending','processing')
+         AND NOT EXISTS (SELECT 1 FROM voice_observation_decisions d WHERE d.message_id=v.message_id AND d.revision=v.revision)
+         AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.input_message_id=v.message_id AND t.state IN ('pending','running','route_owner_pending','blocked'))`,
+    ).all() as Array<{ message_id: string; revision: number }>;
+    for (const row of stale) this.decideQualification({ messageId: row.message_id, revision: row.revision }, 'abandoned');
     // P2：不做 processing→pending 复活。未决定修订的 processing 行由 runPending 直接续查
     // （analysis_id 在手=同分析续查，不是重新发起）；已决定修订的残余在决定时已收口。
     this.timer = setInterval(() => this.wake(), 30_000);
@@ -90,33 +104,34 @@ export class VoiceObservationService {
 
   /** 资格终结（唯一入口，幂等）：冻结未终态行为 closed，取消在途 O 分析。
    *  delivered 由 commitProjection 在投影冻结的同一点调用（主模型请求提交即关闭）；
-   *  abandoned 用于轮次/草稿取消路径。 */
+   *  abandoned 用于轮次/草稿取消路径（消息编辑取代、派发前取消、轮停止、重启死轮）。
+   *  RV01（复审 20261106）：SQL-only、不开自有事务——消息生命周期 inTransaction 在
+   *  调用方事务内同步调用（合同禁嵌套事务）；决定行本身是权威，行内状态更新为从属投影。 */
   decideQualification(binding: { messageId: string; revision: number }, decision: 'delivered' | 'abandoned', meta: { turnId?: string | null; requestId?: string | null } = {}): void {
     const toCancel: string[] = [];
-    const inserted = tx(this.db, () => {
-      const res = this.db.prepare(
-        'INSERT OR IGNORE INTO voice_observation_decisions(message_id, revision, decision, turn_id, request_id, decided_at) VALUES (?,?,?,?,?,?)',
-      ).run(binding.messageId, binding.revision, decision, meta.turnId ?? null, meta.requestId ?? null, new Date().toISOString());
-      if (res.changes === 0) return false;
-      const rows = this.db.prepare(
-        "SELECT id, analysis_id FROM voice_observations WHERE message_id=? AND revision=? AND status IN ('pending','processing')",
-      ).all(binding.messageId, binding.revision) as Array<{ id: string; analysis_id: string | null }>;
-      for (const row of rows) {
-        if (row.analysis_id) toCancel.push(row.analysis_id);
-        // 表 CHECK 无 closed 值：以 failed + 专属错误码承载"资格终结、无结果"（UI 如实显示未取得）
-        this.db.prepare("UPDATE voice_observations SET status='failed', error_code='QUALIFICATION_CLOSED', updated_at=? WHERE id=?").run(new Date().toISOString(), row.id);
-      }
-      return true;
-    });
-    if (inserted) {
-      for (const analysisId of toCancel) void this.cancelInFlight(analysisId);
+    const res = this.db.prepare(
+      'INSERT OR IGNORE INTO voice_observation_decisions(message_id, revision, decision, turn_id, request_id, decided_at) VALUES (?,?,?,?,?,?)',
+    ).run(binding.messageId, binding.revision, decision, meta.turnId ?? null, meta.requestId ?? null, new Date().toISOString());
+    if (res.changes === 0) return;
+    const rows = this.db.prepare(
+      "SELECT id, analysis_id FROM voice_observations WHERE message_id=? AND revision=? AND status IN ('pending','processing')",
+    ).all(binding.messageId, binding.revision) as Array<{ id: string; analysis_id: string | null }>;
+    for (const row of rows) {
+      if (row.analysis_id) toCancel.push(row.analysis_id);
+      // 表 CHECK 无 closed 值：以 failed + 专属错误码承载"资格终结、无结果"（UI 如实显示未取得）
+      this.db.prepare("UPDATE voice_observations SET status='failed', error_code='QUALIFICATION_CLOSED', updated_at=? WHERE id=?").run(new Date().toISOString(), row.id);
     }
+    for (const analysisId of toCancel) void this.cancelInFlight(analysisId);
   }
 
   private cancelInFlight(analysisId: string): void {
     const cancel = this.worker?.cancelAnalysis;
     if (!cancel) return;
-    void cancel(analysisId).catch((err: unknown) => {
+    void cancel(analysisId).then((outcome) => {
+      // RV01：取消未确认时如实记录（analysis 关联已落行）——O 侧可能仍在跑，
+      // 消费面已由资格门挡住；不吞成"已取消"，也不重新分析。
+      if (!outcome.cancelled) this.worker?.logger?.warn('voice_observation_cancel_unconfirmed', { analysis_id: analysisId, status: outcome.status });
+    }).catch((err: unknown) => {
       this.worker?.logger?.warn('voice_observation_cancel_failed', { code: err instanceof Error ? err.name : 'UNKNOWN_ERROR' });
     });
   }
@@ -245,14 +260,24 @@ export class VoiceObservationService {
   }
 
   private storeView(id: string, view: Record<string, unknown>): void {
-    // P2（U03）：资格已终结的修订丢弃迟到结果——不写行、不产生新的可消费成功
     const owner = this.db.prepare('SELECT message_id, revision FROM voice_observations WHERE id=?').get(id) as { message_id: string; revision: number } | undefined;
-    if (owner && this.decided(owner.message_id, owner.revision)) return;
+    const decided = owner ? this.decided(owner.message_id, owner.revision) : null;
+    const analysisId = typeof view.analysis_id === 'string' && view.analysis_id.length > 0 ? view.analysis_id : null;
+    if (decided) {
+      // P2（U03）：资格已终结的修订丢弃迟到结果——不写可消费成功；
+      // RV01（复审 20261106）：迟到 analysis_id 仍归入同一已知操作——落行保留关联并补发
+      // O cancel（衔接既有 fence），不因第一次决定时 ID 为空失去取消责任。
+      if (analysisId) {
+        this.db.prepare('UPDATE voice_observations SET analysis_id=?, updated_at=? WHERE id=?').run(analysisId, new Date().toISOString(), id);
+        void this.cancelInFlight(analysisId);
+      }
+      return;
+    }
     const state = view.state === 'ready' ? 'ready' : view.state === 'partial' ? 'partial' : 'pending';
     const complete = state !== 'pending';
     this.db.prepare(
       'UPDATE voice_observations SET status=?,display_text=?,evidence_json=?,analysis_id=COALESCE(?,analysis_id),error_code=NULL,updated_at=? WHERE id=?',
-    ).run(state, complete ? extractBriefObservation(view) : null, complete ? JSON.stringify(view) : null, String(view.analysis_id), new Date().toISOString(), id);
+    ).run(state, complete ? extractBriefObservation(view) : null, complete ? JSON.stringify(view) : null, analysisId, new Date().toISOString(), id);
   }
 
   private storeFailure(id: string, analysisId: string | null, code: string): void {

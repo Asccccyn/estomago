@@ -116,7 +116,8 @@ export type SupervisorDeps = {
   // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
   surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
   // RR-04：观察「已用于本轮」的真实派发边界回填（observations.markDispatched）。
-  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection' | 'awaitReadyForDispatch'> | null;
+  // RV01（复审 20261106）：+decideQualification——轮次取消/停止时终结输入修订观察资格。
+  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection' | 'awaitReadyForDispatch' | 'decideQualification'> | null;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
@@ -279,6 +280,7 @@ export class TurnSupervisor {
         if (conv) {
           this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
           this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
+          this.abandonObservationsForTurn(turnId);
           this.voiceTaps.delete(turnId);
         }
         return { stopped: true, generation: null };
@@ -286,9 +288,17 @@ export class TurnSupervisor {
       return { stopped: false, generation: null };
     }
     this.d.surfacing?.cancelForTurn?.(turnId);
+    this.abandonObservationsForTurn(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
     return { stopped: true, generation: run.generation };
+  }
+
+  /** RV01（复审 20261106）：轮次停止/取消＝该轮输入修订的观察资格终结（abandoned）——
+   *  取消在途 O 分析、迟到 ID 归属同一操作、消费面挡住；正文照常无分析继续。 */
+  private abandonObservationsForTurn(turnId: string): void {
+    const row = this.d.db.prepare('SELECT t.input_message_id, m.current_revision FROM turns t JOIN messages m ON m.id = t.input_message_id WHERE t.id = ?').get(turnId) as { input_message_id: string; current_revision: number } | undefined;
+    if (row) this.d.voiceObservations?.decideQualification({ messageId: row.input_message_id, revision: row.current_revision }, 'abandoned', { turnId });
   }
 
   async stopAll(timeoutMs = 8000): Promise<void> {

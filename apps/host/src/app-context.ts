@@ -223,6 +223,8 @@ export class Host {
         voiceObservations: {
           ensureForMessage: (messageId, revision, conversationId) => voiceObsService.ensureForMessage(messageId, revision, conversationId, voiceObsService.configured),
           wake: () => voiceObsService.wake(),
+          // RV01（复审 20261106）：修订被取代/派发前取消＝观察资格终结（abandoned）
+          abandonRevision: (messageId, revision) => voiceObsService.decideQualification({ messageId, revision }, 'abandoned'),
         },
       }),
       activity);

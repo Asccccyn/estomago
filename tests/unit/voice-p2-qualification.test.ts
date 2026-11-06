@@ -26,7 +26,7 @@ function fixture() {
   const media = new MediaService(db, buildPaths(root).mediaDir, config);
   const messages = new MessageService(db);
   messages.ensureConversation('primary');
-  const state = { analyzeCalls: 0, mode: 'ready' as 'ready' | 'create_fail' | 'not_ready', cancels: [] as string[] };
+  const state = { analyzeCalls: 0, mode: 'ready' as 'ready' | 'create_fail' | 'not_ready', cancels: [] as string[], cancelOutcome: { cancelled: true, status: 200 } };
   const hearing = {
     async analyzeVoice(): Promise<{ ok: boolean; value?: { view: Record<string, unknown> }; error?: { error_code: string } }> {
       state.analyzeCalls++;
@@ -40,7 +40,7 @@ function fixture() {
   };
   const svc = new VoiceObservationService(db, {
     hearing: hearing as never, archiveClient: null, streamId: 's',
-    cancelAnalysis: async (id: string) => { state.cancels.push(id); },
+    cancelAnalysis: async (id: string) => { state.cancels.push(id); return state.cancelOutcome; },
   });
   const wav = minimalWav();
   const uploadVoice = async (suffix: string) => (await media.saveBuffer({ bytes: wav, purpose: 'chat_voice', operationId: `p2-voice-${suffix}`, createdBy: 'qiaosheng', origin: 'upload' })).id;
@@ -171,5 +171,117 @@ test('U03 assistant 自动深听入口已移除', () => {
   try {
     const svc = f.svc as unknown as Record<string, unknown>;
     assert.equal(svc['registerAssistantObservation'], undefined, '助手音频自动分析入口删除（深听只允许同轮交付）');
+  } finally { f.close(); }
+});
+
+// —— RV01（复审 20261106）：迟到 ID / 停止与编辑放弃 / 重启收口 / 消费门 ——
+
+test('RV01: 分析 ID 迟到仍归入同一已知操作——落行+补发 cancel，不产生可消费成功', async () => {
+  const f = fixture();
+  try {
+    const a = await f.uploadVoice('rv01-late');
+    const sub = f.submitVoice(a, 'vm-rv01-late');
+    f.svc.ensureForMessage(sub.message.id, 1, 'primary', true);
+    const row = f.db.prepare('SELECT id FROM voice_observations WHERE message_id=?').get(sub.message.id) as { id: string };
+    // 慢分析：资格在响应返回前终结（analysis_id 第一次决定时尚未入库——复审反例）
+    let release!: (v: { ok: boolean; value?: { view: Record<string, unknown> } }) => void;
+    const gate = new Promise<{ ok: boolean; value?: { view: Record<string, unknown> } }>((r) => { release = r; });
+    (f.svc as unknown as { worker: { hearing: { analyzeVoice(): Promise<typeof gate> } } }).worker.hearing.analyzeVoice = () => gate as never;
+    const pending = f.svc.runPending((f.svc as unknown as { worker: { hearing: never } }).worker.hearing, 5);
+    await new Promise((r) => setTimeout(r, 30));
+    f.svc.decideQualification({ messageId: sub.message.id, revision: 1 }, 'abandoned');
+    release({ ok: true, value: { view: { analysis_id: 'an_late_1', revision: 1, state: 'ready', readable: '迟到结果。', observations: [] } } });
+    await pending;
+    const after = f.db.prepare('SELECT status,error_code,analysis_id FROM voice_observations WHERE id=?').get(row.id) as { status: string; error_code: string; analysis_id: string | null };
+    assert.equal(after.status, 'failed');
+    assert.equal(after.error_code, 'QUALIFICATION_CLOSED', '迟到成功不写可消费成功');
+    assert.equal(after.analysis_id, 'an_late_1', '迟到 ID 归入同一已知操作（保留取消责任）');
+    assert.ok(f.state.cancels.includes('an_late_1'), '迟到 ID 补发 O cancel（衔接既有 fence）');
+  } finally { f.close(); }
+});
+
+test('RV01: 编辑取代旧修订/派发前取消输入 → 观察资格 abandoned（真实生命周期装配）', async () => {
+  const f = fixture();
+  try {
+    const { bindMessageLifecycle } = await import('../../apps/host/src/application/message-lifecycle.ts');
+    const wired = new MessageService(f.db, bindMessageLifecycle({
+      surfacing: null, activity: null,
+      voiceObservations: {
+        ensureForMessage: (messageId, revision, conversationId) => f.svc.ensureForMessage(messageId, revision, conversationId, true),
+        wake: () => f.svc.wake(),
+        abandonRevision: (messageId, revision) => f.svc.decideQualification({ messageId, revision }, 'abandoned'),
+      },
+    }));
+    const a = await f.uploadVoice('rv01-edit');
+    const sub = f.submitVoice(a, 'vm-rv01-edit');
+    f.svc.ensureForMessage(sub.message.id, 1, 'primary', true);
+    f.db.prepare("UPDATE voice_observations SET analysis_id='an_edit_1' WHERE message_id=?").run(sub.message.id);
+    wired.editUserMessage(sub.message.id, '改口了，用文字说');
+    const d = f.svc.decided(sub.message.id, 1);
+    assert.equal(d?.decision, 'abandoned', '编辑取代＝旧修订观察资格终结');
+    assert.ok(f.state.cancels.includes('an_edit_1'), '在途分析随资格终结取消');
+    // 新修订照常登记（未被旧修订决定挡住）
+    const n2 = (f.db.prepare('SELECT COUNT(*) n FROM voice_observations WHERE message_id=? AND revision=2').get(sub.message.id) as { n: number }).n;
+    assert.equal(n2, 1, '新修订正常登记观察');
+  } finally { f.close(); }
+});
+
+test('RV01: 重启收口死轮——无在途轮的未决观察 abandoned；有在途轮的修订保留', async () => {
+  const f = fixture();
+  try {
+    const a = await f.uploadVoice('rv01-dead');
+    const sub = f.submitVoice(a, 'vm-rv01-dead');
+    f.svc.ensureForMessage(sub.message.id, 1, 'primary', true);
+    f.db.prepare("UPDATE voice_observations SET analysis_id='an_dead_1' WHERE message_id=?").run(sub.message.id);
+    // 该输入的轮已终态（failed）——进程重启后该轮死亡，资格随之终结
+    f.db.prepare("UPDATE turns SET state='failed' WHERE id=?").run(sub.turnId);
+    const b = await f.uploadVoice('rv01-live');
+    const sub2 = f.submitVoice(b, 'vm-rv01-live');
+    f.svc.ensureForMessage(sub2.message.id, 1, 'primary', true);
+    f.svc.start();
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(f.svc.decided(sub.message.id, 1)?.decision, 'abandoned', '死轮未决观察重启即收口（不再续查/重发）');
+    assert.ok(f.state.cancels.includes('an_dead_1'), '死轮在途分析被取消');
+    assert.equal(f.svc.decided(sub2.message.id, 1), null, '仍在途轮的修订不被误收口');
+    await f.svc.stop();
+  } finally { f.close(); }
+});
+
+test('RV01: 被放弃轮次的分析不可被 get/view 读取当成功（消费门）', async () => {
+  const f = fixture();
+  try {
+    const { OidoHearingService } = await import('../../apps/host/src/modules/oido/service.ts');
+    const { OidoSourceRepository } = await import('../../apps/host/src/modules/oido/source-repository.ts');
+    const sources = new OidoSourceRepository(f.db);
+    const oidoStub = {
+      async getOverview(analysisId: string) { return { analysis_id: analysisId, revision: 1, state: 'ready' as const, range_ms: [0, 1000], readable: '真实概览。', observations: [] }; },
+      async getProsodyPage() { return { analysis_id: 'x', revision: 1, state: 'ready' as const, range_ms: [0, 1000], observations: [] }; },
+      async getView() { return { mime: 'image/png', pngBase64: Buffer.alloc(8).toString('base64'), metadata: {} }; },
+    };
+    const hearingSvc = new OidoHearingService({ db: f.db, oido: oidoStub as never, sources });
+    const ctx = { roomId: 'primary', windowId: 'w', turnId: null, purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'rv01' } as never;
+    const a = await f.uploadVoice('rv01-gate');
+    const shaA = (f.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(a) as { content_sha256: string }).content_sha256;
+    const sub = f.submitVoice(a, 'vm-rv01-gate');
+    f.svc.ensureForMessage(sub.message.id, 1, 'primary', true);
+    f.db.prepare("UPDATE voice_observations SET analysis_id='an_gate_1', status='ready', evidence_json='{}' WHERE message_id=?").run(sub.message.id);
+    sources.bindAnalysis('an_gate_1', 'primary', a, shaA);
+    // 被放弃轮次：迟到成功不进消费面
+    f.svc.decideQualification({ messageId: sub.message.id, revision: 1 }, 'abandoned');
+    const blocked = await hearingSvc.getEvidence({ analysis_id: 'an_gate_1' }, ctx);
+    assert.equal(blocked.ok, false);
+    assert.equal((blocked as { error: { error_code: string } }).error.error_code, 'QUALIFICATION_CLOSED', '复审反例：放弃资格后 getEvidence 仍 ok=true → 现被挡');
+    const blockedView = await hearingSvc.view({ analysis_id: 'an_gate_1' }, ctx);
+    assert.equal(blockedView.ok, false, 'view 同门');
+    // delivered 轮次（首发已交付）不受影响——"稍后用 oido_analyze 查询"合法语义保留
+    const c = await f.uploadVoice('rv01-deliv');
+    const shaC = (f.db.prepare('SELECT content_sha256 FROM media_assets WHERE id=?').get(c) as { content_sha256: string }).content_sha256;
+    const sub2 = f.submitVoice(c, 'vm-rv01-deliv');
+    f.svc.ensureForMessage(sub2.message.id, 1, 'primary', true);
+    f.db.prepare("UPDATE voice_observations SET analysis_id='an_gate_2', status='ready', evidence_json='{}' WHERE message_id=?").run(sub2.message.id);
+    sources.bindAnalysis('an_gate_2', 'primary', c, shaC);
+    f.svc.commitProjection({ messageId: sub2.message.id, revision: 1 }, 't', 'r', []);
+    const allowed = await hearingSvc.getEvidence({ analysis_id: 'an_gate_2' }, ctx);
+    assert.equal(allowed.ok, true, '已交付轮次的后续查询不受影响');
   } finally { f.close(); }
 });
