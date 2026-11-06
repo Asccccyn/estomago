@@ -1,7 +1,7 @@
 // 审计 A1+B1 回归（2026-10-25，Codex 独立复审复现迁入）：
 //  A1——conversations 委托正则曾比 handler 宽（(.+) vs [^/]+），多段子路径请求被吞无响应（旧版 404）；
 //      本测对 13 条未列出子路径断言 404 完整响应（含 memories/a/b 多段），另含 content 未配置 503 对照。
-//  B1——通话内 tool_define(wishstar_list_offers) 曾返回完整定义进入下一模型请求（D39 违约）；
+//  B1——通话内 tool_define(wishstar_offer_star) 曾返回完整定义进入下一模型请求（D39 违约）；
 //      本测经真实 HTTP+Supervisor 断言定义结果=TOOL_UNAVAILABLE_IN_CALL。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,7 +30,7 @@ async function fixture(defineDuringCall = false) {
     }
     const invoke = defineDuringCall && modelRequests === 1;
     const delta = invoke
-      ? { tool_calls: [{ index: 0, id: 'audit-define', type: 'function', function: { name: 'tool_define', arguments: JSON.stringify({ name: 'wishstar_list_offers' }) } }] }
+      ? { tool_calls: [{ index: 0, id: 'audit-define', type: 'function', function: { name: 'tool_define', arguments: JSON.stringify({ name: 'wishstar_offer_star' }) } }] }
       : { content: '合成审计回复。' };
     const body = 'data: ' + JSON.stringify({ id: 'audit', choices: [{ delta }] }) + '\n\n' +
       'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: invoke ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + '\n\ndata: [DONE]\n\n';

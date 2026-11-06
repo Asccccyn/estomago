@@ -40,7 +40,9 @@ test('BASE-02：旧配置升级——保留既有字段，auto/keepwarm 关闭�
   assert.equal(config.token_estimates.debounce_ms, 250);
   assert.equal(config.media.max_image_bytes, 20971520);
   // 升级路径零模型网络请求：validateConfig 为同步纯函数（无 fetch/计时器/IO 依赖）
-  assert.equal(Object.keys(validateConfig(structuredClone(legacy)).config.background).length, 3);
+  // 2026-11-04 起背景段含第四键 free_activity（独立开关，默认关）——计数随之更新
+  assert.equal(Object.keys(validateConfig(structuredClone(legacy)).config.background).length, 4);
+  assert.equal(config.background.free_activity.enabled, false);
 });
 
 test('BASE-02b：策略常量正本与配置硬规则（非法值拒绝，null≠0）', () => {

@@ -163,40 +163,9 @@ test('D22：带结构化错误码的 HTTP 500 → 传输层按 HTTP_500 分类�
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
-test('D13/D16：按所见修订核对 + 同消息多片段 + 倒序指认合法', async () => {
-  const root = tempRoot('d13-');
-  const ctx = baseCtx(root);
-  const msgs = new MessageService(ctx.db);
-  msgs.ensureConversation('c1');
-  const m1 = msgs.submitUserMessageWithTurn({ conversationId: 'c1', content: '前半句在这里。后半句也在这里。', clientMessageId: 'a', occurredAt: new Date().toISOString() });
-  const m2 = msgs.submitUserMessageWithTurn({ conversationId: 'c1', content: '另一条完全不同的话', clientMessageId: 'b', occurredAt: new Date().toISOString() });
-  // m1 编辑出新修订（模型只见 rev1）——编辑后当前修订是 rev2
-  msgs.editUserMessage(m1.message.id, '前半句和后半句都被改写了。');
-  seedReceipt(ctx.db, m1.message.id, 1, '前半句在这里。后半句也在这里。');
-  seedReceipt(ctx.db, m2.message.id, 1, '另一条完全不同的话');
-  const calls: HoldCall[] = [];
-  // 视野=两条 rev1；倒序勾选 + 同消息两句
-  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, quotes: [{ seq: 2 }, { seq: 1, from: 2, to: 2 }, { seq: 1, from: 1, to: 1 }] }, [
-    { id: m1.message.id, revision: 1 },
-    { id: m2.message.id, revision: 1 },
-  ]);
-  assert.equal(out.ok, true, `勾选应全部命中（得到 ${JSON.stringify(out.output)}）`);
-  const ourWords = (calls[0]!.payload.our_words as Array<{ speaker: string; text: string }>) ?? [];
-  assert.equal(ourWords.length, 3, '同消息两个不重叠句段 + 另一消息一条');
-  assert.equal(ourWords.map((w) => w.text).join('|'), '另一条完全不同的话|后半句也在这里。|前半句在这里。', '按勾选序各自定位');
-  // D13：抄录内容=所见修订（rev1）——未见过的 rev2 新内容天然不可达
-  const calls3: HoldCall[] = [];
-  const { out: out3 } = await execHold(ctx, calls3, { ...HOLD_ARGS, quotes: [{ seq: 1 }] }, [{ id: m1.message.id, revision: 1 }]);
-  assert.equal(out3.ok, true);
-  assert.equal((calls3[0]!.payload.our_words as Array<{ text: string }>)[0]!.text, '前半句在这里。后半句也在这里。', '按所见修订抄录（不是当前 rev2）');
-  // 勾选没见过的序号=如实拒绝（零副作用）
-  const calls2: HoldCall[] = [];
-  const { out: out2 } = await execHold(ctx, calls2, { ...HOLD_ARGS, quotes: [{ seq: 99 }] }, [{ id: m1.message.id, revision: 1 }]);
-  assert.equal((out2.output as { error_code: string }).error_code, 'QUOTE_REF_SEQ_NOT_SEEN', '未见过序号拒绝（D13 可见性门）');
-  assert.equal(calls2.length, 0, '零副作用');
-  void m2;
-  ctx.db.close();
-});
+// D13/D16（2026-11-06 勘误删除）：quotes 摘录接口已在 22065bb 解耦批退役
+//（hold 不再收 quotes；原文绑定走 memory_source_bind，原话走 memory_words_write——
+// 由 memory-save-decoupled.test.ts 覆盖现行合同）。本测试按退役接口断言，删不改产线。
 
 // —— supervisor 级：D01 thinking 续传 / D02 手动换窗指纹门 / D03 恢复 ——
 function composeSup(root: string, transport: OrTransport, configOver: Record<string, unknown> = {}) {

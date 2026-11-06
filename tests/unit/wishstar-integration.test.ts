@@ -37,13 +37,13 @@ function makeTools(calls: ForwardCall[], respond: (c: ForwardCall) => { status: 
 
 test('wishstar_write_star：转发形状+幂等键派生+写回执瘦身', async () => {
   const calls: ForwardCall[] = [];
-  const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '不该回显的正文', status: 'ok', extra: 'x' } }));
+  const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '不该回显的正文', visibility: 'visible', state: 'written', extra: 'x' } }));
   try {
     const checked = validateToolArgs('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-1' });
     assert.equal(checked.ok, true);
     const out = await tools.execute('wishstar_write_star', checked.value as Record<string, unknown>, CTX as never);
     assert.equal(out.ok, true);
-    assert.deepEqual(out.output, { id: 'star_1', status: 'ok' }, '写回执只留 id/状态，不回显正文');
+    assert.deepEqual(out.output, { id: 'star_1', visibility: 'visible', state: 'written' }, '写回执投影只留 id/可见性/状态，不回显正文');
     const call = calls[0]!;
     assert.equal(call.method, 'POST');
     assert.equal(call.path, '/api/stars');

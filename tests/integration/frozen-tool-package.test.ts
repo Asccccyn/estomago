@@ -27,7 +27,7 @@ const examples: Record<string, Record<string, unknown>> = {
   wishstar_start_session:{special_date_id:'synthetic'},wishstar_confirm_session:{session_id:'synthetic'},wishstar_take_star:{session_id:'synthetic'},
   wishstar_finish_session:{session_id:'synthetic'},wishstar_request_star:{},wishstar_respond_request:{request_id:'synthetic',decision:'not_now'},
   wishstar_offer_star:{star_id:'synthetic'},wishstar_accept_offer:{offer_id:'synthetic'},
-  memory_words_write:{action:'add',memory_id:'synthetic',refs:[{seq:1}]},memory_relations:{action:'list',memory_id:'synthetic'},content_albums_read:{},media_view:{asset_ref:'est:synthetic'},
+  memory_words_write:{action:'add',memory_id:'synthetic',refs:[{seq:1}]},memory_relations:{action:'list',memory_id:'synthetic'},content_albums_read:{},media_view:{asset_ref:'est:synthetic'},memory_source_bind:{memory_id:'synthetic',start_seq:1,end_seq:1},
 };
 
 test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重启与全局配置隔离', async () => {
@@ -51,7 +51,7 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
       if(n===1){
         const system=Array.isArray(input.options.systemPrompt)?input.options.systemPrompt.join('\n'):input.options.systemPrompt;
         const ids=Object.fromEntries([...system.matchAll(/- ([a-z_]+)（definition_id: (td_[a-f0-9]+)）/g)].map((m:any)=>[m[1],m[2]]));
-        assert.equal(Object.keys(ids).length,40);
+        assert.equal(Object.keys(ids).length,41); // 41C：content_albums_read/media_view 入 C 组后目录 41 项
         assert.deepEqual(Object.keys(ids).sort(),Object.keys(examples).sort());
         const [a,b]=InMemoryTransport.createLinkedPair(); const client=new Client({name:'fake-sdk',version:'1'});
         await input.options.mcpServers.est.instance.connect(b);await client.connect(a);
@@ -103,7 +103,7 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
   try{
     await start();const id=await send();
     const frozen=storedToolset(host!.db,id)!;
-    assert.equal(frozen.catalog.length,49);
+    assert.equal(frozen.catalog.length,50); // 49C+... 目录 50 项（memory_source_bind 入 C 组）
     assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,7);
     assert.equal(Object.values(frozen.groups).filter(g=>g==='T').length,2);
     assert.ok(frozen.initialText!.includes('content_albums_read'));
@@ -115,8 +115,8 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
     assert.deepEqual(host!.db.prepare('SELECT catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(id),row);
     const newId=await send('new-room');
     assert.equal(Object.values(storedToolset(host!.db,newId)!.groups).filter(g=>g==='C').length,0);
-    assert.equal(Object.keys(results).length,40);
+    assert.equal(Object.keys(results).length,41);
     const proofs=host!.db.prepare('SELECT tool_context_json FROM provider_requests WHERE window_id=? AND sent_at IS NOT NULL').all(id) as any[];
-    assert.ok(proofs.some(p=>JSON.parse(p.tool_context_json).length===40));
+    assert.ok(proofs.some(p=>JSON.parse(p.tool_context_json).length===41));
   } finally {await host?.stop();globalThis.fetch=originalFetch;fs.rmSync(root,{recursive:true,force:true});}
 });
