@@ -48,14 +48,17 @@ test('define then sent proof before invoke; no direct/forged/cross-room invocati
  assert.equal((await f.executor.execute('tool_define',{name:'not-real'},f.ctx)).ok,false);
  const defined=await f.executor.execute('tool_define',{name:'memory_hold'},f.ctx);assert.equal(defined.ok,true);
  const invoke={name:'memory_hold',definition_id:defined.output.definition_id,arguments:args};
- assert.equal((await f.executor.execute('tool_invoke',invoke,f.ctx)).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- f.persist(tools,[{role:'user',content:JSON.stringify(defined.output)}]);
- assert.equal((await f.executor.execute('tool_invoke',invoke,f.ctx)).ok,false);
+ // P6/U01（20261106）：定义阅读不再是授权——define 后（未发送/未在其他房间"看过"）直接执行
+ const early=await f.executor.execute('tool_invoke',invoke,f.ctx);
+ assert.deepEqual(early.output,{saved:true,memory_id:'m1',source_status:'unbound'},'未发送定义即执行');
+ assert.equal(f.calls.length,1);assert.equal(f.calls[0].cap,'memory.hold');
+ // 伪造 definition_id=版本不符拒绝（冻结版本校验保留）
+ const forged=await f.executor.execute('tool_invoke',{name:'memory_hold',definition_id:'td_deadbeef',arguments:args},f.ctx);
+ assert.equal((forged.output as {error_code:string}).error_code,'TOOL_DEFINITION_STALE');
  f.persist(tools,[{role:'assistant',tool_calls:[{id:'def-call',function:{name:'tool_define',arguments:JSON.stringify({name:'memory_hold'})}}]}, {role:'tool',tool_call_id:'def-call',content:JSON.stringify(defined.output)}]);
- assert.equal((await f.executor.execute('tool_invoke',invoke,{...f.ctx,roomId:'other'})).ok,false);
  const repeated=await f.executor.execute('tool_define',{name:'memory_hold'},f.ctx);assert.equal(repeated.output.already_available,true);assert.equal(repeated.output.parameters,undefined);
  const held=await f.executor.execute('tool_invoke',invoke,f.ctx);assert.deepEqual(held.output,{saved:true,memory_id:'m1',source_status:'unbound'});
- assert.equal(f.calls.length,1);assert.equal(f.calls[0].cap,'memory.hold');
+ assert.equal(f.calls.length,2);assert.equal(f.calls.at(-1)!.cap,'memory.hold');
  assert.ok(f.calls[0].payload.operation_id.startsWith('es-hold-'));
  assert.equal(JSON.stringify(storedToolset(f.db,'w1')!.tools),before);
  const effect=f.db.prepare('SELECT state,verified,memory_id,operation_id FROM tool_side_effects').get() as any;

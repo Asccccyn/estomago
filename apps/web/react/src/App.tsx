@@ -17,7 +17,7 @@ import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
-  Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
+  Phone, AudioLines, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
   Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square,
 } from 'lucide-react'
 
@@ -395,6 +395,7 @@ export default function App() {
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
+  const [callMode, setCallMode] = useState<'ordinary' | 'deep_listen'>('ordinary') // P6/V02：专属深听电话入口
   const [incomingCall, setIncomingCall] = useState<{ ws_url: string; token: string; call_id: string } | null>(null)
   const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake' | 'memory'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
@@ -497,7 +498,8 @@ export default function App() {
               disabled={editing !== null || state.selectionMode} onPick={jumpToDate} />
             <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
               onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
-            <IconBtn title="电话" onClick={() => setCallOpen(true)}><Phone size={18} /></IconBtn>
+            <IconBtn title="电话" onClick={() => { setCallMode('ordinary'); setCallOpen(true); }}><Phone size={18} /></IconBtn>
+            <IconBtn title="深听电话（他的话会做同轮声音观察）" onClick={() => { setCallMode('deep_listen'); setCallOpen(true); }}><AudioLines size={18} /></IconBtn>
             <div className="relative">
               <IconBtn title="更多" onClick={() => setMore(!more)}><MoreHorizontal size={18} /></IconBtn>
               {more && (
@@ -744,7 +746,7 @@ export default function App() {
       {(sheet === 'bench' || sheet === 'log') && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
       <CallInvites onAccept={(conn) => { setIncomingCall(conn); setCallOpen(true); }} />
-      {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
+      {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} mode={callMode} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
       {sheet === 'memory' && <SurfacingSettings client={client} onClose={() => setSheet(null)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}

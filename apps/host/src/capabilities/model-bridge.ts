@@ -158,7 +158,10 @@ export class ModelToolBridge {
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
-    if (args.definition_id !== definitionId(spec) || !definitionWasSeen(this.db,ctx,spec)) return deny('TOOL_DEFINITION_NOT_SEEN');
+    // P6（四仓审计 20261106，U01/R11）：定义阅读凭证不再是授权——tool_invoke 不带
+    // definition_id 也直接执行（参数仍按冻结 schema 完整校验；registry 决定真实权限）。
+    // 携带 definition_id 且与冻结版本不符=过期/幻觉版本，如实拒绝（冻结版本校验保留）。
+    if (typeof args.definition_id === 'string' && args.definition_id !== definitionId(spec)) return deny('TOOL_DEFINITION_STALE');
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);

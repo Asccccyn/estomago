@@ -9,9 +9,9 @@ export const WISHSTAR_READ_ACTIONS = {
 } as const;
 
 export class WishstarService {
-  private readonly wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
+  private readonly wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal): Promise<{ status: number; body: Record<string, unknown> }> } | null;
 
-  constructor(deps: { wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
+  constructor(deps: { wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal): Promise<{ status: number; body: Record<string, unknown> }> } | null }) {
     this.wishstar = deps.wishstar;
   }
 
@@ -37,8 +37,8 @@ export class WishstarService {
     };
     const call = calls[name];
     if (!call) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };
-    const r = await this.wishstar.forward(call.method, call.path, call.body, call.write ? opKey : undefined);
-    if (call.write && (r.status === 0 || r.status >= 500) && r.body.error_code !== 'WISHSTAR_NOT_CONFIGURED') {
+    const r = await this.wishstar.forward(call.method, call.path, call.body, call.write ? opKey : undefined, ctx.signal);
+    if (call.write && (r.status === 0 || r.status >= 500) && r.body.error_code !== 'WISHSTAR_NOT_CONFIGURED' && r.body.error_code !== 'WISHSTAR_CANCELLED') {
       return {ok:false,output:{error_code:'WISHSTAR_OUTCOME_UNKNOWN',detail:'结果未知，可能已经提交。先用相关读取核对，不要把本次当成未执行另发一次。'}};
     }
     if (['wishstar_take_star','wishstar_accept_offer'].includes(name) && r.status >= 200 && r.status < 300 && typeof r.body.content !== 'string') {

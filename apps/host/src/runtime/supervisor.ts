@@ -700,6 +700,7 @@ export class TurnSupervisor {
     const toolSeenActive: ManifestEntry[] = [];
     let roundPendingSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
     let dispatched = false;
+    let toolsExecuted = false; // C03：本轮是否真实执行过工具（含已应答）——失败保留协议的判据
     let lastSentMessages: OrMessage[] | null = null;
     let pendingCalls: MatchedCompleteBlock[] = [];
     let pendingAssistantIndex = -1;
@@ -711,7 +712,10 @@ export class TurnSupervisor {
       return [...envelope.messages, ...pendingCalls.filter(t => !answered.has(t.tool_id)).map(t => ({ role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: code, executed: false }) }) as OrMessage)];
     };
     const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => ({
-      result, finalMessages: o.background && dispatched ? incompleteProtocol(code) : null,
+      // C03（四仓审计 20261106）：**执行过工具**的失败轮保留已实际发出的协议前缀与工具
+      // 结果（未应答 pending 补显式未执行记录）——下一普通输入从此前缀接续，不丢工具
+      // 往来、不重放副作用。无工具的失败轮不保留（消息重试语义：失败输入不进正史）。
+      result, finalMessages: dispatched && (toolsExecuted || pendingCalls.length > 0) ? incompleteProtocol(code) : null,
       lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen,
     });
     const seqOf = (id: string): number => {
@@ -954,6 +958,7 @@ export class TurnSupervisor {
         }
         // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为（06 §2，按调用计数）
         if (o.background?.observeToolCall) o.background.observeToolCall();
+        toolsExecuted = true;
         // The real executor validates the frozen definition and arguments before
         // quoting/admitting its effective handler. Never quote tool_invoke as free.
         const toolDispatch: { current: { id: string; quote: BackgroundToolQuote } | null } = { current: null };
@@ -3083,7 +3088,10 @@ export class TurnSupervisor {
 
     // A native SDK turn can consume tools before a later subscription rejection.
     // Preserve that actual protocol work so the next OR turn cannot replay it.
-    if (dv?.kind === 'claude-agent-sdk' && result.outcome !== 'completed' && result.activityStarted && orFinalMessages && d.trajectory) {
+    // C03（四仓审计 20261106）：OR 工具轮失败同样保留已发协议（failedLoop 现在对
+    // 普通轮也给出 finalMessages）——续轮 503/失败后，下一普通输入接续已发前缀与
+    // 真实工具结果，未执行工具以显式记录收尾，不重放副作用。
+    if (result.outcome !== 'completed' && orFinalMessages && d.trajectory && (dv?.kind === 'claude-agent-sdk' ? result.activityStarted : true)) {
       if (!runToken.token.cancelled) publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
       const base = d.trajectory.forWindow(window.id)?.manifest ?? [];
       const input: ManifestEntry[] = inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }] : [];

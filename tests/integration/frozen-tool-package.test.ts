@@ -72,7 +72,8 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
         const deferredArgs={name:'memory_correct',definition_id:definition.definition_id,arguments:{action:'corrections'}};
         yield {type:'assistant',session_id:session,message:{id:'early-d',content:[{type:'tool_use',id:'early-d',name:'mcp__est__tool_invoke',input:deferredArgs}]}};
         await input.options.hooks.PreToolUse[0].hooks[0]({hook_event_name:'PreToolUse',tool_name:'mcp__est__tool_invoke',tool_input:deferredArgs,tool_use_id:'early-d'});
-        assert.equal(JSON.parse(((await client.callTool({name:'tool_invoke',arguments:deferredArgs})).content as any[])[0].text).error_code,'TOOL_DEFINITION_NOT_SEEN');
+        // P6/U01（20261106）：定义阅读不再是授权——合法 definition_id 直接执行
+        assert.notEqual(JSON.parse(((await client.callTool({name:'tool_invoke',arguments:deferredArgs})).content as any[])[0].text).error_code,'TOOL_DEFINITION_NOT_SEEN');
         yield {type:'stream_event',event:{type:'message_stop'}};
         await input.options.hooks.PostToolBatch[0].hooks[0]({hook_event_name:'PostToolBatch'});
         yield {type:'stream_event',session_id:session,event:{type:'message_start',message:{id:'after-define',model:input.options.model,usage:{input_tokens:1,output_tokens:0}}}};

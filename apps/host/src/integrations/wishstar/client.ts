@@ -37,10 +37,13 @@ export class WishstarClient {
     return body as { items: Array<{ name: string; date: string; days_until: number }> };
   }
 
-  /** 模型面：以 jiaming 身份转发（幂等键由调用方派生；错误原样上抛状态码） */
-  async forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<WishstarResult> {
+  /** 模型面：以 jiaming 身份转发（幂等键由调用方派生；错误原样上抛状态码）。
+   *  P7（四仓审计 20261106）：signal 贯穿 fetch 与响应体读取——取消只停止本地等待
+   *  与读取，不撤回已发出的写；已发出但响应未读完=结果未知，由调用方沿幂等键接管。 */
+  async forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal): Promise<WishstarResult> {
     const token = this.token(this.jiamingEnv);
     if (!token) return { status: 503, body: { error_code: 'WISHSTAR_NOT_CONFIGURED', detail: 'WISHSTAR_JIAMING_TOKEN 未配置（能力缺口，如实拒绝）' } };
+    if (signal?.aborted) return { status: 0, body: { error_code: 'WISHSTAR_CANCELLED', detail: '本地取消：请求未发出' } };
     try {
       const r = await (this.deps.fetch ?? globalThis.fetch.bind(globalThis))(
         `${this.baseUrl}${path}`,
@@ -53,11 +56,15 @@ export class WishstarClient {
           },
           ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
           cache: 'no-store',
+          ...(signal ? { signal } : {}),
         },
       );
       const data = await r.json().catch(() => ({})) as Record<string, unknown>;
       return { status: r.status, body: data };
-    } catch {
+    } catch (err) {
+      // 发出后取消/断开=结果未知（写可能已提交）——与不可达区分，调用方沿幂等键核对
+      if (signal?.aborted) return { status: 0, body: { error_code: 'WISHSTAR_CANCELLED_UNKNOWN', detail: '本地取消：请求可能已发出，结果未知——同幂等键核对后再决定是否重试' } };
+      void err;
       return { status: 0, body: { error_code: 'WISHSTAR_UNREACHABLE', detail: '许愿星服务不可达' } };
     }
   }

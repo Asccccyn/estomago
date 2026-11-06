@@ -10,7 +10,10 @@ import { microphoneEnvironmentIssue, secureMicrophoneUrl } from '../../src/micro
 
 type Phase = 'idle' | 'connecting' | 'active' | 'ended' | 'error';
 
-export function CallPanel({ conversationId, onExit, incoming }: { conversationId: string; onExit: () => void; incoming?: { ws_url: string; token: string; call_id: string } }): React.JSX.Element | null {
+// P6（四仓审计 20261106，V02/U04）：mode=deep_listen=专属深听电话入口——拨号请求
+// 显式携带 analysis_mode；后端沿 dial_requests→accept→voice_calls 全程绑定该模式
+// （普通电话显式 ordinary；模式属于新通话意图，不改旧连接）。
+export function CallPanel({ conversationId, onExit, incoming, mode = 'ordinary' }: { conversationId: string; onExit: () => void; incoming?: { ws_url: string; token: string; call_id: string }; mode?: 'ordinary' | 'deep_listen' }): React.JSX.Element | null {
   const [phase, setPhase] = useState<Phase>('idle');
   const [error, setError] = useState<string | null>(null);
   const [subtitle, setSubtitle] = useState('');
@@ -65,7 +68,7 @@ export function CallPanel({ conversationId, onExit, incoming }: { conversationId
       // F-02：接听来电的直连模式——宿主已建通话，直接连接（不反向拨号）
       if (incoming) { connectCall(incoming.ws_url, incoming.token, incoming.call_id); return; }
       try {
-        const res = await fetch('/api/v1/calls/dial', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const res = await fetch('/api/v1/calls/dial', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mode === 'deep_listen' ? { analysis_mode: 'deep_listen' } : {}) });
         const created = await res.json().catch(() => null) as { request_id?: string; state?: string; ws_url?: string; token?: string; call_id?: string; error?: { message?: string } | null } | null;
         if (cancelled) return;
         // JV-20：拨号被拒（503/502 等错误 body）=等待结束——不再把错误 body 当成功

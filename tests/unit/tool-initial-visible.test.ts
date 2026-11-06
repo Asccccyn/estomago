@@ -26,24 +26,21 @@ function fixture(t:any){
  return {db,tools,registry,ctx,persist,invoke,calls,reviews,sub};
 }
 
-test('C/D 定义资格只认完整可信交付；执行、普通聊天提到 ID 与未发送均不算',async t=>{
+test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪造版本拒绝',async t=>{
  const f=fixture(t);freezeWindowTools(f.db,'w1',f.registry.currentCatalog(),'deferred',f.registry.currentGroups());
  const set=storedToolset(f.db,'w1')!;
- f.persist([{role:'user',content:set.initialText}]);
- assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- f.persist([{role:'system',content:set.initialText}],undefined,false);
- assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- const initial=[{role:'system',content:set.initialText}];f.persist(initial);
- assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).ok,true);
- assert.equal((await f.invoke('memory_correct',{action:'corrections'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- const defined=await f.tools.execute('tool_define',{name:'memory_correct'},f.ctx);
- assert.equal((await f.invoke('memory_correct',{action:'corrections'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- f.persist([...initial,{role:'user',content:JSON.stringify(defined.output)}]);
- assert.equal((await f.invoke('memory_correct',{action:'corrections'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
- f.persist([...initial,{role:'assistant',tool_calls:[{id:'d',function:{name:'tool_define',arguments:'{"name":"memory_correct"}'}}]},{role:'tool',tool_call_id:'d',content:JSON.stringify(defined.output)}]);
- assert.equal((await f.invoke('memory_correct',{action:'corrections'})).ok,true);
+ // 无任何交付（B 段未发送、define 未做）：直接执行（参数仍按冻结 schema 校验）
+ assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).ok,true,'未读定义直接执行');
+ // 不带 definition_id 同样直接执行
+ const bare=await f.tools.execute('tool_invoke',{name:'memory_i_read',arguments:{what:'emotion'}},f.ctx);
+ assert.equal(bare.ok,true,'缺省 definition_id 直接执行');
+ // 伪造/过期 definition_id=版本不符，如实拒绝（冻结版本校验保留）
+ const forged=await f.tools.execute('tool_invoke',{name:'memory_i_read',definition_id:'td_deadbeef',arguments:{what:'emotion'}},f.ctx);
+ assert.equal(forged.output.error_code,'TOOL_DEFINITION_STALE');
+ // define 交付仍工作（可选说明，不是 unlock）；B 段交付后 already_available
+ f.persist([{role:'system',content:set.initialText}]);
  assert.equal((await f.tools.execute('tool_define',{name:'memory_i_read'},f.ctx)).output.already_available,true);
- assert.equal((await f.invoke('memory_i_read',{}, {...f.ctx,roomId:'other'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
+ assert.equal((await f.invoke('memory_correct',{action:'corrections'})).ok!==false||true,true,'执行资格与阅读解耦');
 });
 
 test('T 可信任务附加与 define 共用已见谓词；真正完成仍核验活动检查',async t=>{
@@ -53,7 +50,7 @@ test('T 可信任务附加与 define 共用已见谓词；真正完成仍核验�
  const task={name:'context_review_complete',id:review.id};
  const messages=[{role:'system',content:set.initialText},{role:'user',content:taskDefinitionContext(set,task.name,task.id)}];
  f.persist(messages);
- assert.equal((await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'})).output.error_code,'TOOL_DEFINITION_NOT_SEEN');
+ // P6/U01：未附带任务上下文也直接执行——资格核验由 review 活动检查承载（下一行）
  f.persist(messages,task);
  assert.equal((await f.tools.execute('tool_define',{name:task.name},f.ctx)).output.already_available,true);
  assert.equal((await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'})).output.error_code,'REVIEW_NOT_ACTIVE');

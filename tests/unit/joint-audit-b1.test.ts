@@ -117,7 +117,9 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   const trajRow = db.prepare('SELECT manifest_json FROM window_trajectories WHERE window_id = ?').get(win1.id) as { manifest_json: string | null };
   const manifest = JSON.parse(trajRow.manifest_json ?? '[]') as Array<{ seq: number }>;
   const manifestMax = manifest.reduce((mx, x) => Math.max(mx, x.seq), 0);
-  assert.equal(manifestMax, 2, '失败回合输入不入清单——书签(3)高于清单高水位(2)，旧代码在此抛 BOOKMARK_OUTSIDE_MANIFEST');
+  // C03（四仓审计 20261106）：执行过工具的失败轮保留已发协议——输入与工具往来均入
+  // 清单（书签=清单高水位=3，不再出现 BOOKMARK_OUTSIDE_MANIFEST 空窗）
+  assert.equal(manifestMax, 3, '工具失败轮的已发输入入清单——书签与清单高水位一致');
   // 第三步：长消息越软线触发容量换窗（2026-10-08 晚间裁定：静默不再触发；时间仍隔 8h 以证明静默无关）——不再死锁
   const t3 = await say(`第三条：${'很长的容量触发内容。'.repeat(2500)}`, 'j3', new Date(Date.parse(T0) + 8 * H).toISOString());
   const att3 = db.prepare('SELECT state, window_id FROM attempts WHERE id = ?').get(t3.attemptId) as { state: string; window_id: string };

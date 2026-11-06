@@ -107,6 +107,33 @@ if (bgTaskDetail) {
   if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null } });
   return json(res, 200, { task: r.task });
 }
+// —— P6（四仓审计 20261106，T17 后半）：自由活动显式入口——
+//    用现有 background task/run 机制开**一次**明确有界活动窗口：kind=autonomous、
+//    origin=free_activity、once、立即到期；执行/预算/让位沿既有调度器与
+//    backgroundControl('free_activity') 门；合理多步后 background_complete/noop/
+//    取消/超时均收口。不新增随机自醒或固定催促；下次活动必须再次显式安排。
+if (route === 'POST /api/v1/background/free-activity') {
+  if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
+  const opKey = String(req.headers['idempotency-key'] ?? '');
+  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+  const body = (await readJson(req, d)) as Record<string, unknown>;
+  const note = typeof body.note === 'string' && body.note.trim().length > 0 ? body.note.trim().slice(0, 2000) : '自由活动窗口';
+  const conversationId = typeof body.conversation_id === 'string' && body.conversation_id ? body.conversation_id : 'primary';
+  const prior = d.db.prepare('SELECT id, payload_json FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(conversationId, opKey) as { id: string; payload_json: string } | undefined;
+  if (prior) {
+    let same = false;
+    try { same = JSON.stringify(JSON.parse(prior.payload_json)) === JSON.stringify({ note, source: 'free_activity' }); } catch { same = false; }
+    if (!same) return json(res, 409, { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } });
+    return json(res, 200, { task_id: prior.id, duplicate: true });
+  }
+  const id = genId('bgt');
+  const nowIso = new Date().toISOString();
+  d.db.prepare(
+    `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, client_operation_key, created_at, updated_at)
+     VALUES (?,?,'jiaming','autonomous',1,1,'once',?,?,?,?,NULL,?,'qiaosheng','free_activity',?,?,?)`,
+  ).run(id, conversationId, nowIso, nowIso, 'Asia/Shanghai', null, JSON.stringify({ note, source: 'free_activity' }), opKey, nowIso, nowIso);
+  return json(res, 201, { task_id: id, origin: 'free_activity', next_due_at: nowIso, note: `已安排一次有界自由活动：${note}` });
+}
 if (route === 'POST /api/v1/background/tasks') {
   const opKey = String(req.headers['idempotency-key'] ?? '');
   if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
