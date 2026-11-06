@@ -2495,7 +2495,9 @@ export class TurnSupervisor {
     // 消息当前修订；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
     let surfacingAugment: import('../context/contributions.ts').AugmentResult | null = null;
-    if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
+    // P3（U05/T05，20261106）：通话话轮不注入浮现面——通话期间 Sol 调用与浮现注入均为 0
+    const inputIsCallTurn = inputMessage ? Boolean(this.d.db.prepare("SELECT 1 FROM messages WHERE id=? AND client_message_id LIKE 'voice:%'").get(inputMessage.id)) : false;
+    if (!inputIsCallTurn && d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
         const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
           conversationId: turn.conversation_id, windowId: window.id, turnId,

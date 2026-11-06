@@ -113,6 +113,15 @@ export class SurfacingRepository {
   }
 
   /** 消息编辑撤销尚未保留的旧修订作业；已发送交付事实保持原样。 */
+  /** P3（U05）：会话级取消全部未终态作业（通话开始时调用）。返回取消行数。 */
+  cancelJobsForConversation(conversationId: string, reasonCode: string): number {
+    const result = this.db.prepare(
+      `UPDATE surfacing_jobs SET state='cancelled', updated_at=CURRENT_TIMESTAMP, reason_code=?
+       WHERE conversation_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
+    ).run(reasonCode, conversationId);
+    return Number(result.changes);
+  }
+
   cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
     const affected = this.db.prepare(
       `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN

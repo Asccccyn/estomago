@@ -158,6 +158,8 @@ if (route === 'POST /api/v1/calls') {
   const mode = rawBody.analysis_mode === 'deep_listen' ? 'deep_listen' : 'ordinary';
   d.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)")
     .run(created.callId, rawBody.conversation_id, new Date().toISOString(), created.expiresAt ?? null, mode);
+  // P3（U05）：通话进入活动范围（建立/准备期起）——取消该会话在途 Sol 浮现作业
+  d.surfacing?.cancelForActiveCall?.(rawBody.conversation_id);
   return json(res, 200, { call_id: created.callId, ws_url: created.wsUrl, token: created.token, ...(created.expiresAt ? { expires_at: created.expiresAt } : {}), memory_only: true });
 }
 const estCallEnd = /^DELETE \/api\/v1\/calls\/([^/]+)$/.exec(route);

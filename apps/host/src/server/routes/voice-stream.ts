@@ -45,6 +45,10 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   const turnKey: string = input.turn_id;
   const conv = d.db.prepare('SELECT id FROM conversations WHERE id = ?').get(conversationId) as { id: string } | undefined;
   if (!conv) return ndjsonError(404, 'conversation not found');
+  // P3（四仓审计 20261106，V03）：已结束通话拒收新话轮——结束是权威事实（S 终态/est
+  // 收口），旧回调/迟到客户端不能凭旧 call 开新轮（旧实现照常接纳并入队模型）
+  const endedCall = d.db.prepare("SELECT 1 FROM voice_calls WHERE call_id=? AND state='ended'").get(callId);
+  if (endedCall) return ndjsonError(410, 'call ended');
 
   // —— RE-03：幂等接纳（同窗提交仍走文字轮同一串行链/窗口工具/轨迹/计量）——
   const nowIso = new Date().toISOString();
@@ -65,6 +69,8 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   // 通话登记：未显式 POST /v1/calls 时按首个电话轮自动立册（memory_only 以此为准；挂断由 DELETE /v1/calls 收口）
   if (!d.db.prepare('SELECT 1 FROM voice_calls WHERE call_id=?').get(callId)) {
     d.db.prepare("INSERT OR IGNORE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(callId, conversationId, nowIso);
+    // P3（U05）：未显式建呼的首个话轮自动立册=接通事实——同样取消在途浮现作业
+    d.surfacing?.cancelForActiveCall?.(conversationId);
   }
   // 生命周期重构（R3，20261104）：真实话轮经通话 WS 抵达=会话确已建立的本地硬证据
   // （register 通知可丢，不能作唯一凭证）——回填 connected_at，供结束事实统一判定。

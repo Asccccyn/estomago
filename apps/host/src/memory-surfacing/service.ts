@@ -135,6 +135,10 @@ export class SurfacingService {
   }): void {
     if (!this.cfg.enabled) return;
     if (!o.content || o.content.trim().length === 0) return;
+    // P3（四仓审计 20261106，U05/T05）：通话话轮不登记自动浮现——普通/深听电话期间
+    // Sol 自动调用数为 0；结束不补扫，下一新非通话聊天恢复正常触发
+    const callTurn = this.db.prepare("SELECT 1 FROM messages WHERE id=? AND client_message_id LIKE 'voice:%'").get(o.messageId);
+    if (callTurn) return;
     // SOL_RECALL_REFACTOR：旧 P1 regex 意图门退役——每条正式用户消息都登记
     // 作业，语义判断（none/observe/recall）在提交后由 Sol 完成。这里不做
     // 任何网络调用；Sol 网络请求只出现在事务提交后的 preparePhase。
@@ -157,6 +161,17 @@ export class SurfacingService {
     for (const [id, controllers] of this.controllers) {
       if (this.repo.jobById(id)?.state === 'cancelled') for (const controller of controllers) controller.abort();
     }
+  }
+
+  /** P3（U05）：通话开始（建立/准备/接通）——取消该会话全部未完成浮现作业并中止
+   *  在途 Sol 请求；不补扫，通话结束后由新的非通话聊天按规则重新触发。 */
+  cancelForActiveCall(conversationId: string): void {
+    if (!this.cfg.enabled) return;
+    const n = this.repo.cancelJobsForConversation(conversationId, 'CALL_ACTIVE');
+    for (const [id, controllers] of this.controllers) {
+      if (this.repo.jobById(id)?.state === 'cancelled') for (const controller of controllers) controller.abort();
+    }
+    if (n > 0) this.log?.info('surface_jobs_cancelled_for_call', { conversation: conversationId, jobs: n });
   }
 
   cancelForTurn(turnId: string): void {
@@ -188,6 +203,13 @@ export class SurfacingService {
     for (const job of jobs) {
       if (this.running >= this.cfg.worker_concurrency) break;
       if (this.roomRunning.has(job.conversation_id)) continue;
+      // P3（U05）：请求前准入复核——会话有活动通话时不发起 Sol（作业收口为取消，
+      // 不迟到注入通话；结束后由下一条新非通话消息按规则重新触发）
+      const callActive = this.db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(job.conversation_id);
+      if (callActive && this.repo.transition(job.id, ['pending'], 'cancelled', { reason_code: 'CALL_ACTIVE' })) {
+        this.log?.info('surface_job_call_gated', { job: job.id, conversation: job.conversation_id });
+        continue;
+      }
       const work = this.runJob(job).finally(() => this.active.delete(work));
       this.active.add(work);
     }

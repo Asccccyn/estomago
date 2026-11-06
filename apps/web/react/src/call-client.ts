@@ -46,6 +46,9 @@ export class CallClient {
   private lastVoice = 0;
   private ended = false;
   private drainedStreams = new Set<string>();
+  // P3（四仓审计 20261106，V03）：终止终局——drain 定时器可回收；connect 等待可 settle
+  private readonly drainTimers = new Set<ReturnType<typeof setTimeout>>();
+  private connectSettle: { resolve(): void; reject(err: Error): void } | null = null;
 
   private readonly url: string;
   private readonly token: string;
@@ -60,18 +63,19 @@ export class CallClient {
     this.ws.binaryType = 'arraybuffer';
     this.ws.onmessage = (ev) => this.onMessage(ev.data);
     this.ws.onclose = (ev) => {
-      if (!this.ended) {
-        if (ev.code >= 4001 && ev.code <= 4007) this.events.onError(`通话被服务端关闭（${ev.code}）`);
-        this.events.onState('ended');
-      }
-      void this.stopMic();
+      if (!this.ended && ev.code >= 4001 && ev.code <= 4007) this.events.onError(`通话被服务端关闭（${ev.code}）`);
+      this.terminate('remote_close');
     };
-    this.ws.onerror = () => this.events.onError('通话连接失败');
+    this.ws.onerror = () => { if (!this.ended) this.events.onError('通话连接失败'); };
     await new Promise<void>((resolve, reject) => {
       const w = this.ws!;
-      w.onopen = () => resolve();
-      w.onerror = () => reject(new Error('ws_connect_failed'));
+      this.connectSettle = { resolve, reject };
+      w.onopen = () => { this.connectSettle = null; resolve(); };
+      w.onerror = () => { this.connectSettle = null; reject(new Error('ws_connect_failed')); };
     });
+    // P3：等待期间已被终止（远端关闭/挂断）——不再发 ready（旧实现 CONNECTING 挂断后
+    // 仍可能送出握手帧）
+    if (this.ended) return;
     this.send({ t: 'ready', protocol: 2, capabilities: { playback_drain: true, voice_interrupt: true } });
   }
 
@@ -80,6 +84,7 @@ export class CallClient {
   }
 
   private onMessage(data: unknown): void {
+    if (this.ended) return; // P3：终局后旧回调不复活任何链路
     if (typeof data === 'string') {
       let msg: Record<string, unknown>;
       try { msg = JSON.parse(data) as Record<string, unknown>; } catch { return; }
@@ -283,11 +288,13 @@ registerProcessor('uplink', UplinkProcessor);`;
     const ctx = this.ctx;
     if (!p || !ctx) return;
     const wait = Math.max(0, (p.nextTime - ctx.currentTime) * 1000 + 60);
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.drainTimers.delete(timer);
       if (this.ended || this.cancelledStreams.has(streamId)) return;
       this.send({ t: 'playback_drained', stream_id: streamId });
       this.drainedStreams.add(streamId);
     }, wait);
+    this.drainTimers.add(timer);
   }
 
   /** 真静音开关：静音即停上行并收尾在途输入（已上行部分如实成轮）、冻结 VAD；
@@ -303,10 +310,32 @@ registerProcessor('uplink', UplinkProcessor);`;
 
   async hangup(): Promise<void> {
     if (this.ended) return;
-    this.ended = true;
     try { this.send({ t: 'abort', input_id: this.inputId }); } catch { /* 已关 */ }
-    await this.stopMic();
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close(1000, 'hangup');
+    this.terminate('local_hangup');
+  }
+
+  /** P3（V03）：唯一终局——主动挂断、远端关闭、连接失败、组件卸载共用。
+   *  幂等：先封闭代际（ended），再 settle 连接等待、断回调、关 CONNECTING/OPEN
+   *  socket、停采集/工作台/上下文/播放、清 drain 定时器。晚到 open/授权/消息
+   *  不再重建任何链路（旧实现 CONNECTING 不关 socket、remote close 不置 ended，
+   *  授权晚到仍重建 AudioContext 回 listening）。 */
+  private terminate(reason: 'local_hangup' | 'remote_close'): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.inputLive = false;
+    this.connectSettle?.reject(new Error(`call_terminated:${reason}`));
+    this.connectSettle = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      try { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, reason); } catch { /* 已断 */ }
+    }
+    void this.stopMic();
+    for (const t of this.drainTimers) clearTimeout(t);
+    this.drainTimers.clear();
     this.events.onState('ended');
   }
 
