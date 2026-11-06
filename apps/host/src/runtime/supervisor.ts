@@ -380,6 +380,9 @@ export class TurnSupervisor {
    */
   async runBackgroundTurn(opts: {
     kind: 'autonomous' | 'keepwarm';
+    /** RB2-03（复审 20261106 第二轮）：用户返回让位资格——与预算同一控制类型分类
+     *  （keepwarm/free_activity 让位；预约唤醒按普通回合规则继续）。缺省=仅 keepwarm。 */
+    yieldEligible?: boolean;
     runId: string;
     conversationId: string;
     payload: Record<string, unknown>;
@@ -512,7 +515,8 @@ export class TurnSupervisor {
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
-        yieldRequested: opts.kind === 'keepwarm' && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
+        // RB2-03：让位资格由调用方按控制类型传入（keepwarm/free_activity），同一检查
+        yieldRequested: (opts.yieldEligible ?? opts.kind === 'keepwarm') && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
       },
     });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.

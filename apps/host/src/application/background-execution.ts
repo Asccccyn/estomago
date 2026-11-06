@@ -67,6 +67,8 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
         return supervisor.runBackgroundTurn({
           kind, runId: input.runId, conversationId: input.conversationId, payload: input.payload,
           isCancelRequested: input.isCancelRequested, registerAbort: input.registerAbort,
+          // RB2-03：让位与预算同一控制类型分类（keepwarm/free_activity 让位；预约继续）
+          yieldEligible: control === 'keepwarm' || control === 'free_activity',
           recordDispatch: (info) => scheduler.recordDispatchStart({ runId: input.runId, ...info, capabilityName: info.capabilityName ?? null }),
           maxModelRequests: es.autonomous.max_model_requests_per_run,
         });

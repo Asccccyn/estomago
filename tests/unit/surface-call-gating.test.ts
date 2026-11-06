@@ -158,3 +158,65 @@ test('RB01：preparePhase 请求门——作业在通话开始前登记、drain 
     assert.equal(f.solRequests(), 0, '零 Sol 请求');
   } finally { await f.svc.stop().catch(() => {}); f.close(); }
 });
+
+// —— RB2-01（复审 20261106 第二轮）：活动事实的真实生产者与期限 ——
+
+test('RB2-01：模型 invite 建立活动投影——响铃期 Sol 失效，接听/拒接收口镜像', async () => {
+  const f = fixture();
+  try {
+    const { VoiceCallService } = await import('../../apps/host/src/modules/voice/call-service.ts');
+    const siren = {
+      status: 'available',
+      createInvite: async () => ({ inviteId: 'inv_rb2_1', expiresAt: Date.now() + 45_000 }),
+      listInvites: async () => ({ active: null, recent: [] }),
+      cancelInvite: async () => ({ state: 'cancelled' }),
+      requestHangup: async () => ({ accepted: true }),
+      callTurnAudio: async () => null,
+    };
+    const calls = new VoiceCallService({ db: f.db, sirenCall: siren as never, surfacing: f.svc });
+    const ctx = { roomId: 'primary', windowId: 'w', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'rb2-invite' };
+    // 先放一个在途 Sol 作业——invite 后必须失效（活动开始触发）
+    const chat = f.submit('rb2-inv-pre', 'invite 前想起一件事');
+    f.register(chat.message.id, 1, chat.message.sequence, 'invite 前想起一件事', null);
+    const invited = await calls.control({ action: 'invite' }, ctx as never);
+    assert.equal(invited.ok, true);
+    const mirror = f.db.prepare("SELECT state FROM voice_invites WHERE invite_id='inv_rb2_1'").get() as { state: string };
+    assert.equal(mirror.state, 'pending', 'S 邀请在 E 落忠实投影');
+    const job = f.db.prepare('SELECT state, reason_code FROM surfacing_jobs WHERE source_message_id=?').get(chat.message.id) as { state: string; reason_code: string | null };
+    assert.equal(job.state, 'cancelled', '模型 invite 响铃＝活动开始：在途 Sol 失效');
+    assert.equal(job.reason_code, 'CALL_ACTIVE');
+    // 响铃期间普通文字零登记（复审反例：E 无投影→Sol 1）
+    const chat2 = f.submit('rb2-inv-during', '响铃期间普通文字');
+    f.register(chat2.message.id, 1, chat2.message.sequence, '响铃期间普通文字', null);
+    assert.equal((f.db.prepare('SELECT COUNT(*) n FROM surfacing_jobs WHERE source_message_id=?').get(chat2.message.id) as { n: number }).n, 0, '模型 invite pending 期 Sol 0');
+    // 镜像到期后（读时解释）恢复
+    f.db.prepare('UPDATE voice_invites SET expires_at=? WHERE invite_id=?').run(Date.now() - 1000, 'inv_rb2_1');
+    const chat3 = f.submit('rb2-inv-after', '邀请过期后的新文字');
+    f.register(chat3.message.id, 1, chat3.message.sequence, '邀请过期后的新文字', null);
+    assert.equal((f.db.prepare('SELECT COUNT(*) n FROM surfacing_jobs WHERE source_message_id=?').get(chat3.message.id) as { n: number }).n, 1, '镜像到期（无前端轮询）后恢复');
+  } finally { f.close(); }
+});
+
+test('RB2-01：用户 dial 自然到期不依赖前端轮询——到期后新文字恢复 Sol，过期 dial 不可再接听', async () => {
+  const f = fixture();
+  try {
+    const dial = await f.http('dial', 'POST', '/api/v1/calls/dial', {});
+    assert.equal(dial.status, 200);
+    assert.equal(dial.body['state'], 'pending');
+    // 时间边界推进 60 秒（等效复审的时钟前移）：回拨 created_at，不调用 GET /dial/current
+    f.db.prepare("UPDATE dial_requests SET created_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), dial.body['request_id']);
+    const chat = f.submit('rb2-dial-expired', '过期未接听后的新文字');
+    f.register(chat.message.id, 1, chat.message.sequence, '过期未接听后的新文字', null);
+    assert.equal((f.db.prepare('SELECT COUNT(*) n FROM surfacing_jobs WHERE source_message_id=?').get(chat.message.id) as { n: number }).n, 1, '复审反例：不轮询时过期 dial 不再永久抑制 Sol');
+    const stillPending = f.db.prepare("SELECT state FROM dial_requests WHERE id=?").get(dial.body['request_id']) as { state: string };
+    assert.equal(stillPending.state, 'pending', '行未落 expired（UI 惰性收口不变），活动事实按 TTL 读时解释');
+    // 过期 dial 不可再接听（同一到期规则）
+    const { VoiceCallService } = await import('../../apps/host/src/modules/voice/call-service.ts');
+    const siren = { status: 'available', createCall: async () => ({ ok: true, callId: 'c_x', wsUrl: 'w', token: 't', expiresAt: null }) };
+    const calls = new VoiceCallService({ db: f.db, sirenCall: siren as never });
+    const ctx = { roomId: 'primary', windowId: 'w', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'rb2-accept' };
+    const accepted = await calls.control({ action: 'accept_call' }, ctx as never);
+    assert.equal(accepted.ok, false, '过期请求不再是等待中');
+    assert.equal((accepted as { error: { error_code: string } }).error.error_code, 'NO_PENDING_DIAL', 'accept 共用同一到期规则');
+  } finally { f.close(); }
+});

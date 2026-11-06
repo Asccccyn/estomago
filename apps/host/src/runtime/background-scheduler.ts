@@ -103,8 +103,13 @@ export class BackgroundScheduler {
    */
   notePendingUserChat(): void {
     for (const [runId, c] of this.aborts) {
-      const row = this.d.db.prepare('SELECT kind FROM background_runs WHERE id = ?').get(runId) as { kind: string } | undefined;
-      if (row?.kind === 'keepwarm') this.yieldRequested.add(runId);
+      // RB2-03（复审 20261106 第二轮）：让位按既有控制类型（backgroundControl）判定，
+      // 与预算同一分类——keepwarm 与自由活动（autonomous+origin=free_activity）让位；
+      // 预约唤醒（self_schedule）按普通回合规则继续，不被一刀切取消。
+      const row = this.d.db.prepare(
+        'SELECT r.kind, t.origin FROM background_runs r JOIN background_tasks t ON t.id = r.task_id WHERE r.id = ?',
+      ).get(runId) as { kind: string; origin: string } | undefined;
+      if (row && (row.kind === 'keepwarm' || (row.kind === 'autonomous' && row.origin === 'free_activity'))) this.yieldRequested.add(runId);
       void c;
     }
   }
@@ -274,24 +279,8 @@ export class BackgroundScheduler {
     this.aborts.set(runId, controller);
     const isCancelRequested = (): boolean => this.cancelRequested.has(runId);
     const registerAbort = (c: AbortController): void => { this.aborts.set(runId, c); if (this.cancelRequested.has(runId)) c.abort(); };
-    const finish = (state: RunState, resultCode: string | null, cancelReason: string | null = null): void => {
-      const nowIso = new Date(this.now()).toISOString();
-      const dispatched = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id=?').get(runId) as { n: number }).n;
-      const waiting = task.kind === 'autonomous' && dispatched === 0 && ((cancelReason === 'HOST_STOPPED') || (cancelReason === null && (resultCode === 'NO_ACTIVE_WINDOW' || resultCode === 'CONTEXT_SELECTION_REQUIRED')));
-      if (waiting) state = 'claimed';
-      // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
-      // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
-      // R1（复审 b137e98）：cancelling（stop-run 的待收尾活态）必须可被收口——
-      // 旧条件漏掉它导致 run 永远 cancelling，同 actor+kind 的后续任务被领取门挡住。
-      const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
-      this.aborts.delete(runId);
-      this.cancelRequested.delete(runId);
-      this.cancelReasons.delete(runId);
-      this.yieldRequested.delete(runId);
-      if (waiting || finished === 0) return;
-      if (state === 'cancelled' && task.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
-      this.finalizeTaskAfterRun(task, state, nowIso);
-    };
+    const finish = (state: RunState, resultCode: string | null, cancelReason: string | null = null): void =>
+      this.finishRun(runId, task, state, resultCode, cancelReason);
     try {
       const r = await this.d.executor.executeRun({ runId, taskId: task.id, kind: task.kind, origin: task.origin, conversationId: task.conversation_id, payload: JSON.parse(task.payload_json) as Record<string, unknown>, isCancelRequested, registerAbort });
       if (this.cancelRequested.has(runId)) finish('cancelled', r.result_code ?? 'CANCELLED', this.cancelReasons.get(runId) ?? 'RUN_STOPPED');
@@ -300,6 +289,35 @@ export class BackgroundScheduler {
       if (this.cancelRequested.has(runId)) finish('cancelled', 'CANCELLED', this.cancelReasons.get(runId) ?? 'RUN_STOPPED');
       else finish('failed', 'BACKGROUND_EXECUTOR_FAILED');
     }
+  }
+
+  /** RB2-02（复审 20261106 第二轮）：结束一次执行的共同领域操作——执行完成、无执行者
+   *  停止及需要收尾的恢复入口共用：run 终态、task 资格收尾（finalizeTaskAfterRun）与
+   *  本次资源释放在同一出口。删除 stopRun 的独立 run 终态 SQL 旁路（旧旁路绕过任务
+   *  终结，run 已停而 task 仍伪 scheduled——同 occurrence 实际不能再执行）。 */
+  private finishRun(runId: string, task: TaskRow | null, state: RunState, resultCode: string | null, cancelReason: string | null = null): void {
+    const nowIso = new Date(this.now()).toISOString();
+    const dispatched = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id=?').get(runId) as { n: number }).n;
+    const waiting = task?.kind === 'autonomous' && dispatched === 0 && ((cancelReason === 'HOST_STOPPED') || (cancelReason === null && (resultCode === 'NO_ACTIVE_WINDOW' || resultCode === 'CONTEXT_SELECTION_REQUIRED')));
+    if (waiting) state = 'claimed';
+    // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
+    // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
+    // R1（复审 b137e98）：cancelling（stop-run 的待收尾活态）必须可被收口。
+    const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
+    this.aborts.delete(runId);
+    this.cancelRequested.delete(runId);
+    this.cancelReasons.delete(runId);
+    this.yieldRequested.delete(runId);
+    if (waiting || finished === 0) return;
+    if (state === 'cancelled' && task?.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
+    if (task) this.finalizeTaskAfterRun(task, state, nowIso);
+  }
+
+  /** RB2-02：按 run 身份取其适用修订的 task（修订已变=null——收尾不作用于新版本）。 */
+  private taskOfRun(runId: string): TaskRow | null {
+    return (this.d.db.prepare(
+      'SELECT t.* FROM background_tasks t JOIN background_runs r ON r.task_id = t.id AND r.task_revision = t.revision WHERE r.id = ?',
+    ).get(runId) as TaskRow | undefined) ?? null;
   }
 
   /** 领取≠消耗的收尾（RB04 复审 20261106 扩到全部 once 任务——reminder 同为 once，
@@ -323,15 +341,11 @@ export class BackgroundScheduler {
     const row = this.d.db.prepare('SELECT id, state FROM background_runs WHERE id = ?').get(runId) as { id: string; state: RunState } | undefined;
     if (!row) return null;
     if (row.state === 'claimed' || row.state === 'running') {
-      // P5（四仓审计 20261106，T19）：已无在途执行者（等待派发的 claimed——如
-      // NO_ACTIVE_WINDOW/CONTEXT_SELECTION_REQUIRED 等待态、或领取后未起执行的
-      // 残留）直接收口为 cancelled，不落永久 cancelling（旧实现同 actor+kind 的
-      // 后续任务被领取门永久挡住）；有在途执行者才请求取消并等真实 finish。
+      // P5（T19）+RB2-02：已无在途执行者（等待派发的 claimed）直接经共同收尾出口
+      // 结束——run 与 task 资格同一事务边界一致收口（旧实现绕过任务终结）；
+      // 有在途执行者才请求取消并等真实 finish。
       if (!this.aborts.has(runId)) {
-        const nowIso = new Date(this.now()).toISOString();
-        this.d.db.prepare(
-          "UPDATE background_runs SET state = 'cancelled', result_code = 'CANCELLED', cancel_reason = 'RUN_STOPPED', finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running')",
-        ).run(nowIso, nowIso, runId);
+        this.finishRun(runId, this.taskOfRun(runId), 'cancelled', 'CANCELLED', 'RUN_STOPPED');
         return { state: 'cancelled' };
       }
       this.cancelRequested.add(runId);

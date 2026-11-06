@@ -162,6 +162,8 @@ if (route === 'POST /api/v1/calls') {
     .run(created.callId, rawBody.conversation_id, new Date().toISOString(), created.expiresAt ?? null, mode);
   // P3（U05）：通话进入活动范围（建立/准备期起）——取消该会话在途 Sol 浮现作业
   d.surfacing?.cancelForActiveCall?.(rawBody.conversation_id);
+  // RB2-01：建呼即通话活动事实——该会话的邀请投影收口（活动由 voice_calls 承载）
+  d.db.prepare("UPDATE voice_invites SET state='ended', ended_at=? WHERE conversation_id=? AND state='pending'").run(new Date().toISOString(), rawBody.conversation_id);
   return json(res, 200, { call_id: created.callId, ws_url: created.wsUrl, token: created.token, ...(created.expiresAt ? { expires_at: created.expiresAt } : {}), memory_only: true });
 }
 const estCallEnd = /^DELETE \/api\/v1\/calls\/([^/]+)$/.exec(route);
@@ -211,6 +213,12 @@ if (inviteAction) {
   if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
   try {
     const out = await d.sirenCall.transitionInvite(decodeURIComponent(inviteAction[1]!), inviteAction[2] === 'accept' ? 'accept' : 'decline');
+    // RB2-01：邀请在 S 落定（accepted/declined/终态）——E 侧活动投影同步收口
+    const inviteState = out?.['state'] as string | undefined;
+    if (inviteState && inviteState !== 'pending') {
+      d.db.prepare("UPDATE voice_invites SET state='ended', ended_at=? WHERE invite_id=? AND state='pending'")
+        .run(new Date().toISOString(), decodeURIComponent(inviteAction[1]!));
+    }
     // F-02（2026-10-25）+R-03（复审 2026-10-26/二）：接听交接在这里收口——
     // 邀请落定 accepted 后由宿主建 Siren 通话（内部凭据不进前端），连接信息随本次
     // 响应交付；前端不再另起"她→他"反向 dial。归属合同（invite_call_handoffs）：

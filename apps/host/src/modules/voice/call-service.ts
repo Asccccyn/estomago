@@ -54,13 +54,22 @@ export function isVoiceCallActive(db: Db, conversationId: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(conversationId));
 }
 
-/** RB01（复审 20261106）：通话域"活动"统一事实——响铃（dial_requests pending）、
- *  准备/预留与已建立（voice_calls active）都算活动。Sol 浮现的登记门、请求门
- * （prepare/augment/finalAdmit）与作业失效触发共用本判定；不据 voice 字符串、
- *  前端开关或单一入口路由猜测活动。 */
-export function isCallActivityActive(db: Db, conversationId: string): boolean {
-  return isVoiceCallActive(db, conversationId)
-    || Boolean(db.prepare("SELECT 1 FROM dial_requests WHERE conversation_id=? AND state='pending' LIMIT 1").get(conversationId));
+/** RB01（复审 20261106）：通话域"活动"统一事实。
+ *  RB2-01（复审 20261106 第二轮）：真实生产者与期限都收拢在此——
+ *  a) 用户 dial：pending 且**未到期**（期限在读时按 TTL 解释，不依赖前端轮询
+ *     GET /calls/dial/current 才落 expired）；
+ *  b) 模型主动 invite：S 为正本，E 忠实投影 voice_invites（expires_at 界定，
+ *     接听/拒接/取消时落 ended）；
+ *  c) 预留/已建立通话（voice_calls active）。
+ *  Sol 门、后台忙时判定、accept 准入共用本判定；发起与终态写入走领域出口。 */
+export function isCallActivityActive(db: Db, conversationId: string, nowMs: number = Date.now()): boolean {
+  if (isVoiceCallActive(db, conversationId)) return true;
+  if (Boolean(db.prepare(
+    "SELECT 1 FROM dial_requests WHERE conversation_id=? AND state='pending' AND CAST(strftime('%s',created_at) AS INTEGER)*1000 + ttl_ms > ? LIMIT 1",
+  ).get(conversationId, nowMs))) return true;
+  return Boolean(db.prepare(
+    "SELECT 1 FROM voice_invites WHERE conversation_id=? AND state='pending' AND expires_at > ? LIMIT 1",
+  ).get(conversationId, nowMs));
 }
 
 export class VoiceCallService {
@@ -85,10 +94,18 @@ export class VoiceCallService {
       if (args.action === 'invite') {
         const invite = await this.sirenCall!.createInvite(ctx.roomId, { ttlSeconds: args.ttl_seconds });
         if (!invite) return { ok: false, error: { error_code: 'SIREN_NOT_CONFIGURED' } };
+        // RB2-01：S 为邀请正本；E 落忠实投影供同步准入（Sol 门/忙时判定按
+        // expires_at 读时解释，不依赖前端轮询）。接听/拒接由路由收口 ended。
+        this.db.prepare("INSERT OR REPLACE INTO voice_invites(invite_id, conversation_id, state, expires_at, created_at) VALUES (?,?,'pending',?,?)")
+          .run(invite.inviteId, ctx.roomId, invite.expiresAt, new Date().toISOString());
+        // 通话活动开始（他向她响铃）——统一触发在途 Sol 作业失效
+        this.surfacing?.cancelForActiveCall(ctx.roomId);
         return { ok: true, value: { invite_id: invite.inviteId, state: 'pending', expires_at: invite.expiresAt, note: '邀请已发出：她的页面会显示来电；接听/拒接由她决定，过期由服务端回收，未接不等于拒接' } };
       }
       if (args.action === 'accept_call' || args.action === 'decline_call') {
-        const req = this.db.prepare("SELECT id, analysis_mode FROM dial_requests WHERE conversation_id=? AND state='pending' ORDER BY created_at DESC LIMIT 1").get(ctx.roomId) as { id: string; analysis_mode: string | null } | undefined;
+        // RB2-01：accept/decline 共用同一到期规则——过期请求不再是"等待中"，
+        // 不能因前端未轮询而把过期 dial 当可接听的活动事实
+        const req = this.db.prepare("SELECT id, analysis_mode FROM dial_requests WHERE conversation_id=? AND state='pending' AND CAST(strftime('%s',created_at) AS INTEGER)*1000 + ttl_ms > ? ORDER BY created_at DESC LIMIT 1").get(ctx.roomId, Date.now()) as { id: string; analysis_mode: string | null } | undefined;
         if (!req) return { ok: false, error: { error_code: 'NO_PENDING_DIAL', detail: '没有等待中的通话请求（可能已过期或已处理）' } };
         if (args.action === 'decline_call') {
           this.db.prepare("UPDATE dial_requests SET state='declined', updated_at=? WHERE id=? AND state='pending'").run(new Date().toISOString(), req.id);

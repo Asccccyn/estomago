@@ -20,6 +20,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 
 function setup() {
+  const s = { runBackgroundTurnImpl: null as null | ((opts: { kind: string; runId: string }) => { outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }) };
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'p5-close-'));
   const db = openDatabase(root);
   migrate(db, sha256Hex);
@@ -30,7 +31,7 @@ function setup() {
   messages.ensureConversation('primary');
   const exec = createBackgroundExecution({
     messages, events, bgSettings: settings,
-    supervisor: { enqueueBackground: async <T,>(_cid: string, run: () => Promise<T>) => run(), runBackgroundTurn: (async () => ({ outcome: 'completed' as const })) as never },
+    supervisor: { enqueueBackground: async <T,>(_cid: string, run: () => Promise<T>) => run(), runBackgroundTurn: (async (opts: { kind: string; runId: string }) => (s.runBackgroundTurnImpl?.(opts) ?? { outcome: 'completed' as const })) as never },
     scheduler: { recordDispatchStart: (async () => ({ allowed: true, dispatchId: 'd1' })) as never },
     db,
   });
@@ -45,7 +46,8 @@ function setup() {
     ).run(id, 'primary', dueAt, dueAt, now, now);
     return id;
   };
-  return { root, db, sched, exec, messages, seedReminder, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
+  const enableModelKinds = () => { settings.applyUpdate({ expectedRevision: settings.revision(), operationId: 'p5-enable', patch: { autonomous_enabled: true, free_activity_enabled: true, autonomous_daily_cost_cap_usd: 10, free_activity_daily_cost_cap_usd: 10 } }); };
+  return { root, db, sched, exec, messages, settings, enableModelKinds, seedReminder, overrideRun: (impl: NonNullable<typeof s.runBackgroundTurnImpl>) => { s.runBackgroundTurnImpl = impl; }, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
 test('T16/RB04：真实领取→崩溃→恢复→重放只递交一条系统消息；once 提醒收口不再伪 scheduled', async () => {
@@ -98,5 +100,85 @@ test('T19：stopRun 对无在途执行者的 claimed run 直接收口', () => {
     const row = f.db.prepare('SELECT state, finished_at FROM background_runs WHERE id=?').get(runId) as { state: string; finished_at: string | null };
     assert.equal(row.state, 'cancelled');
     assert.ok(row.finished_at !== null, 'run 已收口（有完成时间）');
+  } finally { f.close(); }
+});
+
+// —— RB2-02/RB2-03（复审 20261106 第二轮）——
+
+test('RB2-02：无执行者 stop 经共同收尾——run 与 task 资格一致（不再伪 scheduled）', async () => {
+  const f = setup();
+  try {
+    const taskId = f.seedReminder('2026-11-06T01:59:00.000Z');
+    f.sched.start();
+    try {
+      await f.sched.tick(); // 领取并投递（真实链）
+      const stopped = f.db.prepare("SELECT id FROM background_runs WHERE task_id=? AND state='cancelled'").get(taskId) as { id: string } | undefined;
+      void stopped;
+      // 第二阶段：预约（autonomous+self_schedule）无活动窗→NO_ACTIVE_WINDOW 等待态（真实执行器如实返回）
+      f.enableModelKinds();
+      const taskId2 = `bgt_${genId('x').slice(2)}`;
+      const now2 = new Date().toISOString();
+      f.db.prepare(
+        `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at)
+         VALUES (?,?,'jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,'{}','qiaosheng','self_schedule',?,?)`,
+      ).run(taskId2, 'primary', '2026-11-06T01:58:00.000Z', '2026-11-06T01:58:00.000Z', now2, now2);
+      f.overrideRun(() => ({ outcome: 'noop' as const, result_code: 'NO_ACTIVE_WINDOW' }));
+      await f.sched.tick();
+      const waiting = f.db.prepare("SELECT id, state, result_code FROM background_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1").get(taskId2) as { id: string; state: string; result_code: string | null };
+      assert.equal(waiting.state, 'claimed', '零派发等待态保留 claimed（不上锁也不终结）');
+      // 正式 stop：走共同收尾出口——run cancelled 且 task 资格一致收口
+      const out = f.sched.stopRun(waiting.id);
+      assert.equal(out?.state, 'cancelled');
+      const run = f.db.prepare('SELECT state, finished_at FROM background_runs WHERE id=?').get(waiting.id) as { state: string; finished_at: string | null };
+      assert.equal(run.state, 'cancelled');
+      assert.ok(run.finished_at);
+      const task = f.db.prepare('SELECT enabled, next_due_at, control_reason FROM background_tasks WHERE id=?').get(taskId2) as { enabled: number; next_due_at: string | null; control_reason: string | null };
+      assert.equal(task.enabled, 0, 'RB2-02：once 任务随 stop 终结（旧实现 enabled=1 伪 scheduled）');
+      assert.equal(task.next_due_at, null);
+      assert.equal(task.control_reason, 'stopped_needs_review', '待核原因保留');
+      // 另一到期任务不被阻塞
+      const taskId3 = f.seedReminder('2026-11-06T01:57:00.000Z');
+      f.overrideRun(null as never);
+      await f.sched.tick();
+      const run3 = f.db.prepare('SELECT state FROM background_runs WHERE task_id=?').get(taskId3) as { state: string };
+      assert.equal(run3.state, 'completed', 'stop 后同 kind 后继任务可正常领取执行');
+    } finally { f.sched.stop(); }
+  } finally { f.close(); }
+});
+
+test('RB2-03：让位按控制类型分类——free_activity 让位、预约唤醒继续', async () => {
+  const f = setup();
+  try {
+    const mkTask = (origin: string, due: string): string => {
+      const id = `bgt_${genId('x').slice(2)}`;
+      const now = new Date().toISOString();
+      f.db.prepare(
+        `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at)
+         VALUES (?,?,'jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,'{}','qiaosheng',?,?,?)`,
+      ).run(id, 'primary', due, due, origin, now, now);
+      return id;
+    };
+    f.enableModelKinds();
+    const cases: Array<[string, boolean]> = [['free_activity', true], ['self_schedule', false]];
+    for (const [origin, shouldYield] of cases) {
+      const taskId = mkTask(origin, '2026-11-06T01:59:00.000Z');
+      f.sched.start();
+      try {
+        let runIdSeen: string | null = null;
+        let yieldAtBoundary: boolean | null = null;
+        f.overrideRun((opts) => {
+          runIdSeen = opts.runId;
+          // 用户消息在安全请求边界到达（执行体内——aborts 已登记，真实触发路径）；
+          // 在 finish 清理之前观察让位标记
+          f.sched.notePendingUserChat();
+          yieldAtBoundary = f.sched.isYieldRequested(opts.runId);
+          return { outcome: 'completed' as const, result_code: 'synthetic-done' };
+        });
+        await f.sched.tick();
+        assert.ok(runIdSeen, '执行真实发生');
+        assert.equal(yieldAtBoundary, shouldYield, `${origin} 的让位分类`);
+        f.overrideRun(null as never);
+      } finally { f.sched.stop(); }
+    }
   } finally { f.close(); }
 });
