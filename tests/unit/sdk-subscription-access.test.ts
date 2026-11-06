@@ -243,7 +243,7 @@ function usageEvents(input: number, read: number | null, write: number | null) {
 }
 
 test('SDK cached input calibrates capacity and records using the complete request total', async t => {
-  const f = fixture(t, () => usageEvents(12, 20000, 0), { deferred: true, windows: { soft_limit_tokens: 12000, model_context_capacity: 100000 } });
+  const f = fixture(t, () => usageEvents(12, 20000, 0), { deferred: true, windows: { soft_limit_tokens: 20000, model_context_capacity: 100000 } });
   assert.equal((await f.send('合成缓存请求')).state, 'completed');
   const records = f.records();
   assert.deepEqual([records.context.lastActualInput, records.cache.lastRead, records.cache.lastWrite, records.cache.lastNoncached], [20012, 20000, 0, 12]);
@@ -316,7 +316,7 @@ test('background fallback records the actual request model in usage and the exis
 
 test('capacity review fallback uses the actual OR model in quiet usage', async t => {
   const model = 'deepseek/deepseek-chat-v3.1';
-  const f = fixture(t, round => round === 1 ? usageEvents(12, 20000, 0) : [limit()], { orModel: model, deferred: true, windows: { soft_limit_tokens: 12000, model_context_capacity: 100000 } });
+  const f = fixture(t, round => round === 1 ? usageEvents(12, 20000, 0) : [limit()], { orModel: model, deferred: true, windows: { soft_limit_tokens: 20000, model_context_capacity: 100000 } });
   await f.send('建立已见历史');
   await f.send('触发容量选集');
   const window = f.windows.activeWindow('synthetic')!;

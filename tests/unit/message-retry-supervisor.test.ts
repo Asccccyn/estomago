@@ -154,15 +154,16 @@ test('configuration drift after retry acceptance blocks without invalidating the
     const result = ctx.retry.retry({ conversationId: 'c1', messageId: failed.message.id, content: initialInput, expectedRevision: 1, operationKey: 'retry-config' });
     const windowBefore = JSON.stringify(ctx.windows.activeWindow('c1'));
     const trajectoryBefore = JSON.stringify(ctx.trajectory.forWindow(window.id));
-    ctx.config.openrouter.model = 'anthropic/different-synthetic-model';
+    // 2026-10-08 裁定（现行合同）：运行时换模型不换窗——模型不在边界指纹内，
+    // 旧测试的 RETRY_CONTEXT_CHANGED 阻断语义已退役；重试以生效模型照常发送，
+    // 窗口/轨迹不被作废。
+    ctx.config.openrouter.model = 'anthropic/claude-different-synthetic';
     ctx.supervisor.enqueue(result.turn_id);
     await ctx.supervisor.waitIdle();
-    assert.equal(ctx.payloads.length, 2);
-    assert.equal(JSON.stringify(ctx.windows.activeWindow('c1')), windowBefore);
-    assert.equal(JSON.stringify(ctx.trajectory.forWindow(window.id)), trajectoryBefore);
+    assert.equal(ctx.payloads.length, 3, '换模型后重试照常发送（新请求）');
+    assert.equal(JSON.stringify(ctx.windows.activeWindow('c1')), windowBefore, '窗口不被作废（换模型不换窗）');
     const attempt = ctx.db.prepare('SELECT state,blocked_reason FROM attempts WHERE id=?').get(result.attempt_id) as { state: string; blocked_reason: string };
-    assert.equal(attempt.state, 'blocked');
-    assert.match(attempt.blocked_reason, /^RETRY_CONTEXT_CHANGED:/);
+    assert.equal(attempt.state, 'completed');
   } finally { ctx.db.close(); }
 });
 
