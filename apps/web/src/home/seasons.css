@@ -16,12 +16,13 @@ button { font: inherit; -webkit-tap-highlight-color: transparent; }
 .scene-hotspot { min-width: 36px; min-height: 36px; }
 .scene-hotspot:focus-visible, .animal-pair:focus-visible { outline: 1px dashed rgba(86, 67, 48, .72); outline-offset: 3px; border-radius: 8px; }
 .scene-hotspot:focus:not(:focus-visible), .animal-pair:focus:not(:focus-visible) { outline: none; }
-.animal-pair { width: var(--pair-width); aspect-ratio: var(--pair-aspect); z-index: 3; }
+.animal-pair { width: var(--pair-width); aspect-ratio: var(--pair-aspect); z-index: 3; pointer-events: none; }
 .animal-pair[hidden] { display: none; }
 .animal-pair .animal { position: absolute; top: 0; width: var(--animal-width-in-pair); aspect-ratio: 1; }
 .animal-pair .animal:first-child { left: 0; }
 .animal-pair .animal:last-child { right: 0; }
 .animal-size { position: absolute; inset: 0; transform-origin: 50% 88%; }
+.animal-pair .animal-size { pointer-events: auto; }
 .animal-sprite { display: block; width: 100%; height: 100%; background-repeat: no-repeat; }
 .animal-cycle { position: absolute; inset: 0; background-repeat: no-repeat; opacity: 0; pointer-events: none; }
 .animal-pair .animal-sprite { animation: breathe 4.9s ease-in-out infinite; }
@@ -43,3 +44,15 @@ html[data-home-hidden="true"] .animal-sprite { animation-play-state: paused; }
 .window-spring-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 .window-panorama, .window-scene-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
 .window-scene-layer { z-index: 2; }
+
+.guide-hotspot, .point-hotspot { z-index: 4; border-radius: 50%; }
+.guide-hotspot::before, .guide-hotspot::after { content: ''; position: absolute; left: 50%; top: 50%; pointer-events: none; transform: translate(-50%, -50%); }
+.guide-hotspot::before { width: 52px; height: 52px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,229,.96) 0%, rgba(255,241,143,.78) 16%, rgba(255,219,101,.32) 38%, rgba(255,219,101,0) 72%); filter: blur(.6px); animation: guide-glow 2.6s ease-in-out infinite; }
+.guide-hotspot::after { background: #fffad8; animation: guide-core 2.6s ease-in-out infinite; }
+.guide-hotspot[data-guide="star"]::after { width: 18px; height: 18px; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 96%, 50% 74%, 21% 96%, 32% 57%, 2% 35%, 39% 35%); filter: blur(.3px); }
+.guide-hotspot[data-guide="firefly"]::before { width: 54px; height: 54px; animation-duration: 3.1s; animation-delay: -.8s; }
+.guide-hotspot[data-guide="firefly"]::after { width: 9px; height: 11px; border-radius: 50%; background: radial-gradient(ellipse, #fffde8 15%, #fff09a 60%, #ffd46a); filter: blur(.4px); animation-duration: 3.1s; animation-delay: -.8s; }
+@keyframes guide-glow { 0%, 100% { opacity: .28; transform: translate(-50%, -50%) scale(.86); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); } }
+@keyframes guide-core { 0%, 100% { opacity: .72; transform: translate(-50%, -50%) scale(.95); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.13); } }
+html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="true"] .guide-hotspot::after { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .guide-hotspot::before, .guide-hotspot::after { animation: none; } }

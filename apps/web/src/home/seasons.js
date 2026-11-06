@@ -62,11 +62,11 @@
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .50, y: .24, w: .96, h: .46, target: 'blossoms' }],
     [
-      { action: 'wishes', label: '许愿星', x: .52, y: .20, w: .90, h: .38, target: 'stars' },
-      { action: 'reading', label: '共读', x: .50, y: .54, w: .96, h: .28, target: 'fireflies' },
+      { action: 'wishes', label: '许愿星', x: (783 - 426.5) / 426.5, y: 23 / 922, guide: 'star', target: 'stars' },
+      { action: 'reading', label: '共读', x: (692 - 426.5) / 426.5, y: 782 / 922, guide: 'firefly', target: 'fireflies' },
       { action: 'anniversaries', label: '纪念日', x: .24, y: .89, w: .31, h: .10, target: 'flowers' },
     ],
-    [{ action: 'moments', label: '朋友圈', x: .73, y: .46, w: .35, h: .14, target: 'wheat' }],
+    [{ action: 'moments', label: '朋友圈', x: (1231 - 853) / 426.5, y: 150 / 922, point: true, target: 'maple-leaf' }],
     [
       { action: 'album', label: '水獭相册', x: .56, y: .49, w: .18, h: .12, target: 'bedside-lamp', subject: 'otter' },
       { action: 'album', label: '小浣熊相册', x: .90, y: .15, w: .16, h: .13, target: 'dried-flowers', subject: 'raccoon' },
@@ -128,11 +128,12 @@
     for (const detail of actions[season]) {
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'scene-hotspot';
+      button.className = detail.guide ? 'scene-hotspot guide-hotspot' : detail.point ? 'scene-hotspot point-hotspot' : 'scene-hotspot';
+      if (detail.guide) button.dataset.guide = detail.guide;
       button.dataset.action = detail.action;
       button.dataset.target = detail.target;
       button.setAttribute('aria-label', detail.label);
-      Object.assign(button.style, { left: `${detail.x * 100}%`, top: `${detail.y * 100}%`, width: `${detail.w * 100}%`, height: `${detail.h * 100}%` });
+      Object.assign(button.style, { left: `${detail.x * 100}%`, top: `${detail.y * 100}%`, width: (detail.guide || detail.point) ? '44px' : `${detail.w * 100}%`, height: (detail.guide || detail.point) ? '44px' : `${detail.h * 100}%` });
       button.addEventListener('click', () => {
         if (busy || adjusting) return;
         const payload = { action: detail.action, season: seasonNames[season], target: detail.target };
@@ -529,7 +530,7 @@
   }
 
   const petals = Array.from({ length: 23 }, (_, i) => ({ x: (i * .381966) % 1, y: (i * .618034) % 1, speed: .012 + (i % 5) * .002, phase: i * 1.7 }));
-  const lights = Array.from({ length: 33 }, (_, i) => ({ x: .10 + ((i * .618034) % .82), y: .40 + ((i * .381966) % .49), phase: i * 2.3 }));
+  const lights = Array.from({ length: 33 }, (_, i) => ({ x: .10 + ((i * .618034) % .82), y: .40 + ((i * .381966) % .37), phase: i * 2.3 }));
   const stars = Array.from({ length: 28 }, (_, i) => ({ x: .13 + ((i * .381966) % .73), y: .035 + ((i * .618034) % .38), phase: i * 1.3 }));
   function drawAtmosphere(time) {
     ctx.clearRect(0, 0, width, height);
