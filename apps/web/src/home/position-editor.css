@@ -34,3 +34,7 @@ html[data-position-editor="true"] .animal-pair,
 html[data-position-editor="true"] .animal { pointer-events: none; }
 html[data-position-editor="true"] .animal[data-edit-selected="true"],
 html[data-position-editor="true"] .animal[data-edit-selected="true"] .animal-size { pointer-events: auto; }
+
+#position-editor .position-rotation output { min-width: 40px; }
+#position-editor #position-upright { flex: none; padding: 3px 6px; }
+#position-editor .position-layer-hint { margin-top: 4px; color: #8a755e; font-size: 11px; }

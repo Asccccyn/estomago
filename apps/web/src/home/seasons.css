@@ -39,5 +39,3 @@ html[data-home-hidden="true"] .animal-sprite { animation-play-state: paused; }
 @media (prefers-reduced-motion: reduce) { .animal-sprite { animation: none !important; } .animal-pair { transition: none; } }
 
 #seasons.editor-phone { width: min(100vw, calc(100dvh * 430 / 932)); margin-inline: auto; }
-
-.season-scene[data-season="spring"] .animal:first-child { z-index: 1; }

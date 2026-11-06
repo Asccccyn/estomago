@@ -11,7 +11,7 @@
   let target = 'otter';
   let together = false;
   let preview = 'phone';
-  let savedMessage = '拖动小动物，调整后点“保存位置”。';
+  let savedMessage = '位置、大小、角度和图层调好后，点“保存调整”。';
   const inRange = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
   try {
     const stored = JSON.parse(localStorage.getItem(storageKey));
@@ -19,10 +19,14 @@
       const valid = stored.version === 1 && Array.isArray(stored.seasons) && stored.seasons.length === 4 && stored.seasons.every(item =>
         item && inRange(item.x, .05, .95) && inRange(item.groundY, .15, .95) &&
         ['groundOffsets', 'xOffsets', 'bodySizes'].every(key => Array.isArray(item[key]) && item[key].length === 2 &&
-          item[key].every(value => inRange(value, key === 'bodySizes' ? .5 : -.4, key === 'bodySizes' ? 1.7 : .4))));
+          item[key].every(value => inRange(value, key === 'bodySizes' ? .5 : -.4, key === 'bodySizes' ? 1.7 : .4))) &&
+        (item.rotations === undefined || (Array.isArray(item.rotations) && item.rotations.length === 2 && item.rotations.every(value => inRange(value, -180, 180)))) &&
+        (item.frontAnimal === undefined || ['otter', 'raccoon'].includes(item.frontAnimal)));
       if (valid) {
-        positions = stored.seasons.map(({ x, groundY, groundOffsets, xOffsets, bodySizes }) => ({ x, groundY, groundOffsets, xOffsets, bodySizes }));
-        savedMessage = '已恢复这个浏览器中保存的位置。';
+        positions = stored.seasons.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }, index) => ({
+          x, groundY, groundOffsets, xOffsets, bodySizes, rotations: rotations ?? [0, 0], frontAnimal: frontAnimal ?? defaults[index].frontAnimal,
+        }));
+        savedMessage = '已恢复这个浏览器中保存的调整。';
       } else savedMessage = '旧的位置格式不适用，已显示当前主页位置。';
     }
   } catch { savedMessage = '未能读取本地草稿，可以调整后复制位置。'; }
@@ -43,7 +47,10 @@
       <p id="position-selection" role="status"></p>
       <div class="position-row position-nudge"><span>微调</span><button type="button" data-dx="-2" data-dy="0" aria-label="向左微调">←</button><button type="button" data-dx="0" data-dy="-2" aria-label="向上微调">↑</button><button type="button" data-dx="0" data-dy="2" aria-label="向下微调">↓</button><button type="button" data-dx="2" data-dy="0" aria-label="向右微调">→</button></div>
       <label class="position-size"><span id="position-scale-label">一起缩放</span> <input id="position-scale" type="range" min="50" max="160" step="1" value="100"><output id="position-scale-value">100%</output></label>
-      <div class="position-row"><button type="button" id="position-reset">恢复本季</button><button type="button" id="position-save">保存位置</button></div>
+      <div class="position-size position-rotation"><label id="position-rotation-label" for="position-rotation">水獭角度</label><input id="position-rotation" type="range" min="-180" max="180" step="1" value="0"><output id="position-rotation-value">0°</output><button type="button" id="position-upright" aria-label="所选小动物恢复零度">0°</button></div>
+      <div class="position-row position-layers" role="group" aria-label="重叠图层"><button type="button" data-front="otter" aria-pressed="false">水獭在上面</button><button type="button" data-front="raccoon" aria-pressed="false">小浣熊在上面</button></div>
+      <p class="position-layer-hint">重叠时，上面的那只盖住下面的那只。</p>
+      <div class="position-row"><button type="button" id="position-reset">恢复本季</button><button type="button" id="position-save">保存调整</button></div>
       <p id="position-status" role="status"></p>
       <details id="position-export"><summary>复制位置给我</summary><textarea id="position-data" aria-label="四季位置数据" readonly spellcheck="false"></textarea><button type="button" id="position-copy">复制位置数据</button></details>
     </div>`;
@@ -52,6 +59,7 @@
   const status = panel.querySelector('#position-status');
   const data = panel.querySelector('#position-data');
   const slider = panel.querySelector('#position-scale');
+  const rotation = panel.querySelector('#position-rotation');
   const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
   const round = value => Math.round(value * 10000) / 10000;
   function render(message) {
@@ -77,6 +85,11 @@
     panel.querySelector('#position-scale-label').textContent = together ? '一起缩放' : target === 'otter' ? '水獭大小' : '小浣熊大小';
     slider.value = percent;
     panel.querySelector('#position-scale-value').textContent = `${percent}%`;
+    const angle = positions[season].rotations[target === 'otter' ? 0 : 1];
+    panel.querySelector('#position-rotation-label').textContent = target === 'otter' ? '水獭角度' : '小浣熊角度';
+    rotation.value = angle;
+    panel.querySelector('#position-rotation-value').textContent = `${angle}°`;
+    panel.querySelectorAll('[data-front]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.front === positions[season].frontAnimal)));
     data.value = JSON.stringify({ version: 1, seasons: positions }, null, 2);
     if (message) status.textContent = message;
   }
@@ -130,6 +143,18 @@
     }
     render('大小已调整，还没有保存。');
   });
+  rotation.addEventListener('input', () => {
+    positions[season].rotations[target === 'otter' ? 0 : 1] = Number(rotation.value);
+    render('角度已调整，还没有保存。');
+  });
+  panel.querySelector('#position-upright').addEventListener('click', () => {
+    positions[season].rotations[target === 'otter' ? 0 : 1] = 0;
+    render('所选小动物已回正，还没有保存。');
+  });
+  panel.querySelectorAll('[data-front]').forEach(button => button.addEventListener('click', () => {
+    positions[season].frontAnimal = button.dataset.front;
+    render('上下图层已调整，还没有保存。');
+  }));
   panel.querySelector('#position-reset').addEventListener('click', () => {
     positions[season] = structuredClone(defaults[season]);
     render('本季已恢复，点保存可更新草稿。');
@@ -137,7 +162,7 @@
   panel.querySelector('#position-save').addEventListener('click', () => {
     try {
       localStorage.setItem(storageKey, data.value);
-      status.textContent = '已保存在此浏览器。告诉我“调好了”，我再写回主页。';
+      status.textContent = '位置、大小、角度和图层已保存。告诉我“调好了”，我再写回主页。';
     } catch { status.textContent = '此浏览器无法保存，请展开下方数据并复制给我。'; }
   });
   panel.querySelector('#position-copy').addEventListener('click', async () => {

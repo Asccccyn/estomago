@@ -53,10 +53,10 @@
   viewport.style.setProperty('--animal-width-in-pair', `${ANIMAL_WIDTH_IN_PAIR * 100}%`);
   viewport.style.setProperty('--pair-aspect', String(1 / ANIMAL_WIDTH_IN_PAIR));
   const resting = [
-    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], xOffsets: [.065, -.035], bodySizes: [1.05, 1] },
-    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], xOffsets: [0, 0], bodySizes: [1.05, 1] },
-    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1.06, 1] },
-    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1, 1] },
+    { x: .50, groundY: .77, pose: 'awake', groundOffsets: [0, 0], xOffsets: [.065, -.035], bodySizes: [1.05, 1], rotations: [0, 0], frontAnimal: 'otter' },
+    { x: .58, groundY: .86, pose: 'sit', groundOffsets: [0, -.012], xOffsets: [0, 0], bodySizes: [1.05, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
+    { x: .44, groundY: .84, pose: 'frontSit', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1.06, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
+    { x: .53, groundY: .83, pose: 'prone', groundOffsets: [0, 0], xOffsets: [0, 0], bodySizes: [1, 1], rotations: [0, 0], frontAnimal: 'raccoon' },
   ];
   const actions = [
     [{ action: 'calendar', label: '日历与记忆', x: .34, y: .20, w: .59, h: .27, target: 'blossoms' }],
@@ -182,7 +182,10 @@
         actor.style.top = `${resting[i].groundOffsets[animalIndex] * height}px`;
         actor.style.left = `${((animalIndex ? COMPANION_OFFSET * 2 : 0) + resting[i].xOffsets[animalIndex]) * panelWidth}px`;
         actor.style.right = 'auto';
-        actor.querySelector('.animal-size').style.transform = `scale(${resting[i].bodySizes[animalIndex]})`;
+        const size = actor.querySelector('.animal-size');
+        size.style.transform = `scale(${resting[i].bodySizes[animalIndex]})`;
+        size.style.rotate = `${resting[i].rotations[animalIndex]}deg`;
+        actor.style.zIndex = actor.dataset.animal === resting[i].frontAnimal ? '1' : '0';
       }
     }
     const flowers = actions[1].find(({ target }) => target === 'flowers');
@@ -325,7 +328,7 @@
         const finish = resting[to];
         const traveler = animal(kind, start.pose, 'traveler', start.bodySizes[index]);
         traveler.style.width = `${panelWidth * SPRITE_WIDTH}px`;
-        if (from === 0 && index === 0) traveler.style.zIndex = '1';
+        traveler.style.zIndex = kind === start.frontAnimal ? '1' : '0';
         travelLayer.append(traveler);
         const size = traveler.querySelector('.animal-size');
         const sprite = traveler.querySelector('.animal-sprite');
@@ -386,6 +389,13 @@
         journeys.push(animate(traveler, frames, { duration, delay, easing: from === 0 ? 'ease-in-out' : 'linear' }));
         journeys.push(animate(sprite, poses.map(([offset, pose]) => ({ offset, ...poseStyle(kind, pose), easing: 'steps(1, end)' })), { duration, delay }));
         const finalSize = from === 2 ? start.bodySizes[index] : finish.bodySizes[index];
+        const finalRotation = from === 2 ? 0 : finish.rotations[index];
+        journeys.push(animate(size, [
+          { offset: 0, rotate: `${start.rotations[index]}deg` },
+          { offset: .12, rotate: '0deg' },
+          { offset: .88, rotate: '0deg' },
+          { offset: 1, rotate: `${finalRotation}deg` },
+        ], { duration, delay, easing: 'ease-in-out' }));
         journeys.push(animate(size, [{ transform: `scale(${start.bodySizes[index]})` }, { transform: `scale(${finalSize})` }], { duration, delay, easing: 'ease-in-out' }));
       }
       if (from < 2 && !isDesktop()) {
@@ -438,8 +448,9 @@
     viewport.dataset.adjusting = 'true';
     // This API exists only in the temporary editor; normal visits use the committed layout.
     window.estomagoPositionEditor = {
-      read: () => resting.map(({ x, groundY, groundOffsets, xOffsets, bodySizes }) => ({
+      read: () => resting.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }) => ({
         x, groundY, groundOffsets: [...groundOffsets], xOffsets: [...xOffsets], bodySizes: [...bodySizes],
+        rotations: [...rotations], frontAnimal,
       })),
       update(configs) {
         configs.forEach((config, index) => Object.assign(resting[index], config));
