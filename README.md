@@ -392,3 +392,10 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 - 部署后只读核对：四服务健康（E host 302→登录页/content 401 鉴权、S 200、M 200、O 200）；chat schema 迁移至 v61；content schema 1,2（13 旧回执/7 creations 原样）；voice_invites/tool_side_effects(args_json) 新列就位；O 无 queued/running 残留。
 - 已知既有：M web 静态页 RuntimeError 为旧问题（本仓无 dist，API 正常）；estomago tunnel 为 TUNNEL_TOKEN 远端配置形态，本机只核对进程存活。
 - 未做：G5 真实存量回填（需单独数据处理授权；生产 content_owner_state 仍为 0，按 G3 dry-run 走 reconcileOwner）。
+
+### G5 存量回填执行记录（2026-11-07，用户授权）
+
+- 驱动：`scripts/content-stock-backfill.mjs`（owner 清单来自 content 库只读枚举；确认走 `reconcileOwner`——live 快照→单调准入→版本锚+committed 引用，与正常写同一路径；`--dry` 先行）。
+- 结果：7 owner 全部 confirmed——4 有效作品落 8 条 committed 引用（各资产恰 1 条、available 保持）；3 墓碑落零集合版本锚（rev2/3/4）。
+- 不变式核对：13 旧回执（fingerprint v0）原样、35 消息附件原样、幂等重跑零新增、守卫等价检查 43 资产受引用保护（未发真实 DELETE）。
+- F06/F07 关闭条件（G6）逐项：运行链已切换（G4）✓、存量已保护 ✓、墓碑版本锚 ✓、旧回执可解释保留 ✓、丢响应沿原身份收口（RF2 回归）✓、迟到版本不撤新关系（F02/F13 回归）✓、直接 API/模型/浏览器共用身份语义（F14/RF2-B 回归）✓。
