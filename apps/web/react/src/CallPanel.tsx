@@ -95,12 +95,24 @@ export function CallPanel({ conversationId, onExit, incoming, mode = 'ordinary' 
     };
   }, [conversationId]);
 
+  // RVO-03（复审 20261106 第二轮）：本地挂断后按宿主回执的 media_close 如实收尾——
+  // est 已收口 ≠ 远端已确认结束：hangup_requested=柔性挂断已受理（约15秒窗口，她开口会取消）；
+  // siren_unavailable=远端不可达（真实停止由 Siren 生命周期/对账收口）；session_not_active=无在途会话。
   const hangup = (): void => {
     void clientRef.current?.hangup();
-    if (callIdRef.current) void fetch(`/api/v1/calls/${encodeURIComponent(callIdRef.current)}`, { method: 'DELETE' });
-    else void fetch('/api/v1/calls/dial/current', { cache: 'no-store' }).then((r) => r.json()).then((c: { request_id?: string }) => { if (c.request_id) void fetch(`/api/v1/calls/dial/${encodeURIComponent(c.request_id)}`, { method: 'DELETE' }); }).catch(() => undefined);
+    if (callIdRef.current) {
+      void fetch(`/api/v1/calls/${encodeURIComponent(callIdRef.current)}`, { method: 'DELETE' })
+        .then((r) => r.json().catch(() => null))
+        .then((b: { media_close?: string } | null) => {
+          if (b?.media_close === 'hangup_requested') setError('已挂断；他那边约15秒内说完就结束（期间他开口会继续）');
+          else if (b?.media_close === 'siren_unavailable') setError('已挂断；他的服务暂时不可达——结束会在恢复后自动确认');
+        })
+        .catch(() => undefined);
+    } else {
+      void fetch('/api/v1/calls/dial/current', { cache: 'no-store' }).then((r) => r.json()).then((c: { request_id?: string }) => { if (c.request_id) void fetch(`/api/v1/calls/dial/${encodeURIComponent(c.request_id)}`, { method: 'DELETE' }); }).catch(() => undefined);
+    }
     setPhase('ended');
-    setTimeout(onExit, 500);
+    setTimeout(onExit, 1200);
   };
 
   const toggleMute = (): void => {
@@ -139,6 +151,7 @@ export function CallPanel({ conversationId, onExit, incoming, mode = 'ordinary' 
           </button>
         )}
         <div className="text-[15px] opacity-70">{phase === 'connecting' ? '正在叫char…（他可以接听或拒绝）' : phase === 'active' ? '通话中' : phase === 'ended' ? '已结束' : '连接失败'}</div>
+        {/* RVO-03：挂断回执的 media_close 未确认语义在 ended 状态可见（本地收口≠远端已结束） */}
         {error && <div className="mt-2 max-w-sm text-[13px] text-[#e08d6d]">{error}</div>}
         {error && secureMicrophoneUrl() && <a className="mt-3 inline-block underline" href={secureMicrophoneUrl()!} target="_blank" rel="noopener noreferrer">使用 HTTPS 打开</a>}
       </div>

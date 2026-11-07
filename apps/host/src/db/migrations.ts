@@ -1545,4 +1545,31 @@ CREATE TABLE IF NOT EXISTS voice_invites(
 CREATE INDEX IF NOT EXISTS idx_voice_invites_activity ON voice_invites(conversation_id, state, expires_at);
 `});
 
+// R2-M04（复审 20261106 第二轮）：I 未知写入跨宿主接管——工具副作用账本扩
+// kind='i_write'（E 接纳时持久化原操作身份+参数快照），加 args_json 快照列；
+// 恢复端用原 operationId 原样重放（M 领域原子幂等从回执恢复原成功/结构化拒绝），
+// 不再只靠内存派生 ID 的 unknown 文本。CHECK 扩值需整表重建（引用本表的 FK 无）。
+MIGRATIONS.push({version:61,name:'tool-side-effects-i-write',sql:`
+CREATE TABLE tool_side_effects_v61(
+  id TEXT PRIMARY KEY,
+  review_id TEXT,
+  turn_id TEXT,
+  window_id TEXT,
+  kind TEXT NOT NULL CHECK (kind IN ('hold','source_bind','review_complete','i_write')),
+  state TEXT NOT NULL CHECK (state IN ('pending','running','unknown','failed_resolved','failed_unresolved','committed','cancelled')),
+  verified INTEGER NOT NULL DEFAULT 0,
+  memory_id TEXT,
+  operation_id TEXT,
+  tool_call_id TEXT,
+  seen_sequence INTEGER,
+  args_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO tool_side_effects_v61(id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,seen_sequence,args_json,created_at,updated_at)
+  SELECT id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,NULL,NULL,created_at,updated_at FROM tool_side_effects;
+DROP TABLE tool_side_effects;
+ALTER TABLE tool_side_effects_v61 RENAME TO tool_side_effects;
+`});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

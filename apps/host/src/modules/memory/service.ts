@@ -883,6 +883,13 @@ export class MemoryToolsService {
     // 同一工具调用的传输重试同 key 重放；I_WRITE_OUTCOME_UNKNOWN 后模型原样重试属
     // 新操作（不按正文去重合法的两次写入）
     const operationId = `i-${action}:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
+    // R2-M04（复审 20261106 第二轮）：接纳即落 effect 账本（原操作身份+参数快照）——
+    // 提交/确定失败收口；结果未知保持 unknown，跨宿主重启由 recoverUnknownEffects
+    // 用原身份原样重放（M 领域原子幂等从回执恢复原成功），不再只有内存 ID+unknown 文本。
+    const iArgs = { action, content, itemId, expectedRevision: expected, restoreRevision, changeReason, relations,
+      ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}) };
+    const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'i_write', operationId, toolCallId: String(ctx.toolCallId ?? ''), seenSequence: ctx.seenSequence, argsJson: JSON.stringify(iArgs) });
+    const settle = (state: 'committed' | 'failed_resolved' | 'unknown'): void => this.reviews.settleEffect(effectId, state, state === 'committed', null);
     try {
       if (action === 'create') {
         r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}), operationId });
@@ -892,12 +899,15 @@ export class MemoryToolsService {
         r = await m.iItemRestore({ itemId, restoreRevision, ...(Array.isArray(args.relations) ? { relations: args.relations } : {}), expectedRevision: expected, ...(changeReason ? { changeReason } : {}), operationId });
       }
     } catch {
-      return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN' } };
+      settle('unknown');
+      return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN', operation_id: operationId, note: '结果未知：操作已持久（跨重启按原身份恢复收口）；不要用新身份重做同一写入。' } };
     }
     if (!r.ok) {
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
-      return { ok: false, output: { error_code: unknown ? 'I_WRITE_OUTCOME_UNKNOWN' : `I_${r.code}` } };
+      settle(unknown ? 'unknown' : 'failed_resolved');
+      return { ok: false, output: { error_code: unknown ? 'I_WRITE_OUTCOME_UNKNOWN' : `I_${r.code}`, ...(unknown ? { operation_id: operationId } : {}) } };
     }
+    settle('committed');
     return { ok: true, output: { note: 'I 已更新（数据写入，修订链留痕）。', action, ...r.result as Record<string, unknown> } };
   }
 
@@ -1055,6 +1065,13 @@ export class MemoryToolsService {
     let resolved = 0;
     let stillUnknown = 0;
     for (const e of this.reviews.unknownEffectsForWindow(windowId)) {
+      // R2-M04：I 写按原身份原样重放（M 领域原子幂等从回执恢复原成功/结构化拒绝）
+      if (e.kind === 'i_write') {
+        const out = await this.replayUnknownIWrite(e.operationId, e.argsJson);
+        if (out === 'committed') { this.reviews.settleEffect(e.id, 'committed', true, null); resolved++; continue; }
+        if (out === 'failed') { this.reviews.settleEffect(e.id, 'failed_resolved', false, null); resolved++; continue; }
+        stillUnknown++; continue; // 仍未知：保持 unknown 并阻断，不自动消解
+      }
       // 审计 F08：只认两类确定结论——真实回执（committed）或服务端显式 completed=false。
       // 查询失败/形状损坏/回执错配一律保持 unknown 并阻断换窗，绝不自动消解。
       let r: Awaited<ReturnType<MariposaClient['holdStatus']>>;
@@ -1094,6 +1111,35 @@ export class MemoryToolsService {
       resolved++;
     }
     return { resolved, stillUnknown };
+  }
+
+  /** R2-M04：用 effect 的参数快照按**原 operationId** 原样重放未知 I 写——
+   *  M 领域原子幂等（f1f6908）从回执恢复原成功（同 item_id、不重复建）或结构化
+   *  拒绝（failed）；传输失败/仍未知返回 'unknown' 保持 effect 未决。 */
+  private async replayUnknownIWrite(operationId: string, argsJson: string | null): Promise<'committed' | 'failed' | 'unknown'> {
+    if (!this.mariposa || argsJson === null) return 'unknown';
+    let a: { action?: string; content?: string; itemId?: string; expectedRevision?: number; restoreRevision?: number; changeReason?: string; relations?: unknown; informedByRevision?: number };
+    try { a = JSON.parse(argsJson) as typeof a; } catch { return 'unknown'; }
+    if (typeof a.action !== 'string' || typeof a.content !== 'string') return 'unknown';
+    try {
+      let r: Awaited<ReturnType<MariposaClient['iItemCreate'] | MariposaClient['iItemRevise'] | MariposaClient['iItemRestore']>>;
+      if (a.action === 'create') {
+        r = await this.mariposa.iItemCreate({ content: a.content, ...(a.changeReason ? { changeReason: a.changeReason } : {}), ...(Array.isArray(a.relations) ? { relations: a.relations as never } : {}), operationId });
+      } else if (a.action === 'revise') {
+        if (typeof a.itemId !== 'string') return 'unknown';
+        r = await this.mariposa.iItemRevise({ itemId: a.itemId, content: a.content, expectedRevision: a.expectedRevision ?? 0, ...(a.changeReason ? { changeReason: a.changeReason } : {}), ...(typeof a.informedByRevision === 'number' ? { informedByRevision: a.informedByRevision } : {}), ...(Array.isArray(a.relations) ? { relations: a.relations as never } : {}), operationId });
+      } else if (a.action === 'restore') {
+        if (typeof a.itemId !== 'string') return 'unknown';
+        r = await this.mariposa.iItemRestore({ itemId: a.itemId, restoreRevision: a.restoreRevision ?? 0, ...(Array.isArray(a.relations) ? { relations: a.relations as never } : {}), expectedRevision: a.expectedRevision ?? 0, ...(a.changeReason ? { changeReason: a.changeReason } : {}), operationId });
+      } else {
+        return 'unknown';
+      }
+      if (r.ok) return 'committed';
+      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
+      return unknown ? 'unknown' : 'failed'; // 结构化拒绝（含幂等冲突/版本冲突）=可判定失败
+    } catch {
+      return 'unknown';
+    }
   }
 
 }
