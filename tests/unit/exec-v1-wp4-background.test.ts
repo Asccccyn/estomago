@@ -168,6 +168,8 @@ test('S-05（2026-10-22 版）：用户消息到来——自主唤醒不再被�
   const run = db.prepare('SELECT state FROM background_runs WHERE kind = ?').get('autonomous') as { state: string };
   assert.equal(run.state, 'noop', '自主唤醒正常收口（无 USER_CHAT_PREEMPTED 无差别取消）');
   // 心跳运行中：进入让位集（安全边界让位，不立即 abort）
+  // RB2-03：让位按 kind+origin 判定——心跳 run 需挂真实 task 行（join 消费其 origin）
+  db.prepare("INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES ('tkw','primary','jiaming','keepwarm',1,1,'cache_idle',NULL,NULL,'Asia/Shanghai',NULL,NULL,'{}','system','system_keepwarm',?,?)").run(new Date().toISOString(), new Date().toISOString());
   db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, claimed_at, created_at, updated_at) VALUES ('bgr-kw','tkw','primary','jiaming','keepwarm',1,'occ-kw','running',?,?,?)").run(new Date().toISOString(), new Date().toISOString(), new Date().toISOString());
   const c2 = new AbortController();
   (sched2 as unknown as { aborts: Map<string, AbortController> }).aborts.set('bgr-kw', c2);
