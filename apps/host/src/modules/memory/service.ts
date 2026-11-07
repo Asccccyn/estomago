@@ -1135,8 +1135,12 @@ export class MemoryToolsService {
         return 'unknown';
       }
       if (r.ok) return 'committed';
-      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
-      return unknown ? 'unknown' : 'failed'; // 结构化拒绝（含幂等冲突/版本冲突）=可判定失败
+      // R3-M02（RI-02）：本次恢复失败≠原操作未提交——传输/限流/鉴权失败（无法核实远端）
+      // 与冲突类（VERSION/IDEMPOTENCY CONFLICT 恰是原操作可能已提交的证据）一律保持
+      // unknown；只有同参数必然复现的确定性领域拒绝才收口 failed。
+      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT')
+        || r.code === 'HTTP_401' || r.code === 'HTTP_403' || r.code.includes('CONFLICT');
+      return unknown ? 'unknown' : 'failed';
     } catch {
       return 'unknown';
     }

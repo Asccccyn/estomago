@@ -3,7 +3,7 @@ import type { Db } from './connection.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
 import { tx } from './connection.ts';
 
-const MIGRATIONS: Array<{ version: number; name: string; sql: string; preSql?: string; postSql?: string; repair?: (db: Db) => number }> = [
+export const MIGRATIONS: Array<{ version: number; name: string; sql: string; preSql?: string; postSql?: string; repair?: (db: Db) => number }> = [
   {
     version: 1,
     name: 'base-schema',
@@ -1545,31 +1545,52 @@ CREATE TABLE IF NOT EXISTS voice_invites(
 CREATE INDEX IF NOT EXISTS idx_voice_invites_activity ON voice_invites(conversation_id, state, expires_at);
 `});
 
-// R2-M04（复审 20261106 第二轮）：I 未知写入跨宿主接管——工具副作用账本扩
-// kind='i_write'（E 接纳时持久化原操作身份+参数快照），加 args_json 快照列；
-// 恢复端用原 operationId 原样重放（M 领域原子幂等从回执恢复原成功/结构化拒绝），
-// 不再只靠内存派生 ID 的 unknown 文本。CHECK 扩值需整表重建（引用本表的 FK 无）。
-MIGRATIONS.push({version:61,name:'tool-side-effects-i-write',sql:`
-CREATE TABLE tool_side_effects_v61(
-  id TEXT PRIMARY KEY,
-  review_id TEXT,
-  turn_id TEXT,
-  window_id TEXT,
-  kind TEXT NOT NULL CHECK (kind IN ('hold','source_bind','review_complete','i_write')),
-  state TEXT NOT NULL CHECK (state IN ('pending','running','unknown','failed_resolved','failed_unresolved','committed','cancelled')),
-  verified INTEGER NOT NULL DEFAULT 0,
-  memory_id TEXT,
-  operation_id TEXT,
-  tool_call_id TEXT,
-  seen_sequence INTEGER,
-  args_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-INSERT INTO tool_side_effects_v61(id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,seen_sequence,args_json,created_at,updated_at)
-  SELECT id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,NULL,NULL,created_at,updated_at FROM tool_side_effects;
-DROP TABLE tool_side_effects;
-ALTER TABLE tool_side_effects_v61 RENAME TO tool_side_effects;
+// R3-M01（第三轮复审 20261106）：v61 重建 tool_side_effects 时把既有 seen_sequence 一并
+// SELECT 成 NULL（该列自旧迁移早已存在，7 条生产 committed 行被清空）。v61 已在生产应用、
+// code_hash 校验禁止原地改写，且保留 v61 会让未升级库（如从 G4 前备份恢复）先丢数据再无据可恢复
+// ——因此从迁移序列移除 v61，由 v62 以条件重建统一两种库形：v61 前形状（有 seen_sequence、
+// 无 args_json、CHECK 无 i_write）整表重建并**保留 seen_sequence**；v61 后形状（生产）已是
+// 目标 schema，v62 幂等跳过。生产已清空的 7 条为 committed 终态、无消费者，不回填（复审已撤销）。
+MIGRATIONS.push({version:62,name:'tool-side-effects-rebuild-preserve-seen-sequence',sql:`
+SELECT 1; -- 结构性重建由 repair 按到达形状条件执行（两种库形列集不同，无法用单一 SQL 同时覆盖）
+`, repair: (db): number => {
+  const tableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tool_side_effects'").get() as { sql: string } | undefined)?.sql ?? '';
+  const cols = new Set((db.prepare('PRAGMA table_info(tool_side_effects)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (cols.has('args_json') && tableSql.includes("'i_write'")) return 0; // v61 后形状：已是目标 schema
+  db.exec(`CREATE TABLE tool_side_effects_v62(
+    id TEXT PRIMARY KEY,
+    review_id TEXT,
+    turn_id TEXT,
+    window_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('hold','source_bind','review_complete','i_write')),
+    state TEXT NOT NULL CHECK (state IN ('pending','running','unknown','failed_unresolved','failed_resolved','committed','cancelled')),
+    verified INTEGER NOT NULL DEFAULT 0,
+    memory_id TEXT,
+    operation_id TEXT,
+    tool_call_id TEXT,
+    seen_sequence INTEGER,
+    args_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`);
+  // R3-M01：seen_sequence 原值保留（旧库自早期迁移已有该列）；args_json 为新列，旧库无则置 NULL
+  db.exec(`INSERT INTO tool_side_effects_v62(id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,seen_sequence,args_json,created_at,updated_at)
+    SELECT id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,
+           ${cols.has('seen_sequence') ? 'seen_sequence' : 'NULL'},
+           ${cols.has('args_json') ? 'args_json' : 'NULL'},
+           created_at,updated_at FROM tool_side_effects`);
+  db.exec('DROP TABLE tool_side_effects');
+  db.exec('ALTER TABLE tool_side_effects_v62 RENAME TO tool_side_effects');
+  return 1;
+}});
+
+// R3-V02（第三轮复审 20261106）：v59 回填把"先冻结尚未就绪占位、后晚到 ready"的旧行误判
+// 为已采纳（projection 非空可能是占位文案而非分析证据）。生产命中 0（复审核实），本迁移
+// 保护从旧备份恢复的库：占位文案行改回未采纳。
+MIGRATIONS.push({version:63,name:'voice-observation-placeholder-adoption-corrective',sql:`
+UPDATE voice_observations SET analysis_adopted = 0
+ WHERE analysis_adopted = 1
+   AND model_projection LIKE '%尚未就绪%';
 `});
 
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

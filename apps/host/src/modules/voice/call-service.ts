@@ -137,6 +137,10 @@ export class VoiceCallService {
         if (!st || !active || typeof active.invite_id !== 'string') return { ok: false, error: { error_code: 'NO_PENDING_INVITE', detail: '没有待取消的邀请（可能已过期或已被处理）' } };
         const out = await this.sirenCall!.cancelInvite(active.invite_id);
         if ((out?.['state'] as string | undefined) !== 'cancelled') return { ok: false, error: { error_code: 'SIREN_INVITE_TRANSITION_FAILED', detail: `终态=${String(out?.['state'] ?? 'unknown')}` } };
+        // R3-B01：取消已由 S 正本确认——E 侧邀请投影同步收口（此前镜像保持 pending 到
+        // TTL，取消后的新文字被误抑制 Sol）
+        this.db.prepare("UPDATE voice_invites SET state='ended', ended_at=? WHERE invite_id=? AND state='pending'")
+          .run(new Date().toISOString(), String(active.invite_id));
         // B5（联合审计 2026-10-27，A08 执行口径）：取消不再追加独立说明轮——本工具回执
         // 即事实，说不说由原续轮的模型自主决定，不强迫解释、不多付一轮。
         // （旧 invite_cancelled 程序事实轮删除：曾强制"说一两句——说明原因或改约"。）

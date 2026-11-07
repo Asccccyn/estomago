@@ -106,7 +106,7 @@ test('R2-M04：恢复时 M 不可达→effect 保持 unknown（阻断语义保�
     const first = await makeWorld(async (cap) => {
       if (cap !== 'i.item.create') return { ok: true, result: {} };
       if (!lostOnce) { lostOnce = true; throw new Error('lost'); }
-      return { ok: false, code: 'VERSION_CONFLICT' };
+      return { ok: false, code: 'INVALID_ARGUMENT' }; // R3-M02：确定性拒绝才收口；冲突类另测
     });
     try {
       const r = await first.tools.execute('memory_i_write', { action: 'create', content: 'B' }, CTX);
@@ -129,5 +129,58 @@ test('R2-M04：确定失败与成功同样收口——effect 账本不留 runnin
     const rows = w.db.prepare("SELECT state, kind FROM tool_side_effects WHERE kind='i_write' ORDER BY rowid").all() as Array<{ state: string }>;
     assert.equal(rows.length, 2);
     assert.ok(rows.every(r => r.state !== 'running' && r.state !== 'unknown'), '全部收口');
+  } finally { w.close(); }
+});
+
+// —— R3-M02（第三轮复审）：I 恢复分类——本次执行失败≠原远端未提交 ——
+
+test('R3-M02：恢复重放遇鉴权失败/冲突类错误——effect 保持 unknown（原操作资格不撤）', async () => {
+  const mkWorld = (code: string) => {
+    let lost = false;
+    return makeWorld(async (cap) => {
+      if (cap !== 'i.item.create') return { ok: true, result: {} };
+      if (!lost) { lost = true; throw new Error('lost-after-commit'); }
+      return { ok: false, code };
+    });
+  };
+  for (const code of ['HTTP_401', 'HTTP_403', 'VERSION_CONFLICT', 'IDEMPOTENCY_CONFLICT', 'HTTP_500', 'HTTP_429', 'TRANSPORT_FAILED']) {
+    const w = mkWorld(code);
+    try {
+      const first = await w.tools.execute('memory_i_write', { action: 'create', content: `x-${code}` }, CTX);
+      assert.equal((first.output as { error_code: string }).error_code, 'I_WRITE_OUTCOME_UNKNOWN');
+      const out = await w.memory.recoverUnknownEffects('c1', 'w1');
+      assert.equal(out.stillUnknown, 1, `${code}：恢复受阻保持 unknown`);
+      assert.equal(out.resolved, 0);
+      assert.equal(w.unknown().length, 1, `${code}：未决资格保留`);
+    } finally { w.close(); }
+  }
+  // 对照：确定性领域拒绝（同参数必然复现）→ failed_resolved 收口
+  const w2 = mkWorld('INVALID_ARGUMENT');
+  try {
+    await w2.tools.execute('memory_i_write', { action: 'create', content: 'ok' }, CTX);
+    const out = await w2.memory.recoverUnknownEffects('c1', 'w1');
+    assert.equal(out.resolved, 1, '确定性拒绝收口');
+    assert.equal(w2.unknown().length, 0);
+  } finally { w2.close(); }
+});
+
+test('R3-M02：崩溃在提交缝的 running i_write——启动恢复归 unknown（不再 failed_resolved）', async () => {
+  const w = makeWorld(async (cap) => (cap === 'i.item.create' ? { ok: true, result: { item_id: 'it_r3', revision: 1 } } : { ok: true, result: {} }));
+  try {
+    // 模拟崩溃在提交缝：effect 停在 running（Host 未 settle 即中断）
+    const { RotationReviewService } = await import('../../apps/host/src/context/rotation-review.ts');
+    void RotationReviewService;
+    const db = (w as unknown as { db: import('../../apps/host/src/db/connection.ts').Db }).db;
+    const effId = 'eff_r3_crash';
+    db.prepare(`INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, memory_id, operation_id, tool_call_id, seen_sequence, args_json, created_at, updated_at)
+      VALUES (?,NULL,'t1','w1','i_write','running',0,NULL,'i-create:t1:req-r3:call-r3','call-r3',1,'{"action":"create","content":"崩溃缝"}','now','now')`).run(effId);
+    // 启动恢复分类（recoveryPass 的同一 SQL 语义）：i_write → unknown
+    const classified = db.prepare("UPDATE tool_side_effects SET state = CASE WHEN kind IN ('hold','i_write') THEN 'unknown' ELSE 'failed_resolved' END WHERE state='running'").run().changes;
+    assert.equal(classified, 1);
+    const row = db.prepare('SELECT state FROM tool_side_effects WHERE id=?').get(effId) as { state: string };
+    assert.equal(row.state, 'unknown', 'R3-M02：i_write 崩溃缝归 unknown（旧实现 failed_resolved 撤掉原操作资格）');
+    // unknown 后可被恢复消费者接管（原身份重放）
+    const out = await w.memory.recoverUnknownEffects('c1', 'w1');
+    assert.equal(out.resolved, 1, '原身份重放恢复原成功');
   } finally { w.close(); }
 });

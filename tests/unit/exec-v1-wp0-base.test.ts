@@ -8,7 +8,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate, schemaVersion, SUPPORTED_SCHEMA_VERSION } from '../../apps/host/src/db/migrations.ts';
+import { migrate, schemaVersion, SUPPORTED_SCHEMA_VERSION, MIGRATIONS } from '../../apps/host/src/db/migrations.ts';
+// R3-M01：v61 按迁移哈希规则从序列移除（由 v62 条件重建承接）——版本号不再连续，期望从 MIGRATIONS 派生
+const ALL_VERSIONS = MIGRATIONS.map((m) => m.version);
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { validateConfig } from '../../apps/host/src/config/schema.ts';
 import { POLICY_CONSTANTS } from '../../apps/host/src/config/policy-constants.ts';
@@ -76,7 +78,7 @@ test('BASE-03：fresh / 升级 / 迁移中断后重启——正文 hash 与 revi
   const dbA = openDatabase(rootA);
   const fresh = migrate(dbA, sha256Hex);
   assert.equal(schemaVersion(dbA), SUPPORTED_SCHEMA_VERSION);
-  assert.equal(fresh.applied.length, SUPPORTED_SCHEMA_VERSION); // v1..v20 连续应用
+  assert.equal(fresh.applied.length, MIGRATIONS.length); // v1..链尾全量应用（v61 已按 R3-M01 移除，不占号）
   assert.ok(rootA.startsWith(os.tmpdir())); // 隔离临时根，不在生产路径
   dbA.close();
 
@@ -102,7 +104,7 @@ test('BASE-03：fresh / 升级 / 迁移中断后重启——正文 hash 与 revi
   // 重启：同一文件重开，完成剩余迁移——只补缺失版本，旧数据不动
   const dbB2 = openDatabase(rootB);
   const resumed = migrate(dbB2, sha256Hex);
-  assert.deepEqual(resumed.applied, Array.from({ length: SUPPORTED_SCHEMA_VERSION - 19 }, (_, i) => 20 + i)); // 只补缺失（v20..当前链尾）
+  assert.deepEqual(resumed.applied, ALL_VERSIONS.filter((v) => v >= 20)); // 只补缺失（v20..当前链尾，序列含跳号）
   assert.equal(schemaVersion(dbB2), SUPPORTED_SCHEMA_VERSION);
   const row = dbB2
     .prepare(
@@ -119,6 +121,6 @@ test('BASE-03：fresh / 升级 / 迁移中断后重启——正文 hash 与 revi
   const again = migrate(dbB2, sha256Hex);
   assert.deepEqual(again.applied, []);
   const count = dbB2.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get() as { n: number };
-  assert.equal(count.n, SUPPORTED_SCHEMA_VERSION); // 每版本只登记一次
+  assert.equal(count.n, MIGRATIONS.length); // 每版本只登记一次
   dbB2.close();
 });

@@ -346,9 +346,11 @@ export class TurnSupervisor {
     ).run(now).changes));
     // D03a：无执行者的 active 评审 → failed（重启后没有任何协程会收口它；不伪造完成凭证）
     const staleReviews = tx(db, () => Number(db.prepare("UPDATE rotation_reviews SET status = 'failed', updated_at = ? WHERE status = 'active'").run(now).changes));
-    // D03b：崩溃遗留 running 写操作——hold 类结果不明（可按 operation_id 探测恢复），本地类可判未提交
+    // D03b：崩溃遗留 running 写操作——远端写（hold/i_write）结果不明（M 侧可能已提交，
+    // 可按 operation_id 探测恢复）；本地类可判未提交（R3-M02：i_write 崩溃在提交缝时
+    // 曾被误判 failed_resolved，撤掉原操作的未决资格）
     const orphanEffects = tx(db, () => Number(db.prepare(
-      "UPDATE tool_side_effects SET state = CASE WHEN kind = 'hold' THEN 'unknown' ELSE 'failed_resolved' END, updated_at = ? WHERE state = 'running'",
+      "UPDATE tool_side_effects SET state = CASE WHEN kind IN ('hold','i_write') THEN 'unknown' ELSE 'failed_resolved' END, updated_at = ? WHERE state = 'running'",
     ).run(now).changes));
     const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners + staleReviews + orphanEffects;
     if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects, code: 'RECOVERY_HOST_RESTART' });

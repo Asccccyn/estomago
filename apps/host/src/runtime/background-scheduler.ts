@@ -303,14 +303,22 @@ export class BackgroundScheduler {
     // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
     // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
     // R1（复审 b137e98）：cancelling（stop-run 的待收尾活态）必须可被收口。
-    const finished = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
+    // R3-B02（第三轮复审）：run CAS 终态与同版本 task 资格收尾在**同一短事务**提交——
+    // 此前分两次提交，提交缝中断会留下"run 已终态、task 仍 enabled/原 due"的半收口，
+    // 且恢复/重试都不会再触达（外连接可观测，P 级反例）。内存资源在事务提交后释放。
+    const finished = tx(this.d.db, () => {
+      const n = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
+      if (n > 0 && !waiting) {
+        if (state === 'cancelled' && task?.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
+        if (task) this.finalizeTaskAfterRun(task, state, nowIso);
+      }
+      return n;
+    });
     this.aborts.delete(runId);
     this.cancelRequested.delete(runId);
     this.cancelReasons.delete(runId);
     this.yieldRequested.delete(runId);
-    if (waiting || finished === 0) return;
-    if (state === 'cancelled' && task?.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
-    if (task) this.finalizeTaskAfterRun(task, state, nowIso);
+    void finished;
   }
 
   /** RB2-02：按 run 身份取其适用修订的 task（修订已变=null——收尾不作用于新版本）。 */

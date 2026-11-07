@@ -55,12 +55,15 @@ const pre = {
 };
 console.log(JSON.stringify({ owners: owners.length, pre, dry }));
 
+let failures = 0;
 for (const o of owners) {
   if (dry) { console.log(`[dry] would reconcile ${o.type}:${o.id}`); continue; }
   try {
     const ok = await coordinator.reconcileOwner(o.type, o.id);
     console.log(`reconcile ${o.type}:${o.id} -> ${ok ? 'confirmed' : 'snapshot-unreachable'}`);
+    if (!ok) failures++;
   } catch (err) {
+    failures++;
     console.error(`reconcile ${o.type}:${o.id} FAILED: ${String(err?.message ?? err).slice(0, 160)}`);
   }
 }
@@ -71,6 +74,7 @@ if (!dry) {
     attachments: db.prepare('SELECT COUNT(*) n FROM message_attachments').get().n,
   };
   const receiptsAfter = new DatabaseSync(path.join(home, 'content', 'content.sqlite3'), { readOnly: true }).prepare('SELECT COUNT(*) n FROM content_receipts').get().n;
-  console.log(JSON.stringify({ post, receipts: { before: pre.receipts.n, after: receiptsAfter.n } }, null, 2));
+  console.log(JSON.stringify({ post, receipts: { before: pre.receipts, after: receiptsAfter } }, null, 2));
 }
 db.close();
+if (failures > 0) { console.error(`[backfill] ${failures} owner(s) failed`); process.exit(1); }

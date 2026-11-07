@@ -19,7 +19,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { OidoHearingService } from '../../apps/host/src/modules/oido/service.ts';
 import { OidoSourceRepository } from '../../apps/host/src/modules/oido/source-repository.ts';
-import { VoiceObservationService } from '../../apps/host/src/modules/oido/observations.ts';
+import { VoiceObservationService, OBSERVATION_NOT_READY_BLOCK as OBS_TEXT } from '../../apps/host/src/modules/oido/observations.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const savedFetch = globalThis.fetch;
@@ -39,6 +39,7 @@ function fixture() {
   let notifyEntered!: () => void;
   const entered = new Promise<void>(r => { notifyEntered = r; });
   const pendingAnalysis = new Promise<void>(r => { releaseAnalysis = r; });
+  let analysesCalls = 0; // R3-V01：首次=自动分析 run_synthetic；后续=显式新分析 run_explicit_new
   const adapter = new OidoAdapter(config.integrations.oido);
   const observations = new VoiceObservationService(db, { hearing, archiveClient: null, streamId: 'synthetic', cancelAnalysis: (id) => adapter.cancelAnalysis(id) });
   globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -49,8 +50,12 @@ function fixture() {
     if (u.endsWith('/v1/analyses')) {
       notifyEntered();
       await pendingAnalysis;
-      return Response.json({ analysis_id: 'run_synthetic', revision: 1, state: 'ready', range_ms: [0, 100], readable: 'synthetic late result', observations: [] });
+      analysesCalls++;
+      const id = analysesCalls === 1 ? 'run_synthetic' : 'run_explicit_new';
+      return Response.json({ analysis_id: id, revision: 1, state: 'ready', range_ms: [0, 100], readable: 'synthetic late result', observations: [] });
     }
+    if (u.endsWith('/v1/find')) return Response.json({ audio_ref: 'est:a', analysis_id: analysesCalls >= 2 ? 'run_explicit_new' : 'run_synthetic', mode: 'substring', state: 'no_match', items: [], limits: [] });
+    if (u.endsWith('/v1/compare')) return Response.json({ left: { analysis_id: 'run_explicit_new' }, right: { analysis_id: 'run_explicit_new' }, metrics: [] });
     if (u.endsWith('/cancel')) return Response.json({ analysis_id: 'run_synthetic', status: 'succeeded', cancelled: false });
     if (u.endsWith('/v1/analyses/run_synthetic')) return Response.json({ analysis_id: 'run_synthetic', revision: 1, state: 'ready', range_ms: [0, 100], readable: 'synthetic audio result', observations: [] });
     throw new Error('UNEXPECTED_EXTERNAL_TRANSPORT');
@@ -134,4 +139,31 @@ test('RV2-02：取消响应读业务 body——200 {succeeded, cancelled:false} 
     const okResult = await adapter.cancelAnalysis('run_ok');
     assert.equal(okResult.cancelled, true, '真实取消确认');
   } finally { globalThis.fetch = savedFetch; delete process.env.SYNTHETIC_OIDO_CREDENTIAL; }
+});
+
+// —— R3-V01（第三轮复审）：显式新分析不再被旧自动历史整资产锁死 ——
+
+test('R3-V01：丢弃后显式新分析成功——find/compare 按实际 analysis 放行', async () => {
+  const f = fixture();
+  try {
+    f.releaseAnalysis(); // 分析即时返回
+    const asset = await f.media.saveBuffer({ bytes: f.wav(), purpose: 'chat_voice', operationId: 'rv3-voice-1', createdBy: 'qiaosheng', origin: 'upload' });
+    const msg = f.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: 'rv3 input', clientMessageId: 'rv3-voice-1', attachments: [{ asset_id: asset.id, presentation: 'voice' }] });
+    f.observations.ensureForMessage(msg.message.id, 1, 'primary', true);
+    await f.observations.runPending(f.hearing); // 自动分析 ready（run_synthetic）
+    // 本轮投递"尚未就绪"占位（未采纳）——旧自动分析被丢弃
+    f.observations.commitProjection({ messageId: msg.message.id, revision: 1 }, msg.turnId, 'rv3-dispatch',
+      [{ id: f.observations.listForMessages([msg.message.id])[0]!.id, assetId: asset.id, text: OBS_TEXT, adopted: false }]);
+    const closedOld = await f.hearing.getEvidence({ analysis_id: 'run_synthetic' }, f.ctx);
+    assert.equal(closedOld.ok, false, '被丢弃的旧分析仍不可读');
+    // 显式新分析（真实 analyzeVoice：快键判丢弃→legacy 新键→O POST #2 → run_explicit_new）
+    const explicit = await f.hearing.analyzeVoice({ audio_ref: `est:${asset.id}` }, f.ctx);
+    assert.equal(explicit.ok, true, '显式新分析成功');
+    assert.equal((explicit.value as { view: { analysis_id?: string } }).view.analysis_id, 'run_explicit_new', '新操作身份（非旧 id）');
+    // find：O 返回新 analysis_id → 放行（旧实现整资产锁死）
+    const findResult = await f.hearing.find({ audio_ref: `est:${asset.id}`, query: 'x' }, f.ctx);
+    assert.equal(findResult.ok, true, 'R3-V01：新分析后 find 放行（旧实现被旧自动历史封锁）');
+    const cmp = await f.hearing.compare({ left: { audio_ref: `est:${asset.id}` }, right: { audio_ref: `est:${asset.id}` } }, f.ctx);
+    assert.equal(cmp.ok, true, 'compare 同门放行');
+  } finally { f.close(); }
 });

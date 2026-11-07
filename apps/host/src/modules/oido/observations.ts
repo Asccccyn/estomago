@@ -335,6 +335,9 @@ export function observationInputBlock(assetId: string, view: Record<string, unkn
  *  analysisRoundClosed：该分析所属修订资格已终结且该分析未被采纳（abandoned，或
  *  delivered 未采纳——超时占位轮的迟到结果不得再被任何消费面当成功读取）。 */
 export function analysisRoundClosed(db: Db, analysisId: string): boolean {
+  // R3-V02：资格由**已作出的决定**判定——无决定行（轮次尚未收口/决策表之前的历史）
+  // 不自动关闭：轮内查询（oido_get 等）合法，历史行维持升级前可读性（生产 2 条 partial
+  // 经 v63 纠正后无占位误采纳）。历史误采纳由迁移纠正，不在此收紧读面。
   const row = db.prepare(
     `SELECT v.analysis_adopted, d.decision FROM voice_observations v
      JOIN voice_observation_decisions d ON d.message_id=v.message_id AND d.revision=v.revision

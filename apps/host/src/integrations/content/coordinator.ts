@@ -102,12 +102,18 @@ export class ContentOperationCoordinator {
       }
     }
 
-    // ③ HTTP 前持久意图 + pin（同一本地事务；失败=操作未被接受，不提交 content）
+    // ③ HTTP 前持久意图 + pin（同一本地事务；失败=操作未被接受，不提交 content）。
+    //    R3-C01：同键异参在事务内权威判定——并发下第二个异参请求在此处得到 409，
+    //    不再回放第一个命令的回执。
+    let accept: 'new' | 'kept' | 'conflict';
     try {
-      tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates));
+      accept = tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates));
     } catch (err) {
       this.logger.warn('content_intent_persist_failed', { code: stableErrorCode(err), detail: String((err as Error).message ?? err).slice(0, 140) });
       return { status: 503, body: { error: { code: 'content_intent_persist_failed', message: '本地意图登记失败，操作未提交（可原键重试）' } } };
+    }
+    if (accept === 'conflict') {
+      return { status: 409, body: { error: { code: 'content_operation_conflict', message: '该幂等键已有未收口的已接受操作（参数不同）。原操作已持久并将按原身份收口；新操作请换幂等键。' } } };
     }
 
     // ④ 提交——只执行已持久且匹配的原意图（upsert 对 failed/acked 重开时即当前请求）
@@ -224,19 +230,29 @@ export class ContentOperationCoordinator {
     return true;
   }
 
-  private upsertIntent(opKey: string, intent: IntentPayload, candidates: string[]): void {
+  /** 接纳一个意图：'new'=新接受；'kept'=同键同参沿用既有未收口意图；'conflict'=同键异参。
+   *  R3-C01（第三轮复审）：同键异参判定在**本事务内**权威执行——此前只在 write() 的
+   *  await 前预检，两个并发同 key 异参请求可同时通过预检、先后进入接纳，后者静默沿用
+   *  前者 payload 并回放前者的命令（受控时序复现 [201,201] 单对象）。 */
+  private upsertIntent(opKey: string, intent: IntentPayload, candidates: string[]): 'new' | 'kept' | 'conflict' {
     const nowIso = new Date().toISOString();
     const payload = JSON.stringify({ ...intent, candidate_assets: candidates });
     const existing = this.db.prepare('SELECT id, state, payload_ref FROM outbox WHERE target = ? AND operation_key = ?').get(CONTENT_OPERATION_TARGET, opKey) as { id: string; state: string; payload_ref: string } | undefined;
+    let outcome: 'new' | 'kept' | 'conflict' = 'new';
     if (!existing) {
       this.db.prepare('INSERT INTO outbox(id, operation_key, target, payload_ref, state, attempt, last_error, created_at, updated_at) VALUES (?,?,?,?,?,0,NULL,?,?)')
         .run(`cout_${opKey.length}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, opKey, CONTENT_OPERATION_TARGET, payload, 'pending', nowIso, nowIso);
     } else if (existing.state === 'failed' || existing.state === 'acked') {
       // 同键再来（此前定局失败后重试，或 ack 后 content 回执已被外部清理）：以当前请求为准重开
       this.db.prepare('UPDATE outbox SET payload_ref = ?, state = ?, attempt = 0, last_error = NULL, updated_at = ? WHERE id = ?').run(payload, 'pending', nowIso, existing.id);
+    } else {
+      // pending/unknown_outcome：事务内权威判定——同参保留原意图；异参冲突（不得静默沿用）
+      const persisted = JSON.parse(existing.payload_ref) as IntentPayload;
+      if (intentFingerprint(persisted) !== intentFingerprint(intent)) return 'conflict';
+      outcome = 'kept';
     }
-    // pending/unknown_outcome：保留原始意图与身份，不覆盖
     for (const assetId of candidates) this.media.pinAssetForOperation({ assetId, operationKey: opKey });
+    return outcome;
   }
 
   private intentOf(opKey: string): IntentPayload | null {
