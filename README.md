@@ -382,3 +382,13 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 - 2026-10-21 event-source (`60c6998`): hold 事件选区与 quotes 分离，完整原文修订校验；契约见 [event-source-hold](docs/event-source-hold.md)。
 
 - 2026-10-21 OpenRouter 自动浮现修通（`06075e5`）：同轮尾部宿主数据注入，保留旧缓存；[验收](docs/reports/2026-10-21-openrouter-surfacing.md)。
+
+## 2026-11-07 G4 生产切换记录
+
+- 时间：2026-11-06 17:2x PST；授权：用户本轮明确批准（"允许做完后你切生产和push远端"）。
+- release：E `audit-r2-20261107-e762ff2`（含未提交 home 并行工作快照）、S `unified-20261107-87ff1d7`、M `unified-20261107-7c16a8e`、O `unified-20261107-85c613a`。
+- 切换方式：O/M/E 改 secrets start.sh 与 content plist 指向新 release 后 launchctl kickstart/bootout+bootstrap；S 同命令 nohup 重启（8790）。
+- 备份：`~/Backups/20261107-pre-g4/`（E chat+content+media、M/S/O sqlite VACUUM INTO），E 备份另在 estomago/backups 轮转内。
+- 部署后只读核对：四服务健康（E host 302→登录页/content 401 鉴权、S 200、M 200、O 200）；chat schema 迁移至 v61；content schema 1,2（13 旧回执/7 creations 原样）；voice_invites/tool_side_effects(args_json) 新列就位；O 无 queued/running 残留。
+- 已知既有：M web 静态页 RuntimeError 为旧问题（本仓无 dist，API 正常）；estomago tunnel 为 TUNNEL_TOKEN 远端配置形态，本机只核对进程存活。
+- 未做：G5 真实存量回填（需单独数据处理授权；生产 content_owner_state 仍为 0，按 G3 dry-run 走 reconcileOwner）。
