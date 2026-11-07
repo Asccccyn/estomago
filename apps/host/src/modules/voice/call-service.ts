@@ -1,9 +1,10 @@
 // modules/voice/call-service.ts（P03.5/P03.6）：通话控制用例。
 // 原 HostToolExecutor.callControl 逐字迁移；accept_call 的直接 fetch/环境变量读取
 // JV-06（联合审计 2026-10-26）：建呼经注入的 SirenAdapter.createCall（与邀请族同源配置）。
-import type { Db } from '../../db/connection.ts';
+import { tx, type Db } from '../../db/connection.ts';
 import type { SirenAdapter } from '../../integrations/siren/adapter.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
+import type { SurfacingService } from '../../memory-surfacing/service.ts';
 
 export type CallControlInput = { action: 'invite' | 'status' | 'end' | 'cancel' | 'accept_call' | 'decline_call'; ttl_seconds?: number };
 
@@ -54,22 +55,50 @@ export function isVoiceCallActive(db: Db, conversationId: string): boolean {
   return Boolean(db.prepare("SELECT 1 FROM voice_calls WHERE conversation_id=? AND state='active' LIMIT 1").get(conversationId));
 }
 
-/** RB01（复审 20261106）：通话域"活动"统一事实。
- *  RB2-01（复审 20261106 第二轮）：真实生产者与期限都收拢在此——
- *  a) 用户 dial：pending 且**未到期**（期限在读时按 TTL 解释，不依赖前端轮询
- *     GET /calls/dial/current 才落 expired）；
- *  b) 模型主动 invite：S 为正本，E 忠实投影 voice_invites（expires_at 界定，
- *     接听/拒接/取消时落 ended）；
- *  c) 预留/已建立通话（voice_calls active）。
- *  Sol 门、后台忙时判定、accept 准入共用本判定；发起与终态写入走领域出口。 */
+// 同一邀请的建呼执行位同时代表当前准备活动；跟随实际请求结束，不借用响铃 TTL。
+const inviteHandoffs = new WeakMap<Db, Map<string, { conversationId: string; completion: Promise<boolean> }>>();
+
+/** Sol 与后台忙时准入共用：未到期响铃、实际建呼准备、预留/已建立通话。 */
 export function isCallActivityActive(db: Db, conversationId: string, nowMs: number = Date.now()): boolean {
   if (isVoiceCallActive(db, conversationId)) return true;
+  for (const handoff of inviteHandoffs.get(db)?.values() ?? []) {
+    if (handoff.conversationId === conversationId) return true;
+  }
   if (Boolean(db.prepare(
     "SELECT 1 FROM dial_requests WHERE conversation_id=? AND state='pending' AND CAST(strftime('%s',created_at) AS INTEGER)*1000 + ttl_ms > ? LIMIT 1",
   ).get(conversationId, nowMs))) return true;
   return Boolean(db.prepare(
     "SELECT 1 FROM voice_invites WHERE conversation_id=? AND state='pending' AND expires_at > ? LIMIT 1",
   ).get(conversationId, nowMs));
+}
+
+export function ensureInviteHandoff(inviteId: string, conversationId: string, deps: {
+  db: Db; sirenCall: SirenAdapter; surfacing?: SurfacingService | null;
+}): Promise<boolean> {
+  const { db, sirenCall, surfacing } = deps;
+  if (db.prepare('SELECT 1 FROM invite_call_handoffs WHERE invite_id=?').get(inviteId)) return Promise.resolve(false);
+  let gates = inviteHandoffs.get(db);
+  if (!gates) { gates = new Map(); inviteHandoffs.set(db, gates); }
+  const existing = gates.get(inviteId);
+  if (existing) return existing.completion;
+
+  // 先登记执行位再开始异步工作；初次与失败后的重试都有同一准备边界，其他接听者
+  // 等待同一请求。成功提交后由 voice_calls 接管活动，失败则 finally 释放本次执行位。
+  const completion = Promise.resolve().then(async () => {
+    surfacing?.cancelForActiveCall(conversationId);
+    const created = await sirenCall.createCall(conversationId);
+    if (!created.ok) throw new Error(created.code);
+    const now = new Date().toISOString();
+    tx(db, () => {
+      db.prepare('INSERT INTO invite_call_handoffs(invite_id,call_id,ws_url,call_token,expires_at,created_at) VALUES (?,?,?,?,?,?)')
+        .run(inviteId, created.callId, created.wsUrl, created.token, created.expiresAt ?? null, now);
+      db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)")
+        .run(created.callId, conversationId, now, created.expiresAt ?? null, 'ordinary');
+    });
+    return true;
+  }).finally(() => { gates.delete(inviteId); });
+  gates.set(inviteId, { conversationId, completion });
+  return completion;
 }
 
 export class VoiceCallService {

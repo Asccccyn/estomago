@@ -3,7 +3,7 @@
 // 否定续查/来源核证（resolveQuoteRefs+receiptOf）/未知写结果恢复（recoverUnknownEffects）。
 // 已见窗口视野来自 ctx.seenMessages（发起请求实际装载清单），不以库高水位替代（D13/04 §C）。
 import type { Db } from '../../db/connection.ts';
-import type { MariposaClient } from '../../integrations/mariposa/client.ts';
+import type { MariposaClient, MariposaCallResult } from '../../integrations/mariposa/client.ts';
 import type { RotationReviewService } from '../../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../../memory/hold-checkpoint.ts';
 import type { SeenRef, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
@@ -17,6 +17,16 @@ import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
 
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
+
+function iWriteFailureIsUnknown(result: Extract<MariposaCallResult, { ok: false }>, phase: 'submit' | 'recover'): boolean {
+  const { httpStatus, code } = result;
+  if (httpStatus >= 500 || httpStatus === 429 || code.startsWith('TRANSPORT')) return true;
+  // 本次无法鉴权不否定原写；身份冲突也无法确认原参数的结果。M 对同操作先回放
+  // 已提交回执，再检查 CAS，所以 VERSION_CONFLICT 是确定拒绝，不是未知提交。
+  return phase === 'recover' && (
+    httpStatus === 401 || httpStatus === 403 || httpStatus === 423 || code === 'IDEMPOTENCY_CONFLICT'
+  );
+}
 
 /** WP4：conversation_read 的可见消息行（owner 真实消息/已发布 assistant） */
 
@@ -903,7 +913,7 @@ export class MemoryToolsService {
       return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN', operation_id: operationId, note: '结果未知：操作已持久（跨重启按原身份恢复收口）；不要用新身份重做同一写入。' } };
     }
     if (!r.ok) {
-      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
+      const unknown = iWriteFailureIsUnknown(r, 'submit');
       settle(unknown ? 'unknown' : 'failed_resolved');
       return { ok: false, output: { error_code: unknown ? 'I_WRITE_OUTCOME_UNKNOWN' : `I_${r.code}`, ...(unknown ? { operation_id: operationId } : {}) } };
     }
@@ -1135,12 +1145,7 @@ export class MemoryToolsService {
         return 'unknown';
       }
       if (r.ok) return 'committed';
-      // R3-M02（RI-02）：本次恢复失败≠原操作未提交——传输/限流/鉴权失败（无法核实远端）
-      // 与冲突类（VERSION/IDEMPOTENCY CONFLICT 恰是原操作可能已提交的证据）一律保持
-      // unknown；只有同参数必然复现的确定性领域拒绝才收口 failed。
-      const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT')
-        || r.code === 'HTTP_401' || r.code === 'HTTP_403' || r.code.includes('CONFLICT');
-      return unknown ? 'unknown' : 'failed';
+      return iWriteFailureIsUnknown(r, 'recover') ? 'unknown' : 'failed';
     } catch {
       return 'unknown';
     }

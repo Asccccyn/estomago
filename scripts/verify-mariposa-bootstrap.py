@@ -33,7 +33,7 @@ def main():
     ap.add_argument('--python',type=Path)
     ap.add_argument('--port',type=int,default=18882)
     ap.add_argument('--output',type=Path)
-    ap.add_argument('--case', choices=['bootstrap', 'memory-tools', 'autonomy-loop'], default='bootstrap')
+    ap.add_argument('--case', choices=['bootstrap', 'memory-tools', 'i-recovery', 'autonomy-loop'], default='bootstrap')
     args=ap.parse_args()
     mariposa=args.mariposa_repo.resolve()
     python=args.python or mariposa/'.venv/bin/python'
@@ -68,7 +68,11 @@ def main():
                             if response.status==200:break
                     except OSError:time.sleep(.05)
                 else:raise TimeoutError('Isolated Mariposa did not become ready')
-                command = ['node','scripts/audit/background-product.ts','--autonomy-loop'] if args.case == 'autonomy-loop' else ['node','tests/cross-project/'+('bootstrap-pagination.test.ts' if args.case == 'bootstrap' else 'memory-tools.test.ts')]
+                scripts = {'bootstrap': 'tests/cross-project/bootstrap-pagination.test.ts',
+                           'memory-tools': 'tests/cross-project/memory-tools.test.ts',
+                           'i-recovery': 'tests/cross-project/i-write-recovery.test.ts',
+                           'autonomy-loop': 'scripts/audit/background-product.ts'}
+                command = ['node', scripts[args.case]] + (['--autonomy-loop'] if args.case == 'autonomy-loop' else [])
                 child=subprocess.Popen(command,env=env,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
                 try:
                     text,_=child.communicate(timeout=90)

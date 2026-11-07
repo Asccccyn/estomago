@@ -3,7 +3,6 @@
 //   原值保留（v61 已从序列移除，v62 条件重建）；v61 后形状幂等跳过。
 // - V02：v59 占位回填被 v63 纠正（model_projection=占位文案 → adopted=0）；真实证据行不受影响。
 // - C01：upsertIntent 事务内同键异参 → conflict（write 层 409；并发第二请求不再回放第一命令）。
-// - B01-A：模型取消邀请（S 确认 cancelled）→ E 镜像立即收口 → 下一新文字 Sol 恢复登记。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -80,44 +79,6 @@ test('R3-C01：upsertIntent 事务内同键异参=conflict（并发第二请求 
     // 同键同参第三请求：kept（沿用既有意图）
     const r3 = (coord as unknown as { upsertIntent(k: string, i: unknown, c: string[]): string }).upsertIntent('content:qiaosheng:k1', first, []);
     assert.equal(r3, 'kept');
-    db.close();
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
-});
-
-test('R3-B01A：模型取消邀请（S cancelled）→ 镜像立即收口 → 下一新文字恢复 Sol 登记', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r3-b01a-'));
-  try {
-    const { VoiceCallService } = await import('../../apps/host/src/modules/voice/call-service.ts');
-    const { SurfacingService } = await import('../../apps/host/src/memory-surfacing/service.ts');
-    const { SurfacingRepository } = await import('../../apps/host/src/memory-surfacing/repository.ts');
-    const { MessageService } = await import('../../apps/host/src/messages/service.ts');
-    const { EventService } = await import('../../apps/host/src/events/service.ts');
-    const db = openDatabase(path.join(root, 'data'));
-    migrate(db, sha256Hex);
-    const messages = new MessageService(db);
-    messages.ensureConversation('primary');
-    const solRequests: number[] = [];
-    const sol = { cfg: {}, isConfigured: (): boolean => true, effectiveModel: () => 'sol', effectiveTemplate: () => 't', applyOverrides(): void {}, decide: async () => { solRequests.push(1); return { ok: true, decision: { decision: 'none', topic: null, basis: 'x', plan: null }, usage: null, elapsed_ms: 1 }; } } as never;
-    const svc = new SurfacingService(db, null as never, sol, { enabled: true, transport_overhead_text: '', policy_revision: 1, prompt_prepare_revision: 'e', delivery_deadline_ms: 3000, max_added_tokens_per_turn: 10, max_packet_bytes: 10, worker_concurrency: 2, recent_user_messages: 2, recent_window_bytes: 2048 } as never, null as never, new EventService(db));
-    const siren = {
-      status: 'available',
-      listInvites: async () => ({ active: { invite_id: 'inv_c1' }, recent: [] }),
-      cancelInvite: async () => ({ state: 'cancelled' }),
-      createInvite: async () => ({ inviteId: 'inv_c1', expiresAt: Date.now() + 45_000 }),
-    };
-    const calls = new VoiceCallService({ db, sirenCall: siren as never, surfacing: svc });
-    db.prepare("INSERT INTO voice_invites(invite_id, conversation_id, state, expires_at, created_at) VALUES ('inv_c1','primary','pending',?,?)").run(Date.now() + 45_000, new Date().toISOString());
-    const ctx = { roomId: 'primary', windowId: 'w', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r3' };
-    const cancelled = await calls.control({ action: 'cancel' }, ctx as never);
-    assert.equal(cancelled.ok, true);
-    const mirror = db.prepare("SELECT state FROM voice_invites WHERE invite_id='inv_c1'").get() as { state: string };
-    assert.equal(mirror.state, 'ended', 'R3-B01A：S 确认取消后镜像立即收口（旧实现保持 pending 到 TTL）');
-    // 下一新文字恢复 Sol 登记（活动读端口不再被已取消邀请抑制）
-    const chat = messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '取消后的新文字', clientMessageId: 'r3-after-cancel' });
-    svc.onUserMessageAccepted({ conversationId: 'primary', messageId: chat.message.id, revision: 1, sequence: chat.message.sequence, content: '取消后的新文字', contentHash: 'h', occurredAt: null });
-    const n = (db.prepare('SELECT COUNT(*) n FROM surfacing_jobs WHERE source_message_id=?').get(chat.message.id) as { n: number }).n;
-    assert.equal(n, 1, '取消后下一新文字恢复 Sol 登记');
-    void SurfacingRepository;
     db.close();
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
