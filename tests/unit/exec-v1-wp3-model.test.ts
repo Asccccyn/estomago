@@ -284,9 +284,9 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估�
   const loaded = ctx.selections.loadContents([{ message_id: vMsg.message.id, revision: 1, sequence: vMsg.message.sequence, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 1 }]);
   assert.equal(loaded.loaded[0]!.attachments.length, 1);
   assert.equal(loaded.loaded[0]!.attachments[0]!.asset_id, voice.id);
-  // R05（2026-10-24）：估算与发送同源——历史图片按 textOnly 占位文本计费。
-  // 临界实例：5 张贴纸（实际投影=5 段占位文本）估算必须由真实文本预算决定，
-  // 旧链会加 5×1600=8000 token 把纯文本装得下的选集错误拒绝。
+  // 相册重构 P5（宿主用户 2026-11-08 裁定：开窗包按最新裁定，撤销 2026-10-18 textOnly）：
+  // 选集历史图片恢复真实视觉输入——估算与发送继续同源，图片块按保守视觉成本
+  // 1600/张计费（R05"同源、不另立模型"原则不变）。5 张贴纸=5 个视觉块+占位文本清零。
   for (let i = 0; i < 4; i++) {
     ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: `s3-${i}`, attachments: [{ asset_id: sticker.id, presentation: 'sticker' }] });
   }
@@ -295,29 +295,25 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估�
     .flatMap((x) => (x.ok ? x.items : []));
   assert.equal(imgItems.length, 5, '五条贴纸历史可选');
   const est = ctx.selections.estimateTokens(imgItems, { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
-  assert.ok(est < 100, `5 张历史图片的 textOnly 估算按占位文本计（实际 ${est}；旧口径会 ≥8000）`);
+  assert.ok(est >= 5 * 1600 && est < 5 * 1600 + 100, `5 个视觉块按 1600/张计（实际 ${est}；应为 8000+文本余量）`);
   // 临界边界：容量上限放在文本预算与旧 1600/图口径之间——新口径必须 fits
   const pv = ctx.selections.preview({ conversationId: 'c1', sourceWindowId: 'csel-src-x', expectedWindowRevision: 0, items: imgItems.map((it) => ({ message_id: it.message_id })), cutoffSequence: 999, estimate: { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 }, capacityBoundTokens: est + 1599 });
   assert.equal((pv as { ok: boolean; result?: { fits: boolean; estimated_tokens: number } }).ok, true);
-  assert.equal((pv as { result: { fits: boolean; estimated_tokens: number } }).result.fits, true, '文本装得下就不能被图片虚拟成本拒绝（旧口径 5×1600=8000 必拒）');
+  assert.equal((pv as { result: { fits: boolean; estimated_tokens: number } }).result.fits, true, '上限高于当前估算（含真实视觉成本）即放行');
   assert.equal((pv as { result: { estimated_tokens: number } }).result.estimated_tokens, est);
 });
 
-test('MEDIA-07（她 2026-10-18 裁定：多选只带文本）——textOnly 投影：图片占位不产视觉块、caption/语音转写保留、非 textOnly 行为不变', () => {
+test('MEDIA-07（相册重构 P5，宿主用户 2026-11-08 裁定：撤销 textOnly）——图片一律真实视觉块、caption/语音转写保留', () => {
   const attachments = [
     { asset_id: 'a-img', presentation: 'image', caption: '海边的落日', derived_text: null, derived_source: null },
     { asset_id: 'a-voice', presentation: 'voice', caption: null, derived_text: '今天很开心', derived_source: 'siren:transcribe' },
   ];
-  // textOnly：图片→占位文本（无 asset_image、hasImage=false、不触发视觉门）；caption 与语音转写照常
-  const t = projectRevisionBlocks('正文一句', attachments, { textOnly: true });
-  assert.equal(t.hasImage, false, 'textOnly 不得产视觉块');
-  assert.ok(t.blocks.every((b) => b.type === 'text'), 'textOnly 全部为文本块');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[图片消息')), '图片有如实占位');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[附件说明] 海边的落日')), 'caption 随文本保留');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('今天很开心')), '语音转写照常携带');
-  assert.ok(!t.blocks.some((b) => b.type === 'asset_image'), '无视觉引用块');
-  // 非 textOnly（默认）：原行为不变——图片仍是视觉块
+  // 撤销 2026-10-18 textOnly：图片不再有占位文本分支，恒产 asset_image 视觉块
+  //（发送边界物化、视觉门照常；携带上限由装配层合并规划——context/carry-images.ts）
   const d = projectRevisionBlocks('正文一句', attachments);
   assert.equal(d.hasImage, true);
-  assert.ok(d.blocks.some((b) => b.type === 'asset_image' && b.asset_id === 'a-img'));
+  assert.ok(d.blocks.some((b) => b.type === 'asset_image' && b.asset_id === 'a-img'), '图片=真实视觉引用块');
+  assert.ok(!d.blocks.some((b) => b.type === 'text' && b.text.includes('[图片消息')), '无占位文本残留');
+  assert.ok(d.blocks.some((b) => b.type === 'text' && b.text.includes('[附件说明] 海边的落日')), 'caption 随文本保留');
+  assert.ok(d.blocks.some((b) => b.type === 'text' && b.text.includes('今天很开心')), '语音转写照常携带');
 });

@@ -17,9 +17,8 @@ export const PROJECTION_VERSION = 'v1' as const;
 export type RevisionAttachment = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
 
 /** 消息修订 → 内部投影块。语音带转写→标注来源的文本块；图片/表情→asset_image 引用块。
- *  textOnly（2026-10-18 她的裁定：多选只带文本）——人工选集装配专用：图片/表情不产出
- *  视觉引用块，以如实占位文本替代（模型知道此处有图、图未携带，不静默消失）；
- *  语音转写本就是文本，照常携带。
+ *  相册重构 P5（2026-11-08 宿主用户裁定，撤销 2026-10-18 textOnly）：图片/表情一律产出
+ *  真实视觉引用块（发送边界物化）；语音转写本就是文本，照常携带。
  *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
  *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
  *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
@@ -62,10 +61,9 @@ export function sliceByByteBudget(text: string, offsetChars: number, budgetBytes
 
 // R3″b（2026-10-24）：续读可用性默认 false——能力未经窗口核实时不宣传（诚实默认）；
 // 生产装配（supervisor）一律显式传入 windowHasTool 实值，默认只影响无窗口上下文的直接调用。
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; voiceObservations?: ReadonlyMap<string, string>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; voiceObservations?: ReadonlyMap<string, string>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const withDefaults = { transcriptContinuationAvailable: false, ...opts };
   const isCurrentInput = opts.isCurrentInput === true;
-  const textOnly = opts.textOnly === true;
   const hearing = opts.hearing?.available === true;
   const blocks: ProjectedBlock[] = [];
   if (content.length > 0) blocks.push({ type: 'text', text: content });
@@ -108,12 +106,9 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       if (observation) blocks.push({ type: 'text', text: observation });
       continue;
     }
-    if (textOnly) {
-      blocks.push({ type: 'text', text: '[图片消息：按多选裁定不带入本窗，图片未随文本携带]' });
-      if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
-      continue;
-    }
-    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）
+    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）。
+    // 相册重构 P5（宿主用户 2026-11-08 裁定，撤销 2026-10-18 textOnly）：选集/历史图片一律
+    // 真实携带（asset_image 块）；携带上限由装配层合并规划（context/carry-images.ts）。
     hasImage = true;
     blocks.push({ type: 'asset_image', asset_id: a.asset_id, projection_version: PROJECTION_VERSION });
     if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });

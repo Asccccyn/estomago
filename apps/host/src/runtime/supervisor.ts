@@ -70,6 +70,9 @@ import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledg
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
+import { planCarryImages, buildCarryFragment, countCarryImageBlocks } from '../context/carry-images.ts';
+import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
+import { contentForward } from '../integrations/content/client.ts';
 import { storedToolset } from './tool-discovery.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 
@@ -94,6 +97,7 @@ export type SupervisorDeps = {
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
+  contentClient?: import('../integrations/content/client.ts').ContentClient | null; // 相册重构 P5：携带集合读取/消费（未装配=无携带注入，如实降级不阻塞聊天）
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
   bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
@@ -167,6 +171,9 @@ type ActiveRun = {
 
 export class TurnSupervisor {
   private d: SupervisorDeps;
+  /** 相册重构 P5：rotation 准备期（pending 键，窗 id 未落地）暂存携带计划；窗口落地后
+   *  迁入 window_carry_plans 表；换窗失败即弃（设置保留、不消费）。 */
+  private pendingCarryPlans = new Map<string, { plan: ReturnType<typeof planCarryImages>; conversationId: string; createdAt: string }>();
   private chains = new Map<string, Promise<unknown>>(); // F-J-31：runSerialized 链尾 Promise<T|void> 存迹，只 await 不读值
   private active = new Map<string, ActiveRun>(); // key = turnId
   // F-J-09（联合审计 2026-10-06）：工具 schema/顺序按 epoch（窗口）冻结——
@@ -487,7 +494,7 @@ export class TurnSupervisor {
     return (row?.client_message_id ?? '').startsWith('voice:');
   }
 
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
     const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
     if (this.d.media && messageId && revision) {
       try {
@@ -1232,6 +1239,8 @@ export class TurnSupervisor {
     selectedMessages?: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; occurred_at?: string | null; reference_at?: string }>;
     /** EXEC_V1 §03.6：当前输入消息（投影其附件进尾部；缺省=纯文本尾） */
     tailMessage?: { id: string; revision: number } | null;
+    /** 相册重构 P5：开窗携带块（选集图+相册携带合并规划的 system 数据块；随首请求冻结进轨迹） */
+    carryFragment?: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const dv = this.drv()!;
     const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
@@ -1253,6 +1262,7 @@ export class TurnSupervisor {
     const bootstrapText = [o.bootText,localTools].filter(Boolean).join('\n');
     if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
     if (o.episodeFragment) messages.push({role:'system',content:[{type:'text',text:o.episodeFragment}]});
+    if (o.carryFragment) messages.push({ role: 'system', content: o.carryFragment.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     let selected: typeof o.dialogue = [];
     if (o.selectedMessages) {
       // WP3：人工选集——顺序=服务端 sequence（已由选集服务排好）；
@@ -1266,16 +1276,24 @@ export class TurnSupervisor {
       selected = [];
     }
     // EXEC_V1 §03.6：历史与尾部统一走投影器（内部 asset_image 引用——轨迹/证据不含 Base64）
-    // 2026-10-18 她的裁定：多选只带文本——选集历史投影 textOnly（图片以占位文本带入，
-    // 不产视觉块、不触发视觉门）；尾部当前输入与追赶投影不受影响（当前轮的图照常进模型）
+    // 相册重构 P5（宿主用户 2026-11-08 裁定：开窗包按最新裁定）：撤销 2026-10-18 textOnly——
+    // 选集历史图片是真实图像输入（asset_image 块，发送边界物化+视觉门照常），并与开窗
+    // 携带照片合并计入 CARRY_IMAGE_LIMIT（装配即校验，见下方 carryImageCount）。
     let envHasImage = false;
     const guides = selectionGuides(o.selectedMessages ?? []);
+    let carryImageCount = o.carryFragment ? countCarryImageBlocks([{ content: o.carryFragment.blocks }]) : 0;
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
+      carryImageCount += countCarryImageBlocks([{ content: proj.blocks }]);
       messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
+    }
+    // 03 §8.5 装配级核验（规划器已拦一次，这里对实际装出的块再核一遍）：携带图+选集图
+    // 合并后的实际图像块不得超过 CARRY_IMAGE_LIMIT；超限明确阻断，不截前 10、不静默丢图。
+    if (carryImageCount > CARRY_IMAGE_LIMIT) {
+      throw new Error(`CARRY_IMAGES_EXCEEDED:开窗携带图片 ${carryImageCount} 块超过上限 ${CARRY_IMAGE_LIMIT}——请减少选集中的图片或调低相册携带设置`);
     }
     // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
     // 保温空尾）不带序号
@@ -1585,6 +1603,64 @@ export class TurnSupervisor {
     return { rotated: true, blocked: null };
   }
 
+  /** 相册重构 P5：解析本窗开窗携带计划（选集图 ∪ 相册携带设置，去重 ≤ 上限）。
+   *  content 不可达→warn 并按空携带继续（聊天/换窗不被相册检索故障拖垮；设置保留，
+   *  next_once 不消费，下次滚窗再带——03 §7.4 未投递不消耗）。合并超限→抛错阻断
+   *  本次换窗准备（旧窗保持 ACTIVE，用户按明细减选）。 */
+  private async resolveWindowCarry(conversationId: string, stashKey: string, selectedMessages: Array<{ message_id: string; attachments?: Array<{ asset_id: string; presentation: string }> }>): Promise<{ fragment: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null; plan: ReturnType<typeof planCarryImages> }> {
+    let carryItems: CarrySetItem[] = [];
+    if (this.d.contentClient) {
+      try {
+        const res = await contentForward(this.d.contentClient, { method: 'GET', actor: 'jiaming', path: '/api/v1/content/carry-set' });
+        if (res.status === 200) {
+          const body = res.body as { items?: CarrySetItem[] };
+          if (Array.isArray(body.items)) carryItems = body.items;
+        } else {
+          this.d.logger.warn('carry_set_unavailable', { status: res.status, conversationId });
+        }
+      } catch {
+        this.d.logger.warn('carry_set_unreachable', { conversationId });
+      }
+    }
+    const selectionImages = selectedMessages.flatMap((m) =>
+      (m.attachments ?? []).filter((a) => a.presentation === 'image' || a.presentation === 'sticker').map((a) => ({ asset_id: a.asset_id, message_id: m.message_id })));
+    const plan = planCarryImages({ selectionImages, carryItems });
+    if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
+    this.pendingCarryPlans.set(stashKey, { plan, conversationId, createdAt: new Date().toISOString() });
+    return { fragment: buildCarryFragment(plan.ok ? plan.images : []), plan };
+  }
+
+  /** 窗口落地后把暂存计划固化到 window_carry_plans（幂等；无暂存=无携带，不建行）。 */
+  private persistCarryPlanForWindow(windowId: string): void {
+    for (const [key, stash] of this.pendingCarryPlans) {
+      if (!key.startsWith('pending:')) continue;
+      if (stash.conversationId !== this.d.db.prepare('SELECT conversation_id FROM windows WHERE id = ?').get(windowId)?.conversation_id) continue;
+      this.d.db.prepare('INSERT OR IGNORE INTO window_carry_plans(window_id, plan_json, has_next_once, created_at) VALUES (?,?,?,?)')
+        .run(windowId, JSON.stringify(stash.plan), stash.plan.ok && stash.plan.hasNextOnce ? 1 : 0, stash.createdAt);
+      this.pendingCarryPlans.delete(key);
+    }
+  }
+
+  /** P5 §7.4：窗内首次成功投递后消费 next_once（before=建窗时刻——不吞投递后新设项；
+   *  content 失败保留未消费，下次成功补齐；同窗已消费即跳过）。 */
+  private async consumeCarryNextOnceOnSuccess(windowId: string): Promise<void> {
+    const row = this.d.db.prepare('SELECT has_next_once, consumed_at, created_at FROM window_carry_plans WHERE window_id = ?').get(windowId) as { has_next_once: number; consumed_at: string | null; created_at: string } | undefined;
+    if (!row || !row.has_next_once || row.consumed_at || !this.d.contentClient) return;
+    try {
+      const res = await contentForward(this.d.contentClient, {
+        method: 'POST', actor: 'jiaming', path: '/api/v1/content/carry-set/consume-next-once',
+        body: { before: row.created_at }, headers: { 'idempotency-key': `carry-consume:${windowId}` },
+      });
+      if (res.status === 200) {
+        this.d.db.prepare('UPDATE window_carry_plans SET consumed_at = ? WHERE window_id = ? AND consumed_at IS NULL').run(new Date().toISOString(), windowId);
+      } else {
+        this.d.logger.warn('carry_consume_rejected', { windowId, status: res.status });
+      }
+    } catch {
+      this.d.logger.warn('carry_consume_unreachable', { windowId }); // 保留未消费，后续成功回合补齐
+    }
+  }
+
   /** WP-07（CX-09）：新窗初始轨迹材料（事务外先行）——按已确认选集
    *  装配首信封（空选=无历史段）+开窗资料 B；bootstrap 以 pending 键
    *  缓存，切换成功后由调用方迁移到真实窗 id。 */
@@ -1600,6 +1676,8 @@ export class TurnSupervisor {
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`, undefined, conversationId);
     const sel = selectionId && d.selections ? d.selections.get(selectionId) : null;
+    const loadedSelection = d.selections && sel ? d.selections.loadForProjection(sel) : [];
+    const carry = await this.resolveWindowCarry(conversationId, `pending:${conversationId}`, loadedSelection);
     const built = this.buildEnvelope({
       conversationId,
       materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
@@ -1607,7 +1685,8 @@ export class TurnSupervisor {
       episodeFragment: this.bootstrapMachine.episodeFragmentFor(`pending:${conversationId}`),
       dialogue: [],
       tailUserText: ' ',
-      selectedMessages: d.selections && sel ? d.selections.loadForProjection(sel) : [],
+      selectedMessages: loadedSelection,
+      carryFragment: carry.fragment,
     });
     const inputChars = JSON.stringify(built.envelope.messages).length + this.selectionPendingInputChars(conversationId);
     const hardBound = (d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER) - dv.maxTokens - d.config.windows.tool_input_reserve_tokens - d.config.windows.review_reserve_tokens - d.config.windows.safety_reserve_tokens;
@@ -1980,9 +2059,14 @@ export class TurnSupervisor {
         const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
+        // 相册重构 P5：懒初始化位点解析开窗携带（真实窗 id——直接固化行；选集/携带图
+        //  随 buildEnvelope 装配并冻结进轨迹）。超限抛错→本 attempt 阻断（不静默丢图）。
+        const loaded0 = sel0 ? d.selections!.loadForProjection(sel0) : [];
+        const carry0 = await this.resolveWindowCarry(turn.conversation_id, window.id, loaded0);
+        this.persistCarryPlanForWindow(window.id);
         const built0 = sel0
-          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(sel0) })
-          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ' });
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loaded0, carryFragment: carry0.fragment })
+          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carry0.fragment });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -2006,6 +2090,7 @@ export class TurnSupervisor {
       if (rotation.rotated) {
         const next = d.windows.activeWindow(turn.conversation_id);
         if (next) window = next; // 新窗已 ACTIVE：本轮输入只进新窗一次（§4.2）
+        if (next) this.persistCarryPlanForWindow(next.id); // P5：准备期暂存的携带计划随窗落地
         if (d.trajectory) {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
@@ -2016,9 +2101,12 @@ export class TurnSupervisor {
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
             // 绑定 target_window_id；无命中=兼容期自动回退）
             const selR = d.selections?.forTargetWindow(window.id) ?? null;
+            const loadedR = selR ? d.selections!.loadForProjection(selR) : [];
+            const carryR = await this.resolveWindowCarry(turn.conversation_id, window.id, loadedR);
+            this.persistCarryPlanForWindow(window.id);
             const builtR = selR
-              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(selR) })
-              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ' });
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loadedR, carryFragment: carryR.fragment })
+              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carryR.fragment });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -2665,6 +2753,9 @@ export class TurnSupervisor {
       d.db.prepare("UPDATE attempts SET state = 'completed', completed_at = ? WHERE id = ?").run(now, attempt.id);
       d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
     });
+    // 相册重构 P5 §7.4：本窗初始资料（含携带图）已随本轮请求成功投递——消费 next_once
+    //（before=建窗时刻，不吞投递后新设项；失败保留待补，不影响回合收尾）。
+    void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
     // §2.2/§7：成功回合才推进协议轨迹（append-only）+ 实际已见 manifest（F06：本轮输入与
     // 已发布助手消息入清单——下一轮范围/书签从这份证据出发）；新已发送边界=本轮末 text 块

@@ -620,7 +620,13 @@ export class ContentServer {
     if (method === 'POST' && pathname === '/api/v1/content/carry-set/consume-next-once') {
       const c = cmd('album_entry', 'update', 'carry-set');
       return { cmd: c, business: () => {
-        const n = this.db.prepare("UPDATE album_entries SET carry_mode = 'none', updated_at = ?, revision = revision + 1 WHERE deleted_at IS NULL AND carry_mode = 'next_once'").run(now()).changes;
+        // before（ISO，可选）：只消费该时刻之前已设置的 next_once——投递确认晚到/补消费
+        // 时，不误吞本次投递之后新设置的携带项（P5 §7.4：旧请求不能消耗后来重设的携带）。
+        const before = typeof body.before === 'string' && body.before ? body.before : null;
+        const n = (before !== null
+          ? this.db.prepare("UPDATE album_entries SET carry_mode = 'none', updated_at = ?, revision = revision + 1 WHERE deleted_at IS NULL AND carry_mode = 'next_once' AND updated_at <= ?")
+          : this.db.prepare("UPDATE album_entries SET carry_mode = 'none', updated_at = ?, revision = revision + 1 WHERE deleted_at IS NULL AND carry_mode = 'next_once'")
+        ).run(now(), ...(before !== null ? [before] : [])).changes;
         return { status: 200, body: { consumed: n, limit: CARRY_IMAGE_LIMIT } };
       } };
     }

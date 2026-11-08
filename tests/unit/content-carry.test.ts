@@ -105,6 +105,12 @@ test('CARRY-4: consume-next-once 只消费 next_once、不动 always；同键幂
   assert.equal(replay.body['consumed'], c1.body['consumed'], '同键重放回放原回执');
   const fresh = await call('POST', '/api/v1/content/carry-set/consume-next-once', {}, 'k-consume-2', 'jiaming');
   assert.equal(fresh.body['consumed'], 0);
+  // before 过滤（P5 §7.4）：只消费该时刻之前设置的 next_once——投递后新设项不被补消费误吞
+  await addEntry('stickers', 'asset-late1', 'next_once', 'k-carry-late');
+  const pastConsume = await call('POST', '/api/v1/content/carry-set/consume-next-once', { before: '2000-01-01T00:00:00.000Z' }, 'k-consume-3', 'jiaming');
+  assert.equal(pastConsume.body['consumed'], 0, '早于一切设置的 before 不消费任何项');
+  const nowConsume = await call('POST', '/api/v1/content/carry-set/consume-next-once', { before: new Date().toISOString() }, 'k-consume-4', 'jiaming');
+  assert.equal((nowConsume.body['consumed'] as number) >= 1, true, '含新设项的 before 正常消费');
 });
 
 test('CARRY-5: PUT 修改 carry_mode 走 If-Match 与上限校验', async () => {

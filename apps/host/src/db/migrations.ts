@@ -1611,4 +1611,22 @@ UPDATE media_assets SET m_sync_state='out_of_scope' WHERE ingest_purpose='chat_v
 `,
 });
 
+// v65（相册重构 P5）：随窗携带计划——新窗初始化时把开窗携带图片集合（选集图+相册
+// 携带，去重 ≤CARRY_IMAGE_LIMIT）定格。plan_json 为审计/减选提示的正本快照；
+// has_next_once 标记本窗初始资料含"下次滚窗一次"项，窗内首次成功投递后置
+// consumed_at（对应 content carry-set 的 next_once 消费），未成功前保持 NULL。
+MIGRATIONS.push({
+  version: 65,
+  name: 'window-carry-plans',
+  sql: `
+CREATE TABLE IF NOT EXISTS window_carry_plans(
+  window_id TEXT PRIMARY KEY,
+  plan_json TEXT NOT NULL,
+  has_next_once INTEGER NOT NULL DEFAULT 0,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL
+);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

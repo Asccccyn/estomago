@@ -377,6 +377,7 @@ export class Host {
       checkpoint,
       trajectory,
       selections,
+      contentClient, // 相册重构 P5：携带集合读取/消费（未启用=null=如实无携带）
       settings,
       alerts,
       media,
