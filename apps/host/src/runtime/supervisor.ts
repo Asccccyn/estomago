@@ -97,6 +97,8 @@ export type SupervisorDeps = {
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
   bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
+  /** 宿主用户 2026-11-07 裁定：开窗运行中事项片段取数端口（app-context 装配；缺省=null 不取） */
+  episodes?: import('./window-bootstrap.ts').EpisodeListPort | null;
   // S17b 批次3：窄 catalog 接口——Supervisor 经同一 Registry 消费目录（唯一来源）
   toolCatalog?: CatalogProvider;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
@@ -1221,6 +1223,9 @@ export class TurnSupervisor {
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
     bootText?: string | null;
+    /** 宿主用户 2026-11-07 裁定：开窗定格的"运行中事项"独立片段（authority=none；
+     *  随窗冻结，来自 WindowBootstrapMachine，不并入 B 段正文） */
+    episodeFragment?: string | null;
     /** WP3（2026-10-08）：人工选集装配——严格按确认的引用集合装载（E04：
      *  不把"自动携带预算设 0"代替拆分——该预算键已随 WP5 退役）。给出即忽略
      *  dialogue 的自动预算挑选；可为空数组=明确空选（不带历史）。 */
@@ -1247,6 +1252,7 @@ export class TurnSupervisor {
     }
     const bootstrapText = [o.bootText,localTools].filter(Boolean).join('\n');
     if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
+    if (o.episodeFragment) messages.push({role:'system',content:[{type:'text',text:o.episodeFragment}]});
     let selected: typeof o.dialogue = [];
     if (o.selectedMessages) {
       // WP3：人工选集——顺序=服务端 sequence（已由选集服务排好）；
@@ -1592,12 +1598,13 @@ export class TurnSupervisor {
     }
     if (!d.trajectory) throw new Error('ROTATION_TRAJECTORY_UNAVAILABLE');
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`);
+    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`, undefined, conversationId);
     const sel = selectionId && d.selections ? d.selections.get(selectionId) : null;
     const built = this.buildEnvelope({
       conversationId,
       materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
       bootText: boot,
+      episodeFragment: this.bootstrapMachine.episodeFragmentFor(`pending:${conversationId}`),
       dialogue: [],
       tailUserText: ' ',
       selectedMessages: d.selections && sel ? d.selections.loadForProjection(sel) : [],
@@ -1970,12 +1977,12 @@ export class TurnSupervisor {
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
         await this.prepareWindowTools(window.id, prepSignal);
-        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal);
+        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
         const built0 = sel0
           ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(sel0) })
-          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
+          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ' });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -2004,7 +2011,7 @@ export class TurnSupervisor {
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
             await this.prepareWindowTools(window.id, prepSignal);
-            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal);
+            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id);
             if (stoppedDuringPreparation()) return;
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
             // 绑定 target_window_id；无命中=兼容期自动回退）

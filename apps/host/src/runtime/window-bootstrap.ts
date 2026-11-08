@@ -1,16 +1,27 @@
 // 窗口开窗资料（Mariposa bootstrap B 段）分页装配机——R3（2026-11-07）纯搬迁自
 // supervisor.ts：与聊天主链零共享状态，独立缓存与分页协议（SNAPSHOT_STALE 整包重建、
 // 瞬时全局失败一次、完整成功才进缓存）。行为逐字保留。
+// 开窗"运行中事项"片段（宿主用户 2026-11-07 裁定：开窗定格、随开窗包冻结、预算 3 条、
+// 近期引用热度排序）：与 B 段同生命周期缓存（同 transferPending/delete），独立取数，
+// 失败冻结为空（每窗一次告警，不阻塞开窗）。
 import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
+import { renderEpisodeFragment, EPISODE_FRAGMENT_BUDGET, type FragmentEpisode } from './episode-fragment.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 
 // R10（复审 2026-10-07）：bootstrap 受控截止时间——准备阶段不无限挂起
 export const BOOTSTRAP_DEADLINE_MS = 8000;
 
-export type BootstrapMachineDeps = Pick<SupervisorDeps, 'bootstrap' | 'events' | 'alerts' | 'config' | 'wishstar'>;
+export type EpisodeListPort = {
+  list(args: { scopeId: string; states?: string[]; limit?: number }): Promise<{ ok: boolean; data?: { episodes?: FragmentEpisode[]; has_more?: boolean }; error?: unknown }>;
+};
+
+export type BootstrapMachineDeps = Pick<SupervisorDeps, 'bootstrap' | 'events' | 'alerts' | 'config' | 'wishstar'> & {
+  episodes?: EpisodeListPort | null;
+};
 
 export class WindowBootstrapMachine {
   private byWindow = new Map<string, string>();
+  private episodeFragmentByWindow = new Map<string, string>();
 
   private readonly d: BootstrapMachineDeps;
 
@@ -25,20 +36,64 @@ export class WindowBootstrapMachine {
       this.byWindow.set(windowId, pending);
       this.byWindow.delete(pendingKey);
     }
+    const pendingFragment = this.episodeFragmentByWindow.get(pendingKey);
+    if (pendingFragment !== undefined) {
+      this.episodeFragmentByWindow.set(windowId, pendingFragment);
+      this.episodeFragmentByWindow.delete(pendingKey);
+    }
   }
 
   take(key: string): string | undefined {
     return this.byWindow.get(key);
   }
 
-  delete(key: string): void {
-    this.byWindow.delete(key);
+  /** 本窗冻结的"运行中事项"片段；null=该窗无片段（未接线/失败冻结/无未了结——内部空串归一为 null） */
+  episodeFragmentFor(key: string): string | null {
+    const v = this.episodeFragmentByWindow.get(key);
+    return v && v.length > 0 ? v : null;
   }
 
-  async windowBootstrap(windowId: string, signal?: AbortSignal): Promise<string | null> {
+  delete(key: string): void {
+    this.byWindow.delete(key);
+    this.episodeFragmentByWindow.delete(key);
+  }
+
+  async windowBootstrap(windowId: string, signal?: AbortSignal, scopeId?: string): Promise<string | null> {
     if (signal?.aborted) return null;
-    let t = this.byWindow.get(windowId);
-    if (t !== undefined) return t;
+    const t = this.byWindow.get(windowId);
+    if (t !== undefined) {
+      if (this.episodeFragmentByWindow.has(windowId) || !scopeId) return t;
+      // B 已有缓存但片段尚未冻结——独立补取后返回缓存（每窗一次）
+      await this.freezeEpisodeFragment(windowId, scopeId);
+      return t;
+    }
+    if (!this.d.bootstrap) return await this.fetchBootText(windowId, signal); // 未接线：如实无 B（也不取片段）
+    const text = await this.fetchBootText(windowId, signal);
+    if (scopeId) await this.freezeEpisodeFragment(windowId, scopeId); // 结论路径统一冻结（含部分交付/不可用）
+    return text;
+  }
+
+  /** 宿主用户 2026-11-07 裁定：开窗时取"运行中事项"前 3 条（M 侧近期引用热度排序），
+   *  渲染为独立片段随窗冻结；失败/无未了结冻结为空（每窗一次告警，不阻塞开窗）。 */
+  private async freezeEpisodeFragment(windowId: string, scopeId: string): Promise<void> {
+    if (this.episodeFragmentByWindow.has(windowId)) return;
+    const port = this.d.episodes;
+    if (!port) {
+      this.episodeFragmentByWindow.set(windowId, '');
+      return;
+    }
+    try {
+      const res = await port.list({ scopeId, states: ['OPEN', 'QUIESCENT'], limit: EPISODE_FRAGMENT_BUDGET });
+      if (!res?.ok) throw new Error('EPISODE_LIST_UNAVAILABLE');
+      const fragment = renderEpisodeFragment(res.data?.episodes ?? [], res.data?.has_more === true);
+      this.episodeFragmentByWindow.set(windowId, fragment ?? '');
+    } catch {
+      this.d.events.publish('context.warning', { conversationId: scopeId, entityRef: windowId, scope: 'private', payload: { source: 'episode-fragment', code: 'EPISODE_FRAGMENT_UNAVAILABLE', note: '运行中事项片段未取得——本窗不带该段（不阻塞开窗）' } });
+      this.episodeFragmentByWindow.set(windowId, '');
+    }
+  }
+
+  private async fetchBootText(windowId: string, signal?: AbortSignal): Promise<string | null> {
     const d = this.d;
     const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
     if (!mc) return null; // 未接线：如实无 B
