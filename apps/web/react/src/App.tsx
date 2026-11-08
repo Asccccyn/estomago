@@ -239,7 +239,12 @@ function VoiceBar({ text, ai, src, assetId, instant }: { text: string; ai?: bool
     const audio = audioRef.current
     if (!audio) return
     if (!audio.paused) audio.pause()
-    else { try { await audio.play() } catch { setFailed(true) } }
+    else {
+      // 元素此前加载失败（隧道一次断流等瞬态）：error 态下 play() 不会重新拉源、
+      // 永远被拒——先 load() 重取；成功后 loadedmetadata/onPlay 会清 failed
+      if (audio.error) audio.load()
+      try { await audio.play() } catch { setFailed(true) }
+    }
   }
   const prog = duration ? t / duration : 0
   const bars = Array.from({ length: Math.min(28, 8 + Math.round((duration ?? 6) * 0.7)) }, (_, i) => BARS[i % BARS.length])
@@ -253,8 +258,8 @@ function VoiceBar({ text, ai, src, assetId, instant }: { text: string; ai?: bool
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
     <audio hidden ref={audioRef} src={src} preload="metadata"
-      onLoadedMetadata={(e) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null)}
-      onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} onPlay={() => setPlay(true)} onPause={() => setPlay(false)}
+      onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null); setFailed(false) }}
+      onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} onPlay={() => { setPlay(true); setFailed(false) }} onPause={() => setPlay(false)}
       onEnded={() => { setPlay(false); setT(0) }} onError={() => setFailed(true)} />
     <button onClick={() => void togglePlay()} className="flex max-w-full shrink-0 items-center gap-2.5 rounded-full bg-[#f0ede5] py-1.5 pl-1.5 pr-4">
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white ${ai ? 'bg-[#3d3929]' : 'bg-[#c96442]'}`}>
