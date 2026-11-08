@@ -35,6 +35,8 @@ import { buildTimeContext, modelTimeContextText } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
 import { assembleContext } from '../context/assembler.ts';
 import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { estimateRotationWorkingSet, systemFragmentChars } from './rotation-estimate.ts';
+import { selectionEstimateContext, selectionCutoffSequence, selectionPendingInputChars } from '../context/selection-estimate.ts';
 import { buildPreRotateReviewMessage } from '../context/review-prompts.ts';
 import { rotationPlan, selectReviewRange, rawKey, type ManifestEntry } from '../context/review-policy.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
@@ -1312,28 +1314,9 @@ export class TurnSupervisor {
     // F06：评审范围的实际已见清单优先取轨迹 manifest（真实发送证据）；无轨迹时退化为库投影。
     const dialogue = this.dialogueUpTo(o.conversationId, o.currentInputSequence - 1);
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
-    // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
-    // 新消息长度只并入"下一输入"预测触发换窗（§4.2：大输入先保存、先提醒旧窗、新输入只进新窗一次）。
-    // 新窗装下新输入的最终校验由工具循环每轮的 P2 容量门承担（F03 尾），真实硬门不放松。
-    const currentInputLen = (d.db.prepare(
-      `SELECT LENGTH(r.content) AS len FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       WHERE m.conversation_id = ? AND m.sequence = ?`,
-    ).get(o.conversationId, o.currentInputSequence) as { len: number | null } | undefined)?.len ?? 0;
-    // 审计 F25：估算只用实际发送集合——轨迹正本（无轨迹的新窗首轮回退库内近期，此时二者一致）。
-    // 被拒/未发送的历史大消息不得污染当前工作集（否则短输入被持续 CAPACITY_BLOCKED_HARD）。
+    // 工作集估算（R4b 迁 runtime/rotation-estimate.ts：D06/F25/1024 裁定②/F-J-33/R21 口径单一正本）
     const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
-    // 她 1024 裁定②：工作集=实际发送载荷（轨迹消息+冻结工具目录，与工具循环硬门同一口径）
-    const trajMessagesForEstimate = trajForEstimate ? trajForEstimate.messages : dialogue;
-    // F-J-33：无轨迹回退路径补 system 材料（轨迹路径 system 段已在 messages 内）
-    const systemChars = trajForEstimate ? 0 : (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const oldWindowEstimate = this.estimateRequestTokens(trajMessagesForEstimate, o.window.id) + Math.ceil(systemChars / (dv?.charsPerToken ?? 1.5)); // 旧窗自身工作集
-    const lastUsage = lastRequestUsageForWindow(d.db, o.window.id);
-    const lastActual = lastUsage ? providerInputTotal(lastUsage) : null;
-    const workingSet = Math.max(oldWindowEstimate, lastActual ?? 0);
-    // R21（复审 2026-10-07）：下一输入=旧工作集+本轮新增输入（system 只计
-    // 一次）——此前 Math.max(workingSet, incomingEstimate) 漏加本轮输入，
-    // 临界消息在旧窗超软线却不触发提醒/换窗（既有问题，硬门不受影响）
-    const nextWithIncoming = workingSet + Math.ceil(currentInputLen / (dv?.charsPerToken ?? 1.5));
+    const { workingSet, nextWithIncoming } = estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, o.window.id) });
 
         // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=容量软线，2026-10-17 起 600k 兜底）
     const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=容量软线（600k 兜底）
@@ -1634,40 +1617,21 @@ export class TurnSupervisor {
   private selectionEstimateContext(tailInputChars: number): { charsPerToken: number; systemChars: number; tailInputChars: number; capacityBoundTokens: number } | null {
     const d = this.d;
     const dv = this.drv();
-    if (!dv) {
-      // SDK 驱动（无信封映射）：粗估回退——不做选集级容量预检（请求级
-      // 容量门仍在 SDK 侧），系统段记 0、界=不设限；tokenizer 未知=rough
-      return { charsPerToken: 1.5, systemChars: 0, tailInputChars, capacityBoundTokens: Number.MAX_SAFE_INTEGER };
-    }
+    if (!dv) return selectionEstimateContext({ driver: null, systemChars: 0, windows: d.config.windows, tailInputChars }); // SDK 驱动粗估回退（§6.2）
     const gate = d.identity.evaluateGate(d.db, { driver: dv.kind });
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const systemChars = (materials?.identityText.length ?? 0) + (materials?.rulesText.length ?? 0) + (materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const w = d.config.windows;
-    const capacity = w.model_context_capacity ?? Number.MAX_SAFE_INTEGER;
-    const bound = Math.min(w.soft_limit_tokens, capacity - dv.maxTokens - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens);
-    return { charsPerToken: dv.charsPerToken, systemChars, tailInputChars, capacityBoundTokens: Math.max(0, bound) };
+    return selectionEstimateContext({ driver: { charsPerToken: dv.charsPerToken, maxTokens: dv.maxTokens }, systemChars: systemFragmentChars(materials), windows: d.config.windows, tailInputChars });
   }
 
   /** 选择面截止水位：最后一条"已了结"消息（其 turn 非 pending/blocked）——
    *  待回答与排队输入不得作为历史带入（H04）。 */
   private selectionCutoffSequence(conversationId: string): number {
-    const row = this.d.db.prepare(
-      `SELECT MAX(m.sequence) AS m FROM messages m
-       LEFT JOIN turns t ON t.input_message_id = m.id
-       WHERE m.conversation_id = ? AND (t.id IS NULL OR t.state NOT IN ('pending','blocked'))`,
-    ).get(conversationId) as { m: number | null };
-    return row?.m ?? 0;
+    return selectionCutoffSequence(this.d.db, conversationId); // R4b 迁 context/selection-estimate.ts（H04）
   }
 
   /** 待回答/排队输入的总字符（容量估计并入"当前待回答输入"，H04/H05）。 */
   private selectionPendingInputChars(conversationId: string): number {
-    const row = this.d.db.prepare(
-      `SELECT COALESCE(SUM(LENGTH(r.content)), 0) AS chars FROM messages m
-       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       JOIN turns t ON t.input_message_id = m.id
-       WHERE m.conversation_id = ? AND (t.state = 'pending' OR (t.state = 'blocked' AND EXISTS (SELECT 1 FROM attempts a WHERE a.turn_id=t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%'))))`,
-    ).get(conversationId) as { chars: number };
-    return row?.chars ?? 0;
+    return selectionPendingInputChars(this.d.db, conversationId); // R4b 迁 context/selection-estimate.ts（H04/H05）
   }
 
   /** preview（§6.2）：只读核验——不跑模型、不 hold、不换窗、不写选集。 */
