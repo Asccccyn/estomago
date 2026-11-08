@@ -46,7 +46,7 @@ if (oidoUiImage) {
   const art = d.db.prepare("SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json='full'").get(analysisId) as { asset_id: string } | undefined;
   if (!art) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件' } });
   try {
-    const { bytes, mime } = d.media.readContent(art.asset_id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(art.asset_id);
     res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
     res.end(bytes);
     return;

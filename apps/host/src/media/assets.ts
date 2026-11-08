@@ -12,8 +12,17 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
+import type { MariposaMediaStore } from '../integrations/mariposa/media-store.ts';
 
 export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
+
+// 相册重构 P2（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：这些用途的媒体字节以 M 为唯一
+// 长期正本，保存成功后落正到 M、缓存缺失时从 M 回源。chat_voice 不在其中——语音原声
+// 另有 oído/Siren 生命周期与远端消费者（执行包 A66：共享资产入口不得误伤既有音频链路），
+// 本轮不迁移；其媒体字节归属仍按原路径处理。
+export const M_MASTER_PURPOSES: ReadonlySet<IngestPurpose> = new Set([
+  'chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view',
+]);
 
 // 用途 → 格式白名单（§5.1：两套小名单；不是按扩展名信任）
 const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
@@ -61,16 +70,20 @@ export type StoredAsset = {
   id: string; state: string; mime_type: string; byte_size: number; content_sha256: string;
   origin: string; origin_service: string | null; origin_ref: string | null;
   ingest_purpose: string; created_by: string; created_at: string; duplicate: boolean;
+  m_sync_state: 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
+  m_sync_attempts: number;
 };
 
 export class MediaService {
   private db: Db;
   private mediaDir: string;
   private config: Config;
-  constructor(db: Db, mediaDir: string, config: Config) {
+  private mStore: MariposaMediaStore | null;
+  constructor(db: Db, mediaDir: string, config: Config, mStore: MariposaMediaStore | null = null) {
     this.db = db;
     this.mediaDir = mediaDir;
     this.config = config;
+    this.mStore = mStore;
     fs.mkdirSync(mediaDir, { recursive: true });
   }
 
@@ -97,6 +110,8 @@ export class MediaService {
     const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id = ?').get(opts.operationId) as { id: string; content_sha256: string } | undefined;
     if (existing) {
       if (existing.content_sha256 !== sha) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+      // 上一次保存可能停在 M 待同步：顺手补一次（M 端按 hash 去重，重复上传无副作用）
+      await this.attemptMSync(existing.id, opts.bytes);
       return this.getAsset(existing.id);
     }
     const sniffed = sniffMime(opts.bytes);
@@ -118,15 +133,61 @@ export class MediaService {
       } else duplicate = true; // 内容去重：同 hash 只存一份字节；不同 asset 身份仍各自成立（§3.1）
       this.db.prepare(
         `INSERT INTO media_assets(id, creation_operation_id, state, mime_type, byte_size, content_sha256, storage_key,
-           width, height, duration_ms, origin, origin_service, origin_ref, created_by, ingest_purpose, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?)`,
-      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso);
+           width, height, duration_ms, origin, origin_service, origin_ref, created_by, ingest_purpose, created_at, updated_at,
+           m_sync_state)
+         VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?)`,
+      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso, M_MASTER_PURPOSES.has(opts.purpose) ? 'pending' : 'out_of_scope');
     } catch (err) {
       try { for (const f of fs.readdirSync(absDir)) { if (f.includes('.tmp-')) fs.unlinkSync(path.join(absDir, f)); } } catch { /* 清理失败不掩盖 */ }
       if (err instanceof MediaError) throw err;
       throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '媒体目录写入失败');
     }
+    await this.attemptMSync(id, opts.bytes);
     return { ...this.getAsset(id), duplicate };
+  }
+
+  // —— 相册重构 P2：M 唯一正本同步/回源。失败不掩盖本地保存成功——状态回 pending
+  //    由后台循环退避重试；成功即 m_content_hash 落行，本地文件自此只是可重建缓存。
+
+  /** 单资产落正到 M。bytes 给定则免读盘（保存路径）；返回是否已 synced。 */
+  async attemptMSync(assetId: string, bytes?: Uint8Array): Promise<boolean> {
+    const row = this.db.prepare('SELECT id, content_sha256, mime_type, state, ingest_purpose, m_sync_state FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string; mime_type: string; state: string; ingest_purpose: IngestPurpose; m_sync_state: string } | undefined;
+    if (!row || row.state !== 'available') return false;
+    if (!M_MASTER_PURPOSES.has(row.ingest_purpose)) return row.m_sync_state === 'out_of_scope';
+    if (row.m_sync_state === 'synced') return true;
+    if (!this.mStore) return false; // M 未配置：保持 pending（如实的待完成状态，不假装 synced）
+    try {
+      const buf = bytes ?? this.readLocalBytes(row.content_sha256);
+      const out = await this.mStore.uploadBytes(buf, row.mime_type);
+      if (out.content_hash !== row.content_sha256) throw new Error('hash mismatch after upload');
+      this.db.prepare("UPDATE media_assets SET m_content_hash = ?, m_sync_state = 'synced', m_sync_attempts = 0, m_synced_at = ?, m_last_sync_error = NULL WHERE id = ?")
+        .run(out.content_hash, new Date().toISOString(), assetId);
+      return true;
+    } catch (err) {
+      // 保留字节与可恢复状态：pending + attempts/error 可见，绝不在失败时清理本地唯一副本
+      this.db.prepare("UPDATE media_assets SET m_sync_attempts = m_sync_attempts + 1, m_last_sync_error = ? WHERE id = ?")
+        .run(String((err as Error).message).slice(0, 200), assetId);
+      return false;
+    }
+  }
+
+  /** 待同步批次（后台一跳有界推进；按创建序，最旧优先）。 */
+  pendingMSyncBatch(limit: number): Array<{ id: string; m_sync_attempts: number }> {
+    const purposes = [...M_MASTER_PURPOSES];
+    const placeholders = purposes.map(() => '?').join(',');
+    return this.db.prepare(
+      `SELECT id, m_sync_attempts FROM media_assets
+       WHERE m_sync_state = 'pending' AND state = 'available' AND ingest_purpose IN (${placeholders})
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+    ).all(...purposes, limit) as Array<{ id: string; m_sync_attempts: number }>;
+  }
+
+  private readLocalBytes(contentSha256: string): Buffer {
+    // storage_key 由内容 hash 派生（<hh>/<hash>.<ext>）——按目录扫前缀取回，不信任扩展名
+    const dir = path.join(this.mediaDir, contentSha256.slice(0, 2));
+    const name = fs.readdirSync(dir).find((f) => f.startsWith(contentSha256));
+    if (!name) throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '媒体文件缺失');
+    return fs.readFileSync(path.join(dir, name));
   }
 
   getAsset(id: string): StoredAsset {
@@ -139,6 +200,9 @@ export class MediaService {
       origin_ref: (row.origin_ref as string | null) ?? null,
       ingest_purpose: row.ingest_purpose as string, created_by: row.created_by as string,
       created_at: row.created_at as string, duplicate: false,
+      m_sync_state: (row.m_sync_state as StoredAsset['m_sync_state']) ?? 'pending',
+      m_content_hash: (row.m_content_hash as string | null) ?? null,
+      m_sync_attempts: Number(row.m_sync_attempts ?? 0),
     };
   }
 
@@ -149,7 +213,8 @@ export class MediaService {
       AND a.presentation IN ('image','sticker') LIMIT 1`).get(assetId, roomId));
   }
 
-  /** 授权读取字节（storage_key 由宿主管理，不暴露绝对路径）。 */
+  /** 授权读取本地缓存字节（storage_key 由宿主管理，不暴露绝对路径）。同步、不回源——
+   *  语音（chat_voice，M 同步范围外）等消费者依赖读取后同步认领行，保持原时序不变。 */
   readContent(id: string): { bytes: Buffer; mime: string } {
     const row = this.db.prepare('SELECT storage_key, mime_type, state FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string } | undefined;
     if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
@@ -157,6 +222,29 @@ export class MediaService {
     const abs = path.join(this.mediaDir, row.storage_key);
     if (!fs.existsSync(abs)) throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '资产文件缺失');
     return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+  }
+
+  /** 相册重构 P2：M 正本媒体的读取入口——本地缓存命中即同步返回；缓存缺失且已落正 M 时
+   *  从 M 回源（sha256 校验后原子重建本地缓存）；M 也读不到才如实
+   *  ASSET_STORAGE_UNAVAILABLE——绝不静默换一张或假装可读。 */
+  async readContentResolvingMaster(id: string): Promise<{ bytes: Buffer; mime: string }> {
+    const row = this.db.prepare('SELECT storage_key, mime_type, state, content_sha256, m_sync_state, m_content_hash FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string; content_sha256: string; m_sync_state: string; m_content_hash: string | null } | undefined;
+    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
+    if (row.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产状态 ${row.state}`);
+    const abs = path.join(this.mediaDir, row.storage_key);
+    if (fs.existsSync(abs)) return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+    const mHash = row.m_content_hash ?? (row.m_sync_state === 'synced' ? row.content_sha256 : null);
+    if (mHash && this.mStore) {
+      const { bytes } = await this.mStore.fetchBytes(mHash);
+      // 回源成功即原子重建本地缓存（后续读取不再依赖 M 在线）
+      const absDir = path.join(this.mediaDir, path.dirname(row.storage_key));
+      fs.mkdirSync(absDir, { recursive: true });
+      const tmp = `${abs}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmp, bytes);
+      fs.renameSync(tmp, abs);
+      return { bytes, mime: row.mime_type };
+    }
+    throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '资产文件缺失');
   }
 
   /** §7 URL 导入：连接目标受控。逐跳重查（≤max_redirects）；私网/环回/链路本地/云元数据全拒。 */

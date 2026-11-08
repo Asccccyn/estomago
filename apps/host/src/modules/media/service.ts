@@ -38,7 +38,7 @@ export class MediaToolsService {
     if (!['image/png','image/jpeg','image/gif','image/webp'].includes(asset.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '该资产不是可投递图片');
     // Access can be revoked between tool execution and sending/replaying history.
     // Both transports call this same resolver at their actual send boundary.
-    return this.media.readContent(assetId);
+    return this.media.readContentResolvingMaster(assetId);
   }
 
   async mediaView(args: { asset_ref: string }, ctx: ToolExecContext): Promise<ToolExecResult> {

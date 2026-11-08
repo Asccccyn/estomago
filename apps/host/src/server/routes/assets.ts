@@ -54,7 +54,7 @@ if (sandboxPreview) {
     if (asset.mime_type !== 'image/svg+xml' && asset.mime_type !== 'text/html') {
       return json(res, 400, { error: { code: 'not_active_mime', message: '此资产不需要沙箱预览（走 content 端点）' } });
     }
-    const { bytes, mime } = d.media.readContent(id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(id);
     // §03.5.1：不能只靠 iframe sandbox——资产 URL 被直接打开时也不能在 est 主站来源执行
     res.writeHead(200, {
       'Content-Type': mime,
@@ -138,7 +138,7 @@ if (assetContent) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   const id = decodeURIComponent(assetContent[1]!);
   try {
-    const { bytes, mime } = d.media.readContent(id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(id);
     return serveAudioContent(req, res, bytes, mime);
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
@@ -193,7 +193,7 @@ if (oidoViewRoute) {
   const row = d.db.prepare('SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json=?').get(analysisId, rangeKey) as { asset_id: string } | undefined;
   if (!row) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件（先由 oido_view 生成）' } });
   try {
-    const { bytes, mime } = d.media.readContent(row.asset_id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(row.asset_id);
     res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
     res.end(bytes);
     return;

@@ -69,6 +69,7 @@ export type RequestDeps = {
   bgSettings?: import('../runtime/background-settings.ts').BackgroundSettingsService; // EXEC_V1 WP4
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
+  mediaMasterStore?: import('../integrations/mariposa/media-store.ts').MariposaMediaStore; // 相册重构 P2：M 唯一正本落正客户端
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
   voiceObservations?: import('../modules/oido/observations.ts').VoiceObservationService; // GLMVoice：观察 sidecar 登记/查询
   callReplyLinks?: import('../modules/voice/call-links.ts').CallReplyLinkService; // A04：通话回复媒体关联 worker（完成/挂断 wake）

@@ -82,6 +82,13 @@ export class Host {
   private mediaBackfillTicking = false;
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
+  /** 相册重构 P2：M 落正待同步批次的后台一跳（单飞门；无模型执行） */
+  private mediaSyncTimer: ReturnType<typeof setInterval> | null = null;
+  private mediaSyncTicking = false;
+  private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
+  private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
+  /** 同步失败退避（进程内；重启归零重试一轮，与 media/index/backfill.ts 同款如实记录） */
+  private readonly mediaMSyncRetryNotBefore = new Map<string, number>();
   private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
   private sirenCallRef: import('./integrations/siren/adapter.ts').SirenAdapter | null = null;
   /** P03.8：oído 接入模块生命周期（删除传播重试 timer 的 start/stop 包装；行为逐字保持） */
@@ -124,6 +131,8 @@ export class Host {
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
+    this.mediaServiceRef = deps.media ?? null; // 相册重构 P2：M 落正待同步循环
+    this.mediaSyncStore = deps.mediaMasterStore ?? null;
     this.oidoRef = deps.oido ?? null;
     this.oidoLifecycle = createOidoDeleteRetryLifecycle(deps.db, () => this.oidoRef);
     this.surfacing = deps.surfacing ?? null;
@@ -200,7 +209,15 @@ export class Host {
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
-    const media = new MediaService(db, paths.mediaDir, opts.config);
+    // 相册重构 P2（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：M 媒体间落正客户端——
+    // mariposa base_url + 主凭据引用配置齐备才装配；M 未配置时保存仍走本地（同步状态如实 pending）。
+    const mediaStore = opts.config.integrations.mariposa.base_url && opts.config.integrations.mariposa.credential_ref
+      ? new (await import('./integrations/mariposa/media-store.ts')).MariposaMediaStore({
+        baseUrl: opts.config.integrations.mariposa.base_url,
+        credentialEnv: opts.config.integrations.mariposa.credential_ref,
+      })
+      : null;
+    const media = new MediaService(db, paths.mediaDir, opts.config, mediaStore);
     const oido = opts.config.integrations.oido.base_url
       ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
       : null;
@@ -422,6 +439,7 @@ export class Host {
       bgSettings,
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
+      mediaMasterStore: mediaStore ?? undefined,
       oido: oido ?? undefined,
       voiceObservations: voiceObsService,
       callReplyLinks,
@@ -487,6 +505,10 @@ export class Host {
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
     this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
     this.mediaBackfillTimer.unref?.();
+    // 相册重构 P2：M 落正待同步推进——同 backfill 的独立任务边界（单飞、有界批次、
+    // 不进调度器串行链）。指数退避按行上 attempts 计算（30s·2^min(n,5)）。
+    this.mediaSyncTimer = setInterval(() => { void this.mediaMSyncTick(); }, 15_000);
+    this.mediaSyncTimer.unref?.();
     // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
     this.oidoLifecycle?.start();
     // P1（F06/F07）：内容写恢复消费者——启动清一遍崩溃遗留的 pending/unknown 意图，
@@ -506,6 +528,25 @@ export class Host {
     this.mediaBackfillAbort = new AbortController();
     try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal); }
     finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
+  }
+
+  /** 相册重构 P2：M 落正待同步一跳（≤5 资产/跳；进程内指数退避 30s·2^min(n,5)，
+   *  与 media/index/backfill.ts 同款——重启后退避归零重试一轮，如实记录） */
+  private async mediaMSyncTick(): Promise<void> {
+    if (this.mediaSyncTicking) return;
+    const media = this.mediaServiceRef;
+    if (!media || !this.mediaSyncStore) return;
+    this.mediaSyncTicking = true;
+    try {
+      const now = Date.now();
+      for (const item of media.pendingMSyncBatch(5)) {
+        if ((this.mediaMSyncRetryNotBefore.get(item.id) ?? 0) > now) continue; // 退避期：跳过不占批次
+        const before = item.m_sync_attempts;
+        const synced = await media.attemptMSync(item.id);
+        if (synced) this.mediaMSyncRetryNotBefore.delete(item.id);
+        else this.mediaMSyncRetryNotBefore.set(item.id, Date.now() + 30_000 * 2 ** Math.min(before + 1, 5));
+      }
+    } finally { this.mediaSyncTicking = false; }
   }
 
   private reconcileCalls(): void {
@@ -536,6 +577,7 @@ export class Host {
       this.server.closeAllConnections?.();
     });
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
+    if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
     if (this.callReconcileTimer) { clearInterval(this.callReconcileTimer); this.callReconcileTimer = null; }

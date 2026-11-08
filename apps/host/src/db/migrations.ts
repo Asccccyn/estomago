@@ -1593,4 +1593,22 @@ UPDATE voice_observations SET analysis_adopted = 0
    AND model_projection LIKE '%尚未就绪%';
 `});
 
+// v64（相册重构 P2，GLM_ALBUM_REFACTOR_EXECUTION 20261108）：M 成为媒体字节唯一长期
+// 正本——media_assets 记录每个资产在 M 的落正状态。m_sync_state 仅两值：
+// pending=本地已存、M 落正待完成（初始与可重试失败都回到这里）；synced=M 已确认
+// content_hash。attempts/last_error 供可见状态与退避重试；不设终态 failed——重试由
+// 后台循环带退避推进，不静默放弃也不假装成功。存量行默认 pending，由存量迁移脚本补齐。
+MIGRATIONS.push({
+  version: 64,
+  name: 'media-assets-mariposa-master',
+  sql: `
+ALTER TABLE media_assets ADD COLUMN m_content_hash TEXT;
+ALTER TABLE media_assets ADD COLUMN m_sync_state TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE media_assets ADD COLUMN m_sync_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE media_assets ADD COLUMN m_synced_at TEXT;
+ALTER TABLE media_assets ADD COLUMN m_last_sync_error TEXT;
+UPDATE media_assets SET m_sync_state='out_of_scope' WHERE ingest_purpose='chat_voice';
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

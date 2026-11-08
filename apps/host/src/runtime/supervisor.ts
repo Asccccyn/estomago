@@ -960,7 +960,7 @@ export class TurnSupervisor {
         windowId: o.windowId, purpose: o.purpose, envelope: o.envelope, maxModelRequests: MAX_TOOL_ROUNDS + 1,
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
-        ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContent(assetId) } : {}),
+        ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId) } : {}),
         beforeModel: async (messages, round) => {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
           // P5（T17）：background_complete 后不再开新模型请求（PostToolBatch 同一面）
