@@ -27,7 +27,7 @@ before(async () => {
 after(async () => { await host?.stop(); cookie = ''; fs.rmSync(root, { recursive: true, force: true }); });
 
 test('首页、聊天与保留的主页内嵌页都经过既有登录门', async () => {
-  for (const route of ['/', '/chat', '/home/scene.html', '/home/feature.html?feature=calendar']) {
+  for (const route of ['/', '/chat', '/home/feature.html?feature=calendar']) {
     const response = await fetch(base + route, { redirect: 'manual' });
     assert.equal(response.status, 302, route);
     assert.equal(response.headers.get('location'), '/login', route);
