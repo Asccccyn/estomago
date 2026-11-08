@@ -4,7 +4,6 @@ import {
   canSend,
   isBlankContent,
   buildOutgoingDraft,
-  newClientMessageId,
   shouldSendOnKeydown,
   normalizeNewlines,
 } from '../../apps/web/src/composer-logic.js';
@@ -45,9 +44,4 @@ test('草稿只做换行规范化（LF），保留行序/空行/首尾空格，�
   const draft = buildOutgoingDraft('  a\r\nb\r\rc\n\n', 'cmid');
   assert.equal(draft.content, '  a\nb\n\nc\n\n'); // \r 各自规范为 \n，不合并语义
   assert.equal(draft.client_message_id, 'cmid');
-});
-
-test('一次点击一个幂等键；uuid 形状', () => {
-  const a = newClientMessageId({ randomUUID: () => '00000000-0000-4000-8000-000000000000' });
-  assert.equal(a, '00000000-0000-4000-8000-000000000000');
 });

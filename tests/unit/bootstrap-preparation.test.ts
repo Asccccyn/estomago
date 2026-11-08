@@ -109,7 +109,7 @@ function compose(mariposa: MariposaTransport) {
   const paths = buildPaths(root), db = openDatabase(path.join(root, 'data')); migrate(db, sha256Hex);
   const events = new EventService(db), messages = new MessageService(db), identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages), trajectory = new WindowTrajectoryService(db);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const seen: string[] = [];
   const runner = new DeepSeekRunner({ retryMax: 0 }, async payload => {
     seen.push(JSON.stringify(payload.messages));
@@ -165,7 +165,7 @@ test('an existing unsent preparation is rebuilt before its first dispatch, inclu
     const gate = ctx.identity.evaluateGate(ctx.db, { driver: 'deepseek' });
     const created = ctx.windows.createWindow({ conversationId: 'c1', gate });
     ctx.trajectory.init(created.window.id, initial, []);
-    (ctx.supervisor as any).bootstrapByWindow.set(created.window.id, 'OLD_UNSENT_CACHED_BOOTSTRAP');
+    (ctx.supervisor as any).bootstrapMachine.byWindow.set(created.window.id, 'OLD_UNSENT_CACHED_BOOTSTRAP');
     const turn = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '合成首次派发', clientMessageId: 'reprep-1' });
     ctx.supervisor.enqueue(turn.turnId); await ctx.supervisor.waitIdle();
     assert.equal(reads, 1); assert.equal(ctx.seen.length, 1);

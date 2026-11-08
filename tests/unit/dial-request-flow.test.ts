@@ -21,6 +21,7 @@ import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { recoveryPass, recoverSchedule } from '../../apps/host/src/runtime/recovery.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { ModelToolBridge, type ToolExecContext } from '../../apps/host/src/capabilities/model-bridge.ts';
@@ -61,7 +62,7 @@ function compose(root: string, transport: OrTransport) {
   messages.ensureConversation('primary');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const windows = new WindowManager(db, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
@@ -105,8 +106,8 @@ test('F01（审计 P1）：停止排队轮→重开 DB→恢复零派发；未�
     const c2 = compose(root, transport);
     try {
       const { TurnSupervisor } = await import('../../apps/host/src/runtime/supervisor.ts');
-      TurnSupervisor.recoveryPass(c2.db, c2.supervisor['d'] ? (c2.supervisor['d'] as { logger: never }).logger : (c2.supervisor as unknown as { d: { logger: never } }).d.logger);
-      const redispatched = TurnSupervisor.recoverSchedule({ db: c2.db, supervisor: c2.supervisor, logger: (c2.supervisor as unknown as { d: { logger: never } }).d.logger } as never);
+      recoveryPass(c2.db, c2.supervisor['d'] ? (c2.supervisor['d'] as { logger: never }).logger : (c2.supervisor as unknown as { d: { logger: never } }).d.logger);
+      const redispatched = recoverSchedule({ db: c2.db, supervisor: c2.supervisor, logger: (c2.supervisor as unknown as { d: { logger: never } }).d.logger } as never);
       assert.equal(redispatched.redispatched, 0, '已停止排队轮不再被恢复派发（旧实现=1，审计复现）');
       await pause(200);
       assert.equal(transportCalls, before, '恢复后零新增模型派发');

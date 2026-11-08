@@ -140,7 +140,7 @@ export class IdentityService {
   // 审计 F01：驱动判别——SDK 专属前提（sdk_version 锁定/实装匹配、订阅认证确认、SDK 版本绑定探针、
   // runtime.model）只约束 SDK 驱动；OR/DS 用各自的型号与 key 状态门（selectRunner），共有身份校验
   // （manifest/版本三键/hash 到文件/证据非空）对全部驱动同样强制（§2.1：共有的身份/主体权限校验必需）。
-  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' | 'deepseek' }): GateResult {
+  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' | 'deepseek' | 'mock' }): GateResult {
     const driver = opts?.driver ?? 'claude-agent-sdk';
     const reasons: string[] = [];
     const installed = this.observedSdkVersion();

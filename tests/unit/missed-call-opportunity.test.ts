@@ -60,7 +60,7 @@ function compose(root: string, transport: OrTransport) {
     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config),
     runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) },
     reasoning: new ReasoningService(db, events), usage: new UsageCollector(db),
-    routing: new RoutingService(db, events, messages), windows: new WindowManager(db, events, identity, config),
+    routing: new RoutingService(db, events, messages), windows: new WindowManager(db, identity, config),
     logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db),
     checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db),
   });

@@ -20,6 +20,7 @@ import { UsageCollector, } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { recoveryPass } from '../../apps/host/src/runtime/recovery.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
@@ -179,7 +180,7 @@ function composeSup(root: string, transport: OrTransport, configOver: Record<str
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa: MariposaTransport = async (cap, payload) => ({ ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-x', version: 1, binding_ids: [], committed_at: new Date().toISOString() } });
@@ -279,7 +280,7 @@ test('D03：重启恢复收口 active 评审与 running 写操作，房间不再
   ctx.db.prepare("INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, created_at, updated_at) VALUES ('e1','rev1','t1','w1','hold','running',0,'es-hold-x','tc1',?,?)").run(now, now);
   ctx.db.prepare("INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, created_at, updated_at) VALUES ('e2','rev1','t1','w1','review_complete','running',0,NULL,'tc2',?,?)").run(now, now);
   const logger = { warn: () => {} };
-  const res = TurnSupervisor.recoveryPass(ctx.db, logger as never);
+  const res = recoveryPass(ctx.db, logger as never);
   assert.equal(res.staleReviews, 1, 'active 评审 → failed（无执行者，不伪造完成）');
   const rev = ctx.db.prepare('SELECT status FROM rotation_reviews WHERE id = ?').get('rev1') as { status: string };
   assert.equal(rev.status, 'failed');
@@ -403,7 +404,7 @@ test('D23：记录快照无 effectiveWarning（WP-03 退役），软线按实际
   const events = new EventService(ctx.db);
   const messages = new MessageService(ctx.db);
   const identity = new IdentityService(config, buildPaths(root));
-  const windows = new WindowManager(ctx.db, events, identity, config);
+  const windows = new WindowManager(ctx.db, identity, config);
   const runner = { status: 'ok' as const, runner: new DeepSeekRunner({ retryMax: 0 }, async () => ({ status: 200, headers: new Map(), body: frameStream(textBody('g', 'x')) })) };
   const snap = buildRecordSnapshot({ db: ctx.db, config, windows, runnerSelection: runner }, 'c1', null);
   // 容量 40000 → safeInput=11808 → effectiveSoft=11808（软线收缩正断言保留）

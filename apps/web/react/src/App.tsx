@@ -175,7 +175,7 @@ function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element
 }
 
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
-function VoiceBar({ dur, text, ai, src, assetId, instant }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string; instant?: boolean }) {
+function VoiceBar({ text, ai, src, assetId, instant }: { text: string; ai?: boolean; src?: string; assetId?: string; instant?: boolean }) {
   // RE-15（2026-10-24 返修）：深听 UI 状态隔离——queued/409 不再显示成成功空卡；
   // 概览响应绑定发起时的 asset（消息修订换 v2 后，迟到的 v1 响应作废不挂新源）；
   // 收起再展开复用已有分析（查询），不重复发起新分析；卸载中止在途请求。
@@ -231,7 +231,7 @@ function VoiceBar({ dur, text, ai, src, assetId, instant }: { dur?: number; text
   }
   const [play, setPlay] = useState(false)
   const [t, setT] = useState(0)
-  const [duration, setDuration] = useState<number | null>(dur ?? null)
+  const [duration, setDuration] = useState<number | null>(null)
   const [failed, setFailed] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
   useEffect(() => { const audio = audioRef.current; return () => { audio?.pause() } }, [src])
@@ -344,7 +344,7 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
 function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
   if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
   const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
-  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} instant={m.lateMedia} />
+  if (m.kind === 'voice') return <VoiceBar text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} instant={m.lateMedia} />
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />

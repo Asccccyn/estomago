@@ -22,7 +22,7 @@ import type { MessageService } from '../messages/service.ts';
 import type { EventService } from '../events/service.ts';
 import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from './capabilities.ts';
-import { buildSdkOptions, subscriptionSdkOptions } from './build-options.ts';
+import { subscriptionSdkOptions } from './build-options.ts';
 import { SubscriptionAccessRunner } from './subscription-access.ts';
 import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
 import type { RunnerSelection } from './runner.ts';
@@ -55,7 +55,7 @@ import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex, genId } from '../util/id.ts';
-import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
+import { WindowBootstrapMachine, BOOTSTRAP_DEADLINE_MS } from './window-bootstrap.ts';
 // P09：wishstar 依赖收窄为结构面（仅开窗临近纪念日提醒所需 upcoming）
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
@@ -130,12 +130,11 @@ const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；
 // §3.3 有界恢复（2026-10-05 审计 P2-1）：同窗评审失败达上限后不再自动付费评审——
 // 恢复路径=评审成功换新窗（新窗计数重置）或人工处理后手动换窗；防"模型永不调用 complete"时每条消息都付费评审。
 const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
-// R10（复审 2026-10-07）：bootstrap 受控截止时间——准备阶段不无限挂起
-const BOOTSTRAP_DEADLINE_MS = 8000;
 
-/** 信封驱动（OR / DS 直连共用消息轨迹与工具循环管线；SDK/mock 走 prompt 路径） */
-export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' | 'claude-agent-sdk' =>
-  kind === 'openrouter' || kind === 'deepseek' || kind === 'claude-agent-sdk';
+/** 信封驱动：四类驱动共用消息轨迹与工具循环管线。R2（2026-11-07）起 mock 测试替身
+ *  同走信封（消费 OrRunRequest、driver='mock'），旧 SDK 单请求 prompt 分支已退役。 */
+export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' =>
+  kind === 'openrouter' || kind === 'deepseek' || kind === 'claude-agent-sdk' || kind === 'mock';
 
 type ModelRequestContext = {
   requestId: string | null;
@@ -174,23 +173,17 @@ export class TurnSupervisor {
   // 首个信封前取一次并冻结（§5.2/§7.1：B 只冻结这一窗的输入快照，权限
   // 撤销/关键身份更正例外走既有安全换窗）。取不到=如实降级不带 B（事件
   // 记录），不阻塞聊天、不伪造"记忆已恢复"。
-  private bootstrapByWindow = new Map<string, string>();
+  private readonly bootstrapMachine: WindowBootstrapMachine;
 
   constructor(d: SupervisorDeps) {
     this.d = d;
+    this.bootstrapMachine = new WindowBootstrapMachine(d);
   }
 
   enqueue(turnId: string): void {
     const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
     if (!conv) return;
     this.runSerialized(conv.conversation_id, async () => {
-      if (this.cancelledBeforeRun.delete(turnId)) {
-        // RE-03：排队期已 stop——不派发，落确定终态（订阅者可见失败收口）
-        this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
-        this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
-        this.voiceTaps.delete(turnId);
-        return;
-      }
       try {
         await this.runTurn(turnId);
       } catch (err) {
@@ -250,10 +243,6 @@ export class TurnSupervisor {
   async waitIdle(): Promise<void> {
     await Promise.all([...this.chains.values()]);
   }
-
-  /** RE-03（2026-10-24 返修）：排队取消登记——尚未获得串行链的 turn 被 stop 时记录，
-   *  链到达时不再派发（上轮反例：断开的排队电话轮在前序释放后仍派发模型） */
-  private cancelledBeforeRun = new Set<string>();
 
   /** RE-02（2026-10-24 返修）：语音正文抽头——同一生成流（publishText 的真实新增 tail，
    *  与聊天落库同源）逐段供给 voice ingress；不经公共事件总线（不进 SSE/UI 面）。
@@ -319,42 +308,6 @@ export class TurnSupervisor {
       this.d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,?,?,'pending')").run(attemptId, turnId, (row.m ?? 0) + 1, inputRevision);
     });
     return attemptId;
-  }
-
-  // AUD-10/38（§10）+ D03（审计 3655d60）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型；
-  //   active 评审无执行者（宿主重启即失主）→ failed（下次换窗按上限内有界重开评审，先做 unknown 写恢复）；
-  //   running 写操作 → hold 记 unknown（可按 operation_id 恢复探测），本地类（review_complete 等）→ failed_resolved。
-  static recoveryPass(db: Db, logger: Pick<Logger, 'warn'>): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number; staleReviews: number; orphanEffects: number } {
-    const now = new Date().toISOString();
-    const turns = tx(db, () => Number(db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now).changes));
-    const attempts = tx(db, () => Number(db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now).changes));
-    const blocks = tx(db, () => Number(db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE state = 'streaming'").run(now).changes));
-    // 孤儿 candidate 窗口（AUD-38）：PREPARING 悬挂 → 终态 BLOCKED
-    const staleWindows = tx(db, () => Number(db.prepare("UPDATE windows SET status = 'BLOCKED', blocked_reason = 'RECOVERY_ORPHAN_CANDIDATE', updated_at = ? WHERE status = 'PREPARING'").run(now).changes));
-    // waiting_route_gate 但房间已无 pending 票据 → 释放回 pending（可被调度恢复接管）
-    const releasedWaiting = tx(db, () => Number(db.prepare(
-      `UPDATE attempts SET state = 'pending', blocked_reason = NULL
-       WHERE state = 'waiting_route_gate'
-         AND turn_id IN (SELECT t.id FROM turns t WHERE NOT EXISTS (
-           SELECT 1 FROM route_decisions rd WHERE rd.conversation_id = t.conversation_id AND rd.state = 'pending'))`,
-    ).run().changes));
-    // route_owner_pending 但票据已消失（被并发消费后崩溃等）→ failed（防悬挂 owner）
-    const failedOwners = tx(db, () => Number(db.prepare(
-      `UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_ORPHAN_ROUTE_OWNER', completed_at = ?
-       WHERE state = 'route_owner_pending'
-         AND NOT EXISTS (SELECT 1 FROM route_decisions rd WHERE rd.attempt_id = attempts.id AND rd.state = 'pending')`,
-    ).run(now).changes));
-    // D03a：无执行者的 active 评审 → failed（重启后没有任何协程会收口它；不伪造完成凭证）
-    const staleReviews = tx(db, () => Number(db.prepare("UPDATE rotation_reviews SET status = 'failed', updated_at = ? WHERE status = 'active'").run(now).changes));
-    // D03b：崩溃遗留 running 写操作——远端写（hold/i_write）结果不明（M 侧可能已提交，
-    // 可按 operation_id 探测恢复）；本地类可判未提交（R3-M02：i_write 崩溃在提交缝时
-    // 曾被误判 failed_resolved，撤掉原操作的未决资格）
-    const orphanEffects = tx(db, () => Number(db.prepare(
-      "UPDATE tool_side_effects SET state = CASE WHEN kind IN ('hold','i_write') THEN 'unknown' ELSE 'failed_resolved' END, updated_at = ? WHERE state = 'running'",
-    ).run(now).changes));
-    const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners + staleReviews + orphanEffects;
-    if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects, code: 'RECOVERY_HOST_RESTART' });
-    return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects };
   }
 
   /**
@@ -790,6 +743,11 @@ export class TurnSupervisor {
           const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
           if (text) lastText = text.text;
         }
+        // F10 同 SDK 车道口径：观测到实际模型/切换模型时刷新本请求上下文——requested 不冒充实际。
+        // message_start 携带的是请求侧模型（OR runner 即 envelope.model），仅在尚无更精确
+        // 观测（onResponseMetadata/切换通知）时采纳，不倒退覆盖。
+        if (ev.kind === 'message_start' && typeof ev.model === 'string' && ev.model && requestContext.responseModel === null) requestContext.responseModel = ev.model;
+        else if (ev.kind === 'system_notice' && ev.subtype === 'model_refusal_fallback' && typeof ev.fallback_model === 'string' && ev.fallback_model) requestContext.responseModel = ev.fallback_model;
         o.onEvent(ev, requestContext); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
@@ -919,7 +877,10 @@ export class TurnSupervisor {
         }
       }
       const result = await Promise.race([
-        runner.run({ driver: transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata }),
+        runner.run({ driver: this.drv()?.kind === 'mock' ? 'mock' : transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata,
+          // R2：mock 的会话连续性（AUD-03 断言）经信封请求的可选 SDK 形状字段传递；
+          // route-edit 的 fresh_session 重跑不 resume 旧 session（同旧 prompt 车道语义）
+          ...(this.drv()?.kind === 'mock' && o.attemptId ? { resumeSessionId: (d.db.prepare('SELECT CASE WHEN a.fresh_session = 1 THEN NULL ELSE w.sdk_session_id END AS s FROM attempts a JOIN windows w ON w.id = a.window_id WHERE a.id = ?').get(o.attemptId) as { s: string | null } | undefined)?.s ?? null } : {}) }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -1198,9 +1159,15 @@ export class TurnSupervisor {
 
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */
-  private drv(): { kind: 'openrouter' | 'deepseek' | 'claude-agent-sdk'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
+  private drv(): { kind: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
     const r = this.d.runnerSelection;
     if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
+    if (r.runner.kind === 'mock') {
+      // R2：mock 并入信封管线——模型取 OR 声明值（与 wire 校验/视觉门同口径），session 仅测试断言用；
+      // provider=mock 时 openrouter.model 可为空，回退到通过 buildOrPayload 型号校验的固定测试型号
+      const or = this.d.config.openrouter;
+      return { kind: 'mock', model: or.model ?? 'anthropic/claude-mock', maxTokens: or.max_output_tokens, reasoning: null, charsPerToken: or.estimate_chars_per_token, sessionId: roomId => `mock:${roomId}` };
+    }
     if (r.runner.kind === 'claude-agent-sdk') {
       return { kind: 'claude-agent-sdk', model: (this.d.settings?.effectiveSdkModel(this.d.config.runtime.model) ?? this.d.config.runtime.model)!, maxTokens: this.d.config.openrouter.max_output_tokens,
         reasoning: { effort: this.d.settings?.reasoningEffort() ?? this.d.config.runtime.thinking.effort }, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
@@ -1293,316 +1260,6 @@ export class TurnSupervisor {
    *  取数顺序：I → 事件 → 我们的话 → 心情（可选段让位剩余时间，预留 1700ms
    *  给终验）→ 同快照终验；SNAPSHOT_STALE/瞬时全局失败整包重建一次；
    *  Stop（父取消）返回 null 不告警；完整成功才进缓存。 */
-  private async windowBootstrap(windowId: string, signal?: AbortSignal): Promise<string | null> {
-    if (signal?.aborted) return null;
-    let t = this.bootstrapByWindow.get(windowId);
-    if (t !== undefined) return t;
-    const d = this.d;
-    const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
-    if (!mc) return null; // 未接线：如实无 B
-    const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
-    const startedAt = performance.now();
-    const moodBudgetMs = (): number => Math.max(0, Math.floor(BOOTSTRAP_DEADLINE_MS - (performance.now() - startedAt) - 1700));
-    const dedupeKey = `bootstrap:${windowId}`;
-    const UNAVAILABLE_TEXT = 'Mariposa开窗资料未取得，I、计划及记忆资料状态未知；不表示记忆不存在';
-    const report = (gaps: BootstrapGap[], code = 'BOOTSTRAP_UNAVAILABLE'): void => {
-      const unavailable = gaps.length === 0;
-      const critical = unavailable || gaps.some(gap => gap.section === 'i');
-      const note = unavailable
-        ? UNAVAILABLE_TEXT
-        : gaps.some(gap => gap.section === 'i')
-          ? 'I 当前的话未全载；其他已复核资料已保留，本次资料不完整'
-          : '部分开窗资料未全载；失败的心情全文未注入，其他已复核资料已保留';
-      d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: unavailable ? code : (gaps[0]?.code ?? 'unknown'), section: unavailable ? 'bootstrap' : gaps[0]?.section, note } });
-      d.alerts?.observe({ code: 'BOOTSTRAP_INCOMPLETE', severity: critical ? 'critical' : 'warning', scopeKind: 'integration', scopeId: 'mariposa', dedupeKey, observationId: null,
-        safeSummary: { title: '开窗资料不完整', detail: note, reason: gaps.map(gap => gap.code).join(',') || code, count: gaps.length, window_id: windowId, retryable: gaps.some(gap => gap.retryable) } });
-    };
-    // SNAPSHOT_STALE invalidates every dependent field. Rebuild once from a new
-    // first page, never splice a replacement snapshot into an existing attempt.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const first = await bootstrapCall(s => mc.bootstrapGet(s), { signal: lifetime });
-        if (first.plans != null && (typeof first.plans !== 'object' || Array.isArray(first.plans)
-          || (first.plans as { items?: unknown }).items !== undefined && (!Array.isArray((first.plans as { items?: unknown[] }).items) || ((first.plans as { items?: unknown[] }).items ?? []).some(item => !item || typeof item !== 'object' || Array.isArray(item))))) {
-          throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', 'bootstrap');
-        }
-        const snapId = typeof first.snapshot_id === 'string' && first.snapshot_id ? first.snapshot_id : null;
-        const gaps: BootstrapGap[] = [];
-        // —— I（current words）：畸形值=critical 局部缺口（不启续取）；续取失败整段丢弃 ——
-        let iText: string | null = null;
-        let iNote = '';
-        const iRaw = (first as Record<string, unknown>).i as unknown;
-        if (iRaw != null) {
-          const bad = (v: unknown): boolean => v === null || typeof v !== 'object' || Array.isArray(v) || typeof (v as { content?: unknown }).content !== 'string';
-          if (bad(iRaw)) {
-            gaps.push({ section: 'i', code: 'BOOTSTRAP_SHAPE_INVALID', retryable: false });
-            iText = null;
-          } else {
-            const iSec = iRaw as { content: string; truncated?: unknown; total_chars?: unknown; next_cursor?: Record<string, unknown> | null };
-            iText = iSec.content;
-            const iLoaded = Array.from(iText).length;
-            const iTotal = typeof iSec.total_chars === 'number' ? iSec.total_chars : null;
-            if (iSec.truncated === true && iSec.next_cursor == null) {
-              gaps.push({ section: 'i', code: 'BOOTSTRAP_CURSOR_MISSING', retryable: false });
-              iNote = '（超窗未全载：续取未完成）';
-            } else if (iSec.next_cursor != null) {
-              if (!snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISSING', 'i');
-              const seenOffsets = new Set<number>();
-              let iCur: Record<string, unknown> | null = iSec.next_cursor ?? null;
-              let loaded = iLoaded;
-              let guard = 0;
-              while (iCur != null && guard < 64) {
-                guard++;
-                const offset = (iCur as { i_offset?: unknown }).i_offset;
-                if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset !== loaded || seenOffsets.has(offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                seenOffsets.add(offset);
-                try {
-                  const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, iCur!, 'i', sg), { signal: lifetime, section: 'i' });
-                  if (typeof page.offset !== 'number' || page.offset !== loaded) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                  if (page.snapshot_id !== snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISMATCH', 'i');
-                  if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', 'i');
-                  if (page.section !== 'i') throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', 'i');
-                  if (typeof page.content !== 'string' || page.content.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', 'i');
-                  if (typeof page.total_chars !== 'number' || !Number.isSafeInteger(page.total_chars) || page.total_chars < 0 || (iTotal != null && page.total_chars !== iTotal)) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', 'i');
-                  if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', 'i');
-                  const cpLen = Array.from(page.content).length;
-                  const endOffset = loaded + cpLen;
-                  if (endOffset > page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', 'i');
-                  const upcoming = page.next_cursor as Record<string, unknown> | null;
-                  if (upcoming != null) {
-                    const noff = (upcoming as { i_offset?: unknown }).i_offset;
-                    if (typeof noff !== 'number' || noff !== endOffset) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                    if (seenOffsets.has(noff)) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_REPEATED', 'i');
-                  } else if (endOffset !== page.total_chars) {
-                    throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', 'i');
-                  }
-                  // 全部校验通过才拼接——坏页的尾巴不得进入已载前缀
-                  iText += page.content;
-                  loaded = endOffset;
-                  iCur = upcoming;
-                } catch (err) {
-                  if (!(err instanceof BootstrapPagingError)) throw err;
-                  if (globalBootstrapFailure(err)) throw err;
-                  gaps.push({ section: 'i', code: err.code, retryable: retryableBootstrapFailure(err) });
-                  iNote = `（超窗未全载：续取未完成，已载 ${Array.from(iText ?? '').length}字）`;
-                  break;
-                }
-              }
-            }
-          }
-        }
-        // —— 事件/我们的话（每桶独立局部缺口；全局失败上抛整包重建）——
-        const dayItems = ((((first as Record<string, unknown>).memory_days as Record<string, unknown> | undefined)?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ ...item }));
-        const readTextSection = async (item: Record<string, unknown>, field: 'event_text' | 'our_words'): Promise<void> => {
-          const memId = item.memory_id;
-          const curKey = `${field}_next`; const truncKey = `${field}_truncated`; const totalKey = field === 'event_text' ? 'event_text_total_chars' : 'our_words_total_items';
-          let cur = item[curKey] as Record<string, unknown> | undefined | null;
-          if (item[truncKey] === true && cur == null) {
-            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: 'BOOTSTRAP_CURSOR_MISSING', retryable: false });
-            item.__bootNote = `[${field === 'event_text' ? '事件正文' : '我们的话'}分节未全载（续取游标缺失）]`;
-            delete item[truncKey];
-            return;
-          }
-          if (cur == null) return;
-          if (!snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISSING', field);
-          try {
-            if (field === 'event_text') {
-              let text = typeof item.event_text === 'string' ? item.event_text : '';
-              let loaded = Array.from(text).length;
-              const total0 = item.event_text_total_chars;
-              let total = typeof total0 === 'number' && Number.isSafeInteger(total0) ? total0 : null;
-              const seen = new Set<number>();
-              let guard = 0;
-              while (cur != null && guard < 64) {
-                guard++;
-                if (cur.memory_id !== memId || cur.field !== field || typeof cur.offset !== 'number' || cur.offset !== loaded || seen.has(cur.offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                seen.add(cur.offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
-                if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
-                if (field === 'event_text' && (typeof page.offset !== 'number' || page.offset !== loaded)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
-                if (typeof page.content !== 'string' || page.content.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', field);
-                if (typeof page.total_chars !== 'number' || !Number.isSafeInteger(page.total_chars) || (total != null && page.total_chars !== total)) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', field);
-                const cpLenE = Array.from(page.content).length;
-                const endE = loaded + cpLenE;
-                if (endE > page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                const upcoming = page.next_cursor as Record<string, unknown> | null;
-                if (upcoming != null) {
-                  if (upcoming.memory_id !== memId || upcoming.field !== field || upcoming.offset !== endE) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                  if (seen.has(upcoming.offset as number)) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_REPEATED', field);
-                } else if (endE !== page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-                // 全部校验通过才拼接
-                total = page.total_chars;
-                text += page.content;
-                loaded = endE;
-                cur = upcoming;
-              }
-              if (total != null && loaded !== total) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-              item.event_text = text;
-              delete item[curKey]; delete item[truncKey];
-            } else {
-              const groups = Array.isArray(item.our_words) ? (item.our_words as Array<{ speaker?: string; texts?: unknown[] }>) : [];
-              let flat: Array<{ speaker?: string; text: string }> = [];
-              for (const g of groups) {
-                if (!g || typeof g !== 'object') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                if (g.texts !== undefined && !Array.isArray(g.texts)) throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                for (const wt of g.texts ?? []) {
-                  if (typeof wt !== 'string') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                  flat.push({ speaker: g.speaker, text: wt });
-                }
-              }
-              const total0 = item.our_words_total_items;
-              let total = typeof total0 === 'number' && Number.isSafeInteger(total0) ? total0 : null;
-              const seenIdx = new Set<number>();
-              let itemOffset = flat.length;
-              const cursor0 = cur as { item_offset?: unknown; char_offset?: unknown };
-              if (cursor0.item_offset !== itemOffset || cursor0.char_offset !== 0) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-              let guard = 0;
-              while (cur != null && guard < 64) {
-                guard++;
-                const co = cur as { item_offset?: unknown; char_offset?: unknown };
-                if (typeof co.item_offset !== 'number' || co.item_offset !== itemOffset || typeof co.char_offset !== 'number' || seenIdx.has(co.item_offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                seenIdx.add(co.item_offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
-                if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
-                if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
-                if (!Array.isArray(page.items) || page.items.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', field);
-                for (const g of page.items as Array<{ speaker?: string; texts?: unknown[] }>) {
-                  for (const wt of g?.texts ?? []) {
-                    if (typeof wt !== 'string') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                    flat.push({ speaker: g.speaker, text: wt });
-                  }
-                }
-                itemOffset += page.items.length;
-                if (typeof page.total_items === 'number' && Number.isSafeInteger(page.total_items)) {
-                  if (total != null && page.total_items !== total) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                  total = page.total_items;
-                }
-                if (total != null && itemOffset > total) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', field);
-                const upcoming = page.next_cursor as Record<string, unknown> | null;
-                if (upcoming != null) {
-                  const u = upcoming as { item_offset?: unknown; char_offset?: unknown };
-                  if (u.item_offset !== itemOffset || u.char_offset !== 0) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                } else if (total != null && itemOffset !== total) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-                cur = upcoming;
-              }
-              // 重组为分组形状（渲染层沿用分组）
-              const regrouped: Array<{ speaker?: string; texts: string[] }> = [];
-              for (const w of flat) {
-                const lastG = regrouped[regrouped.length - 1];
-                if (lastG && lastG.speaker === w.speaker) lastG.texts.push(w.text);
-                else regrouped.push({ speaker: w.speaker, texts: [w.text] });
-              }
-              item.our_words = regrouped;
-              delete item[curKey]; delete item[truncKey];
-            }
-          } catch (err) {
-            if (!(err instanceof BootstrapPagingError)) throw err;
-            if (globalBootstrapFailure(err)) throw err;
-            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: err.code, retryable: retryableBootstrapFailure(err) });
-            // 续取失败：保留已载前缀+如实披露游标（不静默当全文）；初值本就缺段则只留披露行
-            const nextKey = field === 'event_text' ? 'event_text_next' : 'our_words_next';
-            item.__bootNote = `[${field === 'event_text' ? '事件正文' : '我们的话'}分节未全载（${nextKey} 续取未完成）]`;
-            delete item[curKey]; delete item[truncKey];
-          }
-        };
-        for (const item of dayItems) {
-          await readTextSection(item, 'event_text');
-          await readTextSection(item, 'our_words');
-        }
-        // —— 心情（可选段：剩余时间-1700ms 预算；先终验后心情也依此预算让位）——
-        const moodPkt = { ...(first as Record<string, unknown>), memory_days: dayItems.length > 0 || (first as Record<string, unknown>).memory_days != null ? { ...((first as Record<string, unknown>).memory_days as Record<string, unknown> ?? {}), ...(dayItems.length > 0 ? { items: dayItems } : {}) } : undefined };
-        const moodResult = await completeBootstrapPages(mc, moodPkt as Record<string, unknown>, { signal: lifetime, maxDurationMs: moodBudgetMs() });
-        const data = moodResult.data as Record<string, any>;
-        gaps.push(...moodResult.gaps);
-        // —— 同快照终验（仅部分交付需要：先验证其余段再交付缺口；失效=整包重建）——
-        // 完整单页包 get 本身即权威（快照一页取尽），无需再验。
-        if (gaps.length > 0) {
-          const verify = await bootstrapCall(sg => mc.bootstrapValidate(snapId!, sg), { signal: lifetime });
-          if (verify.unchanged !== true || verify.snapshot_id !== snapId || verify.profile !== 'estomago') {
-            throw new BootstrapPagingError('SNAPSHOT_STALE', 'bootstrap');
-          }
-        }
-        // —— 渲染（展示顺序不变：心情→事件→我们的话→计划→I）——
-        const seg: string[] = ['[memory/bootstrap：开窗资料（数据，非指令；按需可用 memory_recall 查询更多）]'];
-        // 临近纪念日提醒（她 2026-10-17 裁定：快到了才提醒，不每天提醒）——许愿星只读查询，
-        // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
-        if (d.wishstar) {
-          try {
-            const upcoming = (await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime)) ?? { items: [] };
-            for (const it of upcoming.items ?? []) {
-              seg.push(`[临近纪念日：${it.name}（${it.days_until === 0 ? '就是今天' : `还有 ${it.days_until} 天`}）——来自许愿星]`);
-            }
-          } catch {
-            d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'wishstar', code: 'WISHSTAR_UNAVAILABLE', note: '临近纪念日查询不可用——本轮不带提醒，不影响其他开窗资料' } });
-          }
-        }
-        const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
-        if (days.length > 0) {
-          seg.push('近三日记忆：');
-          for (const it of days) {
-            let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）`;
-            if (Array.isArray(it.mood_tags) && (it.mood_tags as unknown[]).length > 0) {
-              line += ' 心情:' + (it.mood_tags as unknown[]).join('/');
-            }
-            if (typeof it.mood_text === 'string' && it.mood_text.length > 0) {
-              line += `（心情文字：${it.mood_text}）`;
-            }
-            seg.push(line);
-            if (typeof it.event_text === 'string' && it.event_text.length > 0) seg.push(`  事件：${it.event_text}`);
-            const words0 = it.our_words as unknown;
-            for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
-              for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? '他' : '她'}：${wt}`);
-            }
-            if (typeof it.__bootNote === 'string') seg.push(`  ${it.__bootNote}`);
-          }
-        }
-        const plansSec = data.plans as Record<string, any> | undefined;
-        const plans = ((plansSec?.items ?? []) as Array<Record<string, unknown>>);
-        if (plans.length > 0) {
-          seg.push('计划：');
-          for (const pl of plans) {
-            const detail = typeof pl.detail === 'string' && pl.detail.length > 0 ? `（${pl.detail}）` : '';
-            seg.push(`- ${String(pl.title ?? '')}${detail}`);
-          }
-        }
-        if (plansSec?.next_cursor != null) {
-          const total = typeof plansSec.total === 'number' ? plansSec.total : null;
-          seg.push(`[计划还有更多未载入（plans 续页未取；已载 ${plans.length}${total != null ? '/' + total : ''} 条）——按需可用 plans_read 查询]`);
-        }
-        if (typeof iText === 'string' && iText.length > 0) seg.push(`I（当前的话）：${iText}${iNote}`);
-        else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
-        const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
-        if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
-        if (seg.length === 1) {
-          // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
-          if (gaps.length > 0) report(gaps);
-          return null;
-        }
-        const text = seg.join('\n');
-        if (gaps.length > 0) {
-          report(gaps);
-          return text; // 部分交付：如实披露，不进缓存（下次重试）
-        }
-        this.bootstrapByWindow.set(windowId, text);
-        d.alerts?.resolve(dedupeKey, { summary: {} });
-        return text;
-      } catch (err) {
-        if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_CANCELLED') return null; // 父 Stop：静默，无告警无缓存
-        if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_DEADLINE_EXCEEDED') {
-          report([], 'BOOTSTRAP_DEADLINE_EXCEEDED');
-          return UNAVAILABLE_TEXT;
-        }
-        if (!(err instanceof BootstrapPagingError)) throw err;
-        if (attempt < 1 && (err.code === 'SNAPSHOT_STALE' || retryableBootstrapFailure(err))) continue; // 整包重建一次（仅快照失效/瞬时；授权拒绝重建无意义）
-        report([], err.code);
-        return UNAVAILABLE_TEXT;
-      }
-    }
-    return null;
-  }
 
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
   /** 她 1024 裁定（接缝②）：容量按**实际发送载荷**计——消息轨迹 + 冻结工具目录（含 B 段
@@ -2030,11 +1687,7 @@ export class TurnSupervisor {
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
     // pending 键上的 bootstrap 缓存迁移到真实窗 id（同窗不重复拉）
-    const pendingBoot = this.bootstrapByWindow.get(`pending:${o.conversationId}`);
-    if (pendingBoot !== undefined) {
-      this.bootstrapByWindow.set(rotated.window.id, pendingBoot);
-      this.bootstrapByWindow.delete(`pending:${o.conversationId}`);
-    }
+    this.bootstrapMachine.transferPending(`pending:${o.conversationId}`, rotated.window.id);
     this.d.events.publish('window.rotated', { conversationId: o.conversationId, entityRef: rotated.window.id, scope: 'private', payload: { reason, review_id: reviewId, selection_id: selectionId } });
     return { rotated: true, blocked: null };
   }
@@ -2052,7 +1705,7 @@ export class TurnSupervisor {
     }
     if (!d.trajectory) throw new Error('ROTATION_TRAJECTORY_UNAVAILABLE');
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const boot = await this.windowBootstrap(`pending:${conversationId}`);
+    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`);
     const sel = selectionId && d.selections ? d.selections.get(selectionId) : null;
     const built = this.buildEnvelope({
       conversationId,
@@ -2237,11 +1890,7 @@ export class TurnSupervisor {
             // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
             // 连续模型恢复的第二/三窗复用第一次的旧 B（违反新窗必拉最新）
             if (created.window.status === 'ACTIVE') {
-              const pendingBoot = this.bootstrapByWindow.get(`pending:${conversationId}`);
-              if (pendingBoot !== undefined) {
-                this.bootstrapByWindow.set(created.window.id, pendingBoot);
-                this.bootstrapByWindow.delete(`pending:${conversationId}`);
-              }
+              this.bootstrapMachine.transferPending(`pending:${conversationId}`, created.window.id);
             }
           } catch { rot = { ok: false, reason: 'ROTATE_COMMIT_FAILED' }; }
         }
@@ -2337,14 +1986,8 @@ export class TurnSupervisor {
     const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
     // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const built = dv ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
-      return;
-    }
-    if (built !== null && built.status === 'blocked') {
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, `IDENTITY_NOT_READY:${built.reasons.map(codeOf).join(';').slice(0, 120)}`, 'blocked');
       return;
     }
     if (dv !== null && (!materials?.identityText || !materials?.rulesText)) {
@@ -2391,7 +2034,7 @@ export class TurnSupervisor {
           return;
         }
       }
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: null });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -2442,7 +2085,7 @@ export class TurnSupervisor {
     };
     let trajInitializedThisTurn = false; // RE-10：懒初始化重建的轨迹=合法新基线，wire 守卫跳过
     if (dv && d.trajectory) {
-      if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
+      if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapMachine.delete(window.id);
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (attempt.retry_window_id && !trajExists) {
         this.active.delete(turnId);
@@ -2459,7 +2102,7 @@ export class TurnSupervisor {
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
         await this.prepareWindowTools(window.id, prepSignal);
-        const boot0 = await this.windowBootstrap(window.id, prepSignal);
+        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
         const built0 = sel0
@@ -2493,7 +2136,7 @@ export class TurnSupervisor {
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
             await this.prepareWindowTools(window.id, prepSignal);
-            const bootR = await this.windowBootstrap(window.id, prepSignal);
+            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal);
             if (stoppedDuringPreparation()) return;
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
             // 绑定 target_window_id；无命中=兼容期自动回退）
@@ -2510,7 +2153,6 @@ export class TurnSupervisor {
     // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
     // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑。
     // 信封驱动（OR/DS）无宿主可见 resume 语义（session_id 是内部关联标识，不存历史）→ 恒 null。
-    const resumeSessionId = dv ? null : attempt.fresh_session ? null : window.sdk_session_id;
 
     // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
@@ -2528,7 +2170,7 @@ export class TurnSupervisor {
     }
     d.events.publish('turn.status', {
       conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id,
-      payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(resumeSessionId) },
+      payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(window.sdk_session_id && !attempt.fresh_session) },
     });
 
     // R10：准备阶段被取消 → 迟到的 bootstrap 结果不得再启动模型
@@ -2642,15 +2284,14 @@ export class TurnSupervisor {
     // P2 §6.6：同上——聊天语音观察的有界等待在装配前完成（独立预算，不挂浮现 300s）
     if (inputMessage && this.d.voiceObservations) await this.d.voiceObservations.awaitReadyForDispatch(inputMessage.id, effective.revision, VOICE_OBSERVATION_PREP_BUDGET_MS);
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: Boolean(dv) && voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
-    const sdkPrompt = tailProjection.blocks.filter(block => block.type === 'text').map(block => String(block.text)).join('\n\n');
     // Host memory is separate from the real input. OR uses explicitly labelled
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
       ? [surfaceTransportMessage(this.drv()?.kind ?? '', surfacingAugment.text)] : [];
     const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory,
       { role: 'user', content: tailProjection.blocks } as OrMessage];
-    const orEnvelope: OrRequestEnvelope | null = dv
-      ? (() => {
+    // R2：四类驱动均为信封驱动；RUNTIME_NOT_READY/IDENTITY 门已在此前返回，dv 必非空
+    const orEnvelope: OrRequestEnvelope = (() => {
           // R11：systemMessageCount 按实际（B 独立数据块时=2，cache-plan
           // 的独立 B 点分支由此生效；此前硬编码 1，B 点显式边界从未成立）
           const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: fixedSystemCount(orBaseMessages), prevBoundary: orTraj?.lastBoundary ?? null });
@@ -2658,17 +2299,16 @@ export class TurnSupervisor {
             d.events.publish('context.warning', { conversationId: turn.conversation_id, entityRef: window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
           }
           return {
-            model: dv.model,
-            sessionId: dv.sessionId(turn.conversation_id),
+            model: dv!.model,
+            sessionId: dv!.sessionId(turn.conversation_id),
             messages: orMessages,
             // F-J-09：本窗冻结快照（首发定格；词表中途变化不改变本窗 tools）
             tools: this.windowTools(window.id),
             boundaries,
-            maxTokens: dv.maxTokens,
-            reasoning: dv.reasoning,
+            maxTokens: dv!.maxTokens,
+            reasoning: dv!.reasoning,
           };
-        })()
-      : null;
+        })();
     // F-J-09：跨轮 previousPayload 的 tools 取**已发送冻结快照**（本窗首发定格），
     // 不用本轮重建结果充当"上一请求"——若当前信封 tools 与冻结快照漂移（回归），
     // append-only 断言可在跨轮间抓到（此前两边恒同源=结构性失明）
@@ -2998,7 +2638,8 @@ export class TurnSupervisor {
     let orFinalMessages: OrMessage[] | null = null;
     let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
     let orToolSeen: ManifestEntry[] = []; // WP4：conversation_read 片段已见（实际进入请求的部分）
-    if (orEnvelope !== null) {
+    // R2：orEnvelope 恒非空（四类驱动均信封驱动）；保留块作用域
+    {
       // EXEC_V1 §03.6（WP3/M2）媒体门：当前输入无转写语音→不空输入唤起模型；
       // 含图但型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息已保存、零模型请求、不静默丢图/换模型）
       const orHasImage = orMessages.some((m) => Array.isArray((m as { content: unknown }).content) && ((m as { content: Array<Record<string, unknown>> }).content.some((b) => b && b.type === 'asset_image')));
@@ -3056,45 +2697,6 @@ export class TurnSupervisor {
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
       }
-    } else if (tailProjection.hasVoiceWithoutTranscript) {
-      result = { outcome: 'error', errorClassified: null, errorCode: 'MEDIA_TRANSCRIPTION_FAILED', errorMessage: '当前驱动没有可读取的转写或听觉工具', sessionId: null, requestId: null };
-    } else if (d.media && inputMessage && d.media.listMessageAttachments(inputMessage.id, effective.revision).some((a) => a.presentation === 'image' || a.presentation === 'sticker')) {
-      // AUD-04 P1：SDK 分支有图=视觉门阻断（消息已保存、零模型请求、不静默丢图/换模型）
-      d.logger.warn('media_gate_blocked', { turn_id: turnId, code: 'MODEL_VISION_UNAVAILABLE', driver: 'claude-agent-sdk' });
-      result = { outcome: 'error', errorClassified: null, errorCode: 'MODEL_VISION_UNAVAILABLE', errorMessage: 'SDK 驱动不支持图片输入——消息已保存', sessionId: null, requestId: null };
-      orFinalMessages = null; orLastSentMessages = null; orToolSeen = [];
-    } else {
-      // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
-      try {
-        result = await Promise.race([
-          runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent,
-            onBeforeDispatch: async () => {
-              if (runToken.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
-              this.admitProgramFact(turnId, turn.conversation_id);
-              if (inputMessage) {
-                if (d.messages.getMessage(inputMessage.id)?.current_revision !== effective.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
-                d.voiceObservations?.commitProjection({ messageId: inputMessage.id, revision: effective.revision }, turnId, 'sdk:' + attempt.id, tailProjection.observations);
-              }
-            },
-          }),
-          new Promise<never>((_, reject) => {
-            const arm = (): void => {
-              setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();
-            };
-            if (runToken.controller.signal.aborted) arm();
-            else runToken.controller.signal.addEventListener('abort', arm, { once: true });
-          }),
-        ]);
-      } catch (err) {
-        const isGrace = String((err as Error)?.message ?? '').includes('RUNNER_GRACE_TIMEOUT');
-        if (isGrace) {
-          // 不变式：grace 超时离开 await 时 runner 可能仍活着——旧代一律 fence + abort（迟到回调不得再发布）
-          runToken.token.cancelled = true;
-          runToken.controller.abort();
-        }
-        d.logger.error(isGrace ? 'runner_grace_exceeded' : 'runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
-        result = { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
-      }
     }
     this.active.delete(turnId);
 
@@ -3137,9 +2739,10 @@ export class TurnSupervisor {
       d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orLastSentMessages ?? orFinalMessages), [...base, ...catchupManifest, ...input, ...turnManifestAdditions, ...orToolSeen]);
     }
 
-    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口；
-    // fresh_session 重跑完成后改绑新 session（旧 session 因含被替代输入而弃用）
-    if (result.sessionId && !resumeSessionId) {
+    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口（bindSession 的
+    // WHERE sdk_session_id IS NULL 使 resume 轮天然幂等）；fresh_session 重跑完成后
+    // 改绑新 session（旧 session 因含被替代输入而弃用）
+    if (result.sessionId) {
       if (attempt.fresh_session) d.windows.rebindSession(window.id, window.sdk_session_id, result.sessionId);
       else d.windows.bindSession(window.id, result.sessionId);
     }
@@ -3221,24 +2824,6 @@ export class TurnSupervisor {
   }
 
   // AUD-15/37（§9）：启动调度恢复——数据库是真源，committed-but-not-dispatched 一律重新入队
-  static recoverSchedule(deps: SupervisorDeps): { redispatched: number } {
-    const rows = deps.db
-      .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id WHERE t.state = 'pending' AND a.state IN ('pending','ready_after_route')")
-      .all() as Array<{ id: string }>;
-    for (const r of rows) deps.supervisor!.enqueue(r.id);
-    const recoverable = deps.db.prepare(`SELECT DISTINCT s.conversation_id FROM context_selections s
-      JOIN conversations c ON c.id=s.conversation_id
-      WHERE s.rotation_cause IS NOT NULL AND
-        (s.status='confirmed' OR (s.status='consumed' AND s.target_window_id=c.active_window_id))
-        AND EXISTS (SELECT 1 FROM turns t JOIN attempts a ON a.turn_id=t.id
-          WHERE t.conversation_id=s.conversation_id AND t.state='blocked' AND a.state='blocked'
-          AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%'))`).all() as Array<{ conversation_id: string }>;
-    for (const row of recoverable) void deps.supervisor!.resumeAfterSelectionConfirm(row.conversation_id).catch(() => {
-      deps.logger.warn('selection_recovery_failed', { code: 'ROTATION_RECOVERY_FAILED' });
-    });
-    return { redispatched: rows.length };
-  }
-
   private blockAttempt(attemptId: string, turnId: string, conversationId: string, reason: string, turnState: 'blocked' | 'route_owner_pending'): void {
     const now = new Date().toISOString();
     tx(this.d.db, () => {

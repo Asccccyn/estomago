@@ -41,7 +41,7 @@ for (const provider of ['deepseek', 'openrouter'] as const) test(`${provider} F-
   const events = new EventService(db), messages = new MessageService(db), paths = buildPaths(root);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db), checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: reviews, checkpoint: checkpoint, messages: messages, taskService: tasks });
   const payloads: Record<string, unknown>[] = [];

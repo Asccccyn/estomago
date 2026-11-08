@@ -8,7 +8,6 @@ import path from 'node:path';
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
-import type { EventService } from '../events/service.ts';
 import { contextFingerprint, type BoundaryConfigInput, type GateResult, type IdentityService } from '../identity/service.ts';
 import type { ManualSelectionService } from '../context/manual-selection.ts';
 import type { WindowTrajectoryService } from '../runtime/window-trajectory.ts';
@@ -31,9 +30,8 @@ export type WindowRow = {
 
 export class WindowManager {
   // handoffsDir 参数已随 handoff.json 退役移除（她 2026-10-24 裁定：交接文件零读者）
-  constructor(db: Db, events: EventService, identity: IdentityService, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService, trajectory?: WindowTrajectoryService | null) {
+  constructor(db: Db, identity: IdentityService, config?: BoundaryConfigInput | (() => BoundaryConfigInput), selections?: ManualSelectionService, trajectory?: WindowTrajectoryService | null) {
     this.db = db;
-    this.events = events;
     this.identity = identity;
     // config 可为静态对象或 provider 函数（2026-10-08：运行时 override——
     // 新窗创建时按生效型号/边界存指纹；既有调用方传对象照常工作）
@@ -44,7 +42,6 @@ export class WindowManager {
     this.trajectorySvc = trajectory ?? null;
   }
   private db: Db;
-  private events: EventService;
   private identity: IdentityService;
   private config: BoundaryConfigInput | null;
   private configProvider: (() => BoundaryConfigInput) | null;
@@ -110,14 +107,12 @@ export class WindowManager {
       });
     } catch (err) {
       this.setStatus(id, 'BLOCKED', `receipt_write_failed: ${String((err as Error).message).slice(0, 60)}`);
-      this.emitChanged(id, o.conversationId, 'BLOCKED', 'receipt_write_failed');
       return { window: this.get(id)!, blockedReason: 'receipt 写失败（candidate 已落终态 BLOCKED）' };
     }
 
     if (o.gate.state !== 'READY') {
       const reason = o.gate.reasons.join('; ');
       this.setStatus(id, 'BLOCKED', reason);
-      this.emitChanged(id, o.conversationId, 'BLOCKED', reason);
       return { window: this.get(id)!, blockedReason: reason };
     }
     this.setStatus(id, 'IDENTITY_VERIFIED');
@@ -142,7 +137,6 @@ export class WindowManager {
       return prev;
     });
     void prevId;
-    this.emitChanged(id, o.conversationId, 'ACTIVE', null);
     return { window: this.get(id)!, blockedReason: null };
   }
 
@@ -226,7 +220,6 @@ export class WindowManager {
       this.setStatus(candidateId, 'BLOCKED', `switch_failed: ${(err as Error).message.slice(0, 80)}`);
       return { ok: false, reason: `切换失败已回滚（旧窗保持 ACTIVE）：${(err as Error).message.slice(0, 120)}` };
     }
-    this.emitChanged(candidateId, o.conversationId, 'ACTIVE', null);
     return { ok: true, window: this.get(candidateId)! };
   }
 
@@ -258,14 +251,5 @@ export class WindowManager {
     this.db
       .prepare('UPDATE windows SET status = ?, blocked_reason = ?, updated_at = ? WHERE id = ?')
       .run(status, blockedReason ?? null, new Date().toISOString(), id);
-  }
-
-  private emitChanged(windowId: string, conversationId: string, status: string, reason: string | null): void {
-    this.events.publish('window.changed', {
-      conversationId,
-      entityRef: windowId,
-      scope: 'private',
-      payload: { window_id: windowId, status, reason },
-    });
   }
 }

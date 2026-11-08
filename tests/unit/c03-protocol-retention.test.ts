@@ -49,7 +49,7 @@ function compose(root: string, transport: OrTransport, mariposaCalls: string[]) 
   messages.ensureConversation('c1');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const trajectory = new WindowTrajectoryService(db);
   const mariposa = new MariposaClient({ transport: async (cap: string) => { mariposaCalls.push(cap); return { ok: true, result: {} }; } });
   const { tools } = assembleTestTools({ db, mariposa, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages });

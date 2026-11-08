@@ -112,7 +112,7 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     factories.push(cfg.runtime.provider); assert.equal(cfg.runtime.provider, 'claude-agent-sdk');
     return { status: 'ok', runner: fakeRunner };
   });
-  const windows = new WindowManager(db, events, identity, config, undefined, trajectory);
+  const windows = new WindowManager(db, identity, config, undefined, trajectory);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, windows, trajectory, settings,
     capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner },
     reasoning: new ReasoningService(db, events), usage: new UsageCollector(db),

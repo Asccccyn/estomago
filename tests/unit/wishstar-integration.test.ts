@@ -96,8 +96,9 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
 test('开窗注入：临近纪念日出现在 B 文本头段；无临近=无行；失败=降级警告不阻塞', async () => {
   // 直接调用 supervisor 的 windowBootstrap（同 bootstrap-pages.test 的 hostFor 模式太重——
   // 用最小宿主壳验证注入分支）
-  const { TurnSupervisor } = await import('../../apps/host/src/runtime/supervisor.ts');
-  const callBootstrap = (TurnSupervisor.prototype as unknown as { windowBootstrap: (id: string, signal?: AbortSignal) => Promise<string | null> }).windowBootstrap;
+  // R3（2026-11-07）：分页机已迁 window-bootstrap.ts——对机器原型取方法
+  const { WindowBootstrapMachine } = await import('../../apps/host/src/runtime/window-bootstrap.ts');
+  const callBootstrap = (WindowBootstrapMachine.prototype as unknown as { windowBootstrap: (id: string, signal?: AbortSignal) => Promise<string | null> }).windowBootstrap;
 
   // 最小 mariposa mock：单页完整包（I 一段、无桶无计划）——让 windowBootstrap 走完渲染
   const packet = { snapshot_id: 'snap_ws', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I 前缀' }, plans: null };
@@ -110,19 +111,15 @@ test('开窗注入：临近纪念日出现在 B 文本头段；无临近=无行�
   const initialToolsDb = openDatabase(path.join(tempRoot('ws-initdb-'), 'data'));
   migrate(initialToolsDb, sha256Hex);
   const mkHost = (wishstar: unknown) => ({
-    // windowBootstrap 经 this.toolCatalogSource() 取目录（S17b 批次3）——假 host 提供空目录
-    toolCatalogSource: () => ({ currentCatalog: () => [] }),
     d: {
-      // R1′ 夹具修复（2026-10-23）：e423220 起 windowBootstrap 需真实 db 读 runtime_settings
       db: initialToolsDb,
       bootstrap: mariposa, // S18：显式 BootstrapPort
-      toolCatalog: { currentCatalog: () => [] }, // windowBootstrap 渲染 tools/initial 用（空=无该行）
       events: { publish: () => {} },
       alerts: null,
       wishstar,
       config: { wishstar: { upcoming_days: 3 } },
     },
-    bootstrapByWindow: new Map<string, string>(),
+    byWindow: new Map<string, string>(),
   });
 
   // 1) 有临近：渲染提醒行（含天数）

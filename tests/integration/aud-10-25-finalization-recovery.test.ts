@@ -19,8 +19,9 @@ import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { recoveryPass } from '../../apps/host/src/runtime/recovery.ts';
 import type { AgentRunner, RunnerRunRequest, RunnerRunResult } from '../../apps/host/src/runtime/runner.ts';
-import {tempRoot, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
+import {tempRoot, writeApprovedIdentity, readyRuntimePatch, seedProbes, assembleTestTools } from '../helpers.ts';
 
 function compose(root: string, runner: AgentRunner) {
   writeApprovedIdentity(root);
@@ -36,8 +37,8 @@ function compose(root: string, runner: AgentRunner) {
   const reasoning = new ReasoningService(db, events);
   const usage = new UsageCollector(db);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities, runnerSelection: { status: 'ok', runner }, reasoning, usage, routing, windows, logger });
+  const windows = new WindowManager(db, identity, config);
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities, runnerSelection: { status: 'ok', runner }, reasoning, usage, routing, windows, logger, tools: assembleTestTools({ db }).tools });
   messages.ensureConversation('c1');
   return { db, messages, supervisor };
 }
@@ -125,7 +126,7 @@ test('AUD-10：启动 recovery pass 收尾孤儿 running/streaming（不重跑�
   ctx.db.prepare("UPDATE attempts SET state='running' WHERE turn_id=?").run(msg.turnId);
   ctx.db.prepare("INSERT INTO reasoning_blocks(id, conversation_id, turn_id, attempt_id, sdk_message_id, block_index, origin, visibility, state, created_at, updated_at) VALUES (?,?,?,?,?,'0','stream','summary','streaming',?,?)")
     .run(genId('rbl'), 'c1', msg.turnId, msg.attemptId, 'orphan', now, now);
-  const r = TurnSupervisor.recoveryPass(ctx.db, { warn: () => {} });
+  const r = recoveryPass(ctx.db, { warn: () => {} });
   assert.ok(r.turns >= 1 && r.attempts >= 1 && r.blocks >= 1);
   assert.equal((ctx.db.prepare('SELECT state FROM turns WHERE id=?').get(msg.turnId) as { state: string }).state, 'failed');
   assert.equal((ctx.db.prepare('SELECT blocked_reason FROM attempts WHERE id=?').get(msg.attemptId) as { blocked_reason: string }).blocked_reason, 'RECOVERY_HOST_RESTART');

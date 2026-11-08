@@ -20,7 +20,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { SdkEventNormalizer } from '../../apps/host/src/runtime/sdk-event-normalizer.ts';
 import type { AgentRunner } from '../../apps/host/src/runtime/runner.ts';
-import {writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
 
 const rawPacket = (uuid: string, texts: string[]) => ({
   type: 'assistant' as const,
@@ -77,8 +77,8 @@ function compose(root: string, runner: AgentRunner) {
   const events = new EventService(db);
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
-  const windows = new WindowManager(db, events, identity, config);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing: new RoutingService(db, events, messages), windows, logger });
+  const windows = new WindowManager(db, identity, config);
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing: new RoutingService(db, events, messages), windows, logger, tools: assembleTestTools({ db }).tools });
   messages.ensureConversation('c1');
   return { db, messages, supervisor };
 }

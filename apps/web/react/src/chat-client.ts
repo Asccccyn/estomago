@@ -2,7 +2,7 @@ import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
 export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -556,7 +556,6 @@ export class EstomagoClient {
       if(e.code&&a.status==='failed')a.transcriptionId=undefined
     }finally{a.busy=false;this.patch({attachments:[...this.snapshot.attachments]});this.scheduleEstimate()}
   }
-  voiceAvailable = async () => {try{const result=await this.request('/voice/status');if(!result.available)this.notify('语音服务尚未配置');return result.available===true}catch(e){this.report(e);return false}}
   loadRuntime = async () => {
     try {
       const data=await this.request('/runtime-settings');this.runtime=data

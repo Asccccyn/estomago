@@ -50,7 +50,7 @@ export type OrRequestEnvelope = {
   reasoning: Record<string, unknown> | null;
 };
 export type OrRunRequest = {
-  driver: 'openrouter' | 'deepseek';
+  driver: 'openrouter' | 'deepseek' | 'mock'; // R2（2026-11-07）：mock 测试替身同走信封；SDK runner 仍以自身早退守卫排除信封请求
   purpose: RunnerPurpose;
   envelope: OrRequestEnvelope;
   previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；轨迹正本由调用方提供）
@@ -58,9 +58,8 @@ export type OrRunRequest = {
   onEvent: (ev: SdkNormalizedEvent) => void;
   // F-J-31（typecheck 基线）：以下为运行时真实使用的可选字段——
   //  - onDispatch：supervisor 工具循环每次真实发送逐笔留证（F17），OR/DS 驱动实际接收；
-  //  - prompt/resumeSessionId/options：SDK 形状字段。SDK/mock runner 以 driver 早退守卫排除
-  //    信封请求后访问（守卫的联合判别收窄对多值 driver 不生效，TS 层需经此可选声明到达），
-  //    信封请求运行时不携带这些字段。
+  //  - resumeSessionId：R2 起 mock 信封请求携带（会话连续性断言）；prompt/options 仅 SDK 形状。
+  //    SDK runner 以自身守卫排除信封请求；TS 层经此可选声明到达联合分支。
   onDispatch?: (info: { attemptIndex: number; generationId: string | null }) => void;
   onResponseMetadata?: (info: { model: string | null; provider: string | null }) => void;
   // EXEC_V1 02 §4.2：每次 transport 前（含 429/网络/首字节前重试）异步准入——宿主在此落

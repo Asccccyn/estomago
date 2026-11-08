@@ -16,13 +16,14 @@ import { MessageService } from './messages/service.ts';
 import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
 import { CapabilityMatrix } from './runtime/capabilities.ts';
-import { selectRunner, type RunnerSelection } from './runtime/runner.ts';
+import { selectRunner, type RunnerSelection, type AgentRunner } from './runtime/runner.ts';
 import { SubscriptionAccessRunner } from './runtime/subscription-access.ts';
 import { ReasoningService } from './reasoning/service.ts';
 import { UsageCollector } from './usage/collector.ts';
 import { RoutingService } from './routing/service.ts';
 import { WindowManager } from './windows/manager.ts';
 import { TurnSupervisor } from './runtime/supervisor.ts';
+import { recoveryPass, recoverSchedule } from './runtime/recovery.ts';
 import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
 import { MariposaClient } from './integrations/mariposa/client.ts';
@@ -52,6 +53,9 @@ export type HostOptions = {
   logDir: string | null;
   bind: string;
   port: number; // 0 = 随机端口（测试）
+  /** 测试接缝：仅 provider=mock 且 ESTOMAGO_TEST_MODE=1 时生效——注入闸控 runner
+   *  获得确定性派发时机。生产装配不传。 */
+  runnerOverride?: AgentRunner;
 };
 
 export class Host {
@@ -236,6 +240,10 @@ export class Host {
     const runnerSelection: RunnerSelection = opts.config.runtime.provider === 'mock'
       ? await selectRunner(opts.config)
       : { status: 'ok', runner: new SubscriptionAccessRunner(opts.config, settings) };
+    // 测试接缝（仅 provider=mock 且 TEST_MODE）：注入闸控 runner 以获得确定性的
+    // 派发时机（编辑/取消类用例不再与 mock 的毫秒级完成竞速）。生产不传此参数。
+    const runnerOverride = opts.config.runtime.provider === 'mock' && process.env.ESTOMAGO_TEST_MODE === '1' ? opts.runnerOverride : undefined;
+    const effectiveRunnerSelection: RunnerSelection = runnerOverride ? { status: 'ok', runner: runnerOverride } : runnerSelection;
     // EXEC_V1 02 §4.1（ALERT-07）：SDK 无 TTL 装配证据——显示面经 records.ttlVerification
     // 分离 desired/effective/verification（不得显示"已生效 1h"）。聚合告警在 WP2 核最终
     // options 时按真实证据观察（开机观测会污染事件序列，不是证据点）。
@@ -249,7 +257,7 @@ export class Host {
     // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
-    const windows = new WindowManager(db, events, identity, opts.config, selections, trajectory);
+    const windows = new WindowManager(db, identity, opts.config, selections, trajectory);
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
     const voice = new VoiceService(db, media, opts.config);
@@ -340,7 +348,7 @@ export class Host {
       events,
       identity,
       capabilities,
-      runnerSelection,
+      runnerSelection: effectiveRunnerSelection,
       reasoning,
       usage,
       routing,
@@ -358,7 +366,9 @@ export class Host {
       activity,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
-      bootstrap: modelMariposaClient,
+      // S18 口径：未接线=如实无 B。base_url 未配置（仅开发/测试态）时不装配
+      // bootstrap 端口——装一个必然抛错的客户端只会制造 BOOTSTRAP_INCOMPLETE 噪声。
+      bootstrap: opts.config.integrations.mariposa.base_url ? modelMariposaClient : null,
       toolCatalog: capabilityRegistry,
     });
     // voice 域能力与同一消息/媒体服务装配。
@@ -395,7 +405,7 @@ export class Host {
       messages,
       identity,
       capabilities,
-      runnerSelection,
+      runnerSelection: effectiveRunnerSelection,
       reasoning,
       usage,
       routing,
@@ -454,9 +464,9 @@ export class Host {
     // 生产启动从未执行（AUD-10 验收实际未生效——F25 同款"测试绿但未接线"模式）。
     this.voiceObservations?.start();
     this.callReplyLinks?.start();
-    const recovered = TurnSupervisor.recoveryPass(this.db, this.logger);
+    const recovered = recoveryPass(this.db, this.logger);
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
-    const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
+    const sched = recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
     void recovered; // 清残计数经 recovery_pass warn 日志留痕（RECOVERY_HOST_RESTART）
     // 启动恢复同步：崩溃遗留的 pending/unknown_outcome 按稳定 op 重放（未启用时 no-op）
     void this.archiveSync.drainOnce().catch((err) => {

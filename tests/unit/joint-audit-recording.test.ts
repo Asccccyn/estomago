@@ -22,7 +22,7 @@ function harness(options: { secure?: boolean; microphoneError?: Error } = {}) {
     stop() { this.state = 'inactive'; this.ondataavailable?.({data: new Blob(['synthetic audio'])}); this.onstop?.(); }
   }
   const notices: string[] = [];
-  const client = { snapshot: {attachments: []}, subscribe() {}, getSnapshot() {}, start: async () => {}, stop() {}, notify(text: string) { notices.push(text); }, voiceAvailable: async () => true, queue: async (blob: Blob) => {queued.push(blob);} };
+  const client = { snapshot: {attachments: []}, subscribe() {}, getSnapshot() {}, start: async () => {}, stop() {}, notify(text: string) { notices.push(text); }, queue: async (blob: Blob) => {queued.push(blob);} };
   const react = {
     useMemo: (fn: () => any) => { const i = slot++; return values[i] ??= fn(); },
     useSyncExternalStore: () => {slot++;return client.snapshot;},
