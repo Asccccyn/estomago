@@ -106,6 +106,78 @@ export class ArchiveService {
     return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified };
   }
 
+  /** ALB-13/R35：存档文本检索——content 存档消息集 → M source.search(include_ids)
+   *  限定候选（FTS5 排序即 BM25）。命中按存档条目归并，返回有限摘录（03 §2.4：
+   *  先返回说明与有限匹配原文，需要再读完整片段——深读走既有 conversation_read/原文工具，
+   *  本工具不回读全文）。Qwen dense 不在 source 层（无对应索引）——如实只用 BM25，
+   *  不伪造"语义检索已接"。 */
+  async searchArchives(o: { conversationId: string; query: string; kind?: 'quarrel' | 'sweet'; mariposa: { sourceSearch(a: { query: string; include_ids?: string[]; limit?: number }, s?: AbortSignal): Promise<{ ok: boolean; result?: Record<string, unknown>; code?: string; httpStatus?: number }> } | null }): Promise<{ state: 'matches'; items: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> } | { state: 'no_match' } | { state: 'unavailable'; detail: string }> {
+    if (!this.deps.contentClient) return { state: 'unavailable', detail: 'content 未配置（存档业务正本缺席）' };
+    if (!o.mariposa) return { state: 'unavailable', detail: 'M 客户端未装配' };
+    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string }> }>;
+    try {
+      const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100` });
+      if (res.status !== 200) return { state: 'unavailable', detail: `存档列表读取失败（${res.status}）` };
+      entries = ((res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string }> }> }).items ?? [])
+        .map((e) => ({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string } => typeof m?.message_id === 'string') }));
+    } catch {
+      return { state: 'unavailable', detail: '存档列表暂不可达' };
+    }
+    const msgIds = entries.flatMap((e) => e.messages.map((m) => m.message_id));
+    if (msgIds.length === 0) return { state: 'no_match' };
+    const placeholders = msgIds.map(() => '?').join(',');
+    const receiptRows = this.deps.db.prepare(`SELECT origin_message_id, source_message_id FROM source_sync_receipts WHERE origin_message_id IN (${placeholders}) AND source_message_id IS NOT NULL`).all(...msgIds) as Array<{ origin_message_id: string; source_message_id: string }>;
+    const smToMsg = new Map(receiptRows.map((r) => [r.source_message_id, r.origin_message_id]));
+    const msgToEntry = new Map<string, { archive_id: string; kind: string; note: string | null }>();
+    for (const e of entries) for (const m of e.messages) if (!msgToEntry.has(m.message_id)) msgToEntry.set(m.message_id, { archive_id: e.id, kind: e.kind, note: e.note });
+    let hits: Array<{ message_id?: string; excerpt?: string; text?: string }> = [];
+    try {
+      const r = await o.mariposa.sourceSearch({ query: o.query, include_ids: [...smToMsg.keys()], limit: 20 });
+      if (!r.ok) return { state: 'unavailable', detail: `M 检索被拒（${r.code ?? r.httpStatus ?? 'unknown'}）` };
+      hits = ((r.result as { hits?: unknown })?.hits ?? []) as Array<{ message_id?: string; excerpt?: string; text?: string }>;
+    } catch {
+      return { state: 'unavailable', detail: 'M 检索暂不可达' };
+    }
+    const out: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> = [];
+    const seenArchive = new Set<string>();
+    for (const h of hits) {
+      const msgId = typeof h.message_id === 'string' ? smToMsg.get(h.message_id) : undefined;
+      if (!msgId) continue;
+      const entry = msgToEntry.get(msgId);
+      if (!entry) continue;
+      const snippetRaw = (h.excerpt ?? h.text ?? '').toString().slice(0, 160);
+      if (!seenArchive.has(entry.archive_id) || out.length < 5) {
+        const existing = out.find((x) => x.archive_id === entry.archive_id);
+        if (existing && seenArchive.has(entry.archive_id)) { if (existing.snippet.length < 80 && snippetRaw) existing.snippet = snippetRaw; continue; }
+        seenArchive.add(entry.archive_id);
+        out.push({ archive_id: entry.archive_id, kind: entry.kind, note: entry.note, snippet: snippetRaw, message_id: msgId });
+      }
+      if (out.length >= 5) break;
+    }
+    if (out.length === 0) return { state: 'no_match' };
+    return { state: 'matches', items: out };
+  }
+
+  /** ALB-10/R28：争吵封存的权威消息范围 → M source 引用集（sm_id）。
+   *  供 E 自动浮现最终投递资格检查：命中来源的候选扣留，主动查看/手选不受影响。
+   *  content 不可达=空集+如实 fail-open（聊天不受相册检索故障拖累；日志可查）。
+   *  只返回 kind=quarrel（甜蜜不抑制，03 §6）。 */
+  async quarrelBlockedSourceRefs(conversationId: string): Promise<Set<string>> {
+    if (!this.deps.contentClient) return new Set();
+    try {
+      const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?kind=quarrel&conversation_id=${encodeURIComponent(conversationId)}&limit=100` });
+      if (res.status !== 200) return new Set();
+      const items = (res.body as { items?: Array<{ messages?: Array<{ message_id?: string }> }> }).items ?? [];
+      const msgIds = items.flatMap((a) => (a.messages ?? []).map((m) => m.message_id)).filter((x): x is string => typeof x === 'string');
+      if (msgIds.length === 0) return new Set();
+      const placeholders = msgIds.map(() => '?').join(',');
+      const rows = this.deps.db.prepare(`SELECT source_message_id FROM source_sync_receipts WHERE origin_message_id IN (${placeholders}) AND source_message_id IS NOT NULL`).all(...msgIds) as Array<{ source_message_id: string }>;
+      return new Set(rows.map((r) => r.source_message_id));
+    } catch {
+      return new Set(); // fail-open：封存抑制不阻塞聊天（如实：本轮未过滤，日志层可查）
+    }
+  }
+
   /** 排一次性通知（dedupe_key 幂等：同操作身份只投一次）。 */
   private enqueueNotice(conversationId: string, payload: Record<string, unknown>, dedupeKey: string | null): void {
     const now = new Date().toISOString();

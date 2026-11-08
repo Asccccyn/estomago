@@ -219,7 +219,7 @@ export function assembleTestTools(deps: TestToolDeps): {
   registerMediaCapabilitiesInstance(registry, { db, contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
   // 相册重构 P4：存档工具（镜像 app-context 无条件注册；archives 服务未注入时定义在、
   // 运行期按服务缺席如实报错——与生产装配一致）
-  registerArchivesCapabilitiesInstance(registry, { archives: (deps.archives ?? null) as never });
+  registerArchivesCapabilitiesInstance(registry, { archives: (deps.archives ?? null) as never, mariposa: (deps.mariposa ?? null) as never });
   // 相册重构 P3：图片生成工具（镜像注册；imagegen 未注入=运行期如实 UNCONFIGURED）
   registerImageGenCapabilitiesInstance(registry, { imagegen: (deps.imagegen ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });

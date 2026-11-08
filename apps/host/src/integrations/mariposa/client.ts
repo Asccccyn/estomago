@@ -637,6 +637,11 @@ export class MariposaClient {
 
   /** GLM_VOICE_UNIFICATION（02§4/§5.2，F03）：Source 附属信息补同步——晚到的
    *  观察/媒体关联追加到已归档修订（M 端幂等；正文不可变）。 */
+  /** ALB-13/R35：原文专项检索（source 层 FTS/BM25；include_ids 限定候选集——存档检索用）。 */
+  async sourceSearch(args: { query: string; include_ids?: string[]; limit?: number; conversation_id?: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('source.search', { ...args, limit: args.limit ?? 10 }, signal);
+  }
+
   async attachmentsSync(args: { stream_id: string; origin_message_id: string; revision: number; kind: 'media' | 'call' | 'observation'; payload: Record<string, unknown>; operation_id: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('source.attachments.sync', args, signal);
   }

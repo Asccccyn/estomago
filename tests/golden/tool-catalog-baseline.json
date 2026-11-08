@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "7a478068f0854c30a10a88122148e2585befede6",
+  "baselineCommit": "d05d27f5887842d93caa8371c6a5df3bcc1d319b",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -52,7 +52,8 @@
     "image_generate",
     "memory_source_bind",
     "content_albums_read",
-    "media_view"
+    "media_view",
+    "archives_search"
   ],
   "deferredOrder": [
     "tool_catalog",
@@ -111,9 +112,10 @@
     "image_generate": "td_06f6eb4f5ee249b1c610ef3a",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
-    "media_view": "td_f72b71bbef701e3714320c82"
+    "media_view": "td_f72b71bbef701e3714320c82",
+    "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "69c6b50682d63a5f8792d2141e28218ae5f966b9afe913302444f889009c0944",
+  "toolsSha256": "2a2e776f137f71707a749102da9016101a8267b9d2309db7a1d3ba21fd6f0d35",
   "tools": [
     {
       "type": "function",
@@ -2381,6 +2383,34 @@
           },
           "required": [
             "asset_ref"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "archives_search",
+        "description": "按关键词搜索对话存档（争吵/甜蜜）。返回匹配的存档条目与有限摘录；要看完整片段用既有原文读取工具，本工具不回读全文。没有合格匹配会如实返回 no_match；服务忙/不可用单独区分。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "关键词或短语"
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "quarrel",
+                "sweet"
+              ],
+              "description": "可选：只搜争吵或甜蜜存档；缺省搜全部"
+            }
+          },
+          "required": [
+            "query"
           ],
           "additionalProperties": false
         }

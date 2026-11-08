@@ -365,7 +365,7 @@ export class Host {
     // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
     const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient });
     const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
-    registerArchivesCapabilities(capabilityRegistry, { archives });
+    registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,

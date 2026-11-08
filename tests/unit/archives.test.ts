@@ -154,3 +154,56 @@ test('ARC-4: content v4 路由——kind 校验/空集合拒绝/软删/列表过
   const res2 = await fetch(`${base}/api/v1/content/archives/${ok.body['id']}`, { method: 'DELETE', headers: { authorization: `Bearer ${TOKEN}`, 'x-actor': 'qiaosheng', 'idempotency-key': 'k-del3', 'if-match': `"${Number(ok.body['revision'])}"` } });
   assert.equal(res2.status, 200, '带正确 If-Match 的删除成功');
 });
+
+test('ARC-10: quarrelBlockedSourceRefs——经收据映射到 sm_id；仅争吵；content 不可达=空集', async () => {
+  const u1 = publishUser('c1', 'arc10-u');
+  const u2 = publishUser('c1', 'arc10-s');
+  // 两条消息的 M 同步收据（sm 映射）
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr10a', 'op10', u1.id, 1, 'sc1', 'sm_block_1', 'h1', new Date().toISOString(), new Date().toISOString());
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr10b', 'op10', u2.id, 1, 'sc1', 'sm_block_2', 'h2', new Date().toISOString(), new Date().toISOString());
+  // 争吵存档含 u1；甜蜜存档含 u2
+  await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-q10' });
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u2.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-s10' });
+  const blocked = await svc.quarrelBlockedSourceRefs('c1');
+  assert.equal(blocked.size, 1, '仅争吵封存的来源被抑制');
+  assert.ok(blocked.has('sm_block_1'));
+  assert.equal(blocked.has('sm_block_2'), false, '甜蜜不抑制（03 §6）');
+  // content 不可达=空集（fail-open 不抛）
+  const badSvc = new (await import('../../apps/host/src/modules/archives/service.ts')).ArchiveService({ db, contentClient: { baseUrl: 'http://127.0.0.1:1', token: 'x' } as never });
+  assert.equal((await badSvc.quarrelBlockedSourceRefs('c1')).size, 0);
+});
+
+test('ARC-11: 存档文本检索——命中归并到存档条目；kind 过滤；无匹配如实 no_match', async () => {
+  const u1 = publishUser('c1', 'arc11-u');
+  const u2 = publishUser('c1', 'arc11-s');
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr11a', 'op11', u1.id, 1, 'sc1', 'sm_q1', 'h1', new Date().toISOString(), new Date().toISOString());
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr11b', 'op11', u2.id, 1, 'sc1', 'sm_s1', 'h2', new Date().toISOString(), new Date().toISOString());
+  const q = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], note: '那晚的争执', actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc11-q' });
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u2.id }], note: null, actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc11-s' });
+  // fake mariposa：query 含"晚"返回 sm_q1（争吵），含"甜"返回 sm_s1
+  const fakeM2 = {
+    sourceSearch: async (a: { query: string }) => {
+      if (a.query.includes('争执')) return { ok: true, result: { hits: [{ message_id: 'sm_q1', excerpt: '……那晚的争执……' }] } };
+      if (a.query.includes('不存在')) return { ok: true, result: { hits: [] } };
+      return { ok: true, result: { hits: [] } };
+    },
+  };
+  const hit = await svc.searchArchives({ conversationId: 'c1', query: '争执', mariposa: fakeM2 as never });
+  assert.equal(hit.state, 'matches');
+  if (hit.state === 'matches') {
+    assert.equal(hit.items.length, 1);
+    assert.equal(hit.items[0]!.kind, 'quarrel');
+    assert.equal(hit.items[0]!.note, '那晚的争执');
+    assert.match(hit.items[0]!.snippet, /那晚的争执/);
+  }
+  // kind=sweet 限定：同一查询只搜甜蜜集 → 争执消息不在集内 → no_match
+  const onlySweet = await svc.searchArchives({ conversationId: 'c1', query: '争执', kind: 'sweet', mariposa: { sourceSearch: async (a: { include_ids?: string[] }) => ({ ok: true, result: { hits: (a.include_ids ?? []).includes('sm_q1') ? [{ message_id: 'sm_q1' }] : [] } }) } as never });
+  assert.equal(onlySweet.state, 'no_match', 'kind 过滤限定候选集');
+  const none = await svc.searchArchives({ conversationId: 'c1', query: '不存在', mariposa: fakeM2 as never });
+  assert.equal(none.state, 'no_match');
+  void q;
+});

@@ -2211,6 +2211,21 @@ export class TurnSupervisor {
       } catch {
         surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
       }
+      // ALB-10/R28（相册整改，审计 2026-11-08）：争吵封存的精确来源抑制——自动浮现
+      // 候选项的 source_ref 落在 content 权威封存范围（经 source_sync_receipts 映射）
+      // 时，本轮扣留该冻结注入（text 与 items 一体冻结，item 级剔除会造成投影与
+      // 实际内容不一致——整包扣留，下轮 M 不再重推同源；主动查看/手选/默认携带
+      // 不在本路径）。无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
+      if (surfacingAugment && this.d.archives && this.d.contentClient) {
+        const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id);
+        if (blocked.size > 0) {
+          const hit = surfacingAugment.items.some((it) => typeof it.source_ref === 'string' && blocked.has(it.source_ref.replace(/^source_msg:/, '')));
+          if (hit) {
+            d.logger.info('surfacing_suppressed_quarrel', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, blocked_refs: blocked.size });
+            surfacingAugment = null;
+          }
+        }
+      }
     }
     // §3：经 ContextAssembler 构造（allowlist builder；reasoning 无通道）
     const assembledContext = assembleContext(

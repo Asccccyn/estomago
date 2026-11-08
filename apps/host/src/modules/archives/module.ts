@@ -27,6 +27,7 @@ export const CONVERSATION_ARCHIVE_DEFINITION: import('../../capabilities/contrac
 
 export type ArchivesModuleDeps = {
   archives: ArchiveService;
+  mariposa?: import('../../integrations/mariposa/client.ts').MariposaClient | null;
 };
 
 export function registerArchivesCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ArchivesModuleDeps): void {
@@ -36,6 +37,38 @@ export function registerArchivesCapabilities(registry: { register(d: CapabilityD
     run: (input: { kind: string; message_ids?: string[]; latest_completed_turn?: boolean; note?: string }, ctx) => runConversationArchive(deps.archives, input, ctx),
     toModel: (value) => value,
   }));
+  registry.register(toolCapability({
+    owner: 'archives',
+    id: 'archives_search', baselineOrder: 53, definition: () => ARCHIVESSEARCH_DEFINITION, memoryOnlyAllowed: false, label: '搜索存档',
+    run: (input: { query: string; kind?: 'quarrel' | 'sweet' }, ctx) => runArchivesSearch(deps, input, ctx),
+    toModel: (value) => value,
+  }));
+}
+
+const ARCHIVESSEARCH_DEFINITION: import('../../capabilities/contracts.ts').HostToolSpec = {
+  type: 'function' as const,
+  function: {
+    name: 'archives_search',
+    description: '按关键词搜索对话存档（争吵/甜蜜）。返回匹配的存档条目与有限摘录；要看完整片段用既有原文读取工具，本工具不回读全文。没有合格匹配会如实返回 no_match；服务忙/不可用单独区分。',
+    parameters: {
+      type: 'object' as const,
+      properties: {
+        query: { type: 'string' as const, description: '关键词或短语' },
+        kind: { type: 'string' as const, enum: ['quarrel', 'sweet'] as const, description: '可选：只搜争吵或甜蜜存档；缺省搜全部' },
+      },
+      required: ['query'] as const,
+      additionalProperties: false as const,
+    },
+  },
+};
+
+async function runArchivesSearch(deps: ArchivesModuleDeps, input: { query: string; kind?: 'quarrel' | 'sweet' }, ctx: { roomId: string }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
+  if (!deps.mariposa) return { ok: false, output: { error_code: 'ARCHIVE_SEARCH_UNAVAILABLE', detail: 'M 检索客户端未装配' } };
+  if (typeof input.query !== 'string' || !input.query.trim()) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'query 必填' } };
+  const r = await deps.archives.searchArchives({ conversationId: ctx.roomId, query: input.query, kind: input.kind, mariposa: deps.mariposa as never });
+  if (r.state === 'unavailable') return { ok: false, output: { error_code: 'ARCHIVE_SEARCH_UNAVAILABLE', detail: r.detail } };
+  if (r.state === 'no_match') return { ok: true, output: { state: 'no_match' } };
+  return { ok: true, output: { state: 'matches', items: r.items.map((i) => ({ archive_id: i.archive_id, kind: i.kind, note: i.note, snippet: i.snippet })) } };
 }
 
 async function runConversationArchive(archives: ArchiveService, input: { kind: string; message_ids?: string[]; latest_completed_turn?: boolean; note?: string }, ctx: { roomId: string; turnId: string | null; requestId: string; toolCallId?: string | null }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
