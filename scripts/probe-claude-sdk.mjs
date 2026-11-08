@@ -383,7 +383,9 @@ if (process.argv[2] !== '--worker') {
     const estimates = estimateRows.map(row => JSON.parse(row.raw_usage_json));
     if (estimateRows.length !== 5 || estimateRows.some(row => row.cost_usd !== null || row.input_tokens !== null)) throw Error('SDK_ESTIMATE_MIXED_WITH_REQUEST_USAGE');
     const fork = estimates.at(-1);
-    if (fork.scope !== 'sdk_session_cumulative' || !fork.fork_session || fork.resumed_from_session_id !== parentSession || fork.session_id === parentSession) throw Error('SDK_FORK_ESTIMATE_SCOPE_LOST');
+    // RB03（复审 20261106，0106c78）：fork 策略废除——评审/维护轮不再 fork 丢协议，
+    // 纯1与评审往来按 C08 保留在会话内（b779842），估算证据应显示 resume 续链而非 fork
+    if (fork.scope !== 'sdk_session_cumulative' || fork.fork_session !== false || fork.resumed_from_session_id !== parentSession || fork.session_id !== parentSession) throw Error('SDK_SESSION_CONTINUITY_LOST');
     if (estimates[1].resumed_from_session_id !== estimates[0].session_id || estimates[2].resumed_from_session_id !== estimates[1].session_id) throw Error('SDK_RESUME_ESTIMATE_SCOPE_LOST');
     summary.push({ mode: 'sdk-estimates', observations: estimates, monetaryRequestCosts: estimateRows.map(row => row.cost_usd) });
     console.log(JSON.stringify({ mode: 'sdk-estimates', count: estimates.length, forkScopePreserved: true, actualChargesUnknown: true }));
