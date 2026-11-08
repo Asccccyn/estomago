@@ -2,6 +2,7 @@
 
 当前源码基线分支为 `unified-main-20261102`（不要改用较旧的默认 `main`）；本轮功能基线 `8bbb246`，交付记录 `903991f`。Mariposa 配套基线为 `main` 上的 `db3669f`（共享规则源 `c52739d`）。施工分支 `fix/autonomous-tools-20261104` 已验收提交同步回上述基线；生成契约和 golden 仍从既有脚本派生，不手改。以下旧条目记录各批当时状态，当前部署与限制以本节及本轮报告为准。
 
+- 2026-11-08（相册重构 P3 切片一，`9db2dba`，未部署）：携带设置合同——packages/contracts 唯一常量 CARRY_IMAGE_LIMIT=10 + content v3 carry_mode(none|next_once|always) + 跨相册去重写入校验 + GET carry-set / POST consume-next-once（幂等）+ content-carry 5 例。部署与 P5 装配消费（撤销 textOnly、三模式合并、派发双检、next_once 消费时点）待续；同日生产已切 E=album-p2a-7e9f8ea、M=album-p2a-e3ad5c5（venv 迁 ~/Data/mariposa/venv-album-p2a），存量 31/31 媒体已落正 M。
 - 2026-11-08（相册重构 P0/P1/P2a，提交号见 git log；生产切换仅 media-embedding 单服务，E host 未部署）：P0 media-embedding 已脱离开发树、跑 release `audit-fix-20261108-70c7609`（plist 备份可回滚；指纹/向量验证一致）；P2a 新媒体经 M prepare/stage/finalize 落正（MariposaMediaStore+media_assets m_* 列 v64+读回源+后台退避同步+存量迁移脚本 media-master-backfill.mjs；chat_voice 不纳入）；M 侧 mime 白名单 +svg/html、estomago_builtin 白名单 +media.*（生产库已热更，44→46）。232/232 绿。生产迁移闭环/物理清理/P3-P6 未执行——详见 `docs/reports/ALBUM_P0_P2a_MEDIA_MASTER_20261108.md`。
 - 2026-11-07（用户授权同步）：沿既有 git-anon 导出推送本地 `e44cb40`..`af687f7`（结构整改 R1-R4b 六个代码提交+文档）→ 远端 `1673be1..33ff007` 快进；副本重写全量复查通过、原仓零重写；脱敏映射后本地↔远端 24 文件 45/45 行差异全部由姓名映射解释、无未解释差异。
 
