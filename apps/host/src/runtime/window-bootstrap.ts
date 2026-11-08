@@ -91,12 +91,15 @@ export class WindowBootstrapMachine {
       // Codex 审计 P0 修复：消费真实客户端合同 {ok:true,result}（此前误读 data，
       // 成功响应被当空冻结——生产片段从未生效）
       const res = await port.list({ scopeId, states: ['OPEN', 'QUIESCENT'], limit: EPISODE_FRAGMENT_BUDGET }, lifetime);
+      if (lifetime.aborted) return; // 迟到成功：不冻结，下轮重取（复审 R1）
       if (!res?.ok) throw new Error('EPISODE_LIST_UNAVAILABLE');
       const episodes = (res.result?.episodes ?? []) as FragmentEpisode[];
       const fragment = renderEpisodeFragment(episodes, res.result?.has_more === true);
       this.episodeFragmentByWindow.set(windowId, fragment ?? '');
-    } catch (err) {
-      if (lifetime.aborted && !(err instanceof Error) || (err instanceof Error && err.name === 'AbortError')) return; // 取消/截止：不冻结、不告警，下轮重拉
+    } catch {
+      // 生命周期判定不看异常形态（AbortError/TimeoutError/非 Error reason 一律同判）：
+      // 取消/截止引发的失败不冻结、不告警——下轮重取（复审 R1）
+      if (lifetime.aborted) return;
       this.d.events.publish('context.warning', { conversationId: scopeId, entityRef: windowId, scope: 'private', payload: { source: 'episode-fragment', code: 'EPISODE_FRAGMENT_UNAVAILABLE', note: '运行中事项片段未取得——本窗不带该段（不阻塞开窗）' } });
       this.episodeFragmentByWindow.set(windowId, '');
     }

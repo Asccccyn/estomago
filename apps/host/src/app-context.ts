@@ -370,7 +370,7 @@ export class Host {
       // bootstrap 端口——装一个必然抛错的客户端只会制造 BOOTSTRAP_INCOMPLETE 噪声。
       bootstrap: opts.config.integrations.mariposa.base_url ? modelMariposaClient : null,
       // 宿主用户 2026-11-07 裁定：开窗"运行中事项"片段随开窗包冻结（3 条、近期引用热度排序）
-      episodes: opts.config.integrations.mariposa.base_url ? { list: (a: { scopeId: string; states?: string[]; limit?: number }) => modelMariposaClient.episodeList(a) } : null,
+      episodes: opts.config.integrations.mariposa.base_url ? { list: (a: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal) => modelMariposaClient.episodeList(a, signal) } : null,
       toolCatalog: capabilityRegistry,
     });
     // voice 域能力与同一消息/媒体服务装配。

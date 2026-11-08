@@ -301,13 +301,13 @@ export class MariposaClient {
 
   /** episode（她批 2026-10-07"做吧"）：scope 内分页读取事件状态。
    *  蓝图 §6.3：注入/查询取少量状态+证据引用，不给全库未完故事。 */
-  async episodeList(args: { scopeId: string; states?: string[]; limit?: number; cursor?: Record<string, unknown> }): Promise<MariposaCallResult> {
+  async episodeList(args: { scopeId: string; states?: string[]; limit?: number; cursor?: Record<string, unknown> }, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('episode.list', {
       scope_id: args.scopeId,
       ...(args.states ? { states: args.states } : {}),
       ...(args.limit !== undefined ? { limit: args.limit } : {}),
       ...(args.cursor ? { cursor: args.cursor } : {}),
-    });
+    }, signal);
   }
 
   /** episode.get：按 ID 读取事件当前状态与证据引用（无正文展开）。 */
