@@ -123,3 +123,15 @@ test('机器：消费真实 MariposaClient 合同（{ok,result}）——审计 P
   assert.ok(frag && frag.includes('- 真实合同事件（OPEN，第2版，证据引用3）'), '真实合同链路取到并渲染片段');
   assert.ok(frag!.includes('另有未了结事项未展示'), 'has_more 分页提示');
 });
+
+test('缓存断点：无 B 时片段不计入 B 计数（fixedSystemCount）——审计 P1-D 定向验证', async () => {
+  const { fixedSystemCount } = await import('../../apps/host/src/runtime/cache-plan.ts');
+  const sys = (text: string) => ({ role: 'system', content: [{ type: 'text', text }] });
+  const frag = renderEpisodeFragment([EP('X')], false)!;
+  // 有 B：A/B/episode/user → 计数 2（B 断点定位不变）
+  assert.equal(fixedSystemCount([sys('A身份'), sys('B资料'), sys(frag), { role: 'user', content: 'x' } as never]), 2);
+  // 无 B：A/episode/user → 片段被跳过，计数 1（此前会把片段标成 B）
+  assert.equal(fixedSystemCount([sys('A身份'), sys(frag), { role: 'user', content: 'x' } as never]), 1);
+  // 纯 A：A/user → 计数 1
+  assert.equal(fixedSystemCount([sys('A身份'), { role: 'user', content: 'x' } as never]), 1);
+});
