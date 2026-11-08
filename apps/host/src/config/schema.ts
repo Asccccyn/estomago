@@ -292,7 +292,6 @@ export type Config = {
     max_attachments_per_message: number;
     import_timeout_ms: number;
     max_redirects: number; // 每跳重校验目的地；禁私网/本地元数据地址
-    auto_physical_gc_enabled: boolean; // 首版保守保留
   };
 };
 
@@ -548,7 +547,6 @@ export const CONFIG_DEFAULTS: Config = {
     max_attachments_per_message: 8,
     import_timeout_ms: 30000,
     max_redirects: 3,
-    auto_physical_gc_enabled: false,
   },
 };
 
@@ -685,7 +683,7 @@ const SHAPE: SectionSpec = { section: {
   media: { section: {
     max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
     max_code_artifact_bytes: 'number', max_attachments_per_message: 'number',
-    import_timeout_ms: 'number', max_redirects: 'number', auto_physical_gc_enabled: 'boolean',
+    import_timeout_ms: 'number', max_redirects: 'number',
   } },
 } };
 
@@ -860,7 +858,7 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
  *  R4/R8/R9（裁定 2026-11-03）：memory_surfacing.max_retained_tokens_per_window
  *  （从未接入执行）与 integrations.mariposa.contract_version（transport 从未
  *  发送/消费，F15）退役。siren.contract_version 不在此列——voice.ts 有真实消费者 */
-export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens', 'memory_surfacing.max_retained_tokens_per_window', 'integrations.mariposa.contract_version'] as const;
+export const RETIRED_CONFIG_KEYS = ['digest', 'media.auto_physical_gc_enabled', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens', 'memory_surfacing.max_retained_tokens_per_window', 'integrations.mariposa.contract_version'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];

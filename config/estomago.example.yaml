@@ -258,7 +258,6 @@ media:
   max_attachments_per_message: 8
   import_timeout_ms: 30000
   max_redirects: 3
-  auto_physical_gc_enabled: false
 
 # 自动记忆浮现（SOL_RECALL_REFACTOR 2026-10-30）：Sol 三态判断（独立 OpenAI key）
 # + Mariposa 检索/JEV + 同轮注入。默认关闭（零作业/零网络/零凭据读取）。
