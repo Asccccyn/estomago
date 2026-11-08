@@ -59,10 +59,11 @@ import { WindowBootstrapMachine, BOOTSTRAP_DEADLINE_MS } from './window-bootstra
 // P09：wishstar 依赖收窄为结构面（仅开窗临近纪念日提醒所需 upcoming）
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
-import { lastCacheEvidence } from './cache-observation.ts';
 import { renderToolContext, resolveToolGroups } from './tool-initial-visible.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
+import { keepwarmDispatchGate } from './background-keepwarm-gate.ts';
+import { classifyBackgroundOutcome } from './background-outcome.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError } from './or-contract.ts';
@@ -373,28 +374,11 @@ export class TurnSupervisor {
 
     const nowIso0 = new Date().toISOString();
     let capturedActivityRevision: number | null = null;
-    // —— 心跳专属派发门（05 §派发门与异常；执行位内重算，不用 tick 快照）——
+    // —— 心跳专属派发门（R4a 迁 runtime/background-keepwarm-gate.ts；05 §派发门与异常）——
     if (opts.kind === 'keepwarm') {
-      const act = d.activity?.get(opts.conversationId) ?? null;
-      if (!act || act.last_real_activity_at === null) return { outcome: 'noop', result_code: 'KEEPWARM_NO_REAL_ACTIVITY' };
-      if (runRow.input_activity_revision !== null && runRow.input_activity_revision !== act.activity_revision) {
-        return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '新真实消息已使本维护候选失效' };
-      }
-      const target = d.activity!.nextKeepwarmTarget({ conversationId: opts.conversationId, windowId: window.id });
-      if (target.scheduled && this.nowMs() < target.dueAtMs) return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '目标已被新证据推后' };
-      const evidence = lastCacheEvidence(d.db, window.id);
-      if (evidence === null) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN', detail: '无已确认缓存证据——保温不冷启动' };
-      if (this.nowMs() - Date.parse(evidence.startedAt) >= 3_600_000) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_ALREADY_COLD', detail: '缓存估计已冷——不补冷写' };
-      // 05 satisfied_by_request：同机会内一次真实请求已实际刷新有效缓存（自主唤醒/普通
-      // 聊天）→ 本维护机会记技术回执进入后继，不重复付费。
-      const prq = d.db.prepare('SELECT purpose FROM provider_requests WHERE id = ?').get(evidence.requestId) as { purpose: string } | undefined;
-      const L = Date.parse(act.last_real_activity_at);
-      const refreshedByOther = prq && prq.purpose !== 'cache_keepalive' && Date.parse(evidence.startedAt) >= L && (this.nowMs() - Date.parse(evidence.startedAt)) < 3_000_000;
-      if (refreshedByOther) {
-        d.activity!.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: act.activity_revision, requestId: evidence.requestId, windowId: window.id, dispatchStartedAtIso: evidence.startedAt });
-        return { outcome: 'noop', result_code: 'satisfied_by_request', detail: '同机会缓存已由真实请求刷新——本维护机会不重复付费' };
-      }
-      capturedActivityRevision = act.activity_revision;
+      const gate = keepwarmDispatchGate({ db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id, inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs() });
+      if (gate.decision === 'noop') return { outcome: 'noop', result_code: gate.resultCode, detail: gate.detail };
+      capturedActivityRevision = gate.capturedActivityRevision;
     }
 
     // —— 尾部 host 事件（05/04：宿主事件口径，不伪造用户消息；一次冻结，续轮不重生成）——
@@ -476,88 +460,8 @@ export class TurnSupervisor {
     });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
     settleBackgroundRun(d.db, opts.runId);
-    const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
-    const finishedState = loop.result.outcome === 'completed' || sleepPaused ? 'completed' : 'failed';
-    d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
-    d.db.prepare('UPDATE attempts SET state=?,blocked_reason=?,completed_at=? WHERE id=?').run(finishedState,loop.result.errorCode,new Date().toISOString(),attemptId);
-
-    // —— 结果分类（06 §2：一条执行路径、两种提交结果；判定按整轮不是最后字符串）——
-    const finalText = loop.finalMessages !== null && loop.finalMessages.length > 0
-      ? (() => { const last = loop.finalMessages![loop.finalMessages!.length - 1]!; const c = last.content; return typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => (b as { type?: string }).type === 'text').map((b) => (b as { text?: string }).text ?? '').join('') : ''; })()
-      : '';
-    const publishedCount = Number((d.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(turnId) as { n: number }).n);
-    const pureAck = loop.result.outcome === 'completed' && !loop.result.errorCode && toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
-    d.db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
-      .run(toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), opts.runId);
-
-    if (!pureAck) {
-      // SUBSTANTIVE（06 §2）：提交最初事件与整个必要协议链——工具调用/结果/续轮/最终文本；
-      // 正式发言已在工具执行时入消息库与归档 outbox；已见清单并入轨迹 manifest（B11/C-09）。
-      if (d.trajectory && loop.finalMessages !== null) {
-        const baseManifest = traj.manifest ?? [];
-        const publishedEntries = (d.db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(turnId) as Array<{ id: string; sequence: number }>)
-          .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
-        d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-        d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
-      }
-      // C09（四仓审计 20261106）：工具心跳（substantive）完成同样记维护回执——后继维护
-      // 安排与缓存证据独立成立（不记回执→occurrence key 永不变→后继永久停摆，审计实测
-      // 工具心跳后 next_run/model 增量=0）。缓存命中事实仍以真实 usage 为准（K-13 不冒充）。
-      if (opts.kind === 'keepwarm' && loop.result.outcome === 'completed' && d.activity && capturedActivityRevision !== null) {
-        const evAny = d.db.prepare(
-          `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
-           JOIN background_dispatches bd ON bd.provider_request_id = pr.id
-           WHERE bd.run_id = ? AND pr.outcome = 'completed' AND pr.dispatch_started_at IS NOT NULL
-           ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
-        ).get(opts.runId) as { rid: string; started: string } | undefined;
-        if (evAny) {
-          d.activity.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision, requestId: evAny.rid, windowId: window.id, dispatchStartedAtIso: evAny.started });
-        }
-      }
-      if (loop.result.outcome !== 'completed') {
-        // RB02（复审 20261106）：background_complete 的合法停发已在 runner 控制层归一为
-        // completed（sdk-host-query 与 API complete 门同一出口）——此处只剩真实失败/未知。
-        if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
-        if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-        if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
-        return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
-      }
-
-      const runCode = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
-      const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
-      // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
-      return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') ? loop.result.errorCode : completion === 'noop' ? 'complete:noop' : 'complete:done' };
-    }
-
-    // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文、不推进 L、
-    // 清单不加可见条目。C08（四仓审计 20261106）：**已发协议保留**——host 事件与
-    // assistant "1" 随轨迹提交（缓存前缀延续），下一普通输入/维护从实发前缀接续，
-    // 不再出现首差（旧实现整段丢弃→下一请求 messages[4] 起分叉）。
-    if (d.trajectory && loop.finalMessages !== null) {
-      d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), traj.manifest ?? []);
-      d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
-    }
-    // A retained tool result from an earlier interrupted run may have entered
-    // the model in this pure maintenance request. Promote only that source
-    // evidence; the canonical messages and cache boundary remain untouched.
-    if (d.trajectory && loop.toolSeen.length > 0) {
-      d.trajectory.replaceManifest(window.id, [...(traj.manifest ?? []), ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-    }
-    if (opts.kind === 'keepwarm' && d.activity && capturedActivityRevision !== null) {
-      // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
-      // 不写"保温成功"，同活动版本不重试）
-      const evRow = d.db.prepare(
-        `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
-         JOIN background_dispatches bd ON bd.provider_request_id = pr.id
-         JOIN usage_observations u ON u.request_id = pr.id AND u.completeness = 'complete'
-         WHERE bd.run_id = ? AND pr.outcome = 'completed' AND (u.cache_read_input_tokens > 0 OR u.cache_creation_input_tokens > 0)
-         ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
-      ).get(opts.runId) as { rid: string; started: string } | undefined;
-      if (evRow) {
-        d.activity.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: capturedActivityRevision, requestId: evRow.rid, windowId: window.id, dispatchStartedAtIso: evRow.started });
-      }
-    }
-    return { outcome: 'completed', result_code: opts.kind === 'keepwarm' ? 'ack_only' : 'complete:noop' };
+    // 结果分类与收尾（R4a 迁 runtime/background-outcome.ts）
+    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop });
   }
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
