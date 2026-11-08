@@ -13,7 +13,8 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const args = process.argv.slice(2);
-const homeArg = args[args.indexOf('--home') + 1];
+const homeIdx = args.indexOf('--home');
+const homeArg = homeIdx >= 0 ? args[homeIdx + 1] : null;
 const home = homeArg || path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
 const isProd = home === path.join(os.homedir(), 'Library', 'Application Support', 'estomago');
 if (isProd && !args.includes('--prod')) { console.error('生产根必须 --prod'); process.exit(1); }
@@ -31,6 +32,7 @@ if (!process.env[credentialRef]) { console.error(`凭据环境变量 ${credentia
 
 const { MariposaMediaStore } = await import('../apps/host/src/integrations/mariposa/media-store.ts');
 const { openDatabase } = await import('../apps/host/src/db/connection.ts');
+const { sha256Hex } = await import('../apps/host/src/util/id.ts');
 const store = new MariposaMediaStore({ baseUrl, credentialEnv: credentialRef });
 
 // 注意：本脚本不做 schema 迁移——生产 host 尚在旧 release 时先把库推到 v64 会破坏
