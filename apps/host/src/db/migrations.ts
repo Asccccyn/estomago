@@ -1671,4 +1671,14 @@ CREATE TABLE IF NOT EXISTS imagegen_operations(
 `,
 });
 
+// v68（相册整改 ALB-01，审计 2026-11-08）：E 本地媒体缓存 LRU 逐出——仅 M 已落正
+// (m_sync_state='synced') 的资产可逐（语音/未 synced 永不）；行保留、读取回源 M。
+MIGRATIONS.push({
+  version: 68,
+  name: 'media-assets-cache-lru',
+  sql: `
+ALTER TABLE media_assets ADD COLUMN cache_last_used_at TEXT;
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

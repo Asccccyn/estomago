@@ -939,7 +939,12 @@ export class ContentServer {
     // —— 纪念作品（§6，读） ——
     if (route === 'GET /api/v1/content/creations') {
       const limit = this.limitOf(url);
-      const rows = this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all() as Array<Record<string, unknown>>;
+      // ALB-05④（审计 2026-11-08）：按资产反查作品（icon 或 work 引用即可读）——
+      // media_view 的作品读取授权分支用；不另建端点。
+      const assetId = url.searchParams.get('asset_id');
+      const rows = (assetId
+        ? this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL AND (icon_asset_id = ? OR work_asset_id = ?) ORDER BY created_at DESC, id DESC').all(assetId, assetId)
+        : this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all()) as Array<Record<string, unknown>>;
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.creationDto(r)), next_cursor: null, has_more: rows.length > limit } };
     }

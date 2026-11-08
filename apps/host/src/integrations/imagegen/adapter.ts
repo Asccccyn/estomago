@@ -9,7 +9,7 @@ import { sniffMime } from '../../media/assets.ts';
 export type ImageGenRequest = { prompt: string; model: string; n?: number; size?: string };
 export type ImageGenTransportResult =
   | { status: number; json: unknown; transportError?: undefined }
-  | { transportError: 'timeout' | 'network'; status?: undefined; json?: undefined };
+  | { transportError: 'timeout' | 'network_refused' | 'network_unknown'; status?: undefined; json?: undefined };
 
 export type ImageGenTransport = (body: Record<string, unknown>, signal?: AbortSignal) => Promise<ImageGenTransportResult>;
 
@@ -47,12 +47,20 @@ export class ImageGenAdapter {
     try {
       res = await this.transport({ model: this.model, prompt, n: 1 }, AbortSignal.timeout(this.timeoutMs));
     } catch (err) {
-      const name = (err as Error).name;
-      if (name === 'TimeoutError' || name === 'AbortError') return { outcome: 'unknown', reason: '请求超时——生成结果未确认，不自动重发（避免重复计费）' };
+      // 自定义 transport 抛错（未走 defaultTransport 的分类）：同一套网络分类语义
+      const kind = classifyNetworkError(err);
+      if (kind === 'timeout') return { outcome: 'unknown', reason: '请求超时——生成结果未确认，不自动重发（避免重复计费）' };
+      if (kind === 'network_refused') return { outcome: 'error', code: 'IMAGEGEN_NETWORK', detail: '连接未建立（DNS/拒绝）——请求未送达，可安全重试' };
+      if (kind === 'network_unknown') return { outcome: 'unknown', reason: '网络中断（不能证明请求未送达）——结果未确认，不自动重发（避免重复计费）' };
       return { outcome: 'error', code: 'IMAGEGEN_TRANSPORT', detail: String((err as Error).message).slice(0, 120) };
     }
     if (res.transportError === 'timeout') return { outcome: 'unknown', reason: '请求超时——生成结果未确认，不自动重发（避免重复计费）' };
-    if (res.transportError === 'network') return { outcome: 'error', code: 'IMAGEGEN_NETWORK', detail: '网络故障（请求未送达，可安全重试）' };
+    // ALB-06②（审计 2026-11-08）：不能把一般网络异常当作"请求未送达"的证据——
+    // 服务端完整收到请求后断连（ECONNRESET 等）在客户端与连接阶段故障不可区分，
+    // 重发即第二次付费请求。仅 DNS 解析失败/连接拒绝（连接从未建立、请求必然
+    // 未送达）可安全重试；其余网络异常一律结果待确认。
+    if (res.transportError === 'network_refused') return { outcome: 'error', code: 'IMAGEGEN_NETWORK', detail: '连接未建立（DNS/拒绝）——请求未送达，可安全重试' };
+    if (res.transportError === 'network_unknown') return { outcome: 'unknown', reason: '网络中断（不能证明请求未送达）——结果未确认，不自动重发（避免重复计费）' };
     const status = res.status as number;
     if (status === 401 || status === 403) return { outcome: 'error', code: 'IMAGEGEN_AUTH', detail: `凭据被拒（${res.status}）` };
     if (status === 429) return { outcome: 'error', code: 'IMAGEGEN_RATE_LIMITED', detail: '供应商限流；稍后重试' };
@@ -81,6 +89,19 @@ function extractError(json: unknown): string | null {
   return typeof e?.message === 'string' ? e.message.slice(0, 160) : null;
 }
 
+/** 连接阶段错误码：请求必然未到达服务端（TCP/TLS 从未建立），可安全重试。 */
+const REFUSED_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH']);
+
+function classifyNetworkError(err: unknown): 'timeout' | 'network_refused' | 'network_unknown' {
+  const name = (err as Error).name;
+  if (name === 'TimeoutError' || name === 'AbortError') return 'timeout';
+  // fetch 失败原因挂在 cause（Node undici）；聚合 DNS 错误在 cause.errors[]
+  const cause = (err as { cause?: { code?: string; errors?: Array<{ code?: string }> } }).cause;
+  const codes = [cause?.code, ...(cause?.errors ?? []).map((e) => e.code)];
+  if (codes.some((c) => typeof c === 'string' && REFUSED_CODES.has(c))) return 'network_refused';
+  return 'network_unknown';
+}
+
 function defaultTransport(baseUrl: string, apiKeyEnv: string | null): ImageGenTransport {
   return async (body, signal) => {
     const key = apiKeyEnv ? process.env[apiKeyEnv] : null;
@@ -94,9 +115,7 @@ function defaultTransport(baseUrl: string, apiKeyEnv: string | null): ImageGenTr
       });
       return { status: res.status, json: await res.json().catch(() => null) };
     } catch (err) {
-      const name = (err as Error).name;
-      if (name === 'TimeoutError' || name === 'AbortError') return { transportError: 'timeout' };
-      return { transportError: 'network' };
+      return { transportError: classifyNetworkError(err) };
     }
   };
 }

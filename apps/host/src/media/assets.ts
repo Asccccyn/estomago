@@ -87,6 +87,11 @@ export class MediaService {
     fs.mkdirSync(mediaDir, { recursive: true });
   }
 
+  /** M 唯一正本客户端是否装配（未装配=本实例无 M 落正语义，调用方按各自合同处理）。 */
+  get masterStoreConfigured(): boolean {
+    return this.mStore !== null;
+  }
+
   private purposeLimitBytes(purpose: IngestPurpose): number {
     const m = this.config.media;
     if (purpose === 'chat_image' || purpose === 'chat_sticker') return m.max_image_bytes;
@@ -171,6 +176,31 @@ export class MediaService {
     }
   }
 
+  /** ALB-01：本地缓存 LRU 逐出一跳。候选=state available 且 m_sync_state='synced'（M 已
+   *  有正本，删本地文件后读取回源）；语音(out_of_scope)/pending 永不逐。返回逐出数与
+   *  逐出后缓存总字节（供观测/测试断言）。每跳有界（maxEvict）。 */
+  evictCacheOverBudget(maxEvict = 20): { evicted: number; cacheBytes: number } {
+    const budget = this.config.media.cache_budget_bytes;
+    const rows = this.db.prepare(
+      `SELECT id, storage_key, byte_size, cache_last_used_at FROM media_assets
+       WHERE state = 'available' AND m_sync_state = 'synced' ORDER BY cache_last_used_at IS NOT NULL, cache_last_used_at ASC, created_at ASC, id ASC`,
+    ).all() as Array<{ id: string; storage_key: string; byte_size: number; cache_last_used_at: string | null }>;
+    let total = 0;
+    for (const r of rows) {
+      if (fs.existsSync(path.join(this.mediaDir, r.storage_key))) total += r.byte_size;
+    }
+    let evicted = 0;
+    for (const r of rows) {
+      if (total <= budget || evicted >= maxEvict) break;
+      const abs = path.join(this.mediaDir, r.storage_key);
+      if (!fs.existsSync(abs)) continue;
+      fs.rmSync(abs);
+      total -= r.byte_size;
+      evicted += 1;
+    }
+    return { evicted, cacheBytes: total };
+  }
+
   /** 待同步批次（后台一跳有界推进；按创建序，最旧优先）。 */
   pendingMSyncBatch(limit: number): Array<{ id: string; m_sync_attempts: number }> {
     const purposes = [...M_MASTER_PURPOSES];
@@ -232,7 +262,13 @@ export class MediaService {
     if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
     if (row.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产状态 ${row.state}`);
     const abs = path.join(this.mediaDir, row.storage_key);
-    if (fs.existsSync(abs)) return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+    if (fs.existsSync(abs)) {
+      // ALB-01：本地缓存命中即触 LRU（同步小写入；NULL=从未读过=逐出时视为最旧）
+      if (row.m_sync_state === 'synced') {
+        this.db.prepare("UPDATE media_assets SET cache_last_used_at = ? WHERE id = ? AND m_sync_state = 'synced'").run(new Date().toISOString(), id);
+      }
+      return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+    }
     const mHash = row.m_content_hash ?? (row.m_sync_state === 'synced' ? row.content_sha256 : null);
     if (mHash && this.mStore) {
       const { bytes } = await this.mStore.fetchBytes(mHash);

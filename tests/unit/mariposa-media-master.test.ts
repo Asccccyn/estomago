@@ -206,6 +206,46 @@ test('PM-5: store 客户端——finalize 被拒如实报错、对象不存在�
   } finally { fakeM.failMode = 'none'; f.close(); }
 });
 
+test('PM-7: ALB-01 缓存有界化——超预算 LRU 逐 synced 文件；语音永不逐；逐出后读取回源 M 重建', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-mmedia-evict-'));
+  const db = openDatabase(root);
+  migrate(db, sha256Hex);
+  const config = buildConfig({ media: { cache_budget_bytes: 200 } }); // 预算=200B：三张 ~104B 图必超
+  const mStore = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_M_TOKEN' });
+  const media = new MediaService(db, path.join(root, 'media'), config, mStore);
+  const png = (n: number, fill = 1) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(n, fill)]);
+  const webm = (n: number) => Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(n, 7)]);
+  try {
+    const a1 = await media.saveBuffer({ bytes: png(60, 1), purpose: 'chat_image', operationId: 'ev-1', createdBy: 'q', origin: 'upload' });
+    const a2 = await media.saveBuffer({ bytes: png(60, 2), purpose: 'chat_image', operationId: 'ev-2', createdBy: 'q', origin: 'upload' });
+    const a3 = await media.saveBuffer({ bytes: png(60, 3), purpose: 'chat_image', operationId: 'ev-3', createdBy: 'q', origin: 'upload' });
+    const v = await media.saveBuffer({ bytes: webm(30), purpose: 'chat_voice', operationId: 'ev-v', createdBy: 'q', origin: 'upload' });
+    assert.equal(media.getAsset(a1.id).m_sync_state, 'synced');
+    assert.equal(v.m_sync_state, 'out_of_scope');
+    // 读 a2/a3 触 LRU（a1 最旧：NULL 触点=最旧）
+    await media.readContentResolvingMaster(a2.id);
+    await media.readContentResolvingMaster(a3.id);
+    const ev = media.evictCacheOverBudget();
+    assert.equal(ev.evicted >= 1, true, '超预算必须逐出');
+    assert.ok(ev.cacheBytes <= 200, `逐出后缓存 ${(ev.cacheBytes)}B 应 ≤ 预算`);
+    // 语音文件永不逐
+    const voiceKey = (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(v.id) as { storage_key: string }).storage_key;
+    assert.equal(fs.existsSync(path.join(root, 'media', voiceKey)), true, '语音文件保留（无 M 正本）');
+    // 被逐资产：行仍在 available/synced，读取从 M 回源重建缓存
+    const evictedRow = db.prepare("SELECT id FROM media_assets WHERE m_sync_state='synced' AND id != ? AND id != ?").get(a2.id, a3.id) as { id: string } | undefined;
+    if (evictedRow && evictedRow.id === a1.id) {
+      const gone = (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(a1.id) as { storage_key: string }).storage_key;
+      assert.equal(fs.existsSync(path.join(root, 'media', gone)), false, '最旧者已逐出本地文件');
+      assert.equal(media.getAsset(a1.id).state, 'available', '行保留');
+      fakeM.counts.objectGet = 0;
+      const back = await media.readContentResolvingMaster(a1.id);
+      assert.equal(fakeM.counts.objectGet, 1, '回源 M 一次');
+      assert.equal(sha256Hex(back.bytes), a1.content_sha256, '回源字节与正本一致');
+      assert.equal(fs.existsSync(path.join(root, 'media', gone)), true, '缓存重建');
+    }
+  } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('PM-6: M 未配置（mStore=null）——保存仍成功且如实 pending，回源路径不误报', async () => {
   const f = fixture(null);
   try {

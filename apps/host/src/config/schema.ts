@@ -297,6 +297,9 @@ export type Config = {
     max_attachments_per_message: number;
     import_timeout_ms: number;
     max_redirects: number; // 每跳重校验目的地；禁私网/本地元数据地址
+    /** ALB-01（审计 2026-11-08）：E 本地媒体缓存的字节预算——M 已落正(synced)的非语音
+     *  资产超预算按 LRU 逐出本地文件（行保留，读取回源 M）；语音/未 synced 不逐。 */
+    cache_budget_bytes: number;
   };
 };
 
@@ -553,6 +556,7 @@ export const CONFIG_DEFAULTS: Config = {
     max_attachments_per_message: 8,
     import_timeout_ms: 30000,
     max_redirects: 3,
+    cache_budget_bytes: 1073741824,
   },
 };
 
@@ -690,7 +694,7 @@ const SHAPE: SectionSpec = { section: {
   media: { section: {
     max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
     max_code_artifact_bytes: 'number', max_attachments_per_message: 'number',
-    import_timeout_ms: 'number', max_redirects: 'number',
+    import_timeout_ms: 'number', max_redirects: 'number', cache_budget_bytes: 'number',
   } },
 } };
 

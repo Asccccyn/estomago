@@ -34,6 +34,14 @@ export class MediaToolsService {
       const body = response.body as { albums?: unknown[] };
       allowed = response.status === 200 && Array.isArray(body.albums) && body.albums.length > 0;
     }
+    if (!allowed && this.contentClient) {
+      // ALB-05④：作品成员（icon/work 引用，含生图新作品）可读——模型收到生成回执后
+      // media_view 能实际打开（R36：可操作真实资源）。
+      const response = await contentForward(this.contentClient, { method:'GET', actor:'jiaming',
+        path:`/api/v1/content/creations?asset_id=${encodeURIComponent(assetId)}&limit=1` });
+      const body = response.body as { items?: unknown[] };
+      allowed = response.status === 200 && Array.isArray(body.items) && body.items.length > 0;
+    }
     if (!allowed) throw new MediaError('ASSET_NOT_READABLE', 403, '图片不属于当前房间已发布附件或可读相册');
     if (!['image/png','image/jpeg','image/gif','image/webp'].includes(asset.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '该资产不是可投递图片');
     // Access can be revoked between tool execution and sending/replaying history.

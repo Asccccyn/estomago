@@ -562,6 +562,9 @@ export class Host {
         if (synced) this.mediaMSyncRetryNotBefore.delete(item.id);
         else this.mediaMSyncRetryNotBefore.set(item.id, Date.now() + 30_000 * 2 ** Math.min(before + 1, 5));
       }
+      // ALB-01：本地缓存超预算 LRU 逐出（M 已落正者才可逐；每跳有界）
+      const ev = media.evictCacheOverBudget();
+      if (ev.evicted > 0) this.logger.info('media_cache_evicted', { evicted: ev.evicted, cache_bytes: ev.cacheBytes });
     } finally { this.mediaSyncTicking = false; }
   }
 
