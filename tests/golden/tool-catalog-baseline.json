@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "9a26d02d5f67fc1a9b585cae42129a14f9be0e92",
+  "baselineCommit": "f35ef4672e2e58243fedb16abc38323997915dff",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -60,7 +60,7 @@
     "tool_invoke"
   ],
   "definitionIds": {
-    "memory_hold": "td_682b4310a6cd9b73fd800c51",
+    "memory_hold": "td_f073967a38333e9f5eedad23",
     "memory_recall": "td_3c97452a110827ff34c62d69",
     "memory_recall_next": "td_94172c95a0354c44875fcdb4",
     "memory_read_full": "td_38751466a40fa898903ce182",
@@ -113,7 +113,7 @@
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "a79fe8dcb261acfc829198833e29dc9f87be7a44f37fe4255b2ef17104de91cb",
+  "toolsSha256": "2a08ceea39f2e8fe3a11e6092fad5b9f547b6f845b05ecfc1711a8a64ae57e67",
   "tools": [
     {
       "type": "function",
@@ -160,7 +160,7 @@
                 "type": "string",
                 "minLength": 1
               },
-              "description": "plan 分类必填；使用 plans_read 或已有成功回执的 plan_id"
+              "description": "plan 分类必填；使用 plans_read 或已有成功回执的 plan_id。Existing server-issued plan IDs only — never invent IDs; create the plan first if needed; omit if no valid ID is available."
             },
             "creation_mode": {
               "type": "string",

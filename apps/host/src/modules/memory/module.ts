@@ -25,7 +25,7 @@ export function memoryHoldDefinition(): HostToolSpec {
           original_title: { ...HOLD_INPUT.properties.original_title, description:'记忆标题（长度按 Unicode 码点计）' },
           categories: {type:HOLD_INPUT.properties.categories.type,items:HOLD_INPUT.properties.categories.items,minItems:1,description:HOLD_INPUT.properties.categories.description},
           text: { ...HOLD_INPUT.properties.text, description: HOLD_INPUT.properties.text.description },
-          plan_ids: { ...HOLD_INPUT.properties.plan_ids,description:'plan 分类必填；使用 plans_read 或已有成功回执的 plan_id' },
+          plan_ids: { ...HOLD_INPUT.properties.plan_ids,description:'plan 分类必填；使用 plans_read 或已有成功回执的 plan_id。Existing server-issued plan IDs only — never invent IDs; create the plan first if needed; omit if no valid ID is available.' },
           creation_mode: { ...HOLD_INPUT.properties.creation_mode },
           memory_date: { type:'string', description:HOLD_INPUT.properties.memory_date.description },
           date_confidence: { ...HOLD_INPUT.properties.date_confidence },

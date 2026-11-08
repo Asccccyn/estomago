@@ -276,6 +276,13 @@ export class MemoryToolsService {
       // 审计 F10：结果不明（传输/5xx/429/回执形状无效）≠ 失败——标 unknown，不盲重试也不当没写（§3.3）
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT') || r.code === 'RECEIPT_SHAPE_INVALID';
       this.reviews.settleEffect(effectId, unknown ? 'unknown' : 'failed_resolved', false, null);
+      // 2026-11-08 林石见裁定：plan 绑定失败独立成码薄转译——M 带回全部无效 id，
+      // 不再笼统 HOLD_NOT_FOUND（模型会误读成"记忆不存在"）；不自动建 plan、
+      // 不静默丢弃 plan_ids、E 不做第二套存在性校验（M 是唯一真实性判断者）
+      if (r.code === 'PLAN_NOT_FOUND') {
+        const invalidIds = Array.isArray(r.detail?.invalid_ids) ? r.detail.invalid_ids.filter((x): x is string => typeof x === 'string') : [];
+        return { ok: false, output: { error_code: 'PLAN_NOT_FOUND', invalid_ids: invalidIds, fix: 'Create or find the plan, then retry with its real plan_id.' } };
+      }
       return { ok: false, output: { error_code: unknown ? 'HOLD_OUTCOME_UNKNOWN' : `HOLD_${r.code}`, ...(unknown ? { detail: '结果未知；不要自行重复提交。宿主沿既有 holdStatus 机制核对。' } : {}) } };
     }
     const receipt = r.receipt!;

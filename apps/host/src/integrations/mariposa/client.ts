@@ -8,7 +8,9 @@ import { validateAbsoluteIso } from '../../util/time.ts';
 
 export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
-  | { ok: false; code: string; httpStatus: number };
+  // 2026-11-08 林石见裁定：错误体 detail（如 PLAN_NOT_FOUND 的 invalid_ids）
+  // 随码透传——上层薄转译要用，不再只读 code 丢详情
+  | { ok: false; code: string; httpStatus: number; detail?: Record<string, unknown> };
 
 // G2-F07（裁定 2026-11-03）：可选信封扩展——与 arguments 平级的顶层
 // 字段（如 idempotency_key），由 M 端 HTTP 入口读取驱动通用传输幂等
@@ -137,11 +139,11 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         data?: Record<string, unknown>;
-        error?: { code?: string };
+        error?: { code?: string; detail?: unknown };
       };
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('RESPONSE_SHAPE_INVALID');
       if (body.ok === false) {
-        return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+        return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status, ...errDetail(body.error) };
       }
       if (body.ok !== true || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
         // A 2xx with no verifiable receipt has unknown outcome. The existing
@@ -150,12 +152,17 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
       }
       return { ok: true, result: body.data };
     }
-    const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
+    const body = (await res.json().catch(() => ({}))) as { error?: { code?: string; detail?: unknown } };
     // D22（审计 3655d60）：5xx 不论响应体是否带结构化错误码，都按传输层状态分类为 HTTP_5xx——
     // 调用方（hold/archive）将 5xx 归"结果不明 unknown"并有界核实，不当确定失败。
     if (res.status >= 500) return { ok: false, code: `HTTP_${res.status}`, httpStatus: res.status };
-    return { ok: false, code: typeof body?.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+    return { ok: false, code: typeof body?.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status, ...errDetail(body?.error) };
   };
+}
+
+/** 错误体的 detail 仅在为 JSON 对象时透传（M 端 MariposaError.detail）；其余形状不带。 */
+function errDetail(e: { detail?: unknown } | undefined): { detail?: Record<string, unknown> } {
+  return typeof e?.detail === 'object' && e.detail !== null && !Array.isArray(e.detail) ? { detail: e.detail as Record<string, unknown> } : {};
 }
 
 /** D17（审计 3655d60）：hold 回执完整形状校验——非空 operation_id/memory_id、正整数 version、

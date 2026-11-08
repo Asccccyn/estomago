@@ -57,7 +57,7 @@ function recordingMariposa(calls: HoldCall[], resultOverride?: () => Record<stri
       // F-J-54 对齐（联合审计 2026-10-06）：默认回执按真实服务端语义生成——每条 source_selection 恰好一个绑定
       const selCount = Array.isArray(payload.source_selections) ? (payload.source_selections as unknown[]).length : 0;
       const r = resultOverride ? resultOverride() : { operation_id: payload.operation_id, memory_id: 'mem-1', version: 1, binding_ids: Array.from({ length: selCount }, (_, i) => `msb-${i}`), committed_at: new Date().toISOString() };
-      if (r.__reject) return { ok: false, code: String(r.code), httpStatus: Number(r.httpStatus) };
+      if (r.__reject) return { ok: false, code: String(r.code), httpStatus: Number(r.httpStatus), ...(r.detail ? { detail: r.detail as Record<string, unknown> } : {}) };
       return { ok: true, result: r };
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
@@ -164,7 +164,64 @@ test('D22：带结构化错误码的 HTTP 500 → 传输层按 HTTP_500 分类�
   (globalThis as { fetch: unknown }).fetch = realFetch;
 });
 
-// D13/D16（2026-11-06 勘误删除）：quotes 摘录接口已在 22065bb 解耦批退役
+// —— 2026-11-08 林石见裁定回归：plan_ids 契约（PLAN_NOT_FOUND 薄转译，不自动建 plan/不静默丢弃）——
+// 场景③（无 plan_ids 正常保存）由本文件 D15 用例覆盖（HOLD_ARGS 不带 plan_ids 即 committed）；
+// 场景④（混绑无部分写入）在 mariposa 侧同事务回滚——tests/unit/test_closure_p1_batch2_20261001.py。
+test('林石见①：真实 plan_id 原样透传并正常提交', async () => {
+  const root = tempRoot('plan-a-');
+  const ctx = baseCtx(root);
+  ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
+  const calls: HoldCall[] = [];
+  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, plan_ids: ['plan_real1'] }, []);
+  assert.equal(out.ok, true, '真实 id 绑定成功');
+  assert.deepEqual(calls[0]!.payload.plan_ids, ['plan_real1'], 'plan_ids 原样到达 M，E 不做第二套校验');
+  const eff = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").get() as { state: string } | undefined;
+  assert.equal(eff?.state, 'committed');
+  ctx.db.close();
+});
+
+test('林石见②：伪造 plan id → PLAN_NOT_FOUND 带全部无效 id 与 fix（不再误导读的 HOLD_NOT_FOUND）', async () => {
+  const root = tempRoot('plan-b-');
+  const ctx = baseCtx(root);
+  ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
+  const checkpoint = new HoldCheckpointService(ctx.db);
+  const calls: HoldCall[] = [];
+  const { out } = await execHold(ctx, calls, { ...HOLD_ARGS, plan_ids: ['pending_grandpa_birthday', 'plan_fake'] }, [],
+    () => ({ __reject: true, code: 'PLAN_NOT_FOUND', httpStatus: 404, detail: { invalid_ids: ['pending_grandpa_birthday', 'plan_fake'] } }));
+  assert.equal(out.ok, false);
+  const output = out.output as { error_code: string; invalid_ids: string[]; fix: string };
+  assert.equal(output.error_code, 'PLAN_NOT_FOUND', '独立成码——模型不再误读成"记忆不存在"');
+  assert.deepEqual(output.invalid_ids, ['pending_grandpa_birthday', 'plan_fake'], '全部无效 id 带回（多 id 一个无效也全量可见）');
+  assert.equal(typeof output.fix, 'string', '一句话修复动作');
+  const eff = ctx.db.prepare("SELECT state FROM tool_side_effects WHERE kind='hold'").get() as { state: string } | undefined;
+  assert.equal(eff?.state, 'failed_resolved', '404=确定性失败，不进 unknown 对账');
+  assert.equal(checkpoint.forWindow('w1'), null, '失败零推进');
+  ctx.db.close();
+});
+
+test('林石见②兼容：M 未升级仍回裸 NOT_FOUND → 通用 HOLD_NOT_FOUND 兜底不变', async () => {
+  const root = tempRoot('plan-c-');
+  const ctx = baseCtx(root);
+  ctx.db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
+  const calls: HoldCall[] = [];
+  const { out } = await execHold(ctx, calls, HOLD_ARGS, [], () => ({ __reject: true, code: 'NOT_FOUND', httpStatus: 404 }));
+  assert.equal(out.ok, false);
+  assert.equal((out.output as { error_code: string }).error_code, 'HOLD_NOT_FOUND', '未知/旧码仍走 HOLD_ 前缀通用路径');
+  ctx.db.close();
+});
+
+test('传输层：错误体 error.detail（invalid_ids）随码透传（真 fetch stub）', async () => {
+  const realFetch = globalThis.fetch;
+  (globalThis as { fetch: unknown }).fetch = async () => new Response(JSON.stringify({ ok: false, error: { code: 'PLAN_NOT_FOUND', message: 'plan not found', detail: { invalid_ids: ['pending_x'] } } }), { status: 404 });
+  const client = new MariposaClient({ baseUrl: 'https://unit.test', credentialEnv: 'NONE_SUCH' });
+  const r = await client.memoryHold({ operationId: 'op', holdPayload: {} });
+  assert.equal(r.ok, false);
+  const rej = r as { code: string; detail?: { invalid_ids?: string[] } };
+  assert.equal(rej.code, 'PLAN_NOT_FOUND');
+  assert.deepEqual(rej.detail?.invalid_ids, ['pending_x'], 'detail 不再被 transport 丢弃');
+  (globalThis as { fetch: unknown }).fetch = realFetch;
+});
+
 //（hold 不再收 quotes；原文绑定走 memory_source_bind，原话走 memory_words_write——
 // 由 memory-save-decoupled.test.ts 覆盖现行合同）。本测试按退役接口断言，删不改产线。
 
