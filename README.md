@@ -2,6 +2,7 @@
 
 当前源码基线分支为 `unified-main-20261102`（不要改用较旧的默认 `main`）；本轮功能基线 `8bbb246`，交付记录 `903991f`。Mariposa 配套基线为 `main` 上的 `db3669f`（共享规则源 `c52739d`）。施工分支 `fix/autonomous-tools-20261104` 已验收提交同步回上述基线；生成契约和 golden 仍从既有脚本派生，不手改。以下旧条目记录各批当时状态，当前部署与限制以本节及本轮报告为准。
 
+- 2026-11-08（相册重构 P3 生图，`62e4384`，未部署）：OpenAI 图片生成适配——服务端 Key（credential_ref 模式，未配置=如实 UNCONFIGURED）、ImageGenAdapter（魔数校验/错误分类/超时=结果待确认不自动重发/只回 URL 不当已保存）、两阶段恢复（v67：生成成功暂存字节，入库失败重试不二次付费生成）、自动进作品（content v5 免桶图片作品）；image_generate 工具+冻结包/golden 52 项同步+三夹具容量重标定。真实远端联调未执行（无 Key）。测试 5 例+全量 234/237（2=并行代理 WIP，1=并行 flake 单跑绿）。
 - 2026-11-08（相册重构 P4，`3ba33bc`，未部署）：对话存档（争吵/甜蜜）——content v4 conversation_archives 正本（非连续引用集合保序）+ E 双入口（conversation_archive 工具：精确定位二选一/最近完整回合/无定位如实拒绝；POST /api/v1/archives：争吵先停当前回合双状态分开）+ 通知单通道（工具=回执；用户=host_notices v66 装配期投递一次）+ 测试装配/golden 三基线同步。封存自动浮现抑制（跨 M）与前端 UI 待续。全量 234/236（余 2=并行代理 home WIP）。
 - 2026-11-08（相册重构 P5，`b4a2364`，未部署）：滚窗真实携图——撤销 2026-10-18 textOnly（宿主用户裁定开窗包按最新）；carry-images 规划器（选集图∪相册携带去重合并 ≤CARRY_IMAGE_LIMIT=10，超限结构化阻断）；携带片段独立 system 块随首请求冻结进轨迹；next_once 窗内首次成功投递后消费（before 过滤防误吞，幂等）；估算器 1600/图同源计费；全量 233/235（2 失败=并行代理 home WIP）。P4 存档与前端四入口待续。
 - 2026-11-08（相册重构 P3 切片一，`9db2dba`，未部署）：携带设置合同——packages/contracts 唯一常量 CARRY_IMAGE_LIMIT=10 + content v3 carry_mode(none|next_once|always) + 跨相册去重写入校验 + GET carry-set / POST consume-next-once（幂等）+ content-carry 5 例。部署与 P5 装配消费（撤销 textOnly、三模式合并、派发双检、next_once 消费时点）待续；同日生产已切 E=album-p2a-7e9f8ea、M=album-p2a-e3ad5c5（venv 迁 ~/Data/mariposa/venv-album-p2a），存量 31/31 媒体已落正 M。
