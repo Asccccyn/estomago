@@ -2,6 +2,8 @@
 
 当前源码基线分支为 `unified-main-20261102`（不要改用较旧的默认 `main`）；本轮功能基线 `8bbb246`，交付记录 `903991f`。Mariposa 配套基线为 `main` 上的 `db3669f`（共享规则源 `c52739d`）。施工分支 `fix/autonomous-tools-20261104` 已验收提交同步回上述基线；生成契约和 golden 仍从既有脚本派生，不手改。以下旧条目记录各批当时状态，当前部署与限制以本节及本轮报告为准。
 
+- 2026-11-07（用户授权同步）：沿既有 git-anon 导出推送本地 `e44cb40`..`af687f7`（结构整改 R1-R4b 六个代码提交+文档）→ 远端 `1673be1..33ff007` 快进；副本重写全量复查通过、原仓零重写；脱敏映射后本地↔远端 24 文件 45/45 行差异全部由姓名映射解释、无未解释差异。
+
 - 2026-11-07（`88a4963`，未部署）：R4b 换窗/选集纯函数抽离——工作集估算（D06/F25/1024 裁定②/F-J-33/R21 口径）→ runtime/rotation-estimate.ts、选集容量估计三助手 → context/selection-estimate.ts，supervisor 2814→2778 行；勘察确认选集状态正本本就在 ManualSelectionService，编排视图不整体搬迁。选集/换窗 8 个定向+全量 230/230 绿。R5 memory 域待续。
 
 - 2026-11-07（`77f2aaa`，未部署）：R4a 后台域拆分——保温派发资格门（runtime/background-keepwarm-gate.ts）与结果分类收尾（runtime/background-outcome.ts）迁出 supervisor（2910→2814 行），runBackgroundTurn 收敛为前置检查+尾部装配+循环编排；后台域定向+全量 230/230 绿。S1 让位策略经实读降级（单一闭包源已存在，四处消费点失败语义各异，合并属机械翻牌）；R4b 换窗/选集与 R5 memory 域待续。
