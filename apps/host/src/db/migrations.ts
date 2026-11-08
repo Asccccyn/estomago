@@ -1681,4 +1681,14 @@ ALTER TABLE media_assets ADD COLUMN cache_last_used_at TEXT;
 `,
 });
 
+// v69（宿主用户 2026-11-08 裁定：语音同图片进 M 唯一正本——撤销 v64 对 chat_voice 的
+// out_of_scope 标记）：存量语音行回到 pending，由 media-master-backfill 迁入 M。
+MIGRATIONS.push({
+  version: 69,
+  name: 'chat-voice-to-mariposa-master',
+  sql: `
+UPDATE media_assets SET m_sync_state='pending' WHERE ingest_purpose='chat_voice' AND m_sync_state='out_of_scope';
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

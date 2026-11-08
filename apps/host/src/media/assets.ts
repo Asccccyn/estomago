@@ -22,6 +22,10 @@ export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'crea
 // 本轮不迁移；其媒体字节归属仍按原路径处理。
 export const M_MASTER_PURPOSES: ReadonlySet<IngestPurpose> = new Set([
   'chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view',
+  // 宿主用户 2026-11-08 裁定：语音同图片——M 唯一正本，E 播放/使用走 M 回源
+  // （替代此前 A66 的"语音不迁"范围）。读取回源经 readContentResolvingMaster；
+  // voice.ts 转写链已改为"先认领后取字节"以保留单飞语义（见 media/voice.ts）。
+  'chat_voice',
 ]);
 
 // 用途 → 格式白名单（§5.1：两套小名单；不是按扩展名信任）

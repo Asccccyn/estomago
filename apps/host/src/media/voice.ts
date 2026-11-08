@@ -55,13 +55,20 @@ export class VoiceService {
     }
     const status = this.status();
     if (!status.available) throw new MediaError(status.reason!.toUpperCase(), 503, '语音转写暂不可用，请检查语音服务配置');
-    const audio = this.media.readContent(assetId);
-    const format = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' }[audio.mime];
-    if (!format) throw new MediaError('VOICE_FORMAT_UNSUPPORTED', 422, '语音格式不支持');
+    // 宿主用户 2026-11-08 裁定（语音走 M 正本）：字节改异步回源（readContentResolvingMaster，
+    // 本地缓存缺失时从 M 取回）。取字节移到**认领之后**——先落 processing 行保住
+    // 单飞语义（并发的第二请求立即 UNCONFIRMED，不会因回源耗时双开转写），格式
+    // 不支持按原语义把该行落失败态（可换键重试）。
     const now = new Date().toISOString();
     this.db.prepare(`INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,state,content_sha256,created_at,updated_at)
       VALUES (?,?,?,'processing',?,?,?) ON CONFLICT(asset_id) DO UPDATE SET operation_key=excluded.operation_key,state='processing',error_code=NULL,updated_at=excluded.updated_at`)
       .run(assetId, conversationId, operationKey, asset.content_sha256, now, now);
+    const audio = await this.media.readContentResolvingMaster(assetId);
+    const format = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' }[audio.mime];
+    if (!format) {
+      this.db.prepare("UPDATE voice_transcripts SET state='failed', error_code='VOICE_FORMAT_UNSUPPORTED', updated_at=? WHERE asset_id=? AND state='processing'").run(new Date().toISOString(), assetId);
+      throw new MediaError('VOICE_FORMAT_UNSUPPORTED', 422, '语音格式不支持');
+    }
     try {
       const c = this.config.integrations.siren;
       const adapter = new SirenAdapter(c.base_url, process.env[c.credential_ref!]!, this.transport);

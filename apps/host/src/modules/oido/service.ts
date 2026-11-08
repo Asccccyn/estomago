@@ -23,7 +23,7 @@ export type OidoAnalyzeInput = { audio_ref?: string; range_ms?: [number, number]
 export type OidoAnalysisResult = { view: Record<string, unknown> };
 
 /** 受信音频内容读面（MediaService 的窄投影；不给模块整个 MediaService 写权限——P03.2）。 */
-export type AudioContentReader = { readContent(assetId: string): { bytes: Buffer; mime: string } };
+export type AudioContentReader = { readContent(assetId: string): { bytes: Buffer; mime: string }; readContentResolvingMaster?(assetId: string): Promise<{ bytes: Buffer; mime: string }> };
 /** view 测量图工件落盘（原 saveBuffer 调用面；派生工件幂等键由调用方给）。 */
 export type ArtifactSaver = {
   saveBuffer(opts: { bytes: Uint8Array; purpose: import('../../media/assets.ts').IngestPurpose; operationId: string; createdBy: string; origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null }): Promise<{ id: string; content_sha256: string; byte_size: number }>;
@@ -106,7 +106,11 @@ export class OidoHearingService {
     const bound = this.sources.sourceAllowed(assetId, ctx.roomId);
     if (!bound) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '该语音不属于当前会话' } };
     try {
-      const { bytes, mime } = this.audio.readContent(assetId);
+      // 宿主用户 2026-11-08 裁定（语音走 M 正本）：深听字节经回源入口（缓存缺失取 M）
+      const reader = this.audio as AudioContentReader;
+      const { bytes, mime } = reader.readContentResolvingMaster
+        ? await reader.readContentResolvingMaster(assetId)
+        : reader.readContent(assetId);
       const row = this.sources.assetSha(assetId);
       if (!row) return { ok: false, error: { error_code: 'ASSET_NOT_FOUND' } };
       const vt = this.sources.readyTranscript(assetId, ctx.roomId, row);

@@ -44,7 +44,7 @@ if (!cols.includes('m_sync_state') || !cols.includes('m_content_hash')) {
   console.error('media_assets 尚无 m_* 列（v64 未应用）——先部署含 v64 的 host release 再运行本脚本。');
   process.exit(1);
 }
-const MASTER_PURPOSES = ['chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view'];
+const MASTER_PURPOSES = ['chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view', 'chat_voice']; // 2026-11-08 宿主用户裁定：语音同图片进 M
 const rows = db.prepare(
   `SELECT id, content_sha256, mime_type, storage_key, byte_size, ingest_purpose FROM media_assets
    WHERE m_sync_state = 'pending' AND state = 'available' AND ingest_purpose IN (${MASTER_PURPOSES.map(() => '?').join(',')})

@@ -172,14 +172,14 @@ test('PM-3: 读回源——本地缓存删除后从 M 取回（sha 校验+缓存
   } finally { f.close(); }
 });
 
-test('PM-4: chat_voice 用途 out_of_scope——不进 M、不进待同步批次', async () => {
+test('PM-4: chat_voice 用途进 M 正本（宿主用户 2026-11-08 裁定：语音同图片）', async () => {
   const f = fixture(fakeM.url);
   try {
-    const prepareBefore = fakeM.counts.prepare;
+    // webm 在 M 白名单扩展后（mariposa 侧）可用；本 fake M 不校验 mime——断言同步语义
+    const before = fakeM.objects.size;
     const v = await f.media.saveBuffer({ bytes: f.webm(32), purpose: 'chat_voice', operationId: 'op-pm4', createdBy: 'qiaosheng', origin: 'upload' });
-    assert.equal(v.m_sync_state, 'out_of_scope');
-    assert.equal(fakeM.counts.prepare, prepareBefore, '语音字节不得触发 M 上传（A66 既有音频链路不动）');
-    assert.equal(f.media.pendingMSyncBatch(50).some((x) => x.id === v.id), false);
+    assert.equal(v.m_sync_state, 'synced', '新语音保存即落正 M');
+    assert.equal(fakeM.objects.size, before + 1, '语音字节进入 M 对象库');
   } finally { f.close(); }
 });
 
@@ -206,7 +206,7 @@ test('PM-5: store 客户端——finalize 被拒如实报错、对象不存在�
   } finally { fakeM.failMode = 'none'; f.close(); }
 });
 
-test('PM-7: ALB-01 缓存有界化——超预算 LRU 逐 synced 文件；语音永不逐；逐出后读取回源 M 重建', async () => {
+test('PM-7: ALB-01 缓存有界化——超预算 LRU 逐 synced 文件（含语音，新裁定）；逐出后读取回源 M 重建', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-mmedia-evict-'));
   const db = openDatabase(root);
   migrate(db, sha256Hex);
@@ -221,7 +221,7 @@ test('PM-7: ALB-01 缓存有界化——超预算 LRU 逐 synced 文件；语音
     const a3 = await media.saveBuffer({ bytes: png(60, 3), purpose: 'chat_image', operationId: 'ev-3', createdBy: 'q', origin: 'upload' });
     const v = await media.saveBuffer({ bytes: webm(30), purpose: 'chat_voice', operationId: 'ev-v', createdBy: 'q', origin: 'upload' });
     assert.equal(media.getAsset(a1.id).m_sync_state, 'synced');
-    assert.equal(v.m_sync_state, 'out_of_scope');
+    assert.equal(v.m_sync_state, 'synced', '语音亦落正 M（新裁定）');
     // 读 a2/a3 触 LRU（a1 最旧：NULL 触点=最旧）
     await media.readContentResolvingMaster(a2.id);
     await media.readContentResolvingMaster(a3.id);
@@ -230,7 +230,7 @@ test('PM-7: ALB-01 缓存有界化——超预算 LRU 逐 synced 文件；语音
     assert.ok(ev.cacheBytes <= 200, `逐出后缓存 ${(ev.cacheBytes)}B 应 ≤ 预算`);
     // 语音文件永不逐
     const voiceKey = (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(v.id) as { storage_key: string }).storage_key;
-    assert.equal(fs.existsSync(path.join(root, 'media', voiceKey)), true, '语音文件保留（无 M 正本）');
+    // 新裁定：语音有 M 正本，同样按 LRU 逐出（回源路径同图验证）
     // 被逐资产：行仍在 available/synced，读取从 M 回源重建缓存
     const evictedRow = db.prepare("SELECT id FROM media_assets WHERE m_sync_state='synced' AND id != ? AND id != ?").get(a2.id, a3.id) as { id: string } | undefined;
     if (evictedRow && evictedRow.id === a1.id) {
