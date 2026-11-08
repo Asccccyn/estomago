@@ -2,7 +2,7 @@ import { Check } from 'lucide-react'
 
 // 多选（人工选集）专用控件——她 2026-10-18：交互参照微信（左缘圆圈、整条可点、
 // 底部操作栏），视觉沿用现有前端设计语言（#c96442 主题 / #8a8780 辅灰 / 圆角 / 细边框）。
-// 多选只带文本：图片消息在多选列表以「[图片]」占位显示，装配层 textOnly 保证不带入新窗。
+// 图片随选集真实携带（2026-11-08 开窗包新裁定）；列表仍以「[图片]」标注行位。
 
 /** 左缘勾选圆圈（微信式：空心圈 → 选中实心主题色对勾） */
 export function SelectionCheck({ checked }: { checked: boolean }) {
@@ -18,17 +18,23 @@ export function SelectionMediaText({ kind, text }: { kind: string; text: string 
   const label = kind === 'voice' ? '[语音]' : '[图片]'
   return (
     <span className="block whitespace-pre-wrap break-words rounded-2xl bg-black/5 px-3 py-2 text-[14px] leading-[1.6] text-[#5e5d59]">
-      {label}{text ? ` ${text}` : ' · 只带文本，不随多选带入新窗'}
+      {label}{text ? ` ${text}` : ' · 图片随所选换窗真实携带'}
     </span>
   )
 }
 
 /** 底部操作栏（微信式：取消 / 不带历史 / 确认携带） */
-export function SelectionBar({ count, onConfirm, onEmpty, onCancel }: { count: number; onConfirm: () => void; onEmpty: () => void; onCancel: () => void }) {
+export function SelectionBar({ count, onConfirm, onEmpty, onCancel, onArchive }: { count: number; onConfirm: () => void; onEmpty: () => void; onCancel: () => void; onArchive?: (kind: 'quarrel' | 'sweet') => void }) {
   return (
     <div role="toolbar" aria-label="历史多选操作" className="flex items-center justify-between gap-3 px-5 pb-2 pt-1 text-[14px]">
       <button onClick={onCancel} className="rounded-xl px-3 py-1.5 text-[#8a8780] hover:bg-black/5">取消</button>
       <div className="flex items-center gap-2">
+        {onArchive && count > 0 && (
+          <>
+            <button onClick={() => onArchive('quarrel')} aria-label="存为争吵存档并停止当前输出" className="rounded-xl bg-[#f7e8e4] px-2.5 py-1.5 text-[12px] text-[#b3554d] hover:opacity-80">不吵了，存档</button>
+            <button onClick={() => onArchive('sweet')} aria-label="存为甜蜜存档" className="rounded-xl bg-[#f0e6d2] px-2.5 py-1.5 text-[12px] text-[#8a6d1f] hover:opacity-80">存甜蜜</button>
+          </>
+        )}
         <button onClick={onEmpty} className="rounded-xl px-3 py-1.5 text-[13px] text-[#8a8780] hover:bg-black/5">不带历史</button>
         <button
           onClick={onConfirm}

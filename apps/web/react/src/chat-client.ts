@@ -609,6 +609,32 @@ export class EstomagoClient {
     }catch(e){if(!(e instanceof LifecycleEnded)&&request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
   }
   beginSelection = () => {this.selectionKey??=operationId();this.patch({selectionMode:true})}
+
+  /** 相册重构 P4：把当前多选消息存为对话存档（争吵/甜蜜）。争吵存档服务端会先停止
+   *  正在输出的回复；成功后退出多选并提示一次（03 §3.1/§4：双状态如实分开显示）。 */
+  archiveSelection = async (kind: 'quarrel' | 'sweet') => {
+    const ids = [...this.snapshot.selected]
+    if (ids.length === 0) { this.notify('先选择要存档的消息'); return }
+    const label = kind === 'quarrel' ? '争吵' : '甜蜜'
+    if (!confirm(`把所选 ${ids.length} 条消息存入「${label}存档」？${kind === 'quarrel' ? '正在输出的回复会停止。' : ''}`)) return
+    try {
+      const res = await fetch('/api/v1/archives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `ui-archive:${this.selectionKey ?? operationId()}` },
+        body: JSON.stringify({ kind, message_ids: ids }),
+      })
+      const body = (await res.json().catch(() => ({}))) as { error?: { message?: string }; stopped?: boolean }
+      if (res.status !== 201 && res.status !== 200) {
+        this.notify(body.error?.message ?? (`存档未完成（${res.status}）${body.stopped ? '；输出已停止' : ''}`))
+        return
+      }
+      this.notify(`${label}存档已保存（${ids.length} 条）${body.stopped ? '；当前输出已停止' : ''}`)
+      this.patch({ selectionMode: false, selected: new Set() })
+      this.selectionKey = null
+    } catch {
+      this.notify('存档暂不可达，选择已保留——稍后重试')
+    }
+  }
   select = (id:string) => {const selected=new Set(this.snapshot.selected);selected.has(id)?selected.delete(id):selected.add(id);this.selectionKey??=operationId();this.patch({selected,selectionMode:true})}
   cancelSelection = () => {this.selectionKey=null;this.patch({selected:new Set(),selectionMode:false})}
   /** 手动换窗策略（她 2026-10-19 裁定）：选集确认即换窗——确认返回 rotated=false

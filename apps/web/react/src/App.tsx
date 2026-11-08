@@ -8,6 +8,7 @@ import { BackgroundControls } from './BackgroundControls'
 import { AccessControls } from './AccessControls'
 import { AccountSettings } from './AccountSettings'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
+import AlbumPanel from './AlbumPanel'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
 import { CallInvites } from './CallInvites'
@@ -397,6 +398,7 @@ export default function App() {
   const setEffort = (i: number) => { void client.setEffort(i) }
   const [menu, setMenu] = useState(false)
   const [plus, setPlus] = useState(false)
+  const [albumOpen, setAlbumOpen] = useState(false)
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
@@ -653,6 +655,7 @@ export default function App() {
       </main>
 
       <IntegrationControls client={client} state={state} />
+      {albumOpen && <AlbumPanel onClose={() => setAlbumOpen(false)} />}
       {/* Composer */}
       <footer className="relative shrink-0 px-3 pt-2">
         <BackToLatestDot visible={state.historyMode === 'date' || state.hasLater || state.newMessages || awayFromLatest}
@@ -660,7 +663,8 @@ export default function App() {
           disabled={editing !== null || state.selectionMode} onLatest={() => void returnToLatest()} />
         {state.selectionMode ? (
         <SelectionBar count={state.selected.size}
-          onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条文本历史换窗？`)) void client.confirmSelection() }}
+          onArchive={(kind) => void client.archiveSelection(kind)}
+          onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条历史（含图片）换窗？`)) void client.confirmSelection() }}
           onEmpty={() => { if (confirm('确认不携带历史换窗？')) void client.confirmSelection(true) }}
           onCancel={client.cancelSelection} />
         ) : (<>
@@ -677,7 +681,7 @@ export default function App() {
               <div className="fixed inset-0 z-30" onClick={() => setPlus(false)} />
               <div className="pop-up absolute bottom-[54px] left-0 z-40 flex gap-1 rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl">
                 {([[Image, '相册'], [Camera, '拍照'], [FileText, '文件'], [Archive, '存档读取']] as const).map(([I, l]) => (
-                  <button key={l} aria-label={l} onClick={() => (l === '相册' || l === '文件' ? fileRef.current?.click() : l === '拍照' ? camRef.current?.click() : (setPlus(false), client.beginSelection()))} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#3d3929] hover:bg-[#f3f1ea]">
+                  <button key={l} aria-label={l} onClick={() => (l === '相册' ? (setPlus(false), setAlbumOpen(true)) : l === '文件' ? fileRef.current?.click() : l === '拍照' ? camRef.current?.click() : (setPlus(false), client.beginSelection()))} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#3d3929] hover:bg-[#f3f1ea]">
                     <I size={20} />
                   </button>
                 ))}
