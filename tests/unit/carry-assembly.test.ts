@@ -93,6 +93,22 @@ test('CARRY-ASM-1: 选集 11 图→resolveWindowCarry 结构化阻断；10 图�
   }
 });
 
+test('ARC-STOP：stopActiveForConversation 停掉会话最新未终态回合（争吵存档停止链，持久终态）', async () => {
+  const ctx = compose(tempRoot('arc-stop-'));
+  {
+    const t0 = new Date().toISOString();
+    ctx.db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES ('turn_old','c1','user_input','completed',?)").run(t0);
+    ctx.db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES ('turn_stop_me','c1','user_input','pending',?)").run(t0);
+    const sup = ctx.supervisor as unknown as { stopActiveForConversation(c: string, e?: string | null): { stoppedTurnId: string } | null };
+    const stopped = sup.stopActiveForConversation('c1');
+    assert.ok(stopped, '应停掉 pending 回合');
+    assert.equal(stopped!.stoppedTurnId, 'turn_stop_me');
+    const after = ctx.db.prepare("SELECT state FROM turns WHERE id = 'turn_stop_me'").get() as { state: string };
+    assert.match(after.state, /failed|blocked/, '持久终态（不随进程丢失，重启不复活）');
+    assert.equal(sup.stopActiveForConversation('c1'), null, '无未终态回合后再停=null（幂等不误伤）');
+  }
+});
+
 test('CARRY-ASM-2: 装配兜底——绕过规划器塞 11 个图像块→buildEnvelope 抛错（不静默截断）', async () => {
   const ctx = compose(tempRoot('carry-asm-2-'));
   {

@@ -19,13 +19,13 @@ import { CONTENT_ALBUMS, CARRY_IMAGE_LIMIT, CARRY_MODES, type CarryMode, type Ca
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
-export const CONTENT_SCHEMA_VERSION = 3;
+export const CONTENT_SCHEMA_VERSION = 4;
 export const CONTENT_FINGERPRINT_VERSION = 2;
 
 const LIMIT_DEFAULT = 20;
 const LIMIT_MAX = 100;
 
-export const CONTENT_RESOURCE_TYPES = ['post', 'comment', 'album_entry', 'creation', 'future_note'] as const;
+export const CONTENT_RESOURCE_TYPES = ['post', 'comment', 'album_entry', 'creation', 'future_note', 'conversation_archive'] as const;
 export type ResourceType = (typeof CONTENT_RESOURCE_TYPES)[number];
 
 export class ContentError extends Error {
@@ -182,6 +182,27 @@ CREATE UNIQUE INDEX idx_album_entries_live ON album_entries(kind, asset_id) WHER
     db.exec(`ALTER TABLE album_entries ADD COLUMN carry_mode TEXT NOT NULL DEFAULT 'none';`);
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (3, ?)').run(new Date().toISOString());
   }
+  if (!have.includes(4)) {
+    // v4（相册重构 P4）：对话存档——争吵/甜蜜的业务正本。存档确定的是消息引用集合
+    // （message_id+revision+sequence，非连续集合按原会话序保序展示，不夹带未选消息）；
+    // 原文正本在 M（est 同步），content 不复制正文。kind 由明确操作确定，不猜。
+    db.exec(`
+CREATE TABLE conversation_archives(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('quarrel','sweet')),
+  created_by_actor TEXT NOT NULL CHECK (created_by_actor IN ('qiaosheng','jiaming')),
+  note TEXT,
+  messages_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT
+);
+CREATE INDEX idx_conversation_archives_conv ON conversation_archives(conversation_id, kind, created_at DESC);
+`);
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (4, ?)').run(new Date().toISOString());
+  }
   return db;
 }
 
@@ -191,7 +212,7 @@ function simpleHash(s: string): string {
   return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
 }
 const genId = (p: string): string => `${p}_${Date.now().toString(36)}${randomBytes(4).toString('hex')}`;
-const ID_PREFIX: Record<ResourceType, string> = { post: 'post_', comment: 'cmt_', album_entry: 'ae_', creation: 'crt_', future_note: 'fn_' };
+const ID_PREFIX: Record<ResourceType, string> = { post: 'post_', comment: 'cmt_', album_entry: 'ae_', creation: 'crt_', future_note: 'fn_', conversation_archive: 'ca_' };
 
 export type ContentServerOptions = { stateRoot: string; port: number; token?: string };
 
@@ -338,7 +359,7 @@ export class ContentServer {
    *  是否真实存在（含软删墓碑）。旧格式对象全部软删保留，硬删不存在；ID 无该类型
    *  前缀或无对应行=类型证据不成立。 */
   private legacyDomainRowExists(rt: ResourceType, id: string): boolean {
-    const table = { post: 'feed_posts', comment: 'feed_comments', album_entry: 'album_entries', creation: 'creations', future_note: 'future_notes' }[rt];
+    const table = { post: 'feed_posts', comment: 'feed_comments', album_entry: 'album_entries', creation: 'creations', future_note: 'future_notes', conversation_archive: 'conversation_archives' }[rt];
     return this.db.prepare(`SELECT 1 FROM ${table} WHERE id = ? LIMIT 1`).get(id) !== undefined;
   }
 
@@ -615,6 +636,45 @@ export class ContentServer {
         return { status: 200, body: { id: row.id, deleted: true, asset_ids: noteAssets, revision: Number(row.revision) + 1 } };
       } };
     }
+    // —— 对话存档（相册重构 P4）：kind 由明确操作确定（争吵/甜蜜），引用集合由调用方
+    //    （E 宿主）按已发布消息校验后提交；content 只保存业务记录，不进 E 库、不复制正文。
+    //    幂等由统一回执承担；同集合重复建档以 E 侧操作身份去重（content 不猜"相同"）。
+    if (method === 'POST' && pathname === '/api/v1/content/archives') {
+      const c = cmd('conversation_archive', 'create', null);
+      return { cmd: c, business: () => {
+        const kind = body.kind === 'quarrel' || body.kind === 'sweet' ? body.kind : null;
+        if (!kind) throw new ContentError(422, 'ARCHIVE_KIND_INVALID', 'kind 必须是 quarrel|sweet（由明确操作确定，不猜测分类）');
+        if (typeof body.conversation_id !== 'string' || !body.conversation_id) throw new ContentError(422, 'CONVERSATION_REQUIRED', 'conversation_id 必填');
+        const refs = Array.isArray(body.messages) ? body.messages : [];
+        if (refs.length === 0) throw new ContentError(422, 'ARCHIVE_EMPTY', '存档必须引用至少一条已发布消息');
+        const seen = new Set<string>();
+        const items: Array<{ message_id: string; revision: number; sequence: number }> = [];
+        for (const r of refs as Array<Record<string, unknown>>) {
+          if (!r || typeof r.message_id !== 'string' || !r.message_id || typeof r.revision !== 'number' || typeof r.sequence !== 'number') {
+            throw new ContentError(422, 'ARCHIVE_REF_INVALID', '引用必须含 message_id/revision/sequence（由宿主按真实修订生成）');
+          }
+          if (seen.has(r.message_id)) continue;
+          seen.add(r.message_id);
+          items.push({ message_id: r.message_id, revision: r.revision, sequence: r.sequence });
+        }
+        items.sort((a, b) => a.sequence - b.sequence); // 原会话序展示；非连续集合不夹带
+        const id = genId('ca');
+        const t = now();
+        this.db.prepare('INSERT INTO conversation_archives(id, conversation_id, kind, created_by_actor, note, messages_json, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)')
+          .run(id, String(body.conversation_id), kind, actor, typeof body.note === 'string' ? body.note.slice(0, 2000) : null, JSON.stringify(items), t, t);
+        return { status: 201, body: this.archiveDto(this.db.prepare('SELECT * FROM conversation_archives WHERE id = ?').get(id) as Record<string, unknown>) };
+      } };
+    }
+    if ((m = /^\/api\/v1\/content\/archives\/([^/]+)$/.exec(pathname)) !== null && method === 'DELETE') {
+      const id = m[1]!;
+      const c = cmd('conversation_archive', 'delete', id);
+      return { cmd: c, business: () => {
+        const row = this.archiveRow(id);
+        this.ifMatch(req, Number(row.revision));
+        this.db.prepare('UPDATE conversation_archives SET deleted_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?').run(now(), now(), id);
+        return { status: 200, body: { id, removed: true, kind: String(row.kind), revision: Number(row.revision) + 1 } };
+      } };
+    }
     // —— 携带集合消费（相册重构 P5）：E 在一次滚窗成功投递并确认后调用；把全部
     //    next_once 原子翻回 none。天然幂等（重放=再翻一次无变化），另受统一回执保护。
     if (method === 'POST' && pathname === '/api/v1/content/carry-set/consume-next-once') {
@@ -709,6 +769,11 @@ export class ContentServer {
         const assets = deleted ? [] : (this.db.prepare('SELECT asset_id FROM future_note_assets WHERE note_id = ? ORDER BY position').all(id) as Array<{ asset_id: string }>).map((a) => a.asset_id);
         return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: dedupeAssetIds(assets) };
       }
+      case 'conversation_archive': {
+        // 存档不持有资产引用（消息引用集合指向 E/M 原文，不是 media_assets）；deleted 语义同其他域
+        const rowA = this.archiveRow(id);
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(rowA.revision), deleted: rowA.deleted_at != null, asset_ids: [] };
+      }
     }
   }
 
@@ -785,6 +850,22 @@ export class ContentServer {
       const page = rows.slice(0, limit);
       return { status: 200, body: { items: page.map((r) => this.commentDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
+
+    // —— 对话存档（相册重构 P4，读） ——
+    if (route === 'GET /api/v1/content/archives') {
+      const limit = this.limitOf(url);
+      const kind = url.searchParams.get('kind');
+      const conversationId = url.searchParams.get('conversation_id');
+      let rows = this.db.prepare(`SELECT * FROM conversation_archives WHERE deleted_at IS NULL ${kind === 'quarrel' || kind === 'sweet' ? 'AND kind = ?' : ''} ${conversationId ? 'AND conversation_id = ?' : ''} ORDER BY created_at DESC, id DESC`).all(...(kind === 'quarrel' || kind === 'sweet' ? [kind] : []), ...(conversationId ? [conversationId] : [])) as Array<Record<string, unknown>>;
+      const cursor = this.decodeCursor(url.searchParams.get('cursor'));
+      const scope = JSON.stringify(['archives', kind ?? null, conversationId ?? null]);
+      if (cursor && (cursor.scope !== scope || !cursor.after || !cursor.id)) throw new ContentError(400, 'CURSOR_INVALID', '游标与查询不匹配，请重新读取首页');
+      if (cursor) rows = rows.filter(r => String(r.created_at) < cursor.after! || (String(r.created_at) === cursor.after && String(r.id) < cursor.id!));
+      const page = rows.slice(0, limit);
+      return { status: 200, body: { items: page.map((r) => this.archiveDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.created_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
+    }
+    m2 = /^GET \/api\/v1\/content\/archives\/([^/]+)$/.exec(route);
+    if (m2) return { status: 200, body: this.archiveDto(this.archiveRow(decodeURIComponent(m2[1]!))) };
 
     // —— 携带集合（相册重构 P3/P5，读：E 滚窗装配的唯一读取口径） ——
     if (route === 'GET /api/v1/content/carry-set') {
@@ -872,6 +953,16 @@ export class ContentServer {
     const deleted = r.deleted_at !== null && r.deleted_at !== undefined;
     return { id: r.id, post_id: r.post_id, author: r.author_actor, body: deleted ? null : r.body, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, deleted, deleted_at: r.deleted_at ?? null };
   }
+  private archiveRow(id: string): Record<string, unknown> {
+    const row = this.db.prepare('SELECT * FROM conversation_archives WHERE id = ? AND deleted_at IS NULL').get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new ContentError(404, 'ARCHIVE_NOT_FOUND', '存档不存在');
+    return row;
+  }
+
+  private archiveDto(r: Record<string, unknown>): Record<string, unknown> {
+    return { id: r.id, conversation_id: r.conversation_id, kind: r.kind, created_by: r.created_by_actor, note: r.note, messages: JSON.parse(String(r.messages_json)) as Array<{ message_id: string; revision: number; sequence: number }>, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, deleted: r.deleted_at != null };
+  }
+
   private albumRow(id: string): Record<string, unknown> {
     // 写路径只接纳有效行（墓碑=不存在）；快照读取走 referenceSnapshot 直查
     const row = this.db.prepare('SELECT * FROM album_entries WHERE id = ? AND deleted_at IS NULL').get(id) as Record<string, unknown> | undefined;
@@ -920,6 +1011,7 @@ function parseCarryMode(v: unknown): CarryMode | null {
 /** 旧回执响应形状→资源类型推断（兼容解析的“类型/目标一致”证据；判不出=null）。 */
 function inferResourceTypeFromResponse(body: Record<string, unknown>): ResourceType | null {
   if (typeof body.removed === 'boolean') return 'album_entry';
+  if (body.conversation_id !== undefined && body.messages !== undefined && body.kind !== undefined) return 'conversation_archive';
   if (body.bucket_ref !== undefined || body.icon_asset_id !== undefined) return 'creation';
   if (body.post_id !== undefined) return 'comment';
   if (body.presentation !== undefined) return 'post';

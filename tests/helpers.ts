@@ -18,6 +18,7 @@ import { registerWishstarCapabilities as registerWishstarCapabilitiesInstance } 
 import { registerContentCapabilities as registerContentCapabilitiesInstance } from '../apps/host/src/modules/content/module.ts';
 import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '../apps/host/src/modules/wake/module.ts';
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
+import { registerArchivesCapabilities as registerArchivesCapabilitiesInstance } from '../apps/host/src/modules/archives/module.ts';
 import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
 import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
@@ -214,6 +215,9 @@ export function assembleTestTools(deps: TestToolDeps): {
   registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, contentOps: (deps.contentOps ?? null) as never });
   registerWakeCapabilitiesInstance(registry, { db, taskService: (deps.taskService ?? null) as never });
   registerMediaCapabilitiesInstance(registry, { db, contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
+  // 相册重构 P4：存档工具（镜像 app-context 无条件注册；archives 服务未注入时定义在、
+  // 运行期按服务缺席如实报错——与生产装配一致）
+  registerArchivesCapabilitiesInstance(registry, { archives: (deps.archives ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });
   registerContextReviewCapabilitiesInstance(registry, { db, reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never });
   // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall

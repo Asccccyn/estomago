@@ -98,6 +98,7 @@ export type SupervisorDeps = {
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
   contentClient?: import('../integrations/content/client.ts').ContentClient | null; // 相册重构 P5：携带集合读取/消费（未装配=无携带注入，如实降级不阻塞聊天）
+  archives?: import('../modules/archives/service.ts').ArchiveService; // 相册重构 P4：存档一次性通知（装配期投递）
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
   bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
@@ -263,6 +264,18 @@ export class TurnSupervisor {
   registerVoiceTap(turnId: string, onTap: (text: string) => void): () => void {
     this.voiceTaps.set(turnId, onTap);
     return () => { this.voiceTaps.delete(turnId); };
+  }
+
+  /** 相册重构 P4（03 §3.1）：停止会话当前仍在跑/排队的回合（用户"不吵了"）。只停
+   *  目标会话的最新未终态回合（不挂通话、不动其他会话）；返回被停回合或 null。 */
+  stopActiveForConversation(conversationId: string, exceptTurnId: string | null = null): { stoppedTurnId: string } | null {
+    const row = this.d.db.prepare(
+      `SELECT id FROM turns WHERE conversation_id = ? AND state IN ('pending','running','route_owner_pending') AND id != ?
+       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(conversationId, exceptTurnId ?? '') as { id: string } | undefined;
+    if (!row) return null;
+    const r = this.stop(row.id);
+    return r.stopped ? { stoppedTurnId: row.id } : null;
   }
 
   stop(turnId: string): { stopped: boolean; generation: number | null } {
@@ -1294,6 +1307,13 @@ export class TurnSupervisor {
     // 合并后的实际图像块不得超过 CARRY_IMAGE_LIMIT；超限明确阻断，不截前 10、不静默丢图。
     if (carryImageCount > CARRY_IMAGE_LIMIT) {
       throw new Error(`CARRY_IMAGES_EXCEEDED:开窗携带图片 ${carryImageCount} 块超过上限 ${CARRY_IMAGE_LIMIT}——请减少选集中的图片或调低相册携带设置`);
+    }
+    // 相册重构 P4（03 §4/§5.1）：宿主一次性通知作为独立 system 数据块在尾部前追加——
+    // 只追加新事件（不插历史中间、不改写旧前缀）；投递即标记（SDK 会话前缀保留已发
+    // 内容，同会话重试不重复）。无通知=零块，前缀不受影响。
+    if (this.d.archives) {
+      const notices = this.d.archives.takePendingNotices(o.conversationId);
+      for (const n of notices) messages.push({ role: 'system', content: [{ type: 'text', text: n }] });
     }
     // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
     // 保温空尾）不带序号

@@ -1629,4 +1629,25 @@ CREATE TABLE IF NOT EXISTS window_carry_plans(
 `,
 });
 
+// v66（相册重构 P4）：宿主一次性通知——用户侧操作（如对话存档）的结果告知模型，
+// 在下一次正常请求的信封装配时投递一次（独立 system 数据块，authority=none），
+// 投递即标记 delivered_at（SDK 会话前缀保留已发内容，重试不重复）。工具发起的
+// 操作回执即通知，不排队。dedupe_key 幂等（同操作身份只投一次）。
+MIGRATIONS.push({
+  version: 66,
+  name: 'host-notices',
+  sql: `
+CREATE TABLE IF NOT EXISTS host_notices(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  dedupe_key TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT
+);
+CREATE INDEX idx_host_notices_pending ON host_notices(conversation_id, delivered_at);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

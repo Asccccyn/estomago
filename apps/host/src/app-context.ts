@@ -353,6 +353,10 @@ export class Host {
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
     (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
     tools.setMemoryRecovery(memoryService);
+    // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
+    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient });
+    const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
+    registerArchivesCapabilities(capabilityRegistry, { archives });
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,
@@ -378,6 +382,7 @@ export class Host {
       trajectory,
       selections,
       contentClient, // 相册重构 P5：携带集合读取/消费（未启用=null=如实无携带）
+      archives, // 相册重构 P4：存档一次性通知（信封装配期投递）
       settings,
       alerts,
       media,
@@ -441,6 +446,7 @@ export class Host {
       scheduler,
       mediaIndex: mediaIndex ?? undefined,
       mediaMasterStore: mediaStore ?? undefined,
+      archives,
       oido: oido ?? undefined,
       voiceObservations: voiceObsService,
       callReplyLinks,

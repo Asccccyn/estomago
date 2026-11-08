@@ -70,6 +70,7 @@ export type RequestDeps = {
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
   mediaMasterStore?: import('../integrations/mariposa/media-store.ts').MariposaMediaStore; // 相册重构 P2：M 唯一正本落正客户端
+  archives?: import('../modules/archives/service.ts').ArchiveService; // 相册重构 P4：对话存档（人类入口+通知投递）
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
   voiceObservations?: import('../modules/oido/observations.ts').VoiceObservationService; // GLMVoice：观察 sidecar 登记/查询
   callReplyLinks?: import('../modules/voice/call-links.ts').CallReplyLinkService; // A04：通话回复媒体关联 worker（完成/挂断 wake）
@@ -283,6 +284,12 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return await handleContentProxy(req, res, d, url);
     }
 
+    // —— 相册重构 P4：对话存档人类入口（模型走 conversation_archive 工具，同服务异入口）
+    if (route === 'POST /api/v1/archives' || route === 'GET /api/v1/archives'
+      || /^GET \/api\/v1\/archives\/[^/]+$/.test(route) || /^DELETE \/api\/v1\/archives\/[^/]+$/.test(route)) {
+      return await handleArchivesRoutes(req, res, d, route, url);
+    }
+
     // —— EXEC_V1 §04.11（WP4）+ WAKE_KEEPWARM_V1 §08：后台设置/任务/运行——P07.2 迁 server/routes/background.ts（逐字）。
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/background/* 子路径继续走链尾 404，不被前缀抢占。
     // RB05（复审 20261106）：free-activity 显式入口接进分派（handler 已在 background.ts，
@@ -378,6 +385,7 @@ function serveStatic(res: ServerResponse, pathname: string): void {
 // 本处转发 shim 保持既有 import 位置兼容调用点，P09 复核收口）。
 import { handleVoiceCallLifecycle } from './routes/voice-call.ts';
 import { handleContentProxy } from './routes/content.ts';
+import { handleArchivesRoutes } from './routes/archives.ts';
 import { handleBackgroundRoutes } from './routes/background.ts';
 import { handleConversationRoutes } from './routes/conversations.ts';
 import { handleOidoUiRoutes } from './routes/oido-ui.ts';
