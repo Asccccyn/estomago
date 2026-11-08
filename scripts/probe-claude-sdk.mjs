@@ -315,7 +315,7 @@ if (process.argv[2] !== '--worker') {
     if (!captures.some(c => c.mode === mode) || wake?.state !== 'completed') throw Error('HOST_WAKE_FAILED:' + JSON.stringify(wake));
     bgSettings.applyUpdate({ expectedRevision: bgSettings.revision(), patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 5 } });
     const hostWindow = windows.activeWindow('primary');
-    const beforeKeepwarm = hash(trajectory.forWindow(hostWindow.id).messages);
+    const beforeKeepwarmMsgs = trajectory.forWindow(hostWindow.id).messages;
     const parentSession = hostSessions.get(hostWindow.id)?.sessionId;
     const messageCount = db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id='primary'").get().n;
     mode = 'est-host-keepwarm'; nowMs = Date.parse(activity.get('primary').last_real_activity_at) + 50 * 60_000 + 1000;
@@ -323,11 +323,12 @@ if (process.argv[2] !== '--worker') {
     try { await scheduler.tick(); await supervisor.waitIdle(); } finally { scheduler.stop(); }
     const keepwarm = db.prepare("SELECT state,result_code,retention FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get();
     summary.push({ mode, ...keepwarm, requests: captures.filter(c => c.mode === mode).length,
-      ledgerUnchanged: beforeKeepwarm === hash(trajectory.forWindow(hostWindow.id).messages),
+      // C08 后 PURE_ACK 已发协议随轨迹提交：断言前缀保持 + 追加（host 事件与 assistant "1"）
+      ledgerPrefixKept: (() => { const after = trajectory.forWindow(hostWindow.id).messages; return after.length > beforeKeepwarmMsgs.length && after.slice(0, beforeKeepwarmMsgs.length).every((m, i) => hash(m) === hash(beforeKeepwarmMsgs[i])); })(),
       messagesUnchanged: messageCount === db.prepare("SELECT COUNT(*) n FROM messages WHERE conversation_id='primary'").get().n,
       parentSessionUnchanged: parentSession === hostSessions.get(hostWindow.id)?.sessionId });
     console.log(JSON.stringify(summary.at(-1)));
-    if (!captures.some(c => c.mode === mode) || keepwarm?.retention !== 'ephemeral_ack' || !summary.at(-1).ledgerUnchanged || !summary.at(-1).messagesUnchanged || !summary.at(-1).parentSessionUnchanged) throw Error('HOST_KEEPWARM_FAILED');
+    if (!captures.some(c => c.mode === mode) || keepwarm?.retention !== 'ephemeral_ack' || !summary.at(-1).ledgerPrefixKept || !summary.at(-1).messagesUnchanged || !summary.at(-1).parentSessionUnchanged) throw Error('HOST_KEEPWARM_FAILED');
     mode = 'est-review-batch';
     const reviewMessage = hostMessages.submitUserMessageWithTurn({ conversationId: 'primary', content: 'EST_SYNTHETIC_REVIEW', clientMessageId: mode });
     const review = reviews.create(hostWindow.id, 'primary', hostWindow.revision, [{ id: reviewMessage.message.id, revision: 1, seq: reviewMessage.message.sequence, origin: 'dialogue', visible: true }]);

@@ -135,3 +135,44 @@ test('缓存断点：无 B 时片段不计入 B 计数（fixedSystemCount）—�
   // 纯 A：A/user → 计数 1
   assert.equal(fixedSystemCount([sys('A身份'), { role: 'user', content: 'x' } as never]), 1);
 });
+
+test('取消时点(a)：B 拉取中途被取消——不取 episode、不冻结、不告警——审计 P1-5', async () => {
+  const warnings: unknown[] = [];
+  let episodeCalls = 0;
+  const ctrl = new AbortController();
+  const bootstrap = {
+    bootstrapGet: async () => { ctrl.abort(); return { ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }; },
+    bootstrapNext: async () => ({ ok: true, result: {} }),
+    bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }),
+  };
+  const episodes: EpisodeListPort = { list: async () => { episodeCalls++; return { ok: true, result: { episodes: [EP('不应出现')] } }; } };
+  const machine = new WindowBootstrapMachine({ bootstrap: bootstrap as never, events: { publish: (_k: string, ev: unknown) => warnings.push(ev) } as never, alerts: null, episodes } as never);
+  await machine.windowBootstrap('win-midB', ctrl.signal, 'conv-1');
+  assert.equal(episodeCalls, 0, 'B 中途取消：episode 不取');
+  assert.equal(machine.episodeFragmentFor('win-midB'), null, '不冻结');
+  assert.equal(warnings.length, 0, '不告警');
+});
+
+test('取消时点(b)：episode 等待远端时被取消——迟到结果不冻结、无告警——审计 P1-5', async () => {
+  const warnings: unknown[] = [];
+  const ctrl = new AbortController();
+  const episodes: EpisodeListPort = {
+    list: async (_a, signal) => {
+      await new Promise((r) => setTimeout(r, 30));
+      ctrl.abort(); // 远端悬挂期间父取消到达
+      if (signal?.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+      return { ok: true, result: { episodes: [EP('迟到不应冻结')] } };
+    },
+  };
+  const bootstrap = {
+    bootstrapGet: async () => ({ ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }),
+    bootstrapNext: async () => ({ ok: true, result: {} }),
+    bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }),
+  };
+  const machine = new WindowBootstrapMachine({ bootstrap: bootstrap as never, events: { publish: (_k: string, ev: unknown) => warnings.push(ev) } as never, alerts: null, episodes } as never);
+  const p = machine.windowBootstrap('win-pend', ctrl.signal, 'conv-1');
+  const result = await p;
+  assert.ok(result, 'B 正常返回');
+  assert.equal(machine.episodeFragmentFor('win-pend'), null, '迟到 episode 不冻结');
+  assert.equal(warnings.length, 0, '取消不算失败——无告警');
+});

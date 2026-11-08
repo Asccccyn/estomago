@@ -65,7 +65,7 @@ function dsTransport(seen: Array<Record<string, unknown>>, failOnce = false): Or
 const T0 = '2026-10-01T08:00:00+08:00';
 const T1 = '2026-10-01T09:00:00+08:00';
 
-function compose(root: string, transport: OrTransport, mariposa: MariposaTransport | null = null, configOver: Record<string, unknown> = {}) {
+function compose(root: string, transport: OrTransport, mariposa: MariposaTransport | null = null, configOver: Record<string, unknown> = {}, episodes: { list(args: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal): Promise<{ ok: boolean; result?: { episodes?: Array<{ label: string; state: string; revision: number; ref_count?: number }>; has_more?: boolean } }> } | null = null) {
   writeApprovedIdentity(root);
   const config = buildConfig({
     ...readyRuntimePatch(),
@@ -93,7 +93,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: reviews, checkpoint: checkpoint });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
-     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections });
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, episodes });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, trajectory };
 }
@@ -417,4 +417,48 @@ test('RRA-006（回访 run-035424）：分节正文续取被消费或如实披�
   } finally {
     c1.db.close();
   }
+});
+
+test('T9：选集确认后的首发轨迹携带 episode 片段且唯一（Codex 审计 P1-4 验收）', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const root = tempRoot('wp7-t9-');
+  const mariposa = async (capability: string, payload: Record<string, unknown>) => {
+    if (capability === 'episode.list') {
+      return { ok: true, result: { episodes: [{ label: '签证办理中', state: 'OPEN', revision: 2, ref_count: 3 }], has_more: false } };
+    }
+    if (capability === 'bootstrap.get') {
+      return { ok: true, result: { snapshot_id: 'snap-t9', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I 当前的话' }, plans: null } };
+    }
+    if (capability === 'bootstrap.validate') return { ok: true, result: { unchanged: true } };
+    return { ok: true, result: {} };
+  };
+  let episodeCalls = 0;
+  const episodes = { list: async (a: { scopeId: string }) => { episodeCalls++; assert.equal(a.scopeId, 'c1'); return await mariposa('episode.list', a); } };
+  const ctx = compose(root, dsTransport(seen), mariposa as never, { windows: { soft_limit_tokens: 24_000 } }, episodes as never);
+  await say(ctx, '首窗第一句', 't9m1', T0);
+  const win1 = ctx.windows.activeWindow('c1')!;
+  // 容量触发换窗 → 确认（带一条选集 item）→ 新窗首发
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520)}`;
+  const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 't9m2', occurredAt: T1 });
+  ctx.supervisor.enqueue(s2.turnId);
+  await ctx.supervisor.waitIdle();
+  const awaiting = ctx.selections.awaitingFor('c1')!;
+  // 选一条真实历史消息进新窗
+  const hist = ctx.db.prepare('SELECT id, current_revision AS revision FROM messages WHERE conversation_id=? ORDER BY sequence LIMIT 1').get('c1') as { id: string; revision: number };
+  const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: [{ message_id: hist.id, revision: hist.revision }], explicitEmpty: false, idempotencyKey: 'wp7-t9' });
+  assert.equal(confirm.ok, true, JSON.stringify(confirm));
+  await ctx.supervisor.waitIdle();
+  const win2 = ctx.windows.activeWindow('c1')!;
+  assert.notEqual(win2.id, win1.id, '已换窗');
+  // 核心：新窗首发轨迹含片段恰好一次（首发轨迹=确认后建窗写入的初始轨迹）
+  const traj = ctx.trajectory.forWindow(win2.id)!;
+  const fragCount = traj.messages.filter((m: { content?: Array<{ text?: string }> }) =>
+    Array.isArray(m.content) && m.content.some((b: { text?: string }) => (b.text ?? '').startsWith('[运行中事项'))).length;
+  assert.equal(fragCount, 1, `选集首发轨迹应恰含一个片段块（实际 ${fragCount}）`);
+  assert.ok(episodeCalls >= 1, 'episode.list 经真实端口被调用');
+  // 发出的请求载荷同样含片段且唯一
+  const rotateIdx = seen.findIndex((p) => payloadTexts(p).includes('触发换窗的长输入'));
+  assert.ok(rotateIdx >= 0, '新窗恢复轮已发出');
+  const fragInPayload = payloadTexts(seen[rotateIdx]!).match(new RegExp('\\[运行中事项', 'g'))?.length ?? 0;
+  assert.equal(fragInPayload, 1, '首发请求载荷恰含一个片段块');
 });
