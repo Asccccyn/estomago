@@ -1,9 +1,9 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "9436d0c67f0e59f1117e0a5e18e51bf61ac34a51",
+  "source_commit": "90f7b18171c1a0b3d48d7a7ed4b0238d8f2d8898",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "a0d3edc6b169b374b5b1e30c57ac9632871f6971356e6f39c9dcb03e63dc7fe7",
+    "backend/mariposa/capabilities/registry.py": "8b45d123f56df9e0ad2222a3d710ecdc95180477644fcf194ea26b0ec999cf1c",
     "backend/mariposa/capabilities/input_schemas.py": "4bf52d5c3116e51efce2cc0667255bc84bf5f9f2d5fc7ab24539d031e57ff45b",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "7df8ba21c80704bfac203a2d97dc958cdccb655f3d053d1073d23da4360395c5",
@@ -12,7 +12,7 @@
     "backend/mariposa/retrieval/query_plan.py": "aeeb426055278665f23dcf74a02f38f8ba7f3d86ec1038c9045d8e7fd8d0d8e8",
     "backend/mariposa/recall/round2.py": "629757144b76e510e4481be40194fefcb3e769ade4c05df846b0fb5d0ade507e",
     "backend/mariposa/config.py": "ececab4aba1c1400b71a416c987071abca561761eb355c9d6f036cf96c5b8e80",
-    "scripts/export_contracts.py": "6784afdd659d7eed9447625547b3170c85b97c08f97dc55a11cf63d1b7d16099"
+    "scripts/export_contracts.py": "6aa85e213716386c1a81220b8967a84de59f17e7bf54e544f8d3072db825b1c0"
   },
   "capabilities": [
     {
