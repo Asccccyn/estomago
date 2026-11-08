@@ -118,8 +118,15 @@ test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用
   // 装配投递：取一次出现，取第二次为空（SDK 会话前缀已含，不重复）
   const first = svc.takePendingNotices('c1');
   assert.equal(first.length, 1);
-  assert.match(first[0]!, /争吵存档/);
+  assert.match(first[0]!.text, /争吵存档/);
   assert.equal(svc.takePendingNotices('c1').length, 0, '投递一次后不再出现');
+  // ALB-11：deferConfirm 模式取出不标记，未确认前仍可再取；确认后不再出现
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: publishUser('c1', 'arc3-t').id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-2' });
+  const deferred = svc.takePendingNotices('c1', true);
+  assert.equal(deferred.length, 1);
+  assert.equal(svc.takePendingNotices('c1', true).length, 1, '未确认（无投递证据）不标记——宁可重取不静默丢');
+  svc.confirmNoticesDelivered(deferred.map((n) => n.id));
+  assert.equal(svc.takePendingNotices('c1').length, 0, '确认投递后不再出现');
 });
 
 test('ARC-4: content v4 路由——kind 校验/空集合拒绝/软删/列表过滤', async () => {

@@ -525,7 +525,7 @@ export default function App() {
         </div>
         <div className="relative flex justify-center">
           {state.selectionMode ? (
-            <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 只带文本，图片不带入新窗</span>
+            <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 所选图片随新窗真实携带（计入每次滚窗 10 张上限）</span>
           ) : (
           <button onClick={() => setMenu(!menu)} className="relative rounded-lg px-2 py-1 text-[13px] text-[#5e5d59] hover:bg-black/5">
             char · {MODELS[model]} · {EFFORTS[effort] ?? '默认'}

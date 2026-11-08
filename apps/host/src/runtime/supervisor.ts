@@ -269,9 +269,12 @@ export class TurnSupervisor {
   /** 相册重构 P4（03 §3.1）：停止会话当前仍在跑/排队的回合（用户"不吵了"）。只停
    *  目标会话的最新未终态回合（不挂通话、不动其他会话）；返回被停回合或 null。 */
   stopActiveForConversation(conversationId: string, exceptTurnId: string | null = null): { stoppedTurnId: string } | null {
+    // ALB-12（审计 2026-11-08）：目标是"正在继续的那次输出"——优先 running；仅当没有
+    // running 时才处理最新排队输入（旧实现按 created_at 倒序，running+排队并存时停错
+    // 排队者，正在输出的回合继续跑完）。
     const row = this.d.db.prepare(
       `SELECT id FROM turns WHERE conversation_id = ? AND state IN ('pending','running','route_owner_pending') AND id != ?
-       ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+       ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'route_owner_pending' THEN 1 ELSE 2 END, created_at DESC, rowid DESC LIMIT 1`,
     ).get(conversationId, exceptTurnId ?? '') as { id: string } | undefined;
     if (!row) return null;
     const r = this.stop(row.id);
@@ -1313,7 +1316,7 @@ export class TurnSupervisor {
     // 内容，同会话重试不重复）。无通知=零块，前缀不受影响。
     if (this.d.archives) {
       const notices = this.d.archives.takePendingNotices(o.conversationId);
-      for (const n of notices) messages.push({ role: 'system', content: [{ type: 'text', text: n }] });
+      for (const n of notices) messages.push({ role: 'system', content: [{ type: 'text', text: n.text }] });
     }
     // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
     // 保温空尾）不带序号
@@ -1642,21 +1645,33 @@ export class TurnSupervisor {
         this.d.logger.warn('carry_set_unreachable', { conversationId });
       }
     }
+    // ALB-07：选集图带 M 对象身份（content_sha256）参与合并去重（同字节不同 asset 仍一张）
     const selectionImages = selectedMessages.flatMap((m) =>
-      (m.attachments ?? []).filter((a) => a.presentation === 'image' || a.presentation === 'sticker').map((a) => ({ asset_id: a.asset_id, message_id: m.message_id })));
+      (m.attachments ?? []).filter((a) => a.presentation === 'image' || a.presentation === 'sticker').map((a) => {
+        const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(a.asset_id) as { content_sha256: string } | undefined;
+        return { asset_id: a.asset_id, message_id: m.message_id, content_sha256: row?.content_sha256 ?? `est:${a.asset_id}` };
+      }));
     const plan = planCarryImages({ selectionImages, carryItems });
     if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
+    // ALB-08（审计 2026-11-08）：计划立即持久化（先落 pending 键行；窗口落地时迁到真实
+    // window_id）——旧实现只存进程内 Map，滚窗成功后、首请求前重启即丢，next_once 复活。
+    this.d.db.prepare('INSERT OR REPLACE INTO window_carry_plans(window_id, plan_json, has_next_once, created_at) VALUES (?,?,?,?)')
+      .run(stashKey, JSON.stringify(plan), plan.ok && plan.hasNextOnce ? 1 : 0, new Date().toISOString());
     this.pendingCarryPlans.set(stashKey, { plan, conversationId, createdAt: new Date().toISOString() });
-    return { fragment: buildCarryFragment(plan.ok ? plan.images : []), plan };
+    return { fragment: buildCarryFragment(plan.ok ? plan.fragmentImages : [], plan.ok ? plan.images : []), plan };
   }
 
-  /** 窗口落地后把暂存计划固化到 window_carry_plans（幂等；无暂存=无携带，不建行）。 */
+  /** 窗口落地后把暂存计划固化到真实 window_id（幂等；无暂存=无携带，不建行）。
+   *  ALB-08：计划在准备期已落 pending 键行——这里把该行迁到真实 window_id（行迁移，
+   *  不依赖进程内 Map 存活；Map 仅作同进程幂等缓存）。 */
   private persistCarryPlanForWindow(windowId: string): void {
     for (const [key, stash] of this.pendingCarryPlans) {
       if (!key.startsWith('pending:')) continue;
       if (stash.conversationId !== this.d.db.prepare('SELECT conversation_id FROM windows WHERE id = ?').get(windowId)?.conversation_id) continue;
       this.d.db.prepare('INSERT OR IGNORE INTO window_carry_plans(window_id, plan_json, has_next_once, created_at) VALUES (?,?,?,?)')
         .run(windowId, JSON.stringify(stash.plan), stash.plan.ok && stash.plan.hasNextOnce ? 1 : 0, stash.createdAt);
+      // pending 键行使命结束：删除（非 UPDATE 迁移——新行已 INSERT，UPDATE 会撞 PK 唯一约束）
+      this.d.db.prepare('DELETE FROM window_carry_plans WHERE window_id = ?').run(key);
       this.pendingCarryPlans.delete(key);
     }
   }
@@ -2271,7 +2286,12 @@ export class TurnSupervisor {
     // user-channel data; DS retains its system data message. Only the tail grows.
     const hostMemory: OrMessage[] = surfacingAugment
       ? [surfaceTransportMessage(this.drv()?.kind ?? '', surfacingAugment.text)] : [];
-    const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory,
+    // ALB-11（审计 2026-11-08，03 §4.2）：宿主一次性通知在下一次正常请求尾部追加为
+    // 独立 system 数据块（与浮现注入同一追加位；不进冻结轨迹前缀、不改历史）。取出
+    // 不立即标记——按本轮实际投递证据在终态收口（confirmNoticesDelivered）。
+    const pendingNoticeBatch = this.d.archives ? this.d.archives.takePendingNotices(turn.conversation_id, true) : [];
+    const hostNoticeMessages: OrMessage[] = pendingNoticeBatch.map((n) => ({ role: 'system', content: [{ type: 'text', text: n.text }] }) as OrMessage);
+    const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory, ...hostNoticeMessages,
       { role: 'user', content: tailProjection.blocks } as OrMessage];
     // R2：四类驱动均为信封驱动；RUNTIME_NOT_READY/IDENTITY 门已在此前返回，dv 必非空
     const orEnvelope: OrRequestEnvelope = (() => {
@@ -2748,6 +2768,14 @@ export class TurnSupervisor {
         d.db.prepare("UPDATE turns SET state = 'interrupted', completed_at = ? WHERE id = ?").run(now, turnId);
       });
       d.events.publish('turn.interrupted', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, ...(fallbackSwitched ? { reason: 'MODEL_FALLBACK_SWITCHED' } : {}) } });
+      // ALB-08（审计 2026-11-08，R23"投递后停止不恢复一次设置"）：被停止/中断的回合若
+      // 本窗的 chat 请求已实际发出（sent_at 非空），携带图与留言已被模型收到——
+      // next_once 照常消费，不因停止复活为待带入。
+      const delivered = d.db.prepare("SELECT 1 FROM provider_requests WHERE window_id = ? AND purpose = 'chat' AND sent_at IS NOT NULL AND outcome IS NOT 'SUPERSEDED_BY_RETRY' LIMIT 1").get(window.id);
+      if (delivered) {
+        void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
+        this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id)); // ALB-11：已投递即收口
+      }
       return;
     }
     if (result.outcome === 'error' || result.outcome === 'no_final_result') {
@@ -2755,6 +2783,9 @@ export class TurnSupervisor {
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'failed', generation });
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
       const reasonCode = result.outcome === 'no_final_result' ? 'NO_FINAL_RESULT' : (result.errorCode ?? 'RUNNER_ERROR');
+      // ALB-11：错误收尾但请求可能已实际发出（部分投递）——有证据即收口，无证据保持待发
+      const errDelivered = d.db.prepare('SELECT 1 FROM provider_requests WHERE turn_id = ? AND sent_at IS NOT NULL LIMIT 1').get(turnId);
+      if (errDelivered) this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
       const blockedReason = `${reasonCode}:${result.errorClassified ?? 'unknown'}`;
       tx(d.db, () => {
         d.db.prepare('UPDATE attempts SET state = ?, blocked_reason = ?, completed_at = ? WHERE id = ?').run('failed', blockedReason, now, attempt.id);
@@ -2776,6 +2807,8 @@ export class TurnSupervisor {
     // 相册重构 P5 §7.4：本窗初始资料（含携带图）已随本轮请求成功投递——消费 next_once
     //（before=建窗时刻，不吞投递后新设项；失败保留待补，不影响回合收尾）。
     void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
+    // ALB-11：本轮请求已成功——尾部通知按投递证据收口
+    this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
     d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
     // §2.2/§7：成功回合才推进协议轨迹（append-only）+ 实际已见 manifest（F06：本轮输入与
     // 已发布助手消息入清单——下一轮范围/书签从这份证据出发）；新已发送边界=本轮末 text 块

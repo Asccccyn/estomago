@@ -10,68 +10,94 @@
 import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
 import type { AssetImageRefBlock, ProjectedBlock } from '../media/model-input.ts';
 
-export type SelectionImage = { asset_id: string; message_id: string };
+export type SelectionImage = { asset_id: string; content_sha256: string; message_id: string };
 export type CarryModeLite = 'always' | 'next_once';
 
 export type PlannedCarryImage = {
   asset_id: string;
-  /** selection=选集历史自带；carry_always/carry_next_once=相册携带设置（供来源披露与减选提示） */
+  /** selection=选集历史自带（图块随历史消息走，不进片段）；carry_*=相册携带（片段注入） */
   source: 'selection' | `carry_${CarryModeLite}`;
-  /** 相册携带关系的留言（原样保留；selection 图片的留言在其原消息文本里，不重复注入） */
+  /** 相册携带关系的留言（原样保留；选集图若同时有相册留言，也在片段文本中保留其原话） */
   caption: string | null;
   meaning: string | null;
+  content_sha256: string;
 };
 
 export type CarryPlan =
-  | { ok: true; images: PlannedCarryImage[]; hasNextOnce: boolean }
+  | { ok: true; images: PlannedCarryImage[]; hasNextOnce: boolean; fragmentImages: PlannedCarryImage[] }
   | { ok: false; code: 'CARRY_IMAGES_EXCEEDED'; count: number; limit: number; detail: string };
 
-/** 合并去重：选集图优先（用户本次明确选择），其余名额给携带设置（always 先于 next_once）。 */
+/** 合并去重（ALB-07 整改，审计 2026-11-08）：
+ *  - 去重键=M 对象身份 content_sha256（同字节不同 E asset_id 仍是同一张图）；
+ *  - 选集历史图优先：占额度但不进携带片段——它的图块由选集历史消息投影携带，
+ *    片段里再放一份=同图两个图像块（旧缺陷：6 张被算成 12 块）；
+ *  - 与选集图同 hash 的相册携带条目：图不重复注入，但其 caption/meaning 原样
+ *    保留进片段文本（03 §7.2 留言不得丢弃）；
+ *  - 其余名额给相册携带（always 先于 next_once）。 */
 export function planCarryImages(o: {
   selectionImages: SelectionImage[];
-  carryItems: CarrySetItem[];
+  carryItems: Array<CarrySetItem & { content_sha256?: string | null }>;
+  resolveHash?: (assetId: string) => string | null;
   limit?: number;
 }): CarryPlan {
   const limit = o.limit ?? CARRY_IMAGE_LIMIT;
   const images: PlannedCarryImage[] = [];
-  const seen = new Set<string>();
-  for (const s of o.selectionImages) {
-    if (seen.has(s.asset_id)) continue;
-    seen.add(s.asset_id);
-    images.push({ asset_id: s.asset_id, source: 'selection', caption: null, meaning: null });
+  const byHash = new Map<string, PlannedCarryImage>();
+  for (const sItem of o.selectionImages) {
+    const hash = sItem.content_sha256 || (o.resolveHash ? o.resolveHash(sItem.asset_id) : null) || `est:${sItem.asset_id}`;
+    if (byHash.has(hash)) continue;
+    const entry: PlannedCarryImage = { asset_id: sItem.asset_id, source: 'selection', caption: null, meaning: null, content_sha256: hash };
+    byHash.set(hash, entry);
+    images.push(entry);
   }
   const ordered = [...o.carryItems].sort((a, b) => (a.mode === b.mode ? 0 : a.mode === 'always' ? -1 : 1));
-  let hasNextOnce = false;
+  let hasNextOnce = o.carryItems.some((c) => c.mode === 'next_once');
   for (const c of ordered) {
-    if (seen.has(c.asset_id)) continue;
-    seen.add(c.asset_id);
-    images.push({ asset_id: c.asset_id, source: `carry_${c.mode}`, caption: c.caption, meaning: c.meaning });
-    if (c.mode === 'next_once') hasNextOnce = true;
+    const hash = c.content_sha256 || (o.resolveHash ? o.resolveHash(c.asset_id) : null) || `est:${c.asset_id}`;
+    const existing = byHash.get(hash);
+    if (existing) {
+      // 同图：若相册条目带留言而现有规划项还没有（选集来源），保留留言（图仍只一份）
+      if (existing.source === 'selection' && (c.caption || c.meaning) && !existing.caption && !existing.meaning) {
+        existing.caption = c.caption;
+        existing.meaning = c.meaning;
+      }
+      continue;
+    }
+    const entry: PlannedCarryImage = { asset_id: c.asset_id, source: `carry_${c.mode}`, caption: c.caption, meaning: c.meaning, content_sha256: hash };
+    byHash.set(hash, entry);
+    images.push(entry);
   }
-  if (o.carryItems.some((c) => c.mode === 'next_once')) hasNextOnce = true;
   if (images.length > limit) {
     const selectionCount = images.filter((i) => i.source === 'selection').length;
     const carryCount = images.length - selectionCount;
     return {
       ok: false, code: 'CARRY_IMAGES_EXCEEDED', count: images.length, limit,
-      detail: `合并后 ${images.length} 张（选集 ${selectionCount} + 相册携带 ${carryCount}，去重后）超过每次滚窗上限 ${limit}；请减选历史消息图片或调低相册携带设置`,
+      detail: `合并后 ${images.length} 张（选集 ${selectionCount} + 相册携带 ${carryCount}，按 M 对象去重）超过每次滚窗上限 ${limit}；请减选历史消息图片或调低相册携带设置`,
     };
   }
-  return { ok: true, images, hasNextOnce };
+  const fragmentImages = images.filter((i) => i.source !== 'selection');
+  return { ok: true, images, hasNextOnce, fragmentImages };
 }
 
-/** 开窗携带块：一段 system 数据块（说明 + 留言原样文本）+ 实际 asset_image 引用块。
- *  物化由发送边界 materializeEnvelope 统一完成（内部持久形态不含 Base64，§6.2）。 */
-export function buildCarryFragment(images: PlannedCarryImage[]): { blocks: ProjectedBlock[] } | null {
-  if (images.length === 0) return null;
-  const lines: string[] = [`[开窗携带照片 ${images.length} 张]（来自我们的相册携带设置与所选历史；留言为收藏时的原话）`];
-  images.forEach((img, i) => {
-    if (img.source === 'selection') return; // 选集图的正文/留言已在历史消息里，不重复
+/** 开窗携带块：说明+留言原样文本（选集同图留言单列保留）+ 仅相册携带图的 asset_image 块
+ *  （选集历史图的图块随消息投影走，不在此重复——ALB-07）。 */
+export function buildCarryFragment(fragmentImages: PlannedCarryImage[], allImages: PlannedCarryImage[] = fragmentImages): { blocks: ProjectedBlock[] } | null {
+  const carryOnly = fragmentImages.filter((i) => i.source !== 'selection');
+  const selectionNotes = allImages.filter((i) => i.source === 'selection' && (i.caption || i.meaning));
+  if (carryOnly.length === 0 && selectionNotes.length === 0) return null;
+  const lines: string[] = [];
+  if (carryOnly.length > 0) lines.push(`[开窗携带照片 ${carryOnly.length} 张]（来自相册携带设置；留言为收藏时的原话）`);
+  carryOnly.forEach((img, i) => {
     const parts = [img.caption, img.meaning].filter((t): t is string => typeof t === 'string' && t.length > 0);
     lines.push(`${i + 1}. ${parts.length > 0 ? parts.join(' / ') : '（无留言）'}`);
   });
+  // 选集历史图（图块在消息里）的相册留言：原样保留、不合并改写（ALB-07 留言不丢）
+  for (const n of selectionNotes) {
+    const parts = [n.caption, n.meaning].filter((t): t is string => typeof t === 'string' && t.length > 0);
+    lines.push(`[所选历史图片的相册留言] ${parts.join(' / ')}`);
+  }
   const textBlock = { type: 'text' as const, text: lines.join('\n') };
-  const imageBlocks: AssetImageRefBlock[] = images.map((img) => ({ type: 'asset_image' as const, asset_id: img.asset_id, projection_version: 'v1' as const }));
+  const imageBlocks: AssetImageRefBlock[] = carryOnly.map((img) => ({ type: 'asset_image' as const, asset_id: img.asset_id, projection_version: 'v1' as const }));
   return { blocks: [textBlock, ...imageBlocks] };
 }
 

@@ -79,16 +79,19 @@ test('CARRY-ASM-1: 选集 11 图→resolveWindowCarry 结构化阻断；10 图�
     let blocked: string | null = null;
     try { await sup.resolveWindowCarry('c1', 'pending:c1', withAttachments.slice(0, 11)); } catch (e) { blocked = String((e as Error).message); }
     assert.ok(blocked?.includes('CARRY_IMAGES_EXCEEDED') === true, `11 图应阻断（实际 ${blocked}）`);
-    // 10 张：通过；片段含 10 个 asset_image 块与说明文本
+    // 10 张纯选集图：额度占用 10（≤上限通过），但片段=null——图块由选集历史消息投影
+    // 携带（ALB-07：片段不再重复注入，旧缺陷 6 张被算 12 块）
     const r = await sup.resolveWindowCarry('c1', 'pending:c1', withAttachments.slice(0, 10));
-    assert.ok(r.fragment, '10 图应有携带片段');
-    const blocks = r.fragment!.blocks;
-    assert.equal(blocks.filter((b) => b.type === 'asset_image').length, 10);
-    assert.match((blocks[0] as { text: string }).text, /开窗携带照片 10 张/);
-    // 注入 envelope：独立 system 数据块（B 段之后），含 10 图
-    const built = sup.buildEnvelope({ conversationId: 'c1', materials: null, dialogue: [], tailUserText: ' ', selectedMessages: [], carryFragment: r.fragment });
+    assert.equal(r.fragment, null, '纯选集图无相册携带——不产片段（历史投影即图块载体）');
+    const planRow = ctx.db.prepare('SELECT plan_json FROM window_carry_plans WHERE window_id = ?').get('pending:c1') as { plan_json: string };
+    const plan = JSON.parse(planRow.plan_json) as { ok: boolean; images: unknown[] };
+    assert.equal(plan.ok, true);
+    assert.equal(plan.images.length, 10, '合并额度占用 10 张');
+    // 相册携带路径：给一张不在选集的携带图 → 片段含 1 图块（独立 system 数据块）
+    const frag = { blocks: [{ type: 'text', text: '[开窗携带照片 1 张]（来自相册携带设置）\n1. 留言' }, { type: 'asset_image', asset_id: 'asset_album_x', projection_version: 'v1' }] };
+    const built = sup.buildEnvelope({ conversationId: 'c1', materials: null, dialogue: [], tailUserText: ' ', selectedMessages: [], carryFragment: frag });
     const sysImgMsg = built.envelope.messages.filter((m) => Array.isArray(m.content) && (m.content as Array<{ type: string }>).some((b) => b.type === 'asset_image'));
-    assert.equal(sysImgMsg.length, 1, '携带图集中在独立 system 数据块');
+    assert.equal(sysImgMsg.length, 1, '相册携带图集中在独立 system 数据块');
     assert.equal(sysImgMsg[0]!.role, 'system');
   }
 });

@@ -118,17 +118,29 @@ export class ArchiveService {
     }
   }
 
-  /** 信封装配时取走待投递通知（读+标记同调用；SDK 会话前缀保留已发内容→重试不重复）。 */
-  takePendingNotices(conversationId: string): string[] {
+  /** 信封装配时取待投递通知。ALB-11（审计 2026-11-08）：默认（窗口初始化信封）取出即
+   *  标记——接受"首请求失败即丢失"的窄窗口（换窗重试少）；正常轮次传 deferConfirm=true，
+   *  由调用方在**实际投递证据**（该轮 provider_requests sent_at 非空）出现后经
+   *  confirmNoticesDelivered 收口——取出即标记不能证明已投递。
+   *  崩溃窗口内未确认→下次重取，宁可重复不静默丢。 */
+  takePendingNotices(conversationId: string, deferConfirm = false): Array<{ id: string; text: string }> {
     const rows = this.deps.db.prepare('SELECT id, payload_json FROM host_notices WHERE conversation_id = ? AND delivered_at IS NULL ORDER BY created_at, rowid').all(conversationId) as Array<{ id: string; payload_json: string }>;
     if (rows.length === 0) return [];
     const now = new Date().toISOString();
-    const out: string[] = [];
+    const out: Array<{ id: string; text: string }> = [];
     for (const r of rows) {
-      this.deps.db.prepare('UPDATE host_notices SET delivered_at = ? WHERE id = ?').run(now, r.id);
+      if (!deferConfirm) this.deps.db.prepare('UPDATE host_notices SET delivered_at = ? WHERE id = ?').run(now, r.id);
       const p = JSON.parse(r.payload_json) as { text?: string };
-      out.push(typeof p.text === 'string' ? p.text : '[系统通知]');
+      out.push({ id: r.id, text: typeof p.text === 'string' ? p.text : '[系统通知]' });
     }
     return out;
+  }
+
+  /** 投递证据出现后收口通知（幂等）。 */
+  confirmNoticesDelivered(ids: string[]): void {
+    if (ids.length === 0) return;
+    const now = new Date().toISOString();
+    const placeholders = ids.map(() => '?').join(',');
+    this.deps.db.prepare(`UPDATE host_notices SET delivered_at = ? WHERE id IN (${placeholders}) AND delivered_at IS NULL`).run(now, ...ids);
   }
 }
