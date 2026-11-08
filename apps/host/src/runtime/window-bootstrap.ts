@@ -12,7 +12,8 @@ import type { SupervisorDeps } from './supervisor.ts';
 export const BOOTSTRAP_DEADLINE_MS = 8000;
 
 export type EpisodeListPort = {
-  list(args: { scopeId: string; states?: string[]; limit?: number }): Promise<{ ok: boolean; data?: { episodes?: FragmentEpisode[]; has_more?: boolean }; error?: unknown }>;
+  /** 返回形状=MariposaCallResult（{ok:true,result}）；result 内含 episodes/has_more */
+  list(args: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal): Promise<{ ok: boolean; result?: { episodes?: FragmentEpisode[]; has_more?: boolean }; code?: string }>;
 };
 
 export type BootstrapMachineDeps = Pick<SupervisorDeps, 'bootstrap' | 'events' | 'alerts' | 'config' | 'wishstar'> & {
@@ -60,22 +61,26 @@ export class WindowBootstrapMachine {
 
   async windowBootstrap(windowId: string, signal?: AbortSignal, scopeId?: string): Promise<string | null> {
     if (signal?.aborted) return null;
+    // episode 片段取数纳入与 B 同一准备生命周期（Codex 审计 P1）：共用父取消
+    // 与 BOOTSTRAP_DEADLINE_MS 截止——父取消/截止后不取、不冻结（下轮重拉）。
+    const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
     const t = this.byWindow.get(windowId);
     if (t !== undefined) {
       if (this.episodeFragmentByWindow.has(windowId) || !scopeId) return t;
       // B 已有缓存但片段尚未冻结——独立补取后返回缓存（每窗一次）
-      await this.freezeEpisodeFragment(windowId, scopeId);
+      await this.freezeEpisodeFragment(windowId, scopeId, lifetime);
       return t;
     }
     if (!this.d.bootstrap) return await this.fetchBootText(windowId, signal); // 未接线：如实无 B（也不取片段）
     const text = await this.fetchBootText(windowId, signal);
-    if (scopeId) await this.freezeEpisodeFragment(windowId, scopeId); // 结论路径统一冻结（含部分交付/不可用）
+    if (lifetime.aborted) return text; // 父取消/截止：片段不冻结，下轮重拉
+    if (scopeId) await this.freezeEpisodeFragment(windowId, scopeId, lifetime); // 结论路径统一冻结（含部分交付/不可用）
     return text;
   }
 
   /** 宿主用户 2026-11-07 裁定：开窗时取"运行中事项"前 3 条（M 侧近期引用热度排序），
    *  渲染为独立片段随窗冻结；失败/无未了结冻结为空（每窗一次告警，不阻塞开窗）。 */
-  private async freezeEpisodeFragment(windowId: string, scopeId: string): Promise<void> {
+  private async freezeEpisodeFragment(windowId: string, scopeId: string, lifetime: AbortSignal): Promise<void> {
     if (this.episodeFragmentByWindow.has(windowId)) return;
     const port = this.d.episodes;
     if (!port) {
@@ -83,11 +88,15 @@ export class WindowBootstrapMachine {
       return;
     }
     try {
-      const res = await port.list({ scopeId, states: ['OPEN', 'QUIESCENT'], limit: EPISODE_FRAGMENT_BUDGET });
+      // Codex 审计 P0 修复：消费真实客户端合同 {ok:true,result}（此前误读 data，
+      // 成功响应被当空冻结——生产片段从未生效）
+      const res = await port.list({ scopeId, states: ['OPEN', 'QUIESCENT'], limit: EPISODE_FRAGMENT_BUDGET }, lifetime);
       if (!res?.ok) throw new Error('EPISODE_LIST_UNAVAILABLE');
-      const fragment = renderEpisodeFragment(res.data?.episodes ?? [], res.data?.has_more === true);
+      const episodes = (res.result?.episodes ?? []) as FragmentEpisode[];
+      const fragment = renderEpisodeFragment(episodes, res.result?.has_more === true);
       this.episodeFragmentByWindow.set(windowId, fragment ?? '');
-    } catch {
+    } catch (err) {
+      if (lifetime.aborted && !(err instanceof Error) || (err instanceof Error && err.name === 'AbortError')) return; // 取消/截止：不冻结、不告警，下轮重拉
       this.d.events.publish('context.warning', { conversationId: scopeId, entityRef: windowId, scope: 'private', payload: { source: 'episode-fragment', code: 'EPISODE_FRAGMENT_UNAVAILABLE', note: '运行中事项片段未取得——本窗不带该段（不阻塞开窗）' } });
       this.episodeFragmentByWindow.set(windowId, '');
     }

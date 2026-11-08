@@ -37,7 +37,7 @@ test('机器：开窗冻结片段，二窗独立；transferPending 随窗迁移�
       assert.equal(a.scopeId, 'conv-1');
       assert.deepEqual(a.states, ['OPEN', 'QUIESCENT']);
       assert.equal(a.limit, EPISODE_FRAGMENT_BUDGET);
-      return { ok: true, data: { episodes: [EP('装修新房')], has_more: false } };
+      return { ok: true, result: { episodes: [EP('装修新房')], has_more: false } };
     },
   };
   const machine = new WindowBootstrapMachine({
@@ -60,7 +60,7 @@ test('机器：开窗冻结片段，二窗独立；transferPending 随窗迁移�
 test('机器：片段取数失败 → 冻结为空 + 单次 context.warning（不阻塞开窗包）', async () => {
   const warnings: unknown[] = [];
   let calls = 0;
-  const episodes: EpisodeListPort = { list: async () => { calls++; return { ok: false }; } };
+  const episodes: EpisodeListPort = { list: async () => { calls++; return { ok: false, code: 'HTTP_500' }; } };
   const machine = new WindowBootstrapMachine({
     bootstrap: { bootstrapGet: async () => ({ ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }), bootstrapNext: async () => ({ ok: true, result: {} }), bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }) } as never,
     events: { publish: (_k: string, ev: unknown) => warnings.push(ev) } as never,
@@ -85,4 +85,41 @@ test('机器：episodes 未接线 → 片段为空、不取数', async () => {
   } as never);
   await machine.windowBootstrap('win-n', undefined, 'conv-1');
   assert.equal(machine.episodeFragmentFor('win-n'), null);
+});
+
+test('机器：父取消后不取不冻结不告警（下轮重拉）——审计 P1-C', async () => {
+  const warnings: unknown[] = [];
+  let calls = 0;
+  const episodes: EpisodeListPort = { list: async (_a, signal) => { calls++; if (signal?.aborted) { const e = new Error('aborted'); e.name = 'AbortError'; throw e; } return { ok: true, result: { episodes: [EP('X')] } }; } };
+  const machine = new WindowBootstrapMachine({
+    bootstrap: { bootstrapGet: async () => ({ ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }), bootstrapNext: async () => ({ ok: true, result: {} }), bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }) } as never,
+    events: { publish: (_k: string, ev: unknown) => warnings.push(ev) } as never,
+    alerts: null,
+    episodes,
+  } as never);
+  const ctrl = new AbortController();
+  ctrl.abort();
+  await machine.windowBootstrap('win-cn', ctrl.signal, 'conv-1');
+  assert.equal(calls, 0, '入口已取消：直接返回不取');
+  assert.equal(machine.episodeFragmentFor('win-cn'), null);
+  assert.equal(warnings.length, 0);
+});
+
+test('机器：消费真实 MariposaClient 合同（{ok,result}）——审计 P0-1 回归', async () => {
+  const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
+  const client = new MariposaClient({ transport: async (capability, payload) => {
+    assert.equal(capability, 'episode.list');
+    assert.equal((payload as { scope_id: string }).scope_id, 'conv-real');
+    return { ok: true, result: { episodes: [{ label: '真实合同事件', state: 'OPEN', revision: 2, ref_count: 3 }], has_more: true } };
+  } });
+  const machine = new WindowBootstrapMachine({
+    bootstrap: { bootstrapGet: async () => ({ ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }), bootstrapNext: async () => ({ ok: true, result: {} }), bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }) } as never,
+    events: { publish: () => {} } as never,
+    alerts: null,
+    episodes: { list: (a, signal) => client.episodeList({ scopeId: a.scopeId, states: a.states, limit: a.limit }) },
+  } as never);
+  await machine.windowBootstrap('win-real', undefined, 'conv-real');
+  const frag = machine.episodeFragmentFor('win-real');
+  assert.ok(frag && frag.includes('- 真实合同事件（OPEN，第2版，证据引用3）'), '真实合同链路取到并渲染片段');
+  assert.ok(frag!.includes('另有未了结事项未展示'), 'has_more 分页提示');
 });

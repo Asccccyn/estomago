@@ -181,7 +181,7 @@ if (process.argv[2] !== '--worker') {
     const materials = identity.loadVerifiedMaterials(gate.manifest);
     const messageService = new MessageService(db);
     messageService.ensureConversation('synthetic');
-    const windows = new WindowManager(db, new EventService(db), identity, config);
+    const windows = new WindowManager(db, identity, config);
     let window = windows.createWindow({ conversationId: 'synthetic', gate }).window;
     let nowMs = Date.now();
     const bgSettings = new BackgroundSettingsService(db, config);

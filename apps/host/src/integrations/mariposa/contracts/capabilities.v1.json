@@ -1,10 +1,10 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "5a7281aa65da6feb1fb85359c7c7687032536e5c",
+  "source_commit": "9436d0c67f0e59f1117e0a5e18e51bf61ac34a51",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "e11b4ba085a6235fc63019eadec0e1da27c424d82d1d5b147c7645a9c3fe435e",
-    "backend/mariposa/capabilities/input_schemas.py": "94cef27625e2ecd48d9c658521d34335f6b88650a0d849c55d7ca113c563c2d6",
+    "backend/mariposa/capabilities/registry.py": "a0d3edc6b169b374b5b1e30c57ac9632871f6971356e6f39c9dcb03e63dc7fe7",
+    "backend/mariposa/capabilities/input_schemas.py": "4bf52d5c3116e51efce2cc0667255bc84bf5f9f2d5fc7ab24539d031e57ff45b",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "7df8ba21c80704bfac203a2d97dc958cdccb655f3d053d1073d23da4360395c5",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
@@ -5093,6 +5093,55 @@
           },
           "context": {},
           "include_content": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.range.open",
+      "transport_name": "mariposa_source_range_open",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "打开原文消息区间（语义绑定的动态查看入口；for_binding 返回 hold 绑定所需 source_revision——Codex 审计 P0 恢复：写侧 event_source_ranges 合同仍要求 revision）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "start_message_id",
+          "end_message_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "end_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_char_offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_char_offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "include_content": {
+            "type": "boolean"
+          },
+          "for_binding": {
             "type": "boolean"
           }
         }
