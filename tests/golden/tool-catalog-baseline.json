@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "67fc1eec2a99ba309b6e9afa8c48ea31585ed7d5",
+  "baselineCommit": "9a26d02d5f67fc1a9b585cae42129a14f9be0e92",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -40,7 +40,6 @@
     "wishstar_start_session",
     "wishstar_confirm_session",
     "wishstar_take_star",
-    "conversation_archive",
     "wishstar_finish_session",
     "wishstar_request_star",
     "wishstar_respond_request",
@@ -48,7 +47,9 @@
     "wishstar_accept_offer",
     "context_review_complete",
     "memory_words_write",
+    "conversation_archive",
     "memory_relations",
+    "image_generate",
     "memory_source_bind",
     "content_albums_read",
     "media_view"
@@ -98,7 +99,6 @@
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
     "wishstar_confirm_session": "td_6951feebfb5af5208310cfa5",
     "wishstar_take_star": "td_68e969661d67af8556bc0f9e",
-    "conversation_archive": "td_f88c602fd1d9f3d28b865524",
     "wishstar_finish_session": "td_7fbd981db8b93999e59c4056",
     "wishstar_request_star": "td_3f3cc552874f36a1092ee51b",
     "wishstar_respond_request": "td_f1a72da08a2eeb883646ec12",
@@ -106,12 +106,14 @@
     "wishstar_accept_offer": "td_fe061dcebb331f5a2c2a00ce",
     "context_review_complete": "td_80e678ecb6056243f20c0d26",
     "memory_words_write": "td_f4823cf6cf38cf650274b504",
+    "conversation_archive": "td_f88c602fd1d9f3d28b865524",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
+    "image_generate": "td_06f6eb4f5ee249b1c610ef3a",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "7601d004485d069741a78c977ba698908985884cd05365ba1713000ab9243a7b",
+  "toolsSha256": "a79fe8dcb261acfc829198833e29dc9f87be7a44f37fe4255b2ef17104de91cb",
   "tools": [
     {
       "type": "function",
@@ -1859,45 +1861,6 @@
     {
       "type": "function",
       "function": {
-        "name": "conversation_archive",
-        "description": "把明确的已发布对话片段存入对话存档（争吵/甜蜜）。只接受精确定位：message_ids（连续或非连续集合，按原顺序）或 latest_completed_turn（最近一个已完成回合）。没有精确定位时直接告诉用户需要选区，不要猜范围、不要默认整天。存档不删除、不改写任何历史；争吵存档表示话题到此为止。",
-        "parameters": {
-          "type": "object",
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "quarrel",
-                "sweet"
-              ],
-              "description": "存档类型：争吵或甜蜜（由当前明确操作决定，不猜）"
-            },
-            "message_ids": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "要存档的已发布消息 id 集合（来自你已看到的对话）"
-            },
-            "latest_completed_turn": {
-              "type": "boolean",
-              "description": "true=存档最近一个已完成回合（排除你当前正在进行的这个回合）"
-            },
-            "note": {
-              "type": "string",
-              "description": "可选说明（你的原话，原样保存）"
-            }
-          },
-          "required": [
-            "kind"
-          ],
-          "additionalProperties": false
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
         "name": "wishstar_finish_session",
         "description": "完成本轮拆星仪式。",
         "parameters": {
@@ -2136,6 +2099,45 @@
     {
       "type": "function",
       "function": {
+        "name": "conversation_archive",
+        "description": "把明确的已发布对话片段存入对话存档（争吵/甜蜜）。只接受精确定位：message_ids（连续或非连续集合，按原顺序）或 latest_completed_turn（最近一个已完成回合）。没有精确定位时直接告诉用户需要选区，不要猜范围、不要默认整天。存档不删除、不改写任何历史；争吵存档表示话题到此为止。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "quarrel",
+                "sweet"
+              ],
+              "description": "存档类型：争吵或甜蜜（由当前明确操作决定，不猜）"
+            },
+            "message_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "要存档的已发布消息 id 集合（来自你已看到的对话）"
+            },
+            "latest_completed_turn": {
+              "type": "boolean",
+              "description": "true=存档最近一个已完成回合（排除你当前正在进行的这个回合）"
+            },
+            "note": {
+              "type": "string",
+              "description": "可选说明（你的原话，原样保存）"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
         "name": "memory_relations",
         "description": "建立或读取记忆关系，追踪事件延续链。list 读普通关联；trace 只追 continuation_of 前后链（continuation_of 延续链深度，默认 5，整数 1–10）；link 需 from_memory、to_memory 和 relation_type。",
         "parameters": {
@@ -2217,6 +2219,35 @@
               }
             }
           ]
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "image_generate",
+        "description": "用图片生成模型画一张图并保存为作品（自动进入作品集）。失败时如实返回错误码；同一 client_operation_id 重试不会重复生成或重复计费。生成成功后保存失败会自动重试保存而不重新生成。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "description": "画面描述（你要画什么）"
+            },
+            "client_operation_id": {
+              "type": "string",
+              "description": "本次生成的操作标识（重试沿用同一值）"
+            },
+            "title": {
+              "type": "string",
+              "description": "可选作品标题"
+            }
+          },
+          "required": [
+            "prompt",
+            "client_operation_id"
+          ],
+          "additionalProperties": false
         }
       }
     },

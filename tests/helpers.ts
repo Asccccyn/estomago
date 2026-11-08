@@ -19,6 +19,7 @@ import { registerContentCapabilities as registerContentCapabilitiesInstance } fr
 import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '../apps/host/src/modules/wake/module.ts';
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
 import { registerArchivesCapabilities as registerArchivesCapabilitiesInstance } from '../apps/host/src/modules/archives/module.ts';
+import { registerImageGenCapabilities as registerImageGenCapabilitiesInstance } from '../apps/host/src/modules/imagegen/module.ts';
 import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
 import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
@@ -186,6 +187,7 @@ export type TestToolDeps = {
   contentClient?: unknown; contentOps?: unknown; identity?: unknown; wishstar?: unknown;
   taskService?: unknown; oido?: unknown; mediaIndex?: unknown;
   sirenCall?: unknown; tz?: unknown;
+  archives?: unknown; imagegen?: unknown;
 };
 
 export function assembleTestTools(deps: TestToolDeps): {
@@ -218,6 +220,8 @@ export function assembleTestTools(deps: TestToolDeps): {
   // 相册重构 P4：存档工具（镜像 app-context 无条件注册；archives 服务未注入时定义在、
   // 运行期按服务缺席如实报错——与生产装配一致）
   registerArchivesCapabilitiesInstance(registry, { archives: (deps.archives ?? null) as never });
+  // 相册重构 P3：图片生成工具（镜像注册；imagegen 未注入=运行期如实 UNCONFIGURED）
+  registerImageGenCapabilitiesInstance(registry, { imagegen: (deps.imagegen ?? null) as never });
   registerIdentityCapabilitiesInstance(registry, { db, identity: (deps.identity ?? null) as never });
   registerContextReviewCapabilitiesInstance(registry, { db, reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never });
   // voice 域无条件注册（call_control/transcript_read 属 48 基线；sirenCall

@@ -159,6 +159,11 @@ export type Config = {
   };
   // JOINT-VOICE-20261022（07）：媒体 embedding worker（est 归属叶子；null=未配置零行为）
   media_embedding: { base_url: string | null; credential_ref: string | null };
+  /** 相册重构 P3（GLM_ALBUM_REFACTOR_EXECUTION 20261108 R12）：图片生成——Key 只在
+   *  服务端（环境变量名引用，不进日志/DB/工具参数）；api_key_env 未配置=能力如实
+   *  不可用，不切其他供应商。model 是请求中的真实 ID（gpt-image-2.6-flare/
+   *  sunburst），不是前端显示名。 */
+  image_generation: { base_url: string; api_key_env: string | null; model: string };
   integrations: {
     mariposa: IntegrationConfig;
     siren: IntegrationConfig;
@@ -433,6 +438,7 @@ export const CONFIG_DEFAULTS: Config = {
     semantic_auto_binding_enabled: false,
   },
   media_embedding: { base_url: null, credential_ref: null },
+  image_generation: { base_url: 'https://api.openai.com/v1', api_key_env: null, model: 'gpt-image-2.6-flare' },
   integrations: {
     mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null },
     siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
@@ -613,6 +619,7 @@ const SHAPE: SectionSpec = { section: {
     semantic_auto_binding_threshold: 'number?', semantic_auto_binding_enabled: 'boolean',
   } },
   media_embedding: { section: { base_url: 'string?', credential_ref: 'string?' } },
+  image_generation: { section: { base_url: 'string?', api_key_env: 'string?', model: 'string?' } },
   integrations: { section: {
     mariposa: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     siren: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },

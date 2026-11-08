@@ -353,6 +353,15 @@ export class Host {
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
     (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
     tools.setMemoryRecovery(memoryService);
+    // 相册重构 P3：图片生成——配置了 api_key_env 才装配适配器（Key 只在服务端环境）；
+    // 两阶段恢复由 ImageGenService 承担（生成≠入库，失败不二次付费生成）
+    const imageGenCfg = opts.config.image_generation;
+    const imageGenAdapter = imageGenCfg.api_key_env && process.env[imageGenCfg.api_key_env]
+      ? new (await import('./integrations/imagegen/adapter.ts')).ImageGenAdapter({ baseUrl: imageGenCfg.base_url, apiKeyEnv: imageGenCfg.api_key_env, model: imageGenCfg.model })
+      : null;
+    const imagegen = new (await import('./modules/imagegen/service.ts')).ImageGenService({ db, adapter: imageGenAdapter, media, contentClient });
+    const { registerImageGenCapabilities } = await import('./modules/imagegen/module.ts');
+    registerImageGenCapabilities(capabilityRegistry, { imagegen });
     // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
     const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient });
     const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');

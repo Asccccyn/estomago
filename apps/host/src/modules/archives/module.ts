@@ -32,7 +32,7 @@ export type ArchivesModuleDeps = {
 export function registerArchivesCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ArchivesModuleDeps): void {
   registry.register(toolCapability({
     owner: 'archives',
-    id: 'conversation_archive', baselineOrder: 40, definition: () => CONVERSATION_ARCHIVE_DEFINITION, memoryOnlyAllowed: false, label: '存档对话',
+    id: 'conversation_archive', baselineOrder: 49, definition: () => CONVERSATION_ARCHIVE_DEFINITION, memoryOnlyAllowed: false, label: '存档对话',
     run: (input: { kind: string; message_ids?: string[]; latest_completed_turn?: boolean; note?: string }, ctx) => runConversationArchive(deps.archives, input, ctx),
     toModel: (value) => value,
   }));

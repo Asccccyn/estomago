@@ -1650,4 +1650,25 @@ CREATE INDEX idx_host_notices_pending ON host_notices(conversation_id, delivered
 `,
 });
 
+// v67（相册重构 P3）：图片生成两阶段操作账——生成成功即暂存字节（result_b64），
+// 入库失败重试只走存储不二次付费生成；saved 后清空暂存（字节正本在 media/M）。
+// unknown=供应商结果未确认（禁止自动重发）。
+MIGRATIONS.push({
+  version: 67,
+  name: 'imagegen-operations',
+  sql: `
+CREATE TABLE IF NOT EXISTS imagegen_operations(
+  op_key TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  result_b64 TEXT,
+  asset_id TEXT,
+  creation_id TEXT,
+  revised_prompt TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

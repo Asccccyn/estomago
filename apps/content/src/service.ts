@@ -19,7 +19,7 @@ import { CONTENT_ALBUMS, CARRY_IMAGE_LIMIT, CARRY_MODES, type CarryMode, type Ca
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
-export const CONTENT_SCHEMA_VERSION = 4;
+export const CONTENT_SCHEMA_VERSION = 5;
 export const CONTENT_FINGERPRINT_VERSION = 2;
 
 const LIMIT_DEFAULT = 20;
@@ -202,6 +202,32 @@ CREATE TABLE conversation_archives(
 CREATE INDEX idx_conversation_archives_conv ON conversation_archives(conversation_id, kind, created_at DESC);
 `);
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (4, ?)').run(new Date().toISOString());
+  }
+  if (!have.includes(5)) {
+    // v5（相册重构 P3，R10/R11）：生成图片作品免桶——creations 的 bucket_ref 原指向
+    // Mariposa 纪念桶且 NOT NULL；纯图片作品（work_asset_id+work_kind='image'）没有桶
+    // 语义，重建表使 bucket_service/bucket_id 可空（存量行原样保留）。
+    db.exec(`
+CREATE TABLE creations_v5(
+  id TEXT PRIMARY KEY,
+  creator_actor TEXT NOT NULL CHECK (creator_actor IN ('qiaosheng','jiaming')),
+  title TEXT,
+  bucket_service TEXT,
+  bucket_id TEXT,
+  icon_asset_id TEXT NOT NULL,
+  work_asset_id TEXT,
+  work_kind TEXT CHECK (work_kind IN ('image','video','html') OR work_kind IS NULL),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT
+);
+INSERT INTO creations_v5(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision, deleted_at)
+  SELECT id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision, deleted_at FROM creations;
+DROP TABLE creations;
+ALTER TABLE creations_v5 RENAME TO creations;
+`);
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (5, ?)').run(new Date().toISOString());
   }
   return db;
 }
@@ -547,15 +573,23 @@ export class ContentServer {
     if (method === 'POST' && pathname === '/api/v1/content/creations') {
       const c = cmd('creation', 'create', null);
       return { cmd: c, business: () => {
-        if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）');
-        if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
+        // 免桶仅当 bucket_id 缺席：显式给桶的图片作品（纪念作品换图）仍按原合同存桶
+        const bucketlessImageWork = !(typeof body.bucket_id === 'string' && body.bucket_id) && typeof body.work_asset_id === 'string' && !!body.work_asset_id && body.work_kind === 'image';
+        if (!bucketlessImageWork) {
+          if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）；纯图片作品可免桶（work_asset_id+work_kind=image）');
+        }
+        if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) {
+          // v5：免桶图片作品以自身 work 资产为 icon（同一对象，不复制字节）
+          if (!bucketlessImageWork) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
+          body = { ...body, icon_asset_id: body.work_asset_id };
+        }
         const workAsset: string | null = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : null;
         const workKind: string | null = workAsset !== null && typeof body.work_kind === 'string' ? body.work_kind : null;
         if ((workAsset === null) !== (workKind === null)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
         if (workKind !== null && !['image', 'video', 'html'].includes(String(workKind))) throw new ContentError(422, 'WORK_KIND_INVALID', 'work_kind 必须是 image|video|html');
         const id = genId('crt');
         const t = now();
-        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa', String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
+        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, bucketlessImageWork ? null : (typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa'), bucketlessImageWork ? null : String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
         this.db.prepare('INSERT INTO creations(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,?,?,1)').run(...args);
         return { status: 201, body: this.creationDto(this.creationRow(id)) };
       } };
@@ -979,7 +1013,7 @@ export class ContentServer {
     return row;
   }
   private creationDto(r: Record<string, unknown>): Record<string, unknown> {
-    return { id: r.id, creator: r.creator_actor, title: r.title, bucket_ref: { service: r.bucket_service, kind: 'bucket', id: r.bucket_id }, icon_asset_id: r.icon_asset_id, work_asset_id: r.work_asset_id ?? null, work_kind: r.work_kind ?? null, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, deleted: r.deleted_at != null };
+    return { id: r.id, creator: r.creator_actor, title: r.title, bucket_ref: r.bucket_id != null ? { service: r.bucket_service, kind: 'bucket', id: r.bucket_id } : null, icon_asset_id: r.icon_asset_id, work_asset_id: r.work_asset_id ?? null, work_kind: r.work_kind ?? null, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, deleted: r.deleted_at != null };
   }
   private noteRow(id: string): Record<string, unknown> {
     const row = this.db.prepare('SELECT * FROM future_notes WHERE id = ?').get(id) as Record<string, unknown> | undefined;
