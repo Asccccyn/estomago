@@ -142,18 +142,23 @@ test('取消时点(b)：episode 等待远端时被取消——迟到结果不冻
   assert.equal(warnings.length, 0, '取消不算失败——无告警');
 });
 
-test('R1-a 真实装配形状：signal 经 app-context 同款端口到达 transport，取消后迟到成功不冻结', async () => {
+test('R1-a 真实装配形状：signal 到 transport，取消后迟到成功不冻结，同机同窗下轮重取成功', async () => {
   const { MariposaClient } = await import('../../apps/host/src/integrations/mariposa/client.ts');
   const warnings: unknown[] = [];
-  let signalReachedTransport = false;
   const ctrl = new AbortController();
-  // 与 app-context.ts:373 完全同形的端口（真实 MariposaClient，transport 尊重 signal）
-  const client = new MariposaClient({ transport: async (_cap, _payload, signal) => {
-    signalReachedTransport = Boolean(signal);
-    await new Promise((r) => setTimeout(r, 25));
-    ctrl.abort(); // 等待期间父取消到达
-    if (signal?.aborted) throw signal.reason ?? new DOMException('aborted', 'AbortError');
-    return { ok: true, result: { episodes: [EP('迟到成功不应冻结')], has_more: false } };
+  let calls = 0;
+  let released = false;
+  // 与 app-context.ts:373 完全同形的端口（真实 MariposaClient；transport 假装取消后仍返回迟到成功——
+  // 验证机器自己的生命周期复核，不依赖 transport 主动抛取消异常）
+  const client = new MariposaClient({ transport: async () => {
+    calls++;
+    if (calls === 1) {
+      await new Promise((r) => setTimeout(r, 25));
+      ctrl.abort(); // 远端悬挂期间父取消到达
+      await new Promise((r) => setTimeout(r, 5));
+      return { ok: true, result: { episodes: [EP('迟到成功不应冻结')], has_more: false } }; // 迟到的成功（不抛异常）
+    }
+    return { ok: true, result: { episodes: [EP('重取成功')], has_more: false } };
   } });
   const episodes = { list: (a: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal) => client.episodeList(a, signal) };
   const machine = new WindowBootstrapMachine({
@@ -162,15 +167,15 @@ test('R1-a 真实装配形状：signal 经 app-context 同款端口到达 transp
     alerts: null,
     episodes,
   } as never);
-  await machine.windowBootstrap('win-r1a', ctrl.signal, 'conv-1');
-  assert.ok(signalReachedTransport, 'signal 必须到达 transport（复审 R1-①）');
-  assert.equal(machine.episodeFragmentFor('win-r1a'), null, '迟到成功不冻结（复审 R1-②）');
+  const first = await machine.windowBootstrap('win-r1a', ctrl.signal, 'conv-1');
+  assert.ok(first, 'B 正常返回');
+  assert.equal(machine.episodeFragmentFor('win-r1a'), null, '迟到成功不冻结（生命周期复核，非 transport 抛异常路径）');
   assert.equal(warnings.length, 0, '取消不告警');
-  // 下轮重取：缓存未写，第二次调用重新拉取
-  let secondCall = 0;
-  const machine2 = new WindowBootstrapMachine({ bootstrap: { bootstrapGet: async () => ({ ok: true, result: { snapshot_id: 's', profile: 'estomago', content_role: 'bootstrap_memory_package', instruction_authority: 'none', i: { content: 'I' }, plans: null } }), bootstrapNext: async () => ({ ok: true, result: {} }), bootstrapValidate: async () => ({ ok: true, result: { unchanged: true } }) } as never, events: { publish: () => {} } as never, alerts: null, episodes: { list: async () => { secondCall++; return { ok: true, result: { episodes: [] } }; } } } as never);
-  await machine2.windowBootstrap('win-r1a2', undefined, 'conv-1');
-  assert.equal(secondCall, 1, '未冻结的窗下轮会重取');
+  // 同一机器、同一窗口：下轮重取并按结果冻结
+  const second = await machine.windowBootstrap('win-r1a', undefined, 'conv-1');
+  assert.equal(calls, 2, '同机同窗下轮重取（缓存未写）');
+  assert.ok(second, 'B 缓存命中返回');
+  assert.ok(machine.episodeFragmentFor('win-r1a')?.includes('- 重取成功'), '重取后按结果冻结');
 });
 
 test('R1-b TimeoutError：截止触发的超时拒绝不冻结不告警，下轮重取（复审 R1-③）', async () => {
@@ -199,5 +204,5 @@ test('R1-b TimeoutError：截止触发的超时拒绝不冻结不告警，下轮
   const before = calls;
   await machine.windowBootstrap('win-r1b', undefined, 'conv-1');
   assert.equal(calls, before + 1, 'TimeoutError 后下轮重取');
-  assert.ok(machine.episodeFragmentFor('win-r1b') !== null || calls === before + 1, '重取后按结果冻结');
+  assert.ok(machine.episodeFragmentFor('win-r1b')?.includes('- X'), '重取成功后按结果冻结');
 });
