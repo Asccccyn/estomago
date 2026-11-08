@@ -2,6 +2,8 @@
 
 当前源码基线分支为 `unified-main-20261102`（不要改用较旧的默认 `main`）；本轮功能基线 `8bbb246`，交付记录 `903991f`。Mariposa 配套基线为 `main` 上的 `db3669f`（共享规则源 `c52739d`）。施工分支 `fix/autonomous-tools-20261104` 已验收提交同步回上述基线；生成契约和 golden 仍从既有脚本派生，不手改。以下旧条目记录各批当时状态，当前部署与限制以本节及本轮报告为准。
 
+- 2026-11-07（`e44cb40`，未部署）：四仓结构审计整改 R1-R3——删 cancelledBeforeRun/window.changed/React 死代码组；MockRunner 并入信封工具循环并退役 dv=null prompt 单请求分支（测试替身全迁移零删除，新增 HostOptions.runnerOverride 测试接缝仅 mock+TEST_MODE）；启动恢复与 Mariposa bootstrap 分页机迁出 supervisor 至 runtime/recovery.ts 与 runtime/window-bootstrap.ts（3325→2910 行）。typecheck/build:web 通过，全量 230/230 绿×3。生产仍跑 release 检出未动；R4/R5 待续，R0 裁定项未决。
+
 - 2026-11-06（`f63c20c`，已部署）：I 写入按真实 HTTP 状态区分首次拒绝与未知结果恢复，删除泛 `CONFLICT` 判断；邀请建呼准备改由原有 handoff 执行位统一承担，初次/失败重试/成功交接/释放同源，移除路由中借响铃 pending 表示准备的补丁。删除假重启、复制恢复 SQL 及重复窄测试，换为真实 M HTTP/进程中断 4 项、邀请正式 HTTP 3 项；相关回归 22 项与宿主类型检查通过。M 联调使用既有 `scripts/verify-mariposa-bootstrap.py --case i-recovery --mariposa-repo <M仓目录>`，不会被普通 `npm test` 自动覆盖；生产 7 条 committed 历史字段无需回填。
 
 - 2026-11-06 23:56 PST（用户授权发布/重启）：E Host 切到 `lifecycle-consolidated-20261107-ee4f9fc`，O 切到 `lifecycle-startup-20261107-621d710`，各重启一次，live/ready 均200；M/S/Content版本未变。既有备份已保存，副本预演及生产61→63迁移后核对1782条消息、4857条修订、35条附件、8条内容引用、4条书签、7条已完成执行记录和2条声音观察均未改。沿既有 git-anon 导出，修复提交本地 `f63c20c` 对应远端 `44d5459`；四仓已跟踪文件在既定脱敏映射后无未解释差异，未重写本地历史或姓名文案。未运行真实模型/真人通话验收。
