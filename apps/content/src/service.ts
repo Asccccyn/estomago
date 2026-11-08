@@ -15,11 +15,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
-import { CONTENT_ALBUMS } from '../../../packages/contracts/src/content.ts';
+import { CONTENT_ALBUMS, CARRY_IMAGE_LIMIT, CARRY_MODES, type CarryMode, type CarrySetItem } from '../../../packages/contracts/src/content.ts';
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
-export const CONTENT_SCHEMA_VERSION = 2;
+export const CONTENT_SCHEMA_VERSION = 3;
 export const CONTENT_FINGERPRINT_VERSION = 2;
 
 const LIMIT_DEFAULT = 20;
@@ -174,6 +174,13 @@ CREATE UNIQUE INDEX idx_album_entries_live ON album_entries(kind, asset_id) WHER
       db.exec('PRAGMA foreign_keys=ON');
     }
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (2, ?)').run(new Date().toISOString());
+  }
+  if (!have.includes(3)) {
+    // v3（相册重构 P3，GLM_ALBUM_REFACTOR_EXECUTION 20261108）：携带模式——仅收藏/下次
+    // 滚窗一次/每次滚窗。取值校验在写入路径（ALTER 无法带 CHECK）；上限校验见
+    // assertCarryWithinLimit（合并去重集合 ≤ CARRY_IMAGE_LIMIT，常量正本在共享合同）。
+    db.exec(`ALTER TABLE album_entries ADD COLUMN carry_mode TEXT NOT NULL DEFAULT 'none';`);
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (3, ?)').run(new Date().toISOString());
   }
   return db;
 }
@@ -464,11 +471,21 @@ export class ContentServer {
         const kind = id;
         if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
         if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
+        const carryMode = parseCarryMode(body.carry_mode);
         const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ? AND deleted_at IS NULL').get(kind, body.asset_id) as Record<string, unknown> | undefined;
-        if (existing) return { status: 200, body: this.albumDto(existing), duplicate: true }; // §5：同 (kind,asset) 幂等返回既有（有效行；墓碑可重新归档=新 ID）
+        if (existing) {
+          // §5：同 (kind,asset) 幂等返回既有（有效行；墓碑可重新归档=新 ID）。
+          // 携带模式若显式给出且不同，按同条目更新处理（同 asset 不算新增一张）。
+          if (carryMode !== null && String(existing.carry_mode) !== carryMode) {
+            this.assertCarryWithinLimit(carryMode, String(existing.asset_id), String(existing.id));
+            this.db.prepare("UPDATE album_entries SET carry_mode = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(carryMode, now(), String(existing.id));
+          }
+          return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(existing.id)) as Record<string, unknown>), duplicate: true };
+        }
+        this.assertCarryWithinLimit(carryMode ?? 'none', String(body.asset_id), null);
         const entryId = genId('ae');
         const t = now();
-        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,1)').run(entryId, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t);
+        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision, carry_mode) VALUES (?,?,?,?,?,?,?,?,1,?)').run(entryId, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t, carryMode ?? 'none');
         const refs = Array.isArray(body.refs) ? body.refs : [];
         for (const r of refs as Array<Record<string, unknown>>) {
           if (typeof r?.service !== 'string' || typeof r?.kind !== 'string' || typeof r?.source_id !== 'string') throw new ContentError(422, 'REF_INVALID', '关联引用必须含 service/kind/source_id（任一校验失败则本次写入失败）');
@@ -483,8 +500,12 @@ export class ContentServer {
       return { cmd: c, business: () => {
         const row = this.albumRow(id);
         this.ifMatch(req, Number(row.revision));
-        this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?')
-          .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, now(), String(row.id));
+        const carryMode = parseCarryMode(body.carry_mode);
+        if (carryMode !== null && carryMode !== String(row.carry_mode)) {
+          this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id));
+        }
+        this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), carry_mode = COALESCE(?, carry_mode), updated_at = ?, revision = revision + 1 WHERE id = ?')
+          .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, carryMode, now(), String(row.id));
         return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(row.id)) as Record<string, unknown>) };
       } };
     }
@@ -594,7 +615,59 @@ export class ContentServer {
         return { status: 200, body: { id: row.id, deleted: true, asset_ids: noteAssets, revision: Number(row.revision) + 1 } };
       } };
     }
+    // —— 携带集合消费（相册重构 P5）：E 在一次滚窗成功投递并确认后调用；把全部
+    //    next_once 原子翻回 none。天然幂等（重放=再翻一次无变化），另受统一回执保护。
+    if (method === 'POST' && pathname === '/api/v1/content/carry-set/consume-next-once') {
+      const c = cmd('album_entry', 'update', 'carry-set');
+      return { cmd: c, business: () => {
+        const n = this.db.prepare("UPDATE album_entries SET carry_mode = 'none', updated_at = ?, revision = revision + 1 WHERE deleted_at IS NULL AND carry_mode = 'next_once'").run(now()).changes;
+        return { status: 200, body: { consumed: n, limit: CARRY_IMAGE_LIMIT } };
+      } };
+    }
     return null;
+  }
+
+  // —— 相册重构 P3：携带集合（03 §7/§8）。合并跨相册去重；always 优先于 next_once ——
+  // （同一 asset 多条携带关系只算一张；留言取排序后首条，不合并改写）。
+
+  private carryRows(): Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string }> {
+    return this.db.prepare(
+      "SELECT id, kind, asset_id, carry_mode, caption, meaning, added_by_actor, created_at FROM album_entries WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always') ORDER BY created_at ASC, id ASC",
+    ).all() as Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string }>;
+  }
+
+  /** 合并有效携带集合（E 滚窗装配的唯一读取口径；条目数=去重后 asset 数，天然 ≤ 上限）。 */
+  carrySet(): { limit: number; items: CarrySetItem[] } {
+    const byAsset = new Map<string, CarrySetItem>();
+    for (const r of this.carryRows()) {
+      const mode = r.carry_mode === 'always' ? 'always' : 'next_once';
+      const existing = byAsset.get(r.asset_id);
+      if (!existing || (existing.mode === 'next_once' && mode === 'always')) {
+        byAsset.set(r.asset_id, {
+          asset_id: r.asset_id, mode, entry_id: r.id, kind: r.kind,
+          caption: r.caption, meaning: r.meaning, added_by: r.added_by_actor as CarrySetItem['added_by'],
+        });
+      }
+    }
+    return { limit: CARRY_IMAGE_LIMIT, items: [...byAsset.values()] };
+  }
+
+  /** 写入校验：把某条目改为 newMode 后，合并去重集合不得超 CARRY_IMAGE_LIMIT。
+   *  排除该条目自身现有贡献（改模式/改留言不算新增一张）；同 asset 其他相册的携带关
+   *  系仍在集合内（去重后不重复计数）。超限抛 422，带当前计数供前端明确减选。 */
+  private assertCarryWithinLimit(newMode: CarryMode, assetId: string, excludeEntryId: string | null): void {
+    if (newMode === 'none') return;
+    const exclude = excludeEntryId === null ? "''" : '?';
+    const args = excludeEntryId === null ? [assetId] : [assetId, excludeEntryId];
+    const n = (this.db.prepare(
+      `SELECT COUNT(DISTINCT asset_id) n FROM album_entries
+       WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always')
+         AND asset_id != ?
+         AND id != ${exclude}`,
+    ).get(...args) as { n: number }).n;
+    if (n >= CARRY_IMAGE_LIMIT) {
+      throw new ContentError(422, 'CARRY_LIMIT_EXCEEDED', `携带图片合计已达上限 ${CARRY_IMAGE_LIMIT}/${CARRY_IMAGE_LIMIT}（跨相册去重计数）；请先减选或改回仅收藏`);
+    }
   }
 
   /** P1.1：按对象真实版本给出当前完整去重成员集合的权威快照（与回执分离）。
@@ -707,6 +780,11 @@ export class ContentServer {
       return { status: 200, body: { items: page.map((r) => this.commentDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
 
+    // —— 携带集合（相册重构 P3/P5，读：E 滚窗装配的唯一读取口径） ——
+    if (route === 'GET /api/v1/content/carry-set') {
+      return { status: 200, body: this.carrySet() };
+    }
+
     // —— 相册（§5，读） ——
     if (route === 'GET /api/v1/content/albums') {
       const assetId = url.searchParams.get('asset_id');
@@ -796,7 +874,7 @@ export class ContentServer {
   }
   private albumDto(r: Record<string, unknown>): Record<string, unknown> {
     const refs = this.db.prepare('SELECT service, kind, source_id FROM album_entry_refs WHERE entry_id = ?').all(String(r.id)) as Array<Record<string, string>>;
-    return { id: r.id, kind: r.kind, asset_id: r.asset_id, added_by: r.added_by_actor, caption: r.caption, meaning: r.meaning, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, refs };
+    return { id: r.id, kind: r.kind, asset_id: r.asset_id, added_by: r.added_by_actor, caption: r.caption, meaning: r.meaning, created_at: r.created_at, updated_at: r.updated_at, revision: r.revision, carry_mode: (r.carry_mode as string) ?? 'none', refs };
   }
   private creationRow(id: string): Record<string, unknown> {
     const row = this.db.prepare('SELECT * FROM creations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
@@ -823,6 +901,15 @@ function header(req: IncomingMessage, name: string): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 function dedupeAssetIds(ids: string[]): string[] { return [...new Set(ids)]; }
+
+/** body.carry_mode 解析：缺席/undefined=null（不改变）；非法值 422。 */
+function parseCarryMode(v: unknown): CarryMode | null {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== 'string' || !(CARRY_MODES as readonly string[]).includes(v)) {
+    throw new ContentError(422, 'CARRY_MODE_INVALID', `carry_mode 必须是 ${CARRY_MODES.join('|')}`);
+  }
+  return v as CarryMode;
+}
 
 /** 旧回执响应形状→资源类型推断（兼容解析的“类型/目标一致”证据；判不出=null）。 */
 function inferResourceTypeFromResponse(body: Record<string, unknown>): ResourceType | null {
