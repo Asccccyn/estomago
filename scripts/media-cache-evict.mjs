@@ -26,7 +26,7 @@ const db = openDatabase(paths.dataDir);
 const rows = db.prepare(
   `SELECT id, storage_key, byte_size, ingest_purpose FROM media_assets
    WHERE state = 'available' AND m_sync_state = 'synced' ORDER BY created_at ASC`,
-).all() as Array<{ id: string; storage_key: string; byte_size: number; ingest_purpose: string }>;
+).all();
 
 const eligible = rows.filter((r) => fs.existsSync(path.join(paths.mediaDir, r.storage_key)));
 const totalBytes = eligible.reduce((n, r) => n + r.byte_size, 0);
@@ -41,7 +41,7 @@ for (const r of targets) {
   const abs = path.join(paths.mediaDir, r.storage_key);
   if (!apply) { console.log(`[dry] ${r.id} ${r.ingest_purpose} ${r.byte_size}B`); continue; }
   try { fs.rmSync(abs); freed += r.byte_size; }
-  catch (err) { failed += 1; console.error(`[fail] ${r.id}: ${String((err as Error).message).slice(0, 80)}`); }
+  catch (err) { failed += 1; console.error(`[fail] ${r.id}: ${String(err && err.message ? err.message : err).slice(0, 80)}`); }
 }
 db.close();
 console.log(`[cache-evict] 完成：${apply ? `删除 ${targets.length - failed} 个文件，释放 ${(freed / 1048576).toFixed(1)}MiB` : '未删除任何文件'}；失败 ${failed}。行全部保留；后续读取从 M 回源重建。`);
