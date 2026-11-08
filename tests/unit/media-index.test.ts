@@ -188,3 +188,31 @@ test('预算：media_candidates 投影 ≤4096 字节（10 条上限）', async 
     assert.ok(bytes <= 4096, `投影 ${bytes}B 超预算`);
   } finally { w.close(); f.close(); }
 });
+
+
+// ALB-13/R33：allowAssetIds 集合过滤——stickers scope 只从集合内出候选；空集合如实 no_match
+test('M11: 集合过滤——成员图可中、非成员图被排除、空集合 no_match', async () => {
+  const w = await startFakeWorker();
+  const f = fixture(w.url);
+  try {
+    const a1 = await f.uploadImage(100, 1); // 猫
+    const a2 = await f.uploadImage(200, 2); // 狗
+    f.publish('primary', a1.id, 'ms1');
+    f.publish('primary', a2.id, 'ms2');
+    await f.preIndex(a1.id, a2.id);
+    // 集合只含狗图：查"猫"也应只回狗（或 no_match）——非成员猫图被结构性排除
+    const onlyDog = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set([a2.id]));
+    if (onlyDog.state === 'candidates') {
+      assert.ok(onlyDog.items.every((i) => i.asset_ref !== `est:${a1.id}`), '非成员图不得出现在候选');
+    } else {
+      assert.equal(onlyDog.state, 'no_match');
+    }
+    // 集合只含猫图：查"猫"命中猫
+    const onlyCat = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set([a1.id]));
+    assert.equal(onlyCat.state, 'candidates');
+    assert.equal((onlyCat as { items: Array<{ asset_ref: string }> }).items[0]!.asset_ref, `est:${a1.id}`);
+    // 空集合=无合格候选
+    const empty = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set());
+    assert.equal(empty.state, 'no_match', '空表情集合如实无匹配');
+  } finally { w.close(); f.close(); }
+});

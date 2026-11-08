@@ -503,7 +503,42 @@ export class ArchiveSyncService {
     });
     this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'acked', messages: ack.messages.length } });
     summary.acked += rows.length;
+    // ALB-03（相册整改，审计 2026-11-08，R07/R13/A08）：正文入库确认后，把图片/贴纸
+    // 附件的 M 对象身份（content_sha256）补同步进附属元数据——M 原文页据此渲染实际
+    // 图片而非"含 N 个附件"。payload 用 ref 键（非 asset_ref：读取面对 asset_ref 与
+    // 基础 attachments 去重，会吞掉本行）；语音不补（字节不在 M，回听走既有播放器）。
+    // 尽力而为：失败记日志不阻塞归档（幂等 operation_id 可重放；下次批次的补同步不回头）。
+    void this.syncAttachmentObjectMeta(this.streamId, ack).catch(() => undefined);
     return 'acked';
+  }
+
+  /** 图片/贴纸附件对象元数据补同步（kind=media；sha=M 对象身份，mime 供渲染）。
+   *  只对 m_sync_state='synced' 的资产补——未落正的对象 M 端打不开，如实不补。 */
+  private async syncAttachmentObjectMeta(streamId: string, ack: import('../../integrations/mariposa/client.ts').IngestAck): Promise<void> {
+    for (const m of ack.messages) {
+      const atts = this.db.prepare(
+        `SELECT ma.asset_id, ma.presentation, a.mime_type, a.m_sync_state, a.m_content_hash, a.content_sha256
+         FROM message_attachments ma JOIN media_assets a ON a.id = ma.asset_id
+         WHERE ma.message_id = ? AND ma.revision = ? AND ma.presentation IN ('image','sticker')`,
+      ).all(m.origin_message_id, m.revision) as Array<{ asset_id: string; presentation: string; mime_type: string; m_sync_state: string; m_content_hash: string | null; content_sha256: string }>;
+      for (const att of atts) {
+        if (att.m_sync_state !== 'synced') continue;
+        const sha = att.m_content_hash ?? att.content_sha256;
+        try {
+          const r = await this.client.attachmentsSync({
+            stream_id: streamId,
+            origin_message_id: m.origin_message_id,
+            revision: m.revision,
+            kind: 'media',
+            payload: { ref: `est:${att.asset_id}`, sha, mime: att.mime_type, presentation: att.presentation },
+            operation_id: `att-objmeta:${m.origin_message_id}@${m.revision}:${att.asset_id}`,
+          });
+          if (!r.ok) this.logger.warn('attachment_object_meta_rejected', { message_id: m.origin_message_id, asset_id: att.asset_id, code: r.code });
+        } catch (err) {
+          this.logger.warn('attachment_object_meta_sync_failed', { message_id: m.origin_message_id, asset_id: att.asset_id, code: String((err as Error).message).slice(0, 80) });
+        }
+      }
+    }
   }
 
   private messageIdOf(row: OutboxRow): string | null {

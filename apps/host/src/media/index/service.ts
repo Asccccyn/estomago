@@ -116,10 +116,13 @@ export class MediaIndexService {
   }
 
   /** 中文文字找图（M01）：候选=namespace 内图片索引 ×（活资产 + 本会话消息绑定）权限门。
-   *  top_k 默认 3 最大 10；无足够相似= no_match 如实返回（不硬选 top1）。 */
-  async searchImagesByRoom(query: string, roomId: string, topK = DEFAULT_TOP_K, signal?: AbortSignal): Promise<MediaCandidates> {
+   *  top_k 默认 3 最大 10；无足够相似= no_match 如实返回（不硬选 top1）。
+   *  allowAssetIds（ALB-13/R33）：给定集合时候选再限集合内（表情包 scope——只从
+   *  明确归入 stickers 分类的成员选，自拍/截图不因向量相近混入）；空集合=no_match。 */
+  async searchImagesByRoom(query: string, roomId: string, topK = DEFAULT_TOP_K, signal?: AbortSignal, allowAssetIds?: Set<string>): Promise<MediaCandidates> {
     signal?.throwIfAborted();
     if (!this.worker) throw new Error('MEDIA_WORKER_UNCONFIGURED');
+    if (allowAssetIds !== undefined && allowAssetIds.size === 0) return { state: 'no_match', items: [] }; // 集合空=无合格候选，如实无匹配
     const k = Math.max(1, Math.min(MAX_TOP_K, topK));
     const qBytes = Buffer.from(query, 'utf8');
     const { fingerprint, vectors } = await this.worker.embed([{ id: 'query', modality: 'text', bytes: qBytes }], signal);
@@ -136,7 +139,8 @@ export class MediaIndexService {
            WHERE ma.asset_id = e.asset_id AND m.conversation_id = ?
          )`,
     ).all(fingerprint, roomId) as Array<{ asset_id: string; vector: Buffer }>;
-    const scored = rows
+    const filtered = allowAssetIds !== undefined ? rows.filter((r) => allowAssetIds.has(r.asset_id)) : rows;
+    const scored = filtered
       .map((r) => ({ asset_id: r.asset_id, score: cosine(qvec, new Float32Array(r.vector.buffer, r.vector.byteOffset, DIMS)) }))
       .filter((r) => r.score > MIN_SCORE)
       .sort((a, b) => b.score - a.score)

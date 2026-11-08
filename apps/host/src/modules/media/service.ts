@@ -76,8 +76,22 @@ export class MediaToolsService {
   }
 
 
-  async mediaSearch(args: { query: string; limit?: number }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  async mediaSearch(args: { query: string; limit?: number; scope?: 'chat' | 'stickers' }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
+    // ALB-13/R33：stickers scope 只从 content stickers 分类的有效成员选——自拍/截图
+    // 不因向量相近混入候选（集合空或未配置 content=如实无匹配/降级说明，不静默放开）。
+    let allowSet: Set<string> | undefined;
+    if (args.scope === 'stickers') {
+      if (!this.contentClient) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合未接入（content 未配置）——本次不放开为全域搜索' } };
+      try {
+        const res = await contentForward(this.contentClient, { method: 'GET', actor: 'jiaming', path: '/api/v1/content/albums/stickers/entries?limit=100' });
+        if (res.status !== 200) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: `表情包集合读取失败（${res.status}）——不放开为全域搜索` } };
+        const items = (res.body as { items?: Array<{ asset_id?: string }> }).items ?? [];
+        allowSet = new Set(items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'));
+      } catch {
+        return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合暂不可达——不放开为全域搜索' } };
+      }
+    }
     // Propagate host cancellation. A new short deadline would discard slow image results
     // while the non-preemptible worker still encodes them; background indexing remains open.
     const signal=ctx.signal;
@@ -91,10 +105,11 @@ export class MediaToolsService {
       // ≤5 图/跳）。检索不完整与 no_match 分开如实报：pending>0 = coverage:'incomplete'。
       const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
       signal?.throwIfAborted();
-      const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal);
+      const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal,allowSet);
       signal?.throwIfAborted();
       const out:Record<string,unknown>={...result};
       if(pending.length>0){out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';}
+      if(args.scope==='stickers'){out.scope='stickers';out.note=(out.note?out.note+'；':'')+'候选仅限表情包分类成员（已发布且已建索引者）';}
       return {ok:true,output:out};
     }catch {
       return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':'MEDIA_WORKER_UNAVAILABLE'}};

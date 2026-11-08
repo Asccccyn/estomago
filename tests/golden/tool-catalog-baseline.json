@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "f35ef4672e2e58243fedb16abc38323997915dff",
+  "baselineCommit": "7a478068f0854c30a10a88122148e2585befede6",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -86,7 +86,7 @@
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
-    "media_search": "td_ac4449f47a46a873eda23d58",
+    "media_search": "td_d5bad05cd27ae399af559041",
     "oido_get": "td_23e1d4816888a554a3745bf5",
     "transcript_read": "td_f732c725968a0a8aa604f9a8",
     "oido_capabilities": "td_556434ab24001d6f65381d0b",
@@ -113,7 +113,7 @@
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "media_view": "td_f72b71bbef701e3714320c82"
   },
-  "toolsSha256": "2a08ceea39f2e8fe3a11e6092fad5b9f547b6f845b05ecfc1711a8a64ae57e67",
+  "toolsSha256": "69c6b50682d63a5f8792d2141e28218ae5f966b9afe913302444f889009c0944",
   "tools": [
     {
       "type": "function",
@@ -1441,7 +1441,7 @@
       "type": "function",
       "function": {
         "name": "media_search",
-        "description": "按中文语义在她发过的图片里找候选（如\"那张水獭的图\"）。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。",
+        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个，自拍/截图不会混入）。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1456,6 +1456,14 @@
               "minimum": 1,
               "maximum": 10,
               "description": "候选数，默认 3"
+            },
+            "scope": {
+              "type": "string",
+              "enum": [
+                "chat",
+                "stickers"
+              ],
+              "description": "候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员（找表情专用）"
             }
           },
           "required": [

@@ -25,12 +25,13 @@ export const MEDIASEARCH_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'media_search',
-      description: '按中文语义在她发过的图片里找候选（如"那张水獭的图"）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断，不能用检索标签替代看图；不确定就说不确定。',
+      description: '按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个，自拍/截图不会混入）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。',
       parameters: {
         type: 'object',
         properties: {
           query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
           limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
+          scope: { type: 'string', enum: ['chat', 'stickers'], description: '候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员（找表情专用）' },
         },
         required: ['query'], additionalProperties: false,
       },
