@@ -308,13 +308,49 @@ test('ARC-15 (RR3): 删除存档→逐消息推撤销 observation（latest-wins 
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   await new Promise((resolve) => setTimeout(resolve, 100));
-  const archivedCalls = calls.length;
-  assert.equal(archivedCalls, 1);
+  assert.equal(calls.length, 1);
   assert.equal(calls[0]!.payload['type'], 'conversation_archived');
   calls.length = 0;
-  await pushSvc.revokeArchiveObservations('c2', r.archive.id);
-  assert.equal(calls.length, 1, '删除后逐消息一条撤销');
+  // 生产删除流（routes/archives.ts 同序）：先取引用快照（删除后 content 对已删行 404——
+  // 自查修正点），DELETE 成功后按快照推撤销
+  const snapshot = await pushSvc.archiveRefsForRevoke('c2', r.archive.id);
+  assert.ok(snapshot, '删除前可取引用快照');
+  const del = await fetch(`${base}/api/v1/content/archives/${r.archive.id}`, { method: 'DELETE', headers: { authorization: `Bearer ${TOKEN}`, 'x-actor': 'qiaosheng', 'idempotency-key': 'k-arc15-del', 'if-match': '"1"' } });
+  assert.equal(del.status, 200);
+  assert.equal(await pushSvc.archiveRefsForRevoke('c2', r.archive.id), null, '删除后快照不可得（archiveRow 过滤已删行）');
+  await pushSvc.revokeArchiveObservations(r.archive.id, snapshot!.kind, snapshot!.refs);
+  assert.equal(calls.length, 1, '按删除前快照逐消息一条撤销');
   assert.equal(calls[0]!.payload['type'], 'conversation_archived_revoked');
   assert.equal(calls[0]!.payload['archive_id'], r.archive.id);
   assert.match(calls[0]!.operation_id, /:conversation_archived_revoked$/, '撤销 op 键与建档互不串（幂等）');
+});
+
+test('ARC-16 (RR5): 对象元数据回推消费者——存量未标记行按幂等 op 键补推并落标记；二次无新增', async () => {
+  const calls: Array<{ operation_id: string; payload: Record<string, unknown> }> = [];
+  const { ArchiveSyncService } = await import('../../apps/host/src/integrations/mariposa/archive-sync.ts');
+  const { EventService } = await import('../../apps/host/src/events/service.ts');
+  const { Logger } = await import('../../apps/host/src/observability/logging.ts');
+  const fakeClient = { attachmentsSync: async (a: { operation_id: string; payload: Record<string, unknown> }) => { calls.push(a); return { ok: true }; } } as never;
+  const sync = new ArchiveSyncService({
+    db, events: new EventService(db), logger: new Logger(null), client: fakeClient,
+    config: buildConfig({ archive: { enabled: true, source_scope: 'stream-x' }, integrations: { mariposa: { base_url: 'http://127.0.0.1:9' } } }),
+  });
+  // 存量场景：已确认收据的消息 + synced 图片附件，但从未推过对象元数据
+  const u = publishUser('c2', 'arc16-u');
+  const t0 = new Date().toISOString();
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr16', 'op16', u.id, 1, 'sc1', 'sm_arc16', 'h', t0, t0);
+  db.prepare('INSERT INTO media_assets(id, creation_operation_id, state, mime_type, byte_size, content_sha256, storage_key, origin, created_by, ingest_purpose, created_at, updated_at, m_sync_state, m_content_hash) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run('asset-arc16', 'op-a16', 'available', 'image/png', 10, 'h'.repeat(64), 'hh/x.png', 'upload', 'qiaosheng', 'chat_image', t0, t0, 'synced', 'm'.repeat(64));
+  db.prepare('INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, created_at) VALUES (?,?,?,?,?,?)')
+    .run(u.id, 1, 0, 'asset-arc16', 'image', t0);
+  const pushed = await sync.backfillObjectMeta();
+  assert.equal(pushed, 1);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.operation_id, `att-objmeta:${u.id}@1:asset-arc16`, '与 post-ACK 推送同一幂等 op 键（M 侧重放无副作用）');
+  assert.equal(calls[0]!.payload['sha'], 'm'.repeat(64), 'M 对象身份优先 m_content_hash');
+  assert.equal((db.prepare('SELECT object_meta_synced_at m FROM message_attachments WHERE message_id=? AND asset_id=?').get(u.id, 'asset-arc16') as { m: string }).m != null, true, '成功即落标记');
+  calls.length = 0;
+  assert.equal(await sync.backfillObjectMeta(), 0, '已标记行不再重放（标记防放大）');
+  assert.equal(calls.length, 0);
 });

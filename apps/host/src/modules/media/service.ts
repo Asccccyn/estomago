@@ -131,9 +131,6 @@ export class MediaToolsService {
           out.note=indexFailed>0
             ? `表情包 ${scopePending.length} 张尚未建成索引（其中 ${indexFailed} 张编码失败——图片编码服务异常，文字检索不受影响）；本次结果可能不全`
             : `表情包 ${scopePending.length} 张尚未建成索引（后台补齐中）；本次结果可能不全，稍后可再查`;
-        } else if (indexFailed > 0 && (out.hits as unknown[] | undefined)?.length === 0) {
-          // 本轮补齐后无未索引残留、但有编码失败且零命中——如实说明，不伪装正常 no_match
-          out.note = `表情包成员均已建索引，但本轮 ${indexFailed} 张编码失败后重新补齐；当前零命中可能因此不全，稍后可再查`;
         }
       } else if(pending.length>0){
         out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';

@@ -1671,7 +1671,9 @@ export class TurnSupervisor {
     // planned=2 blocks=2）。统一按 content_sha256 去重。
     const carryItemsWithHash = carryItems.map((c) => {
       const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(c.asset_id) as { content_sha256: string } | undefined;
-      return { ...c, content_sha256: row?.content_sha256 ?? null };
+      // 本地正本行优先；行缺席时保留 content 随携带集提供的身份（RR2，自查修正：
+      // 旧写法无脑覆盖，本地查不到会把好数据抹成 null 退化回 est:asset 双键）
+      return { ...c, content_sha256: row?.content_sha256 ?? c.content_sha256 ?? null };
     });
     const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash });
     if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);

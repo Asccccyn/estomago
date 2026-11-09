@@ -405,3 +405,16 @@ test('R6-携带：carry-set 逐携带关系返回（同 asset 多条留言不预
   assert.equal(items.length, 2, '两条携带关系各自返回（去重归 E 规划器）');
   assert.deepEqual(items.map((i) => i.caption).sort(), ['海边的落日', '风好大'], '留言不预合并丢弃（03 §7.2）');
 });
+
+// RR2（复审 2026-11-09）：浏览器路径（host 代理唯一入口）写入相册条目时补注 M 对象身份——
+// content 侧落 content_sha256，携带集随行返回（配置/规划/装配三口径统一的身份源头）。
+test('RR2: 浏览器经 host 代理收藏→条目落 content_sha256 且 carry-set 随行返回', async () => {
+  const a1 = await upload(PNG, 'rr2-px-1');
+  const assetId = a1;
+  const entry = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'rr2-px-e1' }), body: JSON.stringify({ asset_id: assetId, carry_mode: 'always' }) });
+  assert.equal(entry.status, 201);
+  const set = await fetch(`${base}/api/v1/content/carry-set`, { headers: auth() });
+  const items = ((await set.json()) as { items: Array<{ asset_id: string; content_sha256?: string }> }).items.filter((i) => i.asset_id === assetId);
+  assert.equal(items.length, 1);
+  assert.match(items[0]!.content_sha256 ?? '', /^[0-9a-f]{64}$/, '代理补注的 M 对象身份随携带集返回（前端不知道 hash，E 是身份持有方）');
+});

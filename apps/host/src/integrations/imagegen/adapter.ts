@@ -56,8 +56,8 @@ export class ImageGenAdapter {
       return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_count 官方范围 2..16' };
     }
     const frameDurationMs = typeof opts.frameDurationMs === 'number' ? Math.trunc(opts.frameDurationMs) : undefined;
-    if (frameDurationMs !== undefined && (frameDurationMs < 20 || frameDurationMs > 10_000)) {
-      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 应在 20..10000' };
+    if (frameDurationMs !== undefined && frameDurationMs <= 0) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 必须是正整数毫秒' };
     }
     let res: ImageGenTransportResult;
     try {

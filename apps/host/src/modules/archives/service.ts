@@ -198,18 +198,32 @@ export class ArchiveService {
   }
 
   /** RR3：删除存档→逐条推撤销 observation（M 侧 latest-wins：同 archive_id 最后一行
-   *  是 revoked 即不再显示标记/总览条目）。幂等 op 键（含类型后缀，与建档推送互不串）。 */
-  async revokeArchiveObservations(conversationId: string, archiveId: string): Promise<void> {
-    const client = this.deps.attachments;
-    if (!client || !this.deps.contentClient) return;
+   *  是 revoked 即不再显示标记/总览条目）。幂等 op 键（含类型后缀，与建档推送互不串）。
+   *  refs/kind 由调用方在删除**前**取好——content 的 archiveRow 过滤已删行，删除后再
+   *  读详情必 404，撤销会永远不触发（自查修正：原实现即此死路）。 */
+  async revokeArchiveObservations(archiveId: string, kind: ArchiveKind, refs: Array<{ message_id: string; revision: number }>): Promise<void> {
+    if (!this.deps.attachments || refs.length === 0) return;
     try {
-      const detail = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}` });
-      if (detail.status !== 200) return; // 删除已由 content 收口；撤销投影失败由重放消费者兜底
-      const dto = detail.body as { kind?: ArchiveKind; messages?: Array<{ message_id?: string; revision?: number }> };
-      const refs = (dto.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m.message_id === 'string' && typeof m.revision === 'number');
-      await this.pushArchiveObservations(archiveId, dto.kind === 'sweet' ? 'sweet' : 'quarrel', 'qiaosheng', refs.length, refs.map((m) => ({ message_id: m.message_id, revision: m.revision, sequence: 0 })), 'conversation_archived_revoked');
+      await this.pushArchiveObservations(archiveId, kind, 'qiaosheng', refs.length, refs.map((m) => ({ message_id: m.message_id, revision: m.revision, sequence: 0 })), 'conversation_archived_revoked');
     } catch (err) {
       this.deps.logger?.warn('archive_revoke_sync_failed', { archive_id: archiveId, code: String((err as Error).message).slice(0, 80) });
+    }
+  }
+
+  /** 删除前的档案引用快照（供撤销推送；对已删/未知档案返回 null 不推）。 */
+  async archiveRefsForRevoke(conversationId: string, archiveId: string): Promise<{ kind: ArchiveKind; refs: Array<{ message_id: string; revision: number }> } | null> {
+    if (!this.deps.contentClient) return null;
+    try {
+      const detail = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}` });
+      if (detail.status !== 200) return null;
+      const dto = detail.body as { conversation_id?: string; kind?: ArchiveKind; messages?: Array<{ message_id?: string; revision?: number }> };
+      if (dto.conversation_id !== conversationId) return null;
+      return {
+        kind: dto.kind === 'sweet' ? 'sweet' : 'quarrel',
+        refs: (dto.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m.message_id === 'string' && typeof m.revision === 'number'),
+      };
+    } catch {
+      return null; // 详情读不到：删除照常，撤销投影缺席由日志可查（无第二套恢复正本）
     }
   }
 
