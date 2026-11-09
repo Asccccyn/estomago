@@ -31,7 +31,9 @@ export type SdkRunRequest = {
     executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number) => Promise<ToolExecResult>;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
-    maxModelRequests: number;
+    /** 2026-11-09 撤销 §8.2 工具轮上限后可选：未设=SDK maxTurns 不传（无限制）；
+     *  后台回合仍由 background.maxModelRequests（账本预算）独立约束。 */
+    maxModelRequests?: number;
     /** 2026-10-31 她批：SDK 原生媒体投影（官方文档核实 Streaming Input 支持图片块）——
      *  发送边界把 asset_image 引用物化为 SDK image 块；仅进 prompt 流，
      *  messages 账本/持久化保持引用形态（§6.2 Base64 不入库）。 */

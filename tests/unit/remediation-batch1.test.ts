@@ -112,9 +112,15 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
 test('F04：同批 complete+hold（complete 在前），hold 结果未知 → 不签发完成凭证、不换窗', async () => {
   // chat 首轮：一次性给出 complete(no_new_hold)+hold，complete 排在前面；hold 返回 503
   let reviewIdSeen = '';
+  // 工具轮上限撤销（2026-11-09 裁定）后 mock 不再依赖 8 轮截断收口——
+  // 发过一次 complete+hold 后续轮回文本，让循环自然结束（被测的是
+  // complete 核验失败路径，不是上限截断）
+  let fired = false;
   const orT = orTransportWith({
-    review: (_hasTool, reviewId) => {
+    review: (hasTool, reviewId) => {
       reviewIdSeen = reviewId;
+      if (hasTool || fired) return textBody('r2', 'done');
+      fired = true;
       // 审计 R2：complete 排在 hold 之前 + hold 返回 503——修复后必须先执行写、complete 最后核验失败
       return twoToolBody('r1', ['call-comp', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' }], ['call-hold', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'y' }]);
     },

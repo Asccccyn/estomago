@@ -136,7 +136,10 @@ export type SupervisorDeps = {
  *  无冻结记录的新窗=当前目录（buildHostTools 含 oido_analyze）。 */
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
-const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
+// §8.2 工具续请求上限已按宿主用户裁定撤销（2026-11-09"根治一下，调成无上限"：
+// 一回合连写多条记忆+自纠会撞 8 轮上限，6 条已提交的副作用令整轮不可重放，
+// 尾部记忆与正文回复双双丢失——保护误伤大于循环风险）。循环退出=模型自然
+// 不再发起工具调用；模型死循环时由用户停止回合兜底（abort 信号全程贯通）。
 // §3.3 有界恢复（2026-10-05 审计 P2-1）：同窗评审失败达上限后不再自动付费评审——
 // 恢复路径=评审成功换新窗（新窗计数重置）或人工处理后手动换窗；防"模型永不调用 complete"时每条消息都付费评审。
 const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
@@ -372,7 +375,7 @@ export class TurnSupervisor {
     isCancelRequested: () => boolean;
     registerAbort: (c: AbortController) => void;
     recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
-    maxModelRequests: number;
+    maxModelRequests: number; // 后台回合模型请求预算（§B 账本），与已撤销的 §8.2 工具轮上限无关
   }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string; detail?: string }> {
     const d = this.d;
     const dv = this.drv();
@@ -644,7 +647,7 @@ export class TurnSupervisor {
       return row?.sequence ?? 0;
     };
     try {
-    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+    for (let round = 0; ; round++) {
       pendingCalls = [];
       pendingAssistantIndex = -1;
       // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
@@ -861,9 +864,6 @@ export class TurnSupervisor {
       pendingAssistantIndex = envelope.messages.length;
       pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
-      if (round === MAX_TOOL_ROUNDS) {
-        return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, 'TOOL_ROUNDS_EXCEEDED');
-      }
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
       const ordered = [
@@ -950,7 +950,6 @@ export class TurnSupervisor {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null });
     } catch (error) {
       return failedLoop({ outcome: 'error', errorClassified: 'unknown', errorCode: stableCode(error), errorMessage: String((error as Error).message ?? error), sessionId: null, requestId: null });
     }
@@ -980,7 +979,7 @@ export class TurnSupervisor {
         o.onEvent(ev, requestContext);
       },
       host: {
-        windowId: o.windowId, purpose: o.purpose, envelope: o.envelope, maxModelRequests: MAX_TOOL_ROUNDS + 1,
+        windowId: o.windowId, purpose: o.purpose, envelope: o.envelope,
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
         ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId) } : {}),

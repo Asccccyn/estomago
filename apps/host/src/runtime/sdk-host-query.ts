@@ -141,7 +141,6 @@ export async function runSdkHostQuery(
   let run: Query | undefined;
   const beforeModel = async (): Promise<void> => {
     if (req.abortController.signal.aborted) throw Error('SDK_CANCELLED');
-    if (round >= host.maxModelRequests) throw Error('TOOL_ROUNDS_EXCEEDED');
     const blocked = await verifySubscription(run!);
     if (blocked) throw Error(blocked);
     await host.beforeModel(messages, round);
@@ -158,7 +157,9 @@ export async function runSdkHostQuery(
     // 下一次请求从实发前缀接续，不再向已含维护记录的会话重复重放。旧 fork 策略
     // （为丢弃 ack 而设）与保留策略冲突，已统一到保留侧。
     mcpServers: { est: mcp },
-    maxTurns: host.maxModelRequests,
+    // 2026-11-09 宿主用户裁定撤销 §8.2 工具轮上限：未显式设 maxModelRequests 时
+    // 不传 maxTurns（SDK 无限制）；退出=模型自然结束，死循环由用户停止回合兜底
+    ...(host.maxModelRequests !== undefined ? { maxTurns: host.maxModelRequests } : {}),
     spawnClaudeCodeProcess: spawnProcess ?? proxyOnlySdkSpawn(req.options.options.env.HTTPS_PROXY),
     canUseTool: async (name, input, context) => context.mcpServer?.source === 'sdk' && context.mcpServer.name === 'est' && tools.some(t => sdkToolName(t.function.name) === name)
       ? { behavior: 'allow', updatedInput: input }
