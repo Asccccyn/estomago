@@ -52,15 +52,15 @@ if (rtPut) {
     if (body.access_policy === 'subscription-first' && body.sdk_model === undefined) {
       const selected = typeof body.or_model === 'string' ? body.or_model : d.settings.effectiveOrModel(d.config.openrouter.model);
       body.sdk_model = Object.entries(SDK_TO_API_MODEL).find(([, api]) => api === selected)?.[0];
-      if (!body.sdk_model) return json(res, 422, { error: { code: 'model_not_connected', message: '当前型号尚未接入 SDK，请先选择 Opus 4.6 或 Opus 5.5。' } });
+      if (!body.sdk_model) return json(res, 422, { error: { code: 'model_not_connected', message: '当前型号尚未接入 SDK，请先选择 Opus 4.6、Opus 5.5、Fable 5.1 或 Fable 5.2。' } });
     } else if (body.access_policy === 'configured' && body.or_model === undefined) {
       const selected = typeof body.sdk_model === 'string' ? body.sdk_model : d.settings.effectiveSdkModel(d.config.runtime.model);
       body.or_model = selected ? SDK_TO_API_MODEL[selected] : undefined;
-      if (!body.or_model) return json(res, 422, { error: { code: 'model_not_connected', message: '当前 SDK 型号尚未接入 API 映射，请先选择 Opus 4.6 或 Opus 5.5。' } });
+      if (!body.or_model) return json(res, 422, { error: { code: 'model_not_connected', message: '当前 SDK 型号尚未接入 API 映射，请先选择 Opus 4.6、Opus 5.5、Fable 5.1 或 Fable 5.2。' } });
     }
   }
   if (body.sdk_model !== undefined && body.sdk_model !== null && !(SDK_MODEL_OPTIONS as readonly unknown[]).includes(body.sdk_model)) {
-    return json(res, 422, { error: { code: 'invalid_sdk_model', message: 'SDK 当前只接入 Opus 4.6 与 Opus 5.5。' } });
+    return json(res, 422, { error: { code: 'invalid_sdk_model', message: 'SDK 当前接入 Opus 4.6、Opus 5.5、Fable 5.1 与 Fable 5.2。' } });
   }
   // WP-04（JFA-B05/CX-10/C-016）：两字段全验通过后一次性写入——
   // 任一失败 422 且零写入（不再逐字段先写先错）；or_model 按配置层

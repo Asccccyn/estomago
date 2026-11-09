@@ -104,6 +104,20 @@ const textEvents = () => [
   { type: 'assistant', message: { id: 'native-message', content: [{ type: 'text', text: 'SDK 合成回复' }] } },
 ];
 
+test('Fable 5.1/5.2 运行时选择实际进入 SDK 派发，不更换订阅入口', async t => {
+  for (const model of ['claude-fable-5-1', 'claude-fable-5-2']) {
+    await t.test(model, async sub => {
+      const f = fixture(sub, () => [...textEvents(), { type: 'result', subtype: 'success', session_id: randomUUID() }]);
+      f.settings.setMany([['sdk_model', model], ['reasoning_effort', 'xhigh']]);
+      assert.equal((await f.send('离线模型路由验证')).state, 'completed');
+      assert.equal(f.calls.sdk.length, 1);
+      assert.equal(f.calls.sdk[0].options.model, model);
+      assert.equal(f.calls.sdk[0].options.effort, 'xhigh');
+      assert.equal(f.calls.or.length, 0);
+    });
+  }
+});
+
 test('only a rejected subscription bucket can start OR; next safe round after reset rebuilds from current est history', async t => {
   const f = fixture(t, round => round === 1 ? [limit()] : [...textEvents(), { type: 'result', subtype: 'success', session_id: randomUUID() }]);
   assert.equal((await f.send('第一条合成消息')).state, 'completed');

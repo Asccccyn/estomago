@@ -6,8 +6,13 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 //  - reasoning_effort：仅生成参数（OR reasoning.effort 七档）——**不进
 //    指纹、不换窗**，下一请求立即生效（上下文全复用）。
 //  - 仅信封驱动（OR）面生效；DS 官方直连无 effort 参数，模型沿用配置。
-export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5'] as const;
-export const SDK_TO_API_MODEL: Record<string, string> = { 'claude-opus-4-6': 'anthropic/claude-opus-4.6', 'claude-opus-5-5': 'anthropic/claude-opus-5.5' };
+export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5-2'] as const;
+export const SDK_TO_API_MODEL: Record<string, string> = {
+  'claude-opus-4-6': 'anthropic/claude-opus-4.6',
+  'claude-opus-5-5': 'anthropic/claude-opus-5.5',
+  'claude-fable-5-1': 'anthropic/claude-fable-5.1',
+  'claude-fable-5-2': 'anthropic/claude-fable-5.2',
+};
 export function sdkEffortsForModel(model: string | null): string[] | null {
   const apiModel = model ? SDK_TO_API_MODEL[model] ?? null : null;
   return effortsForModel(null, apiModel);
@@ -71,6 +76,7 @@ const DOCUMENTED_EFFORTS: Record<string, readonly string[]> = {
   'anthropic/claude-opus-4.6': ['low', 'medium', 'high', 'max'],
   'anthropic/claude-opus-5.5': ['low', 'medium', 'high', 'xhigh', 'max'],
   'anthropic/claude-fable-5.1': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'anthropic/claude-fable-5.2': ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 /** Known models use verified native levels, intersected with provider restrictions.

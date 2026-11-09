@@ -12,7 +12,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { contextFingerprint } from '../../apps/host/src/identity/service.ts';
-import { RuntimeSettingsService, REASONING_EFFORTS } from '../../apps/host/src/runtime/runtime-settings.ts';
+import { RuntimeSettingsService, REASONING_EFFORTS, SDK_MODEL_OPTIONS, SDK_TO_API_MODEL, sdkEffortsForModel } from '../../apps/host/src/runtime/runtime-settings.ts';
 
 function makeDb(root: string) {
   writeApprovedIdentity(root);
@@ -80,10 +80,21 @@ test('已核实的具体模型：缺少元数据仍只列真实档位，并遵�
   assert.deepEqual(effortsForModel(null, 'anthropic/claude-opus-4.6'), opus);
   assert.deepEqual(effortsForModel({ supported_efforts: [...REASONING_EFFORTS] }, 'anthropic/claude-opus-4.6'), opus);
   assert.deepEqual(effortsForModel({ supported_efforts: ['low', 'high'] }, 'anthropic/claude-opus-4.6'), ['default', 'low', 'high']);
-  for (const model of ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1']) {
+  for (const model of ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-fable-5.2']) {
     assert.deepEqual(effortsForModel(null, model), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
   }
   assert.equal(effortsForModel(null, 'anthropic/claude-unknown'), null);
+});
+
+test('SDK Fable 5.1/5.2：下拉选项、API 映射与强制思考档位一致', () => {
+  for (const [sdk, api] of [
+    ['claude-fable-5-1', 'anthropic/claude-fable-5.1'],
+    ['claude-fable-5-2', 'anthropic/claude-fable-5.2'],
+  ]) {
+    assert.ok((SDK_MODEL_OPTIONS as readonly string[]).includes(sdk));
+    assert.equal(SDK_TO_API_MODEL[sdk], api);
+    assert.deepEqual(sdkEffortsForModel(sdk), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+  }
 });
 
 // —— 端到端：换模型走受控换窗；换思考深度不换窗 ——
