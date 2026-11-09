@@ -1298,13 +1298,21 @@ export class TurnSupervisor {
     let envHasImage = false;
     const guides = selectionGuides(o.selectedMessages ?? []);
     let carryImageCount = o.carryFragment ? countCarryImageBlocks([{ content: o.carryFragment.blocks }]) : 0;
+    const emittedImageAssets = new Set<string>(); // R2：跨已选消息同图只物化一次
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
       const proj = this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
-      carryImageCount += countCarryImageBlocks([{ content: proj.blocks }]);
-      messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
+      const dedupedBlocks = proj.blocks.map((b) => {
+        if (b.type !== 'asset_image') return b;
+        const assetId = (b as { asset_id: string }).asset_id;
+        if (emittedImageAssets.has(assetId)) return null; // 后续重复图：去块（正文/caption 文本保留）
+        emittedImageAssets.add(assetId);
+        return b;
+      }).filter((b) => b !== null);
+      carryImageCount += countCarryImageBlocks([{ content: dedupedBlocks }]);
+      messages.push({ role: m.role, content: dedupedBlocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }
     // 03 §8.5 装配级核验（规划器已拦一次，这里对实际装出的块再核一遍）：携带图+选集图
     // 合并后的实际图像块不得超过 CARRY_IMAGE_LIMIT；超限明确阻断，不截前 10、不静默丢图。
@@ -1314,10 +1322,9 @@ export class TurnSupervisor {
     // 相册重构 P4（03 §4/§5.1）：宿主一次性通知作为独立 system 数据块在尾部前追加——
     // 只追加新事件（不插历史中间、不改写旧前缀）；投递即标记（SDK 会话前缀保留已发
     // 内容，同会话重试不重复）。无通知=零块，前缀不受影响。
-    if (this.d.archives) {
-      const notices = this.d.archives.takePendingNotices(o.conversationId);
-      for (const n of notices) messages.push({ role: 'system', content: [{ type: 'text', text: n.text }] });
-    }
+    // R4（复审 2026-11-08）：通知注入从窗口初始化信封移除——该信封可被 discardUnsent
+    // 丢弃重建，而通知曾在取出时即标记 delivered（存档→滚窗→通知丢失的根因）。
+    // 唯一注入点=普通轮尾部（orMessages 装配处），按实际投递证据收口。
     // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
     // 保温空尾）不带序号
     const tailSeq = o.tailMessage?.id
@@ -1651,7 +1658,14 @@ export class TurnSupervisor {
         const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(a.asset_id) as { content_sha256: string } | undefined;
         return { asset_id: a.asset_id, message_id: m.message_id, content_sha256: row?.content_sha256 ?? `est:${a.asset_id}` };
       }));
-    const plan = planCarryImages({ selectionImages, carryItems });
+    // R2（复审 2026-11-08）：相册携带项补 M 对象身份——生产装配此前只传 asset_id，
+    // 规划器对选集图按 sha、相册图按 est:asset 计键，同图两张（反例：uniqueMedia=1
+    // planned=2 blocks=2）。统一按 content_sha256 去重。
+    const carryItemsWithHash = carryItems.map((c) => {
+      const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(c.asset_id) as { content_sha256: string } | undefined;
+      return { ...c, content_sha256: row?.content_sha256 ?? null };
+    });
+    const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash });
     if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
     // ALB-08（审计 2026-11-08）：计划立即持久化（先落 pending 键行；窗口落地时迁到真实
     // window_id）——旧实现只存进程内 Map，滚窗成功后、首请求前重启即丢，next_once 复活。

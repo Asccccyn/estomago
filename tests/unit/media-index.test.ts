@@ -207,6 +207,9 @@ test('M11: 集合过滤——成员图可中、非成员图被排除、空集合
     } else {
       assert.equal(onlyDog.state, 'no_match');
     }
+    // R7：集合成员未发进 other 房间也能被集合 scope 检索（分类=授权，与房间无关）
+    const stickerLike = await f.index.searchImagesByRoom('猫猫的图', 'other', 3, undefined, new Set([a1.id]));
+    assert.equal(stickerLike.state, 'candidates', '集合 scope 不要求消息附件绑定（R7）');
     // 集合只含猫图：查"猫"命中猫
     const onlyCat = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set([a1.id]));
     assert.equal(onlyCat.state, 'candidates');

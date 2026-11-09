@@ -88,6 +88,15 @@ export class MediaToolsService {
         if (res.status !== 200) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: `表情包集合读取失败（${res.status}）——不放开为全域搜索` } };
         const items = (res.body as { items?: Array<{ asset_id?: string }> }).items ?? [];
         allowSet = new Set(items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'));
+        // R7：集合成员未建索引（如刚上传未发进聊天）——有界补齐（≤5/次）后检索，
+        // 不再结构性 no_match。indexImage 幂等（同资产同 namespace 覆盖）。
+        const topSignal = ctx.signal;
+        let topped = 0;
+        for (const aid of allowSet) {
+          if (topped >= 5 || topSignal?.aborted) break;
+          const fp = await this.mediaIndex!.workerFingerprint(topSignal);
+          if (fp && !this.mediaIndex!.assetIndexed(aid, fp)) { try { await this.mediaIndex!.indexImage(aid, topSignal); topped += 1; } catch { /* 补失败如实：可能仍 no_match */ } }
+        }
       } catch {
         return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合暂不可达——不放开为全域搜索' } };
       }

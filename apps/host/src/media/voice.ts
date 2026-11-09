@@ -63,13 +63,22 @@ export class VoiceService {
     this.db.prepare(`INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,state,content_sha256,created_at,updated_at)
       VALUES (?,?,?,'processing',?,?,?) ON CONFLICT(asset_id) DO UPDATE SET operation_key=excluded.operation_key,state='processing',error_code=NULL,updated_at=excluded.updated_at`)
       .run(assetId, conversationId, operationKey, asset.content_sha256, now, now);
-    const audio = await this.media.readContentResolvingMaster(assetId);
+    try {
+    // R3（复审 2026-11-08）：字节回源失败发生在 ASR 调用**之前**——不存在真实结果
+    // 未知，收口为可换键重试的 failed（原实现直接抛出，行卡死 processing，M 恢复后
+    // 仍被单飞门拒绝，ASR 零调用）。
+    let audio: { bytes: Buffer; mime: string };
+    try {
+      audio = await this.media.readContentResolvingMaster(assetId);
+    } catch (err) {
+      this.db.prepare("UPDATE voice_transcripts SET state='failed', error_code='VOICE_MASTER_UNREACHABLE', updated_at=? WHERE asset_id=? AND state='processing'").run(new Date().toISOString(), assetId);
+      throw new MediaError('VOICE_MASTER_UNREACHABLE', 503, `语音字节回源失败（M 正本暂不可读）：${String((err as Error).message).slice(0, 80)}——稍后可重试`);
+    }
     const format = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' }[audio.mime];
     if (!format) {
       this.db.prepare("UPDATE voice_transcripts SET state='failed', error_code='VOICE_FORMAT_UNSUPPORTED', updated_at=? WHERE asset_id=? AND state='processing'").run(new Date().toISOString(), assetId);
       throw new MediaError('VOICE_FORMAT_UNSUPPORTED', 422, '语音格式不支持');
     }
-    try {
       const c = this.config.integrations.siren;
       const adapter = new SirenAdapter(c.base_url, process.env[c.credential_ref!]!, this.transport);
       const result = await adapter.transcribe(audio.bytes, { format, mimeType: audio.mime, conversationId });

@@ -124,11 +124,30 @@ export class MediaIndexService {
     if (!this.worker) throw new Error('MEDIA_WORKER_UNCONFIGURED');
     if (allowAssetIds !== undefined && allowAssetIds.size === 0) return { state: 'no_match', items: [] }; // 集合空=无合格候选，如实无匹配
     const k = Math.max(1, Math.min(MAX_TOP_K, topK));
+    const score = (vec: Float32Array) => (r: { asset_id: string; vector: Buffer }) =>
+      ({ asset_id: r.asset_id, score: cosine(vec, new Float32Array(r.vector.buffer, r.vector.byteOffset, DIMS)) });
     const qBytes = Buffer.from(query, 'utf8');
     const { fingerprint, vectors } = await this.worker.embed([{ id: 'query', modality: 'text', bytes: qBytes }], signal);
     signal?.throwIfAborted();
     const qvec = vectors.get('query');
     if (!qvec) throw new Error('MEDIA_WORKER_NO_VECTOR');
+    // R7（复审 2026-11-08）：显式集合 scope（表情包分类）不要求消息附件绑定——用户
+    // 明确归类的成员身份即授权（上传表情→未发进聊天也可检索）。候选=索引∩集合∩活资产；
+    // 默认 chat scope 维持房间消息权限门不变。
+    if (allowAssetIds !== undefined) {
+      const setRows = this.db.prepare(
+        `SELECT e.asset_id, e.vector FROM media_embedding_index e
+         WHERE e.namespace = ? AND e.modality = 'image'
+           AND EXISTS (SELECT 1 FROM media_assets a WHERE a.id = e.asset_id AND a.state = 'available' AND a.content_sha256 = e.content_sha256)`,
+      ).all(fingerprint) as Array<{ asset_id: string; vector: Buffer }>;
+      const scoredSet = setRows.filter((r) => allowAssetIds.has(r.asset_id))
+        .map(score(qvec))
+        .filter((r) => r.score > MIN_SCORE)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k);
+      if (scoredSet.length === 0) return { state: 'no_match', items: [] };
+      return { state: 'candidates', items: scoredSet.map((x) => ({ asset_ref: `est:${x.asset_id}`, kind: 'image' as const })) };
+    }
     // 读路径权限门（07 删除失效）：join 活资产 + 当前会话消息绑定；tombstone/撤权立即消失
     const rows = this.db.prepare(
       `SELECT e.asset_id, e.vector FROM media_embedding_index e
@@ -139,8 +158,7 @@ export class MediaIndexService {
            WHERE ma.asset_id = e.asset_id AND m.conversation_id = ?
          )`,
     ).all(fingerprint, roomId) as Array<{ asset_id: string; vector: Buffer }>;
-    const filtered = allowAssetIds !== undefined ? rows.filter((r) => allowAssetIds.has(r.asset_id)) : rows;
-    const scored = filtered
+    const scored = rows
       .map((r) => ({ asset_id: r.asset_id, score: cosine(qvec, new Float32Array(r.vector.buffer, r.vector.byteOffset, DIMS)) }))
       .filter((r) => r.score > MIN_SCORE)
       .sort((a, b) => b.score - a.score)
@@ -158,6 +176,13 @@ export class MediaIndexService {
       `DELETE FROM media_embedding_index WHERE NOT EXISTS (SELECT 1 FROM media_assets a WHERE a.id = asset_id AND a.state = 'available')`,
     ).run();
     return Number(res.changes);
+  }
+
+  /** R7：资产是否已在当前指纹命名空间建索引（集合 scope 补齐用；幂等判定）。 */
+  assetIndexed(assetId: string, namespace: string): boolean {
+    const row = this.db.prepare(`SELECT 1 FROM media_embedding_index e WHERE e.asset_id = ? AND e.namespace = ?
+      AND e.content_sha256 = (SELECT content_sha256 FROM media_assets WHERE id = ? AND state = 'available')`).get(assetId, namespace, assetId);
+    return row !== undefined;
   }
 
   /** 当前 worker 指纹（health 取；不可达=null）。 */
