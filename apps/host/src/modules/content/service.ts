@@ -73,8 +73,11 @@ export class ContentToolsService {
    *  幂等键绑定 turn+模型显式 key（RF02 同款，不含 provider requestId）。 */
   async contentAlbumEntryWrite(args: { kind: string; asset_id: string; caption?: string; meaning?: string; carry_mode?: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
+    // RR2：补注 M 对象身份（同字节别名在 content 限额/携带集按原图归并）；资产缺席如实不带
+    let sha256: string | null = null;
+    try { sha256 = this.media?.getAsset(args.asset_id).content_sha256 ?? null; } catch { sha256 = null; }
     const r = await this.contentOps.write({ method: 'POST', path: `/api/v1/content/albums/${encodeURIComponent(args.kind)}/entries`, actor: 'jiaming',
-      body: { asset_id: args.asset_id, caption: args.caption, meaning: args.meaning, ...(args.carry_mode ? { carry_mode: args.carry_mode } : {}) },
+      body: { asset_id: args.asset_id, caption: args.caption, meaning: args.meaning, ...(sha256 ? { content_sha256: sha256 } : {}), ...(args.carry_mode ? { carry_mode: args.carry_mode } : {}) },
       headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
     });
     if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
@@ -105,6 +108,15 @@ export class ContentToolsService {
     if (!this.contentClient) {
       return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true } };
     }
+    // RR4（复审 2026-11-09）：成功条件与 imagegen 同一根因口径——M 唯一正本未落正
+    // 不得报 saved（落正由后台退避推进；同键重试只补落正与条目，不重复保存字节）。
+    const synced = () => this.media!.getAsset(asset.id).m_sync_state === 'synced';
+    if (this.media.masterStoreConfigured && !synced()) {
+      await this.media.attemptMSync(asset.id);
+      if (!synced()) {
+        return { ok: false, output: { error_code: 'CREATION_MASTER_PENDING', detail: 'SVG/HTML 已生成并保存为资产，但 M 唯一正本尚未落正——未建作品条目；用同一 client_operation_id 重试只补落正与条目，不会重复保存' } };
+      }
+    }
     this.media.pinAssetForOperation({ assetId: asset.id, operationKey: opKey });
     const { contentForward } = await import('../../integrations/content/client.ts');
     try {
@@ -120,13 +132,18 @@ export class ContentToolsService {
       const creation = res.body as { id?: string };
       const creationId = typeof creation.id === 'string' ? creation.id : null;
       if (creationId !== null) {
+        let snapConfirmed = false;
         try {
           const snap = await contentForward(this.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/references/creation/${encodeURIComponent(creationId)}` });
           const b = snap.body as { owner_revision?: number; deleted?: boolean; asset_ids?: string[] };
           if (snap.status === 200 && typeof b.owner_revision === 'number' && b.deleted !== true) {
             this.media.commitContentSnapshot({ type: 'creation', id: creationId }, { ownerRevision: b.owner_revision, assetIds: Array.isArray(b.asset_ids) ? b.asset_ids : [] }, opKey);
+            snapConfirmed = true;
           }
-        } catch { /* 快照确认失败不阻塞回执：pin 仍在保护，恢复对账收口 */ }
+        } catch { /* 快照读取失败按未确认处理（下方如实返回） */ }
+        if (!snapConfirmed) {
+          return { ok: false, output: { error_code: 'CREATION_SNAPSHOT_PENDING', detail: '资产与作品条目已建，但引用快照未确认（content 暂不可达）——同键重试只补确认，不会重复保存或重复建条目', raw_status: 503 } };
+        }
       } else {
         this.media.releaseOperationPins(opKey); // 回执无 id=无权威关系可确认
       }

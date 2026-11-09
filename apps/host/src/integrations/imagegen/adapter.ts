@@ -6,7 +6,7 @@
 // 无条件重发（多次计费风险），按 R12 停在待核实状态。
 import { sniffMime } from '../../media/assets.ts';
 
-export type ImageGenRequest = { prompt: string; model: string; n?: number; size?: string };
+export type ImageGenRequest = { prompt: string; model: string; n?: number; size?: string; output_format?: string; frame_count?: number; frame_duration_ms?: number };
 export type ImageGenTransportResult =
   | { status: number; json: unknown; transportError?: undefined }
   | { transportError: 'timeout' | 'network_refused' | 'network_unknown'; status?: undefined; json?: undefined };
@@ -38,14 +38,36 @@ export class ImageGenAdapter {
     return typeof v === 'string' && v.length > 0;
   }
 
-  async generate(prompt: string): Promise<ImageGenResult> {
+  async generate(prompt: string, opts: { format?: string; size?: string; frameCount?: number; frameDurationMs?: number } = {}): Promise<ImageGenResult> {
     if (!this.configured) return { outcome: 'error', code: 'IMAGEGEN_UNCONFIGURED', detail: '未配置图片生成 Key（服务端设置）——能力如实不可用，不切换其他供应商' };
     if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 32000) {
       return { outcome: 'error', code: 'IMAGEGEN_PROMPT_INVALID', detail: 'prompt 必须是 1..32000 字符' };
     }
+    // GIF（2026-11-09 她/OpenAI 官方文档确认）：flare/sunburst 经 output_format=gif
+    // 直接生动图（官方 2–16 帧、frame_duration_ms；GIF 不支持分帧流式）。不带
+    // output_format 时供应商默认静态图——生产实证：三次动图请求全落 PNG（根因）。
+    // 响应侧不信任声明格式，仍按字节魔数 sniff。
+    const format = ['png', 'jpeg', 'webp', 'gif'].includes(String(opts.format)) ? String(opts.format) : undefined;
+    if (opts.size !== undefined && !/^\d{3,4}x\d{3,4}$/.test(String(opts.size))) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'size 形如 1024x1024' };
+    }
+    const frameCount = typeof opts.frameCount === 'number' ? Math.trunc(opts.frameCount) : undefined;
+    if (frameCount !== undefined && (frameCount < 2 || frameCount > 16)) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_count 官方范围 2..16' };
+    }
+    const frameDurationMs = typeof opts.frameDurationMs === 'number' ? Math.trunc(opts.frameDurationMs) : undefined;
+    if (frameDurationMs !== undefined && (frameDurationMs < 20 || frameDurationMs > 10_000)) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 应在 20..10000' };
+    }
     let res: ImageGenTransportResult;
     try {
-      res = await this.transport({ model: this.model, prompt, n: 1 }, AbortSignal.timeout(this.timeoutMs));
+      res = await this.transport({
+        model: this.model, prompt, n: 1,
+        ...(format ? { output_format: format } : {}),
+        ...(opts.size ? { size: String(opts.size) } : {}),
+        ...(format === 'gif' && frameCount !== undefined ? { frame_count: frameCount } : {}),
+        ...(format === 'gif' && frameDurationMs !== undefined ? { frame_duration_ms: frameDurationMs } : {}),
+      }, AbortSignal.timeout(this.timeoutMs));
     } catch (err) {
       // 自定义 transport 抛错（未走 defaultTransport 的分类）：同一套网络分类语义
       const kind = classifyNetworkError(err);

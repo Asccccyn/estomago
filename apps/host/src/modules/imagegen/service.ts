@@ -23,9 +23,9 @@ export class ImageGenService {
    *  generated=字节已暂存（存储/M 未确认）；stored=资产+M 已确认（条目未成）；
    *  saved=全部完成（暂存清空）；unknown=供应商结果未确认（禁止自动重发）；
    *  failed_generation/failed_retryable=生成阶段终态/可重试失败。 */
-  async generateAndStore(o: { prompt: string; opKey: string; title?: string | null }): Promise<ImageGenOutcome> {
+  async generateAndStore(o: { prompt: string; opKey: string; title?: string | null; format?: string; size?: string; frameCount?: number; frameDurationMs?: number }): Promise<ImageGenOutcome> {
     const db = this.deps.db;
-    const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as { state: string; result_b64: string | null; asset_id: string | null; creation_id: string | null; revised_prompt: string | null; error: string | null } | undefined;
+    const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as { state: string; result_b64: string | null; asset_id: string | null; creation_id: string | null; revised_prompt: string | null; error: string | null; output_format: string | null } | undefined;
     if (existing?.state === 'saved' && existing.asset_id) {
       return { ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '', revised_prompt: existing.revised_prompt, generation_call: 'none' };
     }
@@ -39,8 +39,10 @@ export class ImageGenService {
         this.deps.media.pinAssetForOperation({ assetId: storedAsset, operationKey: o.opKey });
         this.deps.media.commitContentSnapshot({ type: 'creation', id: storedCreation }, snap, o.opKey);
         db.prepare("UPDATE imagegen_operations SET state='saved', error=NULL, updated_at=? WHERE op_key=?").run(new Date().toISOString(), o.opKey);
+        return { ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '', revised_prompt: storedPrompt, generation_call: 'none' };
       }
-      return { ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '', revised_prompt: storedPrompt, generation_call: 'none' };
+      // RR7（复审 2026-11-09）：快照仍未确认=stored 未收口——如实返回可重试，不冒充 saved
+      return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '作品条目已建但引用快照未确认（content 暂不可达）——同键重试只补快照确认，不会重新生成', retryable: true };
     }
     if (existing?.state === 'unknown') {
       return { ok: false, code: 'IMAGEGEN_RESULT_UNCONFIRMED', detail: existing.error ?? '上次生成结果未确认——不自动重发（避免重复计费）；如供应商支持查询可人工核实', retryable: false };
@@ -59,7 +61,10 @@ export class ImageGenService {
       bytes = Buffer.alloc(0);
       revisedPrompt = existing?.revised_prompt ?? null;
     } else {
-      const r = await this.deps.adapter.generate(o.prompt);
+      // GIF（她 2026-11-09 裁定+官方文档）：生成格式随操作持久——同键重试的生成调用
+      // 沿用首次请求的 output_format（不因模型续轮换格式重画成另一种结果）。
+      const effectiveFormat = o.format ?? existing?.output_format ?? undefined;
+      const r = await this.deps.adapter.generate(o.prompt, { format: effectiveFormat, size: o.size, frameCount: o.frameCount, frameDurationMs: o.frameDurationMs });
       if (r.outcome === 'error') {
         const retryable = r.code === 'IMAGEGEN_NETWORK' || r.code === 'IMAGEGEN_RATE_LIMITED';
         this.upsert(o.opKey, { state: retryable ? 'failed_retryable' : 'failed_generation', error: `${r.code}: ${r.detail}` });
@@ -70,7 +75,7 @@ export class ImageGenService {
         return { ok: false, code: 'IMAGEGEN_RESULT_UNCONFIRMED', detail: r.reason, retryable: false };
       }
       bytes = r.bytes; mime = r.mime; revisedPrompt = r.revisedPrompt;
-      this.upsert(o.opKey, { state: 'generated', resultB64: bytes.toString('base64'), revisedPrompt, error: null });
+      this.upsert(o.opKey, { state: 'generated', resultB64: bytes.toString('base64'), revisedPrompt, error: null, outputFormat: effectiveFormat ?? null });
     }
 
     // —— 阶段 2：资产落盘 + M 落正确认（ALB-05①：M 未确认不得报成功）——
@@ -117,9 +122,15 @@ export class ImageGenService {
     }
     // 引用保护收口：按 content 权威快照把作品资产落成 committed 关系（防误删；
     // 与浏览器写协调器同一协议原语，条目幂等键保证不重复建）。
+    // RR7（复审 2026-11-09）：快照未确认=作品关系未闭合——行留 stored（含
+    // creation_id，storedResume 分支自此真实可达），同键重试只补快照；不冒充 saved。
     if (creationId !== null) {
       const snap = await this.readCreationSnapshot(creationId);
-      if (snap) this.deps.media.commitContentSnapshot({ type: 'creation', id: creationId }, snap, o.opKey);
+      if (!snap) {
+        this.upsert(o.opKey, { state: 'stored', assetId: asset.id, creationId, error: 'IMAGEGEN_SNAPSHOT_PENDING: content snapshot unconfirmed' });
+        return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '资产已保存且作品条目已建，但引用快照未确认（content 暂不可达）——同键重试只补快照确认，不会重新生成', retryable: true };
+      }
+      this.deps.media.commitContentSnapshot({ type: 'creation', id: creationId }, snap, o.opKey);
     } else {
       this.deps.media.releaseOperationPins(o.opKey); // 无条目即无权威关系可确认（content 未装配边角）：pin 不悬置
     }
@@ -141,16 +152,16 @@ export class ImageGenService {
     } catch { return null; }
   }
 
-  private upsert(opKey: string, v: { state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null; error?: string | null }): void {
+  private upsert(opKey: string, v: { state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null; creationId?: string | null; error?: string | null; outputFormat?: string | null }): void {
     const now = new Date().toISOString();
     const db = this.deps.db;
     const row = db.prepare('SELECT op_key FROM imagegen_operations WHERE op_key = ?').get(opKey) as { op_key: string } | undefined;
     if (row) {
-      db.prepare('UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64), revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), error=?, updated_at=? WHERE op_key=?')
-        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.error ?? null, now, opKey);
+      db.prepare('UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64), revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), creation_id=COALESCE(?, creation_id), output_format=COALESCE(?, output_format), error=?, updated_at=? WHERE op_key=?')
+        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.error ?? null, now, opKey);
     } else {
-      db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)')
-        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.error ?? null, now, now);
+      db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, creation_id, output_format, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)')
+        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.error ?? null, now, now);
     }
   }
 }

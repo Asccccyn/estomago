@@ -202,8 +202,9 @@ test('ARC-12: R6 双标记——存档成功后逐消息推 M observation（幂�
   const u = publishUser('c2', 'arc12-u');
   const a = publishAssistant('c2', 'arc12-a');
   const t0 = new Date().toISOString();
+  // RR3：收据按存档引用的精确修订（validateRefs 钉 current_revision=1）
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-    .run('ssr12a', 'op12', u.id, 2, 'sc1', 'sm_arc12u', 'h', t0, t0);
+    .run('ssr12a', 'op12', u.id, 1, 'sc1', 'sm_arc12u', 'h', t0, t0);
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr12b', 'op12', a.id, 1, 'sc1', 'sm_arc12a', 'h', t0, t0);
   const r = await pushSvc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc12' });
@@ -212,7 +213,7 @@ test('ARC-12: R6 双标记——存档成功后逐消息推 M observation（幂�
   assert.equal(calls.length, 2, '逐消息一条 observation');
   const byOrigin = new Map(calls.map((c) => [c.origin_message_id, c]));
   assert.equal(byOrigin.get(u.id)!.kind, 'observation');
-  assert.equal(byOrigin.get(u.id)!.revision, 2, 'revision 取实际已同步收据版本（非存档引用默认）');
+  assert.equal(byOrigin.get(u.id)!.revision, 1, 'RR3：推送 revision=存档钉住的修订（门槛已保证该版有收据）');
   assert.equal(byOrigin.get(u.id)!.stream_id, 'stream-x');
   const payload = byOrigin.get(u.id)!.payload as { type: string; archive_id: string; archive_kind: string; count: number };
   assert.equal(payload.type, 'conversation_archived');
@@ -275,4 +276,45 @@ test('ARC-11: 存档文本检索——命中归并到存档条目；kind 过滤�
   const none = await svc.searchArchives({ conversationId: 'c1', query: '不存在', mariposa: fakeM2 as never });
   assert.equal(none.state, 'no_match');
   void q;
+});
+
+
+test('ARC-14 (RR3): 选 v2 而 M 只有 v1 收据→精确门槛拒绝（不凭旧版收据成功/标错版本）', async () => {
+  const u = publishUser('c2', 'arc14-u');
+  // v1 收据在（生产由归档链写）；消息编辑出 v2、尚未同步
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr14', 'op14', u.id, 1, 'sc1', 'sm_arc14', 'h', new Date().toISOString(), new Date().toISOString());
+  db.prepare('INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('mrev-arc14-2', u.id, 2, 'text', '话-arc14-u（改口）', sha256Hex('v2'), new Date().toISOString(), new Date().toISOString(), 'user');
+  db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u.id);
+  const noticesBefore = (db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n;
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-arc14' });
+  assert.equal(r.ok, false, 'v2 无收据=待同步，不凭 v1 收据成功');
+  if (!r.ok) { assert.equal(r.code, 'ARCHIVE_SOURCE_NOT_SYNCED'); assert.equal(r.retryable, true); }
+  const n = (db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n;
+  assert.equal(n, noticesBefore, '未成功不排队通知');
+});
+
+test('ARC-15 (RR3): 删除存档→逐消息推撤销 observation（latest-wins 撤销语义）', async () => {
+  const calls: Array<{ payload: Record<string, unknown>; operation_id: string }> = [];
+  const port = { attachmentsSync: async (a: { payload: Record<string, unknown>; operation_id: string }) => { calls.push(a); return { ok: true }; } };
+  const client15 = contentClientFor(root, server.port, true);
+  if (!client15) throw new Error('content client 未构造');
+  const pushSvc = new ArchiveService({ db, contentClient: client15, attachments: port, streamId: 'stream-x' });
+  const u = publishUser('c2', 'arc15-u');
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr15', 'op15', u.id, 1, 'sc1', 'sm_arc15', 'h', new Date().toISOString(), new Date().toISOString());
+  const r = await pushSvc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc15' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  if (!r.ok) return;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const archivedCalls = calls.length;
+  assert.equal(archivedCalls, 1);
+  assert.equal(calls[0]!.payload['type'], 'conversation_archived');
+  calls.length = 0;
+  await pushSvc.revokeArchiveObservations('c2', r.archive.id);
+  assert.equal(calls.length, 1, '删除后逐消息一条撤销');
+  assert.equal(calls[0]!.payload['type'], 'conversation_archived_revoked');
+  assert.equal(calls[0]!.payload['archive_id'], r.archive.id);
+  assert.match(calls[0]!.operation_id, /:conversation_archived_revoked$/, '撤销 op 键与建档互不串（幂等）');
 });

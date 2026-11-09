@@ -27,5 +27,7 @@ export type CarrySetItem = {
   caption: string | null;
   meaning: string | null;
   added_by: 'qiaosheng' | 'jiaming';
+  /** RR2：E 写入方补注的 M 对象身份（同字节别名=同 hash）；存量行可缺席 */
+  content_sha256?: string | null;
 };
 export type CarrySet = { limit: number; items: CarrySetItem[] };

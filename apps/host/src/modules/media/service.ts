@@ -88,15 +88,6 @@ export class MediaToolsService {
         if (res.status !== 200) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: `表情包集合读取失败（${res.status}）——不放开为全域搜索` } };
         const items = (res.body as { items?: Array<{ asset_id?: string }> }).items ?? [];
         allowSet = new Set(items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'));
-        // R7：集合成员未建索引（如刚上传未发进聊天）——有界补齐（≤5/次）后检索，
-        // 不再结构性 no_match。indexImage 幂等（同资产同 namespace 覆盖）。
-        const topSignal = ctx.signal;
-        let topped = 0;
-        for (const aid of allowSet) {
-          if (topped >= 5 || topSignal?.aborted) break;
-          const fp = await this.mediaIndex!.workerFingerprint(topSignal);
-          if (fp && !this.mediaIndex!.assetIndexed(aid, fp)) { try { await this.mediaIndex!.indexImage(aid, topSignal); topped += 1; } catch { /* 补失败如实：可能仍 no_match */ } }
-        }
       } catch {
         return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合暂不可达——不放开为全域搜索' } };
       }
@@ -109,16 +100,44 @@ export class MediaToolsService {
       const fingerprint=await this.mediaIndex.workerFingerprint(signal);
       signal?.throwIfAborted();
       if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
-      // R8′（2026-10-23）：检索路径不再前台补索引——此前工具内顺序 await ≤200 图，
-      // 长期占住同会话串行链；补索引移至 app-context 独立循环（media/index/backfill.ts，
-      // ≤5 图/跳）。检索不完整与 no_match 分开如实报：pending>0 = coverage:'incomplete'。
+      // RR6（复审 2026-11-09）：stickers scope 的未索引/失败统计按**本 scope 的真实
+      // 候选集**（stickers 成员）算——旧实现沿用房间附件口径，只入集合未发聊天的资产
+      // 既不会被补也不会被计入 pending，编码失败还被 catch 吞成普通 no_match。
+      // 有界补齐（≤5/次，indexImage 幂等）后按同一候选集复核，失败/未索引用既有
+      // coverage/pending_index 字段如实分开。chat scope 维持房间附件口径（R8′）。
+      let scopePending: string[] = [];
+      let indexFailed = 0;
+      if (args.scope === 'stickers' && allowSet) {
+        let topped = 0;
+        for (const aid of allowSet) {
+          if (topped >= 5 || signal?.aborted) break;
+          if (!this.mediaIndex.assetIndexed(aid, fingerprint)) {
+            try { await this.mediaIndex.indexImage(aid, signal); topped += 1; }
+            catch { indexFailed += 1; }
+          }
+        }
+        scopePending = [...allowSet].filter((aid) => !this.mediaIndex!.assetIndexed(aid, fingerprint));
+      }
       const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
       signal?.throwIfAborted();
       const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal,allowSet);
       signal?.throwIfAborted();
       const out:Record<string,unknown>={...result};
-      if(pending.length>0){out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';}
-      if(args.scope==='stickers'){out.scope='stickers';out.note=(out.note?out.note+'；':'')+'候选仅限表情包分类成员（已发布且已建索引者）';}
+      if(args.scope==='stickers'){
+        out.scope='stickers';
+        out.note='候选仅限表情包分类成员';
+        if(scopePending.length>0){
+          out.coverage='incomplete';out.pending_index=scopePending.length;
+          out.note=indexFailed>0
+            ? `表情包 ${scopePending.length} 张尚未建成索引（其中 ${indexFailed} 张编码失败——图片编码服务异常，文字检索不受影响）；本次结果可能不全`
+            : `表情包 ${scopePending.length} 张尚未建成索引（后台补齐中）；本次结果可能不全，稍后可再查`;
+        } else if (indexFailed > 0 && (out.hits as unknown[] | undefined)?.length === 0) {
+          // 本轮补齐后无未索引残留、但有编码失败且零命中——如实说明，不伪装正常 no_match
+          out.note = `表情包成员均已建索引，但本轮 ${indexFailed} 张编码失败后重新补齐；当前零命中可能因此不全，稍后可再查`;
+        }
+      } else if(pending.length>0){
+        out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';
+      }
       return {ok:true,output:out};
     }catch {
       return {ok:false,output:{error_code:ctx.signal?.aborted?'CANCELLED':'MEDIA_WORKER_UNAVAILABLE'}};

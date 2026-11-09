@@ -30,7 +30,9 @@ import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
+import fs from 'node:fs'
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
@@ -65,7 +67,7 @@ function dsTransport(seen: Array<Record<string, unknown>>, failOnce = false): Or
 const T0 = '2026-10-01T08:00:00+08:00';
 const T1 = '2026-10-01T09:00:00+08:00';
 
-function compose(root: string, transport: OrTransport, mariposa: MariposaTransport | null = null, configOver: Record<string, unknown> = {}, episodes: { list(args: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal): Promise<{ ok: boolean; result?: { episodes?: Array<{ label: string; state: string; revision: number; ref_count?: number }>; has_more?: boolean } }> } | null = null) {
+function compose(root: string, transport: OrTransport, mariposa: MariposaTransport | null = null, configOver: Record<string, unknown> = {}, episodes: { list(args: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal): Promise<{ ok: boolean; result?: { episodes?: Array<{ label: string; state: string; revision: number; ref_count?: number }>; has_more?: boolean } }> } | null = null, mediaSupervisor: MediaService | null = null) {
   writeApprovedIdentity(root);
   const config = buildConfig({
     ...readyRuntimePatch(),
@@ -93,7 +95,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const { tools: tools } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: reviews, checkpoint: checkpoint });;
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
   const supervisor = new TurnSupervisor({bootstrap: mariposa_wire_1, // S18：显式 BootstrapPort
-     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, episodes });
+     db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools, reviews, checkpoint, trajectory, selections, episodes, ...(mediaSupervisor ? { media: mediaSupervisor } : {}) });
   messages.ensureConversation('c1');
   return { db, config, messages, windows, supervisor, selections, trajectory };
 }
@@ -461,4 +463,50 @@ test('T9：选集确认后的首发轨迹携带 episode 片段且唯一（Codex 
   assert.ok(rotateIdx >= 0, '新窗恢复轮已发出');
   const fragInPayload = payloadTexts(seen[rotateIdx]!).match(new RegExp('\\[运行中事项', 'g'))?.length ?? 0;
   assert.equal(fragInPayload, 1, '首发请求载荷恰含一个片段块');
+});
+
+// RR2（复审 2026-11-09）：同字节不同上传 ID（不同 asset_id、同 content_sha256）的图片
+// 在选集装配中按 **M 对象身份** 去块——两张别名只物化一个 asset_image 块。
+test('T12: 同字节别名图（不同 asset_id 同 hash）选集装配只物化一个 asset_image 块', async () => {
+  const seen: Array<Record<string, unknown>> = [];
+  const root = tempRoot('wp7-t12-');
+  const mediaSvc = new MediaService(openDatabase(path.join(root, 'data')), path.join(root, 'media'), buildConfig({}));
+  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 25_200 /* 2026-11-09 R5 重标定（同 T1 注释） */ } }, null, mediaSvc);
+  await say(ctx, '首窗第一句', 't12m0', T0);
+  const win1 = ctx.windows.activeWindow('c1')!;
+  // 两次上传同一张图（同字节→同 content_sha256，不同 asset_id）——真实上传行为即如此
+  const sameBytes = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 7)]);
+  const hash = sha256Hex(sameBytes);
+  const t0 = new Date().toISOString();
+  const assets = ['asset-rr2-a', 'asset-rr2-b'];
+  for (const [i, id] of assets.entries()) {
+    ctx.db.prepare(
+      `INSERT INTO media_assets(id, creation_operation_id, state, mime_type, byte_size, content_sha256, storage_key, origin, created_by, ingest_purpose, created_at, updated_at, m_sync_state)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'synced')`,
+    ).run(id, `op-rr2-${i}`, 'available', 'image/png', sameBytes.length, hash, `${hash.slice(0, 2)}/${hash}.png`, 'upload', 'qiaosheng', 'chat_image', t0, t0);
+  }
+  // 发送边界物化读真实字节：本地缓存落盘（m synced 的别名共享同一份字节文件）
+  const byteDir = path.join(root, 'media', hash.slice(0, 2));
+  fs.mkdirSync(byteDir, { recursive: true });
+  fs.writeFileSync(path.join(byteDir, `${hash}.png`), sameBytes);
+  // 同一条消息挂两张同字节别名图（另一条带图消息会把软线顶穿触发换窗门，pending 输入不可选）
+  const m1 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '同一张图传了两次', clientMessageId: 't12m1', occurredAt: T0, attachments: [{ asset_id: assets[0]!, presentation: 'image' }, { asset_id: assets[1]!, presentation: 'image' }] });
+  ctx.supervisor.enqueue(m1.turnId); await ctx.supervisor.waitIdle();
+  // 容量触发换窗，带图消息选进新窗
+  const s3 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `触发换窗。${'内容填充。'.repeat(520)}`, clientMessageId: 't12m3', occurredAt: T1 });
+  ctx.supervisor.enqueue(s3.turnId); await ctx.supervisor.waitIdle();
+  const awaiting = ctx.selections.awaitingFor('c1')!;
+  const hist = ctx.db.prepare('SELECT id, current_revision AS revision FROM messages WHERE conversation_id=? AND id = ?').all('c1', m1.message.id) as Array<{ id: string; revision: number }>;
+  assert.equal(hist.length, 1);
+  const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: hist.map((h) => ({ message_id: h.id, revision: h.revision })), explicitEmpty: false, idempotencyKey: 'wp7-t12' });
+  assert.equal(confirm.ok, true, JSON.stringify(confirm));
+  await ctx.supervisor.waitIdle();
+  const win2 = ctx.windows.activeWindow('c1')!;
+  assert.notEqual(win2.id, win1.id, '已换窗');
+  const countBlocks = (msgs: Array<{ content?: unknown }>) => msgs.reduce((n, m) => n + (Array.isArray(m.content) ? (m.content as Array<{ type?: string }>).filter((b) => b?.type === 'asset_image').length : 0), 0);
+  const traj = ctx.trajectory.forWindow(win2.id)!;
+  assert.equal(countBlocks(traj.messages as never), 1, '首发轨迹：同字节别名只物化一个 asset_image 块（旧实现按 asset_id 去块=2）');
+  // 说明：发送边界只把 asset_image 引用原位物化为图像块（数量不变），块数的权威口径
+  // 即装配产物（轨迹）；deepseek 通道无视觉声明（DeepSeekConfig 无 vision 键），
+  // 发送轮被 MODEL_VISION_UNAVAILABLE 拦截属生产行为，不在本用例断言范围。
 });

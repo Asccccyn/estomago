@@ -1691,4 +1691,19 @@ UPDATE media_assets SET m_sync_state='pending' WHERE ingest_purpose='chat_voice'
 `,
 });
 
+// v70（相册整改复审 2026-11-09，RR5/GIF）：
+// ① 附件对象元数据补传标记——post-ACK 推送与存量/失败回推（backfillObjectMeta）
+//    共用的"已推"正本（幂等 op 键在 M 侧去重，本地标记防无限重放放大）；
+// ② imagegen 格式留存——同键重试的生成调用沿用首次请求的 output_format
+//    （GIF 动图生成，她 2026-11-09 裁定 gpt-image 可生动图；不带格式供应商默认
+//    静态 PNG，"画动图"被静默降级）。
+MIGRATIONS.push({
+  version: 70,
+  name: 'album-rework-rr5-object-meta-marker-and-imagegen-format',
+  sql: `
+ALTER TABLE message_attachments ADD COLUMN object_meta_synced_at TEXT;
+ALTER TABLE imagegen_operations ADD COLUMN output_format TEXT;
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

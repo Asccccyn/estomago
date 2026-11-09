@@ -87,6 +87,11 @@ export class VoiceService {
         .run(result.text, result.language, result.durationMs, new Date().toISOString(), assetId);
       return this.dto(this.db.prepare('SELECT * FROM voice_transcripts WHERE asset_id=?').get(assetId) as TranscriptRow, false);
     } catch (error) {
+      // RR1（复审 2026-11-09）：错误分类只对**已派发 ASR** 的结果负责。预派发失败
+      // （回源不可达/格式不支持）在上面各自的处理点已把行落成可重试的 failed 并抛
+      // MediaError——此处再按"远端结果未知"改写会把它们覆盖成 unknown（单飞门永久
+      // 拒绝重试、ASR 零调用）。MediaError 直通，保留各自已写入的终态。
+      if (error instanceof MediaError) throw error;
       const known = error instanceof SirenTranscriptionError;
       const code = known ? error.code : 'SIREN_OUTCOME_UNKNOWN';
       this.db.prepare('UPDATE voice_transcripts SET state=?,error_code=?,updated_at=? WHERE asset_id=?')

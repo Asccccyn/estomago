@@ -25,6 +25,12 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
   if (!d.contentOps) return json(res, 503, { error: { code: 'content_unavailable', message: '内容写协调器未装配（聊天不受影响）' } });
   let fwdBody: Record<string, unknown> | undefined;
   try { fwdBody = (await readJson(req, d)) as Record<string, unknown>; } catch { fwdBody = {}; }
+  // RR2（复审 2026-11-09）：相册条目写入补注 M 对象身份（同字节不同上传 ID=同一张图，
+  // content 限额/携带集按原图归并）。浏览器不知道 hash——E 是身份持有方，在唯一
+  // 入口代理处补注；确定性取值不影响写回执指纹的重放一致性。资产缺席如实不带。
+  if (method === 'POST' && /^\/api\/v1\/content\/albums\/[^/]+\/entries$/.test(url.pathname) && fwdBody && typeof fwdBody['asset_id'] === 'string' && fwdBody['asset_id'] && fwdBody['content_sha256'] === undefined && d.media) {
+    try { fwdBody['content_sha256'] = d.media.getAsset(fwdBody['asset_id']).content_sha256; } catch { /* 资产未知：如实不带 */ }
+  }
   const result = await d.contentOps.write({ method, path: url.pathname, actor, body: fwdBody, headers: fwdHeaders });
   return json(res, result.status, result.body);
 }

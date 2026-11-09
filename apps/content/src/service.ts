@@ -254,6 +254,14 @@ ALTER TABLE creations_v6 RENAME TO creations;
 `);
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (6, ?)').run(new Date().toISOString());
   }
+  if (!have.includes(7)) {
+    // v7（相册整改 RR2，复审 2026-11-09）：携带限额与集合按 **M 对象身份** 计——
+    // 同字节经不同上传操作是不同 E asset_id、同一张图；album_entries 记录入库时的
+    // content_sha256（E 侧写入方补注，存量行 NULL=退回 asset 身份）。重建表加列
+    //（SQLite ALTER 加列即可，但保持本仓迁移风格：轻量 ALTER，无索引依赖）。
+    db.exec(`ALTER TABLE album_entries ADD COLUMN content_sha256 TEXT`);
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (7, ?)').run(new Date().toISOString());
+  }
   return db;
 }
 
@@ -545,6 +553,9 @@ export class ContentServer {
         if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
         const carryMode = parseCarryMode(body.carry_mode);
         const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ? AND deleted_at IS NULL').get(kind, body.asset_id) as Record<string, unknown> | undefined;
+        // RR2（复审 2026-11-09）：content_sha256=E 侧写入方补注的 M 对象身份（同字节
+        // 不同上传 ID=同一张图）；缺席=NULL，各口径退回 asset 身份。
+        const sha256 = typeof body.content_sha256 === 'string' && /^[0-9a-f]{64}$/.test(body.content_sha256) ? body.content_sha256 : null;
         if (existing) {
           // §5：同 (kind,asset) 幂等返回既有（有效行；墓碑可重新归档=新 ID）。
           // 携带模式若显式给出且不同，按同条目更新处理（同 asset 不算新增一张）。
@@ -552,12 +563,15 @@ export class ContentServer {
             this.assertCarryWithinLimit(carryMode, String(existing.asset_id), String(existing.id));
             this.db.prepare("UPDATE album_entries SET carry_mode = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(carryMode, now(), String(existing.id));
           }
+          if (sha256 !== null && existing.content_sha256 == null) {
+            this.db.prepare('UPDATE album_entries SET content_sha256 = ?, updated_at = ? WHERE id = ?').run(sha256, now(), String(existing.id)); // 存量行按新信息补身份（幂等）
+          }
           return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(existing.id)) as Record<string, unknown>), duplicate: true };
         }
-        this.assertCarryWithinLimit(carryMode ?? 'none', String(body.asset_id), null);
+        this.assertCarryWithinLimit(carryMode ?? 'none', String(body.asset_id), null, sha256);
         const entryId = genId('ae');
         const t = now();
-        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision, carry_mode) VALUES (?,?,?,?,?,?,?,?,1,?)').run(entryId, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t, carryMode ?? 'none');
+        this.db.prepare('INSERT INTO album_entries(id, kind, asset_id, added_by_actor, caption, meaning, created_at, updated_at, revision, carry_mode, content_sha256) VALUES (?,?,?,?,?,?,?,?,1,?,?)').run(entryId, kind, body.asset_id, actor, typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, t, t, carryMode ?? 'none', sha256);
         const refs = Array.isArray(body.refs) ? body.refs : [];
         for (const r of refs as Array<Record<string, unknown>>) {
           if (typeof r?.service !== 'string' || typeof r?.kind !== 'string' || typeof r?.source_id !== 'string') throw new ContentError(422, 'REF_INVALID', '关联引用必须含 service/kind/source_id（任一校验失败则本次写入失败）');
@@ -757,10 +771,10 @@ export class ContentServer {
   // —— 相册重构 P3：携带集合（03 §7/§8）。合并跨相册去重；always 优先于 next_once ——
   // （同一 asset 多条携带关系只算一张；留言取排序后首条，不合并改写）。
 
-  private carryRows(): Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string }> {
+  private carryRows(): Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string; content_sha256: string | null }> {
     return this.db.prepare(
-      "SELECT id, kind, asset_id, carry_mode, caption, meaning, added_by_actor, created_at FROM album_entries WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always') ORDER BY created_at ASC, id ASC",
-    ).all() as Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string }>;
+      "SELECT id, kind, asset_id, carry_mode, caption, meaning, added_by_actor, created_at, content_sha256 FROM album_entries WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always') ORDER BY created_at ASC, id ASC",
+    ).all() as Array<{ id: string; kind: string; asset_id: string; carry_mode: string; caption: string | null; meaning: string | null; added_by_actor: string; created_at: string; content_sha256: string | null }>;
   }
 
   /** 合并有效携带集合（E 滚窗装配的唯一读取口径；条目数=去重后 asset 数，天然 ≤ 上限）。 */
@@ -771,24 +785,30 @@ export class ContentServer {
     return { limit: CARRY_IMAGE_LIMIT, items: this.carryRows().map((r) => ({
       asset_id: r.asset_id, mode: r.carry_mode === 'always' ? 'always' : 'next_once', entry_id: r.id, kind: r.kind,
       caption: r.caption, meaning: r.meaning, added_by: r.added_by_actor as CarrySetItem['added_by'],
+      ...(r.content_sha256 ? { content_sha256: r.content_sha256 } : {}),
     })) };
   }
 
   /** 写入校验：把某条目改为 newMode 后，合并去重集合不得超 CARRY_IMAGE_LIMIT。
-   *  排除该条目自身现有贡献（改模式/改留言不算新增一张）；同 asset 其他相册的携带关
-   *  系仍在集合内（去重后不重复计数）。超限抛 422，带当前计数供前端明确减选。 */
-  private assertCarryWithinLimit(newMode: CarryMode, assetId: string, excludeEntryId: string | null): void {
+   *  RR2（复审 2026-11-09）：去重口径=M 对象身份——content_sha256 已知的行按 hash
+   *  归并（同字节不同上传 ID=一张），NULL 行退回 'est:'+asset_id（不因缺身份漏计）。
+   *  排除该条目自身现有贡献（改模式/改留言不算新增一张；同字节别名在集合内=不新增）。 */
+  private assertCarryWithinLimit(newMode: CarryMode, assetId: string, excludeEntryId: string | null, selfSha256: string | null = null): void {
     if (newMode === 'none') return;
-    const exclude = excludeEntryId === null ? "''" : '?';
-    const args = excludeEntryId === null ? [assetId] : [assetId, excludeEntryId];
+    const excludeSql = excludeEntryId === null ? "''" : '?';
+    const baseArgs = excludeEntryId === null ? [assetId] : [assetId, excludeEntryId];
     const n = (this.db.prepare(
-      `SELECT COUNT(DISTINCT asset_id) n FROM album_entries
+      `SELECT COUNT(DISTINCT COALESCE(content_sha256, 'est:' || asset_id)) n FROM album_entries
        WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always')
          AND asset_id != ?
-         AND id != ${exclude}`,
-    ).get(...args) as { n: number }).n;
-    if (n >= CARRY_IMAGE_LIMIT) {
-      throw new ContentError(422, 'CARRY_LIMIT_EXCEEDED', `携带图片合计已达上限 ${CARRY_IMAGE_LIMIT}/${CARRY_IMAGE_LIMIT}（跨相册去重计数）；请先减选或改回仅收藏`);
+         AND id != ${excludeSql}`,
+    ).get(...baseArgs) as { n: number }).n;
+    const aliasInSet = selfSha256 !== null && Boolean(this.db.prepare(
+      `SELECT 1 FROM album_entries WHERE deleted_at IS NULL AND carry_mode IN ('next_once','always')
+         AND asset_id != ? AND id != ${excludeSql} AND content_sha256 = ? LIMIT 1`,
+    ).get(...baseArgs, selfSha256));
+    if (!aliasInSet && n >= CARRY_IMAGE_LIMIT) {
+      throw new ContentError(422, 'CARRY_LIMIT_EXCEEDED', `携带图片合计已达上限 ${CARRY_IMAGE_LIMIT}/${CARRY_IMAGE_LIMIT}（跨相册按原图去重计数）；请先减选或改回仅收藏`);
     }
   }
 

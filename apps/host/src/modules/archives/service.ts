@@ -84,13 +84,13 @@ export class ArchiveService {
   }): Promise<ArchiveResult> {
     const v = this.validateRefs(o.conversationId, o.rawRefs);
     if (!v.ok) return v;
-    // R6（复审 2026-11-08）：M 原文同步收据门槛——存档的最终打开依赖 M 确定版本；
-    // 任一引用无收据=待同步，明确拒绝并要求稍后原键重试（不提前显示存档成功）。
-    const placeholders = v.refs.map(() => '?').join(',');
-    const missing = (this.deps.db.prepare(
-      `SELECT m.id FROM messages m WHERE m.id IN (${placeholders})
-       AND NOT EXISTS (SELECT 1 FROM source_sync_receipts r WHERE r.origin_message_id = m.id)`,
-    ).all(...v.refs.map((r) => r.message_id)) as Array<{ id: string }>).map((r) => r.id);
+    // R6/RR3（复审 2026-11-09）：M 原文同步收据门槛按**本次钉住的修订**精确匹配——
+    // 旧实现只查 origin_message_id 存在任意收据，消息编辑出 v2 而 M 只同步过 v1 时
+    // 存档凭 v1 收据成功、标记也推到 v1（选 v2 标 v1）。缺该版收据=待同步，
+    // 明确拒绝并要求稍后原键重试（不提前显示存档成功）。
+    const missing = v.refs.filter((ref) => !this.deps.db.prepare(
+      'SELECT 1 FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ? AND source_message_id IS NOT NULL',
+    ).get(ref.message_id, ref.revision)).map((ref) => ref.message_id);
     if (missing.length > 0) {
       return { ok: false, code: 'ARCHIVE_SOURCE_NOT_SYNCED', detail: `${missing.length} 条消息尚未同步到 M 原文层（如刚发布）；稍后用原操作键重试`, retryable: true };
     }
@@ -178,23 +178,38 @@ export class ArchiveService {
     return { state: 'matches', items: out };
   }
 
-  /** R6：存档事实逐条消息推 M（每条一行 observation；同 operation_id 重放无新增副作用）。 */
-  private async pushArchiveObservations(archiveId: string, kind: ArchiveKind, by: 'qiaosheng' | 'jiaming', count: number, refs: ArchiveRef[]): Promise<void> {
+  /** R6/RR3：存档事实逐条消息推 M（每条一行 observation；revision=存档钉住的修订——
+   *  建档门槛已保证该版有收据；同 operation_id 重放无新增副作用）。 */
+  private async pushArchiveObservations(archiveId: string, kind: ArchiveKind, by: 'qiaosheng' | 'jiaming', count: number, refs: ArchiveRef[], payloadType: 'conversation_archived' | 'conversation_archived_revoked' = 'conversation_archived'): Promise<void> {
     const client = this.deps.attachments;
     if (!client) return;
     for (const ref of refs) {
-      const receipt = this.deps.db.prepare('SELECT revision FROM source_sync_receipts WHERE origin_message_id = ? AND source_message_id IS NOT NULL ORDER BY revision DESC LIMIT 1').get(ref.message_id) as { revision: number } | undefined;
-      if (!receipt) continue; // 建档门槛已保证有收据；此处迟到缺席=如实跳过（日志可查）
       try {
         const r = await client.attachmentsSync({
-          stream_id: this.deps.streamId, origin_message_id: ref.message_id, revision: receipt.revision, kind: 'observation',
-          payload: { type: 'conversation_archived', archive_id: archiveId, archive_kind: kind, count, by },
-          operation_id: `att-arc:${archiveId}:${ref.message_id}`,
+          stream_id: this.deps.streamId, origin_message_id: ref.message_id, revision: ref.revision, kind: 'observation',
+          payload: { type: payloadType, archive_id: archiveId, archive_kind: kind, count, by },
+          operation_id: `att-arc:${archiveId}:${ref.message_id}:${payloadType}`,
         });
         if (!r.ok) this.deps.logger?.warn('archive_observation_rejected', { archive_id: archiveId, message_id: ref.message_id, code: r.code ?? 'unknown' });
       } catch (err) {
         this.deps.logger?.warn('archive_observation_sync_failed', { archive_id: archiveId, message_id: ref.message_id, code: String((err as Error).message).slice(0, 80) });
       }
+    }
+  }
+
+  /** RR3：删除存档→逐条推撤销 observation（M 侧 latest-wins：同 archive_id 最后一行
+   *  是 revoked 即不再显示标记/总览条目）。幂等 op 键（含类型后缀，与建档推送互不串）。 */
+  async revokeArchiveObservations(conversationId: string, archiveId: string): Promise<void> {
+    const client = this.deps.attachments;
+    if (!client || !this.deps.contentClient) return;
+    try {
+      const detail = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}` });
+      if (detail.status !== 200) return; // 删除已由 content 收口；撤销投影失败由重放消费者兜底
+      const dto = detail.body as { kind?: ArchiveKind; messages?: Array<{ message_id?: string; revision?: number }> };
+      const refs = (dto.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m.message_id === 'string' && typeof m.revision === 'number');
+      await this.pushArchiveObservations(archiveId, dto.kind === 'sweet' ? 'sweet' : 'quarrel', 'qiaosheng', refs.length, refs.map((m) => ({ message_id: m.message_id, revision: m.revision, sequence: 0 })), 'conversation_archived_revoked');
+    } catch (err) {
+      this.deps.logger?.warn('archive_revoke_sync_failed', { archive_id: archiveId, code: String((err as Error).message).slice(0, 80) });
     }
   }
 

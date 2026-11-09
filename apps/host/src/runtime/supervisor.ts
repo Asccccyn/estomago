@@ -1297,7 +1297,15 @@ export class TurnSupervisor {
     let envHasImage = false;
     const guides = selectionGuides(o.selectedMessages ?? []);
     let carryImageCount = o.carryFragment ? countCarryImageBlocks([{ content: o.carryFragment.blocks }]) : 0;
-    const emittedImageAssets = new Set<string>(); // R2：跨已选消息同图只物化一次
+    // R2/RR2（复审 2026-11-09）：跨已选消息去块按 **M 对象身份**（content_sha256）——
+    // 同字节经不同上传操作本来就是不同 E asset_id、同一张图（规划器 planCarryImages
+    // 早已按 hash 合并；旧实现这里按 asset_id 去块，同字节别名仍双块）。
+    // 收据缺席/无法定位的资产退回 asset 身份（不因缺哈希丢块）。
+    const emittedImageKeys = new Set<string>();
+    const imageKeyOf = (assetId: string): string => {
+      const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
+      return row?.content_sha256 ?? `est:${assetId}`;
+    };
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
@@ -1306,8 +1314,9 @@ export class TurnSupervisor {
       const dedupedBlocks = proj.blocks.map((b) => {
         if (b.type !== 'asset_image') return b;
         const assetId = (b as { asset_id: string }).asset_id;
-        if (emittedImageAssets.has(assetId)) return null; // 后续重复图：去块（正文/caption 文本保留）
-        emittedImageAssets.add(assetId);
+        const key = imageKeyOf(assetId);
+        if (emittedImageKeys.has(key)) return null; // 后续重复原图（含同字节别名）：去块（正文/caption 文本保留）
+        emittedImageKeys.add(key);
         return b;
       }).filter((b) => b !== null);
       carryImageCount += countCarryImageBlocks([{ content: dedupedBlocks }]);

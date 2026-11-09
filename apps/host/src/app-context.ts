@@ -84,6 +84,7 @@ export class Host {
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
   /** 相册重构 P2：M 落正待同步批次的后台一跳（单飞门；无模型执行） */
   private mediaSyncTimer: ReturnType<typeof setInterval> | null = null;
+  private objectMetaBackfillTimer: ReturnType<typeof setInterval> | null = null;
   private mediaSyncTicking = false;
   private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
   private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
@@ -531,6 +532,10 @@ export class Host {
     // 不进调度器串行链）。指数退避按行上 attempts 计算（30s·2^min(n,5)）。
     this.mediaSyncTimer = setInterval(() => { void this.mediaMSyncTick(); }, 15_000);
     this.mediaSyncTimer.unref?.();
+    // RR5（复审 2026-11-09）：附件对象元数据回推——存量（历史 22 项缺口）/post-ACK
+    // 未 synced/推送失败的行按同一幂等 op 键周期补齐（≤50/跳；标记防重放放大）。
+    this.objectMetaBackfillTimer = setInterval(() => { void this.archiveSync.backfillObjectMeta().catch((err) => { this.logger.warn('object_meta_backfill_failed', { code: stableErrorCode(err) }); }); }, 60_000);
+    this.objectMetaBackfillTimer.unref?.();
     // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
     this.oidoLifecycle?.start();
     // P1（F06/F07）：内容写恢复消费者——启动清一遍崩溃遗留的 pending/unknown 意图，
@@ -603,6 +608,7 @@ export class Host {
     });
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
+    if (this.objectMetaBackfillTimer) { clearInterval(this.objectMetaBackfillTimer); this.objectMetaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
     if (this.callReconcileTimer) { clearInterval(this.callReconcileTimer); this.callReconcileTimer = null; }

@@ -209,3 +209,103 @@ test('IG-4: 超时 unknown→停在待核实；同 op 再调用仍拒绝', async
   const r2 = await f.svc.generateAndStore({ prompt: '画云', opKey });
   assert.equal(r2.ok, false);
 });
+
+// —— 复审 2026-11-09：GIF 生成链（官方 output_format 传参→字节保真→M 落正）与 RR4/RR7 ——
+
+// 结构合法的双帧 GIF89a（含 NETSCATE 循环扩展）——链路测试只要求魔数与字节保真，
+// 浏览器渲染为 <img> 原生能力（官方文档），不在本测试范围。
+const ANIMATED_GIF = Buffer.from('R0lGODlhAQABAID/AP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64');
+
+test('IG-GIF: 动图请求带 output_format/frame 参数；字节全程保真（M 落正+回读一致）；同键重放不重画', async () => {
+  let sawBody: Record<string, unknown> | null = null;
+  const gifTransport: ImageGenTransport = async (body) => {
+    sawBody = { ...(body as Record<string, unknown>) };
+    return { status: 200, json: { id: 'gen-gif', data: [{ b64_json: ANIMATED_GIF.toString('base64'), revised_prompt: '水獭挥手循环' }] } };
+  };
+  const f = fixture(gifTransport);
+  const opKey = imageGenOpKey(CTX1, 'op-gif-1');
+  const r = await f.svc.generateAndStore({ prompt: '一只圆滚滚的小水獭挥手，循环动画，镜头固定', opKey, title: '挥手水獭', format: 'gif', frameCount: 9, frameDurationMs: 200 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  if (!r.ok) return;
+  // 请求侧：官方 GIF 参数如实传到供应商（旧实现缺 output_format=根因：默认静态 PNG）
+  assert.equal((sawBody as Record<string, unknown> | null)?.['output_format'], 'gif');
+  assert.equal((sawBody as Record<string, unknown>)['frame_count'], 9);
+  assert.equal((sawBody as Record<string, unknown>)['frame_duration_ms'], 200);
+  // 存储侧：mime=gif、字节逐字节一致（无任何重编码/缩略图链）
+  const asset = f.media.getAsset(r.asset_id);
+  assert.equal(asset.mime_type, 'image/gif');
+  assert.equal(asset.m_sync_state, 'synced', 'GIF 同为 M 唯一正本（fake M 全链落正）');
+  const readBack = await f.media.readContentResolvingMaster(r.asset_id);
+  assert.equal(Buffer.compare(readBack.bytes, ANIMATED_GIF), 0, '读回字节与生成字节完全一致（动画帧无损）');
+  assert.equal(readBack.mime, 'image/gif', 'HTTP 响应 Content-Type=image/gif（<img> 原生循环播放）');
+  // 作品链：条目（content 正本经 HTTP 读回）+ 引用保护
+  assert.ok(r.creation_id);
+  const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
+  const crt = await contentForward(client as never, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations/${encodeURIComponent(r.creation_id)}` });
+  assert.equal((crt.body as { work_kind?: string }).work_kind, 'image');
+  const r2 = await f.svc.generateAndStore({ prompt: '同键重放', opKey, format: 'gif' });
+  assert.equal(r2.ok, true);
+  assert.equal(f.calls(), 1, '重放不再生成/计费');
+});
+
+test('IG-10 (RR7): 条目已建但快照 GET 失败→IMAGEGEN_SNAPSHOT_PENDING（行留 stored+creation_id）；恢复后同键只补快照', async () => {
+  // content 框架代理：写路由转发真 content；references 读 503（模拟快照读取故障）
+  const proxy = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      if (req.method === 'GET' && (req.url ?? '').includes('/references/')) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'unavailable' } })); return; }
+      const opts = { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${server.port}` }, ...(req.method === 'POST' ? { body: raw } : {}) } as RequestInit;
+      void fetch(`http://127.0.0.1:${server.port}${req.url}`, opts).then(async (up) => {
+        res.writeHead(up.status, { 'Content-Type': 'application/json' });
+        res.end(await up.text());
+      });
+    });
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const proxyUrl = `http://127.0.0.1:${(proxy.address() as { port: number }).port}`;
+    const failingClient = { baseUrl: proxyUrl, token: server.token };
+    const config = buildConfig({});
+    const store = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_IMAGEGEN_KEY' });
+    const media = new MediaService(db, path.join(root, `media-${Math.random().toString(36).slice(2, 8)}`), config, store);
+    let n = 0;
+    const counting: ImageGenTransport = async (body, signal) => { n += 1; return okTransport(body, signal); };
+    const svc = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: counting }), media, contentClient: failingClient as never });
+    const opKey = imageGenOpKey(CTX1, 'op-snap-1');
+    const r1 = await svc.generateAndStore({ prompt: '快照故障画', opKey });
+    assert.equal(r1.ok, false, JSON.stringify(r1));
+    if (r1.ok) return;
+    assert.equal(r1.code, 'IMAGEGEN_SNAPSHOT_PENDING');
+    assert.equal(r1.retryable, true);
+    const row = db.prepare('SELECT state, creation_id FROM imagegen_operations WHERE op_key = ?').get(opKey) as { state: string; creation_id: string };
+    assert.equal(row.state, 'stored', '快照未确认不再冒充 saved');
+    assert.ok(row.creation_id, 'stored 行带 creation_id——恢复分支真实可达');
+    // 恢复：改指真 content，同键重试只补快照（transport 不增）
+    const healed = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: counting }), media, contentClient: client });
+    const r2 = await healed.generateAndStore({ prompt: '快照故障画', opKey });
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    assert.equal(n, 1, '恢复不重新生成');
+    const row2 = db.prepare('SELECT state FROM imagegen_operations WHERE op_key = ?').get(opKey) as { state: string };
+    assert.equal(row2.state, 'saved');
+  } finally { proxy.close(); }
+});
+
+test('IG-11 (RR4): creation_save_artifact 在 M 未落正时 CREATION_MASTER_PENDING（不建条目）；恢复后同键补齐 saved', async () => {
+  const { ContentToolsService } = await import('../../apps/host/src/modules/content/service.ts');
+  const f = fixture(okTransport, { mFail: true });
+  const tools = new ContentToolsService({ media: f.media, contentClient: client, contentOps: null });
+  const ctx = { roomId: 'primary', turnId: 't', requestId: 'r', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [] };
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>';
+  const r1 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: 'crt-m-1' }, ctx);
+  assert.equal(r1.ok, false, JSON.stringify(r1.output));
+  assert.equal(r1.output['error_code'], 'CREATION_MASTER_PENDING', 'M 唯一正本未落正不得 saved（旧实现 ok=true/saved=true）');
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM media_assets WHERE creation_operation_id = 'tool-creation:crt-m-1'").get() as { n: number }).n, 1, '资产已保存（落正未确认）');
+  // 恢复 M：同键重试只补落正+条目（不重复保存资产）
+  fakeM.fail = false;
+  const r2 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: 'crt-m-1' }, ctx);
+  assert.equal(r2.ok, true, JSON.stringify(r2.output));
+  const assetId = (r2.output as { asset_id: string }).asset_id;
+  assert.equal(f.media.getAsset(assetId).m_sync_state, 'synced');
+  assert.ok((r2.output as { creation_id: string | null }).creation_id, '作品条目补建');
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM media_assets WHERE id = ?').get(assetId) as { n: number }).n, 1, '同键重试未产生第二份资产');
+});

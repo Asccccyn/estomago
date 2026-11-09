@@ -513,7 +513,9 @@ export class ArchiveSyncService {
   }
 
   /** 图片/贴纸附件对象元数据补同步（kind=media；sha=M 对象身份，mime 供渲染）。
-   *  只对 m_sync_state='synced' 的资产补——未落正的对象 M 端打不开，如实不补。 */
+   *  只对 m_sync_state='synced' 的资产补——未落正的对象 M 端打不开，如实不补。
+   *  RR5（复审 2026-11-09）：推送成功落 object_meta_synced_at 标记；失败/未 synced
+   *  的行不再只记日志——backfillObjectMeta 周期回推（幂等 op 键，存量同链补齐）。 */
   private async syncAttachmentObjectMeta(streamId: string, ack: import('../../integrations/mariposa/client.ts').IngestAck): Promise<void> {
     for (const m of ack.messages) {
       const atts = this.db.prepare(
@@ -533,12 +535,58 @@ export class ArchiveSyncService {
             payload: { ref: `est:${att.asset_id}`, sha, mime: att.mime_type, presentation: att.presentation },
             operation_id: `att-objmeta:${m.origin_message_id}@${m.revision}:${att.asset_id}`,
           });
-          if (!r.ok) this.logger.warn('attachment_object_meta_rejected', { message_id: m.origin_message_id, asset_id: att.asset_id, code: r.code });
+          if (r.ok) {
+            this.db.prepare('UPDATE message_attachments SET object_meta_synced_at = ? WHERE message_id = ? AND revision = ? AND asset_id = ?')
+              .run(new Date().toISOString(), m.origin_message_id, m.revision, att.asset_id);
+          } else {
+            this.logger.warn('attachment_object_meta_rejected', { message_id: m.origin_message_id, asset_id: att.asset_id, code: r.code });
+          }
         } catch (err) {
           this.logger.warn('attachment_object_meta_sync_failed', { message_id: m.origin_message_id, asset_id: att.asset_id, code: String((err as Error).message).slice(0, 80) });
         }
       }
     }
+  }
+
+  /** RR5：对象元数据回推消费者——覆盖三类缺口：①存量（本机制上线前的历史行）
+   *  ②post-ACK 时资产未 synced（落正由 mediaMSync 稍后推进）③post-ACK 推送失败。
+   *  候选=有正式收据的 (message,revision) + 图片/贴纸附件 + 资产已 synced + 未标记；
+   *  有界批次（≤50/跳）+ 幂等 op 键（M 侧重放无副作用），标记防无限重放放大。
+   *  content 未启用时 no-op。 */
+  async backfillObjectMeta(limit = 50): Promise<number> {
+    if (!this.enabled) return 0;
+    const rows = this.db.prepare(
+      `SELECT ma.message_id, ma.revision, ma.asset_id, ma.presentation, a.mime_type, a.m_content_hash, a.content_sha256
+       FROM message_attachments ma
+       JOIN media_assets a ON a.id = ma.asset_id
+       WHERE ma.presentation IN ('image','sticker') AND ma.object_meta_synced_at IS NULL AND a.m_sync_state = 'synced'
+         AND EXISTS (SELECT 1 FROM source_sync_receipts r WHERE r.origin_message_id = ma.message_id AND r.revision = ma.revision AND r.source_message_id IS NOT NULL)
+       ORDER BY ma.created_at, ma.message_id LIMIT ?`,
+    ).all(limit) as Array<{ message_id: string; revision: number; asset_id: string; presentation: string; mime_type: string; m_content_hash: string | null; content_sha256: string }>;
+    let pushed = 0;
+    for (const row of rows) {
+      const sha = row.m_content_hash ?? row.content_sha256;
+      try {
+        const r = await this.client.attachmentsSync({
+          stream_id: this.streamId,
+          origin_message_id: row.message_id,
+          revision: row.revision,
+          kind: 'media',
+          payload: { ref: `est:${row.asset_id}`, sha, mime: row.mime_type, presentation: row.presentation },
+          operation_id: `att-objmeta:${row.message_id}@${row.revision}:${row.asset_id}`,
+        });
+        if (r.ok) {
+          this.db.prepare('UPDATE message_attachments SET object_meta_synced_at = ? WHERE message_id = ? AND revision = ? AND asset_id = ?')
+            .run(new Date().toISOString(), row.message_id, row.revision, row.asset_id);
+          pushed += 1;
+        } else {
+          this.logger.warn('attachment_object_meta_backfill_rejected', { message_id: row.message_id, asset_id: row.asset_id, code: r.code });
+        }
+      } catch (err) {
+        this.logger.warn('attachment_object_meta_backfill_failed', { message_id: row.message_id, asset_id: row.asset_id, code: String((err as Error).message).slice(0, 80) });
+      }
+    }
+    return pushed;
   }
 
   private messageIdOf(row: OutboxRow): string | null {

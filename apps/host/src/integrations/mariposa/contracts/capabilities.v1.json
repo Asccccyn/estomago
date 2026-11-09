@@ -1,12 +1,12 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "4ed1547719dbc08e0f024c047e777e12c77d9ffb",
+  "source_commit": "8d13f656fbd0c5b6e974672e48d5799041e780f7",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "8b45d123f56df9e0ad2222a3d710ecdc95180477644fcf194ea26b0ec999cf1c",
-    "backend/mariposa/capabilities/input_schemas.py": "b7ca5b5a681d24cc219949efdd36026377f9a6a1649214823142f9e65e4591f5",
+    "backend/mariposa/capabilities/registry.py": "67a3858285031e03a8974046ea09fac21cea0e099725f4a4daac2bd8fcc67df8",
+    "backend/mariposa/capabilities/input_schemas.py": "aab140fb487d338baf9eb8599af197b0bf76756e5808f4f88366b33a38ef546f",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
-    "backend/mariposa/memory/service.py": "7df8ba21c80704bfac203a2d97dc958cdccb655f3d053d1073d23da4360395c5",
+    "backend/mariposa/memory/service.py": "163c9d6885ae776619fc8a8049ae989ba701509747601fa30e8bf20d4cb8c9dd",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
     "backend/mariposa/recall/models.py": "fd3a0a88db062f5e7634a41ee124029e4a263dbf4fe3ae72cd6bc9b23686f43a",
     "backend/mariposa/retrieval/query_plan.py": "aeeb426055278665f23dcf74a02f38f8ba7f3d86ec1038c9045d8e7fd8d0d8e8",
@@ -4477,6 +4477,25 @@
       }
     },
     {
+      "canonical_name": "source.archives.list",
+      "transport_name": "mariposa_source_archives_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "对话存档总览（R6/A65：E 推送的存档事实投影，无截图存档条目+原文跳转锚点）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {}
+        }
+      }
+    },
+    {
       "canonical_name": "source.attachments.sync",
       "transport_name": "mariposa_source_attachments_sync",
       "allowed_principals": [
@@ -5186,6 +5205,14 @@
           },
           "date_to": {
             "type": "string"
+          },
+          "include_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "description": "候选限定在给定 source_messages.id 集内（对话存档检索限定存档消息集）；空数组=无候选"
           }
         }
       }

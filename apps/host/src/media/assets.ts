@@ -34,7 +34,8 @@ const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
   chat_sticker: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
   chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
   creation_icon: ['image/svg+xml', 'image/png', 'image/webp'],
-  creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp'],
+  // GIF（复审 2026-11-09 她裁定 image 模型可生动图）：生成动图作品合法入列
+  creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp', 'image/gif'],
   // derived_view（2026-10-24，RE-05）：oído 测量图等宿主派生图工件（origin=generated+origin_service 标来源）
   derived_view: ['image/png'],
 };
