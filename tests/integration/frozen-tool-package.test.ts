@@ -19,7 +19,7 @@ const examples: Record<string, Record<string, unknown>> = {
   memory_read_full:{memory_ref:'synthetic-unseen'},conversation_read:{around_seq:1,limit:1},memory_i_read:{what:'emotion'},plans_read:{},
   memory_i_write:{action:'create',content:'合成 I'},plans_write:{action:'create',title:'合成计划'},memory_open:{action:'keeps',memory_id:'synthetic'},
   episode_read:{},episode_apply:{action:'start',reason_code:'tracking_requested',label:'合成事件',source_selections:[{}]},
-  content_post_create:{body:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',body:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},
+  content_post_create:{body:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',body:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},content_album_entry_write:{kind:'important_photos',asset_id:'synthetic',idempotency_key:'synthetic'},
   conversation_archive:{kind:'sweet',latest_completed_turn:true},image_generate:{prompt:'合成画',client_operation_id:'synthetic'},archives_search:{query:'合成'},
   wake_manage:{operation:'list'},chat_send_text:{text:'合成正式消息',idempotency_key:'synthetic'},media_import:{source_url:'https://127.0.0.1/image.png'},
   chat_send_attachment:{asset_id:'synthetic',presentation:'image'},call_control:{action:'status'},oido_analyze:{audio_ref:'est:synthetic'},
@@ -55,7 +55,7 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
         // RT01（复审 20261106）：41C 全量 + 7D 完整定义都随窗预送——直接执行需要参数事实，
         // 不再只给 D 组一行摘要（旧 41 断言= D 组无完整定义的旧合同）
         const D7=['memory_correct','deletion_review','creation_save_artifact','oido_capabilities','oido_view','oido_find','oido_compare'];
-        assert.equal(Object.keys(ids).length,51,'C 组（含 conversation_archive/image_generate/archives_search）+ 7D 全部带 definition（完整定义随窗）');
+        assert.equal(Object.keys(ids).length,52,'C 组（含 conversation_archive/image_generate/archives_search/content_album_entry_write）+ 7D 全部带 definition（完整定义随窗）');
         assert.deepEqual([...Object.keys(examples),...D7].sort(),Object.keys(ids).sort());
         const [a,b]=InMemoryTransport.createLinkedPair(); const client=new Client({name:'fake-sdk',version:'1'});
         await input.options.mcpServers.est.instance.connect(b);await client.connect(a);
@@ -108,7 +108,7 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
   try{
     await start();const id=await send();
     const frozen=storedToolset(host!.db,id)!;
-    assert.equal(frozen.catalog.length,53); // 目录 53 项（P4 +conversation_archive、P3 +image_generate、整改三批 +archives_search）
+    assert.equal(frozen.catalog.length,54); // 目录 54 项（P4 +conversation_archive、P3 +image_generate、整改三批 +archives_search、R5 +content_album_entry_write）
     assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,7);
     assert.equal(Object.values(frozen.groups).filter(g=>g==='T').length,2);
     assert.ok(frozen.initialText!.includes('content_albums_read'));
@@ -120,8 +120,8 @@ test('生产装配：M 开窗故障仍发送 40C/7D；直接 invoke、冻结重�
     assert.deepEqual(host!.db.prepare('SELECT catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(id),row);
     const newId=await send('new-room');
     assert.equal(Object.values(storedToolset(host!.db,newId)!.groups).filter(g=>g==='C').length,0);
-    assert.equal(Object.keys(results).length,44); // P4 +conversation_archive、P3 +image_generate、整改 +archives_search
+    assert.equal(Object.keys(results).length,45); // P4 +conversation_archive、P3 +image_generate、整改 +archives_search、R5 +content_album_entry_write
     const proofs=host!.db.prepare('SELECT tool_context_json FROM provider_requests WHERE window_id=? AND sent_at IS NOT NULL').all(id) as any[];
-    assert.ok(proofs.some(p=>JSON.parse(p.tool_context_json).length===44));
+    assert.ok(proofs.some(p=>JSON.parse(p.tool_context_json).length===45));
   } finally {await host?.stop();globalThis.fetch=originalFetch;fs.rmSync(root,{recursive:true,force:true});}
 });

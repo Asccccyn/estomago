@@ -74,12 +74,30 @@ test('PLAN-5: ALB-07——选集图不进片段（图块随历史走）；同图
   assert.equal(r.images.length, 2, '同 hash 不同 asset_id 去重为一张');
   assert.deepEqual(r.fragmentImages.map((i) => i.source), ['carry_always'], '只有相册携带图进片段');
   const sel = r.images.find((i) => i.source === 'selection')!;
-  assert.equal(sel.caption, '海边的落日', '选集图的相册留言原样保留（不随去重丢弃）');
+  assert.deepEqual(sel.comments.map((c) => c.caption), ['海边的落日'], '选集图的相册留言原样保留（不随去重丢弃）');
   const frag = buildCarryFragment(r.fragmentImages, r.images)!;
   const text = (frag.blocks[0] as { type: 'text'; text: string }).text;
   assert.match(text, /这张拍得好/);
   assert.match(text, /海边的落日/, '选集同图留言出现在片段文本（ALB-07 留言不丢）');
   assert.equal(frag.blocks.filter((b) => b.type === 'asset_image').length, 1, '片段只含相册携带图块（不与历史投影双注）');
+});
+
+test('PLAN-5b: R2 残余——同图多条留言逐条保留（不合并、不取首条）', () => {
+  const r = planCarryImages({
+    selectionImages: [],
+    carryItems: [
+      { asset_id: 'c1', mode: 'always', caption: '海边的落日', meaning: null, entry_id: 'e1', kind: 'important_photos', added_by: 'qiaosheng', content_sha256: 'h1' },
+      { asset_id: 'c1-dup', mode: 'always', caption: '风好大', meaning: '但很开心', entry_id: 'e2', kind: 'important_photos', added_by: 'jiaming', content_sha256: 'h1' },
+    ],
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.equal(r.images.length, 1, '同 hash 去重为一张图');
+  assert.equal(r.images[0]!.comments.length, 2, '两条留言都在');
+  const frag = buildCarryFragment(r.fragmentImages, r.images)!;
+  const text = (frag.blocks[0] as { type: 'text'; text: string }).text;
+  assert.match(text, /乔乔：海边的落日/);
+  assert.match(text, /char：风好大 \/ 但很开心/, 'caption/meaning 并列且作者随留言保留');
 });
 
 test('PLAN-6: ALB-07 双注反例——6 张选集图 + 6 张同 hash 相册携带=6 张（非 12），装配通过', () => {

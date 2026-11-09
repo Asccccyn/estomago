@@ -19,7 +19,7 @@ import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHisto
 import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
 import {
   Phone, AudioLines, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
-  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square,
+  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square, Star,
 } from 'lucide-react'
 
 function DotSpinner() {
@@ -597,6 +597,9 @@ export default function App() {
               <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
               <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
               <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
+              {m.kind === 'image' && m.media?.some((x) => x.assetId) && (
+                <IconBtn title="收藏到我们的相册" onClick={() => void client.favoriteImages(m.media!.filter((x) => x.kind === 'image' && x.assetId).map((x) => x.assetId!))}><Star size={15} /></IconBtn>
+              )}
               <IconBtn title={m.canEdit ? '编辑' : '已派发或编辑资格尚未确认'} disabled={editing !== null || m.editPending || !m.canEdit} onClick={() => editMessage(m)}><Pencil size={15} /></IconBtn>
               <span className="ml-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
             </div>
@@ -643,6 +646,9 @@ export default function App() {
                   <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
                   <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
                   <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
+                  {m.kind === 'image' && m.media?.some((x) => x.assetId) && (
+                    <IconBtn title="收藏到我们的相册" onClick={() => void client.favoriteImages(m.media!.filter((x) => x.kind === 'image' && x.assetId).map((x) => x.assetId!))}><Star size={15} /></IconBtn>
+                  )}
                 </div>
               </>
             )}

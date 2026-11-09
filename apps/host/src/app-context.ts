@@ -182,6 +182,9 @@ export class Host {
       templateOverride: surfaceCfg.sol.decision_template,
       templateRevision: SOL_DECISION_SCHEMA_VERSION,
     });
+    // R6 精确封存：quarrel sm 集随 prepare 下推——archives 服务在本函数后段构造，
+    // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable）。
+    let quarrelSourceRefsFn: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null = null;
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
@@ -203,6 +206,7 @@ export class Host {
       },
       logger,
       events,
+      (conversationId) => quarrelSourceRefsFn?.(conversationId) ?? Promise.resolve({ refs: new Set<string>(), reachable: true }),
     );
     // 保存的模板/模型/开关覆盖与配置文件合并，仍由同一服务消费。
     surfacing.restoreSavedSettings();
@@ -363,9 +367,11 @@ export class Host {
     const { registerImageGenCapabilities } = await import('./modules/imagegen/module.ts');
     registerImageGenCapabilities(capabilityRegistry, { imagegen });
     // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
-    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient });
+    // R6 双标记：attachments 端口与归档流同源（observation 推 M 附属元数据）
+    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient, attachments: opts.config.archive.enabled ? archiveMariposaClient : null, streamId: opts.config.archive.source_scope ?? 'estomago-primary-live', logger });
     const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
     registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
+    quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,

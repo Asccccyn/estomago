@@ -2224,17 +2224,22 @@ export class TurnSupervisor {
       } catch {
         surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
       }
-      // ALB-10/R28（相册整改，审计 2026-11-08）：争吵封存的精确来源抑制——自动浮现
-      // 候选项的 source_ref 落在 content 权威封存范围（经 source_sync_receipts 映射）
-      // 时，本轮扣留该冻结注入（text 与 items 一体冻结，item 级剔除会造成投影与
-      // 实际内容不一致——整包扣留，下轮 M 不再重推同源；主动查看/手选/默认携带
-      // 不在本路径）。无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
+      // ALB-10/R28 + R6 精确封存（复审 2026-11-08）：争吵封存的主闸在 prepare 下推——
+      // quarrel sm 集随来源边界进 M，检索层逐项排除（words/raw 按 source_ref、event 按
+      // 桶绑定），无关候选不再整包扣留。此处是终投递资格检查（03 §6：覆盖存档前已在
+      // 途、存档后才冻结返回的候选）：命中来源仍整包扣留（text/items 一体冻结，item
+      // 级剔除会投影不一致；下轮 prepare 已带排除集不再重推）。content 不可达=只暂缓
+      // 本次自动注入（正常聊天继续），不空集放行冒充已核对。主动查看/手选/默认携带
+      // 不在本路径；无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
       if (surfacingAugment && this.d.archives && this.d.contentClient) {
         const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id);
-        if (blocked.size > 0) {
-          const hit = surfacingAugment.items.some((it) => typeof it.source_ref === 'string' && blocked.has(it.source_ref.replace(/^source_msg:/, '')));
+        if (!blocked.reachable) {
+          d.logger.warn('surfacing_deferred_quarrel_unreachable', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId });
+          surfacingAugment = null;
+        } else if (blocked.refs.size > 0) {
+          const hit = surfacingAugment.items.some((it) => typeof it.source_ref === 'string' && blocked.refs.has(it.source_ref.replace(/^source_msg:/, '')));
           if (hit) {
-            d.logger.info('surfacing_suppressed_quarrel', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, blocked_refs: blocked.size });
+            d.logger.info('surfacing_suppressed_quarrel', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, blocked_refs: blocked.refs.size });
             surfacingAugment = null;
           }
         }

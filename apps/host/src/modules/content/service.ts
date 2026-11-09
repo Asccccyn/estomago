@@ -69,19 +69,71 @@ export class ContentToolsService {
     return {ok:true,output:{items:(body.items ?? []).map(item=>({id:item.id,asset_ref:`est:${item.asset_id}`,caption:item.caption,meaning:item.meaning,created_at:item.created_at})),next_cursor:body.next_cursor,has_more:body.has_more}};
   }
 
-  async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  /** R5（复审 2026-11-08）：相册写工具——与浏览器写同一协调面（回执/回放/未知收口）。
+   *  幂等键绑定 turn+模型显式 key（RF02 同款，不含 provider requestId）。 */
+  async contentAlbumEntryWrite(args: { kind: string; asset_id: string; caption?: string; meaning?: string; carry_mode?: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
+    const r = await this.contentOps.write({ method: 'POST', path: `/api/v1/content/albums/${encodeURIComponent(args.kind)}/entries`, actor: 'jiaming',
+      body: { asset_id: args.asset_id, caption: args.caption, meaning: args.meaning, ...(args.carry_mode ? { carry_mode: args.carry_mode } : {}) },
+      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
+    });
+    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
+    if (isUnknownOutcome(r)) return unknownToolResult('ALBUM_ENTRY_UNKNOWN', r);
+    return { ok: false, output: { error_code: 'ALBUM_ENTRY_WRITE_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+  }
+
+  async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     const mime = args.format === 'svg' ? 'image/svg+xml' : 'text/html';
     // 内容安全检查：SVG 不允许 <script>；HTML 允许内联脚本（在沙箱 iframe 内执行——宿主不执行）
     if (args.format === 'svg' && /<script/i.test(args.content)) {
       return { ok: false, output: { error_code: 'SVG_SCRIPT_FORBIDDEN', detail: 'SVG 图标不允许内嵌脚本（HTML 作品请用 format=html 走沙箱预览）' } };
     }
-    const opKey = `tool-creation:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.client_operation_id}`;
+    // ALB-06① 同款（审计 20261108 对 imagegen 的裁定，此处同口径）：幂等身份=
+    // client_operation_id 本身。旧键含 turnId/requestId——工具续轮重试会换 requestId
+    // 而重复建资产；R5 加入"条目失败→同键重试"路径后该缺陷会实际触发，随本批对齐。
+    const opKey = `tool-creation:${args.client_operation_id}`;
+    let asset: { id: string; byte_size: number };
     try {
-      const a = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
-      return { ok: true, output: { asset_id: a.id, mime_type: mime, byte_size: a.byte_size, saved: true } };
+      asset = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
     } catch (err) {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
+    }
+    // R5（复审 2026-11-08）：保存即入作品——作品面板/工作台读 creations 条目，
+    // 只存资产不入条目的作品用户不可见。条目未成=如实可重试（同键只补条目），
+    // 不冒充 saved；引用保护沿用 imagegen 协议（pin→建条目→按权威快照 commit）。
+    if (!this.contentClient) {
+      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true } };
+    }
+    this.media.pinAssetForOperation({ assetId: asset.id, operationKey: opKey });
+    const { contentForward } = await import('../../integrations/content/client.ts');
+    try {
+      const res = await contentForward(this.contentClient, {
+        method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
+        body: { work_asset_id: asset.id, work_kind: args.format },
+        headers: { 'idempotency-key': `tool-creation-entry:${args.client_operation_id}` },
+      });
+      if (res.status !== 201 && res.status !== 200) {
+        this.media.releaseOperationPins(opKey);
+        return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但作品条目被拒（${res.status}）——用同一 client_operation_id 重试只补条目，不会重复保存`, raw_status: res.status } };
+      }
+      const creation = res.body as { id?: string };
+      const creationId = typeof creation.id === 'string' ? creation.id : null;
+      if (creationId !== null) {
+        try {
+          const snap = await contentForward(this.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/references/creation/${encodeURIComponent(creationId)}` });
+          const b = snap.body as { owner_revision?: number; deleted?: boolean; asset_ids?: string[] };
+          if (snap.status === 200 && typeof b.owner_revision === 'number' && b.deleted !== true) {
+            this.media.commitContentSnapshot({ type: 'creation', id: creationId }, { ownerRevision: b.owner_revision, assetIds: Array.isArray(b.asset_ids) ? b.asset_ids : [] }, opKey);
+          }
+        } catch { /* 快照确认失败不阻塞回执：pin 仍在保护，恢复对账收口 */ }
+      } else {
+        this.media.releaseOperationPins(opKey); // 回执无 id=无权威关系可确认
+      }
+      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: creationId, saved: true } };
+    } catch (err) {
+      this.media.releaseOperationPins(opKey);
+      return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——用同一 client_operation_id 重试只补条目` } };
     }
   }
 }

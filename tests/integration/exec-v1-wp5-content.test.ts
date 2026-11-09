@@ -349,3 +349,59 @@ test('F08：无效 refs 零业务写零回执；成功重放不重复新增', as
   const ok2 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-ok' }), body: JSON.stringify({ asset_id: assetId, caption: 'F08' }) });
   assert.equal(ok2.status, 201, '成功重放回放原 201（withReceipt 回放原状态，不重复新增）');
 });
+
+// —— R5（复审 2026-11-08）：相册写工具 + creation_save_artifact 自动入作品 + 携带集合逐条目 ——
+
+async function toolHarness() {
+  const db = openDatabase(path.join(root, 'data'));
+  migrate(db, sha256Hex);
+  const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
+  const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
+  const contentOps = new ContentOperationCoordinator({ db, client, media, logger: new Logger(null) });
+  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages: new MessageService(db), contentClient: client, contentOps });
+  const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w-r5', turnId: 'turn-r5', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-r5' };
+  return { tools, ctx, media, client };
+}
+
+test('R5-工具：content_album_entry_write（收藏+携带模式一体；同键幂等重放）', async () => {
+  const { tools, ctx, media } = await toolHarness();
+  const asset = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'r5-op-asset-1', createdBy: 'qiaosheng', origin: 'upload' });
+  const r1 = await tools.execute('content_album_entry_write', { kind: 'important_photos', asset_id: asset.id, caption: '今晚的月亮', carry_mode: 'always', idempotency_key: 'r5-alb-1' }, ctx);
+  assert.equal(r1.ok, true, JSON.stringify(r1.output));
+  const e1 = r1.output as { id: string; carry_mode: string };
+  assert.equal(e1.carry_mode, 'always');
+  const r2 = await tools.execute('content_album_entry_write', { kind: 'important_photos', asset_id: asset.id, caption: '今晚的月亮', carry_mode: 'always', idempotency_key: 'r5-alb-1' }, ctx);
+  assert.equal(r2.ok, true);
+  assert.equal((r2.output as { id: string }).id, e1.id, '同幂等键重放=同一条目');
+  const bad = await tools.execute('content_album_entry_write', { kind: 'chat_screenshots', asset_id: asset.id, idempotency_key: 'r5-alb-2' }, ctx);
+  assert.equal(bad.ok, false, 'chat_screenshots 不在写工具白名单（只归截图归档链）');
+});
+
+test('R5-工具：creation_save_artifact 保存即入作品（svg 免桶+icon=work；同 op 重放不重复建）', async () => {
+  const { tools, ctx, client } = await toolHarness();
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>';
+  const r1 = await tools.execute('creation_save_artifact', { format: 'svg', content: svg, client_operation_id: 'r5-crt-1' }, ctx);
+  assert.equal(r1.ok, true, JSON.stringify(r1.output));
+  const out1 = r1.output as { asset_id: string; creation_id: string | null; saved: boolean };
+  assert.ok(out1.creation_id, '作品条目已建立');
+  const list = await contentForward(client, { method: 'GET', path: '/api/v1/content/creations?limit=10', actor: 'qiaosheng' });
+  const mine = (list.body as { items: Array<{ id: string; work_kind: string | null; work_asset_id: string | null; icon_asset_id: string | null }> }).items.find((c) => c.id === out1.creation_id);
+  assert.ok(mine, '作品列表可见');
+  assert.equal(mine!.work_kind, 'svg');
+  assert.equal(mine!.work_asset_id, out1.asset_id, '免桶：work=保存资产');
+  assert.equal(mine!.icon_asset_id, out1.asset_id, 'icon 以自身 work 资产充当（不复制字节）');
+  const r2 = await tools.execute('creation_save_artifact', { format: 'svg', content: svg, client_operation_id: 'r5-crt-1' }, ctx);
+  assert.equal(r2.ok, true);
+  assert.equal((r2.output as { creation_id: string | null }).creation_id, out1.creation_id, '同 client_operation_id 重放=同一作品（不重复建条目/资产）');
+});
+
+test('R6-携带：carry-set 逐携带关系返回（同 asset 多条留言不预合并丢弃）', async () => {
+  const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
+  // 同一 asset 两条携带关系（不同相册各一条，均 always）
+  await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/important_photos/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '海边的落日', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-1' } });
+  await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-2' } });
+  const set = await contentForward(client, { method: 'GET', path: '/api/v1/content/carry-set', actor: 'jiaming' });
+  const items = (set.body as { items: Array<{ asset_id: string; caption: string | null; kind: string }> }).items.filter((i) => i.asset_id === 'asset_carry_multi');
+  assert.equal(items.length, 2, '两条携带关系各自返回（去重归 E 规划器）');
+  assert.deepEqual(items.map((i) => i.caption).sort(), ['海边的落日', '风好大'], '留言不预合并丢弃（03 §7.2）');
+});

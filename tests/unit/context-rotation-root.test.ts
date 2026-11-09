@@ -152,7 +152,7 @@ test('R05/R06: capacity intent survives reconstruction and confirmation still di
     return { status: 200, headers: new Map(), body: frameStream(body) };
   };
   const root = tempRoot('root-capacity-');
-  const options = { reminders: { enabled: true }, windows: { soft_limit_tokens: 24_800 /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } };
+  const options = { reminders: { enabled: true }, windows: { soft_limit_tokens: 25_200 /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } };
   let ctx = compose(root, transport, null, options);
   await say(ctx, 'first synthetic', 'a', T0);
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
@@ -173,7 +173,7 @@ test('R05/R06: capacity intent survives reconstruction and confirmation still di
 
 test('R14/R15: failed atomic switch does not consume selection or resume pending input; retry resumes exactly once', async () => {
   const seen: Array<Record<string, unknown>> = [];
-  const ctx = compose(tempRoot('root-failure-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 24_800 /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
+  const ctx = compose(tempRoot('root-failure-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 25_200 /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
   await say(ctx, 'first', 'a', T0);
   const old = ctx.windows.activeWindow('c1')!;
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
@@ -295,7 +295,7 @@ test('R12/R17: manual bypasses failed review limit but verifies unknown hold usi
 
 test('R15: crash after switch before requeue recovers from consumed selection without another rotation', async () => {
   const seen: Array<Record<string, unknown>> = [];
-  const ctx = compose(tempRoot('root-requeue-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 24_800 /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
+  const ctx = compose(tempRoot('root-requeue-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 25_200 /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
   await say(ctx, 'first', 'a', T0);
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
   ctx.db.exec("CREATE TRIGGER crash_requeue BEFORE UPDATE OF state ON attempts WHEN OLD.state='blocked' AND NEW.state='pending' BEGIN SELECT RAISE(ABORT, 'crash after switch'); END");

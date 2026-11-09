@@ -229,6 +229,31 @@ ALTER TABLE creations_v5 RENAME TO creations;
 `);
     db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (5, ?)').run(new Date().toISOString());
   }
+  if (!have.includes(6)) {
+    // v6（相册整改 R5，复审 2026-11-08）：creation_save_artifact 保存即入作品——本地生成
+    // 作品 svg/html 免桶入条目，work_kind 枚举扩 'svg'（重建表换 CHECK；存量行原样保留）。
+    db.exec(`
+CREATE TABLE creations_v6(
+  id TEXT PRIMARY KEY,
+  creator_actor TEXT NOT NULL CHECK (creator_actor IN ('qiaosheng','jiaming')),
+  title TEXT,
+  bucket_service TEXT,
+  bucket_id TEXT,
+  icon_asset_id TEXT NOT NULL,
+  work_asset_id TEXT,
+  work_kind TEXT CHECK (work_kind IN ('image','video','html','svg') OR work_kind IS NULL),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1,
+  deleted_at TEXT
+);
+INSERT INTO creations_v6(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision, deleted_at)
+  SELECT id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision, deleted_at FROM creations;
+DROP TABLE creations;
+ALTER TABLE creations_v6 RENAME TO creations;
+`);
+    db.prepare('INSERT INTO content_schema_migrations(version, applied_at) VALUES (6, ?)').run(new Date().toISOString());
+  }
   return db;
 }
 
@@ -573,23 +598,25 @@ export class ContentServer {
     if (method === 'POST' && pathname === '/api/v1/content/creations') {
       const c = cmd('creation', 'create', null);
       return { cmd: c, business: () => {
-        // 免桶仅当 bucket_id 缺席：显式给桶的图片作品（纪念作品换图）仍按原合同存桶
-        const bucketlessImageWork = !(typeof body.bucket_id === 'string' && body.bucket_id) && typeof body.work_asset_id === 'string' && !!body.work_asset_id && body.work_kind === 'image';
-        if (!bucketlessImageWork) {
-          if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）；纯图片作品可免桶（work_asset_id+work_kind=image）');
+        // 免桶仅当 bucket_id 缺席：显式给桶的图片作品（纪念作品换图）仍按原合同存桶。
+        // R5（复审 2026-11-08）：免桶范围扩到本地生成作品 svg/html（creation_save_artifact
+        // 自动入作品；无 Mariposa 桶），icon 同 v5 规则以自身 work 资产充当。
+        const bucketlessGeneratedWork = !(typeof body.bucket_id === 'string' && body.bucket_id) && typeof body.work_asset_id === 'string' && !!body.work_asset_id && ['image', 'svg', 'html'].includes(String(body.work_kind));
+        if (!bucketlessGeneratedWork) {
+          if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）；本地生成作品可免桶（work_asset_id+work_kind=image|svg|html）');
         }
         if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) {
-          // v5：免桶图片作品以自身 work 资产为 icon（同一对象，不复制字节）
-          if (!bucketlessImageWork) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
+          // v5：免桶作品以自身 work 资产为 icon（同一对象，不复制字节）
+          if (!bucketlessGeneratedWork) throw new ContentError(422, 'ICON_REQUIRED', 'icon_asset_id 必填');
           body = { ...body, icon_asset_id: body.work_asset_id };
         }
         const workAsset: string | null = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : null;
         const workKind: string | null = workAsset !== null && typeof body.work_kind === 'string' ? body.work_kind : null;
         if ((workAsset === null) !== (workKind === null)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
-        if (workKind !== null && !['image', 'video', 'html'].includes(String(workKind))) throw new ContentError(422, 'WORK_KIND_INVALID', 'work_kind 必须是 image|video|html');
+        if (workKind !== null && !['image', 'video', 'html', 'svg'].includes(String(workKind))) throw new ContentError(422, 'WORK_KIND_INVALID', 'work_kind 必须是 image|video|html|svg');
         const id = genId('crt');
         const t = now();
-        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, bucketlessImageWork ? null : (typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa'), bucketlessImageWork ? null : String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
+        const args: Array<string | null> = [id, actor, typeof body.title === 'string' ? body.title.slice(0, 200) : null, bucketlessGeneratedWork ? null : (typeof body.bucket_service === 'string' ? body.bucket_service : 'mariposa'), bucketlessGeneratedWork ? null : String(body.bucket_id), String(body.icon_asset_id), workAsset, workKind, t, t];
         this.db.prepare('INSERT INTO creations(id, creator_actor, title, bucket_service, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision) VALUES (?,?,?,?,?,?,?,?,?,?,1)').run(...args);
         return { status: 201, body: this.creationDto(this.creationRow(id)) };
       } };
@@ -738,18 +765,13 @@ export class ContentServer {
 
   /** 合并有效携带集合（E 滚窗装配的唯一读取口径；条目数=去重后 asset 数，天然 ≤ 上限）。 */
   carrySet(): { limit: number; items: CarrySetItem[] } {
-    const byAsset = new Map<string, CarrySetItem>();
-    for (const r of this.carryRows()) {
-      const mode = r.carry_mode === 'always' ? 'always' : 'next_once';
-      const existing = byAsset.get(r.asset_id);
-      if (!existing || (existing.mode === 'next_once' && mode === 'always')) {
-        byAsset.set(r.asset_id, {
-          asset_id: r.asset_id, mode, entry_id: r.id, kind: r.kind,
-          caption: r.caption, meaning: r.meaning, added_by: r.added_by_actor as CarrySetItem['added_by'],
-        });
-      }
-    }
-    return { limit: CARRY_IMAGE_LIMIT, items: [...byAsset.values()] };
+    // R2 残余（复审 2026-11-08）：逐携带关系返回，不再按 asset 预去重——同 asset
+    // 多条携带关系的留言都要保留（03 §7.2 留言不得丢弃）；合并去重与 always/next_once
+    // 取舍是 E 规划器（planCarryImages）的单一职责，本接口不另立口径。
+    return { limit: CARRY_IMAGE_LIMIT, items: this.carryRows().map((r) => ({
+      asset_id: r.asset_id, mode: r.carry_mode === 'always' ? 'always' : 'next_once', entry_id: r.id, kind: r.kind,
+      caption: r.caption, meaning: r.meaning, added_by: r.added_by_actor as CarrySetItem['added_by'],
+    })) };
   }
 
   /** 写入校验：把某条目改为 newMode 后，合并去重集合不得超 CARRY_IMAGE_LIMIT。

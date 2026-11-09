@@ -55,12 +55,14 @@ test('CARRY-1: 创建即携带 + carry-set 读取 + 非法模式拒绝', async (
   assert.equal(bad.body['error']['code'], 'carry_mode_invalid');
 });
 
-test('CARRY-2: 跨相册同 asset 去重；always 优先于 next_once', async () => {
+test('CARRY-2: 跨相册同 asset 逐关系返回（R2 残余：留言不预合并）；去重与 always 优先归 E 规划器', async () => {
   await addEntry('stickers', 'asset-c1', 'next_once', 'k-carry-2a'); // 同 asset 另一相册，next_once
   const set = await call('GET', '/api/v1/content/carry-set');
-  const items = set.body['items'] as Array<{ asset_id: string; mode: string }>;
-  assert.equal(items.length, 1, '同 asset 跨相册只算一张');
-  assert.equal(items[0]!.mode, 'always', 'always 优先');
+  const items = set.body['items'] as Array<{ asset_id: string; mode: string; kind: string }>;
+  const c1 = items.filter((i) => i.asset_id === 'asset-c1');
+  assert.equal(c1.length, 2, '同 asset 跨相册两条携带关系各自返回（planCarryImages 按 hash 去重为一张，留言逐条保留）');
+  assert.deepEqual(c1.map((i) => i.mode).sort(), ['always', 'next_once'], '各自模式原样（always 优先的取舍在 E 规划器）');
+  assert.deepEqual(c1.map((i) => i.kind).sort(), ['important_photos', 'stickers']);
 });
 
 test('CARRY-3: 去重计数上限——第 10 张成功、第 11 张不同 asset 明确拒绝、减选后可再设', async () => {
@@ -74,11 +76,12 @@ test('CARRY-3: 去重计数上限——第 10 张成功、第 11 张不同 asset
   const eleventh = await addEntry('stickers', 'asset-n11', 'always', 'k-carry-3-11');
   assert.equal(eleventh.status, 422);
   assert.equal(eleventh.body['error']['code'], 'carry_limit_exceeded');
-  // 已在集合内的 asset 再入新相册：新增的是关系不是一张图——集合仍 10、不超限
+  // 已在集合内的 asset 再入新相册：新增的是关系不是一张图——去重集合仍 10、不超限
   const again = await addEntry('chat_screenshots', 'asset-c1', 'next_once', 'k-carry-3-12');
   assert.equal(again.status, 201);
   const setFull = await call('GET', '/api/v1/content/carry-set');
-  assert.equal((setFull.body['items'] as unknown[]).length, CARRY_IMAGE_LIMIT, '去重后恰 10，不因跨相册重复计数');
+  const fullItems = setFull.body['items'] as Array<{ asset_id: string }>;
+  assert.equal(new Set(fullItems.map((i) => i.asset_id)).size, CARRY_IMAGE_LIMIT, '去重后恰 10 个 asset（携带关系数可多于 10，R2 残余逐条保留）');
   // 减选一张后第 11 张可入
   const setBefore = await call('GET', '/api/v1/content/carry-set');
   const firstEntry = (setBefore.body['items'] as Array<{ entry_id: string }>)[0]!;

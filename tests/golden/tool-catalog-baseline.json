@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "d05d27f5887842d93caa8371c6a5df3bcc1d319b",
+  "baselineCommit": "71e9ec5ce01794bd9b27350ca104a68ce157715c",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -52,6 +52,7 @@
     "image_generate",
     "memory_source_bind",
     "content_albums_read",
+    "content_album_entry_write",
     "media_view",
     "archives_search"
   ],
@@ -112,10 +113,11 @@
     "image_generate": "td_06f6eb4f5ee249b1c610ef3a",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
+    "content_album_entry_write": "td_372d8e719502f2e487fffb17",
     "media_view": "td_f72b71bbef701e3714320c82",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "2a2e776f137f71707a749102da9016101a8267b9d2309db7a1d3ba21fd6f0d35",
+  "toolsSha256": "f1789fe8403dc4e34ea0b9943a81895e57eababec5558d6fff8e69c0be1b3474",
   "tools": [
     {
       "type": "function",
@@ -2364,6 +2366,63 @@
               "source_kind"
             ]
           }
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "content_album_entry_write",
+        "description": "把一张图片收入相册（收藏/归类/携带一体）。kind=important_photos 收藏重要照片（可附当时的原话 caption 与你的说明 meaning），kind=stickers 归入表情包。carry_mode 仅 important_photos 有效（none=仅收藏；next_once=下次滚窗带一次；always=每次滚窗都带）。同 (kind,asset) 重复提交幂等返回既有条目。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "important_photos",
+                "stickers"
+              ],
+              "description": "目标相册"
+            },
+            "asset_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "图片资产 id（先经媒体服务持久保存，如聊天图片/生成图）"
+            },
+            "caption": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "收藏时的原话留言（可选）"
+            },
+            "meaning": {
+              "type": "string",
+              "maxLength": 2000,
+              "description": "你对这张图的说明（可选）"
+            },
+            "carry_mode": {
+              "type": "string",
+              "enum": [
+                "none",
+                "next_once",
+                "always"
+              ],
+              "description": "滚窗携带模式，默认 none 仅收藏"
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "操作幂等键；重试沿用同一值"
+            }
+          },
+          "required": [
+            "kind",
+            "asset_id",
+            "idempotency_key"
+          ],
+          "additionalProperties": false
         }
       }
     },

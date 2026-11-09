@@ -16,8 +16,9 @@ export const CARRY_IMAGE_LIMIT = 10;
 export const CARRY_MODES = ['none', 'next_once', 'always'] as const;
 export type CarryMode = (typeof CARRY_MODES)[number];
 
-// E 读取的合并有效携带集合（按 asset 去重；同一 asset 既有 always 又有 next_once 时
-// 以 always 为准——去重后身份唯一，留言取该 asset 首条携带关系）。
+// E 读取的合并有效携带集合（逐携带关系返回——同 asset 多条关系各自一条，留言
+// 不得预合并丢弃；跨 asset/模式 的去重与 always/next_once 取舍由 E 滚窗规划器
+// planCarryImages 单一正本负责）。
 export type CarrySetItem = {
   asset_id: string;
   mode: Exclude<CarryMode, 'none'>;

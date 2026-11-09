@@ -84,6 +84,7 @@ export class SurfacingService {
   private cfg: SurfacingConfig;
   private log: import('../observability/logging.ts').Logger | null;
   private events: import('../events/service.ts').EventService | null;
+  private quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null;
   private eventQueue: Array<import('./contracts.ts').SurfaceJobEventPayload> = [];
   private eventFlushScheduled = false;
 
@@ -94,6 +95,7 @@ export class SurfacingService {
     cfg: SurfacingConfig,
     log: import('../observability/logging.ts').Logger | null,
     events: import('../events/service.ts').EventService | null = null,
+    quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null = null,
   ) {
     this.db = db;
     this.client = client;
@@ -101,6 +103,7 @@ export class SurfacingService {
     this.cfg = cfg;
     this.log = log;
     this.events = events;
+    this.quarrelSourceRefs = quarrelSourceRefs;
     // R05（审计 J02）：状态提交处收集生命周期事件，微任务批量落 SSE——
     // 事务内的状态写入不会嵌套开 EventService 事务；事件=投影非正本，
     // 发布失败只记日志绝不影响浮现状态机。
@@ -409,7 +412,22 @@ export class SurfacingService {
     const opId = `est-surface:${job.id}`;
     // RECALL_SOURCE_BOUNDARY：来源边界随 prepare 下推（excluded=触发消息
     // 全修订+回声；in_context=当前窗携带原文）。收据缺席=如实不带（fail-open）。
+    // R6 精确封存（复审 2026-11-08）：争吵存档的 sm 集并入同一来源边界下推——M 在
+    // 检索层逐项排除（words/raw 按 source_ref、event 按桶绑定；旧绑定/无绑定保留），
+    // 冻结前生效，无关候选不再被整包扣留（03 §6"复用已有来源边界和回声识别机制"）。
+    // content 不可达时不带（同收据缺席口径）——终投递侧另有降级闸（supervisor）。
     const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId], 64);
+    let quarrelPushed = 0;
+    if (this.quarrelSourceRefs) {
+      const quarrel = await this.quarrelSourceRefs(job.conversation_id);
+      if (quarrel.reachable) {
+        for (const sm of quarrel.refs) if (!excluded_source_ids.includes(sm) && excluded_source_ids.length < 192) excluded_source_ids.push(sm);
+        quarrelPushed = quarrel.refs.size;
+        if (quarrelPushed > 0) this.log?.info?.('surface_quarrel_boundary_pushed', { job: job.id, quarrel_refs: quarrelPushed });
+      } else {
+        this.log?.warn?.('surface_quarrel_boundary_unreachable', { job: job.id });
+      }
+    }
     const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id), 128);
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,

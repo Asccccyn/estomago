@@ -89,6 +89,27 @@ export const CONTENTALBUMSREAD_DEFINITION: HostToolSpec = {
   },additionalProperties:false,dependencies:{cursor:['album'],q:['album'],source_service:['album','source_kind','source_id'],source_kind:['album','source_service','source_id'],source_id:['album','source_service','source_kind']}}},
 };
 
+/** R5（复审 2026-11-08）：相册写工具——收藏/归类/携带模式一体。 */
+export const CONTENTALBUMENTRYWRITE_DEFINITION: HostToolSpec = {
+    type: 'function',
+    function: {
+      name: 'content_album_entry_write',
+      description: '把一张图片收入相册（收藏/归类/携带一体）。kind=important_photos 收藏重要照片（可附当时的原话 caption 与你的说明 meaning），kind=stickers 归入表情包。carry_mode 仅 important_photos 有效（none=仅收藏；next_once=下次滚窗带一次；always=每次滚窗都带）。同 (kind,asset) 重复提交幂等返回既有条目。',
+      parameters: {
+        type: 'object',
+        properties: {
+          kind: { type: 'string', enum: CONTENT_ALBUMS.filter(a => a.album !== 'chat_screenshots').map(a => a.album), description: '目标相册' },
+          asset_id: { type: 'string', minLength: 1, maxLength: 128, description: '图片资产 id（先经媒体服务持久保存，如聊天图片/生成图）' },
+          caption: { type: 'string', maxLength: 2000, description: '收藏时的原话留言（可选）' },
+          meaning: { type: 'string', maxLength: 2000, description: '你对这张图的说明（可选）' },
+          carry_mode: { type: 'string', enum: ['none', 'next_once', 'always'], description: '滚窗携带模式，默认 none 仅收藏' },
+          idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '操作幂等键；重试沿用同一值' },
+        },
+        required: ['kind', 'asset_id', 'idempotency_key'], additionalProperties: false,
+      },
+    }
+  };
+
 export type ContentModuleDeps = {
   contentClient?: import('../../integrations/content/client.ts').ContentClient | null;
   media?: import('../../media/assets.ts').MediaService | null;
@@ -123,6 +144,9 @@ export function registerContentCapabilities(registry: { register(d: CapabilityDe
   }));
   registry.register(toolCapability({owner:'content',id:'content_albums_read',baselineOrder:51,definition:CONTENTALBUMSREAD_DEFINITION,memoryOnlyAllowed:false,free:true,label:'浏览相册',
     run:(input:Record<string,unknown>,ctx)=>service.contentAlbumsRead(input,ctx),toModel:value=>value,
+  }));
+  registry.register(toolCapability({owner:'content',id:'content_album_entry_write',baselineOrder:52,definition:CONTENTALBUMENTRYWRITE_DEFINITION,memoryOnlyAllowed:false,free:true,label:'收藏入相册',
+    run:(input:Record<string,unknown>,ctx)=>service.contentAlbumEntryWrite(input as never,ctx),toModel:value=>value,
   }));
 
 }

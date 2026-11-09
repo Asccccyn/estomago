@@ -1,7 +1,7 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
-export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
+export type Media = { kind: 'voice' | 'image'; src: string; text?: string; assetId?: string }
 export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
@@ -289,7 +289,7 @@ export class EstomagoClient {
     for(const m of [...this.raw.values()].sort((a,b)=>a.sequence-b.sequence)){
       if(!['owner','assistant','system'].includes(m.speaker))continue
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
-        kind:a.presentation==='voice'?'voice':'image',src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+'/content',text:a.derived_text??'',
+        kind:a.presentation==='voice'?'voice':'image',src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+'/content',text:a.derived_text??'',assetId:String(a.asset_id),
       }))
       const blocks=this.blocks.get(m.turn_id)??[]
       const thinkMs=blocks.length?Math.max(0,new Date(blocks[blocks.length-1]!.updated_at).getTime()-new Date(blocks[0]!.created_at??blocks[0]!.updated_at).getTime()):0
@@ -609,6 +609,31 @@ export class EstomagoClient {
     }catch(e){if(!(e instanceof LifecycleEnded)&&request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
   }
   beginSelection = () => {this.selectionKey??=operationId();this.patch({selectionMode:true})}
+
+  /** 相册整改 R5（复审 2026-11-08）：聊天图片收藏——把消息里的图片收入"我们的相册"
+   *  （important_photos）。逐资产建条目（服务端同 (kind,asset) 幂等）；留言不在此处
+   *  编造，收藏后可在相册里补。失败如实提示，不影响聊天。 */
+  favoriteImages = async (assetIds: string[]) => {
+    if (assetIds.length === 0) { this.notify('这条消息没有可收藏的图片'); return }
+    const key = 'ui-fav:' + operationId()
+    let done = 0
+    for (const assetId of assetIds) {
+      try {
+        const res = await fetch('/api/v1/content/albums/important_photos/entries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${key}:${assetId}` },
+          body: JSON.stringify({ asset_id: assetId }),
+        })
+        if (res.status === 201 || res.status === 200) done++
+        else {
+          const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } }
+          this.notify(body.error?.message ?? (`收藏未完成（${res.status}）`))
+          return
+        }
+      } catch { this.notify('收藏暂不可达，稍后可重试'); return }
+    }
+    this.notify(done > 0 ? `已收藏 ${done} 张到「我们的相册」` : '收藏未完成')
+  }
 
   /** 相册重构 P4：把当前多选消息存为对话存档（争吵/甜蜜）。争吵存档服务端会先停止
    *  正在输出的回复；成功后退出多选并提示一次（03 §3.1/§4：双状态如实分开显示）。 */

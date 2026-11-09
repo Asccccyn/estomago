@@ -52,6 +52,13 @@ export async function handleArchivesRoutes(req: IncomingMessage, res: ServerResp
     const fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(detail[1]!)}` });
     return json(res, fwd.status, fwd.body);
   }
+  // R6 存档打开链（R35）：存档卡片展开选中的原文（固定版本正文，只读）。
+  const originals = /^GET \/api\/v1\/archives\/([^/]+)\/messages$/.exec(route);
+  if (originals) {
+    const r = await d.archives.archiveOriginals(conversationId, decodeURIComponent(originals[1]!));
+    if (!r.ok) return json(res, r.code === 'CONTENT_UNREACHABLE' ? 503 : 404, { error: { code: r.code.toLowerCase(), message: r.detail } });
+    return json(res, 200, r);
+  }
   const remove = /^DELETE \/api\/v1\/archives\/([^/]+)$/.exec(route);
   if (remove && req.method === 'DELETE') {
     // 删除走宿主派生 actor + 统一回执；If-Match 透传
