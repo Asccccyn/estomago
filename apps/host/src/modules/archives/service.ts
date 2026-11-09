@@ -14,7 +14,7 @@ export type ArchiveRef = { message_id: string; revision: number; sequence: numbe
 
 export type ArchiveResult =
   | { ok: true; archive: { id: string; kind: ArchiveKind; count: number }; notified: 'tool_receipt' | 'queued' | 'none' }
-  | { ok: false; code: string; detail: string };
+  | { ok: false; code: string; detail: string; retryable?: boolean };
 
 export class ArchiveService {
   private readonly deps: { db: Db; contentClient: ContentClient | null };
@@ -78,6 +78,16 @@ export class ArchiveService {
   }): Promise<ArchiveResult> {
     const v = this.validateRefs(o.conversationId, o.rawRefs);
     if (!v.ok) return v;
+    // R6（复审 2026-11-08）：M 原文同步收据门槛——存档的最终打开依赖 M 确定版本；
+    // 任一引用无收据=待同步，明确拒绝并要求稍后原键重试（不提前显示存档成功）。
+    const placeholders = v.refs.map(() => '?').join(',');
+    const missing = (this.deps.db.prepare(
+      `SELECT m.id FROM messages m WHERE m.id IN (${placeholders})
+       AND NOT EXISTS (SELECT 1 FROM source_sync_receipts r WHERE r.origin_message_id = m.id)`,
+    ).all(...v.refs.map((r) => r.message_id)) as Array<{ id: string }>).map((r) => r.id);
+    if (missing.length > 0) {
+      return { ok: false, code: 'ARCHIVE_SOURCE_NOT_SYNCED', detail: `${missing.length} 条消息尚未同步到 M 原文层（如刚发布）；稍后用原操作键重试`, retryable: true };
+    }
     if (!this.deps.contentClient) return { ok: false, code: 'CONTENT_UNAVAILABLE', detail: '内容服务未启用（存档业务正本在 content）' };
     let res: { status: number; body: unknown };
     try {

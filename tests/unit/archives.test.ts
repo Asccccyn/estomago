@@ -98,9 +98,20 @@ test('ARC-2: 最近完整回合——排除当前回合与未发布尾巴；无�
   assert.equal(svc.latestCompletedTurnRefs('c1', t1), null, '排除指定回合后无可定位回合');
 });
 
-test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用户=排队 dedupe 幂等）', async () => {
+test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用户=排队 dedupe 幂等；R6 门槛需同步收据）', async () => {
   const u = publishUser('c1', 'arc3-u');
   const a = publishAssistant('c1', 'arc3-a');
+  // R6：M 原文同步收据门槛——先落收据（生产由归档链写入）
+  const t0 = new Date().toISOString();
+  for (const [mid, sm] of [[u.id, 'sm_arc3u'], [a.id, 'sm_arc3a']] as const) {
+    db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run('ssr-' + sm, 'op-arc3', mid, 1, 'sc1', sm, 'h-' + sm, t0, t0);
+  }
+  // 未同步消息（无收据）→ 明确拒绝可重试
+  const unsynced = publishUser('c1', 'arc3-x');
+  const denied = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: unsynced.id }], actor: 'jiaming', notifyModel: 'none', idempotencyKey: 'k-unsync' });
+  assert.equal(denied.ok, false);
+  if (!denied.ok) { assert.equal(denied.code, 'ARCHIVE_SOURCE_NOT_SYNCED'); assert.equal(denied.retryable, true); }
   // 工具发起：notifyModel=none——成功回执即通知，host_notices 不排
   const t1 = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'jiaming', notifyModel: 'none', idempotencyKey: 'k-tool-1' });
   assert.equal(t1.ok, true, JSON.stringify(t1));
@@ -121,7 +132,10 @@ test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用
   assert.match(first[0]!.text, /争吵存档/);
   assert.equal(svc.takePendingNotices('c1').length, 0, '投递一次后不再出现');
   // ALB-11：deferConfirm 模式取出不标记，未确认前仍可再取；确认后不再出现
-  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: publishUser('c1', 'arc3-t').id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-2' });
+  const msgT = publishUser('c1', 'arc3-t');
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr-arc3t', 'op-arc3t', msgT.id, 1, 'sc1', 'sm_arc3t', 'h-arc3t', new Date().toISOString(), new Date().toISOString());
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: msgT.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-2' });
   const deferred = svc.takePendingNotices('c1', true);
   assert.equal(deferred.length, 1);
   assert.equal(svc.takePendingNotices('c1', true).length, 1, '未确认（无投递证据）不标记——宁可重取不静默丢');
@@ -156,23 +170,24 @@ test('ARC-4: content v4 路由——kind 校验/空集合拒绝/软删/列表过
 });
 
 test('ARC-10: quarrelBlockedSourceRefs——经收据映射到 sm_id；仅争吵；content 不可达=空集', async () => {
-  const u1 = publishUser('c1', 'arc10-u');
-  const u2 = publishUser('c1', 'arc10-s');
+  messages.ensureConversation('c2'); // 隔离：不受本文件其他测试在同会话建档影响
+  const u1 = publishUser('c2', 'arc10-u');
+  const u2 = publishUser('c2', 'arc10-s');
   // 两条消息的 M 同步收据（sm 映射）
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr10a', 'op10', u1.id, 1, 'sc1', 'sm_block_1', 'h1', new Date().toISOString(), new Date().toISOString());
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr10b', 'op10', u2.id, 1, 'sc1', 'sm_block_2', 'h2', new Date().toISOString(), new Date().toISOString());
   // 争吵存档含 u1；甜蜜存档含 u2
-  await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-q10' });
-  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u2.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-s10' });
-  const blocked = await svc.quarrelBlockedSourceRefs('c1');
+  await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-q10' });
+  await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u2.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-s10' });
+  const blocked = await svc.quarrelBlockedSourceRefs('c2');
   assert.equal(blocked.size, 1, '仅争吵封存的来源被抑制');
   assert.ok(blocked.has('sm_block_1'));
   assert.equal(blocked.has('sm_block_2'), false, '甜蜜不抑制（03 §6）');
   // content 不可达=空集（fail-open 不抛）
   const badSvc = new (await import('../../apps/host/src/modules/archives/service.ts')).ArchiveService({ db, contentClient: { baseUrl: 'http://127.0.0.1:1', token: 'x' } as never });
-  assert.equal((await badSvc.quarrelBlockedSourceRefs('c1')).size, 0);
+  assert.equal((await badSvc.quarrelBlockedSourceRefs('c2')).size, 0);
 });
 
 test('ARC-11: 存档文本检索——命中归并到存档条目；kind 过滤；无匹配如实 no_match', async () => {

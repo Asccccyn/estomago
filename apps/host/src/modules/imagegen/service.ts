@@ -29,6 +29,19 @@ export class ImageGenService {
     if (existing?.state === 'saved' && existing.asset_id) {
       return { ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '', revised_prompt: existing.revised_prompt, generation_call: 'none' };
     }
+    // R8：stored 且作品条目已建（snapshot 未确认）——同键重试只补快照确认与 saved 收口
+    const storedResume = existing?.state === 'stored' && existing.asset_id !== null && existing.creation_id !== null
+      ? { assetId: existing.asset_id as string, creationId: existing.creation_id as string, revisedPrompt: existing.revised_prompt } : null;
+    if (storedResume !== null && this.deps.media !== null) {
+      const { assetId: storedAsset, creationId: storedCreation, revisedPrompt: storedPrompt } = storedResume;
+      const snap = await this.readCreationSnapshot(storedCreation);
+      if (snap) {
+        this.deps.media.pinAssetForOperation({ assetId: storedAsset, operationKey: o.opKey });
+        this.deps.media.commitContentSnapshot({ type: 'creation', id: storedCreation }, snap, o.opKey);
+        db.prepare("UPDATE imagegen_operations SET state='saved', error=NULL, updated_at=? WHERE op_key=?").run(new Date().toISOString(), o.opKey);
+      }
+      return { ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '', revised_prompt: storedPrompt, generation_call: 'none' };
+    }
     if (existing?.state === 'unknown') {
       return { ok: false, code: 'IMAGEGEN_RESULT_UNCONFIRMED', detail: existing.error ?? '上次生成结果未确认——不自动重发（避免重复计费）；如供应商支持查询可人工核实', retryable: false };
     }
