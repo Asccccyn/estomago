@@ -1,7 +1,7 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "8d13f656fbd0c5b6e974672e48d5799041e780f7",
+  "source_commit": "45f8a06bfb1993e8cc115a5ca7be582b4636094f",
   "source_files": {
     "backend/mariposa/capabilities/registry.py": "67a3858285031e03a8974046ea09fac21cea0e099725f4a4daac2bd8fcc67df8",
     "backend/mariposa/capabilities/input_schemas.py": "32df3f685e3318aa8116082e9a4dee9f646639aa7ec87c1959d4e31d9fc11f3e",
