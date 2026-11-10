@@ -12,7 +12,7 @@ import { Heart, Image as ImageIcon, Library, Sparkles, Upload, X } from 'lucide-
 type AlbumEntry = { id: string; asset_id: string; caption: string | null; meaning: string | null; added_by: string; carry_mode: 'none' | 'next_once' | 'always'; revision: number; created_at: string }
 type Creation = { id: string; title: string | null; work_asset_id: string | null; work_kind: string | null; created_at: string }
 type ArchiveItem = { id: string; kind: 'quarrel' | 'sweet'; note: string | null; created_by: string; messages: Array<{ message_id: string }>; created_at: string; revision: number }
-type ArchiveOriginal = { message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null }
+type ArchiveOriginal = { message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments?: Array<{ asset_id: string; presentation: string; caption: string | null }> }
 
 const TABS = [
   { key: 'creations', label: '作品', icon: Sparkles },
@@ -248,6 +248,9 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                               <li key={o.message_id} className="text-[13px] leading-relaxed">
                                 <span className="mr-1 text-[11px] text-[#a3a099]">{SPEAKER_LABELS[o.speaker ?? ''] ?? o.speaker}：</span>
                                 <span className="whitespace-pre-wrap text-[#3d3929]">{o.text ?? '（正文缺失）'}</span>
+                                {(o.attachments ?? []).filter((a) => a.presentation === 'image' || a.presentation === 'sticker').map((a) => (
+                                  <img key={a.asset_id} src={`/api/v1/assets/${encodeURIComponent(a.asset_id)}/content`} alt={a.caption ?? ''} title={a.caption ?? undefined} className="mt-1 max-h-44 rounded-xl object-contain" />
+                                ))}
                               </li>
                             ))}
                           </ol>}

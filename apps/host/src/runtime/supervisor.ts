@@ -1675,6 +1675,30 @@ export class TurnSupervisor {
       // 旧写法无脑覆盖，本地查不到会把好数据抹成 null 退化回 est:asset 双键）
       return { ...c, content_sha256: row?.content_sha256 ?? c.content_sha256 ?? null };
     });
+    // F1（复审 2026-11-09 二轮）：对账补身份——携带集仍缺 content_sha256 的存量行
+    // （v7 前旧数据）按 E 资产正本经既有相册条目入口幂等回填；content 侧只补
+    // content_sha256（不动 carry_mode/留言/updated_at）。失败仅告警不阻断滚窗，
+    // 下次对账再补；201=对账间隙条目被删后重建（unexpected，可观测即可）。
+    const backfillClient = this.d.contentClient;
+    if (backfillClient) {
+      for (let i = 0; i < carryItems.length; i++) {
+        const c = carryItems[i]!;
+        if (c.content_sha256) continue; // content 行已有身份
+        const localHash = carryItemsWithHash[i]?.content_sha256 ?? null;
+        if (!localHash) continue; // E 正本也不认识该资产：无从补，如实保持 asset 身份
+        try {
+          const res = await contentForward(backfillClient, {
+            method: 'POST', actor: 'jiaming', path: `/api/v1/content/albums/${encodeURIComponent(c.kind)}/entries`,
+            body: { asset_id: c.asset_id, content_sha256: localHash },
+            headers: { 'idempotency-key': `carry-hash:${c.entry_id}` },
+          });
+          if (res.status === 201) this.d.logger.warn('carry_hash_backfill_recreated', { entryId: c.entry_id });
+          else if (res.status !== 200) this.d.logger.warn('carry_hash_backfill_rejected', { entryId: c.entry_id, status: res.status });
+        } catch {
+          this.d.logger.warn('carry_hash_backfill_unreachable', { entryId: c.entry_id });
+        }
+      }
+    }
     const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash });
     if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
     // ALB-08（审计 2026-11-08）：计划立即持久化（先落 pending 键行；窗口落地时迁到真实

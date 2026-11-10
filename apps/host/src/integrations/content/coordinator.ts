@@ -20,6 +20,9 @@ import { stableErrorCode } from '../../observability/errors.ts';
 import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient } from './client.ts';
 
 export const CONTENT_OPERATION_TARGET = 'content.operation';
+/** F3（复审 2026-11-09 二轮）：存档 M 投影意图 outbox target——content 权威快照确认的
+ *  同一本地事务登记；由 ArchiveSyncService 既有周期消费（不加新 timer/领取器）。 */
+export const ARCHIVE_PROJECTION_TARGET = 'mariposa.archive_projection';
 const RECOVER_INTERVAL_MS = 15_000;
 const RECOVER_BATCH = 5;
 const MAX_ATTEMPTS = 20; // 超限保持 unknown_outcome（pin 继续保护），不自动释放
@@ -189,7 +192,8 @@ export class ContentOperationCoordinator {
     return result;
   }
 
-  /** 成功后确认：快照→（单调准入）→content_owner_state+映射+ack 同一本地事务。 */
+  /** 成功后确认：快照→（单调准入）→content_owner_state+映射+ack 同一本地事务。
+   *  F3：存档快照带固定消息引用/业务身份——投影意图随确认同事务登记。 */
   private async confirmOperation(opKey: string, contentResult: ContentWriteResult): Promise<boolean> {
     const intent = this.intentOf(opKey);
     if (!intent) return false;
@@ -198,13 +202,19 @@ export class ContentOperationCoordinator {
     const ownerType = ownerTypeOf(intent.path);
     const snapshot = await fetchReferenceSnapshot(this.client, ownerType, ownerId);
     if (!snapshot) { this.markUnknown(opKey, new Error('snapshot_unavailable')); return false; } // 404/不可达≠可释放
-    this.confirmSnapshot(opKey, ownerType, ownerId, { ownerRevision: snapshot.owner_revision, deleted: snapshot.deleted, assetIds: snapshot.asset_ids });
+    const archive = ownerType === 'conversation_archive' && snapshot.archive
+      ? { kind: snapshot.archive.kind, by: intent.actor, count: snapshot.archive.messages.length, refs: snapshot.archive.messages.map((m) => ({ message_id: m.message_id, revision: m.revision })) }
+      : undefined;
+    this.confirmSnapshot(opKey, ownerType, ownerId, { ownerRevision: snapshot.owner_revision, deleted: snapshot.deleted, assetIds: snapshot.asset_ids, archive });
     return true;
   }
 
   /** 单调准入的快照确认：旧快照（≤已应用版本）只完成回执处理与 pin 收口，
-   *  不降低 owner 版本、不撤销新关系（迟到旧确认不能复活删除/撤保护）。 */
-  private confirmSnapshot(opKey: string, ownerType: string, ownerId: string, snapshot: { ownerRevision: number; deleted: boolean; assetIds: string[] }): void {
+   *  不降低 owner 版本、不撤销新关系（迟到旧确认不能复活删除/撤保护）。
+   *  F3：conversation_archive 的确认在同一事务登记/更新 M 投影意图（payload 只含
+   *  archive_id/类型/操作者/固定引用/删除事实，不复制正文；稳定 op 键由档案身份派生）。
+   *  已 ack 且同 payload 不重开（幂等重确认不制造重复推送）。 */
+  private confirmSnapshot(opKey: string, ownerType: string, ownerId: string, snapshot: { ownerRevision: number; deleted: boolean; assetIds: string[]; archive?: { kind: string; by: string; count: number; refs: Array<{ message_id: string; revision: number }> } }): void {
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
       const applied = this.db.prepare('SELECT applied_revision, deleted, asset_ids_json FROM content_owner_state WHERE owner_type = ? AND owner_id = ?').get(ownerType, ownerId) as { applied_revision: number; deleted: number; asset_ids_json: string } | undefined;
@@ -217,6 +227,18 @@ export class ContentOperationCoordinator {
       } else {
         // 迟到旧确认：不动正式关系与版本锚，只收口本次操作 pin
         this.media.releaseOperationPins(opKey);
+      }
+      if (snapshot.archive !== undefined && !stale) {
+        const opType = snapshot.deleted ? 'conversation_archived_revoked' : 'conversation_archived';
+        const payload = JSON.stringify({ archive_id: ownerId, kind: snapshot.archive.kind, type: opType, by: snapshot.archive.by, count: snapshot.archive.count, refs: snapshot.archive.refs });
+        this.db.prepare(
+          `INSERT INTO outbox(id, operation_key, target, payload_ref, state, attempt, last_error, created_at, updated_at) VALUES (?,?,?,?,?,0,NULL,?,?)
+           ON CONFLICT(target, operation_key) DO UPDATE SET
+             payload_ref = excluded.payload_ref,
+             state = CASE WHEN outbox.state = 'acked' AND outbox.payload_ref = excluded.payload_ref THEN 'acked' ELSE 'pending' END,
+             attempt = CASE WHEN outbox.state = 'acked' AND outbox.payload_ref = excluded.payload_ref THEN outbox.attempt ELSE 0 END,
+             last_error = NULL, updated_at = excluded.updated_at`,
+        ).run(`cap_${ownerId.length}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, `archive-projection:${ownerId}:${opType}`, ARCHIVE_PROJECTION_TARGET, payload, 'pending', nowIso, nowIso);
       }
       this.ackIntent(opKey, stale ? applied!.applied_revision : snapshot.ownerRevision, ownerId);
     });

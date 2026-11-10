@@ -22,6 +22,7 @@ import { classifyError, ingestOperationId, serverNormalizedBytes, type IngestMes
 export const INGEST_BATCH_MAX_MESSAGES = 50; // 契约建议初值：每请求 ≤50 条
 export const INGEST_BATCH_MAX_BYTES = 1024 * 1024; // 规范化 JSON 总计 ≤1MiB
 export const INGEST_BATCH_MAX_ATTEMPTS = 10; // 瞬时错误有界重试（F15：超限 dead，不无限循环）
+export const ARCHIVE_PROJECTION_MAX_ATTEMPTS = 20; // F3 存档投影有界重试（超限 failed 可观测）
 
 // WP-04（JFA-C07）：本地批界（会话内可收缩——服务端 SOURCE_SELECTION_
 // TOO_LARGE 时减半重切；下限 64KiB 保证单条大消息仍能单独成批尝试）
@@ -93,7 +94,7 @@ export class ArchiveSyncService {
   health(): HealthComponent {
     if (!this.enabled || !this.client.isConfigured()) return { status: 'blocked', detail: 'ARCHIVE_TRANSPORT_NOT_CONFIGURED' };
     const rows = this.db.prepare(`SELECT state, last_error, COUNT(*) n FROM outbox
-      WHERE target='mariposa.archive' AND state != 'acked' GROUP BY state,last_error`).all() as Array<{ state: string; last_error: string | null; n: number }>;
+      WHERE target IN ('mariposa.archive','mariposa.archive_projection') AND state != 'acked' GROUP BY state,last_error`).all() as Array<{ state: string; last_error: string | null; n: number }>;
     const unresolved = rows.reduce((n,r) => n + (r.state === 'failed' || r.state === 'unknown_outcome' || r.last_error !== null ? r.n : 0), 0);
     if (unresolved) return { status: 'degraded', detail: `ARCHIVE_UNRESOLVED:${unresolved}` };
     const pending = rows.reduce((n,r) => n + r.n, 0);
@@ -546,6 +547,61 @@ export class ArchiveSyncService {
         }
       }
     }
+  }
+
+  /** F3（复审 2026-11-09 二轮）：存档 M 投影消费者——content 权威快照确认时同事务
+   *  登记的投影意图（target=mariposa.archive_projection，coordinator 登记）在此收口：
+   *  按原身份逐条推 observation（幂等 op 键 att-arc:<archive>:<message>:<type>，与
+   *  建档/撤销两个类型互不串），全部成员 M 确认才 ack；失败/重启沿原键重试（有界
+   *  attempt，超限 failed 可观测——临时 503 类故障在预算内自动恢复）。
+   *  复用既有 60s 周期（与 backfillObjectMeta 同一定时器），不另加 timer/领取器。 */
+  async drainArchiveProjections(limit = 20): Promise<number> {
+    if (!this.enabled || this.shutdown.signal.aborted) return 0;
+    const rows = this.db.prepare(
+      "SELECT id, payload_ref, attempt FROM outbox WHERE target = 'mariposa.archive_projection' AND state IN ('pending','unknown_outcome') AND attempt <= ? ORDER BY created_at, id LIMIT ?",
+    ).all(ARCHIVE_PROJECTION_MAX_ATTEMPTS, limit) as Array<{ id: string; payload_ref: string; attempt: number }>;
+    let acked = 0;
+    for (const row of rows) {
+      let p: { archive_id: string; kind: string; type: string; by: string; count: number; refs: Array<{ message_id: string; revision: number }> };
+      try {
+        p = JSON.parse(row.payload_ref) as typeof p;
+        if (typeof p.archive_id !== 'string' || !Array.isArray(p.refs)) throw new Error('shape');
+      } catch {
+        this.markDeadQuietly(row as unknown as OutboxRow, 'PROJECTION_PAYLOAD_INVALID');
+        continue;
+      }
+      let allOk = true;
+      let lastCode = 'unknown';
+      for (const ref of p.refs) {
+        try {
+          const r = await this.client.attachmentsSync({
+            stream_id: this.streamId, origin_message_id: ref.message_id, revision: ref.revision, kind: 'observation',
+            payload: { type: p.type, archive_id: p.archive_id, archive_kind: p.kind, count: p.count, by: p.by },
+            operation_id: `att-arc:${p.archive_id}:${ref.message_id}:${p.type}`,
+          });
+          if (!r.ok) { allOk = false; lastCode = r.code ?? 'rejected'; break; }
+        } catch (err) {
+          allOk = false;
+          lastCode = String((err as Error)?.message ?? err).slice(0, 80);
+          break;
+        }
+      }
+      const nowIso = new Date().toISOString();
+      if (allOk) {
+        tx(this.db, () => {
+          this.db.prepare("UPDATE outbox SET state = 'acked', last_error = NULL, attempt = attempt + 1, updated_at = ? WHERE id = ?").run(nowIso, row.id);
+        });
+        acked += 1;
+      } else {
+        const attempts = row.attempt + 1;
+        tx(this.db, () => {
+          this.db.prepare("UPDATE outbox SET state = ?, attempt = ?, last_error = ?, updated_at = ? WHERE id = ?")
+            .run(attempts > ARCHIVE_PROJECTION_MAX_ATTEMPTS ? 'failed' : 'pending', attempts, lastCode.slice(0, 200), nowIso, row.id);
+        });
+        this.logger.warn('archive_projection_retry', { archive_id: p.archive_id, code: lastCode.slice(0, 60) });
+      }
+    }
+    return acked;
   }
 
   /** RR5：对象元数据回推消费者——覆盖三类缺口：①存量（本机制上线前的历史行）

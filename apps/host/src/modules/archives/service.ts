@@ -5,6 +5,9 @@
 // ②最近一个已完成回合（排除当前运行中回合与后台回合——工具发起时当前回合必然在跑）。
 // 无精确定位→如实拒绝，不猜范围、不扩大到整天/整段（03 §2.3）。
 // 通知（03 §4）：工具发起=回执即通知；用户发起=排 host_notices，下次正常请求投递一次。
+// F2/F3（复审 2026-11-09 二轮）：读写两侧都按存档钉住的 (message_id, revision) 对键；
+// 建档经 ContentOperationCoordinator（接受→提交→墓碑快照确认→同事务登记 M 投影
+// outbox），观察推送由既有周期消费者收口——不再 void 尽力而为。
 import type { Db } from '../../db/connection.ts';
 import { genId } from '../../util/id.ts';
 import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
@@ -16,16 +19,15 @@ export type ArchiveResult =
   | { ok: true; archive: { id: string; kind: ArchiveKind; count: number }; notified: 'tool_receipt' | 'queued' | 'none' }
   | { ok: false; code: string; detail: string; retryable?: boolean };
 
-/** R6（复审 2026-11-08）：M 附属元数据推送端口——存档事实经 source.attachments.sync
- *  （kind=observation）落 M，原文页"已存档"标记与存档总览读同一投影（ALB-03 链路）。 */
-export type ArchiveAttachmentsPort = {
-  attachmentsSync(args: { stream_id: string; origin_message_id: string; revision: number; kind: 'observation'; payload: Record<string, unknown>; operation_id: string }, signal?: AbortSignal): Promise<{ ok: boolean; code?: string }>;
+/** F3：建档写路径经既有协调器（同浏览器/模型写工具一个接受/确认/恢复面）。 */
+export type ContentWritePort = {
+  write(req: { method: 'POST' | 'PUT' | 'DELETE'; path: string; actor: 'qiaosheng' | 'jiaming'; body?: Record<string, unknown>; headers: Record<string, string> }): Promise<{ status: number; body: unknown }>;
 };
 
 export class ArchiveService {
-  private readonly deps: { db: Db; contentClient: ContentClient | null; attachments: ArchiveAttachmentsPort | null; streamId: string; logger: { warn(ev: string, fields?: Record<string, string | number | boolean | null | undefined>): void } | null };
-  constructor(deps: { db: Db; contentClient: ContentClient | null; attachments?: ArchiveAttachmentsPort | null; streamId?: string; logger?: { warn(ev: string, fields?: Record<string, string | number | boolean | null | undefined>): void } | null }) {
-    this.deps = { db: deps.db, contentClient: deps.contentClient, attachments: deps.attachments ?? null, streamId: deps.streamId ?? 'estomago-primary-live', logger: deps.logger ?? null };
+  private readonly deps: { db: Db; contentClient: ContentClient | null; contentOps: ContentWritePort | null; logger: { warn(ev: string, fields?: Record<string, string | number | boolean | null | undefined>): void } | null };
+  constructor(deps: { db: Db; contentClient: ContentClient | null; contentOps?: ContentWritePort | null; logger?: { warn(ev: string, fields?: Record<string, string | number | boolean | null | undefined>): void } | null }) {
+    this.deps = { db: deps.db, contentClient: deps.contentClient, contentOps: deps.contentOps ?? null, logger: deps.logger ?? null };
   }
 
   /** 引用校验：消息真实存在、修订真实存在、assistant 已发布（owner 消息天然是已发布
@@ -76,6 +78,29 @@ export class ArchiveService {
     return refs.length > 0 ? refs : null;
   }
 
+  /** F2：已同步存档引用解析（三个读者共享的单一口径）——按存档钉住的
+   *  (message_id, revision) 对键精确匹配 source_sync_receipts，返回
+   *  `${message_id}@${revision}` → source_message_id（**只含请求对键**的解析结果，
+   *  同消息其他修订不外溢）。旧口径只按 message_id 查全部修订：检索面把消息
+   *  后续修订也当存档内容（新词命中 v2 冒充 v1 存档）、封存面把未选修订一并封存。 */
+  private syncedSourceIdsForRefs(refs: Array<{ message_id: string; revision: number }>): Map<string, string> {
+    const byPair = new Map<string, string>();
+    const want = new Set(refs.map((r) => `${r.message_id}@${r.revision}`));
+    const uniqueIds = [...new Set(refs.map((r) => r.message_id))];
+    for (let i = 0; i < uniqueIds.length; i += 400) { // SQLite 绑定参数上界内分块
+      const chunk = uniqueIds.slice(i, i + 400)!;
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.deps.db.prepare(
+        `SELECT origin_message_id, revision, source_message_id FROM source_sync_receipts WHERE origin_message_id IN (${placeholders}) AND source_message_id IS NOT NULL`,
+      ).all(...chunk) as Array<{ origin_message_id: string; revision: number; source_message_id: string }>;
+      for (const r of rows) {
+        const key = `${r.origin_message_id}@${r.revision}`;
+        if (want.has(key)) byPair.set(key, r.source_message_id);
+      }
+    }
+    return byPair;
+  }
+
   /** 建档（人类/模型共用）。notifyModel：'event'=用户发起（排 host_notices，下次请求
    *  投递一次）；'none'=工具发起（调用方回执即通知，不排队，03 §4.2 单通道）。 */
   async createArchive(o: {
@@ -88,39 +113,33 @@ export class ArchiveService {
     // 旧实现只查 origin_message_id 存在任意收据，消息编辑出 v2 而 M 只同步过 v1 时
     // 存档凭 v1 收据成功、标记也推到 v1（选 v2 标 v1）。缺该版收据=待同步，
     // 明确拒绝并要求稍后原键重试（不提前显示存档成功）。
-    const missing = v.refs.filter((ref) => !this.deps.db.prepare(
-      'SELECT 1 FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ? AND source_message_id IS NOT NULL',
-    ).get(ref.message_id, ref.revision)).map((ref) => ref.message_id);
+    const synced = this.syncedSourceIdsForRefs(v.refs);
+    const missing = v.refs.filter((ref) => !synced.has(`${ref.message_id}@${ref.revision}`)).map((ref) => ref.message_id);
     if (missing.length > 0) {
       return { ok: false, code: 'ARCHIVE_SOURCE_NOT_SYNCED', detail: `${missing.length} 条消息尚未同步到 M 原文层（如刚发布）；稍后用原操作键重试`, retryable: true };
     }
-    if (!this.deps.contentClient) return { ok: false, code: 'CONTENT_UNAVAILABLE', detail: '内容服务未启用（存档业务正本在 content）' };
-    let res: { status: number; body: unknown };
-    try {
-      res = await contentForward(this.deps.contentClient, {
-        method: 'POST', actor: o.actor, path: '/api/v1/content/archives',
-        body: { conversation_id: o.conversationId, kind: o.kind, messages: v.refs, note: o.note ?? undefined },
-        headers: o.idempotencyKey ? { 'idempotency-key': o.idempotencyKey } : undefined,
-      });
-    } catch {
-      return { ok: false, code: 'CONTENT_UNREACHABLE', detail: '内容服务暂不可达；存档未完成，可原键重试' };
-    }
+    if (!this.deps.contentClient || !this.deps.contentOps) return { ok: false, code: 'CONTENT_UNAVAILABLE', detail: '内容服务未启用（存档业务正本在 content）' };
+    if (!o.idempotencyKey) return { ok: false, code: 'ARCHIVE_IDEMPOTENCY_REQUIRED', detail: '建档必须带幂等键（可原键重试）' };
+    // F3：经既有协调器提交——接受（意图+pin）→ 提交 → 按权威快照确认；确认的同一
+    // 本地事务登记 M 投影 outbox（见 coordinator.confirmSnapshot），M observation
+    // 由既有周期消费者收口。响应丢失/进程退出沿原键恢复，不再 void 尽力而为。
+    const res = await this.deps.contentOps.write({
+      method: 'POST', actor: o.actor, path: '/api/v1/content/archives',
+      body: { conversation_id: o.conversationId, kind: o.kind, messages: v.refs, note: o.note ?? undefined },
+      headers: { 'idempotency-key': o.idempotencyKey },
+    });
     if (res.status !== 201 && res.status !== 200) {
       const err = (res.body as { error?: { code?: string; message?: string } }).error;
       return { ok: false, code: err?.code?.toUpperCase() ?? `HTTP_${res.status}`, detail: err?.message ?? String(res.status) };
     }
     const created = res.body as { id: string; kind: ArchiveKind; messages: unknown[] };
-    // R6 双标记（R31/A44）：存档事实推 M 附属元数据（尽力而为，幂等 operation_id——
-    // 与 ALB-03 附件元数据同款；失败记日志不回滚存档）。revision 取该消息实际已同步
-    // 的收据版本（M 端只认已入库修订）。
-    if (this.deps.attachments) void this.pushArchiveObservations(created.id, o.kind, o.actor, created.messages.length, v.refs).catch(() => undefined);
     let notified: 'tool_receipt' | 'queued' = 'tool_receipt';
     if (o.notifyModel === 'event') {
       this.enqueueNotice(o.conversationId, {
         kind: 'conversation_archived',
         text: `[系统通知] ${o.actor === 'qiaosheng' ? '乔乔' : 'char'}已将 ${created.messages.length} 条对话存入「${o.kind === 'quarrel' ? '争吵' : '甜蜜'}存档」。${o.kind === 'quarrel' ? '这个话题先到这里，除非乔乔主动重提，不继续争执。' : ''}`,
         archive_id: created.id, archived_kind: o.kind, by: o.actor,
-      }, o.idempotencyKey ? `archive-notice:${o.idempotencyKey}` : null);
+      }, `archive-notice:${o.idempotencyKey}`);
       notified = 'queued';
     }
     return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified };
@@ -130,47 +149,61 @@ export class ArchiveService {
    *  限定候选（FTS5 排序即 BM25）。命中按存档条目归并，返回有限摘录（03 §2.4：
    *  先返回说明与有限匹配原文，需要再读完整片段——深读走既有 conversation_read/原文工具，
    *  本工具不回读全文）。Qwen dense 不在 source 层（无对应索引）——如实只用 BM25，
-   *  不伪造"语义检索已接"。 */
+   *  不伪造"语义检索已接"。
+   *  F2（复审 2026-11-09 二轮）：①引用按存档钉住的 (message_id,revision) 对键解析——
+   *  消息后续修订不进检索面，新词命中 v2 不会冒充 v1 存档；②content 存档分页读全量
+   *  （旧实现只取前 100 条）；③M include_ids 上限 500——分批检索后合并命中。 */
   async searchArchives(o: { conversationId: string; query: string; kind?: 'quarrel' | 'sweet'; mariposa: { sourceSearch(a: { query: string; include_ids?: string[]; limit?: number }, s?: AbortSignal): Promise<{ ok: boolean; result?: Record<string, unknown>; code?: string; httpStatus?: number }> } | null }): Promise<{ state: 'matches'; items: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> } | { state: 'no_match' } | { state: 'unavailable'; detail: string }> {
     if (!this.deps.contentClient) return { state: 'unavailable', detail: 'content 未配置（存档业务正本缺席）' };
     if (!o.mariposa) return { state: 'unavailable', detail: 'M 客户端未装配' };
-    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string }> }>;
+    const entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> = [];
     try {
-      const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100` });
-      if (res.status !== 200) return { state: 'unavailable', detail: `存档列表读取失败（${res.status}）` };
-      entries = ((res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string }> }> }).items ?? [])
-        .map((e) => ({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string } => typeof m?.message_id === 'string') }));
+      let cursor: string | null = null;
+      for (let page = 0; page < 10; page++) { // 有界续页（同 quarrelBlockedSourceRefs 口径）
+        const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+        if (res.status !== 200) return { state: 'unavailable', detail: `存档列表读取失败（${res.status}）` };
+        const body = res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
+        for (const e of body.items ?? []) {
+          entries.push({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m?.message_id === 'string' && typeof m?.revision === 'number') });
+        }
+        cursor = body.next_cursor ?? null;
+        if (!cursor) break;
+      }
     } catch {
       return { state: 'unavailable', detail: '存档列表暂不可达' };
     }
-    const msgIds = entries.flatMap((e) => e.messages.map((m) => m.message_id));
-    if (msgIds.length === 0) return { state: 'no_match' };
-    const placeholders = msgIds.map(() => '?').join(',');
-    const receiptRows = this.deps.db.prepare(`SELECT origin_message_id, source_message_id FROM source_sync_receipts WHERE origin_message_id IN (${placeholders}) AND source_message_id IS NOT NULL`).all(...msgIds) as Array<{ origin_message_id: string; source_message_id: string }>;
-    const smToMsg = new Map(receiptRows.map((r) => [r.source_message_id, r.origin_message_id]));
-    const msgToEntry = new Map<string, { archive_id: string; kind: string; note: string | null }>();
-    for (const e of entries) for (const m of e.messages) if (!msgToEntry.has(m.message_id)) msgToEntry.set(m.message_id, { archive_id: e.id, kind: e.kind, note: e.note });
+    const pairToSource = this.syncedSourceIdsForRefs(entries.flatMap((e) => e.messages));
+    const smToEntry = new Map<string, { archive_id: string; kind: string; note: string | null }>();
+    for (const e of entries) {
+      for (const m of e.messages) {
+        const sm = pairToSource.get(`${m.message_id}@${m.revision}`);
+        if (sm !== undefined && !smToEntry.has(sm)) smToEntry.set(sm, { archive_id: e.id, kind: e.kind, note: e.note });
+      }
+    }
+    if (smToEntry.size === 0) return { state: 'no_match' };
+    const includeIds = [...smToEntry.keys()];
     let hits: Array<{ message_id?: string; excerpt?: string; text?: string }> = [];
     try {
-      const r = await o.mariposa.sourceSearch({ query: o.query, include_ids: [...smToMsg.keys()], limit: 20 });
-      if (!r.ok) return { state: 'unavailable', detail: `M 检索被拒（${r.code ?? r.httpStatus ?? 'unknown'}）` };
-      hits = ((r.result as { hits?: unknown })?.hits ?? []) as Array<{ message_id?: string; excerpt?: string; text?: string }>;
+      for (let i = 0; i < includeIds.length; i += 500) { // M include_ids 合同上限 500
+        const r = await o.mariposa.sourceSearch({ query: o.query, include_ids: includeIds.slice(i, i + 500), limit: 20 });
+        if (!r.ok) return { state: 'unavailable', detail: `M 检索被拒（${r.code ?? r.httpStatus ?? 'unknown'}）` };
+        hits = hits.concat(((r.result as { hits?: unknown })?.hits ?? []) as Array<{ message_id?: string; excerpt?: string; text?: string }>);
+      }
     } catch {
       return { state: 'unavailable', detail: 'M 检索暂不可达' };
     }
     const out: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> = [];
     const seenArchive = new Set<string>();
     for (const h of hits) {
-      const msgId = typeof h.message_id === 'string' ? smToMsg.get(h.message_id) : undefined;
-      if (!msgId) continue;
-      const entry = msgToEntry.get(msgId);
-      if (!entry) continue;
+      const sm = typeof h.message_id === 'string' ? h.message_id : null;
+      const entry = sm !== null ? smToEntry.get(sm) : undefined;
+      if (!entry || !sm) continue;
       const snippetRaw = (h.excerpt ?? h.text ?? '').toString().slice(0, 160);
       if (!seenArchive.has(entry.archive_id) || out.length < 5) {
         const existing = out.find((x) => x.archive_id === entry.archive_id);
         if (existing && seenArchive.has(entry.archive_id)) { if (existing.snippet.length < 80 && snippetRaw) existing.snippet = snippetRaw; continue; }
         seenArchive.add(entry.archive_id);
-        out.push({ archive_id: entry.archive_id, kind: entry.kind, note: entry.note, snippet: snippetRaw, message_id: msgId });
+        out.push({ archive_id: entry.archive_id, kind: entry.kind, note: entry.note, snippet: snippetRaw, message_id: sm });
       }
       if (out.length >= 5) break;
     }
@@ -178,86 +211,40 @@ export class ArchiveService {
     return { state: 'matches', items: out };
   }
 
-  /** R6/RR3：存档事实逐条消息推 M（每条一行 observation；revision=存档钉住的修订——
-   *  建档门槛已保证该版有收据；同 operation_id 重放无新增副作用）。 */
-  private async pushArchiveObservations(archiveId: string, kind: ArchiveKind, by: 'qiaosheng' | 'jiaming', count: number, refs: ArchiveRef[], payloadType: 'conversation_archived' | 'conversation_archived_revoked' = 'conversation_archived'): Promise<void> {
-    const client = this.deps.attachments;
-    if (!client) return;
-    for (const ref of refs) {
-      try {
-        const r = await client.attachmentsSync({
-          stream_id: this.deps.streamId, origin_message_id: ref.message_id, revision: ref.revision, kind: 'observation',
-          payload: { type: payloadType, archive_id: archiveId, archive_kind: kind, count, by },
-          operation_id: `att-arc:${archiveId}:${ref.message_id}:${payloadType}`,
-        });
-        if (!r.ok) this.deps.logger?.warn('archive_observation_rejected', { archive_id: archiveId, message_id: ref.message_id, code: r.code ?? 'unknown' });
-      } catch (err) {
-        this.deps.logger?.warn('archive_observation_sync_failed', { archive_id: archiveId, message_id: ref.message_id, code: String((err as Error).message).slice(0, 80) });
-      }
-    }
-  }
-
-  /** RR3：删除存档→逐条推撤销 observation（M 侧 latest-wins：同 archive_id 最后一行
-   *  是 revoked 即不再显示标记/总览条目）。幂等 op 键（含类型后缀，与建档推送互不串）。
-   *  refs/kind 由调用方在删除**前**取好——content 的 archiveRow 过滤已删行，删除后再
-   *  读详情必 404，撤销会永远不触发（自查修正：原实现即此死路）。 */
-  async revokeArchiveObservations(archiveId: string, kind: ArchiveKind, refs: Array<{ message_id: string; revision: number }>): Promise<void> {
-    if (!this.deps.attachments || refs.length === 0) return;
-    try {
-      await this.pushArchiveObservations(archiveId, kind, 'qiaosheng', refs.length, refs.map((m) => ({ message_id: m.message_id, revision: m.revision, sequence: 0 })), 'conversation_archived_revoked');
-    } catch (err) {
-      this.deps.logger?.warn('archive_revoke_sync_failed', { archive_id: archiveId, code: String((err as Error).message).slice(0, 80) });
-    }
-  }
-
-  /** 删除前的档案引用快照（供撤销推送；对已删/未知档案返回 null 不推）。 */
-  async archiveRefsForRevoke(conversationId: string, archiveId: string): Promise<{ kind: ArchiveKind; refs: Array<{ message_id: string; revision: number }> } | null> {
-    if (!this.deps.contentClient) return null;
-    try {
-      const detail = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}` });
-      if (detail.status !== 200) return null;
-      const dto = detail.body as { conversation_id?: string; kind?: ArchiveKind; messages?: Array<{ message_id?: string; revision?: number }> };
-      if (dto.conversation_id !== conversationId) return null;
-      return {
-        kind: dto.kind === 'sweet' ? 'sweet' : 'quarrel',
-        refs: (dto.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m.message_id === 'string' && typeof m.revision === 'number'),
-      };
-    } catch {
-      return null; // 详情读不到：删除照常，撤销投影缺席由日志可查（无第二套恢复正本）
-    }
-  }
-
   /** ALB-10/R28：争吵封存的权威消息范围 → M source 引用集（sm_id）。
    *  R6 精确封存（复审 2026-11-08）：分页读全量存档（旧实现只取前 100 不续页，
    *  第 101 条起漏抑）；content 不可达=reachable:false——调用方决定降级（自动注入
-   *  暂缓，聊天不受影响），不再空集冒充已核对。只返回 kind=quarrel（甜蜜不抑制）。 */
+   *  暂缓，聊天不受影响），不再空集冒充已核对。只返回 kind=quarrel（甜蜜不抑制）。
+   *  F2：封存面同样按 (message_id,revision) 对键解析——封存 v1 不把未选的 v2
+   *  一并封存（v2 仍可被普通检索）。 */
   async quarrelBlockedSourceRefs(conversationId: string): Promise<{ refs: Set<string>; reachable: boolean }> {
     if (!this.deps.contentClient) return { refs: new Set(), reachable: false };
-    const msgIds: string[] = [];
+    const refs: Array<{ message_id: string; revision: number }> = [];
     try {
       let cursor: string | null = null;
       for (let page = 0; page < 10; page++) { // 有界续页：10 页×100 条=1000 条封档上限，防无限循环
         const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?kind=quarrel&conversation_id=${encodeURIComponent(conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
         if (res.status !== 200) return { refs: new Set(), reachable: false };
-        const body = res.body as { items?: Array<{ messages?: Array<{ message_id?: string }> }>; next_cursor?: string | null };
-        for (const a of body.items ?? []) for (const m of a.messages ?? []) if (typeof m.message_id === 'string') msgIds.push(m.message_id);
+        const body = res.body as { items?: Array<{ messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
+        for (const a of body.items ?? []) for (const m of a.messages ?? []) if (typeof m.message_id === 'string' && typeof m.revision === 'number') refs.push({ message_id: m.message_id, revision: m.revision });
         cursor = body.next_cursor ?? null;
         if (!cursor) break;
       }
     } catch {
       return { refs: new Set(), reachable: false };
     }
-    if (msgIds.length === 0) return { refs: new Set(), reachable: true };
-    const unique = [...new Set(msgIds)];
-    const placeholders = unique.map(() => '?').join(',');
-    const rows = this.deps.db.prepare(`SELECT source_message_id FROM source_sync_receipts WHERE origin_message_id IN (${placeholders}) AND source_message_id IS NOT NULL`).all(...unique) as Array<{ source_message_id: string }>;
-    return { refs: new Set(rows.map((r) => r.source_message_id)), reachable: true };
+    if (refs.length === 0) return { refs: new Set(), reachable: true };
+    const pairToSource = this.syncedSourceIdsForRefs(refs);
+    return { refs: new Set(pairToSource.values()), reachable: true };
   }
 
   /** R6 存档打开链（R35）：存档详情的消息引用 → E 库固定版本正文（只读）。
    *  逐条按存档时钉住的 revision 取修订正文；正文缺席（极端：修订被清理）如实置
-   *  null，不拿最新版本冒充固定版本。 */
-  async archiveOriginals(conversationId: string, archiveId: string): Promise<{ ok: true; kind: string; note: string | null; items: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null }> } | { ok: false; code: string; detail: string }> {
+   *  null，不拿最新版本冒充固定版本。
+   *  F2（复审 2026-11-09 二轮）：同修订的附件引用一并返回（message_attachments 按
+   *  (message,revision,position) 固定）——前端用既有 /assets/:id/content 媒体代理
+   *  渲染图片；不取当前修订附件替代存档版，不因只回文字丢图。 */
+  async archiveOriginals(conversationId: string, archiveId: string): Promise<{ ok: true; kind: string; note: string | null; items: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments: Array<{ asset_id: string; presentation: string; caption: string | null }> }> } | { ok: false; code: string; detail: string }> {
     if (!this.deps.contentClient) return { ok: false, code: 'CONTENT_UNAVAILABLE', detail: '内容服务未启用（存档业务正本在 content）' };
     let detail: { status: number; body: unknown };
     try {
@@ -268,14 +255,17 @@ export class ArchiveService {
     if (detail.status !== 200) return { ok: false, code: `HTTP_${detail.status}`, detail: '存档不存在或不可读' };
     const dto = detail.body as { conversation_id?: string; kind?: string; note?: string | null; messages?: Array<{ message_id?: string; revision?: number; sequence?: number }> };
     if (dto.conversation_id !== conversationId) return { ok: false, code: 'ARCHIVE_CONVERSATION_MISMATCH', detail: '存档不属于当前会话' };
-    const out: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null }> = [];
+    const out: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments: Array<{ asset_id: string; presentation: string; caption: string | null }> }> = [];
     for (const m of dto.messages ?? []) {
       if (typeof m.message_id !== 'string' || typeof m.revision !== 'number') continue;
       const row = this.deps.db.prepare(
         'SELECT m.sequence, m.speaker, m.created_at, r.content FROM messages m LEFT JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
       ).get(m.revision, m.message_id, conversationId) as { sequence: number; speaker: string; created_at: string; content: string | null } | undefined;
       if (!row) continue; // 引用校验在建档时已过；迟到缺席如实跳过
-      out.push({ message_id: m.message_id, revision: m.revision, sequence: row.sequence ?? null, speaker: row.speaker ?? null, text: row.content ?? null, occurred_at: row.created_at ?? null });
+      const atts = this.deps.db.prepare(
+        'SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position',
+      ).all(m.message_id, m.revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;
+      out.push({ message_id: m.message_id, revision: m.revision, sequence: row.sequence ?? null, speaker: row.speaker ?? null, text: row.content ?? null, occurred_at: row.created_at ?? null, attachments: atts });
     }
     out.sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
     return { ok: true, kind: dto.kind ?? 'quarrel', note: dto.note ?? null, items: out };

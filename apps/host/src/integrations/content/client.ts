@@ -48,14 +48,17 @@ export async function contentForward(client: ContentClient, opts: {
 }
 
 /** P1：content 当前权威引用快照——宿主确认映射与存量对账的唯一当前状态来源。
- *  404/不可达不是“已删除且可释放”的证据，由调用方如实处理。 */
+ *  404/不可达不是“已删除且可释放”的证据，由调用方如实处理。
+ *  F3（复审 2026-11-09 二轮）：conversation_archive 快照读**墓碑**（deleted=true 仍可
+ *  读，含固定消息引用）——删除确认依赖它；archive 字段只对存档类型出现。 */
 export type ContentReferenceSnapshot = {
   owner_service: 'content';
-  owner_type: 'post' | 'comment' | 'album_entry' | 'creation' | 'future_note';
+  owner_type: 'post' | 'comment' | 'album_entry' | 'creation' | 'future_note' | 'conversation_archive';
   owner_id: string;
   owner_revision: number;
   deleted: boolean;
   asset_ids: string[];
+  archive?: { kind: string; created_by: string; messages: Array<{ message_id: string; revision: number; sequence: number }> };
 };
 
 export async function fetchReferenceSnapshot(client: ContentClient, ownerType: string, ownerId: string): Promise<ContentReferenceSnapshot | null> {
@@ -94,6 +97,7 @@ export function ownerTypeOf(path: string): string {
   if (p.includes('/posts')) return 'post';
   // 注意 album 单数形态：创建走 /albums/:kind/entries，单条操作走 /album-entries/:id——同 ownerType
   if (p.includes('/albums') || p.includes('/album-entries')) return 'album_entry';
+  if (p.includes('/archives')) return 'conversation_archive';
   if (p.includes('/creations')) return 'creation';
   if (p.includes('/future-notes')) return 'future_note';
   return 'unknown';

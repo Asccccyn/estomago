@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "7cfaa990afbc9057642b8c59632e2b5eda79bd3f",
+  "baselineCommit": "c0ec1cd6cb7a57375d6b668dc09631ed7bce02cc",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -110,14 +110,14 @@
     "memory_words_write": "td_f4823cf6cf38cf650274b504",
     "conversation_archive": "td_f88c602fd1d9f3d28b865524",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
-    "image_generate": "td_b40483fa8383fc09a5ec25ec",
+    "image_generate": "td_cb32eeae0aca24e2b78df9b1",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "content_album_entry_write": "td_372d8e719502f2e487fffb17",
     "media_view": "td_f72b71bbef701e3714320c82",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "9809edd6d25c71f8bda3e621116a78b63320fb28403590b9e1290c7444e98b50",
+  "toolsSha256": "ed83aaacce22b3f9f49bfaaada29bc1277c7edee914a80cd87e1adaecadd63d9",
   "tools": [
     {
       "type": "function",
@@ -2266,7 +2266,7 @@
             },
             "size": {
               "type": "string",
-              "description": "可选尺寸，形如 1024x1024"
+              "description": "可选尺寸，形如 1024x1024 或 auto"
             },
             "frame_count": {
               "type": "integer",
@@ -2274,7 +2274,7 @@
             },
             "frame_duration_ms": {
               "type": "integer",
-              "description": "仅 gif：每帧毫秒（如 200）"
+              "description": "仅 gif：每帧毫秒，最低 20（如 200）"
             }
           },
           "required": [

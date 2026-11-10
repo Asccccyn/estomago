@@ -560,11 +560,16 @@ export class ContentServer {
           // §5：同 (kind,asset) 幂等返回既有（有效行；墓碑可重新归档=新 ID）。
           // 携带模式若显式给出且不同，按同条目更新处理（同 asset 不算新增一张）。
           if (carryMode !== null && String(existing.carry_mode) !== carryMode) {
-            this.assertCarryWithinLimit(carryMode, String(existing.asset_id), String(existing.id));
+            // F1（复审 2026-11-09 二轮）：第 4 参数必须显式传——已有条目的原件身份优先取行内
+            // content_sha256（存量 NULL 行退回本次请求补注值）；漏传会被默认参数掩成 null，
+            // aliasInSet 恒 false，满限时同原件别名被错拒。
+            this.assertCarryWithinLimit(carryMode, String(existing.asset_id), String(existing.id), (existing.content_sha256 as string | null) ?? sha256);
             this.db.prepare("UPDATE album_entries SET carry_mode = ?, updated_at = ?, revision = revision + 1 WHERE id = ?").run(carryMode, now(), String(existing.id));
           }
           if (sha256 !== null && existing.content_sha256 == null) {
-            this.db.prepare('UPDATE album_entries SET content_sha256 = ?, updated_at = ? WHERE id = ?').run(sha256, now(), String(existing.id)); // 存量行按新信息补身份（幂等）
+            // F1：补身份仅改 content_sha256——不碰 updated_at（它是 consume-next-once 的
+            // before 比较基线，属"一次携带"的业务时间，对账补注不得移动它）。
+            this.db.prepare('UPDATE album_entries SET content_sha256 = ? WHERE id = ?').run(sha256, String(existing.id)); // 存量行按新信息补身份（幂等）
           }
           return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(existing.id)) as Record<string, unknown>), duplicate: true };
         }
@@ -588,7 +593,9 @@ export class ContentServer {
         this.ifMatch(req, Number(row.revision));
         const carryMode = parseCarryMode(body.carry_mode);
         if (carryMode !== null && carryMode !== String(row.carry_mode)) {
-          this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id));
+          // F1（复审 2026-11-09 二轮）：PUT 改模式同样按行内原件身份判别名（默认参数已移除，
+          // 此处必须显式传）；存量 NULL 行在对账补齐前按 asset 身份保守计数。
+          this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id), row.content_sha256 as string | null);
         }
         this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), carry_mode = COALESCE(?, carry_mode), updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, carryMode, now(), String(row.id));
@@ -792,8 +799,10 @@ export class ContentServer {
   /** 写入校验：把某条目改为 newMode 后，合并去重集合不得超 CARRY_IMAGE_LIMIT。
    *  RR2（复审 2026-11-09）：去重口径=M 对象身份——content_sha256 已知的行按 hash
    *  归并（同字节不同上传 ID=一张），NULL 行退回 'est:'+asset_id（不因缺身份漏计）。
-   *  排除该条目自身现有贡献（改模式/改留言不算新增一张；同字节别名在集合内=不新增）。 */
-  private assertCarryWithinLimit(newMode: CarryMode, assetId: string, excludeEntryId: string | null, selfSha256: string | null = null): void {
+   *  排除该条目自身现有贡献（改模式/改留言不算新增一张；同字节别名在集合内=不新增）。
+   *  F1：selfSha256 无默认值（F1 前漏传调用点被 =null 默认掩掉）；调用方必须显式给出
+   *  该条目的行内身份（无则请求补注值，再无才 null=按 asset 身份保守计数）。 */
+  private assertCarryWithinLimit(newMode: CarryMode, assetId: string, excludeEntryId: string | null, selfSha256: string | null): void {
     if (newMode === 'none') return;
     const excludeSql = excludeEntryId === null ? "''" : '?';
     const baseArgs = excludeEntryId === null ? [assetId] : [assetId, excludeEntryId];
@@ -814,8 +823,9 @@ export class ContentServer {
 
   /** P1.1：按对象真实版本给出当前完整去重成员集合的权威快照（与回执分离）。
    *  deleted=true 时集合恒为空且 owner_revision 是删除版本（零集合版本锚）。未知对象 404——
-   *  不得把 404 猜成带版本的删除。creation 墓碑保留的 icon/work 字段不算有效引用。 */
-  referenceSnapshot(rt: ResourceType, id: string): { owner_service: 'content'; owner_type: ResourceType; owner_id: string; owner_revision: number; deleted: boolean; asset_ids: string[] } {
+   *  不得把 404 猜成带版本的删除。creation 墓碑保留的 icon/work 字段不算有效引用。
+   *  F3：conversation_archive 读墓碑（含删除行），archive 字段带固定消息引用+业务身份。 */
+  referenceSnapshot(rt: ResourceType, id: string): { owner_service: 'content'; owner_type: ResourceType; owner_id: string; owner_revision: number; deleted: boolean; asset_ids: string[]; archive?: { kind: string; created_by: string; messages: Array<{ message_id: string; revision: number; sequence: number }> } } {
     switch (rt) {
       case 'post': {
         const row = this.postRow(id);
@@ -846,9 +856,14 @@ export class ContentServer {
         return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(row.revision), deleted, asset_ids: dedupeAssetIds(assets) };
       }
       case 'conversation_archive': {
-        // 存档不持有资产引用（消息引用集合指向 E/M 原文，不是 media_assets）；deleted 语义同其他域
-        const rowA = this.archiveRow(id);
-        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(rowA.revision), deleted: rowA.deleted_at != null, asset_ids: [] };
+        // F3（复审 2026-11-09 二轮）：直查含墓碑（同 album_entry 口径）——删除确认必须
+        // 读到 deleted=true 的快照（旧实现走 archiveRow 过滤已删行，删除后 404→协调器
+        // 永远无法确认、撤销投影永远不触发）。archive 字段供投影 payload：固定消息
+        // 引用+业务身份（kind/created_by），不复制正文。
+        const rowA = this.db.prepare('SELECT * FROM conversation_archives WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+        if (!rowA) throw new ContentError(404, 'ARCHIVE_NOT_FOUND', '存档不存在');
+        const messages = JSON.parse(String(rowA.messages_json)) as Array<{ message_id: string; revision: number; sequence: number }>;
+        return { owner_service: 'content', owner_type: rt, owner_id: id, owner_revision: Number(rowA.revision), deleted: rowA.deleted_at != null, asset_ids: [], archive: { kind: String(rowA.kind), created_by: String(rowA.created_by_actor), messages } };
       }
     }
   }

@@ -62,12 +62,15 @@ export async function handleArchivesRoutes(req: IncomingMessage, res: ServerResp
   const remove = /^DELETE \/api\/v1\/archives\/([^/]+)$/.exec(route);
   if (remove && req.method === 'DELETE') {
     // 删除走宿主派生 actor + 统一回执；If-Match 透传。
-    // RR3（含自查修正）：撤销推送的引用快照必须在删除**前**取——content 的
-    // archiveRow 过滤已删行，删除后读详情必 404。删除成功→推撤销（尽力而为）。
-    const snapshot = await d.archives.archiveRefsForRevoke(conversationId, remove[1]!);
+    // F3（复审 2026-11-09 二轮）：删除同经协调器——content 业务成功后按**墓碑快照**
+    // （deleted=true+固定消息引用）确认并同事务登记撤销投影 outbox，由既有周期消费
+    // 者推 M。不再删前抢快照+尽力而为推送（响应丢失/进程退出即投影永久缺席）。
+    if (!d.contentOps) return json(res, 503, { error: { code: 'content_unavailable', message: '内容写协调器未装配' } });
     const ifMatch = typeof req.headers['if-match'] === 'string' ? req.headers['if-match'] : undefined;
-    const fwd = await contentForward(d.contentClient, { method: 'DELETE', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(remove[1]!)}`, headers: { 'idempotency-key': `http-archive-del:${remove[1]}`, ...(ifMatch ? { 'if-match': ifMatch } : {}) } });
-    if (fwd.status === 200 && snapshot) void d.archives.revokeArchiveObservations(remove[1]!, snapshot.kind, snapshot.refs).catch(() => undefined);
+    const fwd = await d.contentOps.write({
+      method: 'DELETE', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(remove[1]!)}`,
+      headers: { 'idempotency-key': `http-archive-del:${remove[1]}`, ...(ifMatch ? { 'if-match': ifMatch } : {}) },
+    });
     return json(res, fwd.status, fwd.body);
   }
   return json(res, 404, { error: { code: 'not_found', message: `未知路由：${route}` } });

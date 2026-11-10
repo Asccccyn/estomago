@@ -4,7 +4,7 @@
   "source_commit": "8d13f656fbd0c5b6e974672e48d5799041e780f7",
   "source_files": {
     "backend/mariposa/capabilities/registry.py": "67a3858285031e03a8974046ea09fac21cea0e099725f4a4daac2bd8fcc67df8",
-    "backend/mariposa/capabilities/input_schemas.py": "aab140fb487d338baf9eb8599af197b0bf76756e5808f4f88366b33a38ef546f",
+    "backend/mariposa/capabilities/input_schemas.py": "32df3f685e3318aa8116082e9a4dee9f646639aa7ec87c1959d4e31d9fc11f3e",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "163c9d6885ae776619fc8a8049ae989ba701509747601fa30e8bf20d4cb8c9dd",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
@@ -5212,7 +5212,7 @@
               "type": "string"
             },
             "maxItems": 500,
-            "description": "候选限定在给定 source_messages.id 集内（对话存档检索限定存档消息集）；空数组=无候选"
+            "description": "候选限定在给定 source_messages.id 集内（对话存档检索限定存档钉住的修订集；集合内的已发布历史修订同样可见）；空数组=无候选"
           }
         }
       }

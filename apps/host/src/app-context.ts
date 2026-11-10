@@ -368,8 +368,9 @@ export class Host {
     const { registerImageGenCapabilities } = await import('./modules/imagegen/module.ts');
     registerImageGenCapabilities(capabilityRegistry, { imagegen });
     // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
-    // R6 双标记：attachments 端口与归档流同源（observation 推 M 附属元数据）
-    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient, attachments: opts.config.archive.enabled ? archiveMariposaClient : null, streamId: opts.config.archive.source_scope ?? 'estomago-primary-live', logger });
+    // F3（复审 2026-11-09 二轮）：建档/删除经 ContentOperationCoordinator（确认事务登记
+    // M 投影 outbox，由 archiveSync 周期消费）——不再挂直接推送端口。
+    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient, contentOps, logger });
     const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
     registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
     quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
@@ -534,7 +535,12 @@ export class Host {
     this.mediaSyncTimer.unref?.();
     // RR5（复审 2026-11-09）：附件对象元数据回推——存量（历史 22 项缺口）/post-ACK
     // 未 synced/推送失败的行按同一幂等 op 键周期补齐（≤50/跳；标记防重放放大）。
-    this.objectMetaBackfillTimer = setInterval(() => { void this.archiveSync.backfillObjectMeta().catch((err) => { this.logger.warn('object_meta_backfill_failed', { code: stableErrorCode(err) }); }); }, 60_000);
+    // F3（复审 2026-11-09 二轮）：存档 M 投影（建档/撤销 observation）共用本 60s 周期
+    // 收口（同一消费者实例；不另加 timer）。
+    this.objectMetaBackfillTimer = setInterval(() => {
+      void this.archiveSync.backfillObjectMeta().catch((err) => { this.logger.warn('object_meta_backfill_failed', { code: stableErrorCode(err) }); });
+      void this.archiveSync.drainArchiveProjections().catch((err) => { this.logger.warn('archive_projection_drain_failed', { code: stableErrorCode(err) }); });
+    }, 60_000);
     this.objectMetaBackfillTimer.unref?.();
     // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
     this.oidoLifecycle?.start();

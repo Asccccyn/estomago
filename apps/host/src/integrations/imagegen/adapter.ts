@@ -48,16 +48,18 @@ export class ImageGenAdapter {
     // output_format 时供应商默认静态图——生产实证：三次动图请求全落 PNG（根因）。
     // 响应侧不信任声明格式，仍按字节魔数 sniff。
     const format = ['png', 'jpeg', 'webp', 'gif'].includes(String(opts.format)) ? String(opts.format) : undefined;
-    if (opts.size !== undefined && !/^\d{3,4}x\d{3,4}$/.test(String(opts.size))) {
-      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'size 形如 1024x1024' };
+    // GIF（复审 2026-11-09 二轮）：参数校验按官方合同——size 官方支持 auto 与
+    // WxH 两形；frame_duration_ms 官方最低 20ms。不自行发明另一组限制。
+    if (opts.size !== undefined && opts.size !== 'auto' && !/^\d{3,4}x\d{3,4}$/.test(String(opts.size))) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'size 形如 1024x1024 或 auto' };
     }
     const frameCount = typeof opts.frameCount === 'number' ? Math.trunc(opts.frameCount) : undefined;
     if (frameCount !== undefined && (frameCount < 2 || frameCount > 16)) {
       return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_count 官方范围 2..16' };
     }
     const frameDurationMs = typeof opts.frameDurationMs === 'number' ? Math.trunc(opts.frameDurationMs) : undefined;
-    if (frameDurationMs !== undefined && frameDurationMs <= 0) {
-      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 必须是正整数毫秒' };
+    if (frameDurationMs !== undefined && frameDurationMs < 20) {
+      return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 官方最低 20 毫秒' };
     }
     let res: ImageGenTransportResult;
     try {

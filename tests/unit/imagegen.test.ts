@@ -28,11 +28,20 @@ import { buildPaths } from '../../apps/host/src/config/paths.ts';
 const PNG_FULL = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40, 1)]);
 
 // —— fake M（与 mariposa-media-master.test.ts 同款形状；可切 503）——
-type FakeM = { url: string; fail: boolean; objects: Map<string, Buffer>; close(): void };
+// 复审 2026-11-09 二轮（GIF 证据修正）：finalize 落**实际 stage 字节**并按魔数
+// 定 MIME；对象 GET 按对象自身的 MIME 回——不再固定 PNG（旧假 M 掩盖了 GIF 的
+// M 落正与回源路径，绿测试只证明参数面）。
+type FakeM = { url: string; fail: boolean; objects: Map<string, Buffer>; objectGets: number; close(): void };
+const sniffMime = (bytes: Buffer): string => {
+  if (bytes.subarray(0, 6).toString('latin1') === 'GIF87a' || bytes.subarray(0, 6).toString('latin1') === 'GIF89a') return 'image/gif';
+  if (bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  return 'application/octet-stream';
+};
 function startFakeM(): Promise<FakeM> {
   const objects = new Map<string, Buffer>();
   let lastStagedHash: string | null = null;
-  const fake: FakeM = { url: '', fail: false, objects, close: () => {} };
+  let lastStagedBytes: Buffer | null = null;
+  const fake: FakeM = { url: '', fail: false, objects, objectGets: 0, close: () => {} };
   const server = http.createServer((req, res) => {
     const reply = (status: number, body: unknown) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
     const url = req.url ?? '';
@@ -44,20 +53,22 @@ function startFakeM(): Promise<FakeM> {
     }
     if (req.method === 'PUT' && url.startsWith('/api/media/stage/')) {
       const chunks: Buffer[] = []; req.on('data', (c) => { chunks.push(c as Buffer); });
-      req.on('end', () => { const bytes = Buffer.concat(chunks); lastStagedHash = sha256Hex(bytes); reply(200, { ok: true, data: { content_hash: lastStagedHash, staged: true, size: bytes.length } }); });
+      req.on('end', () => { lastStagedBytes = Buffer.concat(chunks); lastStagedHash = sha256Hex(lastStagedBytes); reply(200, { ok: true, data: { content_hash: lastStagedHash, staged: true, size: lastStagedBytes.length } }); });
       return;
     }
     if (req.method === 'POST' && url === '/api/capability/media.upload.finalize') {
+      const bytes = lastStagedBytes ?? PNG_FULL;
       const hash = lastStagedHash ?? sha256Hex(PNG_FULL);
-      objects.set(hash, PNG_FULL);
-      reply(200, { ok: true, data: { content_hash: hash, mime: 'image/png', deduplicated: false } });
+      objects.set(hash, bytes);
+      reply(200, { ok: true, data: { content_hash: hash, mime: sniffMime(bytes), deduplicated: false } });
       return;
     }
     const obj = /^\/api\/media\/object\/([0-9a-f]{64})$/.exec(url);
     if (req.method === 'GET' && obj) {
       const bytes = objects.get(obj[1]!);
       if (!bytes) { reply(404, { ok: false, error: { code: 'NOT_FOUND' } }); return; }
-      res.writeHead(200, { 'Content-Type': 'image/png' }); res.end(bytes);
+      fake.objectGets += 1;
+      res.writeHead(200, { 'Content-Type': sniffMime(bytes) }); res.end(bytes);
       return;
     }
     reply(404, { ok: false, error: { code: 'NOT_FOUND' } });
@@ -93,15 +104,16 @@ before(async () => {
 });
 after(async () => { await server.stop(); fakeM.close(); db.close(); fs.rmSync(root, { recursive: true, force: true }); delete process.env.EST_TEST_IMAGEGEN_KEY; });
 
-function fixture(transport: ImageGenTransport, opts: { mFail?: boolean } = {}): { svc: ImageGenService; media: MediaService; calls: () => number } {
+function fixture(transport: ImageGenTransport, opts: { mFail?: boolean } = {}): { svc: ImageGenService; media: MediaService; mediaDir: string; calls: () => number } {
   fakeM.fail = opts.mFail === true;
   const config = buildConfig({});
   const store = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_IMAGEGEN_KEY' });
-  const media = new MediaService(db, path.join(root, `media-${Math.random().toString(36).slice(2, 8)}`), config, store);
+  const mediaDir = path.join(root, `media-${Math.random().toString(36).slice(2, 8)}`);
+  const media = new MediaService(db, mediaDir, config, store);
   let n = 0;
   const counting: ImageGenTransport = async (body, signal) => { n += 1; return transport(body, signal); };
   const adapter = new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'gpt-image-2.6-sunburst', transport: counting });
-  return { svc: new ImageGenService({ db, adapter, media, contentClient: client }), media, calls: () => n };
+  return { svc: new ImageGenService({ db, adapter, media, contentClient: client }), media, mediaDir, calls: () => n };
 }
 const okTransport: ImageGenTransport = async () => ({ status: 200, json: { id: 'gen-1', data: [{ b64_json: PNG_FULL.toString('base64'), revised_prompt: '画好了' }] } });
 const CTX1 = { roomId: 'primary', turnId: 'turn-1', requestId: 'req-1', toolCallId: 'call-1' } as const;
@@ -210,13 +222,38 @@ test('IG-4: 超时 unknown→停在待核实；同 op 再调用仍拒绝', async
   assert.equal(r2.ok, false);
 });
 
-// —— 复审 2026-11-09：GIF 生成链（官方 output_format 传参→字节保真→M 落正）与 RR4/RR7 ——
+// —— 复审 2026-11-09 二轮（GIF 证据修正）：真双帧夹具 + fake M 落实际字节/MIME +
+// 缓存逐出后经真实资产 HTTP 路由回读（不再把 readContentResolvingMaster 的返回对象
+// 称为"实际 HTTP 响应"）。夹具由 Pillow 生成：16×16 红/蓝两帧、duration=200ms、
+// loop=0（NETSCAPE2.0 循环扩展），157 字节。
 
-// 结构合法的双帧 GIF89a（含 NETSCATE 循环扩展）——链路测试只要求魔数与字节保真，
-// 浏览器渲染为 <img> 原生能力（官方文档），不在本测试范围。
-const ANIMATED_GIF = Buffer.from('R0lGODlhAQABAID/AP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==', 'base64');
+const ANIMATED_GIF = Buffer.from('R0lGODlhEAAQAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQAFAAAACwAAAAAEAAQAAAIHQABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFgQEBACH5BAEUAAEALAAAAAAQABAAgQAA/wAAAAAAAAAAAAgdAAEIHEiwoMGDCBMqXMiwocOHECNKnEixosWBAQEAOw==', 'base64');
 
-test('IG-GIF: 动图请求带 output_format/frame 参数；字节全程保真（M 落正+回读一致）；同键重放不重画', async () => {
+/** 逐块走 GIF 结构数图像描述符（0x2C）——不依赖解码器，够断言"仍是两帧"。 */
+function gifFrameCount(buf: Buffer): number {
+  const gct = (buf[10]! & 0x80) !== 0 ? 3 * (2 ** ((buf[10]! & 0x07) + 1)) : 0;
+  let i = 13 + gct;
+  let frames = 0;
+  const skipSubBlocks = () => { let sz = buf[i]!; while (sz > 0) { i += 1 + sz; sz = buf[i]!; } i += 1; };
+  while (i < buf.length) {
+    const b = buf[i]!;
+    if (b === 0x3b) break;
+    if (b === 0x21) { i += 2; skipSubBlocks(); continue; } // 扩展块：标签后子块串
+    if (b === 0x2c) {
+      frames += 1;
+      const packed = buf[i + 9]!;
+      i += 10 + ((packed & 0x80) !== 0 ? 3 * (2 ** ((packed & 0x07) + 1)) : 0);
+      i += 1; // LZW min code size
+      skipSubBlocks();
+      continue;
+    }
+    break;
+  }
+  return frames;
+}
+
+test('IG-GIF: 动图请求带 output_format/frame 参数；M 落实际字节+MIME；逐出缓存后真实资产 HTTP 回源，字节保真仍是两帧；同键重放不重画', async () => {
+  assert.equal(gifFrameCount(ANIMATED_GIF), 2, '夹具前提：真实两帧');
   let sawBody: Record<string, unknown> | null = null;
   const gifTransport: ImageGenTransport = async (body) => {
     sawBody = { ...(body as Record<string, unknown>) };
@@ -231,13 +268,38 @@ test('IG-GIF: 动图请求带 output_format/frame 参数；字节全程保真（
   assert.equal((sawBody as Record<string, unknown> | null)?.['output_format'], 'gif');
   assert.equal((sawBody as Record<string, unknown>)['frame_count'], 9);
   assert.equal((sawBody as Record<string, unknown>)['frame_duration_ms'], 200);
-  // 存储侧：mime=gif、字节逐字节一致（无任何重编码/缩略图链）
+  // 存储侧：mime=gif、M 落的是实际 stage 字节（fake M 按魔数回 MIME，不再固定 PNG）
   const asset = f.media.getAsset(r.asset_id);
   assert.equal(asset.mime_type, 'image/gif');
   assert.equal(asset.m_sync_state, 'synced', 'GIF 同为 M 唯一正本（fake M 全链落正）');
-  const readBack = await f.media.readContentResolvingMaster(r.asset_id);
-  assert.equal(Buffer.compare(readBack.bytes, ANIMATED_GIF), 0, '读回字节与生成字节完全一致（动画帧无损）');
-  assert.equal(readBack.mime, 'image/gif', 'HTTP 响应 Content-Type=image/gif（<img> 原生循环播放）');
+  assert.ok(fakeM.objects.get(asset.m_content_hash ?? asset.content_sha256), 'M 对象库存有该 hash');
+  // 逐出本地缓存（明确删除本服务目录下的缓存文件），再经**真实资产 HTTP 路由**回读
+  for (const dir of fs.readdirSync(root).filter((d) => d.startsWith('media-'))) {
+    const abs = path.join(root, dir);
+    if (!fs.statSync(abs).isDirectory()) continue;
+    for (const ent of fs.readdirSync(abs, { recursive: true })) {
+      const p = path.join(abs, ent as string);
+      if (fs.statSync(p).isFile()) fs.unlinkSync(p);
+    }
+  }
+  const assetServer = http.createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://est');
+    void (async () => {
+      const { handleAssetsRoutes } = await import('../../apps/host/src/server/routes/assets.ts');
+      await handleAssetsRoutes(req, res, { media: f.media } as never, `${req.method} ${u.pathname}`, u);
+    })().catch(() => { res.statusCode = 500; res.end('{}'); });
+  });
+  await new Promise<void>((resolve) => assetServer.listen(0, '127.0.0.1', resolve));
+  try {
+    const getsBefore = fakeM.objectGets;
+    const httpRes = await fetch(`http://127.0.0.1:${(assetServer.address() as { port: number }).port}/api/v1/assets/${encodeURIComponent(r.asset_id)}/content`);
+    const body = Buffer.from(await httpRes.arrayBuffer());
+    assert.equal(httpRes.status, 200);
+    assert.equal(httpRes.headers.get('content-type'), 'image/gif', '真实 HTTP 响应 Content-Type=image/gif');
+    assert.ok(fakeM.objectGets > getsBefore, '缓存逐出后确实回源 M');
+    assert.equal(Buffer.compare(body, ANIMATED_GIF), 0, 'HTTP 回读字节与生成字节完全一致（动画帧无损）');
+    assert.equal(gifFrameCount(body), 2, '回读仍是两帧（无重编码）');
+  } finally { assetServer.close(); }
   // 作品链：条目（content 正本经 HTTP 读回）+ 引用保护
   assert.ok(r.creation_id);
   const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
@@ -246,6 +308,21 @@ test('IG-GIF: 动图请求带 output_format/frame 参数；字节全程保真（
   const r2 = await f.svc.generateAndStore({ prompt: '同键重放', opKey, format: 'gif' });
   assert.equal(r2.ok, true);
   assert.equal(f.calls(), 1, '重放不再生成/计费');
+});
+
+test('IG-GIF-2 (参数合同): size=auto 官方形态放行透传；frame_duration_ms<20 按官方下限拒绝', async () => {
+  const adapter = new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: okTransport });
+  const tooFast = await adapter.generate('x', { format: 'gif', frameDurationMs: 10 });
+  assert.equal(tooFast.outcome, 'error');
+  if (tooFast.outcome === 'error') assert.equal(tooFast.code, 'IMAGEGEN_PARAM_INVALID');
+  let sawSize: unknown = null;
+  const okAdapter = new ImageGenAdapter({
+    baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm',
+    transport: async (body) => { sawSize = (body as Record<string, unknown>)['size']; return okTransport(body); },
+  });
+  const auto = await okAdapter.generate('x', { size: 'auto' });
+  assert.equal(auto.outcome, 'ok');
+  assert.equal(sawSize, 'auto', '官方 auto 形态透传（不自行发明另一组限制）');
 });
 
 test('IG-10 (RR7): 条目已建但快照 GET 失败→IMAGEGEN_SNAPSHOT_PENDING（行留 stored+creation_id）；恢复后同键只补快照', async () => {
