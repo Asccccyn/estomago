@@ -143,7 +143,9 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     assert.equal((await get()).access.next_entry, 'claude-agent-sdk');
     const selectSdk = await fetch(base + '/api/v1/runtime-settings', { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie }, body: JSON.stringify({ sdk_model: 'claude-opus-4-6' }) });
     assert.equal(selectSdk.status, 200);
-    const rejected = await fetch(base + '/api/v1/runtime-settings', { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie }, body: JSON.stringify({ sdk_model: 'claude-fable-5-1' }) });
+    // 43cea97 把 Fable 5.1/5.2 加入 SDK 型号集后，原用例拿 fable-5-1 当"未接入型号"
+    // 已不成立——换真正不存在的 id 保持"未知型号 422 拒绝"的断言意图。
+    const rejected = await fetch(base + '/api/v1/runtime-settings', { method: 'PUT', headers: { 'content-type': 'application/json', origin: base, cookie }, body: JSON.stringify({ sdk_model: 'claude-not-a-model' }) });
     assert.equal(rejected.status, 422);
     assert.equal((await get()).sdk_model, 'claude-opus-4-6');
     await change('configured');
@@ -155,7 +157,7 @@ test('owner access page switches SDK and API through authenticated HTTP and pres
     await change('subscription-first');
     const sdk = await get();
     assert.equal(sdk.driver, 'claude-agent-sdk'); assert.equal(sdk.sdk_model, 'claude-opus-4-6');
-    assert.deepEqual(sdk.sdk_model_options, ['claude-opus-4-6', 'claude-opus-5-5']);
+    assert.deepEqual(sdk.sdk_model_options, ['claude-opus-4-6', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5-2']);
     assert.deepEqual(sdk.effort_options, ['default', 'low', 'medium', 'high', 'max']);
     const effort = await fetch(base + '/api/v1/runtime-settings', {method:'PUT',headers:{'content-type':'application/json',origin:base,cookie},body:JSON.stringify({reasoning_effort:'xhigh'})});
     assert.equal(effort.status,422);
