@@ -1,17 +1,14 @@
-// 协议①（2026-10-24）：来电横幅 + 未接/拒接卡片——est 代理 Siren 邀请（内部凭据不进前端）。
+// 来电横幅：est 代理 Siren 邀请（内部凭据不进前端），终态记录不常驻聊天页。
 // 横幅只在有 pending 邀请时出现（Siren 服务端过期，不依赖本页轮询保活；轮询仅用于展示）；
 // 接听=先落邀请终态、宿主建好通话拿到连接信息再打开通话面板；拒接=直接落终态（不自动补打）。
 // F-02（跨仓预审 2026-10-25）：接/拒以服务端终态为准（失败不进通话、横幅不凭旧缓存滞留）。
 import { useEffect, useState } from 'react';
-import { Phone, PhoneOff, X, Clock } from 'lucide-react';
+import { Phone, PhoneOff } from 'lucide-react';
 
 type Invite = { invite_id: string; state: string; expires_at?: number; created_at?: number; ended_reason?: string | null };
 
-const LABELS: Record<string, string> = { expired: '未接来电', declined: '已拒接', cancelled: '已取消', accepted: '已接听' };
-
 export function CallInvites({ onAccept }: { onAccept: (conn: { ws_url: string; token: string; call_id: string }) => void }): React.JSX.Element | null {
   const [active, setActive] = useState<Invite | null>(null);
-  const [recent, setRecent] = useState<Invite[]>([]);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -20,11 +17,10 @@ export function CallInvites({ onAccept }: { onAccept: (conn: { ws_url: string; t
       try {
         const res = await fetch('/api/v1/calls/invites', { cache: 'no-store' });
         if (!res.ok) return;
-        const data = await res.json() as { active: Invite | null; recent: Invite[] };
+        const data = await res.json() as { active: Invite | null };
         if (stop) return;
         // 服务端权威：active 变 null（过期/取消/接听）即撤横幅，不保留旧 pending
         setActive(data.active ?? null);
-        setRecent((data.recent ?? []).slice(0, 3));
       } catch { /* 服务不可达=无来电显示，聊天不受影响 */ }
     };
     void load();
@@ -71,17 +67,7 @@ export function CallInvites({ onAccept }: { onAccept: (conn: { ws_url: string; t
           </div>
         </div>
       )}
-      {recent.length > 0 && (
-        <div className="mx-auto mb-1 flex max-w-72 flex-col gap-1 px-4">
-          {recent.map((r) => (
-            <div key={r.invite_id} className="flex items-center gap-2 rounded-xl bg-[#f0ede5] px-3 py-1.5 text-[11.5px] text-[#8a8780]">
-              <Clock size={12} />
-              <span>{LABELS[r.state] ?? r.state}{r.state === 'expired' ? '（他没有等到你接）' : ''}</span>
-              {r.state === 'expired' && <X size={10} className="opacity-40" />}
-            </div>
-          ))}
-        </div>
-      )}
+
     </>
   );
 }
