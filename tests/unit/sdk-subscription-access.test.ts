@@ -35,13 +35,14 @@ import { BackgroundScheduler } from '../../apps/host/src/runtime/background-sche
 import { createBackgroundExecution } from '../../apps/host/src/application/background-execution.ts';
 import { SystemAlertService } from '../../apps/host/src/observability/system-alerts.ts';
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
+import { MediaService } from '../../apps/host/src/media/assets.ts';
 
 const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
 const usage = { subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } } as any;
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any; orFrames?: (round: number) => any[] } = {}) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any; orFrames?: (round: number) => any[]; withMedia?: boolean } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
@@ -54,6 +55,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const windows = new WindowManager(db, identity, config, selections, trajectory);
+  const media = options.withMedia ? new MediaService(db, paths.mediaDir, config) : undefined;
   const settings = new RuntimeSettingsService(db);
   const calls = { sdk: [] as any[], or: [] as any[], orFactories: 0 };
   let clock = 1_800_000_000_000;
@@ -85,14 +87,14 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
   const taskService = new BackgroundTaskService(db, backgroundSettings);
   const { tools, registry } = assembleTestTools({ db, messages, taskService, events, reviews, checkpoint });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, windows, trajectory, selections, reviews, checkpoint, settings, tools, toolCatalog: registry,
-    runnerSelection: { status: 'ok', runner }, capabilities: new CapabilityMatrix(config), reasoning: new ReasoningService(db, events),
+    runnerSelection: { status: 'ok', runner }, media, capabilities: new CapabilityMatrix(config), reasoning: new ReasoningService(db, events),
     routing: new RoutingService(db, events, messages), usage: new UsageCollector(db), logger: new Logger(null) });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { db, config, calls, runner, settings, windows, trajectory, selections, backgroundSettings, supervisor, messages, events, taskService,
+  return { db, config, calls, runner, settings, windows, trajectory, selections, backgroundSettings, supervisor, messages, events, taskService, media,
     records: () => buildRecordSnapshot({ db, config, windows, runnerSelection: { status: 'ok', runner } }, 'synthetic', null),
     setNow: (n: number) => { clock = n; },
-    send: async (text: string) => {
-      const input = messages.submitUserMessageWithTurn({ conversationId: 'synthetic', content: text, clientMessageId: randomUUID() });
+    send: async (text: string, attachments?: Array<{ asset_id: string; presentation: 'image' }>) => {
+      const input = messages.submitUserMessageWithTurn({ conversationId: 'synthetic', content: text, clientMessageId: randomUUID(), ...(attachments ? { attachments } : {}) });
       supervisor.enqueue(input.turnId); await supervisor.waitIdle();
       return db.prepare('SELECT state FROM turns WHERE id=?').get(input.turnId) as { state: string };
     } };
@@ -103,6 +105,28 @@ const textEvents = () => [
   { type: 'stream_event', session_id: randomUUID(), event: { type: 'message_start', message: { id: 'native-message', model: 'claude-sonnet-4-6' } } },
   { type: 'assistant', message: { id: 'native-message', content: [{ type: 'text', text: 'SDK 合成回复' }] } },
 ];
+
+test('Fable 5.1/5.2：本轮图片通过 SDK 视觉门并以原生 image 块发送', async t => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  for (const model of ['claude-fable-5-1', 'claude-fable-5-2']) {
+    await t.test(model, async sub => {
+      const f = fixture(sub, () => [...textEvents(), { type: 'result', subtype: 'success', session_id: randomUUID() }], { withMedia: true });
+      f.settings.set('sdk_model', model);
+      const asset = await f.media!.saveBuffer({ bytes: png, purpose: 'chat_image', operationId: 'sdk-fable-image', createdBy: 'qiaosheng', origin: 'upload' });
+      assert.equal((await f.send('请看图片', [{ asset_id: asset.id, presentation: 'image' }])).state, 'completed');
+      assert.equal(f.calls.sdk.length, 1, 'SDK 通道实际派发一次');
+      assert.equal(f.calls.or.length, 0, '没有改走付费 API 通道');
+      assert.equal(f.calls.sdk[0].options.model, model);
+      const blocks = f.calls.sdk[0].capturedPrompt.at(-1).message.content;
+      const image = blocks.find((block: any) => block.type === 'image');
+      assert.equal(image?.source?.media_type, 'image/png');
+      assert.equal(image?.source?.data, png.toString('base64'), '输入图片真正进入 SDK 原生消息');
+      const wire = f.db.prepare("SELECT payload_json FROM provider_requests WHERE purpose = 'chat' ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string } | undefined;
+      assert.ok(wire?.payload_json.includes('asset_image'), '持久化只保留资产引用');
+      assert.ok(!wire?.payload_json.includes(png.toString('base64')), 'Base64 仅在模型发送边界存在');
+    });
+  }
+});
 
 test('Fable 5.1/5.2 运行时选择实际进入 SDK 派发，不更换订阅入口', async t => {
   for (const model of ['claude-fable-5-1', 'claude-fable-5-2']) {

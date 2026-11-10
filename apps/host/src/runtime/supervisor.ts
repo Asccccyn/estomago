@@ -2721,7 +2721,11 @@ export class TurnSupervisor {
         else if (orHasImage) {
           // 2026-10-18：config 人工声明优先于目录发现——图片能力是公开静态事实，
           // 运行时目录查询在发消息关键路径上失败曾致连续阻断（证据只存进程内存、重启清零）
-          const declaredVision = d.config.openrouter.vision_supported_models.includes(orEnvelope.model);
+          // Fable SDK 订阅型号的视觉输入已由 Anthropic 官方规格确认；不能用 OR
+          // 目录核实 SDK 模型 ID（订阅通道不查询该目录），但 OR/未知型号仍须核实。
+          const declaredVision = d.config.openrouter.vision_supported_models.includes(orEnvelope.model)
+            || (dv?.kind === 'claude-agent-sdk'
+              && (orEnvelope.model === 'claude-fable-5-1' || orEnvelope.model === 'claude-fable-5-2'));
           let vision: boolean | null = declaredVision ? true : visionSupportCached(orEnvelope.model, d.config.openrouter.base_url);
           if (vision === null && !declaredVision && d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter') {
             vision = await refreshVisionSupport(d.config.openrouter.base_url, orEnvelope.model);
