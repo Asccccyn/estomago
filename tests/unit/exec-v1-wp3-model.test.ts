@@ -220,6 +220,10 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
   assert.equal(r1.ok, true);
   assert.equal(r2.ok, true);
+  // RR4 回归（林石见 2026-11-10 口径）：发送回执=精简文字（message_id/published），
+  // 不含图片块——"找图给引用、按需看图、发送回执不重复塞图"三入口分工不回归。
+  assert.deepEqual(Object.keys(r1.output as Record<string, unknown>).sort(), ['message_id', 'published']);
+  assert.equal(JSON.stringify(r1.output).includes('asset_image'), false, '回执不含图像块');
   const msgs = ctx.messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 100 }).filter((m) => m.speaker === 'assistant');
   const sent = msgs.filter((m) => m.revision.attachments.length > 0);
   assert.equal(sent.length, 1, '同一工具调用重试只发一条');

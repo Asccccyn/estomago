@@ -70,8 +70,12 @@ before(async () => {
 
 after(async () => { routeServer.close(); await server.stop(); db.close(); fs.rmSync(root, { recursive: true, force: true }); });
 
+// W0（复审 2026-11-10 证据修正）：operationId 用独立自增序号——旧写法 `alias-up-${seed}`
+// 使"同字节别名"第二次 upload 命中同幂等键返回**同一 asset_id**，没测到"不同上传 ID"。
+// 字节按 seed、身份按序号：同字节、不同上传、不同 asset_id。
+let uploadSeq = 0;
 async function upload(seed: number): Promise<string> {
-  const a = await media.saveBuffer({ bytes: PNG_BYTES(seed), purpose: 'chat_image', operationId: `alias-up-${seed}`, createdBy: 'qiaosheng', origin: 'upload' });
+  const a = await media.saveBuffer({ bytes: PNG_BYTES(seed), purpose: 'chat_image', operationId: `alias-up-${seed}-${uploadSeq++}`, createdBy: 'qiaosheng', origin: 'upload' });
   return a.id;
 }
 
@@ -85,7 +89,8 @@ test('F1-1: 三个正式入口的别名合同——满 10 张时同原件别名�
   }
   const realHash = media.getAsset(ids[0]!).content_sha256;
   // 别名=同字节另一上传（不同 asset_id、同 content_sha256）；先仅收藏
-  const aliasId = await upload(1); // 与第 1 张同字节
+  const aliasId = await upload(1); // 与第 1 张同字节、不同上传 ID
+  assert.notEqual(aliasId, ids[0], '别名必须是不同上传 ID（W0 前提自证）');
   assert.equal(media.getAsset(aliasId).content_sha256, realHash, '同字节别名前提成立');
   const saved = await proxy('POST', '/api/v1/content/albums/stickers/entries', { asset_id: aliasId }, { 'idempotency-key': 'f1-alias-save' });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
@@ -108,7 +113,8 @@ test('F1-1: 三个正式入口的别名合同——满 10 张时同原件别名�
   assert.equal(rejected.status, 422);
   assert.equal((rejected.body['error'] as { code: string }).code, 'carry_limit_exceeded');
   // 新建入口的别名（audit 已证 PASS 的路径）同口径放行
-  const alias2 = await upload(2); // 与第 2 张同字节
+  const alias2 = await upload(2); // 与第 2 张同字节、不同上传 ID
+  assert.notEqual(alias2, ids[1], '别名必须是不同上传 ID（W0 前提自证）');
   const viaNew = await proxy('POST', '/api/v1/content/albums/chat_screenshots/entries', { asset_id: alias2, carry_mode: 'always' }, { 'idempotency-key': 'f1-alias-new' });
   assert.equal(viaNew.status, 201);
 });

@@ -9,7 +9,6 @@
 // 建档经 ContentOperationCoordinator（接受→提交→墓碑快照确认→同事务登记 M 投影
 // outbox），观察推送由既有周期消费者收口——不再 void 尽力而为。
 import type { Db } from '../../db/connection.ts';
-import { genId } from '../../util/id.ts';
 import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
 
 export type ArchiveKind = 'quarrel' | 'sweet';
@@ -101,11 +100,12 @@ export class ArchiveService {
     return byPair;
   }
 
-  /** 建档（人类/模型共用）。notifyModel：'event'=用户发起（排 host_notices，下次请求
-   *  投递一次）；'none'=工具发起（调用方回执即通知，不排队，03 §4.2 单通道）。 */
+  /** 建档（人类/模型共用）。RR4-W3（2026-11-10 修正稿）：用户发起（actor=qiaosheng）
+   *  的成功通知由协调器在**写入成功回执**处经 archive-notice.ts 幂等登记（前台/恢复/
+   *  重放同一入口；本方法不再排队——单一事实源）；工具发起（jiaming）回执即通知。 */
   async createArchive(o: {
     conversationId: string; kind: ArchiveKind; rawRefs: Array<{ message_id: string; revision?: number }>;
-    note?: string | null; actor: 'qiaosheng' | 'jiaming'; notifyModel: 'event' | 'none'; idempotencyKey: string | null;
+    note?: string | null; actor: 'qiaosheng' | 'jiaming'; idempotencyKey: string | null;
   }): Promise<ArchiveResult> {
     const v = this.validateRefs(o.conversationId, o.rawRefs);
     if (!v.ok) return v;
@@ -133,16 +133,29 @@ export class ArchiveService {
       return { ok: false, code: err?.code?.toUpperCase() ?? `HTTP_${res.status}`, detail: err?.message ?? String(res.status) };
     }
     const created = res.body as { id: string; kind: ArchiveKind; messages: unknown[] };
-    let notified: 'tool_receipt' | 'queued' = 'tool_receipt';
-    if (o.notifyModel === 'event') {
-      this.enqueueNotice(o.conversationId, {
-        kind: 'conversation_archived',
-        text: `[系统通知] ${o.actor === 'qiaosheng' ? '乔乔' : 'char'}已将 ${created.messages.length} 条对话存入「${o.kind === 'quarrel' ? '争吵' : '甜蜜'}存档」。${o.kind === 'quarrel' ? '这个话题先到这里，除非乔乔主动重提，不继续争执。' : ''}`,
-        archive_id: created.id, archived_kind: o.kind, by: o.actor,
-      }, `archive-notice:${o.idempotencyKey}`);
-      notified = 'queued';
+    return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified: o.actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
+  }
+
+  /** content 存档列表分页读到底——next_cursor=null 是唯一结束条件（批次大小只控制
+   *  每次请求的工作量，不限制业务范围；旧实现 10 页×100=1000 条封顶后静默当全量）。
+   *  游标停滞/非 200/异常=分页失败，调用方按 unavailable/reachable:false 处理——
+   *  不装成"已读全量"。 */
+  private async readAllArchivePages(o: { kind?: 'quarrel' | 'sweet'; conversationId: string }): Promise<Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> | null> {
+    const entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> = [];
+    let cursor: string | null = null;
+    const seenCursors = new Set<string>();
+    while (cursor === null || !seenCursors.has(cursor)) {
+      if (cursor !== null) seenCursors.add(cursor);
+      const res = await contentForward(this.deps.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+      if (res.status !== 200) return null;
+      const body = res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
+      for (const e of body.items ?? []) {
+        entries.push({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m?.message_id === 'string' && typeof m?.revision === 'number') });
+      }
+      cursor = body.next_cursor ?? null;
+      if (cursor === null) return entries;
     }
-    return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified };
+    return null; // 游标回环：分页失败
   }
 
   /** ALB-13/R35：存档文本检索——content 存档消息集 → M source.search(include_ids)
@@ -151,24 +164,17 @@ export class ArchiveService {
    *  本工具不回读全文）。Qwen dense 不在 source 层（无对应索引）——如实只用 BM25，
    *  不伪造"语义检索已接"。
    *  F2（复审 2026-11-09 二轮）：①引用按存档钉住的 (message_id,revision) 对键解析——
-   *  消息后续修订不进检索面，新词命中 v2 不会冒充 v1 存档；②content 存档分页读全量
-   *  （旧实现只取前 100 条）；③M include_ids 上限 500——分批检索后合并命中。 */
+   *  消息后续修订不进检索面，新词命中 v2 不会冒充 v1 存档；②content 存档分页读全量；
+   *  ③M include_ids 上限 500——分批检索后合并命中。
+   *  RR4-W2c（2026-11-10 修正稿）：分页到底（见 readAllArchivePages），无总量上限。 */
   async searchArchives(o: { conversationId: string; query: string; kind?: 'quarrel' | 'sweet'; mariposa: { sourceSearch(a: { query: string; include_ids?: string[]; limit?: number }, s?: AbortSignal): Promise<{ ok: boolean; result?: Record<string, unknown>; code?: string; httpStatus?: number }> } | null }): Promise<{ state: 'matches'; items: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> } | { state: 'no_match' } | { state: 'unavailable'; detail: string }> {
     if (!this.deps.contentClient) return { state: 'unavailable', detail: 'content 未配置（存档业务正本缺席）' };
     if (!o.mariposa) return { state: 'unavailable', detail: 'M 客户端未装配' };
-    const entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> = [];
+    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }>;
     try {
-      let cursor: string | null = null;
-      for (let page = 0; page < 10; page++) { // 有界续页（同 quarrelBlockedSourceRefs 口径）
-        const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-        if (res.status !== 200) return { state: 'unavailable', detail: `存档列表读取失败（${res.status}）` };
-        const body = res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
-        for (const e of body.items ?? []) {
-          entries.push({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m?.message_id === 'string' && typeof m?.revision === 'number') });
-        }
-        cursor = body.next_cursor ?? null;
-        if (!cursor) break;
-      }
+      const all = await this.readAllArchivePages({ kind: o.kind, conversationId: o.conversationId });
+      if (all === null) return { state: 'unavailable', detail: '存档列表分页读取失败' };
+      entries = all;
     } catch {
       return { state: 'unavailable', detail: '存档列表暂不可达' };
     }
@@ -212,30 +218,25 @@ export class ArchiveService {
   }
 
   /** ALB-10/R28：争吵封存的权威消息范围 → M source 引用集（sm_id）。
-   *  R6 精确封存（复审 2026-11-08）：分页读全量存档（旧实现只取前 100 不续页，
-   *  第 101 条起漏抑）；content 不可达=reachable:false——调用方决定降级（自动注入
-   *  暂缓，聊天不受影响），不再空集冒充已核对。只返回 kind=quarrel（甜蜜不抑制）。
-   *  F2：封存面同样按 (message_id,revision) 对键解析——封存 v1 不把未选的 v2
-   *  一并封存（v2 仍可被普通检索）。 */
-  async quarrelBlockedSourceRefs(conversationId: string): Promise<{ refs: Set<string>; reachable: boolean }> {
-    if (!this.deps.contentClient) return { refs: new Set(), reachable: false };
-    const refs: Array<{ message_id: string; revision: number }> = [];
+   *  R6 精确封存（复审 2026-11-08）：content 不可达=reachable:false——调用方决定降级
+   *  （自动注入暂缓，聊天不受影响），不再空集冒充已核对。只返回 kind=quarrel。
+   *  F2：封存面按 (message_id,revision) 对键解析——封存 v1 不把未选的 v2 一并封存。
+   *  RR4-W2d（2026-11-10 修正稿）：分页读到底（无总量上限）；complete=服务可达**且**
+   *  范围已读全——与 reachable 分开，两个消费者（prepare 下推 + supervisor 终投递
+   *  复核）都按 complete:false 暂缓受影响的自动注入。 */
+  async quarrelBlockedSourceRefs(conversationId: string): Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }> {
+    if (!this.deps.contentClient) return { refs: new Set(), reachable: false, complete: false };
+    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> | null;
     try {
-      let cursor: string | null = null;
-      for (let page = 0; page < 10; page++) { // 有界续页：10 页×100 条=1000 条封档上限，防无限循环
-        const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?kind=quarrel&conversation_id=${encodeURIComponent(conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-        if (res.status !== 200) return { refs: new Set(), reachable: false };
-        const body = res.body as { items?: Array<{ messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
-        for (const a of body.items ?? []) for (const m of a.messages ?? []) if (typeof m.message_id === 'string' && typeof m.revision === 'number') refs.push({ message_id: m.message_id, revision: m.revision });
-        cursor = body.next_cursor ?? null;
-        if (!cursor) break;
-      }
+      entries = await this.readAllArchivePages({ kind: 'quarrel', conversationId });
     } catch {
-      return { refs: new Set(), reachable: false };
+      entries = null;
     }
-    if (refs.length === 0) return { refs: new Set(), reachable: true };
+    if (entries === null) return { refs: new Set(), reachable: false, complete: false };
+    const refs = entries.flatMap((e) => e.messages);
+    if (refs.length === 0) return { refs: new Set(), reachable: true, complete: true };
     const pairToSource = this.syncedSourceIdsForRefs(refs);
-    return { refs: new Set(pairToSource.values()), reachable: true };
+    return { refs: new Set(pairToSource.values()), reachable: true, complete: true };
   }
 
   /** R6 存档打开链（R35）：存档详情的消息引用 → E 库固定版本正文（只读）。
@@ -269,18 +270,6 @@ export class ArchiveService {
     }
     out.sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
     return { ok: true, kind: dto.kind ?? 'quarrel', note: dto.note ?? null, items: out };
-  }
-
-  /** 排一次性通知（dedupe_key 幂等：同操作身份只投一次）。 */
-  private enqueueNotice(conversationId: string, payload: Record<string, unknown>, dedupeKey: string | null): void {
-    const now = new Date().toISOString();
-    try {
-      this.deps.db.prepare('INSERT INTO host_notices(id, conversation_id, kind, payload_json, dedupe_key, created_at) VALUES (?,?,?,?,?,?)')
-        .run(genId('hn'), conversationId, String(payload['kind']), JSON.stringify(payload), dedupeKey, now);
-    } catch (err) {
-      if (String((err as Error).message).includes('UNIQUE')) return; // 同操作身份已有通知：幂等不重复
-      throw err;
-    }
   }
 
   /** 信封装配时取待投递通知。ALB-11（审计 2026-11-08）：默认（窗口初始化信封）取出即

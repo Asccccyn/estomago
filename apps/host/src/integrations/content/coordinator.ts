@@ -18,6 +18,7 @@ import { MediaError } from '../../media/assets.ts';
 import type { Logger } from '../../observability/logging.ts';
 import { stableErrorCode } from '../../observability/errors.ts';
 import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient } from './client.ts';
+import { isUserArchiveCreate, registerArchiveCreatedNotice } from './archive-notice.ts';
 
 export const CONTENT_OPERATION_TARGET = 'content.operation';
 /** F3（复审 2026-11-09 二轮）：存档 M 投影意图 outbox target——content 权威快照确认的
@@ -90,7 +91,12 @@ export class ContentOperationCoordinator {
       this.logger.warn('content_resolve_failed', { code: stableErrorCode(err), detail: String((err as Error).message ?? err).slice(0, 140) });
       return { status: 503, body: { error: { code: 'content_unreachable', message: '内容服务不可达，稍后重试（原操作未提交）', detail: String((err as Error).message ?? err).slice(0, 140) } } };
     }
-    if (resolved.outcome !== 'new') return { status: resolved.status, body: resolved.body };
+    if (resolved.outcome !== 'new') {
+      // RR4-W3：同操作成功重放（本宿主此前已收口，或崩溃前 content 已提交）——用户
+      // 发起的存档创建经同一登记入口幂等补齐（多数路径已登记，UNIQUE 吞并）。
+      this.registerArchiveNoticeIfUserCreate(currentIntent, key, resolved.status, resolved.body);
+      return { status: resolved.status, body: resolved.body };
+    }
 
     // ② 新操作：候选资产存在且 available（字段集合=请求引用，不是领域完整成员——
     //    正式成员由 content 快照决定，Host 不拼领域集合）
@@ -135,6 +141,10 @@ export class ContentOperationCoordinator {
     try {
       const resolved = await resolveContentOperation(this.client, { actor: p.actor, method: p.method, path: p.path, body: p.body, idempotencyKey: idem, ifMatch: p.if_match });
       if (resolved.outcome === 'replay') {
+        // RR4-W3：恢复确认成功（回执在=content 保存成功的可信证据）——补登记原本
+        // 漏掉的那份用户通知。登记在快照确认**之前**（快照/M 投影不拖延已确定的
+        // 成功通知）；登记失败抛出→本 catch 标 unknown，恢复链沿原键再来。
+        this.registerArchiveNoticeIfUserCreate(p, idem, resolved.status, resolved.body);
         // 原操作已提交：确认映射收口（快照不可达=保留，下轮再试）
         await this.confirmOperation(opKey, { status: resolved.status, body: resolved.body });
         return { status: resolved.status, body: resolved.body };
@@ -184,12 +194,27 @@ export class ContentOperationCoordinator {
       this.finishFailed(opKey, `content ${result.status}`);
       return result;
     }
+    // RR4-W3：content 2xx=保存成功回执——用户发起的存档创建在快照确认**之前**登记
+    // 通知（快照失败只拖延映射/M 投影，不拖延已确定的成功通知）。登记失败向上抛
+    // （同键重试安全；不吞——否则该通知失去恢复机会）。
+    this.registerArchiveNoticeIfUserCreate(intent, idemKey, result.status, result.body);
     // 成功：读权威快照确认映射。确认失败不吞——pin 仍在保护，恢复消费者收口；
     // 业务已成功，向调用方如实返回 content 结果。
     await this.confirmOperation(opKey, result).catch((err) => {
       this.logger.warn('content_confirm_deferred', { code: stableErrorCode(err) });
     });
     return result;
+  }
+
+  /** RR4-W3：用户发起存档创建的成功通知登记（唯一正本在 archive-notice.ts；
+   *  非 2xx/非该形态=无动作）。 */
+  private registerArchiveNoticeIfUserCreate(intent: IntentPayload, idemKey: string, status: number, body: unknown): void {
+    if (status < 200 || status >= 300) return;
+    if (!isUserArchiveCreate(intent.actor, intent.method, intent.path)) return;
+    const b = body as { id?: string; kind?: string; messages?: unknown[] } | null;
+    const convId = (intent.body as { conversation_id?: string } | undefined)?.conversation_id;
+    if (typeof b?.id !== 'string' || (b.kind !== 'quarrel' && b.kind !== 'sweet') || !Array.isArray(b.messages) || typeof convId !== 'string' || !convId) return;
+    registerArchiveCreatedNotice(this.db, { conversationId: convId, archiveId: b.id, kind: b.kind, count: b.messages.length, idempotencyKey: idemKey });
   }
 
   /** 成功后确认：快照→（单调准入）→content_owner_state+映射+ack 同一本地事务。

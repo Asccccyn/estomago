@@ -25,13 +25,13 @@ export const MEDIASEARCH_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'media_search',
-      description: '按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个，自拍/截图不会混入）。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。',
+      description: '按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从"我们的相册"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。',
       parameters: {
         type: 'object',
         properties: {
           query: { type: 'string', minLength: 1, maxLength: 200, description: '中文或任意语言的自然描述' },
           limit: { type: 'integer', minimum: 1, maximum: 10, description: '候选数，默认 3' },
-          scope: { type: 'string', enum: ['chat', 'stickers'], description: '候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员（找表情专用）' },
+          scope: { type: 'string', enum: ['chat', 'stickers', 'photos', 'creations'], description: '候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员；photos=仅"我们的相册"精选成员；creations=仅作品集图片作品' },
         },
         required: ['query'], additionalProperties: false,
       },
@@ -60,7 +60,7 @@ export function registerMediaCapabilities(registry: { register(d: CapabilityDesc
   registry.register(toolCapability({
     owner: 'media',
     id: 'media_search', baselineOrder: 27, definition: () => MEDIASEARCH_DEFINITION, memoryOnlyAllowed: false, label: '找图',
-    run: (input: { query: string; limit?: number }, ctx) => service.mediaSearch(input, ctx),
+    run: (input: { query: string; limit?: number; scope?: 'chat' | 'stickers' | 'photos' | 'creations' }, ctx) => service.mediaSearch(input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({owner:'media',id:'media_view',baselineOrder:52,definition:MEDIAVIEW_DEFINITION,memoryOnlyAllowed:false,free:true,label:'看图',

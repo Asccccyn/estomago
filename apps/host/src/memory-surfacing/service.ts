@@ -84,7 +84,7 @@ export class SurfacingService {
   private cfg: SurfacingConfig;
   private log: import('../observability/logging.ts').Logger | null;
   private events: import('../events/service.ts').EventService | null;
-  private quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null;
+  private quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null;
   private eventQueue: Array<import('./contracts.ts').SurfaceJobEventPayload> = [];
   private eventFlushScheduled = false;
 
@@ -95,7 +95,7 @@ export class SurfacingService {
     cfg: SurfacingConfig,
     log: import('../observability/logging.ts').Logger | null,
     events: import('../events/service.ts').EventService | null = null,
-    quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null = null,
+    quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null,
   ) {
     this.db = db;
     this.client = client;
@@ -415,20 +415,24 @@ export class SurfacingService {
     // R6 精确封存（复审 2026-11-08）：争吵存档的 sm 集并入同一来源边界下推——M 在
     // 检索层逐项排除（words/raw 按 source_ref、event 按桶绑定；旧绑定/无绑定保留），
     // 冻结前生效，无关候选不再被整包扣留（03 §6"复用已有来源边界和回声识别机制"）。
-    // content 不可达时不带（同收据缺席口径）——终投递侧另有降级闸（supervisor）。
-    const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId], 64);
+    // RR4-W2e（林石见 2026-11-10 修正稿）：排除集**不再截断**——触发来源全修订
+    // （旧 cap 64）与 quarrel 全集（旧 cap 192）完整并入同一次 prepare（M 合同与
+    // 规范化已同步放开；分块在 M 查询层完成）。完整集合超量不再是"常态暂停注入"
+    // 的理由；content 不可达/范围未读全时不带 quarrel 集（同收据缺席口径）——
+    // 终投递侧降级闸（supervisor，complete 感知）是权威。
+    const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId]);
     let quarrelPushed = 0;
     if (this.quarrelSourceRefs) {
       const quarrel = await this.quarrelSourceRefs(job.conversation_id);
-      if (quarrel.reachable) {
-        for (const sm of quarrel.refs) if (!excluded_source_ids.includes(sm) && excluded_source_ids.length < 192) excluded_source_ids.push(sm);
+      if (quarrel.reachable && quarrel.complete) {
+        for (const sm of quarrel.refs) if (!excluded_source_ids.includes(sm)) excluded_source_ids.push(sm);
         quarrelPushed = quarrel.refs.size;
         if (quarrelPushed > 0) this.log?.info?.('surface_quarrel_boundary_pushed', { job: job.id, quarrel_refs: quarrelPushed });
       } else {
-        this.log?.warn?.('surface_quarrel_boundary_unreachable', { job: job.id });
+        this.log?.warn?.('surface_quarrel_boundary_unreachable', { job: job.id, complete: quarrel.complete });
       }
     }
-    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id), 128);
+    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id));
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
       conversation_scope: job.conversation_id,

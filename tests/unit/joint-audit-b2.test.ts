@@ -46,7 +46,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 25_200 /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 25_280 /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);

@@ -93,7 +93,7 @@ async function runConversationArchive(archives: ArchiveService, input: { kind: s
   const note = typeof input.note === 'string' && input.note.trim().length > 0 ? input.note.slice(0, 2000) : null;
   const idem = `tool-archive:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
   const r = await archives.createArchive({
-    conversationId: ctx.roomId, kind, rawRefs, note, actor: 'jiaming', notifyModel: 'none', idempotencyKey: idem,
+    conversationId: ctx.roomId, kind, rawRefs, note, actor: 'jiaming', idempotencyKey: idem,
   });
   if (!r.ok) return { ok: false, output: { error_code: r.code, detail: r.detail } };
   // 工具回执即通知（单通道，03 §4.2）：本回执就是char收到的通知，不再另发事件

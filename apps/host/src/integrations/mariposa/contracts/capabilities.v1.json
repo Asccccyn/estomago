@@ -4,11 +4,11 @@
   "source_commit": "45f8a06bfb1993e8cc115a5ca7be582b4636094f",
   "source_files": {
     "backend/mariposa/capabilities/registry.py": "67a3858285031e03a8974046ea09fac21cea0e099725f4a4daac2bd8fcc67df8",
-    "backend/mariposa/capabilities/input_schemas.py": "32df3f685e3318aa8116082e9a4dee9f646639aa7ec87c1959d4e31d9fc11f3e",
+    "backend/mariposa/capabilities/input_schemas.py": "9cfe462954c2184ecb22db4a4aa7e362e7a013354859f197e0cd79805efb1969",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "163c9d6885ae776619fc8a8049ae989ba701509747601fa30e8bf20d4cb8c9dd",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
-    "backend/mariposa/recall/models.py": "fd3a0a88db062f5e7634a41ee124029e4a263dbf4fe3ae72cd6bc9b23686f43a",
+    "backend/mariposa/recall/models.py": "ab36f6441608413c97818626672d38f1208646bf9de7edd9a81c9b0a254003b4",
     "backend/mariposa/retrieval/query_plan.py": "aeeb426055278665f23dcf74a02f38f8ba7f3d86ec1038c9045d8e7fd8d0d8e8",
     "backend/mariposa/recall/round2.py": "629757144b76e510e4481be40194fefcb3e769ade4c05df846b0fb5d0ade507e",
     "backend/mariposa/config.py": "ececab4aba1c1400b71a416c987071abca561761eb355c9d6f036cf96c5b8e80",
@@ -2621,8 +2621,7 @@
                 "items": {
                   "type": "string"
                 },
-                "default": [],
-                "x-limit-before-normalization": 64
+                "default": []
               }
             }
           },
@@ -3055,8 +3054,7 @@
                 "items": {
                   "type": "string"
                 },
-                "default": [],
-                "x-limit-before-normalization": 64
+                "default": []
               }
             }
           },
@@ -3484,7 +3482,6 @@
           },
           "excluded_source_ids": {
             "type": "array",
-            "maxItems": 64,
             "items": {
               "type": "string",
               "minLength": 1

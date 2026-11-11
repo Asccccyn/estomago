@@ -11,8 +11,11 @@
 // 未同步（无收据）的消息无法定位 → 如实缺席（fail-open，不猜 sm id）。
 import type { Db } from '../db/connection.ts';
 
-/** 多个 origin 消息 id → 去重后的 sm id 集（按收据表全修订收全）。 */
-export function syncedSourceIdsFor(db: Db, originMessageIds: string[], cap = 128): string[] {
+/** 多个 origin 消息 id → 去重后的 sm id 集（按收据表全修订收全）。
+ *  RR4-W2e（林石见 2026-11-10 修正稿）：**不截断**——排除资格是正确性约束，
+ *  E 先截断再把截断结果当完整集合下推，会让封存内容回流。调用方如需有界展示
+ *  自行切片；来源资格排除一律全量。 */
+export function syncedSourceIdsFor(db: Db, originMessageIds: string[]): string[] {
   const out = new Set<string>();
   for (const id of originMessageIds) {
     if (typeof id !== 'string' || id.length === 0) continue;
@@ -23,9 +26,8 @@ export function syncedSourceIdsFor(db: Db, originMessageIds: string[], cap = 128
       const sid = r.source_message_id.startsWith('source_msg:') ? r.source_message_id.slice('source_msg:'.length) : r.source_message_id;
       if (sid.startsWith('sm_')) out.add(sid);
     }
-    if (out.size >= cap) break;
   }
-  return [...out].slice(0, cap);
+  return [...out];
 }
 
 /** 当前活动窗实际携带的消息 id——G1-F03（裁定 2026-11-03）修正映射：

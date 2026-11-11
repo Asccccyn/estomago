@@ -76,20 +76,57 @@ export class MediaToolsService {
   }
 
 
-  async mediaSearch(args: { query: string; limit?: number; scope?: 'chat' | 'stickers' }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  async mediaSearch(args: { query: string; limit?: number; scope?: 'chat' | 'stickers' | 'photos' | 'creations' }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mediaIndex || !this.mediaIndex.available) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '图片语义检索未接入（能力缺口，如实拒绝）' } };
-    // ALB-13/R33：stickers scope 只从 content stickers 分类的有效成员选——自拍/截图
-    // 不因向量相近混入候选（集合空或未配置 content=如实无匹配/降级说明，不静默放开）。
+    // ALB-13/R33 + RR4-W2b（林石见 2026-11-10 修正稿"全量覆盖"）：集合 scope
+    // （stickers/photos/creations）只从对应分类的**全部有效成员**选——分页以
+    // next_cursor=null 为唯一结束条件（批次大小控制每次工作量，不限制业务范围；
+    // 旧实现只取前 100 条）。分类语义保留（表情不混自拍）。集合空或未配置
+    // content=如实无匹配/降级说明，不静默放开为全域搜索。
+    const SCOPE_KINDS = { stickers: 'stickers', photos: 'important_photos' } as const;
+    const scopeLabel = args.scope === 'stickers' ? '表情包' : args.scope === 'photos' ? '相册（我们的相册）' : '作品';
     let allowSet: Set<string> | undefined;
-    if (args.scope === 'stickers') {
-      if (!this.contentClient) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合未接入（content 未配置）——本次不放开为全域搜索' } };
+    if (args.scope !== undefined && args.scope !== 'chat') {
+      if (!this.contentClient) return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合未接入（content 未配置）——本次不放开为全域搜索` } };
+      const collectAlbum = async (kind: string): Promise<string[] | null> => {
+        const collected: string[] = [];
+        let cursor: string | null = null;
+        const seenCursors = new Set<string>();
+        while (cursor === null || !seenCursors.has(cursor)) { // 游标停滞=按分页失败处理，不无限循环
+          if (cursor !== null) seenCursors.add(cursor);
+          const res = await contentForward(this.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/albums/${kind}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+          if (res.status !== 200) return null;
+          const body = res.body as { items?: Array<{ asset_id?: string }>; next_cursor?: string | null };
+          for (const it of body.items ?? []) if (typeof it.asset_id === 'string') collected.push(it.asset_id);
+          cursor = body.next_cursor ?? null;
+          if (cursor === null) return collected;
+        }
+        return null; // 游标回环：分页失败
+      };
+      const collectCreations = async (): Promise<string[] | null> => {
+        const collected: string[] = [];
+        let cursor: string | null = null;
+        const seenCursors = new Set<string>();
+        while (cursor === null || !seenCursors.has(cursor)) {
+          if (cursor !== null) seenCursors.add(cursor);
+          const res = await contentForward(this.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+          if (res.status !== 200) return null;
+          const body = res.body as { items?: Array<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>; next_cursor?: string | null };
+          for (const it of body.items ?? []) {
+            if (it.work_kind === 'image' && typeof it.work_asset_id === 'string') collected.push(it.work_asset_id);
+            if (typeof it.icon_asset_id === 'string' && it.icon_asset_id !== it.work_asset_id) collected.push(it.icon_asset_id);
+          }
+          cursor = body.next_cursor ?? null;
+          if (cursor === null) return collected;
+        }
+        return null;
+      };
       try {
-        const res = await contentForward(this.contentClient, { method: 'GET', actor: 'jiaming', path: '/api/v1/content/albums/stickers/entries?limit=100' });
-        if (res.status !== 200) return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: `表情包集合读取失败（${res.status}）——不放开为全域搜索` } };
-        const items = (res.body as { items?: Array<{ asset_id?: string }> }).items ?? [];
-        allowSet = new Set(items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'));
+        const collected = args.scope === 'creations' ? await collectCreations() : await collectAlbum(SCOPE_KINDS[args.scope as keyof typeof SCOPE_KINDS]);
+        if (collected === null) return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合分页读取失败——不放开为全域搜索` } };
+        allowSet = new Set(collected);
       } catch {
-        return { ok: false, output: { error_code: 'STICKER_SCOPE_UNAVAILABLE', detail: '表情包集合暂不可达——不放开为全域搜索' } };
+        return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合暂不可达——不放开为全域搜索` } };
       }
     }
     // Propagate host cancellation. A new short deadline would discard slow image results
@@ -100,37 +137,38 @@ export class MediaToolsService {
       const fingerprint=await this.mediaIndex.workerFingerprint(signal);
       signal?.throwIfAborted();
       if(fingerprint===null)return {ok:false,output:{error_code:'MEDIA_WORKER_UNAVAILABLE',detail:'图片检索暂不可用；文字聊天不受影响'}};
-      // RR6（复审 2026-11-09）：stickers scope 的未索引/失败统计按**本 scope 的真实
-      // 候选集**（stickers 成员）算——旧实现沿用房间附件口径，只入集合未发聊天的资产
-      // 既不会被补也不会被计入 pending，编码失败还被 catch 吞成普通 no_match。
-      // 有界补齐（≤5/次，indexImage 幂等）后按同一候选集复核，失败/未索引用既有
-      // coverage/pending_index 字段如实分开。chat scope 维持房间附件口径（R8′）。
+      // RR6（复审 2026-11-09）+RR4-W2a/W2b：集合 scope 的未索引/失败统计按**本 scope 的
+      // 全量候选集**算——只入集合未发聊天的资产由后台补索引 tick 从相册/作品枚举持续
+      // 补齐（见 app-context），检索时仍有界补 ≤5 次/次（indexImage 幂等）；**每次尝试
+      // 都消耗额度（失败也计数）**——候选放开后不能让连续失败图变相放大尝试量。失败/
+      // 未索引用既有 coverage/pending_index 字段如实分开。chat scope 维持房间附件口径（R8′）。
       let scopePending: string[] = [];
       let indexFailed = 0;
-      if (args.scope === 'stickers' && allowSet) {
+      if (allowSet) {
         let topped = 0;
         for (const aid of allowSet) {
           if (topped >= 5 || signal?.aborted) break;
           if (!this.mediaIndex.assetIndexed(aid, fingerprint)) {
-            try { await this.mediaIndex.indexImage(aid, signal); topped += 1; }
+            try { await this.mediaIndex.indexImage(aid, signal); }
             catch { indexFailed += 1; }
+            topped += 1; // 尝试即计数（含失败）——额度约束的是尝试量
           }
         }
         scopePending = [...allowSet].filter((aid) => !this.mediaIndex!.assetIndexed(aid, fingerprint));
       }
-      const pending=this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint);
+      const pending = args.scope === undefined || args.scope === 'chat' ? this.mediaIndex.unindexedImagesInRoom(ctx.roomId,fingerprint) : [];
       signal?.throwIfAborted();
       const result=await this.mediaIndex.searchImagesByRoom(args.query,ctx.roomId,args.limit??3,signal,allowSet);
       signal?.throwIfAborted();
       const out:Record<string,unknown>={...result};
-      if(args.scope==='stickers'){
-        out.scope='stickers';
-        out.note='候选仅限表情包分类成员';
+      if(allowSet){
+        out.scope=args.scope;
+        out.note=`候选仅限${scopeLabel}分类成员（全部成员）`;
         if(scopePending.length>0){
           out.coverage='incomplete';out.pending_index=scopePending.length;
           out.note=indexFailed>0
-            ? `表情包 ${scopePending.length} 张尚未建成索引（其中 ${indexFailed} 张编码失败——图片编码服务异常，文字检索不受影响）；本次结果可能不全`
-            : `表情包 ${scopePending.length} 张尚未建成索引（后台补齐中）；本次结果可能不全，稍后可再查`;
+            ? `${scopeLabel} ${scopePending.length} 张尚未建成索引（其中 ${indexFailed} 张编码失败——图片编码服务异常，文字检索不受影响）；本次结果可能不全`
+            : `${scopeLabel} ${scopePending.length} 张尚未建成索引（后台补齐中）；本次结果可能不全，稍后可再查`;
         }
       } else if(pending.length>0){
         out.coverage='incomplete';out.pending_index=pending.length;out.note='部分图片索引后台进行中，本次结果可能不全；稍后可再查';

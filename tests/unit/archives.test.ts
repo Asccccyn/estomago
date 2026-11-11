@@ -142,20 +142,20 @@ test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用
   }
   // 未同步消息（无收据）→ 明确拒绝可重试
   const unsynced = publishUser('c1', 'arc3-x');
-  const denied = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: unsynced.id }], actor: 'jiaming', notifyModel: 'none', idempotencyKey: 'k-unsync' });
+  const denied = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: unsynced.id }], actor: 'jiaming', idempotencyKey: 'k-unsync' });
   assert.equal(denied.ok, false);
   if (!denied.ok) { assert.equal(denied.code, 'ARCHIVE_SOURCE_NOT_SYNCED'); assert.equal(denied.retryable, true); }
   // 工具发起：notifyModel=none——成功回执即通知，host_notices 不排
-  const t1 = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'jiaming', notifyModel: 'none', idempotencyKey: 'k-tool-1' });
+  const t1 = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'jiaming', idempotencyKey: 'k-tool-1' });
   assert.equal(t1.ok, true, JSON.stringify(t1));
-  const t2 = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'jiaming', notifyModel: 'none', idempotencyKey: 'k-tool-1' });
+  const t2 = await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'jiaming', idempotencyKey: 'k-tool-1' });
   assert.equal(t2.ok, true);
   if (t1.ok && t2.ok) assert.equal(t2.archive.id, t1.archive.id, '同幂等键重放=同一存档');
   assert.equal((db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n, 0, '工具发起不排队通知');
   // 用户发起：排队通知 + dedupe 幂等
-  const u1r = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u.id }], note: '到这里', actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-1' });
+  const u1r = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u.id }], note: '到这里', actor: 'qiaosheng', idempotencyKey: 'k-user-1' });
   assert.equal(u1r.ok, true);
-  const u1again = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u.id }], note: '到这里', actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-1' });
+  const u1again = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u.id }], note: '到这里', actor: 'qiaosheng', idempotencyKey: 'k-user-1' });
   assert.equal(u1again.ok, true);
   if (u1r.ok && u1again.ok) assert.equal(u1again.archive.id, u1r.archive.id);
   assert.equal((db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n, 1, '同操作身份只排一条');
@@ -168,7 +168,7 @@ test('ARC-3: 建档 + 幂等 + 通知通道分离（工具=回执不排队；用
   const msgT = publishUser('c1', 'arc3-t');
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr-arc3t', 'op-arc3t', msgT.id, 1, 'sc1', 'sm_arc3t', 'h-arc3t', new Date().toISOString(), new Date().toISOString());
-  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: msgT.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-user-2' });
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: msgT.id }], actor: 'qiaosheng', idempotencyKey: 'k-user-2' });
   const deferred = svc.takePendingNotices('c1', true);
   assert.equal(deferred.length, 1);
   assert.equal(svc.takePendingNotices('c1', true).length, 1, '未确认（无投递证据）不标记——宁可重取不静默丢');
@@ -212,8 +212,8 @@ test('ARC-10: quarrelBlockedSourceRefs——经收据映射到 sm_id；仅争吵
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr10b', 'op10', u2.id, 1, 'sc1', 'sm_block_2', 'h2', new Date().toISOString(), new Date().toISOString());
   // 争吵存档含 u1；甜蜜存档含 u2
-  await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-q10' });
-  await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u2.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-s10' });
+  await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], actor: 'qiaosheng', idempotencyKey: 'k-q10' });
+  await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u2.id }], actor: 'qiaosheng', idempotencyKey: 'k-s10' });
   const blocked = await svc.quarrelBlockedSourceRefs('c2');
   assert.equal(blocked.reachable, true);
   assert.equal(blocked.refs.size, 1, '仅争吵封存的来源被抑制');
@@ -238,7 +238,7 @@ test('ARC-10b (F2): 封存面按存档钉住修订解析——封存 v1 不把�
   db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u.id);
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr10b2', 'op10b', u.id, 2, 'sc1', 'sm_pin_v2', 'h2', t0, t0);
-  const r = await svc.createArchive({ conversationId: 'c3', kind: 'quarrel', rawRefs: [{ message_id: u.id, revision: 1 }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc10b' });
+  const r = await svc.createArchive({ conversationId: 'c3', kind: 'quarrel', rawRefs: [{ message_id: u.id, revision: 1 }], actor: 'qiaosheng', idempotencyKey: 'k-arc10b' });
   assert.equal(r.ok, true, JSON.stringify(r));
   const blocked = await svc.quarrelBlockedSourceRefs('c3');
   assert.equal(blocked.reachable, true);
@@ -255,7 +255,7 @@ test('ARC-12 (F3): 建档经协调器→快照确认同事务登记投影→M �
     db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
       .run('ssr12-' + sm, 'op12', mid, 1, 'sc1', sm, 'h', t0, t0);
   }
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc12' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }, { message_id: a.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc12' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   // 投影意图在 content 确认的同一事务登记（建档返回即确认完成，不再 void 尽力而为）
@@ -314,7 +314,7 @@ test('ARC-13: R6 存档打开链——archiveOriginals 返回钉住修订的正�
   db.prepare('INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, created_at) VALUES (?,?,?,?,?,?,?)')
     .run(u.id, 2, 0, 'asset-arc13-r2', 'image', '后来换的', t0);
   db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u.id);
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id, revision: 1 }, { message_id: a.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc13' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id, revision: 1 }, { message_id: a.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc13' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   const opened = await svc.archiveOriginals('c2', r.archive.id);
@@ -336,8 +336,8 @@ test('ARC-11: 存档文本检索——命中归并到存档条目；kind 过滤�
     .run('ssr11a', 'op11', u1.id, 1, 'sc1', 'sm_q1', 'h1', new Date().toISOString(), new Date().toISOString());
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr11b', 'op11', u2.id, 1, 'sc1', 'sm_s1', 'h2', new Date().toISOString(), new Date().toISOString());
-  const q = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], note: '那晚的争执', actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc11-q' });
-  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u2.id }], note: null, actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc11-s' });
+  const q = await svc.createArchive({ conversationId: 'c1', kind: 'quarrel', rawRefs: [{ message_id: u1.id }], note: '那晚的争执', actor: 'qiaosheng', idempotencyKey: 'k-arc11-q' });
+  await svc.createArchive({ conversationId: 'c1', kind: 'sweet', rawRefs: [{ message_id: u2.id }], note: null, actor: 'qiaosheng', idempotencyKey: 'k-arc11-s' });
   // fake mariposa：query 含"晚"返回 sm_q1（争吵），含"甜"返回 sm_s1
   const fakeM2 = {
     sourceSearch: async (a: { query: string }) => {
@@ -374,7 +374,7 @@ test('ARC-11b (F2): 检索面按存档钉住的修订解析——v2 的 sm 不�
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr11b2', 'op11b', u.id, 2, 'sc1', 'sm_arc11b_v2', 'h2', t0, t0);
   // 存档钉 v1（v1 也有收据——门槛通过）
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id, revision: 1 }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc11b' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id, revision: 1 }], actor: 'qiaosheng', idempotencyKey: 'k-arc11b' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   let seenIncludes: string[] = [];
@@ -406,7 +406,7 @@ test('ARC-14 (RR3): 选 v2 而 M 只有 v1 收据→精确门槛拒绝（不凭�
     .run('mrev-arc14-2', u.id, 2, 'text', '话-arc14-u（改口）', sha256Hex('v2'), new Date().toISOString(), new Date().toISOString(), 'user');
   db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u.id);
   const noticesBefore = (db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n;
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: 'k-arc14' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc14' });
   assert.equal(r.ok, false, 'v2 无收据=待同步，不凭 v1 收据成功');
   if (!r.ok) { assert.equal(r.code, 'ARCHIVE_SOURCE_NOT_SYNCED'); assert.equal(r.retryable, true); }
   const n = (db.prepare('SELECT COUNT(*) n FROM host_notices').get() as { n: number }).n;
@@ -418,7 +418,7 @@ test('ARC-15 (F3): 删除经协调器→墓碑快照确认→撤销投影登记�
   const u = publishUser('c2', 'arc15-u');
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr15', 'op15', u.id, 1, 'sc1', 'sm_arc15', 'h', new Date().toISOString(), new Date().toISOString());
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc15' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc15' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   assert.ok((await spy.sync().drainArchiveProjections()) >= 1, '建档投影收口（批次含本文件其他 pending 投影）');
@@ -485,7 +485,7 @@ test('ARC-18 (F3): 真实 HTTP 删除路由——经协调器删除→墓碑确�
   const u = publishUser('c2', 'arc18-u');
   db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
     .run('ssr18', 'op18', u.id, 1, 'sc1', 'sm_arc18', 'h', new Date().toISOString(), new Date().toISOString());
-  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', notifyModel: 'none', idempotencyKey: 'k-arc18' });
+  const r = await svc.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc18' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   assert.ok((await spy.sync().drainArchiveProjections()) >= 1, '建档投影收口');
@@ -511,4 +511,70 @@ test('ARC-18 (F3): 真实 HTTP 删除路由——经协调器删除→墓碑确�
     const revokedCalls = spy.calls.filter((c) => (c['payload'] as { archive_id?: string; type?: string }).archive_id === r.archive.id && (c['payload'] as { type?: string }).type === 'conversation_archived_revoked');
     assert.equal(revokedCalls.length, 1, '逐消息一条撤销 observation');
   } finally { routeServer.close(); }
+});
+
+test('ARC-19 (W3): 通知恰绑定写入成功回执——两种故障位置分立；恢复补登记恰一份；重放不加', async () => {
+  const notices = () => (db.prepare('SELECT COUNT(*) n FROM host_notices WHERE conversation_id = ? AND dedupe_key LIKE ?').get('c2', 'archive-notice:k-arc19%') as { n: number }).n;
+  const u = publishUser('c2', 'arc19-u');
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('ssr19', 'op19', u.id, 1, 'sc1', 'sm_arc19', 'h', new Date().toISOString(), new Date().toISOString());
+  const forwardToReal = async (req: http.IncomingMessage, res: http.ServerResponse, raw: string) => {
+    const opts = { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${server.port}` }, ...(req.method !== 'GET' && raw !== '' ? { body: raw } : {}) } as RequestInit;
+    const up = await fetch(`http://127.0.0.1:${server.port}${req.url}`, opts);
+    const text = await up.text();
+    res.writeHead(up.status, { 'Content-Type': 'application/json' }); res.end(text);
+  };
+  const readRaw = (req: http.IncomingMessage) => new Promise<string>((resolve) => { let raw = ''; req.on('data', (c) => { raw += c; }); req.on('end', () => resolve(raw)); });
+  // (a) 内容服务已提交、成功响应丢失（故障在写入回执，不在快照）：前台失败零通知；
+  // 恢复确认成功后补登记恰一份
+  let dropFirstPost = true;
+  const proxyA = http.createServer((req, res) => { void (async () => {
+    const raw = await readRaw(req);
+    if (req.method === 'POST' && (req.url ?? '').startsWith('/api/v1/content/archives') && dropFirstPost) {
+      dropFirstPost = false;
+      await fetch(`http://127.0.0.1:${server.port}${req.url}`, { method: 'POST', headers: { ...req.headers, host: `127.0.0.1:${server.port}` }, body: raw }); // 真提交，丢弃响应
+      res.writeHead(504, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'gateway_timeout', message: '响应丢失' } }));
+      return;
+    }
+    await forwardToReal(req, res, raw);
+  })().catch(() => { res.statusCode = 500; res.end('{}'); }); });
+  await new Promise<void>((resolve) => proxyA.listen(0, '127.0.0.1', resolve));
+  try {
+    const opsA = new ContentOperationCoordinator({ db, client: { baseUrl: `http://127.0.0.1:${(proxyA.address() as { port: number }).port}`, token: TOKEN } as never, media: new MediaService(db, path.join(root, 'media-19a'), buildConfig({})), logger });
+    const svcA = new ArchiveService({ db, contentClient: client, contentOps: opsA, logger });
+    const r1 = await svcA.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc19' });
+    assert.equal(r1.ok, false, '写入响应丢失=前台结果未知（不是快照故障）');
+    assert.equal(notices(), 0, '未确认成功前零通知');
+    await opsA.recoverOnce(); // 代理已恢复（只丢第一次）
+    assert.equal(notices(), 1, '恢复确认成功后补登记恰一份');
+    const pending = svcA.takePendingNotices('c2');
+    assert.equal(pending.filter((n) => n.id !== '').length >= 1, true);
+    // 同键重放（HTTP 重试同操作）：回放原回执，不新增通知
+    const r2 = await svcA.createArchive({ conversationId: 'c2', kind: 'sweet', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc19' });
+    assert.equal(r2.ok, true, '同键重放回放原成功回执');
+    assert.equal(notices(), 1, '重放不新增通知');
+  } finally { proxyA.close(); }
+  // (b) 已收到成功响应、随后快照读取失败：存档成功、通知即时登记（不被快照/M 投影拖延）
+  const proxyB = http.createServer((req, res) => { void (async () => {
+    const raw = await readRaw(req);
+    if (req.method === 'GET' && (req.url ?? '').includes('/references/')) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'unavailable' } })); return; }
+    await forwardToReal(req, res, raw);
+  })().catch(() => { res.statusCode = 500; res.end('{}'); }); });
+  await new Promise<void>((resolve) => proxyB.listen(0, '127.0.0.1', resolve));
+  let archiveId = '';
+  try {
+    const opsB = new ContentOperationCoordinator({ db, client: { baseUrl: `http://127.0.0.1:${(proxyB.address() as { port: number }).port}`, token: TOKEN } as never, media: new MediaService(db, path.join(root, 'media-19b'), buildConfig({})), logger });
+    const svcB = new ArchiveService({ db, contentClient: client, contentOps: opsB, logger });
+    const rb = await svcB.createArchive({ conversationId: 'c2', kind: 'quarrel', rawRefs: [{ message_id: u.id }], actor: 'qiaosheng', idempotencyKey: 'k-arc19b' });
+    assert.equal(rb.ok, true, '写入成功回执已收到——存档成功，快照未确认不拖延结果');
+    archiveId = rb.ok ? rb.archive.id : '';
+    assert.equal(notices(), 2, 'k-arc19b 即时登记（快照失败不拖延已确定的成功通知）');
+    const projBefore = db.prepare("SELECT COUNT(*) n FROM outbox WHERE target = 'mariposa.archive_projection' AND operation_key = ?").get(`archive-projection:${archiveId}:conversation_archived`) as { n: number };
+    assert.equal(projBefore.n, 0, '快照失败=确认未完成，投影暂未登记（由恢复链补）');
+  } finally { proxyB.close(); }
+  // 恢复（真协调器）：补确认+投影；通知不再新增
+  await contentOps.recoverOnce(20);
+  assert.equal(notices(), 2, '恢复/投影不产生额外通知');
+  const projAfter = db.prepare("SELECT COUNT(*) n FROM outbox WHERE target = 'mariposa.archive_projection' AND operation_key = ?").get(`archive-projection:${archiveId}:conversation_archived`) as { n: number };
+  assert.equal(projAfter.n, 1, '快照恢复后投影补登记');
 });

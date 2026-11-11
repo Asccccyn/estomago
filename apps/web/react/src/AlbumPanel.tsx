@@ -12,6 +12,8 @@ import { Heart, Image as ImageIcon, Library, Sparkles, Upload, X } from 'lucide-
 type AlbumEntry = { id: string; asset_id: string; caption: string | null; meaning: string | null; added_by: string; carry_mode: 'none' | 'next_once' | 'always'; revision: number; created_at: string }
 type Creation = { id: string; title: string | null; work_asset_id: string | null; work_kind: string | null; created_at: string }
 type ArchiveItem = { id: string; kind: 'quarrel' | 'sweet'; note: string | null; created_by: string; messages: Array<{ message_id: string }>; created_at: string; revision: number }
+/** RR4-W2f：各 tab 分页游标（next_cursor=null=到末页；"加载更多"续读） */
+type PageState = { cursor: string | null; hasMore: boolean }
 type ArchiveOriginal = { message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments?: Array<{ asset_id: string; presentation: string; caption: string | null }> }
 
 const TABS = [
@@ -45,23 +47,39 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
   const [openArchive, setOpenArchive] = useState<string | null>(null)
   const [originals, setOriginals] = useState<ArchiveOriginal[] | null>(null)
   const stickerInputRef = useRef<HTMLInputElement | null>(null)
+  // RR4-W2f：分页状态放 ref+state 双份（ref 供 load 回调读当前游标，state 驱动按钮）
+  const pageRef = useRef<Partial<Record<TabKey, PageState>>>({})
+  const [page, setPage] = useState<Partial<Record<TabKey, PageState>>>({})
+  useEffect(() => { pageRef.current = page }, [page])
+  const LoadMore = ({ tab: t }: { tab: TabKey }) => {
+    const st = page[t]
+    if (!st?.hasMore || busy) return null
+    return <button onClick={() => void load({ more: true })} className="mt-1 rounded-xl border border-black/10 px-3 py-2 text-[12.5px] text-[#5e5d59] hover:bg-black/5">加载更多</button>
+  }
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts: { more?: boolean } = {}) => {
     setBusy(true); setErr(null)
     try {
+      const cursor = opts.more ? pageRef.current[tab]?.cursor : null
+      const suffix = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+      const attach = <T,>(prev: T[], body: { items?: T[]; next_cursor?: string | null; has_more?: boolean }) => {
+        const items = opts.more ? [...prev, ...(body.items ?? [])] : (body.items ?? [])
+        setPage((p) => ({ ...p, [tab]: { cursor: body.next_cursor ?? null, hasMore: body.has_more === true } }))
+        return items
+      }
       if (tab === 'creations') {
-        const { status, body } = await jfetch<{ items?: Creation[] }>('/api/v1/content/creations?limit=50')
+        const { status, body } = await jfetch<{ items?: Creation[]; next_cursor?: string | null; has_more?: boolean }>(`/api/v1/content/creations?limit=50${suffix}`)
         if (status !== 200) throw new Error('作品读取失败 ' + status)
-        setCreations(body.items ?? [])
+        setCreations((prev) => attach(prev, body))
       } else if (tab === 'archives') {
-        const { status, body } = await jfetch<{ items?: ArchiveItem[] }>('/api/v1/archives?limit=50')
+        const { status, body } = await jfetch<{ items?: ArchiveItem[]; next_cursor?: string | null; has_more?: boolean }>(`/api/v1/archives?limit=50${suffix}`)
         if (status !== 200) throw new Error('存档读取失败 ' + status)
-        setArchives(body.items ?? [])
+        setArchives((prev) => attach(prev, body))
       } else {
         const kind = tab === 'photos' ? 'important_photos' : 'stickers'
-        const { status, body } = await jfetch<{ items?: AlbumEntry[] }>(`/api/v1/content/albums/${kind}/entries?limit=50`)
+        const { status, body } = await jfetch<{ items?: AlbumEntry[]; next_cursor?: string | null; has_more?: boolean }>(`/api/v1/content/albums/${kind}/entries?limit=50${suffix}`)
         if (status !== 200) throw new Error('相册读取失败 ' + status)
-        setEntries(body.items ?? [])
+        setEntries((prev) => attach(prev, body))
       }
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
   }, [tab])
@@ -94,7 +112,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
   }
 
   const removeArchive = async (a: ArchiveItem) => {
-    if (!confirm(`删除这条${KIND_LABELS[a.kind]}存档？（原文与记忆不受影响）`)) return
+    if (!confirm(`撤销这条${KIND_LABELS[a.kind]}存档？（只取消存档关系，原文与记忆不受影响）`)) return
     setBusy(true); setErr(null)
     try {
       const { status, body } = await jfetch<{ error?: { message?: string } }>(`/api/v1/archives/${encodeURIComponent(a.id)}`, {
@@ -190,6 +208,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                     )}
                   </div>)}
             </div>)}
+          {!busy && tab === 'creations' && <LoadMore tab="creations" />}
           {!busy && (tab === 'photos' || tab === 'stickers') && (
             <div className="flex flex-col gap-2 pt-1">
               {tab === 'stickers' && (
@@ -220,6 +239,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                     <button aria-label="移除" disabled={busy} onClick={() => void removeEntry(e)} className="shrink-0 rounded-xl p-1.5 text-[#a3a099] hover:bg-black/5 hover:text-[#b3554d]"><X size={15} /></button>
                   </div>
                 ))}
+              <LoadMore tab={tab} />
             </div>)}
           {!busy && tab === 'archives' && (archives.length === 0
             ? <Empty text="还没有对话存档——多选消息后可存为争吵/甜蜜存档" />
@@ -258,6 +278,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                   )}
                 </div>
               ))}
+              <LoadMore tab="archives" />
             </div>)}
         </div>
       </div>

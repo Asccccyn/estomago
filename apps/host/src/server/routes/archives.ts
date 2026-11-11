@@ -29,7 +29,7 @@ export async function handleArchivesRoutes(req: IncomingMessage, res: ServerResp
     const idem = typeof req.headers['idempotency-key'] === 'string' && req.headers['idempotency-key'] ? req.headers['idempotency-key'] : `http-archive:${conversationId}:${Date.now()}`;
     const r = await d.archives.createArchive({
       conversationId, kind, rawRefs: rawIds.map((id) => ({ message_id: id })), note,
-      actor: 'qiaosheng', notifyModel: 'event', idempotencyKey: idem,
+      actor: 'qiaosheng', idempotencyKey: idem,
     });
     if (!r.ok) {
       // 停止成功但建档失败：双状态如实（输出已停，存档未完成；原键可重试，停止不重复执行）
@@ -43,8 +43,11 @@ export async function handleArchivesRoutes(req: IncomingMessage, res: ServerResp
 
   const listRoute = route === 'GET /api/v1/archives';
   if (listRoute) {
+    // RR4-W2f：limit/cursor 透传（旧实现固定 limit=50 无游标——前端只能拿首批）。
     const kind = url.searchParams.get('kind');
-    const fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives?${kind ? `kind=${encodeURIComponent(kind)}&` : ''}conversation_id=${encodeURIComponent(conversationId)}&limit=50` });
+    const limit = url.searchParams.get('limit');
+    const cursor = url.searchParams.get('cursor');
+    const fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives?${kind ? `kind=${encodeURIComponent(kind)}&` : ''}conversation_id=${encodeURIComponent(conversationId)}${limit ? `&limit=${encodeURIComponent(limit)}` : '&limit=50'}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
     return json(res, fwd.status, fwd.body);
   }
   const detail = /^GET \/api\/v1\/archives\/([^/]+)$/.exec(route);

@@ -431,7 +431,7 @@ export class MemoryToolsService {
       // G1-F02（裁定 2026-11-03）：来源资格排除 start/refine 共用一份——
       // refine 缺席时 M 对新 query_plan 整体归一化替换、缺字段按 []，
       // 旧排除静默清空，续查会把当前请求/回声再当历史证据
-      const recallExcluded = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, ctx.roomId, 64), 64);
+      const recallExcluded = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, ctx.roomId, 64));
       if (refineSession && refineRef) {
         // 否定续查（2026-10-24 她裁·reject 接入）：先在会话内结构性排除指定候选
         //（M 侧 session_local 标记，后续检索确定性排除），再按新条件 refine。

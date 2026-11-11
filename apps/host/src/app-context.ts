@@ -82,6 +82,8 @@ export class Host {
   private mediaBackfillTicking = false;
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
+  /** RR4-W2a：集合类索引来源（相册+作品）的游标拉取器——content 未装配=null（仅房间轮转）。 */
+  private mediaSourceFetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null = null;
   /** 相册重构 P2：M 落正待同步批次的后台一跳（单飞门；无模型执行） */
   private mediaSyncTimer: ReturnType<typeof setInterval> | null = null;
   private objectMetaBackfillTimer: ReturnType<typeof setInterval> | null = null;
@@ -184,8 +186,8 @@ export class Host {
       templateRevision: SOL_DECISION_SCHEMA_VERSION,
     });
     // R6 精确封存：quarrel sm 集随 prepare 下推——archives 服务在本函数后段构造，
-    // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable）。
-    let quarrelSourceRefsFn: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean }>) | null = null;
+    // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable+complete）。
+    let quarrelSourceRefsFn: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null;
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
@@ -207,7 +209,7 @@ export class Host {
       },
       logger,
       events,
-      (conversationId) => quarrelSourceRefsFn?.(conversationId) ?? Promise.resolve({ refs: new Set<string>(), reachable: true }),
+      (conversationId) => quarrelSourceRefsFn?.(conversationId) ?? Promise.resolve({ refs: new Set<string>(), reachable: true, complete: true }),
     );
     // 保存的模板/模型/开关覆盖与配置文件合并，仍由同一服务消费。
     surfacing.restoreSavedSettings();
@@ -302,6 +304,35 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     // EXEC_V1 WP5：content 薄代理（content.enabled=true 且凭据文件存在才装配）
     const contentClient = contentClientFor(paths.stateRoot, opts.config.content.port, opts.config.content.enabled);
+    // RR4-W2a：索引覆盖来源接相册+作品（仅收藏/仅入表情/仅存作品、未发进聊天的图同链
+    // 补齐）。拉取器游标续进由 backfill 持有；本处只提供分页读取。content 未装配=null。
+    let mediaSourceFetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null = null;
+    if (contentClient) {
+      const { contentForward } = await import('./integrations/content/client.ts');
+      mediaSourceFetch = {
+        sources: ['album:chat_screenshots', 'album:important_photos', 'album:stickers', 'creations'],
+        fetchPage: async (source: string, cursor: string | null): Promise<import('./media/index/backfill.ts').MediaSourcePage | null> => {
+          try {
+            if (source === 'creations') {
+              const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+              if (res.status !== 200) return null;
+              const b = res.body as { items?: Array<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>; next_cursor?: string | null };
+              const assets: string[] = [];
+              for (const it of b.items ?? []) {
+                if (it.work_kind === 'image' && typeof it.work_asset_id === 'string') assets.push(it.work_asset_id);
+                if (typeof it.icon_asset_id === 'string' && it.icon_asset_id !== it.work_asset_id) assets.push(it.icon_asset_id);
+              }
+              return { assets, next: b.next_cursor ?? null };
+            }
+            const kind = source.slice('album:'.length);
+            const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/albums/${kind}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+            if (res.status !== 200) return null;
+            const b = res.body as { items?: Array<{ asset_id?: string }>; next_cursor?: string | null };
+            return { assets: (b.items ?? []).map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'), next: b.next_cursor ?? null };
+          } catch { return null; }
+        },
+      };
+    }
     // P1（F06/F07 20261106）：内容写协调器——先解析原操作、HTTP 前持久意图+pin、
     // 成功后按权威快照确认映射、未知结果由恢复消费者按原身份收口。同一实例装给
     // 浏览器代理、模型写工具与 Host 启动恢复。
@@ -493,7 +524,13 @@ export class Host {
     });
 
     const host = new Host(opts.config, opts, server, deps, archiveSync);
+    host.wireMediaSourceFetch(mediaSourceFetch); // RR4-W2a：集合类索引来源（构造后接线，避免经路由 deps 传递）
     return host;
+  }
+
+  /** RR4-W2a：create() 装配期注入相册/作品来源拉取器（content 未装配=null=仅房间轮转）。 */
+  wireMediaSourceFetch(fetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null): void {
+    this.mediaSourceFetch = fetch;
   }
 
   async start(): Promise<void> {
@@ -559,7 +596,7 @@ export class Host {
     if (!mediaIndex) return;
     this.mediaBackfillTicking = true;
     this.mediaBackfillAbort = new AbortController();
-    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal); }
+    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal, this.mediaSourceFetch?.sources ?? [], this.mediaSourceFetch?.fetchPage); }
     finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
   }
 

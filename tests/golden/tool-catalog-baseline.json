@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "c0ec1cd6cb7a57375d6b668dc09631ed7bce02cc",
+  "baselineCommit": "77ccfeb3ce1cf8fb6cc7ecc3b63c4d51c2e037cf",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -88,7 +88,7 @@
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
-    "media_search": "td_d5bad05cd27ae399af559041",
+    "media_search": "td_f05de9feeb73a5f5ff262470",
     "oido_get": "td_23e1d4816888a554a3745bf5",
     "transcript_read": "td_f732c725968a0a8aa604f9a8",
     "oido_capabilities": "td_556434ab24001d6f65381d0b",
@@ -117,7 +117,7 @@
     "media_view": "td_f72b71bbef701e3714320c82",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "ed83aaacce22b3f9f49bfaaada29bc1277c7edee914a80cd87e1adaecadd63d9",
+  "toolsSha256": "17cafb05438dd49044f51f85e08511d29f20eba842684a99b14a8c58defad3fa",
   "tools": [
     {
       "type": "function",
@@ -1445,7 +1445,7 @@
       "type": "function",
       "function": {
         "name": "media_search",
-        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个，自拍/截图不会混入）。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
+        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从\"我们的相册\"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1465,9 +1465,11 @@
               "type": "string",
               "enum": [
                 "chat",
-                "stickers"
+                "stickers",
+                "photos",
+                "creations"
               ],
-              "description": "候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员（找表情专用）"
+              "description": "候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员；photos=仅\"我们的相册\"精选成员；creations=仅作品集图片作品"
             }
           },
           "required": [

@@ -998,12 +998,20 @@ export class ContentServer {
       const limit = this.limitOf(url);
       // ALB-05④（审计 2026-11-08）：按资产反查作品（icon 或 work 引用即可读）——
       // media_view 的作品读取授权分支用；不另建端点。
+      // RR4-W2f：列表补真游标（旧实现 next_cursor 恒 null——有 has_more 无续页，
+      // 前端/检索枚举只能拿首批）。asset_id 反查是单资产定位，不参与游标分页。
       const assetId = url.searchParams.get('asset_id');
-      const rows = (assetId
-        ? this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL AND (icon_asset_id = ? OR work_asset_id = ?) ORDER BY created_at DESC, id DESC').all(assetId, assetId)
-        : this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all()) as Array<Record<string, unknown>>;
+      if (assetId) {
+        const rows = this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL AND (icon_asset_id = ? OR work_asset_id = ?) ORDER BY created_at DESC, id DESC').all(assetId, assetId) as Array<Record<string, unknown>>;
+        return { status: 200, body: { items: rows.slice(0, limit).map((r) => this.creationDto(r)), next_cursor: null, has_more: rows.length > limit } };
+      }
+      let rows = this.db.prepare('SELECT * FROM creations WHERE deleted_at IS NULL ORDER BY created_at DESC, id DESC').all() as Array<Record<string, unknown>>;
+      const cursor = this.decodeCursor(url.searchParams.get('cursor'));
+      const scope = JSON.stringify(['creations']);
+      if (cursor && (cursor.scope !== scope || !cursor.after || !cursor.id)) throw new ContentError(400, 'CURSOR_INVALID', '游标与查询不匹配，请重新读取首页');
+      if (cursor) rows = rows.filter((r) => String(r.created_at) < cursor.after! || (String(r.created_at) === cursor.after && String(r.id) < cursor.id!));
       const page = rows.slice(0, limit);
-      return { status: 200, body: { items: page.map((r) => this.creationDto(r)), next_cursor: null, has_more: rows.length > limit } };
+      return { status: 200, body: { items: page.map((r) => this.creationDto(r)), next_cursor: rows.length > limit && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.created_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: rows.length > limit } };
     }
     m2 = /^GET \/api\/v1\/content\/creations\/([^/]+)$/.exec(route);
     if (m2) return { status: 200, body: this.creationDto(this.creationRow(m2[1]!)) };

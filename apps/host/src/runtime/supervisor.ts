@@ -2268,8 +2268,10 @@ export class TurnSupervisor {
       // 不在本路径；无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
       if (surfacingAugment && this.d.archives && this.d.contentClient) {
         const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id);
-        if (!blocked.reachable) {
-          d.logger.warn('surfacing_deferred_quarrel_unreachable', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId });
+        // RR4-W2d：服务可达（reachable）与范围读全（complete）分开——任一不成立都
+        // 暂缓本次自动注入（正常聊天继续），已生成未投递的候选不绕过完整性判断。
+        if (!blocked.reachable || !blocked.complete) {
+          d.logger.warn('surfacing_deferred_quarrel_unreachable', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, complete: blocked.complete });
           surfacingAugment = null;
         } else if (blocked.refs.size > 0) {
           const hit = surfacingAugment.items.some((it) => typeof it.source_ref === 'string' && blocked.refs.has(it.source_ref.replace(/^source_msg:/, '')));
