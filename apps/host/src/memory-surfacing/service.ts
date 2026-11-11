@@ -417,22 +417,34 @@ export class SurfacingService {
     // 冻结前生效，无关候选不再被整包扣留（03 §6"复用已有来源边界和回声识别机制"）。
     // RR4-W2e（林石见 2026-11-10 修正稿）：排除集**不再截断**——触发来源全修订
     // （旧 cap 64）与 quarrel 全集（旧 cap 192）完整并入同一次 prepare（M 合同与
-    // 规范化已同步放开；分块在 M 查询层完成）。完整集合超量不再是"常态暂停注入"
-    // 的理由；content 不可达/范围未读全时不带 quarrel 集（同收据缺席口径）——
-    // 终投递侧降级闸（supervisor，complete 感知）是权威。
+    // 规范化已同步放开；分块在 M 查询层完成）。完整集合超量不是暂停理由；清单
+    // 不可核对时按 RR4-F1 在本阶段暂缓（见下），不再"不带排除集继续检索"。
     const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId]);
     let quarrelPushed = 0;
     if (this.quarrelSourceRefs) {
       const quarrel = await this.quarrelSourceRefs(job.conversation_id);
-      if (quarrel.reachable && quarrel.complete) {
-        for (const sm of quarrel.refs) if (!excluded_source_ids.includes(sm)) excluded_source_ids.push(sm);
-        quarrelPushed = quarrel.refs.size;
-        if (quarrelPushed > 0) this.log?.info?.('surface_quarrel_boundary_pushed', { job: job.id, quarrel_refs: quarrelPushed });
-      } else {
-        this.log?.warn?.('surface_quarrel_boundary_unreachable', { job: job.id, complete: quarrel.complete });
+      if (!(quarrel.reachable && quarrel.complete)) {
+        // RR4-F1（复审 2026-11-11）：封存清单当次无法完整核对——**暂缓本次自动注入**
+        // （沿用既有 blocked 状态路径，与 Sol 技术失败同款收口），不生成一包缺少完整
+        // 排除依据的候选再指望终检补救。终检只比返回项的 source_ref：来自封存片段的
+        // 派生桶（event，来源在 M 的 memory_source_bindings）不带该字段，prepare 不带
+        // 排除集时会漏过终检进入请求（复审独立复现；清单在两次检查之间恢复的时序同样
+        // 被本闸覆盖）。正常聊天继续；后续消息的新作业照常尝试（本作业按 blocked 终态）。
+        this.repo.transition(job.id, ['preparing'], 'blocked', {
+          reason_code: quarrel.reachable ? 'QUARREL_SCOPE_INCOMPLETE' : 'QUARREL_SCOPE_UNREACHABLE',
+        });
+        this.log?.warn?.('surface_deferred_quarrel_scope', { job: job.id, reachable: quarrel.reachable, complete: quarrel.complete });
+        return;
       }
+      for (const sm of quarrel.refs) if (!excluded_source_ids.includes(sm)) excluded_source_ids.push(sm);
+      quarrelPushed = quarrel.refs.size;
+      if (quarrelPushed > 0) this.log?.info?.('surface_quarrel_boundary_pushed', { job: job.id, quarrel_refs: quarrelPushed });
     }
-    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id));
+    // RR4-F2（复审 2026-11-11）：in_context=**去重提示**（非正确性约束）——按 M 合同
+    // maxItems=128 有界；与 excluded（封存排除=正确性，不截断）分开处理。多修订会使
+    // 128 条消息产生 >128 个来源（128 消息+1 编辑=129 收据曾致整请求被入口校验拒绝）；
+    // 超界截断只降低去重精度（可能重复注入已携带原文），不产生正确性错误。
+    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id)).slice(0, 128);
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
       conversation_scope: job.conversation_id,

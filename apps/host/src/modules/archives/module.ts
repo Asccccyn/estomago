@@ -62,10 +62,11 @@ const ARCHIVESSEARCH_DEFINITION: import('../../capabilities/contracts.ts').HostT
   },
 };
 
-async function runArchivesSearch(deps: ArchivesModuleDeps, input: { query: string; kind?: 'quarrel' | 'sweet' }, ctx: { roomId: string }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
+async function runArchivesSearch(deps: ArchivesModuleDeps, input: { query: string; kind?: 'quarrel' | 'sweet' }, ctx: { roomId: string; signal?: AbortSignal }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
   if (!deps.mariposa) return { ok: false, output: { error_code: 'ARCHIVE_SEARCH_UNAVAILABLE', detail: 'M 检索客户端未装配' } };
   if (typeof input.query !== 'string' || !input.query.trim()) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'query 必填' } };
-  const r = await deps.archives.searchArchives({ conversationId: ctx.roomId, query: input.query, kind: input.kind, mariposa: deps.mariposa as never });
+  // RR4-F4：调用方取消贯穿 content 分页与 M 检索（每页/每批发起前检查）
+  const r = await deps.archives.searchArchives({ conversationId: ctx.roomId, query: input.query, kind: input.kind, signal: ctx.signal, mariposa: deps.mariposa as never });
   if (r.state === 'unavailable') return { ok: false, output: { error_code: 'ARCHIVE_SEARCH_UNAVAILABLE', detail: r.detail } };
   if (r.state === 'no_match') return { ok: true, output: { state: 'no_match' } };
   return { ok: true, output: { state: 'matches', items: r.items.map((i) => ({ archive_id: i.archive_id, kind: i.kind, note: i.note, snippet: i.snippet })) } };

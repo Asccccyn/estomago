@@ -2,7 +2,7 @@
 // 原 HostToolExecutor 方法逐字迁移：复用现有 assets/index/embedding worker 接口；
 // 不绕过 URL 安全或收费上界；worker 故障=能力如实不可用，不拖聊天。
 import { MediaError } from '../../media/assets.ts';
-import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
+import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
 import { OidoSourceRepository } from '../oido/source-repository.ts';
 import type { Db } from '../../db/connection.ts';
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
@@ -88,46 +88,31 @@ export class MediaToolsService {
     let allowSet: Set<string> | undefined;
     if (args.scope !== undefined && args.scope !== 'chat') {
       if (!this.contentClient) return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合未接入（content 未配置）——本次不放开为全域搜索` } };
-      const collectAlbum = async (kind: string): Promise<string[] | null> => {
-        const collected: string[] = [];
-        let cursor: string | null = null;
-        const seenCursors = new Set<string>();
-        while (cursor === null || !seenCursors.has(cursor)) { // 游标停滞=按分页失败处理，不无限循环
-          if (cursor !== null) seenCursors.add(cursor);
-          const res = await contentForward(this.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/albums/${kind}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-          if (res.status !== 200) return null;
-          const body = res.body as { items?: Array<{ asset_id?: string }>; next_cursor?: string | null };
-          for (const it of body.items ?? []) if (typeof it.asset_id === 'string') collected.push(it.asset_id);
-          cursor = body.next_cursor ?? null;
-          if (cursor === null) return collected;
-        }
-        return null; // 游标回环：分页失败
-      };
-      const collectCreations = async (): Promise<string[] | null> => {
-        const collected: string[] = [];
-        let cursor: string | null = null;
-        const seenCursors = new Set<string>();
-        while (cursor === null || !seenCursors.has(cursor)) {
-          if (cursor !== null) seenCursors.add(cursor);
-          const res = await contentForward(this.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-          if (res.status !== 200) return null;
-          const body = res.body as { items?: Array<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>; next_cursor?: string | null };
-          for (const it of body.items ?? []) {
-            if (it.work_kind === 'image' && typeof it.work_asset_id === 'string') collected.push(it.work_asset_id);
-            if (typeof it.icon_asset_id === 'string' && it.icon_asset_id !== it.work_asset_id) collected.push(it.icon_asset_id);
-          }
-          cursor = body.next_cursor ?? null;
-          if (cursor === null) return collected;
-        }
-        return null;
-      };
-      try {
-        const collected = args.scope === 'creations' ? await collectCreations() : await collectAlbum(SCOPE_KINDS[args.scope as keyof typeof SCOPE_KINDS]);
-        if (collected === null) return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合分页读取失败——不放开为全域搜索` } };
-        allowSet = new Set(collected);
-      } catch {
-        return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合暂不可达——不放开为全域搜索` } };
+      // RR4-F4：集合分页改用共享读取器 readAllContentPages——取消（ctx.signal）贯穿
+      // 每页请求（第一页期间取消即停，不再读后页）；游标停滞/非 200=失败不装全量。
+      const scopeFail = (reason: 'cancelled' | 'failed') => ({ ok: false as const, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: reason === 'cancelled' ? `已取消${scopeLabel}集合读取` : `${scopeLabel}集合分页读取失败——不放开为全域搜索` } });
+      let collected: string[];
+      if (args.scope === 'creations') {
+        const r = await readAllContentPages<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>(this.contentClient, {
+          buildPath: (cursor) => `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+          signal: ctx.signal,
+        });
+        if (!r.ok) return scopeFail(r.reason);
+        collected = r.items.flatMap((it) => {
+          const out: string[] = [];
+          if (it.work_kind === 'image' && typeof it.work_asset_id === 'string') out.push(it.work_asset_id);
+          if (typeof it.icon_asset_id === 'string' && it.icon_asset_id !== it.work_asset_id) out.push(it.icon_asset_id);
+          return out;
+        });
+      } else {
+        const r = await readAllContentPages<{ asset_id?: string }>(this.contentClient, {
+          buildPath: (cursor) => `/api/v1/content/albums/${SCOPE_KINDS[args.scope as keyof typeof SCOPE_KINDS]}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+          signal: ctx.signal,
+        });
+        if (!r.ok) return scopeFail(r.reason);
+        collected = r.items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string');
       }
+      allowSet = new Set(collected);
     }
     // Propagate host cancellation. A new short deadline would discard slow image results
     // while the non-preemptible worker still encodes them; background indexing remains open.

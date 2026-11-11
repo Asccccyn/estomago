@@ -253,7 +253,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                         {openArchive === a.id ? '收起原文' : '展开原文'}
                       </button>
                     </div>
-                    <button aria-label="删除存档" disabled={busy} onClick={() => void removeArchive(a)} className="rounded-xl p-1.5 text-[#a3a099] hover:bg-black/5 hover:text-[#b3554d]"><X size={15} /></button>
+                    <button aria-label="撤销存档" disabled={busy} onClick={() => void removeArchive(a)} className="rounded-xl p-1.5 text-[#a3a099] hover:bg-black/5 hover:text-[#b3554d]"><X size={15} /></button>
                   </div>
                   <p className="mt-1.5 text-[13px] text-[#3d3929]">{a.note ?? '（无说明）'}</p>
                   <p className="mt-0.5 text-[11px] text-[#a3a099]">{a.messages.length} 条消息 · {a.created_by === 'qiaosheng' ? '乔乔' : 'char'} · {new Date(a.created_at).toLocaleString()}</p>

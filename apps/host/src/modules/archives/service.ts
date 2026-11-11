@@ -9,7 +9,7 @@
 // 建档经 ContentOperationCoordinator（接受→提交→墓碑快照确认→同事务登记 M 投影
 // outbox），观察推送由既有周期消费者收口——不再 void 尽力而为。
 import type { Db } from '../../db/connection.ts';
-import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
+import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
 
 export type ArchiveKind = 'quarrel' | 'sweet';
 export type ArchiveRef = { message_id: string; revision: number; sequence: number };
@@ -136,26 +136,19 @@ export class ArchiveService {
     return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified: o.actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
   }
 
-  /** content 存档列表分页读到底——next_cursor=null 是唯一结束条件（批次大小只控制
-   *  每次请求的工作量，不限制业务范围；旧实现 10 页×100=1000 条封顶后静默当全量）。
-   *  游标停滞/非 200/异常=分页失败，调用方按 unavailable/reachable:false 处理——
-   *  不装成"已读全量"。 */
-  private async readAllArchivePages(o: { kind?: 'quarrel' | 'sweet'; conversationId: string }): Promise<Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> | null> {
-    const entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> = [];
-    let cursor: string | null = null;
-    const seenCursors = new Set<string>();
-    while (cursor === null || !seenCursors.has(cursor)) {
-      if (cursor !== null) seenCursors.add(cursor);
-      const res = await contentForward(this.deps.contentClient!, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-      if (res.status !== 200) return null;
-      const body = res.body as { items?: Array<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string; revision?: number }> }>; next_cursor?: string | null };
-      for (const e of body.items ?? []) {
-        entries.push({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m?.message_id === 'string' && typeof m?.revision === 'number') });
-      }
-      cursor = body.next_cursor ?? null;
-      if (cursor === null) return entries;
-    }
-    return null; // 游标回环：分页失败
+  /** content 存档列表分页读到底——RR4-F4：改用共享读取器 readAllContentPages（取消/
+   *  游标停滞/非 200 语义单点定义）；本方法只做 DTO 收窄。signal 由调用方传入（工具
+   *  上下文/准备流程的取消会贯穿每页与后续 M 检索）。 */
+  private async readAllArchivePages(o: { kind?: 'quarrel' | 'sweet'; conversationId: string; signal?: AbortSignal }): Promise<{ ok: true; entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> } | { ok: false; reason: 'cancelled' | 'failed'; status?: number }> {
+    const r = await readAllContentPages<{ id: string; kind: string; note: string | null; messages?: Array<{ message_id?: string; revision?: number }> }>(this.deps.contentClient!, {
+      buildPath: (cursor) => `/api/v1/content/archives?${o.kind ? `kind=${o.kind}&` : ''}conversation_id=${encodeURIComponent(o.conversationId)}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+      signal: o.signal,
+    });
+    if (!r.ok) return r;
+    return {
+      ok: true,
+      entries: r.items.map((e) => ({ id: e.id, kind: e.kind, note: e.note, messages: (e.messages ?? []).filter((m): m is { message_id: string; revision: number } => typeof m?.message_id === 'string' && typeof m?.revision === 'number') })),
+    };
   }
 
   /** ALB-13/R35：存档文本检索——content 存档消息集 → M source.search(include_ids)
@@ -167,17 +160,12 @@ export class ArchiveService {
    *  消息后续修订不进检索面，新词命中 v2 不会冒充 v1 存档；②content 存档分页读全量；
    *  ③M include_ids 上限 500——分批检索后合并命中。
    *  RR4-W2c（2026-11-10 修正稿）：分页到底（见 readAllArchivePages），无总量上限。 */
-  async searchArchives(o: { conversationId: string; query: string; kind?: 'quarrel' | 'sweet'; mariposa: { sourceSearch(a: { query: string; include_ids?: string[]; limit?: number }, s?: AbortSignal): Promise<{ ok: boolean; result?: Record<string, unknown>; code?: string; httpStatus?: number }> } | null }): Promise<{ state: 'matches'; items: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> } | { state: 'no_match' } | { state: 'unavailable'; detail: string }> {
+  async searchArchives(o: { conversationId: string; query: string; kind?: 'quarrel' | 'sweet'; signal?: AbortSignal; mariposa: { sourceSearch(a: { query: string; include_ids?: string[]; limit?: number }, s?: AbortSignal): Promise<{ ok: boolean; result?: Record<string, unknown>; code?: string; httpStatus?: number }> } | null }): Promise<{ state: 'matches'; items: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> } | { state: 'no_match' } | { state: 'unavailable'; detail: string }> {
     if (!this.deps.contentClient) return { state: 'unavailable', detail: 'content 未配置（存档业务正本缺席）' };
     if (!o.mariposa) return { state: 'unavailable', detail: 'M 客户端未装配' };
-    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }>;
-    try {
-      const all = await this.readAllArchivePages({ kind: o.kind, conversationId: o.conversationId });
-      if (all === null) return { state: 'unavailable', detail: '存档列表分页读取失败' };
-      entries = all;
-    } catch {
-      return { state: 'unavailable', detail: '存档列表暂不可达' };
-    }
+    const all = await this.readAllArchivePages({ kind: o.kind, conversationId: o.conversationId, signal: o.signal });
+    if (!all.ok) return { state: 'unavailable', detail: all.reason === 'cancelled' ? '已取消' : `存档列表分页读取失败${all.status !== undefined ? `（${all.status}）` : ''}` };
+    const entries = all.entries;
     const pairToSource = this.syncedSourceIdsForRefs(entries.flatMap((e) => e.messages));
     const smToEntry = new Map<string, { archive_id: string; kind: string; note: string | null }>();
     for (const e of entries) {
@@ -191,12 +179,13 @@ export class ArchiveService {
     let hits: Array<{ message_id?: string; excerpt?: string; text?: string }> = [];
     try {
       for (let i = 0; i < includeIds.length; i += 500) { // M include_ids 合同上限 500
-        const r = await o.mariposa.sourceSearch({ query: o.query, include_ids: includeIds.slice(i, i + 500), limit: 20 });
+        if (o.signal?.aborted) return { state: 'unavailable', detail: '已取消' };
+        const r = await o.mariposa.sourceSearch({ query: o.query, include_ids: includeIds.slice(i, i + 500), limit: 20 }, o.signal);
         if (!r.ok) return { state: 'unavailable', detail: `M 检索被拒（${r.code ?? r.httpStatus ?? 'unknown'}）` };
         hits = hits.concat(((r.result as { hits?: unknown })?.hits ?? []) as Array<{ message_id?: string; excerpt?: string; text?: string }>);
       }
     } catch {
-      return { state: 'unavailable', detail: 'M 检索暂不可达' };
+      return { state: 'unavailable', detail: o.signal?.aborted ? '已取消' : 'M 检索暂不可达' };
     }
     const out: Array<{ archive_id: string; kind: string; note: string | null; snippet: string; message_id: string }> = [];
     const seenArchive = new Set<string>();
@@ -224,16 +213,11 @@ export class ArchiveService {
    *  RR4-W2d（2026-11-10 修正稿）：分页读到底（无总量上限）；complete=服务可达**且**
    *  范围已读全——与 reachable 分开，两个消费者（prepare 下推 + supervisor 终投递
    *  复核）都按 complete:false 暂缓受影响的自动注入。 */
-  async quarrelBlockedSourceRefs(conversationId: string): Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }> {
+  async quarrelBlockedSourceRefs(conversationId: string, signal?: AbortSignal): Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }> {
     if (!this.deps.contentClient) return { refs: new Set(), reachable: false, complete: false };
-    let entries: Array<{ id: string; kind: string; note: string | null; messages: Array<{ message_id: string; revision: number }> }> | null;
-    try {
-      entries = await this.readAllArchivePages({ kind: 'quarrel', conversationId });
-    } catch {
-      entries = null;
-    }
-    if (entries === null) return { refs: new Set(), reachable: false, complete: false };
-    const refs = entries.flatMap((e) => e.messages);
+    const all = await this.readAllArchivePages({ kind: 'quarrel', conversationId, signal }).catch(() => null);
+    if (all === null || !all.ok) return { refs: new Set(), reachable: false, complete: false };
+    const refs = all.entries.flatMap((e) => e.messages);
     if (refs.length === 0) return { refs: new Set(), reachable: true, complete: true };
     const pairToSource = this.syncedSourceIdsForRefs(refs);
     return { refs: new Set(pairToSource.values()), reachable: true, complete: true };

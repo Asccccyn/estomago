@@ -23,7 +23,8 @@ export function contentClientFor(stateRoot: string, port: number, enabled: boole
   return { baseUrl: `http://127.0.0.1:${port}`, token };
 }
 
-/** 转发请求到 content——est 唯一通道。actor 从可信上下文派生，不从请求体。 */
+/** 转发请求到 content——est 唯一通道。actor 从可信上下文派生，不从请求体。
+ *  RR4-F4：可选 signal 与每次请求超时合并（取消立即生效，不必等当页超时）。 */
 export async function contentForward(client: ContentClient, opts: {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string; // /api/v1/content/...
@@ -31,6 +32,7 @@ export async function contentForward(client: ContentClient, opts: {
   body?: unknown;
   headers?: Record<string, string>; // Idempotency-Key / If-Match 透传
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): Promise<{ status: number; body: unknown }> {
   const res = await fetch(`${client.baseUrl}${opts.path}`, {
     method: opts.method,
@@ -41,10 +43,44 @@ export async function contentForward(client: ContentClient, opts: {
       ...opts.headers,
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 5000),
+    signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(opts.timeoutMs ?? 5000), opts.signal]) : AbortSignal.timeout(opts.timeoutMs ?? 5000),
   });
   const body = await res.json().catch(() => ({}));
   return { status: res.status, body };
+}
+
+/** RR4-F4（复审 2026-11-11）：content 列表**全量分页读取器**——archives/media 的
+ *  集合读取共用同一实现，取消/游标停滞/非 200 语义只在此定义一次：
+ *  - 结束条件唯一=next_cursor=null（批次大小只控制单次请求工作量，不限制业务范围）；
+ *  - 每页发起前检查 signal（取消不再继续读后页），HTTP 与调用方取消合并；
+ *  - 游标回环/非 200/网络异常=分页失败（'failed'，调用方按各自错误语义映射），不装全量；
+ *  - 调用方传入 buildPath(cursor) 定位列表端点（items/next_cursor 形状各列表一致）。 */
+export async function readAllContentPages<T>(client: ContentClient, o: {
+  buildPath: (cursor: string | null) => string;
+  actor?: 'qiaosheng' | 'jiaming';
+  signal?: AbortSignal;
+}): Promise<{ ok: true; items: T[] } | { ok: false; reason: 'cancelled' | 'failed'; status?: number }> {
+  const items: T[] = [];
+  let cursor: string | null = null;
+  const seen = new Set<string>();
+  for (;;) {
+    if (o.signal?.aborted) return { ok: false, reason: 'cancelled' };
+    let res: { status: number; body: unknown };
+    try {
+      res = await contentForward(client, { method: 'GET', path: o.buildPath(cursor), actor: o.actor ?? 'jiaming', signal: o.signal });
+    } catch {
+      if (o.signal?.aborted) return { ok: false, reason: 'cancelled' };
+      return { ok: false, reason: 'failed' };
+    }
+    if (o.signal?.aborted) return { ok: false, reason: 'cancelled' };
+    if (res.status !== 200) return { ok: false, reason: 'failed', status: res.status };
+    const body = res.body as { items?: T[]; next_cursor?: string | null };
+    if (Array.isArray(body.items)) items.push(...body.items);
+    cursor = body.next_cursor ?? null;
+    if (cursor === null) return { ok: true, items };
+    if (seen.has(cursor)) return { ok: false, reason: 'failed' }; // 游标回环：分页失败
+    seen.add(cursor);
+  }
 }
 
 /** P1：content 当前权威引用快照——宿主确认映射与存量对账的唯一当前状态来源。
