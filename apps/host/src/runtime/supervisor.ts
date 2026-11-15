@@ -284,7 +284,7 @@ export class TurnSupervisor {
     return r.stopped ? { stoppedTurnId: row.id } : null;
   }
 
-  stop(turnId: string): { stopped: boolean; generation: number | null } {
+  stop(turnId: string): { stopped: boolean; generation: number | null; reason?: 'GENERATION_IN_FLIGHT' } {
     const run = this.active.get(turnId);
     if (!run) {
       // 排队中（无活动代）。F01（四仓审计 20261104，P1）：停止确认**直接持久落终态**
@@ -307,6 +307,12 @@ export class TurnSupervisor {
       }
       return { stopped: false, generation: null };
     }
+    // 她 2026-11-15 裁定：模型请求已派发（回复开始生成）后不再可打断——本轮跑完，
+    // 保住 SDK 会话锚与缓存；打断只在派发前有效（无任何产出，锚由 runner 保留）。
+    const inFlight = this.d.db.prepare(
+      "SELECT 1 FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE a.turn_id = ? AND a.state = 'running' AND pr.dispatch_started_at IS NOT NULL LIMIT 1",
+    ).get(turnId);
+    if (inFlight) return { stopped: false, generation: run.generation, reason: 'GENERATION_IN_FLIGHT' };
     this.d.surfacing?.cancelForTurn?.(turnId);
     this.abandonObservationsForTurn(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃

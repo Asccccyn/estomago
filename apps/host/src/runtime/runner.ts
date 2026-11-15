@@ -95,7 +95,7 @@ export type RunnerRunResult = {
     anchorSessionId: string | null;
     anchorMessageCount: number | null;
     sentMessageCount: number;
-    anchorOutcome?: 'saved' | 'deleted' | null;
+    anchorOutcome?: 'saved' | 'kept' | 'deleted' | null;
   };
   /** B3：错误事件的脱敏安全字段（HTTP status/供应商请求 ID/SDK 错误类型；不含正文） */
   errorEvidence?: Record<string, unknown> | null;

@@ -151,6 +151,9 @@ const stopTurn = /^POST \/api\/v1\/turns\/([^/]+)\/stop$/.exec(route);
 if (stopTurn) {
   const turnId = decodeURIComponent(stopTurn[1]!);
   const result = d.supervisor.stop(turnId);
+  // 她 2026-11-15 裁定：回复已开始生成（请求已派发）→ 本轮跑完，不受理停止
+  if (result.reason === 'GENERATION_IN_FLIGHT')
+    return json(res, 409, { stopped: false, generation: result.generation, error: { code: 'generation_in_flight', message: '回复正在生成，本轮将跑完（开始生成后不再打断）' } });
   return json(res, result.stopped ? 200 : 409, { ...result, note: result.stopped ? '已 fence 当前代并请求中断' : '无活动代（可能已结束）' });
 }
 

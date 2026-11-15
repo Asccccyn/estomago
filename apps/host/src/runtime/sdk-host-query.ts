@@ -329,11 +329,18 @@ export async function runSdkHostQuery(
     }
     if (outcome === 'completed' && normalizer.sessionId) {
       // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
-      // 记录属于该会话）；失败/未完成不动锚，下一次请求按旧锚重放未确认部分。
+      // 记录属于该会话）。
       sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
         messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
       resumeDiagnosis.anchorOutcome = 'saved';
+    } else if (outcome === 'interrupted' && !activityStarted) {
+      // 她 2026-11-15 裁定：没生成任何回复的打断不掉缓存——本轮无任何模型产出，
+      // SDK 会话未被触碰，保留旧锚（不前进），下一次请求照常按旧锚 resume 命中。
+      // 派发后的用户停止已被 supervisor.stop 拒绝，能到这里的只有派发前打断。
+      resumeDiagnosis.anchorOutcome = 'kept';
     } else {
+      // 已开始产出后的中断/失败：会话内可能残留本轮半截内容，保守删锚，下一次
+      // 请求全量重放重建（掉一次缓存换轨迹正本与会话一致）。
       sessions.delete(host.windowId);
       resumeDiagnosis.anchorOutcome = 'deleted';
     }

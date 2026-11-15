@@ -220,17 +220,37 @@ test('幽灵房间 POST → 404 conversation_not_found（不静默建房）', as
   assert.equal(body.error.code, 'conversation_not_found');
 });
 
-test('停止：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
+// 她 2026-11-15 裁定：停止只在模型请求派发前有效（生成中跑完不打断）。
+// 闸控 runner 挡在派发前 → 停止 200，回合 interrupted（未生成任何内容，SDK 锚保留）。
+test('停止（派发前）：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
+  gateOpen = false;
+  let turnId = '';
+  try {
+    const submitted = await submit('停止场景', 'int-stop-1');
+    turnId = submitted.turn_id;
+    await pollUntil(async () => host.db.prepare("SELECT 1 FROM attempts WHERE turn_id = ? AND state = 'running'").get(turnId) != null, 8000);
+    const stop = await api('POST', `/api/v1/turns/${turnId}/stop`, {});
+    assert.equal(stop.status, 200);
+  } finally {
+    gateOpen = true;
+    for (const w of gateWaiters.splice(0)) w();
+  }
+  await pollUntil(async () => (await turnState(turnId)).state === 'interrupted', 8000);
+});
+
+// 她 2026-11-15 裁定：模型请求已派发（回复开始生成）→ 停止不再受理（409），本轮跑完。
+// slow 场景流式输出中即已派发（onBeforeDispatch 落 dispatch_started_at）。
+test('停止闸门：已派发生成中 → 409 generation_in_flight，回合跑完不中断', async () => {
   process.env.ESTOMAGO_MOCK_SCENARIO = 'slow';
-  const { turn_id } = await submit('停止场景', 'int-stop-1');
-  await new Promise((r) => setTimeout(r, 80));
+  const { turn_id } = await submit('闸门场景', 'int-stop-gate-1');
+  await pollUntil(async () => host.db.prepare('SELECT 1 FROM provider_requests WHERE turn_id = ? AND dispatch_started_at IS NOT NULL').get(turn_id) != null, 8000);
   const stop = await api('POST', `/api/v1/turns/${turn_id}/stop`, {});
-  assert.equal(stop.status, 200);
-  await pollUntil(async () => (await turnState(turn_id)).state === 'interrupted', 8000);
-  const reasoning = (await (await api('GET', `/api/v1/turns/${turn_id}/reasoning`)).json()) as {
-    blocks: Array<{ state: string; visibility: string }>;
-  };
-  assert.ok(reasoning.blocks.some((b) => b.state === 'interrupted'), '已展示片段保留并标 interrupted');
+  assert.equal(stop.status, 409);
+  const body = (await stop.json()) as { stopped: boolean; error: { code: string } };
+  assert.equal(body.stopped, false);
+  assert.equal(body.error.code, 'generation_in_flight');
+  delete process.env.ESTOMAGO_MOCK_SCENARIO;
+  await pollUntil(async () => (await turnState(turn_id)).state === 'completed', 8000);
 });
 
 test('鉴权：无 token 401；错 token 401；对 Origin 校验不误伤本地脚本', async () => {
