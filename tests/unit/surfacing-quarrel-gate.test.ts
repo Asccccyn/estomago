@@ -153,3 +153,140 @@ test('F4：集合检索第一页期间取消→不请求第二页、不进入编
     assert.match(String((r.output as { detail?: string }).detail), /取消/, '取消语义如实返回');
   } finally { proxy.close(); await content.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+// —— RR4 复审 2026-11-12 两处收口（A 正文传输失败 / B 自动浮现取消贯穿）的验收 ——
+
+import { ArchiveService } from '../../apps/host/src/modules/archives/service.ts';
+
+async function seedQuarrelArchives(content: ContentServer, conversationId: string, n: number, db: ReturnType<typeof makeDb>): Promise<void> {
+  const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
+  const direct = { baseUrl: `http://127.0.0.1:${content.port}`, token: content.token };
+  const t0 = new Date().toISOString();
+  for (let i = 1; i <= n; i++) {
+    const r = await contentForward(direct, { method: 'POST', actor: 'qiaosheng', path: '/api/v1/content/archives', body: { conversation_id: conversationId, kind: 'quarrel', messages: [{ message_id: `qam${i}`, revision: 1, sequence: i }] }, headers: { 'idempotency-key': `ab-qa-${i}` } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(`ssr-ab-${i}`, 'op-ab', `qam${i}`, 1, 'sc1', `sm_ab_${i}`, 'h', t0, t0);
+  }
+}
+
+/** 转发真实 content，但对第 pageIndexFor 故障页：回 200 头 + 一半正文后断开（复审 A 同款传输故障）。 */
+function truncatingProxy(content: ContentServer, breakOnPage: number): { url: string; listRequests: number } {
+  let listRequests = 0;
+  const server = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const isList = (req.url ?? '').startsWith('/api/v1/content/archives') && req.method === 'GET';
+      if (isList) listRequests += 1;
+      void fetch(`http://127.0.0.1:${content.port}${req.url}`, { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${content.port}` }, ...(req.method !== 'GET' ? { body: raw } : {}) }).then(async (up) => {
+        const text = await up.text();
+        if (isList && listRequests === breakOnPage) {
+          res.writeHead(up.status, { 'Content-Type': 'application/json' });
+          res.write(text.slice(0, Math.max(1, Math.floor(text.length / 2)))); // 200 头+一半正文
+          res.destroy(); // 传输中断开——客户端 res.json() 必须失败
+          return;
+        }
+        res.writeHead(up.status, { 'Content-Type': 'application/json' }); res.end(text);
+      }).catch(() => { res.statusCode = 500; res.end('{}'); });
+    });
+  });
+  return {
+    listen: () => new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve)),
+    url: () => `http://127.0.0.1:${(server.address() as { port: number }).port}`,
+    close: () => server.close(),
+  } as never;
+}
+
+test('A：200 头后正文截断=读取失败——封存 unreachable（非完整空集）；搜索 unavailable（非 no_match 且不调 M）；空列表/多页正例不受影响', async () => {
+  const port = await new Promise<number>((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); }); });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-abfix-'));
+  const content = new ContentServer({ stateRoot: path.join(root, 'content'), port, token: 'ab-token' });
+  await content.start();
+  const db = makeDb(path.join(root, 'data'));
+  await seedQuarrelArchives(content, 'c1', 150, db); // 150 份争吵存档 → 2 页
+  const proxy = truncatingProxy(content, 1);
+  await (proxy as unknown as { listen: () => Promise<void> }).listen();
+  let mSearchCalls = 0;
+  try {
+    const healthy = new ArchiveService({ db, contentClient: { baseUrl: `http://127.0.0.1:${content.port}`, token: 'ab-token' } as never });
+    // 正例 1：合法空列表（无存档会话）仍是 reachable+complete 的空集
+    const empty = await healthy.quarrelBlockedSourceRefs('c-none');
+    assert.equal(empty.reachable, true); assert.equal(empty.complete, true); assert.equal(empty.refs.size, 0);
+    // 正例 2：完整响应翻页到底（150 条 → 2 页全收）
+    const full = await healthy.quarrelBlockedSourceRefs('c1');
+    assert.equal(full.reachable, true); assert.equal(full.complete, true);
+    assert.equal(full.refs.size, 150, '两页去重后全集');
+    // 故障：第一页 200 头后正文截断
+    const viaProxy = new ArchiveService({ db, contentClient: { baseUrl: (proxy as unknown as { url: () => string }).url(), token: 'ab-token' } as never });
+    const broken = await viaProxy.quarrelBlockedSourceRefs('c1');
+    assert.equal(broken.reachable, false, '正文截断≠完整核对');
+    assert.equal(broken.complete, false, '不得冒充完整空排除集');
+    assert.equal(broken.refs.size, 0);
+    // 搜索自己的读取也被截断（独立代理，复现报告场景：搜索页正文丢失）
+    const proxy2 = truncatingProxy(content, 1);
+    await (proxy2 as unknown as { listen: () => Promise<void> }).listen();
+    const searchSvc = new ArchiveService({ db, contentClient: { baseUrl: (proxy2 as unknown as { url: () => string }).url(), token: 'ab-token' } as never });
+    const searched = await searchSvc.searchArchives({ conversationId: 'c1', query: '任何词', mariposa: { sourceSearch: async () => { mSearchCalls += 1; return { ok: true, result: { hits: [] } }; } } as never });
+    assert.equal(searched.state, 'unavailable', '传输失败→unavailable，不是 no_match');
+    assert.equal(mSearchCalls, 0, '未完成读取不发起 M 检索');
+    (proxy2 as unknown as { close: () => void }).close();
+  } finally {
+    (proxy as unknown as { close: () => void }).close();
+    await content.stop(); db.close(); fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('B：自动浮现真实链第一页期间取消→零后续页、零 M prepare、作业 cancelled；正例：多页读完+完整排除集下推', async () => {
+  const port = await new Promise<number>((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); }); });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-bfix-'));
+  const content = new ContentServer({ stateRoot: path.join(root, 'content'), port, token: 'b-token' });
+  await content.start();
+  const harness = makeService(tempRoot('sfb-'), [{ decision: 'recall' }, { decision: 'recall' }], null);
+  const { db, svc } = harness;
+  await seedQuarrelArchives(content, 'c1', 150, db);
+  // 挂起代理：第一页请求到达后先通知测试、等放行再回真实响应
+  let listRequests = 0;
+  let firstPageSeen: (() => void) | null = null;
+  const seenPromise = new Promise<void>((resolve) => { firstPageSeen = resolve; });
+  let release: (() => void) | null = null;
+  const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+  const proxy = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      const isList = (req.url ?? '').startsWith('/api/v1/content/archives') && req.method === 'GET';
+      if (isList) listRequests += 1;
+      void fetch(`http://127.0.0.1:${content.port}${req.url}`, { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${content.port}` }, ...(req.method !== 'GET' ? { body: raw } : {}) }).then(async (up) => {
+        const text = await up.text();
+        if (isList && listRequests === 1) { firstPageSeen!(); await releasePromise; }
+        res.writeHead(up.status, { 'Content-Type': 'application/json' }); res.end(text);
+      }).catch(() => { res.statusCode = 500; res.end('{}'); });
+    });
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const archives = new ArchiveService({ db, contentClient: { baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: 'b-token' } as never });
+  // 真实端口接线（同 Host 装配形态）：signal 传到封存分页
+  (svc as unknown as { quarrelSourceRefs: unknown }).quarrelSourceRefs = (cid: string, signal?: AbortSignal) => archives.quarrelBlockedSourceRefs(cid, signal);
+  try {
+    // —— 取消场景：第一页在途时取消回合 ——
+    const live = new MessageService(db, bindForTest({ surfacing: svc, activity: null }));
+    const trig = live.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得那次争吵吗', clientMessageId: 'b-trig', occurredAt: T0 });
+    const augPromise = svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: trig.turnId, attemptId: 'b1', message: { id: trig.message.id, revision: 1, sequence: trig.message.sequence, content: '还记得那次争吵吗', hash: 'h1' } });
+    await seenPromise; // 第一页请求已到达
+    svc.cancelForTurn(trig.turnId); // 公开取消入口（复审同款）
+    release!(); // 放行第一页真实响应
+    const aug = await augPromise;
+    assert.equal(aug, null, '取消后零注入');
+    assert.equal(listRequests, 1, 'B 核心：取消后不再请求第二页');
+    const callsArr = CALLS.get(svc)!;
+    assert.equal(callsArr.filter((c) => c.cap.endsWith('.prepare')).length, 0, 'B 核心：取消后不再发 M prepare');
+    const job = db.prepare('SELECT state, reason_code FROM surfacing_jobs WHERE source_message_id=?').get(trig.message.id) as { state: string; reason_code: string | null };
+    assert.ok(['cancelled', 'blocked', 'empty'].includes(job.state), `作业收口（实际 ${job.state}）`);
+    // —— 正例：不取消——多页读完、prepare 携带完整排除集（含第二页成员）——
+    const trig2 = live.submitUserMessageWithTurn({ conversationId: 'c1', content: '聊点别的花园', clientMessageId: 'b-trig2', occurredAt: T0 });
+    const aug2 = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: trig2.turnId, attemptId: 'b2', message: { id: trig2.message.id, revision: 1, sequence: trig2.message.sequence, content: '聊点别的花园', hash: 'h2' } });
+    assert.ok(aug2, '正常链路照常注入（取消修复不破坏正例）');
+    assert.equal(listRequests, 3, '正例两页读完（1+2）');
+    const prep = callsArr.find((c) => c.cap.endsWith('.prepare'))!.payload as { excluded_source_ids?: string[] };
+    assert.equal(prep.excluded_source_ids?.length, 150, '完整排除集（两页全集）下推');
+  } finally { proxy.close(); await svc.stop(); await content.stop(); await new Promise((r) => setImmediate(r)); db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

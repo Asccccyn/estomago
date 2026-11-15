@@ -187,7 +187,8 @@ export class Host {
     });
     // R6 精确封存：quarrel sm 集随 prepare 下推——archives 服务在本函数后段构造，
     // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable+complete）。
-    let quarrelSourceRefsFn: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null;
+    // RR4-B：signal 贯穿——作业取消/剩余期限经 SurfacingService 端口传到封存分页读取。
+    let quarrelSourceRefsFn: ((conversationId: string, signal?: AbortSignal) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null;
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
@@ -209,7 +210,7 @@ export class Host {
       },
       logger,
       events,
-      (conversationId) => quarrelSourceRefsFn?.(conversationId) ?? Promise.resolve({ refs: new Set<string>(), reachable: true, complete: true }),
+      (conversationId, signal) => quarrelSourceRefsFn?.(conversationId, signal) ?? Promise.resolve({ refs: new Set<string>(), reachable: true, complete: true }),
     );
     // 保存的模板/模型/开关覆盖与配置文件合并，仍由同一服务消费。
     surfacing.restoreSavedSettings();

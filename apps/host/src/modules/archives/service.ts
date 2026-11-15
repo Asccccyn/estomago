@@ -132,8 +132,14 @@ export class ArchiveService {
       const err = (res.body as { error?: { code?: string; message?: string } }).error;
       return { ok: false, code: err?.code?.toUpperCase() ?? `HTTP_${res.status}`, detail: err?.message ?? String(res.status) };
     }
-    const created = res.body as { id: string; kind: ArchiveKind; messages: unknown[] };
-    return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified: o.actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
+    const created = res.body as { id?: string; kind?: ArchiveKind; messages?: unknown[] };
+    // RR4-A：2xx 但正文传输失败（截断/坏 JSON→body 缺字段）不冒充建档成功——协调器
+    // 已按 unknown 收口，原键重试经 resolve replay 取回真实结果。
+    if (typeof created.id !== 'string' || !created.id || (created.kind !== 'quarrel' && created.kind !== 'sweet')) {
+      return { ok: false, code: 'CONTENT_UNPARSEABLE', detail: '存档服务响应不完整（正文传输失败）；可原键重试', retryable: true };
+    }
+    const messages = created.messages ?? [];
+    return { ok: true, archive: { id: created.id, kind: created.kind, count: messages.length }, notified: o.actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
   }
 
   /** content 存档列表分页读到底——RR4-F4：改用共享读取器 readAllContentPages（取消/

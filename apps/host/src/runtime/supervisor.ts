@@ -2267,7 +2267,8 @@ export class TurnSupervisor {
       // 本次自动注入（正常聊天继续），不空集放行冒充已核对。主动查看/手选/默认携带
       // 不在本路径；无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
       if (surfacingAugment && this.d.archives && this.d.contentClient) {
-        const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id);
+        // RR4-B：终投递复核同样受本回合取消约束（stop/route-signal abort 控制器）。
+        const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id, runToken.controller.signal);
         // RR4-W2d：服务可达（reachable）与范围读全（complete）分开——任一不成立都
         // 暂缓本次自动注入（正常聊天继续），已生成未投递的候选不绕过完整性判断。
         if (!blocked.reachable || !blocked.complete) {

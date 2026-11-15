@@ -84,7 +84,7 @@ export class SurfacingService {
   private cfg: SurfacingConfig;
   private log: import('../observability/logging.ts').Logger | null;
   private events: import('../events/service.ts').EventService | null;
-  private quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null;
+  private quarrelSourceRefs: ((conversationId: string, signal?: AbortSignal) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null;
   private eventQueue: Array<import('./contracts.ts').SurfaceJobEventPayload> = [];
   private eventFlushScheduled = false;
 
@@ -95,7 +95,7 @@ export class SurfacingService {
     cfg: SurfacingConfig,
     log: import('../observability/logging.ts').Logger | null,
     events: import('../events/service.ts').EventService | null = null,
-    quarrelSourceRefs: ((conversationId: string) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null,
+    quarrelSourceRefs: ((conversationId: string, signal?: AbortSignal) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null,
   ) {
     this.db = db;
     this.client = client;
@@ -422,7 +422,16 @@ export class SurfacingService {
     const excluded_source_ids = syncedSourceIdsFor(this.db, [src.messageId]);
     let quarrelPushed = 0;
     if (this.quarrelSourceRefs) {
-      const quarrel = await this.quarrelSourceRefs(job.conversation_id);
+      // RR4-B（复审 2026-11-12）：封存清单读取纳入 bounded——作业取消（cancelForTurn
+      // abort 控制器）与剩余期限同时约束这段分页读取；signal 经端口传到共享分页器，
+      // 取消后不再请求后页。读取完成后复核作业仍在 preparing，取消/编辑竞态下不再
+      // 发 M prepare。
+      const quarrel = await this.bounded(signal => this.quarrelSourceRefs!(job.conversation_id, signal), this.deadline(job) - Date.now(), job.id)
+        .catch((err): { refs: Set<string>; reachable: boolean; complete: boolean } => {
+          if (err instanceof Error && err.message === 'SURFACE_CANCELLED') throw err;
+          return { refs: new Set(), reachable: false, complete: false }; // 读取向传输失败=不可核对（runJob 统一收口）
+        });
+      if (this.repo.jobById(job.id)?.state !== 'preparing') return;
       if (!(quarrel.reachable && quarrel.complete)) {
         // RR4-F1（复审 2026-11-11）：封存清单当次无法完整核对——**暂缓本次自动注入**
         // （沿用既有 blocked 状态路径，与 Sol 技术失败同款收口），不生成一包缺少完整
@@ -445,6 +454,9 @@ export class SurfacingService {
     // 128 条消息产生 >128 个来源（128 消息+1 编辑=129 收据曾致整请求被入口校验拒绝）；
     // 超界截断只降低去重精度（可能重复注入已携带原文），不产生正确性错误。
     const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id)).slice(0, 128);
+    // RR4-B：发起 M prepare 前复核作业状态——取消/编辑发生在封存读取与本次调用之间时
+    // 不再发起检索（bounded 只 abort 已注册的控制器，竞态窗口内的后续调用不自灭）。
+    if (this.repo.jobById(job.id)?.state !== 'preparing') return;
     const r = await this.bounded(signal => this.client.surfacePrepare({
       operation_id: opId,
       conversation_scope: job.conversation_id,
@@ -551,6 +563,9 @@ export class SurfacingService {
     }
     const deadlineAt = new Date(this.deadline(job)).toISOString();
     const p = (async () => {
+      // RR4-B：发起 validate 前复核作业仍在 validating——取消/编辑落在上一跳与本次
+      // 调用之间时不再发起 M 检索（bounded 只 abort 已注册控制器，竞态窗口不自灭）。
+      if (this.repo.jobById(job.id)?.state !== 'validating') return;
       const r = await this.bounded(signal => this.client.surfaceValidate({
         operation_id: `est-surface-v:${job.id}:${target.messageId}:${target.revision}`,
         conversation_scope: job.conversation_id,
@@ -632,7 +647,10 @@ export class SurfacingService {
     const itemsAll = JSON.parse(fresh.items_json) as SurfaceItem[];
     // check：经 HTTP 调 Mariposa 的本地校验；回执绑目标消息/修订/窗口。
     let ck;
-    try { ck = await this.bounded(signal => this.client.surfaceCheck({
+    try {
+      // RR4-B：同上——check 发起前复核作业仍 ready（取消后不再发第三跳 M 调用）。
+      if (this.repo.jobById(job.id)?.state !== 'ready') return null;
+      ck = await this.bounded(signal => this.client.surfaceCheck({
       validation_receipt: fresh.receipt_id ?? '',
       conversation_scope: input.conversationId,
       target_message_id: input.message.id,

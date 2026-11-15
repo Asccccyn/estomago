@@ -24,7 +24,10 @@ export function contentClientFor(stateRoot: string, port: number, enabled: boole
 }
 
 /** 转发请求到 content——est 唯一通道。actor 从可信上下文派生，不从请求体。
- *  RR4-F4：可选 signal 与每次请求超时合并（取消立即生效，不必等当页超时）。 */
+ *  RR4-F4：可选 signal 与每次请求超时合并（取消立即生效，不必等当页超时）。
+ *  RR4-A（复审 2026-11-12）：正文读取/JSON 解析失败不再伪装成空对象——保留 {}
+ *  兼容旧调用方（按 status 处理错误页），但新增 bodyFailed=true 如实暴露；分页
+ *  读取器据此判失败，不得把传输截断当成"完整空页/末页"。 */
 export async function contentForward(client: ContentClient, opts: {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE';
   path: string; // /api/v1/content/...
@@ -33,7 +36,7 @@ export async function contentForward(client: ContentClient, opts: {
   headers?: Record<string, string>; // Idempotency-Key / If-Match 透传
   timeoutMs?: number;
   signal?: AbortSignal;
-}): Promise<{ status: number; body: unknown }> {
+}): Promise<{ status: number; body: unknown; bodyFailed: boolean }> {
   const res = await fetch(`${client.baseUrl}${opts.path}`, {
     method: opts.method,
     headers: {
@@ -45,8 +48,10 @@ export async function contentForward(client: ContentClient, opts: {
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(opts.timeoutMs ?? 5000), opts.signal]) : AbortSignal.timeout(opts.timeoutMs ?? 5000),
   });
-  const body = await res.json().catch(() => ({}));
-  return { status: res.status, body };
+  let bodyFailed = false;
+  let body: unknown = {};
+  try { body = await res.json(); } catch { bodyFailed = true; }
+  return { status: res.status, body, bodyFailed };
 }
 
 /** RR4-F4（复审 2026-11-11）：content 列表**全量分页读取器**——archives/media 的
@@ -65,7 +70,7 @@ export async function readAllContentPages<T>(client: ContentClient, o: {
   const seen = new Set<string>();
   for (;;) {
     if (o.signal?.aborted) return { ok: false, reason: 'cancelled' };
-    let res: { status: number; body: unknown };
+    let res: { status: number; body: unknown; bodyFailed: boolean };
     try {
       res = await contentForward(client, { method: 'GET', path: o.buildPath(cursor), actor: o.actor ?? 'jiaming', signal: o.signal });
     } catch {
@@ -74,8 +79,10 @@ export async function readAllContentPages<T>(client: ContentClient, o: {
     }
     if (o.signal?.aborted) return { ok: false, reason: 'cancelled' };
     if (res.status !== 200) return { ok: false, reason: 'failed', status: res.status };
+    if (res.bodyFailed) return { ok: false, reason: 'failed', status: res.status }; // 200 头后正文截断/坏 JSON=失败，不是空页
     const body = res.body as { items?: T[]; next_cursor?: string | null };
-    if (Array.isArray(body.items)) items.push(...body.items);
+    if (!body || typeof body !== 'object' || !Array.isArray(body.items)) return { ok: false, reason: 'failed', status: res.status }; // 形状缺失=协议失败，不冒充空列表
+    items.push(...body.items);
     cursor = body.next_cursor ?? null;
     if (cursor === null) return { ok: true, items };
     if (seen.has(cursor)) return { ok: false, reason: 'failed' }; // 游标回环：分页失败
