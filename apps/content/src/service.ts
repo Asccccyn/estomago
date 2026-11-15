@@ -592,10 +592,19 @@ export class ContentServer {
         const row = this.albumRow(id);
         this.ifMatch(req, Number(row.revision));
         const carryMode = parseCarryMode(body.carry_mode);
+        // W1（林石见口径 2026-11-10：旧收藏改携带时"先补齐图片身份，再计算十张"；
+        // 2026-11-15 她授权落地）：v7 前无身份的行在 PUT 携带请求带合法 hash（E 资产
+        // 正本经代理补注）时先补 content_sha256（仅身份，不动 updated_at——它是
+        // consume-next-once 的 before 基线），再按补齐后的身份算上限——同字节别名
+        // 不被错拒。无 hash 时维持行内身份保守计数（F1 口径不变）。
+        const w1sha = typeof body.content_sha256 === 'string' && /^[0-9a-f]{64}$/.test(body.content_sha256) ? body.content_sha256 : null;
+        let selfSha = row.content_sha256 as string | null;
+        if (w1sha !== null && selfSha == null) {
+          this.db.prepare('UPDATE album_entries SET content_sha256 = ? WHERE id = ?').run(w1sha, String(row.id));
+          selfSha = w1sha;
+        }
         if (carryMode !== null && carryMode !== String(row.carry_mode)) {
-          // F1（复审 2026-11-09 二轮）：PUT 改模式同样按行内原件身份判别名（默认参数已移除，
-          // 此处必须显式传）；存量 NULL 行在对账补齐前按 asset 身份保守计数。
-          this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id), row.content_sha256 as string | null);
+          this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id), selfSha);
         }
         this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), carry_mode = COALESCE(?, carry_mode), updated_at = ?, revision = revision + 1 WHERE id = ?')
           .run(typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null, typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null, carryMode, now(), String(row.id));
@@ -969,6 +978,10 @@ export class ContentServer {
       const albums = CONTENT_ALBUMS.filter(a => !assetId || Boolean(this.db.prepare('SELECT 1 FROM album_entries WHERE kind=? AND asset_id=? AND deleted_at IS NULL LIMIT 1').get(a.album, assetId)));
       return { status: 200, body: { albums } };
     }
+    // W1（2026-11-15 她授权落地）：单条相册条目读取（与存档详情同款）——PUT 补身份的
+    // 代理预读用它取 asset_id；墓碑/未知=404（albumRow），调用方按不可得不带处理。
+    m2 = /^GET \/api\/v1\/content\/album-entries\/([^/]+)$/.exec(route);
+    if (m2) return { status: 200, body: this.albumDto(this.albumRow(decodeURIComponent(m2[1]!))) };
     m2 = /^GET \/api\/v1\/content\/albums\/([^/]+)\/entries$/.exec(route);
     if (m2) {
       const kind = m2[1]!;

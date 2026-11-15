@@ -63,8 +63,11 @@ before(async () => {
 
 after(async () => { routeServer.close(); await server.stop(); fs.rmSync(root, { recursive: true, force: true }); });
 
+// W0（复审 2026-11-10 证据修正）：操作键用独立自增序号——同 seed 再上传=不同上传 ID
+// （旧写法 `hash-up-${seed}` 会使同字节"别名"复用同一资产，测不到不同 ID 场景）。
+let uploadSeq = 0;
 async function upload(seed: number): Promise<string> {
-  const a = await media.saveBuffer({ bytes: PNG_BYTES(seed), purpose: 'chat_image', operationId: `hash-up-${seed}`, createdBy: 'qiaosheng', origin: 'upload' });
+  const a = await media.saveBuffer({ bytes: PNG_BYTES(seed), purpose: 'chat_image', operationId: `hash-up-${seed}-${uploadSeq++}`, createdBy: 'qiaosheng', origin: 'upload' });
   return a.id;
 }
 
@@ -104,4 +107,46 @@ test('F1-3: 存量 NULL 身份行经既有条目入口补齐——仅补身份�
   const backfilled = setAfter.items.find((i) => i.asset_id === asset);
   assert.equal(backfilled?.content_sha256, realHash, '身份已补齐（后续限额按原图归并）');
   assert.equal(backfilled?.mode, 'always', '仅补身份——carry_mode 不动');
+});
+
+test('W1: 旧仅收藏 NULL 身份行改携带——代理 PUT 先按 E 资产行补身份再算十张（别名不误拒）；自报 hash 被覆盖', async () => {
+  const carrySetItems = async () => ((await (await fetch(`http://127.0.0.1:${server.port}/api/v1/content/carry-set`, { headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'jiaming' } })).json()) as { items: Array<{ asset_id: string; content_sha256?: string; mode: string }> }).items;
+  // 满 10 张互不相同原件（本文件 F1-2/F1-3 已各留 1 张携带行——共享 DB，再补 8 张），
+  // 全部 always（经真实代理 POST——身份由代理补注）
+  for (let i = 1; i <= 8; i++) {
+    const a = await upload(i);
+    const r = await proxyFn('POST', '/api/v1/content/albums/important_photos/entries', { asset_id: a, carry_mode: 'always' }, { 'idempotency-key': `w1-fill-${i}` });
+    assert.equal(r.status, 201, `i=${i} ${JSON.stringify(r.body)}`);
+  }
+  // 两条旧"仅收藏"行：与第 1/2 张同字节的不同上传 ID、直连 content 建（无 E 补注=无身份）
+  const alias1 = await upload(1);
+  const alias2 = await upload(2);
+  const mkLegacy = async (assetId: string, key: string): Promise<{ id: string; revision: number }> => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/albums/important_photos/entries`, {
+      method: 'POST', headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'qiaosheng', 'content-type': 'application/json', 'idempotency-key': key },
+      body: JSON.stringify({ asset_id: assetId }),
+    });
+    assert.equal(res.status, 201);
+    const b = await res.json() as { id: string; revision: number };
+    return b;
+  };
+  const leg1 = await mkLegacy(alias1, 'w1-legacy-1');
+  const leg2 = await mkLegacy(alias2, 'w1-legacy-2');
+  const before = await carrySetItems();
+  assert.equal(before.filter((i) => i.asset_id === alias1)[0], undefined, '前提：仅收藏行不在携带集');
+  // ① 旧行改携带（浏览器 PUT：只带 carry_mode；自报假 hash 必须被代理覆盖）——满 10 张下
+  // 旧缺陷=422（NULL 身份按 asset 计数）；W1=先补身份再算上限→别名放行
+  const fake = 'e'.repeat(64);
+  const put1 = await proxyFn('PUT', `/api/v1/content/album-entries/${leg1.id}`, { carry_mode: 'always', content_sha256: fake }, { 'idempotency-key': 'w1-put-1', 'if-match': `"${leg1.revision}"` });
+  assert.equal(put1.status, 200, `旧收藏改携带应放行（W1：先补身份再算十张）：${JSON.stringify(put1.body)}`);
+  // ② 无自报 hash 的普通 PUT 同样放行且补真实身份
+  const put2 = await proxyFn('PUT', `/api/v1/content/album-entries/${leg2.id}`, { carry_mode: 'always' }, { 'idempotency-key': 'w1-put-2', 'if-match': `"${leg2.revision}"` });
+  assert.equal(put2.status, 200, JSON.stringify(put2.body));
+  // 语义核验：身份=真实 hash（假值被覆盖）；去重身份仍 10（别名并入原件，不误增）
+  const after = await carrySetItems();
+  const a1 = after.find((i) => i.asset_id === alias1);
+  const a2 = after.find((i) => i.asset_id === alias2);
+  assert.equal(a1?.content_sha256, media.getAsset(alias1).content_sha256, '补齐身份=E 资产行事实（自报假值被覆盖）');
+  assert.equal(a2?.content_sha256, media.getAsset(alias2).content_sha256, '无自报值同样按 E 资产行补齐');
+  assert.equal(new Set(after.map((i) => i.content_sha256 ?? `est:${i.asset_id}`)).size, 10, '别名并入后去重身份仍 10');
 });

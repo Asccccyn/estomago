@@ -32,6 +32,19 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
   if (method === 'POST' && /^\/api\/v1\/content\/albums\/[^/]+\/entries$/.test(url.pathname) && fwdBody && typeof fwdBody['asset_id'] === 'string' && fwdBody['asset_id'] && d.media) {
     try { fwdBody['content_sha256'] = d.media.getAsset(fwdBody['asset_id']).content_sha256; } catch { delete fwdBody['content_sha256']; /* 资产未知：如实不带（自报身份不采信） */ }
   }
+  // W1（2026-11-15 她授权落地）：旧收藏改携带的 PUT——PUT 体不带 asset_id，先读条目
+  // 取 asset_id 再按 E 资产行补注身份（服务端事实：无条件覆盖，自报值先删）；条目读
+  // 不到或正文截断（RR4-A 两 flavor）→如实不带，content 行内身份仍参与保守计数。
+  if (method === 'PUT' && /^\/api\/v1\/content\/album-entries\/[^/]+$/.test(url.pathname) && fwdBody && d.media && d.contentClient) {
+    delete fwdBody['content_sha256'];
+    try {
+      const entry = await contentForward(d.contentClient, { method: 'GET', actor, path: url.pathname });
+      if (entry.status === 200 && !entry.bodyFailed) {
+        const assetId = (entry.body as { asset_id?: string }).asset_id;
+        if (typeof assetId === 'string' && assetId) fwdBody['content_sha256'] = d.media.getAsset(assetId).content_sha256;
+      }
+    } catch { /* 已删自报值：如实不带 */ }
+  }
   const result = await d.contentOps.write({ method, path: url.pathname, actor, body: fwdBody, headers: fwdHeaders });
   return json(res, result.status, result.body);
 }
