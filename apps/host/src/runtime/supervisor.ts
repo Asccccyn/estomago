@@ -1650,7 +1650,7 @@ export class TurnSupervisor {
     if (this.d.contentClient) {
       try {
         const res = await contentForward(this.d.contentClient, { method: 'GET', actor: 'jiaming', path: '/api/v1/content/carry-set' });
-        if (res.status === 200) {
+        if (res.status === 200 && !res.bodyFailed) {
           const body = res.body as { items?: CarrySetItem[] };
           if (Array.isArray(body.items)) carryItems = body.items;
         } else {
@@ -1734,6 +1734,12 @@ export class TurnSupervisor {
         method: 'POST', actor: 'jiaming', path: '/api/v1/content/carry-set/consume-next-once',
         body: { before: row.created_at }, headers: { 'idempotency-key': `carry-consume:${windowId}` },
       });
+      // RR4-A：2xx 但正文截断=消费结果未知——不标记已消费（保留下次成功投递后补消费；
+      // 同键 replay 幂等，content 侧已提交的话重放取回原回执）。
+      if (res.status === 200 && res.bodyFailed) {
+        this.d.logger.warn('carry_consume_body_unparseable', { windowId });
+        return;
+      }
       if (res.status === 200) {
         this.d.db.prepare('UPDATE window_carry_plans SET consumed_at = ? WHERE window_id = ? AND consumed_at IS NULL').run(new Date().toISOString(), windowId);
       } else {

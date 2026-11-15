@@ -106,7 +106,7 @@ export type ContentReferenceSnapshot = {
 
 export async function fetchReferenceSnapshot(client: ContentClient, ownerType: string, ownerId: string): Promise<ContentReferenceSnapshot | null> {
   const r = await contentForward(client, { method: 'GET', path: `/api/v1/content/references/${encodeURIComponent(ownerType)}/${encodeURIComponent(ownerId)}`, actor: 'qiaosheng' });
-  if (r.status !== 200) return null;
+  if (r.status !== 200 || r.bodyFailed) return null; // RR4-A：截断快照不是权威状态——null=确认留待恢复链
   return r.body as ContentReferenceSnapshot;
 }
 
@@ -129,6 +129,7 @@ export async function resolveContentOperation(client: ContentClient, opts: {
     body: { method: opts.method, path: opts.path, body: opts.body ?? {}, idempotency_key: opts.idempotencyKey, if_match: opts.ifMatch ?? '' },
   });
   if (r.status !== 200) throw new Error(`content resolve failed: ${r.status}`);
+  if (r.bodyFailed) throw new Error('content resolve failed: body'); // RR4-A：截断的 resolve 结果不是任何 outcome——按不可达处理（调用方既有 503 分支）
   return r.body as ContentResolveOutcome;
 }
 

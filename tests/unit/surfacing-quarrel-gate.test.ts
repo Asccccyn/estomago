@@ -170,20 +170,23 @@ async function seedQuarrelArchives(content: ContentServer, conversationId: strin
   }
 }
 
-/** 转发真实 content，但对第 pageIndexFor 故障页：回 200 头 + 一半正文后断开（复审 A 同款传输故障）。 */
-function truncatingProxy(content: ContentServer, breakOnPage: number): { url: string; listRequests: number } {
+/** 转发真实 content，但对 pathPrefix 的第 N 次 GET：回 200 头 + 一半正文后断开（复审 A 同款传输故障）。 */
+function truncatingProxy(content: ContentServer, breakOnPage: number, pathPrefix = '/api/v1/content/archives'): { url: string; listRequests: number } {
   let listRequests = 0;
   const server = http.createServer((req, res) => {
     let raw = ''; req.on('data', (c) => { raw += c; });
     req.on('end', () => {
-      const isList = (req.url ?? '').startsWith('/api/v1/content/archives') && req.method === 'GET';
+      const isList = (req.url ?? '').startsWith(pathPrefix) && req.method === 'GET';
       if (isList) listRequests += 1;
       void fetch(`http://127.0.0.1:${content.port}${req.url}`, { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${content.port}` }, ...(req.method !== 'GET' ? { body: raw } : {}) }).then(async (up) => {
         const text = await up.text();
         if (isList && listRequests === breakOnPage) {
-          res.writeHead(up.status, { 'Content-Type': 'application/json' });
-          res.write(text.slice(0, Math.max(1, Math.floor(text.length / 2)))); // 200 头+一半正文
-          res.destroy(); // 传输中断开——客户端 res.json() 必须失败
+          // 200 头+一半正文+干净 FIN（去 Content-Length 走 chunked）——fetch 可解析完成
+          // 但 JSON.parse 失败，走 bodyFailed 分支（连接销毁 flavor 由 reject 表达，
+          // 两种表现消费者都必须接住；A 测试同时覆盖两 flavor：quarrel 用 destroy 版）
+          const headers = Object.fromEntries(Object.entries(up.headers).filter(([k]) => k.toLowerCase() !== 'content-length'));
+          res.writeHead(up.status, headers);
+          res.end(text.slice(0, Math.max(1, Math.floor(text.length / 2))));
           return;
         }
         res.writeHead(up.status, { 'Content-Type': 'application/json' }); res.end(text);
@@ -290,3 +293,42 @@ test('B：自动浮现真实链第一页期间取消→零后续页、零 M prep
     assert.equal(prep.excluded_source_ids?.length, 150, '完整排除集（两页全集）下推');
   } finally { proxy.close(); await svc.stop(); await content.stop(); await new Promise((r) => setImmediate(r)); db.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('C（残留收口）：截断不冒充——工具读相册报错（非空列表）；media_view 授权查报 503（非误判不可读）', async () => {
+  const port = await new Promise<number>((resolve) => { const s = net.createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as net.AddressInfo).port; s.close(() => resolve(p)); }); });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-cfix-'));
+  const content = new ContentServer({ stateRoot: path.join(root, 'content'), port, token: 'c-token' });
+  await content.start();
+  const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
+  const direct = { baseUrl: `http://127.0.0.1:${content.port}`, token: 'c-token' };
+  // 本地正本资产（readImage 先查本地；无收据不在房间 → 走 content 授权反查）
+  const { MediaService } = await import('../../apps/host/src/media/assets.ts');
+  const { buildConfig } = await import('../../apps/host/src/config/schema.ts');
+  const dbC = makeDb(path.join(root, 'data'));
+  const mediaSvc = new MediaService(dbC, path.join(root, 'media'), buildConfig({}));
+  const asset = await mediaSvc.saveBuffer({ bytes: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 3)]), purpose: 'chat_sticker', operationId: 'c-op-1', createdBy: 'qiaosheng', origin: 'upload' });
+  const seed = await contentForward(direct, { method: 'POST', actor: 'qiaosheng', path: '/api/v1/content/albums/stickers/entries', body: { asset_id: asset.id }, headers: { 'idempotency-key': 'c-1' } });
+  assert.equal(seed.status, 201);
+  const { ContentToolsService } = await import('../../apps/host/src/modules/content/service.ts');
+  const ctxTool = { roomId: 'c1', turnId: 't', requestId: 'r', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [] };
+  try {
+    // ① content_albums_read 工具：条目列表 GET 截断 → 报读失败，不返回空列表
+    const proxyAlbums = truncatingProxy(content, 1, '/api/v1/content/albums/stickers/entries');
+    await (proxyAlbums as unknown as { listen: () => Promise<void> }).listen();
+    const toolsBad = new ContentToolsService({ contentClient: { baseUrl: (proxyAlbums as unknown as { url: () => string }).url(), token: 'c-token' } as never, media: null, contentOps: null });
+    const r = await toolsBad.contentAlbumsRead({ album: 'stickers' }, ctxTool as never);
+    assert.equal(r.ok, false, JSON.stringify(r.output));
+    assert.equal((r.output as { error_code: string }).error_code, 'ALBUM_READ_FAILED', '截断≠空相册');
+    (proxyAlbums as unknown as { close: () => void }).close();
+    // ② media_view 授权查（相册成员反查）截断 → 503 CONTENT_UNREACHABLE，不是 ASSET_NOT_READABLE
+    const { MediaToolsService } = await import('../../apps/host/src/modules/media/service.ts');
+    const proxyAlbums2 = truncatingProxy(content, 1, '/api/v1/content/albums?');
+    await (proxyAlbums2 as unknown as { listen: () => Promise<void> }).listen();
+    const mediaTools = new MediaToolsService({ contentClient: { baseUrl: (proxyAlbums2 as unknown as { url: () => string }).url(), token: 'c-token' } as never, media: mediaSvc });
+    const view = await mediaTools.mediaView({ asset_ref: `est:${asset.id}` }, { roomId: 'c1' } as never);
+    assert.equal(view.ok, false);
+    assert.equal((view.output as { error_code: string }).error_code, 'CONTENT_UNREACHABLE', '传输失败不得误判为无权读');
+    (proxyAlbums2 as unknown as { close: () => void }).close();
+  } finally { await content.stop(); dbC.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+

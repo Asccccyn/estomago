@@ -47,12 +47,21 @@ export async function handleArchivesRoutes(req: IncomingMessage, res: ServerResp
     const kind = url.searchParams.get('kind');
     const limit = url.searchParams.get('limit');
     const cursor = url.searchParams.get('cursor');
-    const fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives?${kind ? `kind=${encodeURIComponent(kind)}&` : ''}conversation_id=${encodeURIComponent(conversationId)}${limit ? `&limit=${encodeURIComponent(limit)}` : '&limit=50'}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+    // RR4-A：截断≠空列表；两种传输故障 flavor（reject/半包）都 503
+    let fwd: Awaited<ReturnType<typeof contentForward>>;
+    try {
+      fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives?${kind ? `kind=${encodeURIComponent(kind)}&` : ''}conversation_id=${encodeURIComponent(conversationId)}${limit ? `&limit=${encodeURIComponent(limit)}` : '&limit=50'}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+    } catch { return json(res, 503, { error: { code: 'content_unreachable', message: '存档列表暂不可达（正文传输失败），请重试' } }); }
+    if (fwd.bodyFailed) return json(res, 503, { error: { code: 'content_unreachable', message: '存档列表响应不完整（正文传输失败），请重试' } });
     return json(res, fwd.status, fwd.body);
   }
   const detail = /^GET \/api\/v1\/archives\/([^/]+)$/.exec(route);
   if (detail) {
-    const fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(detail[1]!)}` });
+    let fwd: Awaited<ReturnType<typeof contentForward>>;
+    try {
+      fwd = await contentForward(d.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(detail[1]!)}` });
+    } catch { return json(res, 503, { error: { code: 'content_unreachable', message: '存档详情暂不可达（正文传输失败），请重试' } }); }
+    if (fwd.bodyFailed) return json(res, 503, { error: { code: 'content_unreachable', message: '存档详情响应不完整（正文传输失败），请重试' } });
     return json(res, fwd.status, fwd.body);
   }
   // R6 存档打开链（R35）：存档卡片展开选中的原文（固定版本正文，只读）。

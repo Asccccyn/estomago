@@ -109,6 +109,12 @@ export class ImageGenService {
           headers: { 'idempotency-key': `imagegen:${o.opKey}` },
         });
         if (res.status === 201 || res.status === 200) {
+          if (res.bodyFailed) {
+            // RR4-A：2xx 但正文截断——条目可能已建（幂等键在）；不冒充成功也不提前
+            // 释放 pin，行留 stored 同键重试（resolve replay 取回真实条目）。
+            this.upsert(o.opKey, { state: 'stored', assetId: asset.id, error: 'IMAGEGEN_ENTRY_PENDING: body truncated' });
+            return { ok: false, code: 'IMAGEGEN_ENTRY_PENDING', detail: '资产已保存且 M 已确认，但作品条目响应不完整（正文传输失败）——同键重试只补条目确认', retryable: true };
+          }
           const created = res.body as { id?: string; revision?: number };
           creationId = typeof created.id === 'string' ? created.id : null;
         } else {

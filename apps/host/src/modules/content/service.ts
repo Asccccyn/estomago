@@ -62,8 +62,15 @@ export class ContentToolsService {
     const params = new URLSearchParams();
     for (const key of ['cursor','limit','q','source_service','source_kind','source_id']) if (args[key] !== undefined) params.set(key,String(args[key]));
     const endpoint = args.album ? `/albums/${encodeURIComponent(String(args.album))}/entries?${params}` : '/albums';
-    const response = await contentForward(this.contentClient,{method:'GET',actor:'jiaming',path:'/api/v1/content'+endpoint});
-    if (response.status !== 200) return {ok:false,output:{error_code:'ALBUM_READ_FAILED',detail:JSON.stringify(response.body)}};
+    // RR4-A：截断正文≠空相册——两种传输故障 flavor（fetch reject / 2xx 半包 JSON 失败）
+    // 都如实报读失败，模型可重试（旧实现会把传输故障当空列表）
+    let response: Awaited<ReturnType<typeof contentForward>>;
+    try {
+      response = await contentForward(this.contentClient,{method:'GET',actor:'jiaming',path:'/api/v1/content'+endpoint});
+    } catch {
+      return {ok:false,output:{error_code:'ALBUM_READ_FAILED',detail:'内容服务暂不可达（正文传输失败）'}};
+    }
+    if (response.status !== 200 || response.bodyFailed) return {ok:false,output:{error_code:'ALBUM_READ_FAILED',detail:response.bodyFailed?'内容服务响应不完整（正文传输失败）':JSON.stringify(response.body)}};
     const body = response.body as {albums?: unknown[];items?: Array<Record<string,unknown>>;next_cursor?:string|null;has_more?:boolean};
     if (!args.album) return {ok:true,output:{albums:body.albums ?? []}};
     return {ok:true,output:{items:(body.items ?? []).map(item=>({id:item.id,asset_ref:`est:${item.asset_id}`,caption:item.caption,meaning:item.meaning,created_at:item.created_at})),next_cursor:body.next_cursor,has_more:body.has_more}};
@@ -128,6 +135,11 @@ export class ContentToolsService {
       if (res.status !== 201 && res.status !== 200) {
         this.media.releaseOperationPins(opKey);
         return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但作品条目被拒（${res.status}）——用同一 client_operation_id 重试只补条目，不会重复保存`, raw_status: res.status } };
+      }
+      if (res.bodyFailed) {
+        // RR4-A：2xx 但正文截断——条目可能已建（幂等键在），不能当失败释放 pin 也不能
+        // 冒充 saved：如实 PENDING（同键重试经 resolve replay 取回真实条目），pin 保留。
+        return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: '资产已保存，但作品条目响应不完整（正文传输失败）——用同一 client_operation_id 重试只补条目确认', raw_status: 503 } };
       }
       const creation = res.body as { id?: string };
       const creationId = typeof creation.id === 'string' ? creation.id : null;

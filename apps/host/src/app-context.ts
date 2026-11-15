@@ -316,7 +316,7 @@ export class Host {
           try {
             if (source === 'creations') {
               const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-              if (res.status !== 200) return null;
+              if (res.status !== 200 || res.bodyFailed) return null;
               const b = res.body as { items?: Array<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>; next_cursor?: string | null };
               const assets: string[] = [];
               for (const it of b.items ?? []) {
@@ -327,7 +327,7 @@ export class Host {
             }
             const kind = source.slice('album:'.length);
             const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/albums/${kind}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
-            if (res.status !== 200) return null;
+            if (res.status !== 200 || res.bodyFailed) return null;
             const b = res.body as { items?: Array<{ asset_id?: string }>; next_cursor?: string | null };
             return { assets: (b.items ?? []).map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'), next: b.next_cursor ?? null };
           } catch { return null; }

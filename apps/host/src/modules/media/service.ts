@@ -29,16 +29,25 @@ export class MediaToolsService {
       allowed = Boolean(binding && this.sources.sourceAllowed(binding.asset_id, roomId, binding.content_sha256));
     }
     if (!allowed && this.contentClient) {
-      const response = await contentForward(this.contentClient, { method:'GET', actor:'jiaming',
-        path:`/api/v1/content/albums?asset_id=${encodeURIComponent(assetId)}` });
+      // RR4-A：授权反查的两种传输故障 flavor 都不得误判为"无权读"——如实 503
+      let response: Awaited<ReturnType<typeof contentForward>>;
+      try {
+        response = await contentForward(this.contentClient, { method:'GET', actor:'jiaming',
+          path:`/api/v1/content/albums?asset_id=${encodeURIComponent(assetId)}` });
+      } catch { throw new MediaError('CONTENT_UNREACHABLE', 503, '内容服务暂不可达（正文传输失败）——不能据此判不可读'); }
+      if (response.bodyFailed) throw new MediaError('CONTENT_UNREACHABLE', 503, '内容服务响应不完整（正文传输失败）——不能据此判不可读');
       const body = response.body as { albums?: unknown[] };
       allowed = response.status === 200 && Array.isArray(body.albums) && body.albums.length > 0;
     }
     if (!allowed && this.contentClient) {
       // ALB-05④：作品成员（icon/work 引用，含生图新作品）可读——模型收到生成回执后
-      // media_view 能实际打开（R36：可操作真实资源）。
-      const response = await contentForward(this.contentClient, { method:'GET', actor:'jiaming',
-        path:`/api/v1/content/creations?asset_id=${encodeURIComponent(assetId)}&limit=1` });
+      // media_view 能实际打开（R36：可操作真实资源）。传输故障同上——503 不误判。
+      let response: Awaited<ReturnType<typeof contentForward>>;
+      try {
+        response = await contentForward(this.contentClient, { method:'GET', actor:'jiaming',
+          path:`/api/v1/content/creations?asset_id=${encodeURIComponent(assetId)}&limit=1` });
+      } catch { throw new MediaError('CONTENT_UNREACHABLE', 503, '内容服务暂不可达（正文传输失败）——不能据此判不可读'); }
+      if (response.bodyFailed) throw new MediaError('CONTENT_UNREACHABLE', 503, '内容服务响应不完整（正文传输失败）——不能据此判不可读');
       const body = response.body as { items?: unknown[] };
       allowed = response.status === 200 && Array.isArray(body.items) && body.items.length > 0;
     }
