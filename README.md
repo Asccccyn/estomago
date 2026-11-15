@@ -115,7 +115,7 @@
 
 ## 2026-11-15 · 停止与缓存锚裁定（她裁定，未部署）
 
-- 2026-11-15（`189c84d`，未部署）：她裁定"模型开始生成回复后没有打断的地方"——supervisor.stop 对已派发（attempts running × dispatch_started_at）回合返回 409 generation_in_flight 本轮跑完；停止只在派发前有效，且此时打断不再删 SDK 会话锚（interrupted 且 !activityStarted → anchorOutcome='kept'，下一次请求照常 resume 不掉缓存），收口 RB03 注释与实现删锚的背离。已开始产出后的中断/失败仍删锚保守重建。mock-turn 停止用例按新合同改写+新增闸门用例；目标文件 41 例 + typecheck 绿。
+- 2026-11-15（`189c84d`，未部署）：她裁定"模型开始生成回复后没有打断的地方"——supervisor.stop 对已派发（attempts running × dispatch_started_at）回合返回 409 generation_in_flight 本轮跑完；停止只在派发前有效，且此时打断不再删 SDK 会话锚（interrupted 且 !activityStarted → anchorOutcome='kept'，下一次请求照常 resume 不掉缓存），收口 RB03 注释与实现删锚的背离。已开始产出后的中断/失败仍删锚保守重建。用例对齐：mock-turn 停止改派发前停止+新增 409 闸门；F07/F20 改经关机路径 stopAll 验证工具批 fence/usage 记账（语义保留，用户停止不再可达）；A04 语音客户端断开不再打断生成（回复完成落迟到关联，Siren 侧照实 partial）。全量 238 文件 + typecheck 全绿。
 
 ## 2026-11-03 · 自动浮现预算与交付合同（裁定批次1+2，本地未提交、未部署）
 

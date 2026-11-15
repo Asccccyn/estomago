@@ -203,8 +203,9 @@ test('F07：停止后同批后续工具不再分派（内容 fence 不足以拦�
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '两个工具', clientMessageId: 's1', occurredAt: T0 });
   ctx.supervisor.enqueue(sub.turnId);
   await new Promise<void>((r) => setTimeout(r, 30));
-  const stopped = ctx.supervisor.stop(sub.turnId);
-  assert.ok(stopped.stopped, '停止生效');
+  // 她 2026-11-15 裁定后 stop() 对已派发回合拒绝（回复跑完）——fence 语义改经关机路径
+  // stopAll 验证（仍是真实可达路径：同批后续工具必须不再分派）
+  void ctx.supervisor.stopAll(2000);
   releaseHold();
   await ctx.supervisor.waitIdle();
   assert.equal(holdCalls.length, 1, '第二个工具未被分派（停止即停止派发）');
