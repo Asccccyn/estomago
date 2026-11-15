@@ -12,8 +12,11 @@ export function select(v: any, keys: string[]): Obj {
 /** Failure is never rewritten as success. References with no model status tool stay internal. */
 export function modelFailure(value: Obj): Obj {
   // invalid_ids/fix（2026-11-08 林石见裁定）：PLAN_NOT_FOUND 携带无效 id 清单
-  // 与一句话修复动作——失败投影放行，其余码不带这两个键不受影响
+  // 与一句话修复动作——失败投影放行，其余码不带这两个键不受影响。
+  // asset_id/creation_id（审计 2026-11-15 P1-d）：已保存对象的真实引用不得在失败
+  // 投影里丢失（发布失败回执需给模型可操作的资产引用）。
   return select(value,['error_code','error','message','detail','saved','retryable','field','missing_fields',
     'invalid_ids','fix',
-    'result_set_id','memory_id','episode_id','word_id','recollection_id','mark_id','relation_id']);
+    'result_set_id','memory_id','episode_id','word_id','recollection_id','mark_id','relation_id',
+    'asset_id','creation_id','saved_asset_id','saved_creation_id']);
 }

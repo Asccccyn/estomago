@@ -351,6 +351,15 @@ function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: bo
   if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
   const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
   if (m.kind === 'voice') return <VoiceBar text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} instant={m.lateMedia} />
+  // M02（包1 2026-11-15）：SVG/HTML 代码作品走沙箱 /preview（同服务端 CSP：脚本
+  // 仅在隔离 iframe 内执行，主站不引入其来源）——不作为 <img> 渲染。
+  if (m.kind === 'work') return (
+    <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
+      <iframe src={m.src} title={m.text || '代码作品'} sandbox="allow-scripts" className="h-64 w-full max-w-60 rounded-2xl bg-white ring-1 ring-black/5" />
+      <p className="text-xs text-[#8a8580]">代码作品（沙箱预览）</p>
+      {showText && m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
+    </div>
+  )
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />

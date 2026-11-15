@@ -552,6 +552,10 @@ export class ContentServer {
         if (!CONTENT_ALBUMS.some(album => album.album === kind)) throw new ContentError(404, 'ALBUM_NOT_FOUND', '相册不存在');
         if (typeof body.asset_id !== 'string' || !body.asset_id) throw new ContentError(422, 'ASSET_REQUIRED', 'asset_id 必填（先经 est 媒体服务持久保存）');
         const carryMode = parseCarryMode(body.carry_mode);
+        // P2-b（审计 2026-11-15，F10）：carry 只属重要照片——其余相册（stickers/
+        // chat_screenshots）传携带模式按合同明确拒绝（旧实现照单写入，进共享携带集
+        // 参与十张限额）；none=显式仅收藏，任何相册合法。
+        if (kind !== 'important_photos' && carryMode !== null && carryMode !== 'none') throw new ContentError(422, 'CARRY_KIND_INCOMPATIBLE', '携带模式仅适用于 important_photos；其他相册不参与滚窗携带');
         const existing = this.db.prepare('SELECT * FROM album_entries WHERE kind = ? AND asset_id = ? AND deleted_at IS NULL').get(kind, body.asset_id) as Record<string, unknown> | undefined;
         // RR2（复审 2026-11-09）：content_sha256=E 侧写入方补注的 M 对象身份（同字节
         // 不同上传 ID=同一张图）；缺席=NULL，各口径退回 asset 身份。
@@ -613,6 +617,8 @@ export class ContentServer {
           selfSha = w1sha;
         }
         if (carryMode !== null && carryMode !== String(row.carry_mode)) {
+          // P2-b（审计 2026-11-15，F10）：PUT 同口径——非 important_photos 条目不接受携带模式。
+          if (String(row.kind) !== 'important_photos' && carryMode !== 'none') throw new ContentError(422, 'CARRY_KIND_INCOMPATIBLE', '携带模式仅适用于 important_photos；其他相册不参与滚窗携带');
           this.assertCarryWithinLimit(carryMode, String(row.asset_id), String(row.id), selfSha);
         }
         this.db.prepare('UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), carry_mode = COALESCE(?, carry_mode), updated_at = ?, revision = revision + 1 WHERE id = ?')

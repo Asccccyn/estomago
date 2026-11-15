@@ -185,3 +185,28 @@ test('M07（包1 2026-11-15 宿主用户裁定）：同资产新键=修改既有
   assert.equal(c5.status, 200);
   assert.equal(c5.body['revision'], c4.body['revision'], '同键重放不重复执行');
 });
+
+test('P2-b（审计 2026-11-15，F10）：stickers 传携带模式=按合同明确拒绝（POST 与 PUT 同口径）', async () => {
+  const assetId = (await media.saveBuffer({ bytes: PNG_BYTES(91), purpose: 'chat_sticker', operationId: 'p2b-op-91', createdBy: 'qiaosheng', origin: 'upload' })).id;
+  const post = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/albums/stickers/entries`, {
+    method: 'POST', headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'qiaosheng', 'content-type': 'application/json', 'idempotency-key': 'p2b-1' },
+    body: JSON.stringify({ asset_id: assetId, carry_mode: 'always' }),
+  });
+  assert.equal(post.status, 422, 'stickers+always 建条目被拒');
+  assert.equal(((await post.json() as { error?: { code?: string } }).error ?? {}).code, 'carry_kind_incompatible', '服务端序列化 ContentError.code 为小写');
+  // 合法建（仅收藏语义），再 PUT 改携带同样拒绝
+  const okPost = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/albums/stickers/entries`, {
+    method: 'POST', headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'qiaosheng', 'content-type': 'application/json', 'idempotency-key': 'p2b-2' },
+    body: JSON.stringify({ asset_id: assetId }),
+  });
+  assert.equal(okPost.status, 201);
+  const entryId = ((await okPost.json()) as { id: string }).id;
+  const put = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/album-entries/${entryId}`, {
+    method: 'PUT', headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'qiaosheng', 'content-type': 'application/json', 'idempotency-key': 'p2b-3', 'if-match': '"1"' },
+    body: JSON.stringify({ carry_mode: 'next_once' }),
+  });
+  assert.equal(put.status, 422, 'stickers 条目 PUT 改携带同样被拒');
+  const carry = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/carry-set`, { headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'jiaming' } });
+  const items = ((await carry.json()) as { items: Array<{ asset_id: string }> }).items;
+  assert.equal(items.some((i) => i.asset_id === assetId), false, 'stickers 不进携带集');
+});

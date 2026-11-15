@@ -55,14 +55,19 @@ test('CARRY-1: 创建即携带 + carry-set 读取 + 非法模式拒绝', async (
   assert.equal(bad.body['error']['code'], 'carry_mode_invalid');
 });
 
-test('CARRY-2: 跨相册同 asset 逐关系返回（R2 残余：留言不预合并）；去重与 always 优先归 E 规划器', async () => {
-  await addEntry('stickers', 'asset-c1', 'next_once', 'k-carry-2a'); // 同 asset 另一相册，next_once
+test('CARRY-2 (P2-b 后合同): 携带只属 important_photos——其他相册传携带拒绝、纯归档不入携带集', async () => {
+  // 旧合同曾允许 stickers 同 asset 再设一条携带关系（跨相册逐条返回）；2026-11-15
+  // 审计 F10 统一分类约束后该前提不成立：携带关系唯一归 important_photos。
+  const rejected = await addEntry('stickers', 'asset-c1', 'next_once', 'k-carry-2a');
+  assert.equal(rejected.status, 422);
+  assert.equal(rejected.body['error']['code'], 'carry_kind_incompatible');
+  const plain = await addEntry('stickers', 'asset-c1', undefined, 'k-carry-2b'); // 纯归档合法
+  assert.equal(plain.status, 201);
   const set = await call('GET', '/api/v1/content/carry-set');
   const items = set.body['items'] as Array<{ asset_id: string; mode: string; kind: string }>;
   const c1 = items.filter((i) => i.asset_id === 'asset-c1');
-  assert.equal(c1.length, 2, '同 asset 跨相册两条携带关系各自返回（planCarryImages 按 hash 去重为一张，留言逐条保留）');
-  assert.deepEqual(c1.map((i) => i.mode).sort(), ['always', 'next_once'], '各自模式原样（always 优先的取舍在 E 规划器）');
-  assert.deepEqual(c1.map((i) => i.kind).sort(), ['important_photos', 'stickers']);
+  assert.equal(c1.length, 1, '同 asset 只有 important_photos 的携带关系入集合；stickers 纯归档不入');
+  assert.equal(c1[0]!.mode, 'always', '模式原样（取舍在 E 规划器）');
 });
 
 test('CARRY-3: 去重计数上限——第 10 张成功、第 11 张不同 asset 明确拒绝、减选后可再设', async () => {
@@ -73,11 +78,15 @@ test('CARRY-3: 去重计数上限——第 10 张成功、第 11 张不同 asset
   }
   const tenth = await addEntry('important_photos', 'asset-n10', 'next_once', 'k-carry-3-10');
   assert.equal(tenth.status, 201, '第 10 张（去重后恰好满额）应成功');
-  const eleventh = await addEntry('stickers', 'asset-n11', 'always', 'k-carry-3-11');
+  const eleventh = await addEntry('important_photos', 'asset-n11', 'always', 'k-carry-3-11');
   assert.equal(eleventh.status, 422);
   assert.equal(eleventh.body['error']['code'], 'carry_limit_exceeded');
-  // 已在集合内的 asset 再入新相册：新增的是关系不是一张图——去重集合仍 10、不超限
-  const again = await addEntry('chat_screenshots', 'asset-c1', 'next_once', 'k-carry-3-12');
+  // P2-b：其他相册传携带=分类拒绝（不是限额问题）
+  const wrongKind = await addEntry('chat_screenshots', 'asset-c1', 'next_once', 'k-carry-3-12x');
+  assert.equal(wrongKind.status, 422);
+  assert.equal(wrongKind.body['error']['code'], 'carry_kind_incompatible');
+  // 已在集合内的 asset 再入其他相册纯归档：合法，且携带集合不变（新增的不是携带关系）
+  const again = await addEntry('chat_screenshots', 'asset-c1', undefined, 'k-carry-3-12');
   assert.equal(again.status, 201);
   const setFull = await call('GET', '/api/v1/content/carry-set');
   const fullItems = setFull.body['items'] as Array<{ asset_id: string }>;
@@ -90,7 +99,7 @@ test('CARRY-3: 去重计数上限——第 10 张成功、第 11 张不同 asset
   void firstEntry;
   const del = await call('DELETE', `/api/v1/content/album-entries/${target.id}`, undefined, 'k-carry-3-del', 'qiaosheng', { 'if-match': `"${target.revision}"` });
   assert.equal(del.status, 200);
-  const retry = await addEntry('stickers', 'asset-n11', 'always', 'k-carry-3-11b');
+  const retry = await addEntry('important_photos', 'asset-n11', 'always', 'k-carry-3-11b');
   assert.equal(retry.status, 201, '减选后原被拒项可入');
 });
 
@@ -109,7 +118,7 @@ test('CARRY-4: consume-next-once 只消费 next_once、不动 always；同键幂
   const fresh = await call('POST', '/api/v1/content/carry-set/consume-next-once', {}, 'k-consume-2', 'jiaming');
   assert.equal(fresh.body['consumed'], 0);
   // before 过滤（P5 §7.4）：只消费该时刻之前设置的 next_once——投递后新设项不被补消费误吞
-  await addEntry('stickers', 'asset-late1', 'next_once', 'k-carry-late');
+  await addEntry('important_photos', 'asset-late1', 'next_once', 'k-carry-late');
   const pastConsume = await call('POST', '/api/v1/content/carry-set/consume-next-once', { before: '2000-01-01T00:00:00.000Z' }, 'k-consume-3', 'jiaming');
   assert.equal(pastConsume.body['consumed'], 0, '早于一切设置的 before 不消费任何项');
   const nowConsume = await call('POST', '/api/v1/content/carry-set/consume-next-once', { before: new Date().toISOString() }, 'k-consume-4', 'jiaming');
@@ -117,7 +126,7 @@ test('CARRY-4: consume-next-once 只消费 next_once、不动 always；同键幂
 });
 
 test('CARRY-5: PUT 修改 carry_mode 走 If-Match 与上限校验', async () => {
-  const created = await addEntry('stickers', 'asset-put1', 'none', 'k-carry-5');
+  const created = await addEntry('important_photos', 'asset-put1', 'none', 'k-carry-5');
   assert.equal(created.body['carry_mode'], 'none');
   const id = created.body['id'] as string;
   const rev = created.body['revision'] as number;

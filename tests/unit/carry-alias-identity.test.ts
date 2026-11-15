@@ -92,11 +92,12 @@ test('F1-1: 三个正式入口的别名合同——满 10 张时同原件别名�
   const aliasId = await upload(1); // 与第 1 张同字节、不同上传 ID
   assert.notEqual(aliasId, ids[0], '别名必须是不同上传 ID（W0 前提自证）');
   assert.equal(media.getAsset(aliasId).content_sha256, realHash, '同字节别名前提成立');
-  const saved = await proxy('POST', '/api/v1/content/albums/stickers/entries', { asset_id: aliasId }, { 'idempotency-key': 'f1-alias-save' });
+  // P2-b（2026-11-15）：携带只属 important_photos——别名先纯归档 stickers，携带流程走 important_photos
+  const saved = await proxy('POST', '/api/v1/content/albums/important_photos/entries', { asset_id: aliasId }, { 'idempotency-key': 'f1-alias-save' });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   const aliasEntryId = saved.body['id'] as string;
   // ① POST 已有入口（同 asset 再 POST 改携带）——满 10 张时同原件别名必须可选
-  const viaPost = await proxy('POST', '/api/v1/content/albums/stickers/entries', { asset_id: aliasId, carry_mode: 'next_once' }, { 'idempotency-key': 'f1-alias-post' });
+  const viaPost = await proxy('POST', '/api/v1/content/albums/important_photos/entries', { asset_id: aliasId, carry_mode: 'next_once' }, { 'idempotency-key': 'f1-alias-post' });
   assert.equal(viaPost.status, 200, `POST 已有改携带应放行（旧缺陷：漏传行内身份→aliasInSet 恒 false→422）：${JSON.stringify(viaPost.body)}`);
   // 改回仅收藏，验证 ② PUT 入口（If-Match 用各自最新修订）
   const backToNone = await proxy('PUT', `/api/v1/content/album-entries/${aliasEntryId}`, { carry_mode: 'none' }, { 'idempotency-key': 'f1-alias-none', 'if-match': `"${Number(viaPost.body['revision'])}"` });
@@ -115,7 +116,7 @@ test('F1-1: 三个正式入口的别名合同——满 10 张时同原件别名�
   // 新建入口的别名（audit 已证 PASS 的路径）同口径放行
   const alias2 = await upload(2); // 与第 2 张同字节、不同上传 ID
   assert.notEqual(alias2, ids[1], '别名必须是不同上传 ID（W0 前提自证）');
-  const viaNew = await proxy('POST', '/api/v1/content/albums/chat_screenshots/entries', { asset_id: alias2, carry_mode: 'always' }, { 'idempotency-key': 'f1-alias-new' });
+  const viaNew = await proxy('POST', '/api/v1/content/albums/important_photos/entries', { asset_id: alias2, carry_mode: 'always' }, { 'idempotency-key': 'f1-alias-new' });
   assert.equal(viaNew.status, 201);
 });
 

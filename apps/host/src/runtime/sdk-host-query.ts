@@ -56,7 +56,20 @@ export async function runSdkHostQuery(
   };
   // A restart, edit, rotation or OR interval rebuilds from est's current ledger.
   // No synthetic SessionStore entries or mutation of the runtime's private format.
-  const inputMessages = messages.slice(resume?.messageCount ?? 0).filter(m => m.role !== 'system');
+  // P1-a（审计 2026-11-15）：system 数据块中的媒体引用（相册携带图）在 SDK 流式输入没有
+  // 载体——systemPrompt 只组装文本（supervisor），输入流又滤掉全部 system；旧实现携带图
+  // 被静默丢弃、回合成功仍消费 next_once。把 system 消息的非文本块按原序抬升为输入流首条
+  // user 消息（文本块留在 systemPrompt 不重复；本转换仅在输入组装层，账本/锚点哈希基于
+  // 原 messages 不受影响）。无 readImage 时维持未核实门，与 tail 物化同款不静默丢图。
+  const sliced = messages.slice(resume?.messageCount ?? 0);
+  const systemMedia = sliced.flatMap((m) => (m.role === 'system' && typeof m.content !== 'string') ? m.content.filter((b) => b.type !== 'text') : []);
+  if (systemMedia.length > 0 && !host.readImage) {
+    return { outcome: 'error', errorCode: 'SDK_MEDIA_TRANSPORT_UNVERIFIED', errorClassified: 'unknown', errorMessage: '携带图无媒体投影通道（readImage 缺席），不静默丢图', sessionId: null, requestId: null, attempts: 0, activityStarted: false };
+  }
+  const inputMessages = [
+    ...(systemMedia.length > 0 ? [{ role: 'user', content: systemMedia }] : []),
+    ...sliced.filter((m) => m.role !== 'system'),
+  ];
   const lastUser = inputMessages.findLastIndex(m => m.role === 'user');
   const history = inputMessages.slice(0, Math.max(0, lastUser));
   const tail = inputMessages.slice(Math.max(0, lastUser));
@@ -80,6 +93,11 @@ export async function runSdkHostQuery(
   try { replay = new SdkHistoryReplay(history, req.abortController.signal, host.readImage); }
   catch (error) { return { outcome: 'error', errorCode: (error as Error).message, errorClassified: 'unknown', errorMessage: 'SDK 历史输入格式不受支持，未发送模型请求', sessionId: null, requestId: null, attempts: 0, activityStarted: false }; }
   let activityStarted = false;
+  // P2-a（审计 2026-11-15）：会话是否实际接收到输入（历史重放帧或当前输入）——
+  // 锚保留/删除的判定基准。旧实现以"无输出块（activityStarted）"判定，既会把
+  // 已送入输入未出块的打断错保留（会话已前进，旧锚 resume 会重复送入），又会把
+  // 0 帧 0 派发的准入拒绝错删锚（会话明明未触碰）。
+  let sessionReceivedInput = false;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
   let businessCompleted = false; // RB02（复审 20261106）：background_complete 后的合法停发——非异常
@@ -205,12 +223,13 @@ export async function runSdkHostQuery(
   };
   const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
     if (!(await admitted)) return;
-    yield* replay.input();
+    for await (const frame of replay.input()) { yield frame; sessionReceivedInput = true; }
     if (!replay.completed || req.abortController.signal.aborted) return;
     try { await beforeModel(); }
     catch (error) { failure = String((error as Error).message); run?.close(); return; }
     yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null,
       session_id: '', client_composed: true };
+    sessionReceivedInput = true;
     // Replay completions already satisfy the SDK's first-result wait. Keep
     // stdin open until the real turn finishes, including tool/control replies.
     await inputDone;
@@ -333,10 +352,11 @@ export async function runSdkHostQuery(
       sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
         messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
       resumeDiagnosis.anchorOutcome = 'saved';
-    } else if (outcome === 'interrupted' && !activityStarted) {
-      // 她 2026-11-15 裁定：没生成任何回复的打断不掉缓存——本轮无任何模型产出，
-      // SDK 会话未被触碰，保留旧锚（不前进），下一次请求照常按旧锚 resume 命中。
-      // 派发后的用户停止已被 supervisor.stop 拒绝，能到这里的只有派发前打断。
+    } else if (outcome !== 'completed' && !sessionReceivedInput) {
+      // P2-a（审计 2026-11-15，修正她 11-15 裁定的实现）：会话未接收到任何输入帧
+      // （历史重放与当前输入都没送入）——准入拒绝、派发前打断都未触碰会话，保留
+      // 旧锚（不前进），下一次请求照常按旧锚 resume 命中。已送入输入（无论有无
+      // 输出块）的打断/失败走 else 删锚：会话已前进，旧锚 resume 会重复送入。
       resumeDiagnosis.anchorOutcome = 'kept';
     } else {
       // 已开始产出后的中断/失败：会话内可能残留本轮半截内容，保守删锚，下一次

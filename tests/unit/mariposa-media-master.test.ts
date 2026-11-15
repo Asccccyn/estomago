@@ -256,3 +256,38 @@ test('PM-6: M 未配置（mStore=null）——保存仍成功且如实 pending�
     assert.equal(local.bytes.length, a.byte_size);
   } finally { f.close(); }
 });
+
+test('PM-11 (P1-e 审计 2026-11-15): 逐出按物理文件——同字节别名只算一份；共享文件的待同步引用不逐', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-mmedia-evict2-'));
+  const db = openDatabase(root);
+  migrate(db, sha256Hex);
+  const config = buildConfig({ media: { cache_budget_bytes: 50 } }); // 低于单个 ~104B 文件——共享文件必须被逐（旧实现按行重复计账）
+  const mStore = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_M_TOKEN' });
+  const media = new MediaService(db, path.join(root, 'media'), config, mStore);
+  const png = (fill: number) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(96, fill)]);
+  try {
+    // ① 两个别名（同字节）都已 synced：磁盘只有一个文件；超预算逐出后=0（旧实现按行计 104 还剩 104）
+    const a1 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'ev2-1', createdBy: 'q', origin: 'upload' });
+    const a2 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'ev2-2', createdBy: 'q', origin: 'upload' });
+    assert.equal(a2.id !== a1.id, true, '同字节不同操作=两个 asset 身份');
+    assert.equal(media.getAsset(a1.id).m_sync_state, 'synced');
+    assert.equal(media.getAsset(a2.id).m_sync_state, 'synced');
+    const ev = media.evictCacheOverBudget();
+    assert.equal(ev.evicted, 1, '超预算逐出该共享文件一次');
+    assert.equal(ev.cacheBytes, 0, '容量按物理文件去重（旧实现报 104）');
+    // ② A synced、同字节 B 遇 M 503 仍 pending：共享文件不可逐——B 的后台同步依赖本地字节
+    fakeM.failMode = 'prepare_503';
+    const a3 = await media.saveBuffer({ bytes: png(2), purpose: 'chat_image', operationId: 'ev2-3', createdBy: 'q', origin: 'upload' }); // 落正失败→pending，但本地字节在
+    const a4 = await media.saveBuffer({ bytes: png(2), purpose: 'chat_image', operationId: 'ev2-4', createdBy: 'q', origin: 'upload' });
+    fakeM.failMode = 'none';
+    const b1 = media.getAsset(a3.id), b2 = media.getAsset(a4.id);
+    // 制造一个 synced + 一个 pending 的共享对：a3/a4 同为 pending；补一次 a3 同步（关 fail 后 attemptMSync 幂等补）
+    await media.attemptMSync(a3.id);
+    assert.equal(media.getAsset(a3.id).m_sync_state, 'synced', 'a3 恢复落正');
+    assert.equal(media.getAsset(a4.id).m_sync_state, 'pending', 'a4 仍待同步（其同步要用本地字节）');
+    const ev2 = media.evictCacheOverBudget();
+    assert.equal(ev2.evicted, 0, '共享文件存在未落正引用——本地是 a4 唯一字节，不逐');
+    const key = (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(a4.id) as { storage_key: string }).storage_key;
+    assert.equal(fs.existsSync(path.join(root, 'media', key)), true, 'a4 的本地字节仍在，后台重试可用');
+  } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

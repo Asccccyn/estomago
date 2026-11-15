@@ -305,7 +305,8 @@ test('IG-GIF: 动图请求带 output_format/frame 参数；M 落实际字节+MIM
   const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
   const crt = await contentForward(client as never, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations/${encodeURIComponent(r.creation_id)}` });
   assert.equal((crt.body as { work_kind?: string }).work_kind, 'image');
-  const r2 = await f.svc.generateAndStore({ prompt: '同键重放', opKey, format: 'gif' });
+  // 同键同参重放=原结果（P1-c：请求指纹含 prompt/帧参数——同键换参=IDEMPOTENCY_CONFLICT）
+  const r2 = await f.svc.generateAndStore({ prompt: '一只圆滚滚的小水獭挥手，循环动画，镜头固定', opKey, format: 'gif', frameCount: 9, frameDurationMs: 200 });
   assert.equal(r2.ok, true);
   assert.equal(f.calls(), 1, '重放不再生成/计费');
 });
@@ -469,4 +470,83 @@ test('IG-14 (M03): 默认交付 send——生成→保存→发布；save_only �
   const row = db.prepare('SELECT state FROM imagegen_operations WHERE op_key = ?').get(opKey3) as { state: string };
   assert.equal(row.state, 'saved');
   assert.equal(msgCount(`tool-imagegen:${opKey3}:publish`), 1, '补发布恰好一条，未重新生成');
+});
+
+// —— 包1审计返修（2026-11-15）：P1-c 同键三连 + P1-d 恢复补发布 ——
+
+test('IG-15 (P1-c): 同键异参=IDEMPOTENCY_CONFLICT；并发同键第二个 IN_PROGRESS 只一次外呼；200 头正文断流=结果未确认', async () => {
+  const f = fixture(okTransport);
+  const opKey = imageGenOpKey(CTX1, 'op-15');
+  const r0 = await f.svc.generateAndStore({ prompt: '画海', opKey });
+  assert.equal(r0.ok, true);
+  // ① 同键不同 prompt（审计复现：save_only 后换 prompt+send 把第一张图发进聊天）→ 冲突，不发布
+  const r1 = await f.svc.generateAndStore({ prompt: '另一幅画', opKey, deliver: 'send', roomId: 'primary', turnId: 't' });
+  assert.equal(r1.ok, false);
+  if (!r1.ok) { assert.equal(r1.code, 'IDEMPOTENCY_CONFLICT'); assert.equal(r1.retryable, false); }
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM messages WHERE client_message_id = ?").get(`tool-imagegen:${opKey}:publish`) as { n: number }).n, 0, '冲突路径不发布');
+  // 同键同参重放仍原结果
+  const r1b = await f.svc.generateAndStore({ prompt: '画海', opKey });
+  assert.equal(r1b.ok, true);
+  assert.equal(f.calls(), 1);
+  // ② 并发同键：慢 transport 下第二个调用进行中拒绝，外呼恰一次
+  const slow: ImageGenTransport = async () => { await new Promise((r) => setTimeout(r, 60)); return okTransport(); };
+  const f2 = fixture(slow);
+  const opKey2 = imageGenOpKey(CTX1, 'op-15b');
+  const p1 = f2.svc.generateAndStore({ prompt: '并发画', opKey: opKey2 });
+  await new Promise((r) => setImmediate(r)); // 让 p1 走到 transport 等待点（calling 行+ACTIVE 已登记）
+  const p2 = await f2.svc.generateAndStore({ prompt: '并发画', opKey: opKey2 });
+  assert.equal(p2.ok, false, JSON.stringify(p2));
+  if (!p2.ok) { assert.equal(p2.code, 'IMAGEGEN_IN_PROGRESS'); assert.equal(p2.retryable, true); }
+  const done = await p1;
+  assert.equal(done.ok, true);
+  assert.equal(f2.calls(), 1, '并发同键只一次付费外呼');
+  // ③ 200 头后正文断流（审计 flavor）：生成可能已成功——结果未确认，同键重试不自动重发
+  const trunc: ImageGenTransport = async () => ({ transportError: 'body_truncated', status: 200 });
+  const f3 = fixture(trunc);
+  const opKey3 = imageGenOpKey(CTX1, 'op-15c');
+  const r3 = await f3.svc.generateAndStore({ prompt: '断流画', opKey: opKey3 });
+  assert.equal(r3.ok, false, JSON.stringify(r3));
+  if (!r3.ok) { assert.equal(r3.code, 'IMAGEGEN_RESULT_UNCONFIRMED'); assert.equal(r3.retryable, false); }
+  const st = db.prepare('SELECT state FROM imagegen_operations WHERE op_key=?').get(opKey3) as { state: string };
+  assert.equal(st.state, 'unknown', '断流落未确认，不冒充明确失败');
+  const r3b = await f3.svc.generateAndStore({ prompt: '断流画', opKey: opKey3 });
+  assert.equal(r3b.ok, false);
+  assert.equal(f3.calls(), 1, '未确认不自动重发（防重复计费）');
+});
+
+test('IG-16 (P1-d): stored→saved 恢复进入同一交付分支——deliver=send 恢复后补发布，不重生成', async () => {
+  const { MessageService } = await import('../../apps/host/src/messages/service.ts');
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary', null);
+  const msgCount = (k: string) => (db.prepare('SELECT COUNT(*) n FROM messages WHERE client_message_id = ?').get(k) as { n: number }).n;
+  // 快照 503 代理（IG-10 同款）：条目已建、快照读不到 → SNAPSHOT_PENDING（stored 行）
+  const proxy = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      if (req.method === 'GET' && (req.url ?? '').includes('/references/')) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'unavailable' } })); return; }
+      const opts = { method: req.method, headers: { ...req.headers, host: `127.0.0.1:${server.port}` }, ...(req.method === 'POST' ? { body: raw } : {}) } as RequestInit;
+      void fetch(`http://127.0.0.1:${server.port}${req.url}`, opts).then(async (up) => {
+        res.writeHead(up.status, { 'Content-Type': 'application/json' });
+        res.end(await up.text());
+      });
+    });
+  });
+  await new Promise<void>((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  try {
+    const failingClient = { baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: server.token };
+    const f = fixture(okTransport);
+    const svcFail = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: async (b, s) => okTransport(b, s) }), media: f.media, contentClient: failingClient as never });
+    const opKey = imageGenOpKey(CTX1, 'op-16');
+    const r1 = await svcFail.generateAndStore({ prompt: '快照期画', opKey, deliver: 'send', roomId: 'primary', turnId: 't16' });
+    assert.equal(r1.ok, false, JSON.stringify(r1));
+    if (r1.ok) return;
+    assert.equal(r1.code, 'IMAGEGEN_SNAPSHOT_PENDING');
+    assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 0, '快照未确认时未发布');
+    // 恢复：真 content + messages——同键重试补快照后必须补发布（旧缺陷：直接 ok 且像 save_only）
+    const healed = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: okTransport }), media: f.media, contentClient: client, messages });
+    const r2 = await healed.generateAndStore({ prompt: '快照期画', opKey, deliver: 'send', roomId: 'primary', turnId: 't16' });
+    assert.equal(r2.ok, true, JSON.stringify(r2));
+    if (r2.ok) { assert.ok(r2.published_message_id, '恢复进入 saved 后补发布（P1-d）'); assert.equal(r2.generation_call, 'none', '恢复不重新生成'); }
+    assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 1);
+  } finally { proxy.close(); }
 });

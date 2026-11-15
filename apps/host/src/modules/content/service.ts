@@ -102,12 +102,16 @@ export class ContentToolsService {
         title: it.title ?? null,
         work_kind: workKind,
         created_at: it.created_at ?? null,
-        // 图片作品：位图引用（可看可发）；SVG/HTML：沙箱预览引用（E06 限制如实标注）
+        // 图片作品：位图引用（可看可发）；SVG/HTML：沙箱预览引用（E06 限制如实标注）；
+        // 其余类型（如 video——/preview 端点只收 SVG/HTML，审计 2026-11-15）：给 asset_id
+        // 与真实限制，不把不支持预览的类型投影成预览入口。
         ...(workKind === 'image' && workAssetId
           ? { asset_ref: `est:${workAssetId}`, asset_id: workAssetId }
-          : workAssetId
+          : (workKind === 'svg' || workKind === 'html') && workAssetId
             ? { asset_id: workAssetId, preview_ref: `/api/v1/assets/${workAssetId}/preview`, note: 'SVG/HTML 代码作品：模型不直接看图，发送用 chat_send_attachment（presentation=work）' }
-            : {}),
+            : workAssetId
+              ? { asset_id: workAssetId, note: `work_kind=${workKind ?? 'unknown'} 不支持沙箱预览端点（/preview 仅收 SVG/HTML）——引用真实，预览能力待该类型接入` }
+              : {}),
         ...(typeof it.icon_asset_id === 'string' && it.icon_asset_id ? { icon_asset_ref: `est:${it.icon_asset_id}` } : {}),
       };
     });

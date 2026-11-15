@@ -1,8 +1,8 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
-export type Media = { kind: 'voice' | 'image'; src: string; text?: string; assetId?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
+export type Media = { kind: 'voice' | 'image' | 'work'; src: string; text?: string; assetId?: string }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -289,7 +289,11 @@ export class EstomagoClient {
     for(const m of [...this.raw.values()].sort((a,b)=>a.sequence-b.sequence)){
       if(!['owner','assistant','system'].includes(m.speaker))continue
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
-        kind:a.presentation==='voice'?'voice':'image',src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+'/content',text:a.derived_text??'',assetId:String(a.asset_id),
+        // M02（包1 2026-11-15）：work=SVG/HTML 代码作品——用已有沙箱 /preview 隔离展示，
+        // 不走 /content（Content-Disposition 附件下载头，旧映射把作品当图片渲染成坏图）。
+        kind:a.presentation==='voice'?'voice':a.presentation==='work'?'work':'image',
+        src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+(a.presentation==='work'?'/preview':'/content'),
+        text:a.derived_text??'',assetId:String(a.asset_id),
       }))
       const blocks=this.blocks.get(m.turn_id)??[]
       const thinkMs=blocks.length?Math.max(0,new Date(blocks[blocks.length-1]!.updated_at).getTime()-new Date(blocks[0]!.created_at??blocks[0]!.updated_at).getTime()):0
@@ -641,7 +645,7 @@ export class EstomagoClient {
     const ids = [...this.snapshot.selected]
     if (ids.length === 0) { this.notify('先选择要存档的消息'); return }
     const label = kind === 'quarrel' ? '争吵' : '甜蜜'
-    if (!confirm(`把所选 ${ids.length} 条消息存入「${label}存档」？${kind === 'quarrel' ? '正在输出的回复会停止。' : ''}`)) return
+    if (!confirm(`把所选 ${ids.length} 条消息存入「${label}存档」？${kind === 'quarrel' ? '未开始派发的回复会停止；已开始生成的按 2026-11-15 裁定跑完（不再中断）。' : ''}`)) return
     try {
       const res = await fetch('/api/v1/archives', {
         method: 'POST',

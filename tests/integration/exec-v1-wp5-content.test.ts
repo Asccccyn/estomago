@@ -398,15 +398,18 @@ test('R5-工具：creation_save_artifact 保存即入作品（svg 免桶+icon=wo
   assert.equal((r2.output as { creation_id: string | null }).creation_id, out1.creation_id, '同 client_operation_id 重放=同一作品（不重复建条目/资产）');
 });
 
-test('R6-携带：carry-set 逐携带关系返回（同 asset 多条留言不预合并丢弃）', async () => {
+test('R6-携带（P2-b 后合同）：携带只属 important_photos；纯归档关系不入携带集、留言原样', async () => {
   const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
-  // 同一 asset 两条携带关系（不同相册各一条，均 always）
+  // 携带关系一条（important_photos）；同 asset 在 stickers 再归档一条纯收藏
   await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/important_photos/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '海边的落日', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-1' } });
-  await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-2' } });
+  const otherKind = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-2' } });
+  assert.equal(otherKind.status, 422, 'P2-b：stickers 传携带=分类拒绝');
+  const plain = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大' }, headers: { 'Idempotency-Key': 'cm-2b' } });
+  assert.equal(plain.status, 201, '纯归档合法');
   const set = await contentForward(client, { method: 'GET', path: '/api/v1/content/carry-set', actor: 'jiaming' });
   const items = (set.body as { items: Array<{ asset_id: string; caption: string | null; kind: string }> }).items.filter((i) => i.asset_id === 'asset_carry_multi');
-  assert.equal(items.length, 2, '两条携带关系各自返回（去重归 E 规划器）');
-  assert.deepEqual(items.map((i) => i.caption).sort(), ['海边的落日', '风好大'], '留言不预合并丢弃（03 §7.2）');
+  assert.equal(items.length, 1, '携带集只含 important_photos 的携带关系（stickers 纯归档不入）');
+  assert.equal(items[0]!.caption, '海边的落日', '携带关系留言原样保留（03 §7.2）');
 });
 
 // RR2（复审 2026-11-09）：浏览器路径（host 代理唯一入口）写入相册条目时补注 M 对象身份——

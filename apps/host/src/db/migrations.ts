@@ -1733,4 +1733,14 @@ CREATE INDEX IF NOT EXISTS idx_msg_attachments_asset ON message_attachments(asse
 `,
 });
 
+// v72（包1审计返修 2026-11-15 P1-c/D02）：同键业务请求指纹——同 opKey 异参
+// （prompt/格式/尺寸/帧参数/交付选择）按冲突拒绝，不把第一次的图当第二次结果。
+MIGRATIONS.push({
+  version: 72,
+  name: 'imagegen-request-fingerprint',
+  sql: `
+ALTER TABLE imagegen_operations ADD COLUMN request_fingerprint TEXT;
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

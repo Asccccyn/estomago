@@ -9,7 +9,7 @@ import { sniffMime } from '../../media/assets.ts';
 export type ImageGenRequest = { prompt: string; model: string; n?: number; size?: string; output_format?: string; frame_count?: number; frame_duration_ms?: number };
 export type ImageGenTransportResult =
   | { status: number; json: unknown; transportError?: undefined }
-  | { transportError: 'timeout' | 'network_refused' | 'network_unknown'; status?: undefined; json?: undefined };
+  | { transportError: 'timeout' | 'network_refused' | 'network_unknown' | 'body_truncated'; status?: number; json?: undefined };
 
 export type ImageGenTransport = (body: Record<string, unknown>, signal?: AbortSignal) => Promise<ImageGenTransportResult>;
 
@@ -97,6 +97,9 @@ export class ImageGenAdapter {
       return { outcome: 'error', code: 'IMAGEGEN_TRANSPORT', detail: String((err as Error).message).slice(0, 120) };
     }
     if (res.transportError === 'timeout') return { outcome: 'unknown', reason: '请求超时——生成结果未确认，不自动重发（避免重复计费）' };
+    // P1-c（审计 2026-11-15）：已收到响应头（含 200）但正文读取/解析失败——生成可能已
+    // 成功且计费，字节未落手；重发即第二次付费请求。按结果未确认归类，不自动重发。
+    if (res.transportError === 'body_truncated') return { outcome: 'unknown', reason: `收到供应商 ${res.status ?? ''} 应答但正文传输中断——生成可能已成功，重发有重复计费风险，不自动重发` };
     // ALB-06②（审计 2026-11-08）：不能把一般网络异常当作"请求未送达"的证据——
     // 服务端完整收到请求后断连（ECONNRESET 等）在客户端与连接阶段故障不可区分，
     // 重发即第二次付费请求。仅 DNS 解析失败/连接拒绝（连接从未建立、请求必然
@@ -158,7 +161,12 @@ function defaultTransport(baseUrl: string, apiKeyEnv: string | null): ImageGenTr
         body: JSON.stringify(body),
         signal,
       });
-      return { status: res.status, json: await res.json().catch(() => null) };
+      try {
+        return { status: res.status, json: await res.json() };
+      } catch {
+        // 头已到、正文断流（审计 P1-c 实证 flavor）：与连接失败区分——见 adapter 主分类
+        return { transportError: 'body_truncated', status: res.status };
+      }
     } catch (err) {
       return { transportError: classifyNetworkError(err) };
     }

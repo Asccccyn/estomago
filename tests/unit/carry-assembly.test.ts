@@ -33,7 +33,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 
 const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(24, 1)]);
 
-function compose(root: string) {
+function compose(root: string, opts: { contentClient?: unknown } = {}) {
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' } });
   const paths = buildPaths(root);
@@ -51,7 +51,7 @@ function compose(root: string) {
   const selections = new ManualSelectionService(db);
   const { registry } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages });
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from(['data: {"type":"completion","message":{"content":[{"type":"text","text":"ok"}]}}\n\n']) }));
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, toolCatalog: registry });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, toolCatalog: registry, ...(opts.contentClient ? { contentClient: opts.contentClient as never } : {}) });
   messages.ensureConversation('c1');
   return { db, messages, supervisor, media, selections, root };
 }
@@ -126,4 +126,15 @@ test('CARRY-ASM-2: 装配兜底——绕过规划器塞 11 个图像块→buildE
     try { sup.buildEnvelope({ conversationId: 'c1', materials: null, dialogue: [], tailUserText: ' ', selectedMessages: loaded11 }); } catch (e) { asmBlocked = String((e as Error).message); }
     assert.ok(asmBlocked?.includes('CARRY_IMAGES_EXCEEDED') === true, `装配应兜底阻断（实际 ${asmBlocked}）`);
   }
+});
+
+test('CARRY-ASM-4 (P1-b 审计 2026-11-15): content 已配置但 carry-set 读不到→准备明确失败，不按空携带冻结空计划', async () => {
+  // 死端口 content：配置了但不可达——resolveWindowCarry 必须抛 CARRY_SET_UNREADABLE
+  // （旧实现 warn 后按空携带继续，滚窗冻结空计划、本窗永久丢携带图）。
+  const ctx = compose(tempRoot('carry-asm-4-'), { contentClient: { baseUrl: 'http://127.0.0.1:1', token: 'x' } });
+  const sup = ctx.supervisor as unknown as CarrySupervisor;
+  let blocked: string | null = null;
+  try { await sup.resolveWindowCarry('c1', 'pending:c1', []); } catch (e) { blocked = String((e as Error).message); }
+  assert.ok(blocked?.startsWith('CARRY_SET_UNREADABLE'), `应明确失败（实际=${blocked ?? '未抛'}）`);
+  ctx.db.close();
 });

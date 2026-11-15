@@ -1312,6 +1312,11 @@ export class TurnSupervisor {
       const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
       return row?.content_sha256 ?? `est:${assetId}`;
     };
+    // P1-a（审计 2026-11-15）：携带图先入去重键集——选集历史再出现同图（或同字节别名）
+    // 时去块，不与携带双投（旧实现只对选集内部去重，携带图不在键集）。
+    if (o.carryFragment) for (const b of o.carryFragment.blocks) {
+      if ((b as { type: string }).type === 'asset_image') emittedImageKeys.add(imageKeyOf((b as { asset_id: string }).asset_id));
+    }
     for (const m of selected) {
       const guide = guides.get(m.sequence);
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
@@ -1648,9 +1653,10 @@ export class TurnSupervisor {
   }
 
   /** 相册重构 P5：解析本窗开窗携带计划（选集图 ∪ 相册携带设置，去重 ≤ 上限）。
-   *  content 不可达→warn 并按空携带继续（聊天/换窗不被相册检索故障拖垮；设置保留，
-   *  next_once 不消费，下次滚窗再带——03 §7.4 未投递不消耗）。合并超限→抛错阻断
-   *  本次换窗准备（旧窗保持 ACTIVE，用户按明细减选）。 */
+   *  P1-b（审计 2026-11-15）：content 已配置但 carry-set 读取失败（不可达/非 200/正文
+   *  截断/形状不对）→ **准备明确失败**——旧实现 warn 后按空携带继续，滚窗会冻结空计划
+   *  （本窗永久丢携带图）；失败保留旧窗/选集，可恢复重试。content 未配置=无携带能力，
+   *  照常空携带。空清单（200+items=[]）合法滚窗。合并超限→抛错阻断本次换窗准备。 */
   private async resolveWindowCarry(conversationId: string, stashKey: string, selectedMessages: Array<{ message_id: string; attachments?: Array<{ asset_id: string; presentation: string }> }>): Promise<{ fragment: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null; plan: ReturnType<typeof planCarryImages> }> {
     let carryItems: CarrySetItem[] = [];
     if (this.d.contentClient) {
@@ -1659,11 +1665,13 @@ export class TurnSupervisor {
         if (res.status === 200 && !res.bodyFailed) {
           const body = res.body as { items?: CarrySetItem[] };
           if (Array.isArray(body.items)) carryItems = body.items;
+          else throw new Error(`carry-set 响应形状不对（items 非数组）`);
         } else {
-          this.d.logger.warn('carry_set_unavailable', { status: res.status, conversationId });
+          throw new Error(`carry-set 读取失败（status=${res.status}${res.bodyFailed ? '，正文传输中断' : ''}）`);
         }
-      } catch {
-        this.d.logger.warn('carry_set_unreachable', { conversationId });
+      } catch (err) {
+        this.d.logger.warn('carry_set_unreadable', { conversationId, error: String((err as Error).message).slice(0, 120) });
+        throw new Error(`CARRY_SET_UNREADABLE:${String((err as Error).message).slice(0, 120)}——携带清单读不到，本次准备不继续（旧窗/选集保留，可重试；不冻结空计划）`);
       }
     }
     // ALB-07：选集图带 M 对象身份（content_sha256）参与合并去重（同字节不同 asset 仍一张）

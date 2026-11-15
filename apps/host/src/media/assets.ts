@@ -74,6 +74,7 @@ export class MediaError extends Error {
 export type StoredAsset = {
   id: string; state: string; mime_type: string; byte_size: number; content_sha256: string;
   origin: string; origin_service: string | null; origin_ref: string | null;
+  creation_operation_id: string | null;
   ingest_purpose: string; created_by: string; created_at: string; duplicate: boolean;
   m_sync_state: 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
   m_sync_attempts: number;
@@ -181,26 +182,36 @@ export class MediaService {
     }
   }
 
-  /** ALB-01：本地缓存 LRU 逐出一跳。候选=state available 且 m_sync_state='synced'（M 已
-   *  有正本，删本地文件后读取回源）；语音(out_of_scope)/pending 永不逐。返回逐出数与
-   *  逐出后缓存总字节（供观测/测试断言）。每跳有界（maxEvict）。 */
+  /** ALB-01：本地缓存 LRU 逐出一跳。P1-e（审计 2026-11-15）改为**按物理文件**
+   *  （storage_key）核算与逐出：同字节别名共享一个文件——①容量按去重后的文件计，
+   *  不再按资产行重复累计；②共享该文件的引用中存在非（available 且 synced）行
+   *  （pending 待同步/out_of_scope 无 M 正本，如 derived_view）时，逐出会毁掉其唯一
+   *  本地字节、后台重试永久失败——该文件不可逐。返回逐出文件数与去重后缓存字节。 */
   evictCacheOverBudget(maxEvict = 20): { evicted: number; cacheBytes: number } {
     const budget = this.config.media.cache_budget_bytes;
     const rows = this.db.prepare(
-      `SELECT id, storage_key, byte_size, cache_last_used_at FROM media_assets
-       WHERE state = 'available' AND m_sync_state = 'synced' ORDER BY cache_last_used_at IS NOT NULL, cache_last_used_at ASC, created_at ASC, id ASC`,
-    ).all() as Array<{ id: string; storage_key: string; byte_size: number; cache_last_used_at: string | null }>;
-    let total = 0;
+      `SELECT storage_key, content_sha256, byte_size, cache_last_used_at FROM media_assets
+       WHERE state = 'available' AND m_sync_state = 'synced'`,
+    ).all() as Array<{ storage_key: string; content_sha256: string; byte_size: number; cache_last_used_at: string | null }>;
+    const blocked = new Set((this.db.prepare(
+      `SELECT DISTINCT content_sha256 FROM media_assets
+       WHERE content_sha256 IS NOT NULL AND NOT (state = 'available' AND m_sync_state = 'synced')`,
+    ).all() as Array<{ content_sha256: string }>).map((r) => r.content_sha256));
+    const files = new Map<string, { sha: string; size: number; lastUsed: string | null }>();
     for (const r of rows) {
-      if (fs.existsSync(path.join(this.mediaDir, r.storage_key))) total += r.byte_size;
+      const f = files.get(r.storage_key);
+      if (!f) files.set(r.storage_key, { sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at });
+      else if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at; // 任一引用读过=文件最近使用
     }
+    const existing = [...files.entries()].filter(([k]) => fs.existsSync(path.join(this.mediaDir, k)));
+    let total = existing.reduce((s, [, f]) => s + f.size, 0);
+    existing.sort((a, b) => (a[1].lastUsed ?? '').localeCompare(b[1].lastUsed ?? '')); // 从未读过（NULL）=最旧，先逐
     let evicted = 0;
-    for (const r of rows) {
+    for (const [key, f] of existing) {
       if (total <= budget || evicted >= maxEvict) break;
-      const abs = path.join(this.mediaDir, r.storage_key);
-      if (!fs.existsSync(abs)) continue;
-      fs.rmSync(abs);
-      total -= r.byte_size;
+      if (blocked.has(f.sha)) continue; // 同文件存在未落正引用——本地是它的唯一字节，不逐
+      fs.rmSync(path.join(this.mediaDir, key));
+      total -= f.size;
       evicted += 1;
     }
     return { evicted, cacheBytes: total };
@@ -233,6 +244,7 @@ export class MediaService {
       byte_size: row.byte_size as number, content_sha256: row.content_sha256 as string,
       origin: row.origin as string, origin_service: (row.origin_service as string | null) ?? null,
       origin_ref: (row.origin_ref as string | null) ?? null,
+      creation_operation_id: (row.creation_operation_id as string | null) ?? null,
       ingest_purpose: row.ingest_purpose as string, created_by: row.created_by as string,
       created_at: row.created_at as string, duplicate: false,
       m_sync_state: (row.m_sync_state as StoredAsset['m_sync_state']) ?? 'pending',

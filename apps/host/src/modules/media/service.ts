@@ -12,10 +12,12 @@ export class MediaToolsService {
   private readonly contentClient: ContentClient | null;
   private readonly sources: OidoSourceRepository | null;
   private readonly mediaIndex: import('../../media/index/service.ts').MediaIndexService | null;
+  private readonly db: Db | null;
 
   constructor(deps: { db?: Db; contentClient?: ContentClient | null; media?: import('../../media/assets.ts').MediaService | null; mediaIndex?: import('../../media/index/service.ts').MediaIndexService | null }) {
     this.media = deps.media ?? null;
     this.contentClient = deps.contentClient ?? null;
+    this.db = deps.db ?? null;
     this.sources = deps.db ? new OidoSourceRepository(deps.db) : null;
     this.mediaIndex = deps.mediaIndex ?? null;
   }
@@ -27,6 +29,16 @@ export class MediaToolsService {
     if (!allowed && asset.origin_service === 'oido' && asset.origin_ref && this.sources) {
       const binding = this.sources.analysisBinding(asset.origin_ref, roomId);
       allowed = Boolean(binding && this.sources.sourceAllowed(binding.asset_id, roomId, binding.content_sha256));
+    }
+    // M06（审计 2026-11-15）：media_import 的合法导入回执给出可看引用——刚导入、尚未
+    // 发布/入册/入作品的资产按"导入操作所属回合的房间"授权（操作身份含 turnId，turn
+    // 属本房间=可看），不是放开任意 asset_id。
+    if (!allowed && asset.origin === 'import' && asset.creation_operation_id?.startsWith('tool-media-import:')) {
+      const turnId = asset.creation_operation_id.split(':')[1] ?? '';
+      if (turnId && turnId !== 'noturn' && this.db) {
+        const t = this.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
+        allowed = t?.conversation_id === roomId;
+      }
     }
     if (!allowed && this.contentClient) {
       // RR4-A：授权反查的两种传输故障 flavor 都不得误判为"无权读"——如实 503
@@ -82,7 +94,8 @@ export class MediaToolsService {
     const operationId = `tool-media-import:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
     try {
       const a = await this.media.importFromUrl({ sourceUrl: args.source_url, operationId, createdBy: 'jiaming' });
-      return { ok: true, output: { asset_id: a.id, mime_type: a.mime_type, byte_size: a.byte_size, imported: true } };
+      // M06（审计 2026-11-15）：回执给 media_view 要求原样传回的 asset_ref（导入后即可看）
+      return { ok: true, output: { asset_id: a.id, asset_ref: `est:${a.id}`, mime_type: a.mime_type, byte_size: a.byte_size, imported: true, view_hint: '查看用 media_view 传回 asset_ref' } };
     } catch (err) {
       const code = (err as { code?: string }).code ?? 'ASSET_IMPORT_FAILED';
       return { ok: false, output: { error_code: code, retryable: code === 'ASSET_IMPORT_FAILED' } };
