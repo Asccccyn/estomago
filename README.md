@@ -113,6 +113,10 @@
 
 - 2026-11-04（`69364ad`，已随 `8bbb246` 部署）：P1 修复 emotion/trace/计划链接结果与分类多选，里程碑覆盖保护、冻结 schema 完整校验；两仓真实隔离 HTTP 验收通过。[施工记录](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
 
+## 2026-11-15 · 停止与缓存锚裁定（她裁定，未部署）
+
+- 2026-11-15（`189c84d`，未部署）：她裁定"模型开始生成回复后没有打断的地方"——supervisor.stop 对已派发（attempts running × dispatch_started_at）回合返回 409 generation_in_flight 本轮跑完；停止只在派发前有效，且此时打断不再删 SDK 会话锚（interrupted 且 !activityStarted → anchorOutcome='kept'，下一次请求照常 resume 不掉缓存），收口 RB03 注释与实现删锚的背离。已开始产出后的中断/失败仍删锚保守重建。mock-turn 停止用例按新合同改写+新增闸门用例；目标文件 41 例 + typecheck 绿。
+
 ## 2026-11-03 · 自动浮现预算与交付合同（裁定批次1+2，本地未提交、未部署）
 
 依据《ESTOMAGO_MARIPOSA_BUDGET_RULING_20261103》（她 13 项裁定）：**R1/R3** 投递预算 `delivery_budget_bytes=min(4096×3, 24576)` 随 prepare/validate/check 载荷过线（同 job 同值，M 端 payload_hash 幂等校验），E 终检仍权威；跨线统一 UTF-8 bytes、量最终投影。**R5/R6** 记忆与原文分开交付——"我们的话"/事件命中只投记忆本体（原话+日期+说话人），原文模式命中投真实锚词前后各 300 字节选（〔原文节选〕标识；定位失败保持全文逐字；不随预算缩放）；复核侧邻文窗保留（R3 裁定③，相邻纠正仍达 JEV），交付侧剥离。**R2 已知后果**：不可截断且超 12KiB 投影预算的长正文永不自动完整注入，走既有主动深读入口，不视为缺陷。**R4/R8** 删除从未执行的 `max_retained_tokens_per_window`（schema/示例 yaml/RETIRED_CONFIG_KEYS 结构化披露）；M 端同步删除 AUTO×3/union60/256KiB/delivery_same_occurrence 四组死配置并升 `SURFACE_POLICY_REVISION` 6→7（在途 run 失效、判断缓存换键）。**R9** 作业调度身份改由配置 `memory_surfacing.job_policy_revision/job_prompt_revision`（默认 1/`e_surface_v1`）承担，删除冒充 M 的硬编码 1/`surface_prepare_v2`；新增迁移 v52——M 响应真实执行版本落 `surfacing_jobs.m_policy_revision/m_prompt_revision` 并记 `surface_m_versions` 日志；`integrations.mariposa.contract_version` 退役（transport 从未消费，F15；siren 侧有真实消费者保留）。验收：11-02"明明哥哥"生产数据只读重放 18,661B/6,221tokens（丢弃）→ 333B/111tokens（双门通过）。
