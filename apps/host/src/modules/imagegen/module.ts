@@ -62,7 +62,9 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
   return { ok: true, output: {
     generated: true,
     sent: r.published_message_id ? true : false,
-    ...(r.published_message_id ? { message_id: r.published_message_id } : { note: '仅保存未发送（deliver=save_only）——发送用 chat_send_attachment 同一 asset_id' }),
+    ...(r.published_message_id
+      ? { message_id: r.published_message_id }
+      : { note: r.note ?? '仅保存未发送（deliver=save_only）——发送用 chat_send_attachment 同一 asset_id' }),
     asset_ref: `est:${r.asset_id}`, asset_id: r.asset_id, creation_id: r.creation_id, mime_type: r.mime,
     ...(r.revised_prompt ? { revised_prompt: r.revised_prompt } : {}),
   } };

@@ -1743,4 +1743,14 @@ ALTER TABLE imagegen_operations ADD COLUMN request_fingerprint TEXT;
 `,
 });
 
+// v73（二轮返修 2026-11-15 P1-2/D01）：供应商 200+URL-only 应答的结果 URL 留存——
+// 同键重试只重取 URL 恢复字节，不重新发起付费生成。
+MIGRATIONS.push({
+  version: 73,
+  name: 'imagegen-result-url',
+  sql: `
+ALTER TABLE imagegen_operations ADD COLUMN result_url TEXT;
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

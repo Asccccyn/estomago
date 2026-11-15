@@ -16,6 +16,9 @@ export type ImageGenTransport = (body: Record<string, unknown>, signal?: AbortSi
 export type ImageGenResult =
   | { outcome: 'ok'; bytes: Buffer; mime: string; generationId: string | null; revisedPrompt: string | null }
   | { outcome: 'unknown'; reason: string } // 请求已发出但结果未确认——禁止自动重发
+  // 二轮返修 P1-2（2026-11-15）：生成已成功、供应商回了结果 URL，但字节取回失败——
+  // 重放只重取 URL（fetchImageResultUrl），不得重新发起付费生成。
+  | { outcome: 'url_pending'; url: string; reason: string }
   | { outcome: 'error'; code: string; detail: string };
 
 export class ImageGenAdapter {
@@ -36,6 +39,38 @@ export class ImageGenAdapter {
   get configured(): boolean {
     const v = this.apiKeyEnv ? process.env[this.apiKeyEnv] : null;
     return typeof v === 'string' && v.length > 0;
+  }
+
+  /** 二轮返修 P1-2（2026-11-15）：取回供应商结果 URL 的字节——同一次生成的恢复动作，
+   *  不重新计费。https-only、有界（50MiB 安全上限）、魔数校验须为图片；失败如实返回
+   *  原因（调用方落 url_pending，同键重放只重取本 URL）。 */
+  async fetchImageResultUrl(url: string): Promise<{ ok: true; bytes: Buffer; mime: string } | { ok: false; reason: string }> {
+    let u: URL;
+    try { u = new URL(url); } catch { return { ok: false, reason: '结果 URL 非法' }; }
+    // 公网结果 URL 强制 https；环回（本机供应商部署/隔离验证）允许 http
+    const isLoopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLoopback)) return { ok: false, reason: '结果 URL 非 https' };
+    try {
+      const res = await fetch(u, { signal: AbortSignal.timeout(this.timeoutMs) });
+      if (res.status < 200 || res.status >= 300) return { ok: false, reason: `结果 URL 返回 ${res.status}` };
+      const chunks: Buffer[] = [];
+      let size = 0;
+      const reader = res.body?.getReader();
+      if (!reader) return { ok: false, reason: '结果 URL 无正文流' };
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > 50 * 1024 * 1024) { await reader.cancel(); return { ok: false, reason: '结果字节超过 50MiB 上限' }; }
+        chunks.push(Buffer.from(value));
+      }
+      const bytes = Buffer.concat(chunks);
+      const sniffed = sniffMime(bytes);
+      if (sniffed === null || !sniffed.startsWith('image/')) return { ok: false, reason: `取回字节不是图片（${sniffed ?? 'unknown'}）` };
+      return { ok: true, bytes, mime: sniffed };
+    } catch (err) {
+      return { ok: false, reason: `结果 URL 取回失败（${String((err as Error).message).slice(0, 80)}）` };
+    }
   }
 
   async generate(prompt: string, opts: { format?: string; size?: string; frameCount?: number; frameDurationMs?: number } = {}): Promise<ImageGenResult> {
@@ -108,7 +143,7 @@ export class ImageGenAdapter {
     if (res.transportError === 'network_unknown') return { outcome: 'unknown', reason: '网络中断（不能证明请求未送达）——结果未确认，不自动重发（避免重复计费）' };
     const status = res.status as number;
     if (status === 401 || status === 403) return { outcome: 'error', code: 'IMAGEGEN_AUTH', detail: `凭据被拒（${res.status}）` };
-    if (status === 429) return { outcome: 'error', code: 'IMAGEGEN_RATE_LIMITED', detail: '供应商限流；稍后重试' };
+    if (status === 429) return { outcome: 'error', code: 'IMAGEGEN_RATE_LIMITED', detail: extractError(res.json) ?? '供应商限流；稍后重试' };
     if (status === 400 || status === 404 || status === 422) {
       const detail = extractError(res.json) ?? String(res.status);
       return { outcome: 'error', code: 'IMAGEGEN_REQUEST_REJECTED', detail };
@@ -116,14 +151,24 @@ export class ImageGenAdapter {
     // M04（包1 2026-11-15）：收到完整 5xx 应答=供应商明确失败，不是"结果未确认"——
     // 未确认只留给响应丢失（超时/断连，请求可能已送达且计费）。生产实证 11-12 一次
     // 500 被归 unknown 后同键永久卡死、被迫换键重新付费。同键重试据此重新请求上游。
-    if (status >= 500) return { outcome: 'error', code: 'IMAGEGEN_UPSTREAM_ERROR', detail: extractError(res.json) ?? `供应商 ${res.status} 明确失败` };
+    if (status >= 500) {
+      // 二轮返修 P2-3：正文完整收到的 5xx（含非 JSON 的空/文本正文）按明确失败处理；
+      // body_truncated（读取中断）已在上方统一归未确认。
+      return { outcome: 'error', code: 'IMAGEGEN_UPSTREAM_ERROR', detail: extractError(res.json) ?? `供应商 ${res.status} 明确失败` };
+    }
     if (status < 200 || status >= 300) return { outcome: 'error', code: `IMAGEGEN_HTTP_${status}`, detail: extractError(res.json) ?? String(status) };
     const data = (res.json as { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> | null })?.data;
     const item = Array.isArray(data) ? data[0] : undefined;
     const b64 = typeof item?.b64_json === 'string' ? item.b64_json : null;
     if (!b64) {
-      // 只回 URL 未回字节：结果未落手——按需取回属供应商恢复能力，未配置时不猜
-      return { outcome: 'error', code: 'IMAGEGEN_NO_BYTES', detail: item?.url ? '供应商只返回了临时 URL 未返回字节；不把外链当已保存' : '响应缺图片字节' };
+      // 二轮返修 P1-2（2026-11-15）：生成已成功但只有结果 URL——先就地取回字节（同一次
+      // 生成，不重新计费）；取不回落 url_pending，同键重放只重取 URL。
+      if (typeof item?.url === 'string' && item.url.length > 0) {
+        const fetched = await this.fetchImageResultUrl(item.url);
+        if (fetched.ok) return { outcome: 'ok', bytes: fetched.bytes, mime: fetched.mime, generationId: (res.json as { id?: unknown }).id != null ? String((res.json as { id: unknown }).id) : null, revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : null };
+        return { outcome: 'url_pending', url: item.url, reason: fetched.reason };
+      }
+      return { outcome: 'error', code: 'IMAGEGEN_NO_BYTES', detail: '响应缺图片字节' };
     }
     const bytes = Buffer.from(b64, 'base64');
     const sniffed = sniffMime(bytes);
@@ -161,12 +206,18 @@ function defaultTransport(baseUrl: string, apiKeyEnv: string | null): ImageGenTr
         body: JSON.stringify(body),
         signal,
       });
+      // 二轮返修 P2-3（2026-11-15）：只有**读取中断**（连接断/超时，正文不完整）才是
+      // 传输断流；正文完整收到但不是 JSON（429 空正文、502 纯文本、2xx 非 JSON）按
+      // 状态码分类——旧实现把一切 JSON.parse 失败当断流，吞掉了限流与 5xx 的重试语义。
+      let text: string;
       try {
-        return { status: res.status, json: await res.json() };
+        text = await res.text();
       } catch {
-        // 头已到、正文断流（审计 P1-c 实证 flavor）：与连接失败区分——见 adapter 主分类
         return { transportError: 'body_truncated', status: res.status };
       }
+      let json: unknown = null;
+      try { json = JSON.parse(text); } catch { /* 完整正文、非 JSON——按状态分类（json=null） */ }
+      return { status: res.status, json };
     } catch (err) {
       return { transportError: classifyNetworkError(err) };
     }

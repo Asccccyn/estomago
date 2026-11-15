@@ -550,3 +550,140 @@ test('IG-16 (P1-d): stored→saved 恢复进入同一交付分支——deliver=s
     assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 1);
   } finally { proxy.close(); }
 });
+
+// —— 二轮返修（2026-11-15）：P1-1 旧记录升级不自动发布 / P1-2 URL 恢复 / P2-3 完整错误应答 ——
+
+test('IG-17 (P1-1): 升级存量（无请求指纹）同键重放不自动发布——saved 与 stored 恢复同口径', async () => {
+  const { MessageService } = await import('../../apps/host/src/messages/service.ts');
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary', null);
+  const msgCount = (k: string) => (db.prepare('SELECT COUNT(*) n FROM messages WHERE client_message_id = ?').get(k) as { n: number }).n;
+  const f = fixture(okTransport, { messages });
+  const opKey = imageGenOpKey(CTX1, 'op-17');
+  // 先用现行实现做一次真实保存（含指纹与作品条目），再把指纹清空=v72 升级存量的形状
+  const r0 = await f.svc.generateAndStore({ prompt: '升级前的原画', opKey, deliver: 'save_only', roomId: 'primary', turnId: 't17' });
+  assert.equal(r0.ok, true, JSON.stringify(r0));
+  db.prepare('UPDATE imagegen_operations SET request_fingerprint = NULL WHERE op_key = ?').run(opKey);
+  // 同键换 prompt、默认 send：旧记录无请求证据——不冲突也不发布，回执给显式发送入口
+  const r1 = await f.svc.generateAndStore({ prompt: '另一段提示词', opKey, deliver: 'send', roomId: 'primary', turnId: 't17' });
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  if (r1.ok) {
+    assert.equal(r1.published_message_id, undefined, '无原请求指纹不得补成发布授权');
+    assert.ok(r1.note?.includes('chat_send_attachment'), '回执给显式发送入口');
+    if (r0.ok) assert.equal(r1.asset_id, r0.asset_id, '原作品仍可定位');
+  }
+  assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 0, '新增聊天消息 0');
+  assert.equal(f.calls(), 1, '新增生成请求 0（共 1 次=首次那一次）');
+  // stored 恢复同口径：把行拨回 stored（快照未确认形状）并清指纹，恢复到 saved 也不发布
+  const r2 = await f.svc.generateAndStore({ prompt: '升级前的原画', opKey, deliver: 'send', roomId: 'primary', turnId: 't17' });
+  assert.equal(r2.ok, true);
+  db.prepare("UPDATE imagegen_operations SET state='stored', result_b64=NULL, request_fingerprint=NULL WHERE op_key = ?").run(opKey);
+  const r3 = await f.svc.generateAndStore({ prompt: '升级前的原画', opKey, deliver: 'send', roomId: 'primary', turnId: 't17' });
+  assert.equal(r3.ok, true, JSON.stringify(r3));
+  if (r3.ok) {
+    assert.equal(r3.published_message_id, undefined, 'stored→saved 恢复同样不自动发布');
+    assert.ok(r3.note?.includes('旧版本'));
+  }
+  assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 0);
+  const row = db.prepare('SELECT state FROM imagegen_operations WHERE op_key = ?').get(opKey) as { state: string };
+  assert.equal(row.state, 'saved', '恢复仍收口到 saved（保存结果保留）');
+});
+
+test('IG-18 (P1-2): 供应商 200+URL-only——就地取回字节成活；取不回落 url_pending，同键重放只重取 URL 不再生成', async () => {
+  const { MessageService } = await import('../../apps/host/src/messages/service.ts');
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary', null);
+  const msgCount = (k: string) => (db.prepare('SELECT COUNT(*) n FROM messages WHERE client_message_id = ?').get(k) as { n: number }).n;
+  // 结果 URL 服务器：可切换 503/200+PNG 字节
+  let urlUp = true;
+  const urlServer = http.createServer((req, res) => {
+    if (!urlUp) { res.writeHead(503); res.end('down'); return; }
+    res.writeHead(200, { 'Content-Type': 'image/png' });
+    res.end(PNG_FULL);
+  });
+  await new Promise<void>((resolve) => urlServer.listen(0, '127.0.0.1', resolve));
+  const urlPort = (urlServer.address() as { port: number }).port;
+  const urlTransport: ImageGenTransport = async () => ({ status: 200, json: { id: 'gen-url', data: [{ url: `http://127.0.0.1:${urlPort}/generated.png` }] } });
+  try {
+    // ① 取回成功：一次生成调用完成 生成→保存→发布（默认 send）
+    const f = fixture(urlTransport, { messages });
+    const opKey = imageGenOpKey(CTX1, 'op-18');
+    const r1 = await f.svc.generateAndStore({ prompt: 'URL 回包画', opKey, deliver: 'send', roomId: 'primary', turnId: 't18' });
+    assert.equal(r1.ok, true, JSON.stringify(r1));
+    if (r1.ok) assert.ok(r1.published_message_id, '默认发送照常发布');
+    assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 1, '恰好一条消息');
+    assert.equal(f.calls(), 1, '生成请求总数 1');
+    // ② 取不回落 url_pending：重放只重取 URL，生成计数不增；URL 恢复后同键收口成功
+    const f2 = fixture(urlTransport, { messages });
+    const opKey2 = imageGenOpKey(CTX1, 'op-18b');
+    urlUp = false;
+    const r2 = await f2.svc.generateAndStore({ prompt: 'URL 断取画', opKey: opKey2, deliver: 'send', roomId: 'primary', turnId: 't18b' });
+    assert.equal(r2.ok, false, JSON.stringify(r2));
+    if (!r2.ok) { assert.equal(r2.code, 'IMAGEGEN_URL_PENDING'); assert.equal(r2.retryable, true); }
+    const st = db.prepare('SELECT state, result_url FROM imagegen_operations WHERE op_key=?').get(opKey2) as { state: string; result_url: string };
+    assert.equal(st.state, 'url_pending', '落 url_pending（不是 failed_generation）');
+    assert.ok(st.result_url, '结果 URL 留存');
+    assert.equal(f2.calls(), 1, '生成请求 1');
+    // URL 仍挂：同键重放还是 PENDING，仍不生成
+    const r2b = await f2.svc.generateAndStore({ prompt: 'URL 断取画', opKey: opKey2, deliver: 'send', roomId: 'primary', turnId: 't18b' });
+    assert.equal(r2b.ok, false);
+    if (!r2b.ok) assert.equal(r2b.code, 'IMAGEGEN_URL_PENDING', '第二次回执说明只重取 URL、未重新生成');
+    assert.equal(f2.calls(), 1, '生成请求总数仍 1');
+    assert.equal(msgCount(`tool-imagegen:${opKey2}:publish`), 0, '新增作品前的失败路径不发布');
+    // URL 恢复：同键重试 → 取回字节 → 保存+发布，生成仍 1 次
+    urlUp = true;
+    const r2c = await f2.svc.generateAndStore({ prompt: 'URL 断取画', opKey: opKey2, deliver: 'send', roomId: 'primary', turnId: 't18b' });
+    assert.equal(r2c.ok, true, JSON.stringify(r2c));
+    if (r2c.ok) assert.ok(r2c.published_message_id);
+    assert.equal(f2.calls(), 1, '恢复取回不重新生成');
+    assert.equal(msgCount(`tool-imagegen:${opKey2}:publish`), 1);
+  } finally { urlServer.close(); }
+});
+
+test('IG-19 (P2-3): 完整 429 空正文/502 纯文本=明确错误可重试；200 头后半截 JSON 断流=未确认不重发', async () => {
+  // 真实 defaultTransport（不注入 transport）：本机 HTTP 上游切换四种应答形态
+  let mode: 'ok' | 'rate429' | 'bad502' | 'trunc200' = 'ok';
+  let hits = 0;
+  const upstream = http.createServer((req, res) => {
+    hits += 1;
+    if (mode === 'rate429') { res.writeHead(429, { 'Content-Length': 0 }); res.end(); return; }
+    if (mode === 'bad502') { res.writeHead(502, { 'Content-Type': 'text/plain' }); res.end('Bad Gateway'); return; }
+    if (mode === 'trunc200') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.write('{"data":[{"b64_js'); res.destroy(); return; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id: 'gen-h', data: [{ b64_json: PNG_FULL.toString('base64') }] }));
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const port = (upstream.address() as { port: number }).port;
+  const makeAdapter = () => new ImageGenAdapter({ baseUrl: `http://127.0.0.1:${port}`, apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm' });
+  const store = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_IMAGEGEN_KEY' });
+  const media = new MediaService(db, path.join(root, `media-ig19-${Math.random().toString(36).slice(2, 8)}`), buildConfig({}), store);
+  const svc = new ImageGenService({ db, adapter: makeAdapter(), media, contentClient: client });
+  try {
+    // ① 429 空正文：完整错误应答→RATE_LIMITED 可重试；重试成功后上游累计 2 次
+    mode = 'rate429'; hits = 0;
+    const k1 = imageGenOpKey(CTX1, 'op-19-429');
+    const r1 = await svc.generateAndStore({ prompt: 'x', opKey: k1 });
+    assert.equal(r1.ok, false, JSON.stringify(r1));
+    if (!r1.ok) { assert.equal(r1.code, 'IMAGEGEN_RATE_LIMITED'); assert.equal(r1.retryable, true); }
+    mode = 'ok';
+    const r1b = await svc.generateAndStore({ prompt: 'x', opKey: k1 });
+    assert.equal(r1b.ok, true, JSON.stringify(r1b));
+    assert.equal(hits, 2, '429→重试成功：上游累计 2 次');
+    // ② 502 纯文本：完整错误应答→UPSTREAM_ERROR 可重试
+    mode = 'bad502'; hits = 0;
+    const k2 = imageGenOpKey(CTX1, 'op-19-502');
+    const r2 = await svc.generateAndStore({ prompt: 'x', opKey: k2 });
+    assert.equal(r2.ok, false, JSON.stringify(r2));
+    if (!r2.ok) { assert.equal(r2.code, 'IMAGEGEN_UPSTREAM_ERROR'); assert.equal(r2.retryable, true); }
+    assert.equal(hits, 1);
+    // ③ 200 头+半截 JSON 后断连：读取中断=未确认；同键重放仍未确认，上游累计 1 次
+    mode = 'trunc200'; hits = 0;
+    const k3 = imageGenOpKey(CTX1, 'op-19-trunc');
+    const r3 = await svc.generateAndStore({ prompt: 'x', opKey: k3 });
+    assert.equal(r3.ok, false, JSON.stringify(r3));
+    if (!r3.ok) { assert.equal(r3.code, 'IMAGEGEN_RESULT_UNCONFIRMED'); assert.equal(r3.retryable, false); }
+    const r3b = await svc.generateAndStore({ prompt: 'x', opKey: k3 });
+    assert.equal(r3b.ok, false);
+    assert.equal(hits, 1, '未确认不自动重发（上游累计 1 次）');
+  } finally { upstream.close(); }
+});
