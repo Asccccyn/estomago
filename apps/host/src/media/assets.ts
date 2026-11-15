@@ -182,39 +182,20 @@ export class MediaService {
     }
   }
 
-  /** ALB-01：本地缓存 LRU 逐出一跳。P1-e（审计 2026-11-15）改为**按物理文件**
-   *  （storage_key）核算与逐出：同字节别名共享一个文件——①容量按去重后的文件计，
-   *  不再按资产行重复累计；②共享该文件的引用中存在非（available 且 synced）行
-   *  （pending 待同步/out_of_scope 无 M 正本，如 derived_view）时，逐出会毁掉其唯一
-   *  本地字节、后台重试永久失败——该文件不可逐。返回逐出文件数与去重后缓存字节。 */
+  /** ALB-01：本地缓存 LRU 逐出一跳——物理文件口径的唯一正本见模块级
+   *  planCacheEviction/deleteCacheFiles（二轮返修 P1-4：后台与运维 CLI 共用）。 */
   evictCacheOverBudget(maxEvict = 20): { evicted: number; cacheBytes: number } {
     const budget = this.config.media.cache_budget_bytes;
-    const rows = this.db.prepare(
-      `SELECT storage_key, content_sha256, byte_size, cache_last_used_at FROM media_assets
-       WHERE state = 'available' AND m_sync_state = 'synced'`,
-    ).all() as Array<{ storage_key: string; content_sha256: string; byte_size: number; cache_last_used_at: string | null }>;
-    const blocked = new Set((this.db.prepare(
-      `SELECT DISTINCT content_sha256 FROM media_assets
-       WHERE content_sha256 IS NOT NULL AND NOT (state = 'available' AND m_sync_state = 'synced')`,
-    ).all() as Array<{ content_sha256: string }>).map((r) => r.content_sha256));
-    const files = new Map<string, { sha: string; size: number; lastUsed: string | null }>();
-    for (const r of rows) {
-      const f = files.get(r.storage_key);
-      if (!f) files.set(r.storage_key, { sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at });
-      else if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at; // 任一引用读过=文件最近使用
+    const { candidates, totalBytes } = planCacheEviction(this.db, this.mediaDir);
+    const targets: CacheEvictionCandidate[] = [];
+    let acc = totalBytes;
+    for (const f of candidates) {
+      if (acc <= budget || targets.length >= maxEvict) break;
+      targets.push(f);
+      acc -= f.size;
     }
-    const existing = [...files.entries()].filter(([k]) => fs.existsSync(path.join(this.mediaDir, k)));
-    let total = existing.reduce((s, [, f]) => s + f.size, 0);
-    existing.sort((a, b) => (a[1].lastUsed ?? '').localeCompare(b[1].lastUsed ?? '')); // 从未读过（NULL）=最旧，先逐
-    let evicted = 0;
-    for (const [key, f] of existing) {
-      if (total <= budget || evicted >= maxEvict) break;
-      if (blocked.has(f.sha)) continue; // 同文件存在未落正引用——本地是它的唯一字节，不逐
-      fs.rmSync(path.join(this.mediaDir, key));
-      total -= f.size;
-      evicted += 1;
-    }
-    return { evicted, cacheBytes: total };
+    const { evicted, freedBytes } = deleteCacheFiles(this.mediaDir, targets);
+    return { evicted, cacheBytes: totalBytes - freedBytes };
   }
 
   /** 待同步批次（后台一跳有界推进；按创建序，最旧优先）。 */
@@ -527,4 +508,48 @@ export function isPublicIp(ip: string): boolean {
     return true;
   }
   return false;
+}
+
+// —— 二轮返修 P1-4/P2-5（2026-11-15）：物理文件逐出的唯一正本——后台 evictCacheOverBudget
+// 与运维脚本 scripts/media-cache-evict.mjs 共用（同一计量、同一保护、同一候选顺序）。 ——
+export type CacheEvictionCandidate = { storageKey: string; sha: string; size: number; lastUsed: string | null };
+
+/** 可逐文件计划：候选=仅含（available 且 synced）引用、且磁盘上存在的物理文件，按
+ *  storage_key 去重、大小计一次；LRU=各引用最近使用时间的最大值（任一引用读过=最近
+ *  使用），从未读过最旧。保护：同文件存在仍需本地字节的有效引用——available 且未
+ *  synced（pending 待同步）或 out_of_scope（无 M 正本，如语音/派生图）；missing（已
+ *  标删）行不保护文件——它不是文件的活跃依赖（旧实现把标删别名也算保护者，永不可逐）。 */
+export function planCacheEviction(db: Db, mediaDir: string): { candidates: CacheEvictionCandidate[]; totalBytes: number } {
+  const rows = db.prepare(
+    `SELECT storage_key, content_sha256, byte_size, cache_last_used_at FROM media_assets
+     WHERE state = 'available' AND m_sync_state = 'synced'`,
+  ).all() as Array<{ storage_key: string; content_sha256: string; byte_size: number; cache_last_used_at: string | null }>;
+  const blocked = new Set((db.prepare(
+    `SELECT DISTINCT content_sha256 FROM media_assets
+     WHERE content_sha256 IS NOT NULL AND state != 'missing' AND NOT (state = 'available' AND m_sync_state = 'synced')`,
+  ).all() as Array<{ content_sha256: string }>).map((r) => r.content_sha256));
+  const files = new Map<string, CacheEvictionCandidate>();
+  for (const r of rows) {
+    if (blocked.has(r.content_sha256)) continue;
+    if (!fs.existsSync(path.join(mediaDir, r.storage_key))) continue;
+    const f = files.get(r.storage_key);
+    if (!f) files.set(r.storage_key, { storageKey: r.storage_key, sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at });
+    else if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at;
+  }
+  const candidates = [...files.values()].sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? ''));
+  return { candidates, totalBytes: candidates.reduce((s, f) => s + f.size, 0) };
+}
+
+/** 执行删除（存在才删、逐个容错）：返回实际删除文件数/字节/失败数。预演=不调用本函数。 */
+export function deleteCacheFiles(mediaDir: string, files: CacheEvictionCandidate[]): { evicted: number; freedBytes: number; failed: number } {
+  let evicted = 0, freedBytes = 0, failed = 0;
+  for (const f of files) {
+    const abs = path.join(mediaDir, f.storageKey);
+    try {
+      if (!fs.existsSync(abs)) continue;
+      fs.rmSync(abs);
+      evicted += 1; freedBytes += f.size;
+    } catch { failed += 1; }
+  }
+  return { evicted, freedBytes, failed };
 }

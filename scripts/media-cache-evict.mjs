@@ -1,10 +1,10 @@
 // 相册整改 ALB-01：E 本地媒体缓存一次性逐出（运维脚本，需单独授权执行）。
-// 对象=state=available 且 m_sync_state='synced' 的资产（M 已有同 hash 正本）——删除
-// 本地文件、保留行；读取经 readContentResolvingMaster 按需从 M 回源重建缓存。
-// 语音(out_of_scope)/未 synced(pending) 的文件永不逐（无 M 正本，删=丢字节）。
+// 二轮返修 P1-4（2026-11-15）：与后台 evictCacheOverBudget 共用同一套物理文件规则
+// （planCacheEviction/deleteCacheFiles）——按 storage_key 去重计量、保护仍需本地字节
+// 的有效引用（pending/out_of_scope；missing 标删行不算）、LRU 按文件各引用最近使用。
+// 读取经 readContentResolvingMaster 按需从 M 回源重建缓存。
 // 用法：node --experimental-strip-types scripts/media-cache-evict.mjs [--home <root>] --prod [--apply] [--to-budget]
 //   默认 dry-run 清点；--apply 才删文件；--to-budget=只逐到配置预算内（默认逐全部候选）。
-import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -22,27 +22,23 @@ const paths = buildPaths(resolveStateRoot(home));
 const { config } = loadConfig({ argv: [], paths });
 const { openDatabase } = await import('../apps/host/src/db/connection.ts');
 const db = openDatabase(paths.dataDir);
-
-const rows = db.prepare(
-  `SELECT id, storage_key, byte_size, ingest_purpose FROM media_assets
-   WHERE state = 'available' AND m_sync_state = 'synced' ORDER BY created_at ASC`,
-).all();
-
-const eligible = rows.filter((r) => fs.existsSync(path.join(paths.mediaDir, r.storage_key)));
-const totalBytes = eligible.reduce((n, r) => n + r.byte_size, 0);
+// 共用唯一正本：同一计量/保护/顺序，预演与实际执行同一批候选
+const { planCacheEviction, deleteCacheFiles } = await import('../apps/host/src/media/assets.ts');
+const { candidates, totalBytes } = planCacheEviction(db, paths.mediaDir);
 const budget = config.media.cache_budget_bytes;
 const targets = toBudget
-  ? (() => { let acc = totalBytes; const t = []; for (const r of eligible) { if (acc <= budget) break; acc -= r.byte_size; t.push(r); } return t; })()
-  : eligible;
-console.log(`[cache-evict] synced 候选 ${eligible.length} 个/${(totalBytes / 1048576).toFixed(1)}MiB（预算 ${(budget / 1048576).toFixed(0)}MiB）；模式=${apply ? `APPLY${toBudget ? '(至预算)' : '(全部候选)'}` : 'DRY-RUN'}；目标 ${targets.length} 个`);
+  ? (() => { let acc = totalBytes; const t = []; for (const f of candidates) { if (acc <= budget) break; acc -= f.size; t.push(f); } return t; })()
+  : candidates;
+const targetBytes = targets.reduce((n, f) => n + f.size, 0);
+console.log(`[cache-evict] 可逐文件（按物理文件去重）${candidates.length} 个/${(totalBytes / 1048576).toFixed(1)}MiB，预算 ${(budget / 1048576).toFixed(0)}MiB；模式=${apply ? `APPLY${toBudget ? '(至预算)' : '(全部候选)'}` : 'DRY-RUN'}；目标 ${targets.length} 个/${(targetBytes / 1048576).toFixed(1)}MiB`);
 
-let freed = 0, failed = 0;
-for (const r of targets) {
-  const abs = path.join(paths.mediaDir, r.storage_key);
-  if (!apply) { console.log(`[dry] ${r.id} ${r.ingest_purpose} ${r.byte_size}B`); continue; }
-  try { fs.rmSync(abs); freed += r.byte_size; }
-  catch (err) { failed += 1; console.error(`[fail] ${r.id}: ${String(err && err.message ? err.message : err).slice(0, 80)}`); }
+if (!apply) {
+  for (const f of targets) console.log(`[dry] ${f.storageKey} ${f.size}B lastUsed=${f.lastUsed ?? '从未读取'}`);
+  db.close();
+  console.log('[cache-evict] 预演完成：未删除任何文件；行全部保留。');
+} else {
+  const { evicted, freedBytes, failed } = deleteCacheFiles(paths.mediaDir, targets);
+  db.close();
+  console.log(`[cache-evict] 完成：删除 ${evicted} 个文件，释放 ${(freedBytes / 1048576).toFixed(1)}MiB；失败 ${failed}。行全部保留；后续读取从 M 回源重建。`);
+  if (failed > 0) process.exit(2);
 }
-db.close();
-console.log(`[cache-evict] 完成：${apply ? `删除 ${targets.length - failed} 个文件，释放 ${(freed / 1048576).toFixed(1)}MiB` : '未删除任何文件'}；失败 ${failed}。行全部保留；后续读取从 M 回源重建。`);
-if (failed > 0) process.exit(2);

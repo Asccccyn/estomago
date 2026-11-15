@@ -291,3 +291,73 @@ test('PM-11 (P1-e 审计 2026-11-15): 逐出按物理文件——同字节别名
     assert.equal(fs.existsSync(path.join(root, 'media', key)), true, 'a4 的本地字节仍在，后台重试可用');
   } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+test('PM-12 (P1-4/P2-5 二轮返修): 标删别名不再保护共享文件；CLI 与后台共用规则；M 恢复后正式重试补同步', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const exec = promisify(execFile);
+  const { buildPaths, resolveStateRoot } = await import('../../apps/host/src/config/paths.ts');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'est-pm12-home-'));
+  const paths = buildPaths(resolveStateRoot(home));
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.writeFileSync(path.join(paths.configDir, 'estomago.yaml'), 'media:\n  cache_budget_bytes: 50\n');
+  const db = openDatabase(path.join(home, 'data'));
+  migrate(db, sha256Hex);
+  const config = buildConfig({ media: { cache_budget_bytes: 50 } });
+  const mStore = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_M_TOKEN' });
+  const media = new MediaService(db, paths.mediaDir, config, mStore);
+  const png = (fill: number) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(96, fill)]);
+  const runCli = (cliArgs: string[]) => exec('node', ['--experimental-strip-types', 'scripts/media-cache-evict.mjs', '--home', home, ...cliArgs], { cwd: process.cwd(), env: { ...process.env, ESTOMAGO_TEST_MODE: '1' } });
+  const fileOf = (id: string) => path.join(paths.mediaDir, (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(id) as { storage_key: string }).storage_key);
+  try {
+    // 前提：文件1（a1 pending + a2 synced，共享）受保护；文件2（a3/a4 均 synced）可逐
+    fakeM.failMode = 'prepare_503';
+    const a1 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'pm12-1', createdBy: 'q', origin: 'upload' });
+    fakeM.failMode = 'none';
+    const a2 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'pm12-2', createdBy: 'q', origin: 'upload' });
+    const a3 = await media.saveBuffer({ bytes: png(2), purpose: 'chat_image', operationId: 'pm12-3', createdBy: 'q', origin: 'upload' });
+    const a4 = await media.saveBuffer({ bytes: png(2), purpose: 'chat_image', operationId: 'pm12-4', createdBy: 'q', origin: 'upload' });
+    void a4;
+    assert.equal(media.getAsset(a1.id).m_sync_state, 'pending', '前提：a1 因 M 503 仍待同步（保护文件1）');
+    assert.equal(media.getAsset(a2.id).m_sync_state, 'synced');
+    assert.equal(media.getAsset(a3.id).m_sync_state, 'synced');
+    // ① 预演（默认与 --to-budget）：只计文件2 一个/104B；两个文件都在（预演不删）
+    const dry = await runCli([]);
+    assert.ok(dry.stdout.includes('可逐文件（按物理文件去重）1 个'), dry.stdout);
+    assert.ok(dry.stdout.includes('目标 1 个'), dry.stdout);
+    const dryBudget = await runCli(['--to-budget']);
+    void dryBudget;
+    assert.equal(fs.existsSync(fileOf(a1.id)), true, '预演不删：待同步共享文件在');
+    assert.equal(fs.existsSync(fileOf(a3.id)), true, '预演不删：可逐文件在');
+    // ② 实际执行（按预算 / 全部候选）：都不删待同步共享文件1；只删可逐的文件2
+    const applyBudget = await runCli(['--apply', '--to-budget']);
+    assert.ok(applyBudget.stdout.includes('删除 1 个文件'), applyBudget.stdout);
+    assert.equal(fs.existsSync(fileOf(a1.id)), true, '按预算模式保留待同步共享文件');
+    assert.equal(fs.existsSync(fileOf(a3.id)), false);
+    const applyAll = await runCli(['--apply']);
+    assert.ok(applyAll.stdout.includes('删除 0 个文件') || applyAll.stdout.includes('目标 0 个'), applyAll.stdout);
+    assert.equal(fs.existsSync(fileOf(a1.id)), true, '全部合格文件模式同样保留（它不是合格文件）');
+    // ③ M 恢复：正式重试使待同步引用补落 synced（验收 4b）
+    const recovered = await media.attemptMSync(a1.id);
+    assert.equal(recovered, true, 'M 恢复后正式重试补同步成功');
+    assert.equal(media.getAsset(a1.id).m_sync_state, 'synced');
+    // ④ 文件1 变为可逐：预演目标 1 与实际执行一致；执行后从 M 回源 hash 一致（验收 4c）
+    const dry2 = await runCli(['--to-budget']);
+    assert.ok(dry2.stdout.includes('目标 1 个'), dry2.stdout);
+    assert.equal(fs.existsSync(fileOf(a1.id)), true, '预演后文件仍在');
+    const apply2 = await runCli(['--apply', '--to-budget']);
+    assert.ok(apply2.stdout.includes('删除 1 个文件'), apply2.stdout);
+    assert.equal(fs.existsSync(fileOf(a1.id)), false);
+    const back = await media.readContentResolvingMaster(a1.id);
+    assert.equal(sha256Hex(back.bytes), media.getAsset(a1.id).content_sha256, 'M 回源字节 hash 一致');
+    // ⑤ P2-5：已标删别名不再保护——重建文件1 后标删 a2，预算 50 下应逐出 1 份；A 可回源、B 维持 missing
+    assert.equal(fs.existsSync(fileOf(a2.id)), true, '回源已重建本地缓存');
+    media.markAssetMissing(a2.id); // 正式删除原语（a2 无引用）
+    const ev = media.evictCacheOverBudget();
+    assert.equal(ev.evicted, 1, `标删别名不保护——104B 超预算 50B 应逐出（实际 ${ev.evicted}）`);
+    assert.equal(fs.existsSync(fileOf(a2.id)), false);
+    assert.equal(media.getAsset(a2.id).state, 'missing', 'B 维持 missing');
+    const back2 = await media.readContentResolvingMaster(a1.id);
+    assert.equal(sha256Hex(back2.bytes), media.getAsset(a1.id).content_sha256, 'A 从 M 回源 hash 一致');
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
