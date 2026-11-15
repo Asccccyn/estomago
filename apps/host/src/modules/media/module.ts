@@ -25,7 +25,7 @@ export const MEDIASEARCH_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'media_search',
-      description: '按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从"我们的相册"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。',
+      description: '按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从"我们的相册"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个；语义检索只覆盖位图——要列出/翻页全部作品含 SVG/HTML 用 content_creations_read）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答"哪张图可能相关"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。',
       parameters: {
         type: 'object',
         properties: {

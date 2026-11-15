@@ -1706,4 +1706,31 @@ ALTER TABLE imagegen_operations ADD COLUMN output_format TEXT;
 `,
 });
 
+// v71（包1 M02 2026-11-15）：附件 presentation 增加 work——SVG/HTML 代码作品引用。
+// 交付走沙箱预览（/api/v1/assets/:id/preview），不进普通图片白名单。SQLite 不能改
+// CHECK，整表重建（message_attachments 为叶子表，无 FK 引用，重建安全；索引重建）。
+MIGRATIONS.push({
+  version: 71,
+  name: 'attachment-presentation-work',
+  sql: `
+CREATE TABLE message_attachments_v71(
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  asset_id TEXT NOT NULL,
+  presentation TEXT NOT NULL CHECK (presentation IN ('image','sticker','voice','work')),
+  caption TEXT,
+  derived_text TEXT,
+  derived_source TEXT,
+  created_at TEXT NOT NULL,
+  object_meta_synced_at TEXT,
+  PRIMARY KEY (message_id, revision, position)
+);
+INSERT INTO message_attachments_v71 SELECT message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at, object_meta_synced_at FROM message_attachments;
+DROP TABLE message_attachments;
+ALTER TABLE message_attachments_v71 RENAME TO message_attachments;
+CREATE INDEX IF NOT EXISTS idx_msg_attachments_asset ON message_attachments(asset_id);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -75,7 +75,7 @@ export type MessagePageDto = {
 
 export type MessageAttachmentInput = {
   asset_id: string; // 必须先经资产创建/导入取得（不接受 URL/路径/Base64）
-  presentation: 'image' | 'sticker' | 'voice';
+  presentation: 'image' | 'sticker' | 'voice' | 'work'; // work=SVG/HTML 代码作品引用（隔离预览交付，包1 M02 2026-11-15）
   caption?: string | null; // 图片/表情可选说明——不是用户亲笔正文
 };
 

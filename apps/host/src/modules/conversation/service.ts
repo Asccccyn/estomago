@@ -354,7 +354,7 @@ export class ConversationToolsService {
   }
 
 
-  async chatSendAttachment(args: { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
+  async chatSendAttachment(args: { asset_id: string; presentation: 'image' | 'sticker' | 'voice' | 'work'; content?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.messages || !this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '消息/媒体服务未装配' } };
     try {
       this.media.validateForSend([{ asset_id: args.asset_id, presentation: args.presentation }]);

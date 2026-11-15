@@ -150,3 +150,38 @@ test('W1: 旧仅收藏 NULL 身份行改携带——代理 PUT 先按 E 资产�
   assert.equal(a2?.content_sha256, media.getAsset(alias2).content_sha256, '无自报值同样按 E 资产行补齐');
   assert.equal(new Set(after.map((i) => i.content_sha256 ?? `est:${i.asset_id}`)).size, 10, '别名并入后去重身份仍 10');
 });
+
+test('M07（包1 2026-11-15 宿主用户裁定）：同资产新键=修改既有条目——caption 显式替换/空串清空/省略保留；修改不占携带名额', async () => {
+  const assetId = (await media.saveBuffer({ bytes: PNG_BYTES(90), purpose: 'chat_image', operationId: 'm07-op-90', createdBy: 'qiaosheng', origin: 'upload' })).id;
+  const post = async (key: string, body: Record<string, unknown>) => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/v1/content/albums/important_photos/entries`, {
+      method: 'POST', headers: { authorization: 'Bearer carry-hash-token', 'x-actor': 'qiaosheng', 'content-type': 'application/json', 'idempotency-key': key },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() as Record<string, unknown> };
+  };
+  const c1 = await post('m07-k1', { asset_id: assetId, caption: '当时的原话', meaning: '我的说明' });
+  assert.equal(c1.status, 201, JSON.stringify(c1.body));
+  const entryId = c1.body['id'] as string;
+  // 新键+空串 caption=删除留言；meaning 省略=保留原值
+  const c2 = await post('m07-k2', { asset_id: assetId, caption: '' });
+  assert.equal(c2.status, 200, '同资产=既有条目身份，不新建');
+  assert.equal(c2.body['id'], entryId);
+  assert.equal(c2.body['caption'], '', '空串=清空留言');
+  assert.equal(c2.body['meaning'], '我的说明', '省略=保留原值');
+  // 新键无实际变化（carry 同值、caption 省略）→ 不推进修订、不清留言
+  // （携带名额满 10 场景下改携带的边界由本文件 W1/F1 用例覆盖，此处不重复灌集合）
+  const c3 = await post('m07-k3', { asset_id: assetId, carry_mode: 'none' });
+  assert.equal(c3.status, 200, JSON.stringify(c3.body));
+  assert.equal(c3.body['carry_mode'], 'none');
+  assert.equal(c3.body['caption'], '', '省略=保留清空后的值');
+  assert.equal(c3.body['revision'], c2.body['revision'], '无实际变化不推进修订');
+  // 新键+新 caption=替换
+  const c4 = await post('m07-k4', { asset_id: assetId, caption: '新原话' });
+  assert.equal(c4.body['caption'], '新原话');
+  assert.ok(Number(c4.body['revision']) > Number(c3.body['revision']), '实际替换推进修订');
+  // 同键同指纹重放=原回执，不推进修订
+  const c5 = await post('m07-k4', { asset_id: assetId, caption: '新原话' });
+  assert.equal(c5.status, 200);
+  assert.equal(c5.body['revision'], c4.body['revision'], '同键重放不重复执行');
+});

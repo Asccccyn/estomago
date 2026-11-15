@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "77ccfeb3ce1cf8fb6cc7ecc3b63c4d51c2e037cf",
+  "baselineCommit": "d5e51f556197d2eabdaa2d2130dfc39e5edde322",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -54,6 +54,7 @@
     "content_albums_read",
     "content_album_entry_write",
     "media_view",
+    "content_creations_read",
     "archives_search"
   ],
   "deferredOrder": [
@@ -84,11 +85,11 @@
     "background_complete": "td_e4bd112b3b94eefbe84a2ffd",
     "chat_send_text": "td_2eecb84ad9caf01e6364ab07",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
-    "chat_send_attachment": "td_0d35f6fc0fba7a7867deb5ac",
+    "chat_send_attachment": "td_2d582dc311115a57e9cd3dae",
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
-    "media_search": "td_f05de9feeb73a5f5ff262470",
+    "media_search": "td_5a5830c2fce44facc1a51ed3",
     "oido_get": "td_23e1d4816888a554a3745bf5",
     "transcript_read": "td_f732c725968a0a8aa604f9a8",
     "oido_capabilities": "td_556434ab24001d6f65381d0b",
@@ -110,14 +111,15 @@
     "memory_words_write": "td_f4823cf6cf38cf650274b504",
     "conversation_archive": "td_f88c602fd1d9f3d28b865524",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
-    "image_generate": "td_cb32eeae0aca24e2b78df9b1",
+    "image_generate": "td_07d95a84bbbb2855276a14f8",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
-    "content_album_entry_write": "td_372d8e719502f2e487fffb17",
+    "content_album_entry_write": "td_228924fc50dbf03f78332239",
     "media_view": "td_f72b71bbef701e3714320c82",
+    "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "17cafb05438dd49044f51f85e08511d29f20eba842684a99b14a8c58defad3fa",
+  "toolsSha256": "1f900c85b2a8be56feaf09f28ec7886496d1fad3132fc552da31bf32f8439b9b",
   "tools": [
     {
       "type": "function",
@@ -1300,7 +1302,7 @@
       "type": "function",
       "function": {
         "name": "chat_send_attachment",
-        "description": "以你当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。",
+        "description": "以你当前房间身份正式发布附件消息（图片/表情/语音/SVG·HTML 代码作品）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产；SVG/HTML 作品用 presentation=work（隔离预览交付），普通位图用 image。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1314,7 +1316,8 @@
               "enum": [
                 "image",
                 "sticker",
-                "voice"
+                "voice",
+                "work"
               ]
             },
             "content": {
@@ -1445,7 +1448,7 @@
       "type": "function",
       "function": {
         "name": "media_search",
-        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从\"我们的相册\"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
+        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从\"我们的相册\"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个；语义检索只覆盖位图——要列出/翻页全部作品含 SVG/HTML 用 content_creations_read）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2240,7 +2243,7 @@
       "type": "function",
       "function": {
         "name": "image_generate",
-        "description": "用图片生成模型画一张图并保存为作品（自动进入作品集）。默认静态图；她要 GIF 动图时必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒），聊天窗口会自动循环播放。失败时如实返回错误码；同一 client_operation_id 重试不会重复生成或重复计费。生成成功后保存失败会自动重试保存而不重新生成。",
+        "description": "画一张图：默认同一次操作完成 生成→保存为作品→发布到当前聊天（回执 sent=true 即已发送，不要再调用 chat_send_attachment 补发）。她要求先验图再发、或明确只要保存时，传 deliver=save_only 仅保存（之后可用 chat_send_attachment 发送同一 asset_id，不会重新生成）。默认静态图；要 GIF 动图必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒；帧数和尺寸拼成大图受供应商\"最长边≤3840\"限制，大尺寸请减少帧数，超限组合会在请求前被拒）。失败回执如实分阶段：上游明确失败（含 5xx）retryable=true，同键重试会重新请求上游；结果未确认（超时/断连）不自动重发避免重复计费；已生成保存失败、或已保存发布失败时，同键重试只补缺失阶段，不重新付费生成。同一 client_operation_id 重试沿用同一值。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2277,6 +2280,14 @@
             "frame_duration_ms": {
               "type": "integer",
               "description": "仅 gif：每帧毫秒，最低 20（如 200）"
+            },
+            "deliver": {
+              "type": "string",
+              "enum": [
+                "send",
+                "save_only"
+              ],
+              "description": "交付方式：默认 send=保存后发布到当前聊天；save_only=仅保存不发送（先验图流程用，之后用 chat_send_attachment 发同一资产）"
             }
           },
           "required": [
@@ -2397,7 +2408,7 @@
       "type": "function",
       "function": {
         "name": "content_album_entry_write",
-        "description": "把一张图片收入相册（收藏/归类/携带一体）。kind=important_photos 收藏重要照片（可附当时的原话 caption 与你的说明 meaning），kind=stickers 归入表情包。carry_mode 仅 important_photos 有效（none=仅收藏；next_once=下次滚窗带一次；always=每次滚窗都带）。同 (kind,asset) 重复提交幂等返回既有条目。",
+        "description": "把一张图片收入相册，或修改已收藏的条目（收藏/归类/携带一体）。kind=important_photos 收藏重要照片（可附当时的原话 caption 与你的说明 meaning），kind=stickers 归入表情包。carry_mode 仅 important_photos 有效（none=仅收藏；next_once=下次滚窗带一次；always=每次滚窗都带）。更新已有条目：caption/meaning 显式给出才更新（空串=删除留言），省略=保留原值；修改留言不算新增一张、不占携带名额；显式 carry_mode=none=撤销携带（不删除收藏）。同 idempotency_key 重试幂等返回原结果。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2418,12 +2429,12 @@
             "caption": {
               "type": "string",
               "maxLength": 2000,
-              "description": "收藏时的原话留言（可选）"
+              "description": "原话留言；更新已有条目时给出新值则替换、空串=删除留言、省略=保留原值"
             },
             "meaning": {
               "type": "string",
               "maxLength": 2000,
-              "description": "你对这张图的说明（可选）"
+              "description": "你对这张图的说明；更新语义同 caption（空串=清空、省略=保留）"
             },
             "carry_mode": {
               "type": "string",
@@ -2432,7 +2443,7 @@
                 "next_once",
                 "always"
               ],
-              "description": "滚窗携带模式，默认 none 仅收藏"
+              "description": "滚窗携带模式；新建省略=none 仅收藏，更新省略=保留原值"
             },
             "idempotency_key": {
               "type": "string",
@@ -2467,6 +2478,30 @@
           "required": [
             "asset_ref"
           ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "content_creations_read",
+        "description": "浏览作品集（分页）。含生成图与 SVG/HTML 代码作品：图片作品返回 asset_ref（用 media_view 看图、chat_send_attachment 发送）；SVG/HTML 返回 preview_ref 沙箱预览入口（模型不直接看图，发送用 chat_send_attachment presentation=work）。这是跨窗口重新找到已保存作品的读取入口。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": "string",
+              "minLength": 1,
+              "description": "上一页返回的 next_cursor"
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "description": "每页数量，默认 20"
+            }
+          },
           "additionalProperties": false
         }
       }

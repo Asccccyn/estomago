@@ -52,6 +52,11 @@ export class MediaToolsService {
       allowed = response.status === 200 && Array.isArray(body.items) && body.items.length > 0;
     }
     if (!allowed) throw new MediaError('ASSET_NOT_READABLE', 403, '图片不属于当前房间已发布附件或可读相册');
+    if (asset.mime_type === 'image/svg+xml' || asset.mime_type === 'text/html') {
+      // M06/E06（包1 2026-11-15）：SVG/HTML 是隔离预览交付的代码作品——模型视觉通道
+      // 只收位图，如实报限制+可用入口，不冒充已看到图片。
+      throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `这是 ${asset.mime_type} 代码作品，不能作为图片直接查看；沙箱预览入口 /api/v1/assets/${assetId}/preview，聊天交付用 chat_send_attachment（presentation=work）`);
+    }
     if (!['image/png','image/jpeg','image/gif','image/webp'].includes(asset.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '该资产不是可投递图片');
     // Access can be revoked between tool execution and sending/replaying history.
     // Both transports call this same resolver at their actual send boundary.

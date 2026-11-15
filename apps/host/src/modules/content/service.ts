@@ -76,6 +76,44 @@ export class ContentToolsService {
     return {ok:true,output:{items:(body.items ?? []).map(item=>({id:item.id,asset_ref:`est:${item.asset_id}`,caption:item.caption,meaning:item.meaning,created_at:item.created_at})),next_cursor:body.next_cursor,has_more:body.has_more}};
   }
 
+  /** M06（包1 2026-11-15）：作品集读取入口——content creations 全量分页。图片作品给
+   *  asset_ref（media_view 看图/发送用）；SVG/HTML 给 preview_ref 沙箱入口（模型不直接
+   *  看图）。复用 content 正本 API，不另建检索；截断两 flavor 同 RR4-A 口径如实报失败。 */
+  async contentCreationsRead(args: { cursor?: string; limit?: number }, _ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
+    const { contentForward } = await import('../../integrations/content/client.ts');
+    const params = new URLSearchParams();
+    if (args.limit && args.limit > 0 && args.limit <= 100) params.set('limit', String(Math.floor(args.limit)));
+    if (args.cursor) params.set('cursor', args.cursor);
+    let r: Awaited<ReturnType<typeof contentForward>>;
+    try {
+      r = await contentForward(this.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?${params}` });
+    } catch {
+      return { ok: false, output: { error_code: 'CREATIONS_READ_FAILED', detail: '内容服务暂不可达（正文传输失败）' } };
+    }
+    if (r.bodyFailed) return { ok: false, output: { error_code: 'CREATIONS_READ_FAILED', detail: '内容服务响应不完整（正文传输失败）' } };
+    if (r.status !== 200) return { ok: false, output: { error_code: 'CREATIONS_READ_FAILED', detail: `content ${r.status}` } };
+    const b = r.body as { items?: Array<Record<string, unknown>>; next_cursor?: string | null; has_more?: boolean };
+    const items = (b.items ?? []).map((it) => {
+      const workKind = typeof it.work_kind === 'string' ? it.work_kind : null;
+      const workAssetId = typeof it.work_asset_id === 'string' ? it.work_asset_id : null;
+      return {
+        creation_id: it.id ?? null,
+        title: it.title ?? null,
+        work_kind: workKind,
+        created_at: it.created_at ?? null,
+        // 图片作品：位图引用（可看可发）；SVG/HTML：沙箱预览引用（E06 限制如实标注）
+        ...(workKind === 'image' && workAssetId
+          ? { asset_ref: `est:${workAssetId}`, asset_id: workAssetId }
+          : workAssetId
+            ? { asset_id: workAssetId, preview_ref: `/api/v1/assets/${workAssetId}/preview`, note: 'SVG/HTML 代码作品：模型不直接看图，发送用 chat_send_attachment（presentation=work）' }
+            : {}),
+        ...(typeof it.icon_asset_id === 'string' && it.icon_asset_id ? { icon_asset_ref: `est:${it.icon_asset_id}` } : {}),
+      };
+    });
+    return { ok: true, output: { items, next_cursor: b.next_cursor ?? null, has_more: b.has_more ?? false } };
+  }
+
   /** R5（复审 2026-11-08）：相册写工具——与浏览器写同一协调面（回执/回放/未知收口）。
    *  幂等键绑定 turn+模型显式 key（RF02 同款，不含 provider requestId）。 */
   async contentAlbumEntryWrite(args: { kind: string; asset_id: string; caption?: string; meaning?: string; carry_mode?: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -113,7 +151,7 @@ export class ContentToolsService {
     // 只存资产不入条目的作品用户不可见。条目未成=如实可重试（同键只补条目），
     // 不冒充 saved；引用保护沿用 imagegen 协议（pin→建条目→按权威快照 commit）。
     if (!this.contentClient) {
-      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true } };
+      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } };
     }
     // RR4（复审 2026-11-09）：成功条件与 imagegen 同一根因口径——M 唯一正本未落正
     // 不得报 saved（落正由后台退避推进；同键重试只补落正与条目，不重复保存字节）。
@@ -159,7 +197,7 @@ export class ContentToolsService {
       } else {
         this.media.releaseOperationPins(opKey); // 回执无 id=无权威关系可确认
       }
-      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: creationId, saved: true } };
+      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: creationId, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } };
     } catch (err) {
       this.media.releaseOperationPins(opKey);
       return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——用同一 client_operation_id 重试只补条目` } };

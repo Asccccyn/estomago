@@ -57,12 +57,12 @@ export const CHATSENDATTACHMENT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'chat_send_attachment',
-      description: '以你当前房间身份正式发布附件消息（图片/表情/语音）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产。',
+      description: '以你当前房间身份正式发布附件消息（图片/表情/语音/SVG·HTML 代码作品）。只向当前授权私聊投递；同一工具调用重试只发一次。asset_id 必须是已存在的资产；SVG/HTML 作品用 presentation=work（隔离预览交付），普通位图用 image。',
       parameters: {
         type: 'object',
         properties: {
           asset_id: { type: 'string', minLength: 1, maxLength: 128 },
-          presentation: { type: 'string', enum: ['image', 'sticker', 'voice'] },
+          presentation: { type: 'string', enum: ['image', 'sticker', 'voice', 'work'] },
           content: { type: 'string', maxLength: 4000 },
         },
         required: ['asset_id', 'presentation'], additionalProperties: false,
@@ -97,7 +97,7 @@ export function registerConversationCapabilities(registry: { register(d: Capabil
   registry.register(toolCapability({
     owner: 'conversation',
     id: 'chat_send_attachment', baselineOrder: 24, free: true, definition: () => CHATSENDATTACHMENT_DEFINITION, memoryOnlyAllowed: false, label: '发附件',
-    run: (input: { asset_id: string; presentation: 'image' | 'sticker' | 'voice'; content?: string }, ctx) => service.chatSendAttachment(input, ctx),
+    run: (input: { asset_id: string; presentation: 'image' | 'sticker' | 'voice' | 'work'; content?: string }, ctx) => service.chatSendAttachment(input, ctx),
     toModel: (value) => value,
   }));
 }

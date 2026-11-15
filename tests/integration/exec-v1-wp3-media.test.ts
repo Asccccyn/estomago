@@ -229,3 +229,23 @@ test('HTTP：上传→元数据→content(Range)→附件发送→编辑 If-Matc
   const garbage = await fetch(`${base}/api/v1/assets?purpose=chat_image`, { method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'up-g', Origin: base }), body: new Uint8Array(GARBAGE) });
   assert.equal(garbage.status, 422); // 魔数不明
 });
+
+test('MEDIA-M02（包1 2026-11-15）：work=SVG/HTML 作品引用可发送——不进图片白名单，位图不冒充 work，投影走文本引用', async () => {
+  const { db, media, messages } = svc();
+  messages.ensureConversation('c1');
+  const svg = await media.saveBuffer({ bytes: Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><circle r="3"/></svg>'), purpose: 'creation_icon', operationId: 'op-work-1', createdBy: 'jiaming', origin: 'generated' });
+  const png = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-work-2', createdBy: 'qiaosheng', origin: 'upload' });
+  // 旧缺陷：SVG 走 presentation=image 被拒（保存成功却发不出去的根因）
+  assert.throws(() => media.validateForSend([{ asset_id: svg.id, presentation: 'image' }]), (e: MediaError) => e.code === 'ASSET_TYPE_UNSUPPORTED');
+  // work：svg 放行；png 冒充 work 拒（隔离方向不放宽）
+  media.validateForSend([{ asset_id: svg.id, presentation: 'work' }]);
+  assert.throws(() => media.validateForSend([{ asset_id: png.id, presentation: 'work' }]), (e: MediaError) => e.code === 'ASSET_TYPE_UNSUPPORTED');
+  // 真实发布链路（v71 CHECK 含 work）：附件消息可入库、投影给文本引用+沙箱预览入口而非位图块
+  const msg = messages.publishAssistantMessage({ conversationId: 'c1', turnId: 't1', content: '', clientMessageId: 'work-send-1', attachments: [{ asset_id: svg.id, presentation: 'work' }] });
+  assert.equal(msg.revision.attachments[0]!.presentation, 'work');
+  const { projectRevisionBlocks } = await import('../../apps/host/src/media/model-input.ts');
+  const proj = projectRevisionBlocks('', [{ asset_id: svg.id, presentation: 'work', caption: null, derived_text: null, derived_source: null }]);
+  assert.equal(proj.hasImage, false, '代码作品不投位图块');
+  assert.ok(proj.blocks.some((b) => b.type === 'text' && String((b as { text: string }).text).includes(`/api/v1/assets/${svg.id}/preview`)), '投影带沙箱预览入口');
+  db.close();
+});

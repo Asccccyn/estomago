@@ -61,6 +61,24 @@ export class ImageGenAdapter {
     if (frameDurationMs !== undefined && frameDurationMs < 20) {
       return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: 'frame_duration_ms 官方最低 20 毫秒' };
     }
+    // M05（包1 2026-11-15）：生产实证 11-12——8 帧@1024x1024 被拒，供应商把 GIF 帧拼成
+    // sprite sheet 且"最长边 ≤3840"。只拦截可证明必拒的组合：枚举全部整格拼法取最长边
+    // 最小值，仍超 3840 才拒（如 16@1024 必拒）。能放下某种网格的组合同样可能被拒
+    // （供应商实际支持的拼法集合未知，8@1024 即例），失败原因照常透传供应商原始说明。
+    if (format === 'gif' && frameCount !== undefined && typeof opts.size === 'string' && opts.size !== 'auto') {
+      const sm = /^(\d{3,4})x(\d{3,4})$/.exec(opts.size);
+      if (sm) {
+        const w = Number(sm[1]), h = Number(sm[2]);
+        let minLongest = Infinity;
+        for (let cols = 1; cols <= frameCount; cols++) {
+          const rows = Math.ceil(frameCount / cols);
+          minLongest = Math.min(minLongest, Math.max(cols * w, rows * h));
+        }
+        if (minLongest > 3840) {
+          return { outcome: 'error', code: 'IMAGEGEN_PARAM_INVALID', detail: `gif ${frameCount} 帧 @ ${w}x${h}：任何拼接布局最长边至少 ${minLongest}，超过供应商上限 3840——减少帧数或改用更小尺寸` };
+        }
+      }
+    }
     let res: ImageGenTransportResult;
     try {
       res = await this.transport({
@@ -92,7 +110,10 @@ export class ImageGenAdapter {
       const detail = extractError(res.json) ?? String(res.status);
       return { outcome: 'error', code: 'IMAGEGEN_REQUEST_REJECTED', detail };
     }
-    if (status >= 500) return { outcome: 'unknown', reason: `供应商 ${res.status}——结果未确认，不自动重发` };
+    // M04（包1 2026-11-15）：收到完整 5xx 应答=供应商明确失败，不是"结果未确认"——
+    // 未确认只留给响应丢失（超时/断连，请求可能已送达且计费）。生产实证 11-12 一次
+    // 500 被归 unknown 后同键永久卡死、被迫换键重新付费。同键重试据此重新请求上游。
+    if (status >= 500) return { outcome: 'error', code: 'IMAGEGEN_UPSTREAM_ERROR', detail: extractError(res.json) ?? `供应商 ${res.status} 明确失败` };
     if (status < 200 || status >= 300) return { outcome: 'error', code: `IMAGEGEN_HTTP_${status}`, detail: extractError(res.json) ?? String(status) };
     const data = (res.json as { data?: Array<{ b64_json?: string; url?: string; revised_prompt?: string }> | null })?.data;
     const item = Array.isArray(data) ? data[0] : undefined;

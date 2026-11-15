@@ -571,6 +571,15 @@ export class ContentServer {
             // before 比较基线，属"一次携带"的业务时间，对账补注不得移动它）。
             this.db.prepare('UPDATE album_entries SET content_sha256 = ? WHERE id = ?').run(sha256, String(existing.id)); // 存量行按新信息补身份（幂等）
           }
+          // M07（包1 2026-11-15，宿主用户裁定"修改留言是修改不是新增，可修改/编辑/删除"）：
+          // 显式给出的 caption/meaning 按同条目更新——空串=清空，省略=保留原值；修改
+          // 留言不触发携带上限（不是新增一张），revision/updated_at 仅在实际变化时推进。
+          const capPatch = typeof body.caption === 'string' ? body.caption.slice(0, 2000) : null;
+          const meaningPatch = typeof body.meaning === 'string' ? body.meaning.slice(0, 2000) : null;
+          if ((capPatch !== null && capPatch !== (existing.caption as string | null)) || (meaningPatch !== null && meaningPatch !== (existing.meaning as string | null))) {
+            this.db.prepare("UPDATE album_entries SET caption = COALESCE(?, caption), meaning = COALESCE(?, meaning), updated_at = ?, revision = revision + 1 WHERE id = ?")
+              .run(capPatch, meaningPatch, now(), String(existing.id));
+          }
           return { status: 200, body: this.albumDto(this.db.prepare('SELECT * FROM album_entries WHERE id = ?').get(String(existing.id)) as Record<string, unknown>), duplicate: true };
         }
         this.assertCarryWithinLimit(carryMode ?? 'none', String(body.asset_id), null, sha256);

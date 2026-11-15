@@ -10,24 +10,31 @@ import type { ImageGenAdapter } from '../../integrations/imagegen/adapter.ts';
 import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
 
 export type ImageGenOutcome =
-  | { ok: true; asset_id: string; creation_id: string | null; mime: string; revised_prompt: string | null; generation_call: 'first' | 'none' }
-  | { ok: false; code: string; detail: string; retryable: boolean };
+  | { ok: true; asset_id: string; creation_id: string | null; mime: string; revised_prompt: string | null; generation_call: 'first' | 'none'; published_message_id?: string }
+  | { ok: false; code: string; detail: string; retryable: boolean; saved_asset_id?: string; saved_creation_id?: string | null };
 
 export class ImageGenService {
-  private readonly deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null };
-  constructor(deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null }) {
+  private readonly deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null; messages?: import('../../messages/service.ts').MessageService | null; events?: import('../../events/service.ts').EventService | null; archiveSync?: { drainOnce(): Promise<unknown> } | null };
+  constructor(deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null; messages?: import('../../messages/service.ts').MessageService | null; events?: import('../../events/service.ts').EventService | null; archiveSync?: { drainOnce(): Promise<unknown> } | null }) {
     this.deps = deps;
   }
 
   /** 状态机（imagegen_operations.state）：
    *  generated=字节已暂存（存储/M 未确认）；stored=资产+M 已确认（条目未成）；
    *  saved=全部完成（暂存清空）；unknown=供应商结果未确认（禁止自动重发）；
-   *  failed_generation/failed_retryable=生成阶段终态/可重试失败。 */
-  async generateAndStore(o: { prompt: string; opKey: string; title?: string | null; format?: string; size?: string; frameCount?: number; frameDurationMs?: number }): Promise<ImageGenOutcome> {
+   *  failed_generation/failed_retryable=生成阶段终态/可重试失败。
+   *  M03（包1 2026-11-15）：默认交付=send——saved 后发布到当前聊天；发布幂等靠确定性
+   *  clientMessageId（同键重放/发布失败重试都只补发布，不重新生成）。 */
+  async generateAndStore(o: { prompt: string; opKey: string; title?: string | null; format?: string; size?: string; frameCount?: number; frameDurationMs?: number; deliver?: 'send' | 'save_only'; roomId?: string | null; turnId?: string | null }): Promise<ImageGenOutcome> {
     const db = this.deps.db;
     const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as { state: string; result_b64: string | null; asset_id: string | null; creation_id: string | null; revised_prompt: string | null; error: string | null; output_format: string | null } | undefined;
     if (existing?.state === 'saved' && existing.asset_id) {
-      return { ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '', revised_prompt: existing.revised_prompt, generation_call: 'none' };
+      // M03：saved 后同键重放默认补发布（幂等：clientMessageId 命中返回原消息=D06）
+      const published = o.deliver === 'send' ? this.tryPublish(o.opKey, existing.asset_id, o.roomId ?? null, o.turnId ?? null) : null;
+      if (published && !published.ok) {
+        return { ok: false, code: 'IMAGEGEN_PUBLISH_FAILED', detail: `作品已保存，但发布到当前聊天失败（${published.detail}）——同键重试只补发布，不会重新生成`, retryable: true, saved_asset_id: existing.asset_id, saved_creation_id: existing.creation_id };
+      }
+      return { ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '', revised_prompt: existing.revised_prompt, generation_call: 'none', ...(published?.ok ? { published_message_id: published.messageId } : {}) };
     }
     // R8：stored 且作品条目已建（snapshot 未确认）——同键重试只补快照确认与 saved 收口
     const storedResume = existing?.state === 'stored' && existing.asset_id !== null && existing.creation_id !== null
@@ -66,7 +73,9 @@ export class ImageGenService {
       const effectiveFormat = o.format ?? existing?.output_format ?? undefined;
       const r = await this.deps.adapter.generate(o.prompt, { format: effectiveFormat, size: o.size, frameCount: o.frameCount, frameDurationMs: o.frameDurationMs });
       if (r.outcome === 'error') {
-        const retryable = r.code === 'IMAGEGEN_NETWORK' || r.code === 'IMAGEGEN_RATE_LIMITED';
+        // M04（包1 2026-11-15）：UPSTREAM_ERROR（收到完整 5xx 应答）与网络/限流同为
+        // 可重试——供应商明确失败，同键重试重新请求上游；不再落 unknown 永久卡死。
+        const retryable = r.code === 'IMAGEGEN_NETWORK' || r.code === 'IMAGEGEN_RATE_LIMITED' || r.code === 'IMAGEGEN_UPSTREAM_ERROR';
         this.upsert(o.opKey, { state: retryable ? 'failed_retryable' : 'failed_generation', error: `${r.code}: ${r.detail}` });
         return { ok: false, code: r.code, detail: r.detail, retryable };
       }
@@ -143,7 +152,35 @@ export class ImageGenService {
 
     db.prepare("UPDATE imagegen_operations SET state='saved', asset_id=?, creation_id=?, result_b64=NULL, error=NULL, updated_at=? WHERE op_key=?")
       .run(asset.id, creationId, new Date().toISOString(), o.opKey);
+    // M03：默认交付 send——发布失败不回滚保存（行已 saved，同键重试只补发布）
+    if (o.deliver === 'send') {
+      const published = this.tryPublish(o.opKey, asset.id, o.roomId ?? null, o.turnId ?? null);
+      if (!published.ok) {
+        return { ok: false, code: 'IMAGEGEN_PUBLISH_FAILED', detail: `作品已保存，但发布到当前聊天失败（${published.detail}）——同键重试只补发布，不会重新生成`, retryable: true, saved_asset_id: asset.id, saved_creation_id: creationId };
+      }
+      return { ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type, revised_prompt: revisedPrompt, generation_call: 'first', published_message_id: published.messageId };
+    }
     return { ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type, revised_prompt: revisedPrompt, generation_call: 'first' };
+  }
+
+  /** M03（包1 2026-11-15）：发布到当前聊天——确定性 clientMessageId 使同键重放/中断恢复
+   *  幂等（消息表唯一索引命中即返回原消息，不再发第二条=验收 D06）。与
+   *  chat_send_attachment 同一发布入口（publishAssistantMessage），不另建消息通道。 */
+  private tryPublish(opKey: string, assetId: string, roomId: string | null, turnId: string | null): { ok: true; messageId: string } | { ok: false; detail: string } {
+    if (!this.deps.messages) return { ok: false, detail: '消息服务未装配' };
+    if (!roomId) return { ok: false, detail: '无当前聊天房间' };
+    try {
+      const msg = this.deps.messages.publishAssistantMessage({
+        conversationId: roomId, turnId: turnId ?? 'tool', content: '', kind: 'text',
+        clientMessageId: `tool-imagegen:${opKey}:publish`,
+        attachments: [{ asset_id: assetId, presentation: 'image' }],
+        events: this.deps.events ?? null,
+      });
+      void this.deps.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
+      return { ok: true, messageId: msg.id };
+    } catch (err) {
+      return { ok: false, detail: String((err as Error).message).slice(0, 120) };
+    }
   }
 
   /** content 权威快照读取（owner=creation；失败不阻塞收口——pin 仍在保护，恢复消费者对账）。 */

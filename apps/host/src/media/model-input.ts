@@ -106,6 +106,13 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       if (observation) blocks.push({ type: 'text', text: observation });
       continue;
     }
+    // M02（包1 2026-11-15）：work=SVG/HTML 代码作品——模型视觉通道只收位图，作品以引用
+    // 文本进投影（沙箱预览归前端 /api/v1/assets/:id/preview），不投 asset_image。
+    if (a.presentation === 'work') {
+      blocks.push({ type: 'text', text: `[代码作品 | est:${a.asset_id} | 沙箱预览 /api/v1/assets/${a.asset_id}/preview]（内容为 SVG/HTML，模型不直接看图；引用真实可回看）` });
+      if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
+      continue;
+    }
     // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）。
     // 相册重构 P5（宿主用户 2026-11-08 裁定，撤销 2026-10-18 textOnly）：选集/历史图片一律
     // 真实携带（asset_image 块）；携带上限由装配层合并规划（context/carry-images.ts）。

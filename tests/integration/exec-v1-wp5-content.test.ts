@@ -147,20 +147,23 @@ test('FEED-06/ALBUM：相册条目幂等归档+our_words 反查+caption 更新',
   const add = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng', body: { asset_id: 'asset_test_screenshot_1', caption: '聊天截图', refs: [{ service: 'mariposa', kind: 'our_words', source_id: 'ow_test_1' }] }, headers: { 'Idempotency-Key': 'alb-1' } });
   assert.equal(add.status, 201);
   const entry = add.body as { id: string; kind: string; caption: string | null };
-  // 同 kind+asset 幂等返回既有
+  // M07（包1 2026-11-15 宿主用户裁定）：同 (kind,asset) 返回既有条目身份；同资产新键显式
+  // 给出的 caption 按同条目更新（空串=清空/省略=保留），revision/updated_at 推进。
   const add2 = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng', body: { asset_id: 'asset_test_screenshot_1', caption: '重复添加' }, headers: { 'Idempotency-Key': 'alb-2' } });
-  const dup = add2.body as { id: string };
-  assert.equal(dup.id, entry.id, '同 (kind,asset) 幂等返回既有');
+  const dup = add2.body as { id: string; caption: string | null; revision: number };
+  assert.equal(dup.id, entry.id, '同 (kind,asset) 返回既有条目身份（不新建）');
+  assert.equal(dup.caption, '重复添加', '显式 caption=同条目更新');
+  assert.equal(dup.revision, 2, '实际更新推进修订');
   // our_words 反查
   const rev = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/chat_screenshots/entries?source_service=mariposa&source_kind=our_words&source_id=ow_test_1', actor: 'qiaosheng' });
   const revItems = (rev.body as { items: Array<{ id: string; refs: Array<{ service: string; kind: string; source_id: string }> }> }).items;
   assert.equal(revItems.length, 1);
   assert.equal(revItems[0]!.refs[0]!.source_id, 'ow_test_1');
   // 更新 caption
-  const upd = await contentForward(client, { method: 'PUT', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', body: { caption: '更新后的说明' }, headers: { 'If-Match': '"1"', 'Idempotency-Key': 'alb-u1' } });
+  const upd = await contentForward(client, { method: 'PUT', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', body: { caption: '更新后的说明' }, headers: { 'If-Match': '"2"', 'Idempotency-Key': 'alb-u1' } });
   assert.equal(upd.status, 200);
   // 移除归档（不删外部原文/文件）
-  const rem = await contentForward(client, { method: 'DELETE', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', headers: { 'If-Match': '"2"', 'Idempotency-Key': 'alb-d1' } });
+  const rem = await contentForward(client, { method: 'DELETE', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', headers: { 'If-Match': '"3"', 'Idempotency-Key': 'alb-d1' } });
   assert.equal(rem.status, 200);
   const afterRem = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng' });
   assert.equal((afterRem.body as { items: unknown[] }).items.length, 0);

@@ -104,7 +104,7 @@ before(async () => {
 });
 after(async () => { await server.stop(); fakeM.close(); db.close(); fs.rmSync(root, { recursive: true, force: true }); delete process.env.EST_TEST_IMAGEGEN_KEY; });
 
-function fixture(transport: ImageGenTransport, opts: { mFail?: boolean } = {}): { svc: ImageGenService; media: MediaService; mediaDir: string; calls: () => number } {
+function fixture(transport: ImageGenTransport, opts: { mFail?: boolean; messages?: import('../../apps/host/src/messages/service.ts').MessageService | null } = {}): { svc: ImageGenService; media: MediaService; mediaDir: string; calls: () => number } {
   fakeM.fail = opts.mFail === true;
   const config = buildConfig({});
   const store = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_IMAGEGEN_KEY' });
@@ -113,7 +113,7 @@ function fixture(transport: ImageGenTransport, opts: { mFail?: boolean } = {}): 
   let n = 0;
   const counting: ImageGenTransport = async (body, signal) => { n += 1; return transport(body, signal); };
   const adapter = new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'gpt-image-2.6-sunburst', transport: counting });
-  return { svc: new ImageGenService({ db, adapter, media, contentClient: client }), media, mediaDir, calls: () => n };
+  return { svc: new ImageGenService({ db, adapter, media, contentClient: client, ...(opts.messages !== undefined ? { messages: opts.messages } : {}) }), media, mediaDir, calls: () => n };
 }
 const okTransport: ImageGenTransport = async () => ({ status: 200, json: { id: 'gen-1', data: [{ b64_json: PNG_FULL.toString('base64'), revised_prompt: '画好了' }] } });
 const CTX1 = { roomId: 'primary', turnId: 'turn-1', requestId: 'req-1', toolCallId: 'call-1' } as const;
@@ -385,4 +385,88 @@ test('IG-11 (RR4): creation_save_artifact 在 M 未落正时 CREATION_MASTER_PEN
   assert.equal(f.media.getAsset(assetId).m_sync_state, 'synced');
   assert.ok((r2.output as { creation_id: string | null }).creation_id, '作品条目补建');
   assert.equal((db.prepare('SELECT COUNT(*) n FROM media_assets WHERE id = ?').get(assetId) as { n: number }).n, 1, '同键重试未产生第二份资产');
+});
+
+// —— 包1（2026-11-15）：M04 上游 5xx 分类 / M05 GIF 拼接上限 / M03 默认发布 ——
+
+test('IG-12 (M04): 收到完整 5xx=明确失败可重试——同键重试重新请求上游并成功（不再永久卡 unknown）', async () => {
+  let n500 = 0;
+  const flaky: ImageGenTransport = async () => {
+    if (n500++ === 0) return { status: 500, json: { error: { message: 'upstream exploded' } } };
+    return okTransport();
+  };
+  const f = fixture(flaky);
+  const opKey = imageGenOpKey(CTX1, 'op-12');
+  const r1 = await f.svc.generateAndStore({ prompt: '画雨', opKey });
+  assert.equal(r1.ok, false, JSON.stringify(r1));
+  if (!r1.ok) {
+    assert.equal(r1.code, 'IMAGEGEN_UPSTREAM_ERROR');
+    assert.equal(r1.retryable, true);
+    assert.ok(String(r1.detail).includes('upstream exploded'), '脱敏原因透传');
+  }
+  const st = db.prepare('SELECT state FROM imagegen_operations WHERE op_key=?').get(opKey) as { state: string };
+  assert.equal(st.state, 'failed_retryable', '5xx 落可重试失败，不落 unknown');
+  const r2 = await f.svc.generateAndStore({ prompt: '画雨', opKey });
+  assert.equal(r2.ok, true, JSON.stringify(r2));
+  if (r2.ok) assert.equal(r2.generation_call, 'first', '重试真实重新请求上游');
+  assert.equal(f.calls(), 2, '同键重试重新调用供应商一次');
+});
+
+test('IG-13 (M05): GIF 拼接 sheet 最长边≤3840——必拒组合付费请求前拦截；存在可放拼法的组合不本地拒绝', async () => {
+  let calls = 0;
+  const counting: ImageGenTransport = async (body, signal) => { calls += 1; return okTransport(body, signal); };
+  const adapter = new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: counting });
+  // 16@1024：任何网格（含 4x4=4096）都超 3840——付费请求前拦截
+  const reject = await adapter.generate('x', { format: 'gif', frameCount: 16, frameDurationMs: 100, size: '1024x1024' });
+  assert.equal(reject.outcome, 'error');
+  if (reject.outcome === 'error') { assert.equal(reject.code, 'IMAGEGEN_PARAM_INVALID'); assert.ok(reject.detail.includes('3840')); }
+  assert.equal(calls, 0, '必拒组合不发出付费请求');
+  // 8@1024：存在 3x3=3072≤3840 的拼法——本地放行（生产实证供应商仍可能拒，原因由其透传）
+  const pass = await adapter.generate('x', { format: 'gif', frameCount: 8, frameDurationMs: 100, size: '1024x1024' });
+  assert.equal(pass.outcome, 'ok', '本地只拦"任何拼法都超限"的组合，不编造拼法集合');
+  assert.equal(calls, 1);
+  const pass2 = await adapter.generate('x', { format: 'gif', frameCount: 8, size: '768x768' });
+  assert.equal(pass2.outcome, 'ok');
+});
+
+test('IG-14 (M03): 默认交付 send——生成→保存→发布；save_only 不发布；发布失败只补发布不重生成；重放不重复发布（D06）', async () => {
+  const { MessageService } = await import('../../apps/host/src/messages/service.ts');
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary', null);
+  const msgCount = (k: string) => (db.prepare('SELECT COUNT(*) n FROM messages WHERE client_message_id = ?').get(k) as { n: number }).n;
+  const f = fixture(okTransport, { messages });
+  const opKey = imageGenOpKey(CTX1, 'op-14');
+  const r1 = await f.svc.generateAndStore({ prompt: '画太阳', opKey, deliver: 'send', roomId: 'primary', turnId: 'turn-1' });
+  assert.equal(r1.ok, true, JSON.stringify(r1));
+  if (r1.ok) assert.ok(r1.published_message_id, '默认交付发布到当前聊天');
+  assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 1, '确定性发布幂等键恰好一条');
+  const r2 = await f.svc.generateAndStore({ prompt: '画太阳', opKey, deliver: 'send', roomId: 'primary', turnId: 'turn-1' });
+  assert.equal(r2.ok, true);
+  if (r1.ok && r2.ok) assert.equal(r2.published_message_id, r1.published_message_id, '重放返回原消息，不再发第二条（D06）');
+  assert.equal(f.calls(), 1);
+  assert.equal(msgCount(`tool-imagegen:${opKey}:publish`), 1);
+  // save_only：不发布
+  const opKey2 = imageGenOpKey(CTX1, 'op-14-so');
+  const r3 = await f.svc.generateAndStore({ prompt: '画月亮', opKey: opKey2, deliver: 'save_only', roomId: 'primary', turnId: 'turn-1' });
+  assert.equal(r3.ok, true);
+  if (r3.ok) assert.equal(r3.published_message_id, undefined, '仅保存未发送');
+  assert.equal(msgCount(`tool-imagegen:${opKey2}:publish`), 0);
+  // 发布失败（messages 未装配的真实形态）→ 已保存+发布失败回执；同键重试（装配后）只补发布
+  const opKey3 = imageGenOpKey(CTX1, 'op-14-pf');
+  const fNoMsg = fixture(okTransport);
+  const r4 = await fNoMsg.svc.generateAndStore({ prompt: '画星星', opKey: opKey3, deliver: 'send', roomId: 'primary', turnId: 'turn-1' });
+  assert.equal(r4.ok, false, JSON.stringify(r4));
+  if (!r4.ok) {
+    assert.equal(r4.code, 'IMAGEGEN_PUBLISH_FAILED');
+    assert.equal(r4.retryable, true);
+    assert.ok(r4.saved_asset_id, '回执带已保存资产引用');
+  }
+  assert.equal(fNoMsg.calls(), 1, '生成只发生一次');
+  const healed = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: okTransport }), media: fNoMsg.media, contentClient: client, messages });
+  const r5 = await healed.generateAndStore({ prompt: '画星星', opKey: opKey3, deliver: 'send', roomId: 'primary', turnId: 'turn-1' });
+  assert.equal(r5.ok, true, JSON.stringify(r5));
+  if (r5.ok) assert.ok(r5.published_message_id, '补发布成功');
+  const row = db.prepare('SELECT state FROM imagegen_operations WHERE op_key = ?').get(opKey3) as { state: string };
+  assert.equal(row.state, 'saved');
+  assert.equal(msgCount(`tool-imagegen:${opKey3}:publish`), 1, '补发布恰好一条，未重新生成');
 });

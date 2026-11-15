@@ -479,6 +479,14 @@ export class MediaService {
     for (const it of items) {
       const a = this.getAsset(it.asset_id);
       if (a.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产 ${it.asset_id} 状态 ${a.state}`);
+      // M02（包1 2026-11-15）：work=代码作品引用（SVG/HTML）——隔离交付，前端走沙箱
+      // 预览（/api/v1/assets/:id/preview）；可执行格式不进普通图片白名单（§5.1 不放宽）。
+      if (it.presentation === 'work') {
+        if (a.mime_type !== 'image/svg+xml' && a.mime_type !== 'text/html') {
+          throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=work 只接受 SVG/HTML 作品（收到 ${a.mime_type}；普通图片用 presentation=image）`);
+        }
+        continue;
+      }
       const wanted = it.presentation === 'voice' ? PURPOSE_MIMES.chat_voice : PURPOSE_MIMES.chat_image;
       if (!wanted.includes(a.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
     }
