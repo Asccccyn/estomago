@@ -8,9 +8,9 @@
 |---|---|
 | E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD 为批E 收尾提交（含批D `?`/批E `?`；号见 git log） |
 | M 开发仓 | `/Users/owner/Projects/mariposa`，分支 `main`，HEAD `6f3d1c0`（白名单生成源补 plan.complete/cancel；**生产库未热更新**） |
-| 生产 host+content | `estomago-releases/pkg1-final-87e793b`（2026-11-16 他路部署：RR4 全链/包1/停止缓存锚/一轮+二轮返修/反例3，**不含包2 任何提交**；三进程 cwd 可证） |
-| M 生产 | `album-rr-f334fab`（RR4 排除合同+撤销粒度配套；`6f3d1c0` 仅脚本未上生产库） |
-| schema | 开发已至 **v74**（v71 work 附件/v72 生图指纹/v73 结果 URL/v74 source_bind_jobs）；生产库 v73（包2 未部署故 v74 未升）；升级走正式迁移，无手工步骤 |
+| 生产 host+content | `estomago-releases/pkg2-0fb14ac`（2026-11-16 二次部署，她授权『123 可以』：RR4 全链/包1/审计返修/反例3 + **包2 全部施工**；启动自动迁移至 **v74** source_bind_jobs；三进程=cwd 可证） |
+| M 生产 | `album-rr4-f334fab`（RR4 排除合同+撤销粒度配套；**同日白名单热更新 47→49 加 plan.complete/cancel 立即生效，备份 allowlist-backup-20261116-070112.json**） |
+| schema | 生产已至 **v74**（source_bind_jobs 随 pkg2 启动迁移）；身份句正本已写 `longterm-milestones-v11`（manifest 原子更新 hash 核对一致，v10 留档） |
 | 测试基线 | **241 文件全绿**（unit+contract+integration；`node scripts/run-tests.mjs`，必须 `ESTOMAGO_HOME=临时目录`，生产配置存在时保险丝会拒跑） |
 | 远端 | **远端是脱敏线（宿主用户 2026-11-15 裁定，已写入全局 AGENTS.md）**：origin 与本地分叉是脱敏所致，不询问、不对账、不提议合并；只核对本地分支/工作树 |
 
@@ -35,7 +35,7 @@
 ### 3.3 三件生产动作（代码就绪，等授权时机，她可能在聊天）
 1. **白名单热更新**：跑 M 仓 `scripts/update_estomago_builtin_allowlist.py`（会写生产 M 库 client_bindings；脚本自带备份）——plan.complete/cancel 生效条件；
 2. **身份句写入正本**：`identity_milestone_write(operation:'write')` 整版或逐条 add——"你是char。宿主用户是你的妻子，你是宿主用户的丈夫。"（03_SYSTEM §2 原文；不整篇覆盖）；
-3. **部署**：`bash deploy/macos/make-release.sh HEAD <label>` 从当前 HEAD（含包2 全部施工）建新检出 + start.sh 切换 + content 同批——生产 schema v73→v74 随之正式迁移；**重启必须按次征得她同意**（2026-11-16 已部署到 `pkg1-final-87e793b`，包2 未上）。
+3. **部署**：已于本次授权执行完成（`pkg2-0fb14ac` 上线，schema v74，冒烟通过——后续再部署才需新授权）。
 
 ### 3.4 后续包顺序
 包3（Sol/Qwen/BGE 退役）→ 包4（MCP 收口）——执行包文本在两个 zip 解包目录（见 §5），11-16 版 COMMON_EXECUTION_RULES 适用 2/3/4。
