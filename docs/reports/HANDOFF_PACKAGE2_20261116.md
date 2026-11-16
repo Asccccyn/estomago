@@ -1,17 +1,17 @@
 # 包2 交接文档｜2026-11-16（给下一窗口 GLM）
 
-一句话：包1（媒体增量）+ 三轮审计返修 + 反例3 已全部收口；包2（runtime debug + 午夜绑定）批A/B/C 与 **DBG-04（存档直接范围写入，`2be186d`）** 已完成并分别提交，**剩批D 交叉联验、批E 退役文档**；一切仅在开发仓，生产未动，BIND 未启用。
+一句话：包1（媒体增量）+ 三轮审计返修 + 反例3 已全部收口并**已部署**（`pkg1-final-87e793b`）；包2（runtime debug + 午夜绑定）批A/B/C、DBG-04、**批D 交叉联验、批E 退役与状态报告**全部完成并分别提交，**包2 至此施工完毕**；剩余=三件生产动作（含包2 部署）按裁定待她逐次授权、BIND 启用需她配凭据。
 
 ## 1. 版本与运行事实（开工先核对，不要信旧摘要）
 
 | 项 | 现值 |
 |---|---|
-| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD `2be186d`（包2 DBG-04；其后仅文档维护提交） |
-| M 开发仓 | `/Users/owner/Projects/mariposa`，分支 `main`，HEAD `6f3d1c0`（白名单生成源补 plan.complete/cancel） |
-| 生产 host | `estomago-releases/call-ui-20261110-1363302`（launchd start.sh 指向；进程 cwd 可证） |
-| 生产 content | `estomago-releases/album-rr-236bee3`；M 生产 `album-rr-b1752b0` |
-| schema | 开发已至 **v74**（v71 work 附件/v72 生图指纹/v73 结果 URL/v74 source_bind_jobs）；生产库 v70——升级走正式迁移即可，无手工步骤 |
-| 测试基线 | **240 文件全绿**（unit+contract+integration；`node scripts/run-tests.mjs`，必须 `ESTOMAGO_HOME=临时目录`，生产配置存在时保险丝会拒跑） |
+| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD 为批E 收尾提交（含批D `?`/批E `?`；号见 git log） |
+| M 开发仓 | `/Users/owner/Projects/mariposa`，分支 `main`，HEAD `6f3d1c0`（白名单生成源补 plan.complete/cancel；**生产库未热更新**） |
+| 生产 host+content | `estomago-releases/pkg1-final-87e793b`（2026-11-16 他路部署：RR4 全链/包1/停止缓存锚/一轮+二轮返修/反例3，**不含包2 任何提交**；三进程 cwd 可证） |
+| M 生产 | `album-rr-f334fab`（RR4 排除合同+撤销粒度配套；`6f3d1c0` 仅脚本未上生产库） |
+| schema | 开发已至 **v74**（v71 work 附件/v72 生图指纹/v73 结果 URL/v74 source_bind_jobs）；生产库 v73（包2 未部署故 v74 未升）；升级走正式迁移，无手工步骤 |
+| 测试基线 | **241 文件全绿**（unit+contract+integration；`node scripts/run-tests.mjs`，必须 `ESTOMAGO_HOME=临时目录`，生产配置存在时保险丝会拒跑） |
 | 远端 | **远端是脱敏线（宿主用户 2026-11-15 裁定，已写入全局 AGENTS.md）**：origin 与本地分叉是脱敏所致，不询问、不对账、不提议合并；只核对本地分支/工作树 |
 
 ## 2. 已完成（按提交，均已在 README 批次索引有详行）
@@ -28,17 +28,14 @@
 
 ## 3. 剩余工作（按优先级）
 
-### 3.1 批D 交叉联验（现包2最大剩余项）
-同时聊天/跨日/编辑冲突的交叉场景（各批隔离验证已覆盖单路径）；SDK 与 API 投影分别核对（引导语归位后 SDK systemPrompt 变了——真实 SDK 冒烟未做）。
-
-### 3.2 批E 退役与状态报告
-- 旧 I 占位文件 `identity/i-snapshot-pending.md` 生产清理（部署窗口做，gate 已不依赖）；
-- 按执行包 06_STATUS_AND_RETIREMENT 输出状态/退役/部署差异报告（对照本文件与 README 批次行，不要重写已交付内容）。
+### 3.1 批D 交叉联验（已随本窗口完成：batch-d-cross.test BD-1/2/3 + archives ARC-26 全绿；SDK 投影走真实 ClaudeSdkRunner→runSdkHostQuery 链，scripted 输入而非真实付费调用）
+### 3.2 批E 退役与状态报告（已随本窗口完成：`docs/reports/PACKAGE2_RECEIPT_20261116.md`；批D/批E 提交号见 git log 与 README 批次行）
+*包2 施工完毕。下列生产动作仍按裁定逐次授权：*
 
 ### 3.3 三件生产动作（代码就绪，等授权时机，她可能在聊天）
 1. **白名单热更新**：跑 M 仓 `scripts/update_estomago_builtin_allowlist.py`（会写生产 M 库 client_bindings；脚本自带备份）——plan.complete/cancel 生效条件；
 2. **身份句写入正本**：`identity_milestone_write(operation:'write')` 整版或逐条 add——"你是char。宿主用户是你的妻子，你是宿主用户的丈夫。"（03_SYSTEM §2 原文；不整篇覆盖）；
-3. **部署**：`bash deploy/macos/make-release.sh HEAD <label>` 从 HEAD 建新检出 + start.sh 切换 + content 同批——**重启必须按次征得她同意**。
+3. **部署**：`bash deploy/macos/make-release.sh HEAD <label>` 从当前 HEAD（含包2 全部施工）建新检出 + start.sh 切换 + content 同批——生产 schema v73→v74 随之正式迁移；**重启必须按次征得她同意**（2026-11-16 已部署到 `pkg1-final-87e793b`，包2 未上）。
 
 ### 3.4 后续包顺序
 包3（Sol/Qwen/BGE 退役）→ 包4（MCP 收口）——执行包文本在两个 zip 解包目录（见 §5），11-16 版 COMMON_EXECUTION_RULES 适用 2/3/4。
@@ -59,6 +56,6 @@
 - 审计报告三份（an-z outputs 目录）：初版 diff 审计/GLM 返修复审/验收裁定（反例1/2 退出、反例3 修复的依据都在第三份）；
 - 全局 AGENTS.md（~/.codex/AGENTS.md）：远端脱敏裁定等最新规则。
 
-## 6. 当前工作树
+## 6. 当前工作树与生产
 
-E/M 两仓工作树干净（本交接文档与 README 队列更新随本提交入库）。生产三进程未动、未重启、未付费调用、BIND 未启用。
+E/M 两仓工作树干净（批D/批E 提交后）。生产已于 2026-11-16 部署 `pkg1-final-87e793b`（含包1 全链；**包2 未上**）；BIND 未启用；包2 剩余动作为 §3.3 三件（逐次授权）+ BIND 启用（她配凭据）。
