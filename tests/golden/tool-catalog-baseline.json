@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "a9bf1927b3bfb04f1448f6bca28c16644fa4125d",
+  "baselineCommit": "8adf77c50c7f83d7e66ab7bc3b5bfb3bf1a3935c",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -111,7 +111,7 @@
     "wishstar_accept_offer": "td_fe061dcebb331f5a2c2a00ce",
     "context_review_complete": "td_80e678ecb6056243f20c0d26",
     "memory_words_write": "td_f4823cf6cf38cf650274b504",
-    "conversation_archive": "td_f88c602fd1d9f3d28b865524",
+    "conversation_archive": "td_9d83efbbb261155d73df3511",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
     "image_generate": "td_07d95a84bbbb2855276a14f8",
     "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
@@ -121,7 +121,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "c1b8e55c46772d5a15ba1bcc589f67c4ea5352a4d557f8ec16da9e274952b898",
+  "toolsSha256": "871dca614f6d34c004e0130c2987853d246be01e57612ff611489c9cc87f63f1",
   "tools": [
     {
       "type": "function",
@@ -2172,7 +2172,7 @@
       "type": "function",
       "function": {
         "name": "conversation_archive",
-        "description": "把明确的已发布对话片段存入对话存档（争吵/甜蜜）。只接受精确定位：message_ids（连续或非连续集合，按原顺序）或 latest_completed_turn（最近一个已完成回合）。没有精确定位时直接告诉用户需要选区，不要猜范围、不要默认整天。存档不删除、不改写任何历史；争吵存档表示话题到此为止。",
+        "description": "把明确的已发布对话片段存入对话存档（争吵/甜蜜）。三种精确定位（只能选一种）：①message_ids（连续或非连续集合，按原顺序）；②latest_completed_turn=true（最近一个已完成回合，排除你当前正在进行的回合）；③anchor_start+anchor_end 双边界锚点——各给说话人（宿主用户/char）和该消息正文中一段连续的逐字原话，宿主在你本次已见的消息范围内解析，保存起止之间（含首尾）全部完整已见的消息；之间未见或只见节选的不纳入，缺口如实保留。边界引语必须来自原话本身（不是你的转述或概述）。没有精确定位时直接告诉用户需要选区，不要猜范围、不要默认整天。存档不删除、不改写任何历史；争吵存档表示话题到此为止。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2194,6 +2194,50 @@
             "latest_completed_turn": {
               "type": "boolean",
               "description": "true=存档最近一个已完成回合（排除你当前正在进行的这个回合）"
+            },
+            "anchor_start": {
+              "type": "object",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ],
+                  "description": "起点消息的说话人：宿主用户（用户）或char（助手）"
+                },
+                "quote": {
+                  "type": "string",
+                  "description": "起点消息正文中一段连续的逐字原话（足以唯一定位该消息；完整正文已见时定位整条消息，含首尾）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ],
+              "additionalProperties": false
+            },
+            "anchor_end": {
+              "type": "object",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ],
+                  "description": "终点消息的说话人：宿主用户（用户）或char（助手）"
+                },
+                "quote": {
+                  "type": "string",
+                  "description": "终点消息正文中一段连续的逐字原话（该条消息一并存档）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ],
+              "additionalProperties": false
             },
             "note": {
               "type": "string",

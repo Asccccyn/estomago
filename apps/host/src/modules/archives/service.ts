@@ -10,9 +10,34 @@
 // outbox），观察推送由既有周期消费者收口——不再 void 尽力而为。
 import type { Db } from '../../db/connection.ts';
 import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
+import { effectiveRevisionText } from '../../messages/effective-text.ts';
 
 export type ArchiveKind = 'quarrel' | 'sweet';
 export type ArchiveRef = { message_id: string; revision: number; sequence: number };
+
+/** DBG-04（包2 11-16 版）：双边界锚点——说话人（人可读名）+ 短逐字原话。 */
+export type ArchiveAnchor = { speaker: '宿主用户' | 'char'; quote: string };
+
+/** 消歧候选：可见序位 + 少量边界文字（不回读整段）。 */
+export type AnchorCandidate = { speaker: '宿主用户' | 'char'; position: number; excerpt: string };
+
+export type AnchorRangeResolution =
+  | {
+      ok: true;
+      refs: Array<{ message_id: string; revision: number }>;
+      segments: number; // 实际段数（缺口保留，不自动补齐）
+      skipped_unseen: number; // 起止之间未进入本次视野的序列数（未携带/滚窗缺口）
+      excluded_excerpt_only: number; // 起止之间只见节选的消息数（存档只收整条，如实排除）
+      boundary_excerpts: { start: string; end: string }; // 范围摘要：少量边界文字（不回显整段）
+    }
+  | {
+      ok: false;
+      code: 'ARCHIVE_ANCHOR_NOT_FOUND' | 'ARCHIVE_ANCHOR_AMBIGUOUS' | 'ARCHIVE_ANCHOR_EXCERPT_ONLY' | 'ARCHIVE_ANCHOR_STALE' | 'ARCHIVE_ANCHOR_REVERSED';
+      detail: string;
+      boundary?: 'start' | 'end';
+      candidates?: AnchorCandidate[];
+      conflicts?: Array<{ message_id: string; seen_revision: number; current_revision: number }>;
+    };
 
 export type ArchiveResult =
   | { ok: true; archive: { id: string; kind: ArchiveKind; count: number }; notified: 'tool_receipt' | 'queued' | 'none' }
@@ -75,6 +100,109 @@ export class ArchiveService {
       refs.push({ message_id: r.id, revision: r.current_revision, sequence: r.sequence });
     }
     return refs.length > 0 ? refs : null;
+  }
+
+  /** DBG-04 定位③：双边界锚点解析。作用域=ctx.seenMessages（发起请求**实际装载**的
+   *  (消息,修订) 清单，D13 口径——模型不能靠自报"我看过"扩大范围）；边界=说话人+短
+   *  逐字原话，只在真实原文（含语音可信转写，与引语核对同一 effectiveRevisionText
+   *  口径）中匹配；记忆概述/模型转述中的相似句子不是原文，天然不参与。
+   *  - 同消息取最新已见修订；片段区间合并，任一整条装载=完整已见（同 resolveQuoteRefs）。
+   *  - 边界消息完整正文已见→锚点定位整条消息（含首尾）；只见节选=如实报告合同差异
+   *    （存档只收整条），不默取隐藏正文、不静默扩范围。
+   *  - 成员=起止之间（含首尾）完整已见的合格消息；只见节选的如实排除计数；未进入
+   *    视野的序列保留为缺口（段数如实），不按库连续性补齐。
+   *  - 多处命中/边界倒置/所见版本已被编辑：给具体原因与最小消歧候选，不静默选、
+   *    不默认最新/第一项、不写入。
+   *  内部读原文仅为定位核验，不产生任何已读记录（D19：回执也不把来源标为已读）。 */
+  resolveAnchorRange(roomId: string, seenMessages: ReadonlyArray<{ id: string; revision: number; char_start?: number; char_end?: number }>, start: ArchiveAnchor, end: ArchiveAnchor): AnchorRangeResolution {
+    type Visible = { message_id: string; sequence: number; speaker: 'owner' | 'assistant'; revision: number; text: string; currentRevision: number; full: boolean; ranges: Array<[number, number]> };
+    const byId = new Map<string, Visible>();
+    for (const s of seenMessages) {
+      if (!s || typeof s.id !== 'string' || typeof s.revision !== 'number') continue;
+      const row = this.deps.db.prepare(
+        'SELECT sequence, speaker, current_revision FROM messages WHERE id = ? AND conversation_id = ?',
+      ).get(s.id, roomId) as { sequence: number; speaker: string; current_revision: number } | undefined;
+      if (!row || (row.speaker !== 'owner' && row.speaker !== 'assistant')) continue;
+      const prev = byId.get(s.id);
+      if (prev && s.revision < prev.revision) continue; // 旧修订片段不把权限拼到新正文上
+      const rev = this.deps.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(s.id, s.revision) as { content: string } | undefined;
+      if (!rev) continue;
+      const text = effectiveRevisionText(this.deps.db, s.id, s.revision, rev.content);
+      if (text.trim().length === 0) continue;
+      const pair: [number, number] | null = typeof s.char_start === 'number' && typeof s.char_end === 'number' ? [s.char_start, s.char_end] : null;
+      if (!prev || s.revision > prev.revision) {
+        byId.set(s.id, { message_id: s.id, sequence: row.sequence, speaker: row.speaker as 'owner' | 'assistant', revision: s.revision, text, currentRevision: row.current_revision, full: pair === null, ranges: pair ? [pair] : [] });
+      } else if (pair === null) {
+        prev.full = true;
+      } else {
+        prev.ranges.push(pair);
+      }
+    }
+    const visible = [...byId.values()].sort((a, b) => a.sequence - b.sequence);
+    if (visible.length === 0) return { ok: false, code: 'ARCHIVE_ANCHOR_NOT_FOUND', boundary: 'start', detail: '本次请求没有实际装载的对话视野，锚点无从解析' };
+
+    const mergedRanges = (v: Visible): Array<[number, number]> => {
+      const sorted = [...v.ranges].sort((a, b) => a[0] - b[0]);
+      const merged: Array<[number, number]> = [];
+      for (const r of sorted) {
+        const last = merged[merged.length - 1];
+        if (last && r[0] <= last[1]) last[1] = Math.max(last[1], r[1]);
+        else merged.push([r[0], r[1]]);
+      }
+      return merged;
+    };
+    const matchBoundary = (which: 'start' | 'end', anchor: ArchiveAnchor, label: string): { ok: true; hit: Visible } | { ok: false; res: AnchorRangeResolution } => {
+      const wantSpeaker: 'owner' | 'assistant' = anchor.speaker === '宿主用户' ? 'owner' : 'assistant';
+      const hits: Array<{ v: Visible; occStart: number }> = [];
+      for (const v of visible) {
+        if (v.speaker !== wantSpeaker) continue;
+        let idx = v.text.indexOf(anchor.quote);
+        while (idx >= 0) {
+          if (v.full) { hits.push({ v, occStart: idx }); break; }
+          const startCp = utf16IndexToCodepoints(v.text, idx);
+          const endCp = startCp + Array.from(anchor.quote).length;
+          if (mergedRanges(v).some(([rs, re]) => startCp >= rs && endCp <= re)) { hits.push({ v, occStart: idx }); break; }
+          idx = v.text.indexOf(anchor.quote, idx + 1);
+        }
+      }
+      if (hits.length === 0) {
+        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_NOT_FOUND', boundary: which, detail: `${label}锚点在本次已见范围内没有匹配的原文（说话人：${anchor.speaker}；引语必须是该消息正文的连续逐字片段）` } };
+      }
+      if (hits.length > 1) {
+        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_AMBIGUOUS', boundary: which, detail: `${label}引语命中 ${hits.length} 条已见消息，未唯一定位不写入；请用更长的原话或前后文区分`, candidates: hits.map((h) => ({ speaker: anchor.speaker, position: visible.indexOf(h.v) + 1, excerpt: excerptAround(h.v.text, h.occStart, anchor.quote) })) } };
+      }
+      const hit = hits[0]!.v;
+      if (!hit.full) {
+        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_EXCERPT_ONLY', boundary: which, detail: `${label}边界消息只见节选；当前存档只收整条消息，不能默取节选之外正文——请改用完整已见的边界消息（或明确 message_ids）` } };
+      }
+      if (hit.revision !== hit.currentRevision) {
+        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_STALE', boundary: which, detail: `${label}边界消息在你所见版本之后已被编辑（引用失效）；请按当前版本重新定位`, conflicts: [{ message_id: hit.message_id, seen_revision: hit.revision, current_revision: hit.currentRevision }] } };
+      }
+      return { ok: true, hit };
+    };
+    const s = matchBoundary('start', start, '起点');
+    if (!s.ok) return s.res;
+    const e = matchBoundary('end', end, '终点');
+    if (!e.ok) return e.res;
+    if (s.hit.sequence > e.hit.sequence) {
+      return { ok: false, code: 'ARCHIVE_ANCHOR_REVERSED', detail: `边界倒置：起点消息（第 ${visible.indexOf(s.hit) + 1} 条已见）在终点（第 ${visible.indexOf(e.hit) + 1} 条）之后` };
+    }
+    const inRange = visible.filter((v) => v.sequence >= s.hit.sequence && v.sequence <= e.hit.sequence);
+    const members = inRange.filter((v) => v.full);
+    const excerptOnly = inRange.length - members.length;
+    if (members.length === 0) return { ok: false, code: 'ARCHIVE_ANCHOR_NOT_FOUND', boundary: 'start', detail: '起止之间没有可存档的完整已见消息' };
+    let segments = 1;
+    for (let i = 1; i < members.length; i++) {
+      if (members[i]!.sequence - members[i - 1]!.sequence > 1) segments++;
+    }
+    return {
+      ok: true,
+      refs: members.map((m) => ({ message_id: m.message_id, revision: m.revision })),
+      segments,
+      skipped_unseen: (e.hit.sequence - s.hit.sequence + 1) - members.length - excerptOnly,
+      excluded_excerpt_only: excerptOnly,
+      boundary_excerpts: { start: clipExcerpt(s.hit.text), end: clipExcerpt(e.hit.text) },
+    };
   }
 
   /** F2：已同步存档引用解析（三个读者共享的单一口径）——按存档钉住的
@@ -287,4 +415,30 @@ export class ArchiveService {
     const placeholders = ids.map(() => '?').join(',');
     this.deps.db.prepare(`UPDATE host_notices SET delivered_at = ? WHERE id IN (${placeholders}) AND delivered_at IS NULL`).run(now, ...ids);
   }
+}
+
+/** UTF-16 下标→码点数（与 memory/service.ts 的引语核对同一换算口径：已见片段
+ *  范围 SeenRef.char_* 是码点半开区间）。 */
+function utf16IndexToCodepoints(s: string, utf16Index: number): number {
+  let cp = 0;
+  let i = 0;
+  while (i < utf16Index) {
+    const code = s.charCodeAt(i);
+    i += code >= 0xd800 && code <= 0xdbff && i + 1 < s.length ? 2 : 1;
+    cp++;
+  }
+  return cp;
+}
+
+/** 消歧候选摘录：命中处前后少量文字（不回读整段）。 */
+function excerptAround(text: string, occStart: number, quote: string): string {
+  const from = Math.max(0, occStart - 10);
+  const to = occStart + quote.length + 14;
+  const raw = text.slice(from, to).replace(/\s+/g, ' ').trim();
+  return `${from > 0 ? '…' : ''}${raw}${to < text.length ? '…' : ''}`.slice(0, 60);
+}
+
+/** 回执范围摘要：边界消息开头少量文字（成功回执不回显整段）。 */
+function clipExcerpt(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().slice(0, 24);
 }

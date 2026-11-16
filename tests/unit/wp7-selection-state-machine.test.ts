@@ -147,7 +147,7 @@ test('T1：明确空选换窗后新窗 payload 不含旧原文；同窗失败回
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t1-');
   const transport = dsTransport(seen);
-  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const ctx = compose(root, transport, null, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   // 先建窗（空房首条自动建窗）
   const s1 = await say(ctx, '旧窗的第一句话', 'm1', T0);
   assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(s1.attemptId) as { state: string }).state, 'completed');
@@ -201,7 +201,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
       throw new Error('wp7-trajectory-write-boom');
     }
   }
-  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const ctx = compose2(root, dsTransport(seen), BoomTrajectory, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;
@@ -228,7 +228,7 @@ test('T2：切换事务内初始轨迹写入失败→整体回滚（旧窗 ACTIV
 test('T2b：正常换窗成功返回时初始轨迹已存在（无需下一轮懒初始化）', async () => {
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t2b-');
-  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   await say(ctx, '旧窗原话', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;
@@ -348,7 +348,7 @@ test('RRA-016/WP07-T2 拆分：bootstrap 503=明确未取得资料且不阻塞�
     if (cap === 'bootstrap.get') return { ok: false, code: 'HTTP_503', httpStatus: 503 };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const ctx = compose(root, dsTransport(seen), slow503, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
   await say(ctx, '第一条消息', 'm1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520) /* 2026-10-21 time_context 人话化再瘦——重标定 */}`;
@@ -436,7 +436,7 @@ test('T9：选集确认后的首发轨迹携带 episode 片段且唯一（Codex 
   };
   let episodeCalls = 0;
   const episodes = { list: async (a: { scopeId: string }) => { episodeCalls++; assert.equal(a.scopeId, 'c1'); return await mariposa('episode.list', a); } };
-  const ctx = compose(root, dsTransport(seen), mariposa as never, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ } }, episodes as never);
+  const ctx = compose(root, dsTransport(seen), mariposa as never, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ } }, episodes as never);
   await say(ctx, '首窗第一句', 't9m1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   // 容量触发换窗 → 确认（带一条选集 item）→ 新窗首发
@@ -471,7 +471,7 @@ test('T12: 同字节别名图（不同 asset_id 同 hash）选集装配只物化
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp7-t12-');
   const mediaSvc = new MediaService(openDatabase(path.join(root, 'data')), path.join(root, 'media'), buildConfig({}));
-  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 27_230 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定（同 T1 注释）：media_search +photos/creations scope */ } }, null, mediaSvc);
+  const ctx = compose(root, dsTransport(seen), null, { windows: { soft_limit_tokens: 27_630 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定（同 T1 注释）：media_search +photos/creations scope */ } }, null, mediaSvc);
   await say(ctx, '首窗第一句', 't12m0', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
   // 两次上传同一张图（同字节→同 content_sha256，不同 asset_id）——真实上传行为即如此

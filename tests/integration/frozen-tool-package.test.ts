@@ -20,7 +20,7 @@ const examples: Record<string, Record<string, unknown>> = {
   memory_i_write:{action:'create',content:'合成 I'},plans_write:{action:'create',title:'合成计划'},memory_open:{action:'keeps',memory_id:'synthetic'},
   episode_read:{},episode_apply:{action:'start',reason_code:'tracking_requested',label:'合成事件',source_selections:[{}]},
   content_post_create:{body:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',body:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},content_album_entry_write:{kind:'important_photos',asset_id:'synthetic',idempotency_key:'synthetic'},
-  conversation_archive:{kind:'sweet',latest_completed_turn:true},image_generate:{prompt:'合成画',client_operation_id:'synthetic'},archives_search:{query:'合成'},
+  conversation_archive:{kind:'sweet',anchor_start:{speaker:'宿主用户',quote:'合成引语起点'},anchor_end:{speaker:'char',quote:'合成引语终点'}},image_generate:{prompt:'合成画',client_operation_id:'synthetic'},archives_search:{query:'合成'},
   wake_manage:{operation:'list'},chat_send_text:{text:'合成正式消息',idempotency_key:'synthetic'},media_import:{source_url:'https://127.0.0.1/image.png'},
   chat_send_attachment:{asset_id:'synthetic',presentation:'image'},call_control:{action:'status'},oido_analyze:{audio_ref:'est:synthetic'},
   chat_send_voice:{text:'合成语音'},media_search:{query:'合成图'},oido_get:{analysis_id:'synthetic'},transcript_read:{audio_ref:'est:synthetic'},

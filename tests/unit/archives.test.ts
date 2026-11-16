@@ -25,6 +25,7 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
+import { assembleTestTools } from '../helpers.ts';
 
 const TOKEN = 'archives-test-token';
 let server: ContentServer;
@@ -577,4 +578,236 @@ test('ARC-19 (W3): 通知恰绑定写入成功回执——两种故障位置分�
   assert.equal(notices(), 2, '恢复/投影不产生额外通知');
   const projAfter = db.prepare("SELECT COUNT(*) n FROM outbox WHERE target = 'mariposa.archive_projection' AND operation_key = ?").get(`archive-projection:${archiveId}:conversation_archived`) as { n: number };
   assert.equal(projAfter.n, 1, '快照恢复后投影补登记');
+});
+
+// ===== 包2 DBG-04（11-16 版）：双边界锚点定位（D14-D19）=====
+// 端到端经 assembleTestTools 注册表执行真实 conversation_archive 工具（定义/schema
+// 校验/run/解析/建档全链），可见作用域=ctx.seenMessages（D13 口径）。
+
+type SeenRefLite = { id: string; revision: number; char_start?: number; char_end?: number };
+let anchorTools: ReturnType<typeof assembleTestTools>['tools'] | null = null;
+function toolsBridge(): ReturnType<typeof assembleTestTools>['tools'] {
+  if (anchorTools === null) anchorTools = assembleTestTools({ db, archives: svc }).tools;
+  return anchorTools;
+}
+function seedMsg(conv: string, cmid: string, content: string, speaker: 'owner' | 'assistant', turnId = 'turn-an'): { id: string; sequence: number } {
+  if (speaker === 'owner') {
+    const m = messages.submitUserMessageWithTurn({ conversationId: conv, content, clientMessageId: cmid });
+    return { id: m.message.id, sequence: m.message.sequence };
+  }
+  const m = messages.publishAssistantMessage({ conversationId: conv, turnId, content, kind: 'text', clientMessageId: cmid });
+  return { id: m.id, sequence: m.sequence };
+}
+function seedReceipt(id: string, rev = 1): void {
+  const t = new Date().toISOString();
+  db.prepare('INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(`ssr-an-${id}@${rev}`, `op-an-${id}@${rev}`, id, rev, 'sc1', `sm_an_${id}_${rev}`, `h-${id}-${rev}`, t, t);
+}
+const mkCtx = (conv: string, seen: SeenRefLite[], toolCallId = 'call-an') => ({
+  roomId: conv, windowId: 'w-an', turnId: 'turn-an', purpose: 'chat' as const, activeReviewId: null,
+  seenSequence: 99, seenMessages: seen, requestId: 'req-an', toolCallId,
+});
+async function listArchives(conv: string): Promise<Array<{ id: string; messages: Array<{ message_id: string }> }>> {
+  const res = await fetch(`${base}/api/v1/content/archives?conversation_id=${conv}&limit=100`, { headers: { authorization: `Bearer ${TOKEN}`, 'x-actor': 'qiaosheng' } });
+  const body = await res.json() as { items?: Array<{ id: string; messages?: Array<{ message_id: string }> }> };
+  return (body.items ?? []).map((e) => ({ id: e.id, messages: e.messages ?? [] }));
+}
+
+test('ARC-20 (D14): 唯一双边界锚点——一次调用定位+保存；回执短摘要不回显全文', async () => {
+  messages.ensureConversation('c4');
+  const u1 = seedMsg('c4', 'an-u1', '今天先到这里吧，我去把灯关了。', 'owner');
+  const a1 = seedMsg('c4', 'an-a1', '好的，今天的事也说开了，晚安。', 'assistant');
+  const u2 = seedMsg('c4', 'an-u2', '明天想吃什么？', 'owner');
+  const a2 = seedMsg('c4', 'an-a2', '想吃你上次做的那碗面。', 'assistant');
+  for (const m of [u1, a1, u2, a2]) seedReceipt(m.id);
+  const seen: SeenRefLite[] = [u1, a1, u2, a2].map((m) => ({ id: m.id, revision: 1 }));
+  const out = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '今天先到这里' },
+    anchor_end: { speaker: 'char', quote: '那碗面' },
+  }, mkCtx('c4', seen));
+  assert.equal(out.ok, true, JSON.stringify(out.output));
+  assert.equal(out.output['archived'], true);
+  assert.equal(out.output['message_count'], 4, '起止之间（含首尾）全部完整已见成员');
+  assert.equal(out.output['segments'], 1);
+  assert.equal(out.output['skipped_unseen'], 0);
+  assert.equal(out.output['excluded_excerpt_only'], 0);
+  const rs = out.output['range_summary'] as { start: string; end: string };
+  assert.match(rs.start, /今天先到这里/);
+  assert.match(rs.end, /那碗面/);
+  assert.ok(rs.start.length <= 24 && rs.end.length <= 24, '范围摘要只用少量边界文字');
+  assert.equal(out.seenAdditions, undefined, 'D19：不产生任何已读增量');
+  const list = await listArchives('c4');
+  const mine = list.find((e) => e.messages.length === 4);
+  assert.ok(mine, 'content 正本已写入');
+  assert.deepEqual(mine!.messages.map((m) => m.message_id).sort(), [u1.id, a1.id, u2.id, a2.id].sort());
+  // D18：同 tool_call（同幂等键）重试——回放同一存档，不重复建档
+  const again = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '今天先到这里' },
+    anchor_end: { speaker: 'char', quote: '那碗面' },
+  }, mkCtx('c4', seen));
+  assert.equal(again.ok, true, JSON.stringify(again.output));
+  assert.equal(again.output['archive_id'], out.output['archive_id'], '同键重放=同一存档');
+  assert.equal((await listArchives('c4')).length, list.length, '不重复建档');
+});
+
+test('ARC-21 (D15): 同句多处→最小消歧候选；边界倒置；所见版本已被编辑——均不写入', async () => {
+  const u3 = seedMsg('c4', 'an-u3', '这句话我说了两次', 'owner');
+  const u4 = seedMsg('c4', 'an-u4', '这句话我说了两次，真的', 'owner');
+  const seen: SeenRefLite[] = [u3, u4].map((m) => ({ id: m.id, revision: 1 }));
+  const before = (await listArchives('c4')).length;
+  const amb = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '这句话我说了两次' },
+    anchor_end: { speaker: '宿主用户', quote: '这句话我说了两次，真的' },
+  }, mkCtx('c4', seen, 'call-amb'));
+  assert.equal(amb.ok, false);
+  assert.equal(amb.output['error_code'], 'ARCHIVE_ANCHOR_AMBIGUOUS');
+  assert.equal(amb.output['boundary'], 'start', '冲突定位到具体边界');
+  const cands = amb.output['candidates'] as Array<{ speaker: string; position: number; excerpt: string }>;
+  assert.equal(cands.length, 2, '最小消歧候选：两处命中');
+  assert.ok(cands.every((c) => c.excerpt.length <= 60 && c.excerpt.includes('这句话我说了两次')), '候选带少量边界文字');
+  // 起点唯一、终点同句两处：歧义按边界如实报告（同样不写入）
+  const rev = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '这句话我说了两次，真的' },
+    anchor_end: { speaker: '宿主用户', quote: '这句话我说了两次' },
+  }, mkCtx('c4', seen, 'call-rev'));
+  assert.equal(rev.ok, false);
+  assert.equal(rev.output['error_code'], 'ARCHIVE_ANCHOR_AMBIGUOUS');
+  assert.equal(rev.output['boundary'], 'end');
+  // 边界倒置的干净场景：用唯一句构造
+  const u5 = seedMsg('c4', 'an-u5', '这是会被编辑的旧句子', 'owner');
+  const a9 = seedMsg('c4', 'an-a9', '这句是后来才出现的回复', 'assistant');
+  const seen2: SeenRefLite[] = [u5, a9].map((m) => ({ id: m.id, revision: 1 }));
+  const reversed = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: 'char', quote: '后来才出现的回复' },
+    anchor_end: { speaker: '宿主用户', quote: '会被编辑的旧句子' },
+  }, mkCtx('c4', seen2, 'call-rev2'));
+  assert.equal(reversed.ok, false);
+  assert.equal(reversed.output['error_code'], 'ARCHIVE_ANCHOR_REVERSED', '边界倒置给具体原因');
+  // 所见版本已被编辑（所见 v1，current=v2）
+  const t0 = new Date().toISOString();
+  db.prepare('INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('mrev-an-stale', u5.id, 2, 'text', '这是编辑之后的新句子', sha256Hex('an-stale-v2'), t0, t0, 'user');
+  db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u5.id);
+  const stale = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '会被编辑的旧句子' },
+    anchor_end: { speaker: 'char', quote: '后来才出现的回复' },
+  }, mkCtx('c4', seen2, 'call-stale'));
+  assert.equal(stale.ok, false);
+  assert.equal(stale.output['error_code'], 'ARCHIVE_ANCHOR_STALE');
+  const conflicts = stale.output['conflicts'] as Array<{ message_id: string; seen_revision: number; current_revision: number }>;
+  assert.equal(conflicts[0]!.message_id, u5.id);
+  assert.equal(conflicts[0]!.seen_revision, 1);
+  assert.equal(conflicts[0]!.current_revision, 2);
+  assert.equal((await listArchives('c4')).length, before, '三种冲突都不写入');
+});
+
+test('ARC-22 (D16): 显式范围含本回合已发布消息可存；未发布草稿不可见不可存', async () => {
+  const u9 = seedMsg('c4', 'an-u9', '把刚才这轮也存进去', 'owner', 'turn-cur');
+  const a9b = seedMsg('c4', 'an-a9b', '好，这一句是我们刚说完的', 'assistant', 'turn-cur');
+  const t0 = new Date().toISOString();
+  db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES (?,?,?, 'assistant', 'text', 1, NULL, ?)")
+    .run('m_an_draft', 'c4', 9998, t0);
+  db.prepare('INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('mrev-an-draft', 'm_an_draft', 1, 'text', '还没发出去的话', sha256Hex('an-draft'), t0, t0, 'user');
+  seedReceipt(u9.id); seedReceipt(a9b.id);
+  const seen: SeenRefLite[] = [u9, a9b].map((m) => ({ id: m.id, revision: 1 })); // 草稿不在视野
+  const out = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '把刚才这轮也存进去' },
+    anchor_end: { speaker: 'char', quote: '刚说完的' },
+  }, mkCtx('c4', seen, 'call-cur'));
+  assert.equal(out.ok, true, JSON.stringify(out.output));
+  assert.equal(out.output['message_count'], 2, '本回合已发布消息按显式范围可存');
+  const list = await listArchives('c4');
+  const mine = list.find((e) => e.messages.length === 2 && e.messages.some((m) => m.message_id === u9.id));
+  assert.ok(mine);
+  assert.equal(mine!.messages.some((m) => m.message_id === 'm_an_draft'), false, '未发布草稿不在可见面，不被存档');
+});
+
+test('ARC-23 (D17): 滚窗缺口如实保留段数；只见节选的边界拒绝/内部排除；未见部分引语不命中', async () => {
+  messages.ensureConversation('c5');
+  const u1 = seedMsg('c5', 'an2-u1', '窗口里带着的第一句', 'owner');
+  const u2 = seedMsg('c5', 'an2-u2', '中间这句没有被带过来', 'owner'); // 库里存在但未携带
+  const u3 = seedMsg('c5', 'an2-u3', '窗口里带着的最后一句', 'owner');
+  seedReceipt(u1.id); seedReceipt(u3.id);
+  const seenGap: SeenRefLite[] = [u1, u3].map((m) => ({ id: m.id, revision: 1 }));
+  const gap = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '第一句' },
+    anchor_end: { speaker: '宿主用户', quote: '最后一句' },
+  }, mkCtx('c5', seenGap, 'call-gap'));
+  assert.equal(gap.ok, true, JSON.stringify(gap.output));
+  assert.equal(gap.output['message_count'], 2, '不按库连续性补齐未携带消息');
+  assert.equal(gap.output['segments'], 2, '缺口如实保留：两段');
+  assert.equal(gap.output['skipped_unseen'], 1);
+  // 边界只见节选：整条不可存（存档只收整条），不默取节选之外正文
+  const u4 = seedMsg('c5', 'an2-u4', '只有开头一段被看见过，后面的部分没有进入视野。', 'owner');
+  const seenExcerpt: SeenRefLite[] = [{ id: u4.id, revision: 1, char_start: 0, char_end: 10 }];
+  const exBoundary = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '只有开头一段' },
+    anchor_end: { speaker: '宿主用户', quote: '只有开头一段' },
+  }, mkCtx('c5', seenExcerpt, 'call-exb'));
+  assert.equal(exBoundary.ok, false);
+  assert.equal(exBoundary.output['error_code'], 'ARCHIVE_ANCHOR_EXCERPT_ONLY', '如实报告合同差异，不扩范围');
+  // 引语落在未见区域：不命中（不把节选外文字当作已见）
+  const exUnseen = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '后面的部分' },
+    anchor_end: { speaker: '宿主用户', quote: '后面的部分' },
+  }, mkCtx('c5', seenExcerpt, 'call-exu'));
+  assert.equal(exUnseen.ok, false);
+  assert.equal(exUnseen.output['error_code'], 'ARCHIVE_ANCHOR_NOT_FOUND');
+  // 内部只见节选：边界完整，节选成员如实排除计数
+  const u5 = seedMsg('c5', 'an2-u5', '完整的起点消息', 'owner');
+  const u6 = seedMsg('c5', 'an2-u6', '只看见开头的中间消息', 'owner');
+  const u7 = seedMsg('c5', 'an2-u7', '完整的终点消息', 'owner');
+  seedReceipt(u5.id); seedReceipt(u7.id);
+  const seenMixed: SeenRefLite[] = [{ id: u5.id, revision: 1 }, { id: u6.id, revision: 1, char_start: 0, char_end: 3 }, { id: u7.id, revision: 1 }];
+  const mixed = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '完整的起点消息' },
+    anchor_end: { speaker: '宿主用户', quote: '完整的终点消息' },
+  }, mkCtx('c5', seenMixed, 'call-mix'));
+  assert.equal(mixed.ok, true, JSON.stringify(mixed.output));
+  assert.equal(mixed.output['message_count'], 2);
+  assert.equal(mixed.output['excluded_excerpt_only'], 1, '节选成员如实排除');
+  assert.equal(mixed.output['segments'], 2);
+  const list = await listArchives('c5');
+  const mine = list.find((e) => e.messages.some((m) => m.message_id === u5.id));
+  assert.equal(mine!.messages.some((m) => m.message_id === u6.id), false, '节选消息不默收');
+});
+
+test('ARC-24 (D19): 锚点解析内部读零副作用——不落任何已读/通知/投影记录', async () => {
+  const u5 = seedMsg('c5', 'an3-u5', '解析起点用的消息', 'owner');
+  const u7 = seedMsg('c5', 'an3-u7', '解析终点用的消息', 'owner');
+  const tableCount = (t: string): number => (db.prepare(`SELECT COUNT(*) n FROM ${t}`).get() as { n: number }).n;
+  const tables = ['messages', 'message_revisions', 'outbox', 'host_notices', 'tool_side_effects', 'source_sync_receipts'];
+  const snap = tables.map(tableCount).join(',');
+  const resolution = svc.resolveAnchorRange('c5', [{ id: u5.id, revision: 1 }, { id: u7.id, revision: 1 }], { speaker: '宿主用户', quote: '解析起点用的消息' }, { speaker: '宿主用户', quote: '解析终点用的消息' });
+  if (!resolution.ok) throw new Error(`resolveAnchorRange 应成功：${resolution.detail}`);
+  assert.equal(resolution.refs.length, 2);
+  const after = tables.map(tableCount).join(',');
+  assert.equal(after, snap, '解析只读：内部读原文不产生已读/通知/投影等任何写入');
+});
+
+test('ARC-25: 参数门——三种定位互斥；锚点必须成对；非法说话人/空引语拒绝', async () => {
+  const seen: SeenRefLite[] = [];
+  const both = await toolsBridge().execute('conversation_archive', { kind: 'sweet', message_ids: ['x'], anchor_start: { speaker: '宿主用户', quote: 'a' }, anchor_end: { speaker: 'char', quote: 'b' } }, mkCtx('c4', seen, 'call-p1'));
+  assert.equal(both.ok, false);
+  assert.equal(both.output['error_code'], 'ARCHIVE_POSITION_AMBIGUOUS');
+  const half = await toolsBridge().execute('conversation_archive', { kind: 'sweet', anchor_start: { speaker: '宿主用户', quote: 'a' } }, mkCtx('c4', seen, 'call-p2'));
+  assert.equal(half.ok, false);
+  assert.equal(half.output['error_code'], 'ARCHIVE_ANCHOR_PAIR_REQUIRED');
+  const badSpeaker = await toolsBridge().execute('conversation_archive', { kind: 'sweet', anchor_start: { speaker: '用户', quote: 'a' }, anchor_end: { speaker: 'char', quote: 'b' } }, mkCtx('c4', seen, 'call-p3'));
+  assert.equal(badSpeaker.ok, false, 'schema 枚举拒绝非法说话人');
+  const emptyQuote = await toolsBridge().execute('conversation_archive', { kind: 'sweet', anchor_start: { speaker: '宿主用户', quote: '   ' }, anchor_end: { speaker: 'char', quote: 'b' } }, mkCtx('c4', seen, 'call-p4'));
+  assert.equal(emptyQuote.ok, false);
+  assert.equal(emptyQuote.output['error_code'], 'TOOL_ARG_INVALID');
 });
