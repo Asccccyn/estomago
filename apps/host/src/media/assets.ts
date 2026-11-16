@@ -514,12 +514,14 @@ export function isPublicIp(ip: string): boolean {
 // 与运维脚本 scripts/media-cache-evict.mjs 共用（同一计量、同一保护、同一候选顺序）。 ——
 export type CacheEvictionCandidate = { storageKey: string; sha: string; size: number; lastUsed: string | null };
 
-/** 可逐文件计划：候选=仅含（available 且 synced）引用、且磁盘上存在的物理文件，按
- *  storage_key 去重、大小计一次；LRU=各引用最近使用时间的最大值（任一引用读过=最近
- *  使用），从未读过最旧。保护：同文件存在仍需本地字节的有效引用——available 且未
- *  synced（pending 待同步）或 out_of_scope（无 M 正本，如语音/派生图）；missing（已
- *  标删）行不保护文件——它不是文件的活跃依赖（旧实现把标删别名也算保护者，永不可逐）。 */
-export function planCacheEviction(db: Db, mediaDir: string): { candidates: CacheEvictionCandidate[]; totalBytes: number } {
+/** 缓存计划：**totalBytes=磁盘实占**（synced 范围内按 storage_key 去重的全部现存文件，
+ *  含受保护文件——它们同样占预算，只是不可删）；**candidates=可删候选**（排除受保护
+ *  后按 LRU 排序：各引用最近使用时间的最大值，从未读过最旧）。保护：同文件存在仍需
+ *  本地字节的有效引用——available 且未 synced（pending 待同步）或 out_of_scope（无 M
+ *  正本，如语音/派生图）；missing（已标删）行不保护文件——它不是文件的活跃依赖。
+ *  反例3（2026-11-16 裁定）：受保护文件计入实际占用、只在挑选删除对象时跳过——上一版
+ *  把它们从 totalBytes 一并剔除，实占 208B/预算 150B 时误判不超而一个不删。 */
+export function planCacheEviction(db: Db, mediaDir: string): { candidates: CacheEvictionCandidate[]; totalBytes: number; protectedCount: number; protectedBytes: number } {
   const rows = db.prepare(
     `SELECT storage_key, content_sha256, byte_size, cache_last_used_at FROM media_assets
      WHERE state = 'available' AND m_sync_state = 'synced'`,
@@ -528,16 +530,24 @@ export function planCacheEviction(db: Db, mediaDir: string): { candidates: Cache
     `SELECT DISTINCT content_sha256 FROM media_assets
      WHERE content_sha256 IS NOT NULL AND state != 'missing' AND NOT (state = 'available' AND m_sync_state = 'synced')`,
   ).all() as Array<{ content_sha256: string }>).map((r) => r.content_sha256));
-  const files = new Map<string, CacheEvictionCandidate>();
+  const files = new Map<string, CacheEvictionCandidate & { protectedFile: boolean }>();
   for (const r of rows) {
-    if (blocked.has(r.content_sha256)) continue;
     if (!fs.existsSync(path.join(mediaDir, r.storage_key))) continue;
+    const isProtected = blocked.has(r.content_sha256);
     const f = files.get(r.storage_key);
-    if (!f) files.set(r.storage_key, { storageKey: r.storage_key, sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at });
-    else if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at;
+    if (!f) {
+      files.set(r.storage_key, { storageKey: r.storage_key, sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at, protectedFile: isProtected });
+    } else {
+      if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at;
+      if (isProtected) f.protectedFile = true; // 任一引用仍需本地字节=整文件受保护
+    }
   }
-  const candidates = [...files.values()].sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? ''));
-  return { candidates, totalBytes: candidates.reduce((s, f) => s + f.size, 0) };
+  const all = [...files.values()];
+  const candidates = all.filter((f) => !f.protectedFile)
+    .map(({ protectedFile: _p, ...rest }) => rest)
+    .sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? ''));
+  const protectedFiles = all.filter((f) => f.protectedFile);
+  return { candidates, totalBytes: all.reduce((s, f) => s + f.size, 0), protectedCount: protectedFiles.length, protectedBytes: protectedFiles.reduce((s, f) => s + f.size, 0) };
 }
 
 /** 执行删除（存在才删、逐个容错）：返回实际删除文件数/字节/失败数。预演=不调用本函数。 */

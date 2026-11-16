@@ -22,15 +22,16 @@ const paths = buildPaths(resolveStateRoot(home));
 const { config } = loadConfig({ argv: [], paths });
 const { openDatabase } = await import('../apps/host/src/db/connection.ts');
 const db = openDatabase(paths.dataDir);
-// 共用唯一正本：同一计量/保护/顺序，预演与实际执行同一批候选
+// 共用唯一正本：同一计量/保护/顺序，预演与实际执行同一批候选。
+// 反例3（2026-11-16）：实占=含受保护文件的全部现存文件（它们占预算）；可逐=排除受保护后的删除候选。
 const { planCacheEviction, deleteCacheFiles } = await import('../apps/host/src/media/assets.ts');
-const { candidates, totalBytes } = planCacheEviction(db, paths.mediaDir);
+const { candidates, totalBytes, protectedCount, protectedBytes } = planCacheEviction(db, paths.mediaDir);
 const budget = config.media.cache_budget_bytes;
 const targets = toBudget
   ? (() => { let acc = totalBytes; const t = []; for (const f of candidates) { if (acc <= budget) break; acc -= f.size; t.push(f); } return t; })()
   : candidates;
 const targetBytes = targets.reduce((n, f) => n + f.size, 0);
-console.log(`[cache-evict] 可逐文件（按物理文件去重）${candidates.length} 个/${(totalBytes / 1048576).toFixed(1)}MiB，预算 ${(budget / 1048576).toFixed(0)}MiB；模式=${apply ? `APPLY${toBudget ? '(至预算)' : '(全部候选)'}` : 'DRY-RUN'}；目标 ${targets.length} 个/${(targetBytes / 1048576).toFixed(1)}MiB`);
+console.log(`[cache-evict] 磁盘实占（按物理文件去重）${(totalBytes / 1024).toFixed(1)}KiB（受保护 ${protectedCount} 个/${(protectedBytes / 1024).toFixed(1)}KiB 不可删，计入占用）；预算 ${(budget / 1024).toFixed(0)}KiB；可逐候选 ${candidates.length} 个/${(candidates.reduce((n, f) => n + f.size, 0) / 1024).toFixed(1)}KiB；模式=${apply ? `APPLY${toBudget ? '(至预算)' : '(全部候选)'}` : 'DRY-RUN'}；目标 ${targets.length} 个/${(targetBytes / 1024).toFixed(1)}KiB`);
 
 if (!apply) {
   for (const f of targets) console.log(`[dry] ${f.storageKey} ${f.size}B lastUsed=${f.lastUsed ?? '从未读取'}`);
@@ -39,6 +40,6 @@ if (!apply) {
 } else {
   const { evicted, freedBytes, failed } = deleteCacheFiles(paths.mediaDir, targets);
   db.close();
-  console.log(`[cache-evict] 完成：删除 ${evicted} 个文件，释放 ${(freedBytes / 1048576).toFixed(1)}MiB；失败 ${failed}。行全部保留；后续读取从 M 回源重建。`);
+  console.log(`[cache-evict] 完成：删除 ${evicted} 个文件，释放 ${(freedBytes / 1024).toFixed(1)}KiB；失败 ${failed}。行全部保留；后续读取从 M 回源重建。`);
   if (failed > 0) process.exit(2);
 }

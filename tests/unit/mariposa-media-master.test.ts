@@ -321,9 +321,10 @@ test('PM-12 (P1-4/P2-5 二轮返修): 标删别名不再保护共享文件；CLI
     assert.equal(media.getAsset(a1.id).m_sync_state, 'pending', '前提：a1 因 M 503 仍待同步（保护文件1）');
     assert.equal(media.getAsset(a2.id).m_sync_state, 'synced');
     assert.equal(media.getAsset(a3.id).m_sync_state, 'synced');
-    // ① 预演（默认与 --to-budget）：只计文件2 一个/104B；两个文件都在（预演不删）
+    // ① 预演（默认与 --to-budget）：实占含受保护的文件1（反例3 口径），可逐候选只文件2；两个文件都在
     const dry = await runCli([]);
-    assert.ok(dry.stdout.includes('可逐文件（按物理文件去重）1 个'), dry.stdout);
+    assert.ok(dry.stdout.includes('磁盘实占（按物理文件去重）0.2KiB') && dry.stdout.includes('受保护 1 个'), dry.stdout);
+    assert.ok(dry.stdout.includes('可逐候选 1 个'), dry.stdout);
     assert.ok(dry.stdout.includes('目标 1 个'), dry.stdout);
     const dryBudget = await runCli(['--to-budget']);
     void dryBudget;
@@ -359,5 +360,51 @@ test('PM-12 (P1-4/P2-5 二轮返修): 标删别名不再保护共享文件；CLI
     assert.equal(media.getAsset(a2.id).state, 'missing', 'B 维持 missing');
     const back2 = await media.readContentResolvingMaster(a1.id);
     assert.equal(sha256Hex(back2.bytes), media.getAsset(a1.id).content_sha256, 'A 从 M 回源 hash 一致');
+  } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('PM-13 (反例3·2026-11-16 裁定): 受保护文件计入实占——150B 预算/实占 208B 只删可删份、受保护留存、余 104B，M 恢复后 pending 补同步', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const exec = promisify(execFile);
+  const { buildPaths, resolveStateRoot } = await import('../../apps/host/src/config/paths.ts');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'est-pm13-home-'));
+  const paths = buildPaths(resolveStateRoot(home));
+  fs.mkdirSync(paths.configDir, { recursive: true });
+  fs.writeFileSync(path.join(paths.configDir, 'estomago.yaml'), 'media:\n  cache_budget_bytes: 150\n');
+  const db = openDatabase(path.join(home, 'data'));
+  migrate(db, sha256Hex);
+  const config = buildConfig({ media: { cache_budget_bytes: 150 } });
+  const mStore = new MariposaMediaStore({ baseUrl: fakeM.url, credentialEnv: 'EST_TEST_M_TOKEN' });
+  const media = new MediaService(db, paths.mediaDir, config, mStore);
+  const png = (fill: number) => Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(96, fill)]);
+  const runCli = (cliArgs: string[]) => exec('node', ['--experimental-strip-types', 'scripts/media-cache-evict.mjs', '--home', home, ...cliArgs], { cwd: process.cwd(), env: { ...process.env, ESTOMAGO_TEST_MODE: '1' } });
+  const fileOf = (id: string) => path.join(paths.mediaDir, (db.prepare('SELECT storage_key FROM media_assets WHERE id=?').get(id) as { storage_key: string }).storage_key);
+  try {
+    // 文件1：synced+pending 共享（受保护）；文件2：仅 synced（可删）。实占 208B、预算 150B
+    fakeM.failMode = 'prepare_503';
+    const p1 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'pm13-1', createdBy: 'q', origin: 'upload' });
+    fakeM.failMode = 'none';
+    const p2 = await media.saveBuffer({ bytes: png(1), purpose: 'chat_image', operationId: 'pm13-2', createdBy: 'q', origin: 'upload' });
+    const p3 = await media.saveBuffer({ bytes: png(2), purpose: 'chat_image', operationId: 'pm13-3', createdBy: 'q', origin: 'upload' });
+    void p2;
+    assert.equal(media.getAsset(p1.id).m_sync_state, 'pending', '前提：文件1 的 p1 待同步（受保护）');
+    assert.equal(media.getAsset(p3.id).m_sync_state, 'synced');
+    // 后台：实占 208 > 预算 150 → 只删可删的文件2，受保护文件1 留存，余 104
+    const ev = media.evictCacheOverBudget();
+    assert.equal(ev.evicted, 1, `实占超预算应删可删份（实际 ${ev.evicted}）`);
+    assert.equal(ev.cacheBytes, 104, '余 104B=受保护文件仍在计占用');
+    assert.equal(fs.existsSync(fileOf(p1.id)), true, '受保护文件留存');
+    assert.equal(fs.existsSync(fileOf(p3.id)), false, '可删份已删');
+    // CLI 同口径（独立同条件库已由后台侧验证语义；此处同一库再跑至预算=无候选可删）
+    const cli = await runCli(['--to-budget']);
+    assert.ok(cli.stdout.includes('磁盘实占（按物理文件去重）0.1KiB') && cli.stdout.includes('受保护 1 个'), cli.stdout);
+    assert.ok(cli.stdout.includes('可逐候选 0 个'), cli.stdout);
+    // M 恢复：正式重试使 pending 补同步（文件1 字节仍在——正是保护的意义）
+    const recovered = await media.attemptMSync(p1.id);
+    assert.equal(recovered, true, 'M 恢复后 pending 别名补同步成功');
+    assert.equal(media.getAsset(p1.id).m_sync_state, 'synced');
+    const back = await media.readContentResolvingMaster(p1.id);
+    assert.equal(sha256Hex(back.bytes), media.getAsset(p1.id).content_sha256, '回源/本地字节 hash 一致');
   } finally { db.close(); fs.rmSync(home, { recursive: true, force: true }); }
 });
