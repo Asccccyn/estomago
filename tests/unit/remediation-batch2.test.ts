@@ -131,7 +131,7 @@ test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不�
   const log: PayloadLog = [];
   const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 46270 /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* RT01 后再重标定：D 组完整定义随窗预送后首轮可容纳、携带大工具结果的续轮仍被硬门拦截；相册重构 P4/P3（+conversation_archive/+image_generate）目录增长后再标定 44k→46.5k；2026-11-10 RR4：media_search +photos/creations scope +290B≈+81 token 再标定 45k→45.1k */ , soft_limit_tokens: 800 } } });
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 47050 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* RT01 后再重标定：D 组完整定义随窗预送后首轮可容纳、携带大工具结果的续轮仍被硬门拦截；相册重构 P4/P3（+conversation_archive/+image_generate）目录增长后再标定 44k→46.5k；2026-11-10 RR4：media_search +photos/creations scope +290B≈+81 token 再标定 45k→45.1k */ , soft_limit_tokens: 800 } } });
   const sub = await say(ctx, '触发工具', 't1', T0);
   assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };

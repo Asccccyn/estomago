@@ -1,10 +1,11 @@
 {
-  "baselineCommit": "d5e51f556197d2eabdaa2d2130dfc39e5edde322",
+  "baselineCommit": "87e793bdb25b6bf5b3440df457c9632f39648025",
   "order": [
     "memory_hold",
     "memory_recall",
     "memory_recall_next",
     "memory_read_full",
+    "memory_update",
     "conversation_read",
     "memory_i_read",
     "plans_read",
@@ -67,6 +68,7 @@
     "memory_recall": "td_3c97452a110827ff34c62d69",
     "memory_recall_next": "td_94172c95a0354c44875fcdb4",
     "memory_read_full": "td_38751466a40fa898903ce182",
+    "memory_update": "td_f96ffcd208abb576b687fbd7",
     "conversation_read": "td_ede191bcb2588e4994452f65",
     "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
@@ -119,7 +121,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "1f900c85b2a8be56feaf09f28ec7886496d1fad3132fc552da31bf32f8439b9b",
+  "toolsSha256": "a4b72161f1ec88cb2171497d4a5475eafe307a7fbb9c4cc570460d49ed126112",
   "tools": [
     {
       "type": "function",
@@ -423,6 +425,57 @@
             "memory_ref"
           ],
           "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "memory_update",
+        "description": "修订一条已有记忆：改正文错字/标题/分类/事件日期。必须带 memory_id 和当前版本号 expected_version（memory_read_full、hold 回执或检索结果里有）。就地修订当前版本，不新建重复记忆；新建用 memory_hold。版本冲突说明别人已改过——先用 memory_read_full 读新版本再带新 expected_version 重试，不要覆盖。",
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "memory_id",
+            "expected_version"
+          ],
+          "properties": {
+            "memory_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "已有记忆 ID（写入回执/检索/读取结果中的 memory_id）"
+            },
+            "expected_version": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "当前版本号（乐观锁；冲突回执会给重读指引）"
+            },
+            "text": {
+              "type": "string",
+              "description": "修订后的完整记忆正文（省略=保持不变）"
+            },
+            "original_title": {
+              "type": "string",
+              "description": "修订后的标题（省略=保持不变）"
+            },
+            "categories": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "description": "修订后的分类（省略=保持不变）"
+            },
+            "memory_date": {
+              "type": "string",
+              "description": "修订后的事件日期（省略=保持不变）"
+            },
+            "date_confidence": {
+              "type": "string",
+              "description": "修订后的日期置信（省略=保持不变）"
+            }
+          }
         }
       }
     },

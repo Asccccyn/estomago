@@ -161,7 +161,20 @@ export class DeepSeekRunner implements AgentRunner {
           : response.status === 402 ? 'DS_PAYMENT_REQUIRED'
             : response.status === 400 ? 'DS_BAD_REQUEST'
               : `DS_HTTP_${response.status}`;
-        return { ...this.final('error', code, null, `HTTP ${response.status}`, attempt), requestId: response.headers.get('x-generation-id') };
+        // DBG-01（包2 2026-11-16）：读取响应体的具体原因（旧实现只留状态码，供应商
+        // error.message 被丢弃）——只取 error.message 字段/首段文本，脱敏有界，不回完整响应体。
+        let detail = '';
+        try {
+          const chunks: Uint8Array[] = [];
+          let size = 0;
+          for await (const c of response.body) { // 有界读首 4KB——只为取具体原因，不消费全量
+            chunks.push(c); size += c.byteLength;
+            if (size >= 4096) break;
+          }
+          const text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+          try { const j = JSON.parse(text) as { error?: { message?: unknown } }; if (typeof j.error?.message === 'string') detail = j.error.message.slice(0, 160); } catch { detail = text.slice(0, 160).trim(); }
+        } catch { /* 正文读失败不掩盖状态码语义 */ }
+        return { ...this.final('error', code, null, `HTTP ${response.status}${detail ? ': ' + detail : ''}`, attempt), requestId: response.headers.get('x-generation-id') };
       }
       const streamed = await this.consumeStream(response, req, attempt, () => { publishedAny = true; });
       if (streamed.kind === 'result') return streamed.result;

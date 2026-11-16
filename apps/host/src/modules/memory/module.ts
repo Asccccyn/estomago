@@ -41,6 +41,28 @@ export function memoryHoldDefinition(): HostToolSpec {
   }
 }
 
+/** memory_update 定义（包2 DBG-03 2026-11-16）：M memory.update 领域能力的模型入口——
+ *  此前缺失导致写错字只能再 hold 一条，旧错误正文继续参与检索（用户实证"啤啤→啾啾"）。 */
+export const MEMORYUPDATE_DEFINITION: HostToolSpec = {
+  type: 'function', function: {
+    name: 'memory_update',
+    description: '修订一条已有记忆：改正文错字/标题/分类/事件日期。必须带 memory_id 和当前版本号 expected_version（memory_read_full、hold 回执或检索结果里有）。就地修订当前版本，不新建重复记忆；新建用 memory_hold。版本冲突说明别人已改过——先用 memory_read_full 读新版本再带新 expected_version 重试，不要覆盖。',
+    parameters: {
+      type: 'object', additionalProperties: false,
+      required: ['memory_id', 'expected_version'],
+      properties: {
+        memory_id: { type: 'string', minLength: 1, description: '已有记忆 ID（写入回执/检索/读取结果中的 memory_id）' },
+        expected_version: { type: 'integer', minimum: 1, description: '当前版本号（乐观锁；冲突回执会给重读指引）' },
+        text: { type: 'string', description: '修订后的完整记忆正文（省略=保持不变）' },
+        original_title: { type: 'string', description: '修订后的标题（省略=保持不变）' },
+        categories: { type: 'array', items: { type: 'string' }, minItems: 1, description: '修订后的分类（省略=保持不变）' },
+        memory_date: { type: 'string', description: '修订后的事件日期（省略=保持不变）' },
+        date_confidence: { type: 'string', description: '修订后的日期置信（省略=保持不变）' },
+      },
+    },
+  },
+};
+
 export const MEMORYSOURCEBIND_DEFINITION: HostToolSpec = {
   type: 'function', function: {
     name: 'memory_source_bind',
@@ -413,6 +435,12 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     id: 'memory_read_full', baselineOrder: 4, free: true, definition: () => MEMORYREADFULL_DEFINITION, memoryOnlyAllowed: true, label: 'memory_read_full',
     run: (input: Record<string, unknown>, ctx) => svc.memoryReadFull(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_read_full', input as Record<string, unknown>, value as Record<string, unknown>),
+  }));
+  registry.register(toolCapability({
+    owner: 'memory',
+    id: 'memory_update', baselineOrder: 5, definition: () => MEMORYUPDATE_DEFINITION, memoryOnlyAllowed: true, label: '修订记忆',
+    run: (input: Record<string, unknown>, ctx) => Promise.resolve(svc.memoryUpdate(input, ctx)),
+    toModel: (value) => value,
   }));
   registry.register(toolCapability({
     owner: 'memory',

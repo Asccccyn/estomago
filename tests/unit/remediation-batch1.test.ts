@@ -76,7 +76,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
     integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
-    windows: { soft_limit_tokens: 1500 + 14_830 /* 2026-11-15 包1：目录底座 +572 token */ }, // 2026-11-09 R5：+content_album_entry_write 后目录底座 ≈13.66k（相册重构后曾 ≈13.2k）——同款底座+正文标定
+    windows: { soft_limit_tokens: 1500 + 15_610 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录底座 +572 token */ }, // 2026-11-09 R5：+content_album_entry_write 后目录底座 ≈13.66k（相册重构后曾 ≈13.2k）——同款底座+正文标定
     ...configOver,
   });
   const paths = buildPaths(root);

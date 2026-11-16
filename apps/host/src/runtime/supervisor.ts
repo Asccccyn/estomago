@@ -2886,7 +2886,11 @@ export class TurnSupervisor {
         d.db.prepare('UPDATE attempts SET state = ?, blocked_reason = ?, completed_at = ? WHERE id = ?').run('failed', blockedReason, now, attempt.id);
         d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('failed', now, turnId);
       });
-      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'failed', reason: reasonCode } });
+      // DBG-01（包2 2026-11-16）：失败事件带上脱敏的具体原因与证据字段（旧实现只发错误码，
+      // errorMessage/errorEvidence 全程未发布——前端拿不到"为什么"）。detail 有界；证据沿
+      // runner 白名单口径（不含消息正文/凭据）。
+      const failDetail = (result.errorMessage ?? '').slice(0, 200) || null;
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'failed', reason: reasonCode, ...(failDetail ? { detail: failDetail } : {}), ...(result.errorEvidence ? { evidence: result.errorEvidence } : {}) } });
       d.logger.warn('attempt_failed', { turn_id: turnId, attempt_id: attempt.id, code: reasonCode });
       return;
     }

@@ -358,10 +358,14 @@ export class EstomagoClient {
         this.running.delete(id)
         if(data.state==='blocked'||data.state==='failed'){
           const reason=typeof data.reason==='string'?data.reason:''
+          // DBG-01（包2 2026-11-16）：有脱敏具体原因（detail）时直接展示——不再一律"可在活动日志查看状态"
+          const detail=typeof data.detail==='string'&&data.detail.trim()?data.detail.trim():''
           this.notify(reason.split(':')[0]==='DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW'
             ?'旧窗口缺少此前已发送的模型协议内容。请通过正常手动换窗选择原文后继续；已有历史保持不变，本轮没有发出模型请求。'
             :reason.split(':')[0]==='MODEL_VISION_UNAVAILABLE'
             ?'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。'
+            :detail
+            ?`本轮暂未完成：${detail}`
             :'本轮暂未完成，可在活动日志查看状态')
           // The context event endpoint omits turn.status; retain failures from live
           // events and SSE replay so opening the activity panel does not hide them.
