@@ -1,12 +1,12 @@
 # 包2 交接文档｜2026-11-16（给下一窗口 GLM）
 
-一句话：包1（媒体增量）+ 三轮审计返修 + 反例3 已全部收口；包2（runtime debug + 午夜绑定）批A/B/C 已完成并分别提交，**剩 DBG-04（存档直接范围写入）、批D 交叉联验、批E 退役文档**；一切仅在开发仓，生产未动，BIND 未启用。
+一句话：包1（媒体增量）+ 三轮审计返修 + 反例3 已全部收口；包2（runtime debug + 午夜绑定）批A/B/C 与 **DBG-04（存档直接范围写入，`2be186d`）** 已完成并分别提交，**剩批D 交叉联验、批E 退役文档**；一切仅在开发仓，生产未动，BIND 未启用。
 
 ## 1. 版本与运行事实（开工先核对，不要信旧摘要）
 
 | 项 | 现值 |
 |---|---|
-| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD `fd07b3f`（包2批C） |
+| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD `2be186d`（包2 DBG-04；其后仅文档维护提交） |
 | M 开发仓 | `/Users/owner/Projects/mariposa`，分支 `main`，HEAD `6f3d1c0`（白名单生成源补 plan.complete/cancel） |
 | 生产 host | `estomago-releases/call-ui-20261110-1363302`（launchd start.sh 指向；进程 cwd 可证） |
 | 生产 content | `estomago-releases/album-rr-236bee3`；M 生产 `album-rr-b1752b0` |
@@ -24,29 +24,23 @@
 
 **包2 批C `fd07b3f`**：BIND-01..08 午夜来源绑定（**默认 disabled**）。落点：E 维护 tick（60s due 检查）+ `source_bind_jobs` 表（UNIQUE(memory_id)）+ `GlmChatAdapter`（apps/host/src/integrations/glm/chat.ts）+ M `source.binding.bind`。分批=E `tool_side_effects` committed hold 事实按上海上一 00:00 边界。范围如实=E 工具路径（M 原生/导入无枚举能力）。**启用条件：她配 GLM 凭据（config `source_binding.api_key_env`）+ enabled: true；真实评估按 BIND-09 另行授权。**
 
+**包2 DBG-04 `2be186d`（存档直接范围写入）**：conversation_archive 第三种定位 anchor_start/anchor_end（说话人 宿主用户/char+短逐字原话），`ArchiveService.resolveAnchorRange` 在 ctx.seenMessages（D13 实际装载视野）内解析为 (message_id,revision)，一次调用定位+保存；节选边界/内部节选/缺口/同句多处/倒置/版本已变全部如实（错误码族 ARCHIVE_ANCHOR_*，消歧候选经 modelFailure 白名单放行 boundary/candidates/conflicts——**改失败回执新增字段时记得白名单，否则被剥掉**）；回执短摘要；幂等/收据门/协调器链复用。验证 archives.test ARC-20..25（D14-D19）+ frozen examples 锚点形态；容量五点已平移至 27_630/27_550/17_500/46_950/16_010。**给包3 的交接不变（D22）：只有真实进入主模型上下文的范围才是 coverage 事实；包2 只提供投影/范围事实，未建 coverage 存储。**
+
 ## 3. 剩余工作（按优先级）
 
-### 3.1 DBG-04 存档直接范围写入（包2 最大的剩余单项）
-执行包 11-16 版 `01_BUG_SPEC.md` DBG-04 节 + `05_ACCEPTANCE.md` D14-D22 是唯一权威，先读原文。要点：
-- 三种定位：已有 ref／latest_completed_turn（已实现）／**当前上下文已见内容给双边界锚点（speaker+短逐字原话），宿主内解析为真实 (message_id,revision)**——第三种是要新增的。
-- 复用设施：`modules/archives/service.ts` validateRefs/同步收据门；`context/manual-selection.ts` 可见性谓词；边界唯一直接保存、歧义最小消歧、非连续保留缺口、短回执不回显全文、内部读不计已读（D19）。
-- 参数挂在现有 `conversation_archive`（不新建工具）；包4 再撤 seq。
-- 注意：模型可见的对话投影现在无 seq → 锚点用说话人+原话引语；解析范围=本窗实际可见消息（轨迹/选集），不是全库。
-- 交接给包3：只有真实进入主模型上下文的范围才是 coverage 事实（D22）；包2 只提供投影/范围事实，不建 coverage 存储。
-
-### 3.2 批D 交叉联验
+### 3.1 批D 交叉联验（现包2最大剩余项）
 同时聊天/跨日/编辑冲突的交叉场景（各批隔离验证已覆盖单路径）；SDK 与 API 投影分别核对（引导语归位后 SDK systemPrompt 变了——真实 SDK 冒烟未做）。
 
-### 3.3 批E 退役与状态报告
+### 3.2 批E 退役与状态报告
 - 旧 I 占位文件 `identity/i-snapshot-pending.md` 生产清理（部署窗口做，gate 已不依赖）；
 - 按执行包 06_STATUS_AND_RETIREMENT 输出状态/退役/部署差异报告（对照本文件与 README 批次行，不要重写已交付内容）。
 
-### 3.4 三件生产动作（代码就绪，等授权时机，她可能在聊天）
+### 3.3 三件生产动作（代码就绪，等授权时机，她可能在聊天）
 1. **白名单热更新**：跑 M 仓 `scripts/update_estomago_builtin_allowlist.py`（会写生产 M 库 client_bindings；脚本自带备份）——plan.complete/cancel 生效条件；
 2. **身份句写入正本**：`identity_milestone_write(operation:'write')` 整版或逐条 add——"你是char。宿主用户是你的妻子，你是宿主用户的丈夫。"（03_SYSTEM §2 原文；不整篇覆盖）；
 3. **部署**：`bash deploy/macos/make-release.sh HEAD <label>` 从 HEAD 建新检出 + start.sh 切换 + content 同批——**重启必须按次征得她同意**。
 
-### 3.5 后续包顺序
+### 3.4 后续包顺序
 包3（Sol/Qwen/BGE 退役）→ 包4（MCP 收口）——执行包文本在两个 zip 解包目录（见 §5），11-16 版 COMMON_EXECUTION_RULES 适用 2/3/4。
 
 ## 4. 流程约定（踩过的坑，照做省时间）
