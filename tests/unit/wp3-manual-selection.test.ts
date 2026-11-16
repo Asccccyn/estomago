@@ -227,7 +227,7 @@ test('H04/H07/H08/H13 集成：容量触发换窗→awaiting 阻断（锁释放�
   const seen: Array<Record<string, unknown>> = [];
   const root = tempRoot('wp3-int-');
   // 软线调小：第二条消息即触发换窗（走容量路径；warning_tokens 已退役不再配置）
-  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 27_550 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长后首轮可容纳、长输入仍越线 */ /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } } as never);
+  const ctx = compose(root, dsTransport(seen), { windows: { soft_limit_tokens: 27_630 /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长后首轮可容纳、长输入仍越线 */ /* 裁定②1024 统一口径实测校准 */ /* 2026-10-17 输出协议行；1024 裁定②+目录底座，相对位不变 */ } } as never);
   // H13 正例：真全新空房 → 首条消息自动建窗（不要求选集）
   // 历史在其后种行（模拟更早已归档的存量原文进入本房间）
   const s1 = await say(ctx, '今天聊点新的', 'm1', T0);

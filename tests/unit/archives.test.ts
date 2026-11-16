@@ -865,3 +865,26 @@ test('ARC-26 (批D·编辑冲突×定位三法): 所见版本被编辑→锚点�
   assert.equal(unseenV3.ok, false);
   assert.equal(unseenV3.output['error_code'], 'ARCHIVE_ANCHOR_NOT_FOUND', '未见修订的文字不参与匹配');
 });
+
+test('ARC-27 (Codex P1-12): 消歧候选摘录裁在各自已见区间内——节选外邻文不外发；命中数如实、候选截断', async () => {
+  messages.ensureConversation('c7');
+  const u1 = seedMsg('c7', 'an27-u1', '共有开头句，后面是第一段很长的未见文字UNSEEN_A_继续延伸到这里', 'owner');
+  const u2 = seedMsg('c7', 'an27-u2', '共有开头句，后面是第二段完全不同的未见文字UNSEEN_B_同样很长很长', 'owner');
+  const seen: SeenRefLite[] = [
+    { id: u1.id, revision: 1, char_start: 0, char_end: 6 }, // 只见"共有开头句，"（6 码点）
+    { id: u2.id, revision: 1, char_start: 0, char_end: 6 },
+  ];
+  const out = await toolsBridge().execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '共有开头句' },
+    anchor_end: { speaker: '宿主用户', quote: '共有开头句' },
+  }, mkCtx('c7', seen, 'call-a27'));
+  assert.equal(out.ok, false);
+  assert.equal(out.output['error_code'], 'ARCHIVE_ANCHOR_AMBIGUOUS');
+  const cands = out.output['candidates'] as Array<{ excerpt: string }>;
+  assert.equal(cands.length, 2);
+  for (const c of cands) {
+    assert.ok(!c.excerpt.includes('UNSEEN_A') && !c.excerpt.includes('UNSEEN_B'), `节选外邻文不得外发：${c.excerpt}`);
+    assert.ok(c.excerpt.includes('共有开头句'), '候选仍含命中引语上下文');
+  }
+});

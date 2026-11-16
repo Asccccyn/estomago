@@ -6,7 +6,7 @@
 
 | 项 | 现值 |
 |---|---|
-| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`，HEAD 为批E 收尾提交（含批D `?`/批E `?`；号见 git log） |
+| E 开发仓 | `/Users/owner/Projects/estomago`，分支 `unified-main-20261102`；包2 谱系：批A `a9bf192`→批B `58e204e`→批C `fd07b3f`→DBG-04 `2be186d`→批D `c27b88e`→批E `0fb14ac`→BIND 热修 `f8eb66b`/`fdb102b`/`5cfe676`→收尾与部署基线 `2f17f5d`/`77e6e8a`（此后另有 Codex 审计返修批，以 git log 为准） |
 | M 开发仓 | `/Users/owner/Projects/mariposa`，分支 `main`，HEAD `6f3d1c0`（白名单生成源补 plan.complete/cancel；**生产库未热更新**） |
 | 生产 host+content | `estomago-releases/pkg2-0fb14ac`（2026-11-16 二次部署，她授权『123 可以』：RR4 全链/包1/审计返修/反例3 + **包2 全部施工**；启动自动迁移至 **v74** source_bind_jobs；三进程=cwd 可证） |
 | M 生产 | `album-rr4-f334fab`（RR4 排除合同+撤销粒度配套；**同日白名单热更新 47→49 加 plan.complete/cancel 立即生效，备份 allowlist-backup-20261116-070112.json**） |
@@ -58,4 +58,4 @@
 
 ## 6. 当前工作树与生产
 
-E/M 两仓工作树干净（批D/批E 提交后）。生产已于 2026-11-16 部署 `pkg1-final-87e793b`（含包1 全链；**包2 未上**）；BIND 未启用；包2 剩余动作为 §3.3 三件（逐次授权）+ BIND 启用（她配凭据）。
+E/M 两仓工作树干净。**生产现状（2026-11-16 晚，P3 更正）**：E host `pkg2fix2-5cfe676`（包2 全部施工已上线，schema v74）；M `album-rr4-f334fab`（白名单热更 50 项）；BIND 已启用（DeepSeek）并完成首批绑定（bound 29/skipped 3/no_match 7/failed 1）；§3.3 三件生产动作已执行完毕。本节早期版本的『包2 未上、BIND 未启用』为当时时点记录，以本段与 README 首段为准。

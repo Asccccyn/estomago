@@ -45,25 +45,28 @@ export class SourceBindingService {
     return boundaryUtc.toISOString();
   }
 
-  /** 是否到了应跑下一批的时间（存在未收集的已提交 hold 或未处理任务，且过了上边界）。 */
+  /** 是否到了应跑下一批的时间（存在未收集的已提交 hold 或可重试任务，且过了上边界）。
+   *  P1-4（Codex 审计 2026-11-16）：资格口径与领取查询一致——failed/source_unavailable
+   *  在重试上限内同样触发 due，否则单独留存的失败任务永不重试（只有新 hold 才捎带）。 */
   dueNow(now = new Date()): boolean {
     if (!this.enabled) return false;
     const boundary = SourceBindingService.lastBoundary(now);
     const open = this.deps.db.prepare(
-      `SELECT 1 FROM source_bind_jobs WHERE status = 'pending' AND batch_boundary <= ? LIMIT 1`,
-    ).get(boundary);
+      `SELECT 1 FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable') AND batch_boundary <= ? AND attempts < ? LIMIT 1`,
+    ).get(boundary, SourceBindingService.MAX_ATTEMPTS);
     if (open) return true;
     const uncollected = this.uncollectedHolds(boundary, 1);
     return uncollected.length > 0;
   }
 
-  /** 截止点前已提交、且尚无任务行的 hold 事实（E 范围）。 */
+  /** 截止点前已提交、且尚无任务行的 hold 事实（E 范围）。
+   *  P1-9（Codex 审计）：B01 半开区间——提交时刻恰为边界点 00:00:00.000 的归下一批（旧 `<=` 会提前收走）。 */
   private uncollectedHolds(boundary: string, limit: number): Array<{ memory_id: string; conversation_id: string | null; turn_id: string | null; committed_at: string }> {
     return this.deps.db.prepare(
       `SELECT e.memory_id AS memory_id, t.conversation_id AS conversation_id, e.turn_id AS turn_id, e.updated_at AS committed_at
        FROM tool_side_effects e LEFT JOIN turns t ON t.id = e.turn_id
        WHERE e.kind = 'hold' AND e.state = 'committed' AND e.verified = 1 AND e.memory_id IS NOT NULL
-         AND e.updated_at <= ? AND e.memory_id NOT IN (SELECT memory_id FROM source_bind_jobs)
+         AND e.updated_at < ? AND e.memory_id NOT IN (SELECT memory_id FROM source_bind_jobs)
        ORDER BY e.updated_at ASC LIMIT ?`,
     ).all(boundary, limit) as Array<{ memory_id: string; conversation_id: string | null; turn_id: string | null; committed_at: string }>;
   }
@@ -146,6 +149,27 @@ export class SourceBindingService {
       return;
     }
 
+    // ②b P1-3（Codex 审计）：付费判断前查既有绑定——该记忆已有**非本任务**建立的来源绑定时
+    //    直接跳过（人工来源不被自动追加；M 侧 OVERLAP 只查成员交集，拦不住不重叠段）。
+    //    本任务自己已写的段（binding_ids_json 留存）不算障碍——部分成功后重试补剩余段仍可达。
+    const ownBindingIds = new Set<string>(job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : []);
+    const convReceipt = job.conversation_id ? this.deps.db.prepare(
+      'SELECT source_conversation_id FROM source_sync_receipts WHERE origin_message_id IN (SELECT id FROM messages WHERE conversation_id = ?) AND source_conversation_id IS NOT NULL LIMIT 1',
+    ).get(job.conversation_id) as { source_conversation_id: string } | undefined : undefined;
+    if (convReceipt) {
+      try {
+        const bl = await m.sourceBindingsOfConversation(convReceipt.source_conversation_id);
+        if (bl.ok) {
+          const rows = ((bl.result as { bindings?: unknown } | null)?.bindings ?? []) as Array<{ memory_id?: unknown; binding_id?: unknown }>;
+          const foreign = rows.filter((b) => b.memory_id === job.memory_id && typeof b.binding_id === 'string' && !ownBindingIds.has(b.binding_id));
+          if (foreign.length > 0) {
+            this.setStatus(job, 'skipped_existing', `该记忆已有来源绑定（${foreign.length} 条，人工/其他任务建立）——付费判断前跳过，不覆盖不追加`);
+            return;
+          }
+        }
+      } catch { /* 绑定查询传输失败不阻断——写入时 M 侧 OVERLAP 仍兜底 */ }
+    }
+
     // ③ GLM 判断（只在候选真实引用中选范围/给短依据，或无可靠匹配）
     const cand = candidates.map((c) => ({ id: c.id, speaker: c.speaker === 'owner' ? '宿主用户' : 'char', at: c.occurred_at, text: c.content.slice(0, 200) }));
     const prompt =
@@ -157,7 +181,9 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
 输出 JSON：找到可靠来源时 {"match":true,"ranges":[{"start":"<消息id>","end":"<消息id>","basis":"<一句话可核验依据>"}],"confidence":"high|low"}（ranges 支持多段不连续）；没有可靠匹配时 {"match":false,"reason":"<短原因>"}。整段无关谈话不要包入；短引语命中不等于整件事来源。`;
     const answer = await this.deps.glm!.chat([{ role: 'user', content: prompt }], { responseJson: true, temperature: 0 });
     if (!answer.ok) {
-      this.setStatus(job, answer.retryable ? 'failed' : 'no_match', `GLM 判断未完成（${answer.reason}）${answer.retryable ? '——下批重试' : ''}`);
+      // P1-5（Codex 审计）：判断服务失败（超时/凭据被拒/缺正文）≠ 无匹配——一律 failed 留重试语义，
+      // no_match 只在得到**有效否定判断**时记录（旧实现把不可重试的服务故障永久记成无来源）。
+      this.setStatus(job, 'failed', `GLM 判断未完成（${answer.reason}）——${answer.retryable ? '下批重试' : '结果未知/配置类，达上限停止'}`);
       return;
     }
     let parsed: { match?: unknown; ranges?: Array<{ start?: unknown; end?: unknown; basis?: unknown }>; reason?: unknown };
@@ -166,53 +192,89 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       this.setStatus(job, 'no_match', typeof parsed.reason === 'string' ? parsed.reason.slice(0, 200) : '无可靠匹配——合法结果，不重复付费重判');
       return;
     }
-    // ④ 范围 → 真实消息/修订 → M 同步收据 → members（与 memory_source_bind 同口径）
+    // ④ P1-1（Codex 审计）：逐段解析——每个 range 独立的连续段，段间消息**不进任何成员集合**
+    //    （旧实现取全部端点全局 min/max，两个不连续段会把中间无关聊天并入一段提交）。
+    //    P1-2：成员修订须仍等于判断时候选修订（消息被编辑→冲突退出，不拿新文本冒充旧判断依据）。
     const idSet = new Set(candidates.map((c) => c.id));
-    const resolved: Array<{ id: string; revision: number; sequence: number }> = [];
-    for (const r of parsed.ranges) {
-      for (const mid of [r.start, r.end]) {
-        if (typeof mid !== 'string' || !idSet.has(mid)) { this.setStatus(job, 'failed', `GLM 引用了不存在的消息 id——拒绝写入`); return; }
-        resolved.push(this.deps.db.prepare('SELECT id, current_revision AS revision, sequence FROM messages WHERE id = ?').get(mid) as { id: string; revision: number; sequence: number });
+    const candRevision = new Map(candidates.map((c) => [c.id, c.revision]));
+    type Segment = { members: Array<{ source_message_id: string; content_hash: string }>; conversation: string };
+    const segments: Segment[] = [];
+    const seenSm = new Set<string>();
+    let globalConversation: string | null = null;
+    for (const rg of parsed.ranges) {
+      const endpoints: Array<{ id: string; sequence: number }> = [];
+      for (const mid of [rg.start, rg.end]) {
+        if (typeof mid !== 'string' || !idSet.has(mid)) { this.setStatus(job, 'failed', 'GLM 引用了不存在的消息 id——拒绝写入'); return; }
+        const row = this.deps.db.prepare('SELECT id, sequence FROM messages WHERE id = ?').get(mid) as { id: string; sequence: number };
+        endpoints.push(row);
       }
+      const [startRow, endRow] = endpoints;
+      if (startRow.sequence > endRow.sequence) { this.setStatus(job, 'failed', 'GLM 段边界倒置——拒绝写入'); return; }
+      const span = this.deps.db.prepare(
+        `SELECT id, current_revision AS revision, sequence FROM messages WHERE conversation_id = ?
+         AND sequence BETWEEN ? AND ? AND speaker IN ('owner','assistant') ORDER BY sequence ASC`,
+      ).all(job.conversation_id, startRow.sequence, endRow.sequence) as Array<{ id: string; revision: number; sequence: number }>;
+      const segMembers: Segment['members'] = [];
+      for (const s of span) {
+        // P1-2：判断基于候选当时的修订快照；写入时修订已变=按冲突退出（M 无版本 CAS，E 侧复核）
+        if (s.revision !== candRevision.get(s.id)) { this.setStatus(job, 'version_conflict', `范围消息（${s.id}）在判断后被编辑——不按旧判断写入新文本，按冲突语义待重处理`); return; }
+        // 收据按 span 消息的当前修订精确匹配（与手动绑定 receiptOf 同口径）——多修订混旧 sm 已实证（SOURCE_RANGE_NOT_PATH）。
+        const receipt = this.deps.db.prepare(
+          'SELECT source_message_id, source_conversation_id, content_hash FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ? AND source_message_id IS NOT NULL',
+        ).get(s.id, s.revision) as { source_message_id: string; source_conversation_id: string; content_hash: string } | undefined;
+        if (!receipt) { this.setStatus(job, 'source_unavailable', `范围含未同步消息（${s.id}）——原文落 M 后下批重试`); return; }
+        // 绑定会话=M 侧真实会话（收据 source_conversation_id，与手动绑定同口径——传 E 会话 id 会被 M NOT_FOUND 拒）。
+        if (globalConversation === null) globalConversation = receipt.source_conversation_id;
+        else if (receipt.source_conversation_id !== globalConversation) { this.setStatus(job, 'failed', '范围成员收据跨 M 会话——不一致，不写入'); return; }
+        if (seenSm.has(receipt.source_message_id)) { this.setStatus(job, 'failed', 'GLM 各段成员重复——拒绝写入'); return; }
+        seenSm.add(receipt.source_message_id);
+        segMembers.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
+      }
+      if (segMembers.length > 0) segments.push({ members: segMembers, conversation: globalConversation! });
     }
-    const span = this.deps.db.prepare(
-      `SELECT id, current_revision AS revision, sequence FROM messages WHERE conversation_id = ?
-       AND sequence BETWEEN ? AND ? AND speaker IN ('owner','assistant') ORDER BY sequence ASC`,
-    ).all(job.conversation_id, Math.min(...resolved.map((r) => r.sequence)), Math.max(...resolved.map((r) => r.sequence))) as Array<{ id: string; revision: number; sequence: number }>;
-    const members: Array<{ source_message_id: string; content_hash: string }> = [];
-    let sourceConversation: string | null = null;
-    for (const s of span) {
-      // 收据按 span 消息的当前修订精确匹配（与手动绑定 receiptOf 同口径）——消息编辑出多修订时
-      // 旧修订收据的 sm 会留在 M 路径上，选旧 sm 触发 SOURCE_RANGE_NOT_PATH（BIND-09 复放实证）。
-      const receipt = this.deps.db.prepare(
-        'SELECT source_message_id, source_conversation_id, content_hash FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ? AND source_message_id IS NOT NULL',
-      ).get(s.id, s.revision) as { source_message_id: string; source_conversation_id: string; content_hash: string } | undefined;
-      if (!receipt) { this.setStatus(job, 'source_unavailable', `范围含未同步消息（${s.id}）——原文落 M 后下批重试`); return; }
-      // 绑定会话=M 侧真实会话（收据 source_conversation_id，与手动绑定 memorySourceBind 同口径）——
-      // 传 E 会话 id 会被 M 的会话解析 NOT_FOUND 拒绝（BIND-09 生产首批 27 条的实际根因）。
-      if (sourceConversation === null) sourceConversation = receipt.source_conversation_id;
-      else if (receipt.source_conversation_id !== sourceConversation) { this.setStatus(job, 'failed', '范围成员收据跨 M 会话——不一致，不写入'); return; }
-      members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
-    }
-    // ⑤ 绑定写入（M 领域服务；人工已绑/重叠 → skipped_existing 不覆盖）
+    if (segments.length === 0) { this.setStatus(job, 'no_match', '判断段内无合格成员——按无来源保留'); return; }
+    // P1-2：记忆版本复核——判断基于 version 快照，写入前仍须同一版本（M 侧无 CAS 接口，E 侧复核如实）
     try {
-      const r = await m.sourceBindingBind(job.memory_id, { conversation_id: sourceConversation!, members });
-      if (r.ok) {
-        const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
-        this.setStatus(job, 'bound', `自动补绑（后台任务建立，非本人绑定）`, typeof bindingId === 'string' ? [bindingId] : []);
+      const re = await m.memoryGet(job.memory_id);
+      const v2 = re.ok ? (re.result as MemShape).version : undefined;
+      if (typeof v2 === 'number' && version != null && v2 !== version) {
+        this.setStatus(job, 'version_conflict', `记忆在判断后被修改（v${version}→v${v2}）——按冲突语义待重处理`);
         return;
       }
-      if (r.code === 'EVENT_SOURCE_OVERLAP' || r.code === 'SOURCE_ALREADY_BOUND') { this.setStatus(job, 'skipped_existing', '已有人工/既有绑定——跳过不覆盖'); return; }
-      if (r.code === 'VERSION_CONFLICT' || r.code === 'EVENT_SOURCE_CHANGED') { this.setStatus(job, 'version_conflict', '记忆/原文版本已变化——按冲突语义待重处理入口'); return; }
-      const retryable = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
-      this.setStatus(job, retryable ? 'failed' : 'failed', `绑定写入失败（${r.code}）——下批重试`);
-    } catch {
-      this.setStatus(job, 'failed', '绑定写入传输失败（结果未知，不盲重发）——下批核对后重试');
+    } catch { /* 复核传输失败不阻断——写入链自有失败面，避免双倍故障 */ }
+
+    // ⑤ P1-1：逐段写入（每段独立绑定调用）；OVERLAP 段跳过不覆盖；中途失败保留已成功段的 binding_id
+    //    （重试时既有自写段被 P1-3 前置检查放行、M OVERLAP 幂等跳过，只补剩余段）。
+    const okIds: string[] = [];
+    let overlapped = 0;
+    let hardFail: string | null = null;
+    for (const seg of segments) {
+      try {
+        const r = await m.sourceBindingBind(job.memory_id, { conversation_id: seg.conversation, members: seg.members });
+        if (r.ok) {
+          const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
+          if (typeof bindingId === 'string') okIds.push(bindingId);
+          continue;
+        }
+        if (r.code === 'EVENT_SOURCE_OVERLAP' || r.code === 'SOURCE_ALREADY_BOUND') { overlapped++; continue; }
+        if (r.code === 'VERSION_CONFLICT' || r.code === 'EVENT_SOURCE_CHANGED') { hardFail = '记忆/原文版本已变化——按冲突语义待重处理'; break; }
+        hardFail = `绑定写入失败（${r.code}）——已成功 ${okIds.length} 段，剩余段下批重试`;
+        break;
+      } catch {
+        hardFail = `绑定写入传输失败（结果未知，不盲重发）——已成功 ${okIds.length} 段，下批核对后重试`;
+        break;
+      }
     }
+    if (okIds.length > 0) {
+      this.setStatus(job, 'bound', `自动补绑 ${okIds.length} 段（后台任务建立，非本人绑定）${overlapped > 0 ? `；既有绑定段跳过 ${overlapped} 段` : ''}`, okIds);
+      return;
+    }
+    if (overlapped === segments.length) { this.setStatus(job, 'skipped_existing', '已有人工/既有绑定——跳过不覆盖'); return; }
+    this.setStatus(job, 'failed', hardFail ?? '绑定写入失败——下批重试');
   }
 
-  /** 候选窗口：hold 回合输入序号 ±30、同会话、双方消息，有界 max_candidates。 */
-  private gatherCandidates(job: JobRow): Array<{ id: string; speaker: string; occurred_at: string; content: string; sequence: number }> {
+  /** 候选窗口：hold 回合输入序号 ±30、同会话、双方消息，有界 max_candidates（revision=判断时快照，P1-2 钉住）。 */
+  private gatherCandidates(job: JobRow): Array<{ id: string; speaker: string; occurred_at: string; content: string; sequence: number; revision: number }> {
     if (!job.conversation_id) return [];
     const cfg = this.deps.config.source_binding;
     let anchorSeq: number | null = null;
@@ -229,10 +291,10 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       anchorSeq = last.n ?? 0;
     }
     return this.deps.db.prepare(
-      `SELECT m.id AS id, m.speaker AS speaker, r.occurred_at AS occurred_at, r.content AS content, m.sequence AS sequence
+      `SELECT m.id AS id, m.speaker AS speaker, r.occurred_at AS occurred_at, r.content AS content, m.sequence AS sequence, m.current_revision AS revision
        FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
        WHERE m.conversation_id = ? AND m.speaker IN ('owner','assistant') AND m.sequence BETWEEN ? AND ?
        ORDER BY m.sequence ASC LIMIT ?`,
-    ).all(job.conversation_id, Math.max(1, anchorSeq - 30), anchorSeq + 30, cfg.max_candidates) as Array<{ id: string; speaker: string; occurred_at: string; content: string; sequence: number }>;
+    ).all(job.conversation_id, Math.max(1, anchorSeq - 30), anchorSeq + 30, cfg.max_candidates) as Array<{ id: string; speaker: string; occurred_at: string; content: string; sequence: number; revision: number }>;
   }
 }

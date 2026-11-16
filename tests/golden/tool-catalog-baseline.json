@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "8adf77c50c7f83d7e66ab7bc3b5bfb3bf1a3935c",
+  "baselineCommit": "77e6e8a5935c0908bd9332a601185887dace3814",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -98,7 +98,7 @@
     "oido_view": "td_e2afa71c62d836d5b4359e54",
     "oido_find": "td_4dac90ce5f50d5a00ba5b2db",
     "oido_compare": "td_531c45af21260ea69a6c0fcf",
-    "identity_milestone_write": "td_f00582bdcebaaccc4baf3ae0",
+    "identity_milestone_write": "td_93479b067f25f5bb779b6f71",
     "wishstar_write_star": "td_09240106d16047bb5678885d",
     "wishstar_read": "td_8c101051bb0083cf6b9c2fb0",
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
@@ -121,7 +121,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "871dca614f6d34c004e0130c2987853d246be01e57612ff611489c9cc87f63f1",
+  "toolsSha256": "a4d07d64a20527cdacb0473491e451f892de886cdab515fe7ce7c6e4e4619ff8",
   "tools": [
     {
       "type": "function",
@@ -1736,7 +1736,7 @@
                 "revise",
                 "remove"
               ],
-              "description": "缺省=write（整版替换，会覆盖全部现有条目——常规修改请用 add/revise/remove 单条操作，不覆盖其他条目）"
+              "description": "必填且必须显式（缺省调用会被拒绝）：read 读；write 整版替换（覆盖全部现有条目）；add 追加一条；revise/remove 按 item 改/删单条。常规修改用 add/revise/remove，不覆盖其他条目"
             },
             "text": {
               "type": "string",

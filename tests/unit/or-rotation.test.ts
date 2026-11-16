@@ -84,7 +84,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   // 裁定②（2026-10-24）：容量口径统一含冻结工具目录（底座随目录增长标定——相册重构
   // P4/P5/P3 依次 +conversation_archive/+image_generate 后底座 ≈13.2k token）——软线=
   // 底座+1500（原相对位置不变：首轮不触发，第二轮长消息≈+3.2k token 触发）
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 17_500 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 47706→48991B（≈+356 token）——底座+1500 相对位不变：首轮不触发，第二轮长消息≈+3.2k token 触发 */ }, ...configOver });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 17_580 /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 47706→48991B（≈+356 token）——底座+1500 相对位不变：首轮不触发，第二轮长消息≈+3.2k token 触发 */ }, ...configOver });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);

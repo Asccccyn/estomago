@@ -108,3 +108,19 @@ test('RB02：background_complete 后的合法停发归一为 completed（不再 
   assert.equal(r.errorCode, null, '不携带失败错误码');
   assert.ok(sessions.get('w1'), '成功收尾保留 SDK 锚（旧实现 error 分支删锚）');
 });
+
+// Codex P1-10（2026-11-16）：失败 result 的具体原因（error/errors 数组，如 Overloaded）
+// 在归一化层已提取——最终 RunnerRunResult.errorMessage 必须携带，不再只剩 SDK_* 稳定码。
+test('P1-10: 失败 result 的具体原因进入最终回执 errorMessage', async () => {
+  const factory: SdkQueryFactory = ((input: { prompt: AsyncIterable<unknown> }) => {
+    const run = (async function* () {
+      void (async () => { try { for await (const _ of input.prompt) void _; } catch { /* closed */ } })();
+      yield { type: 'result', subtype: 'error_during_execution', is_error: true, error: 'unknown', errors: ['Overloaded: upstream busy'], session_id: 'sess-p10', usage: {} } as never;
+    })();
+    return Object.assign(run, { close() {} }) as never;
+  });
+  const r = await runSdkHostQuery(factory, req(), new Map(), async () => null, (async () => ({ pid: 1 })) as never);
+  assert.equal(r.outcome, 'error');
+  assert.match(String(r.errorMessage ?? ''), /Overloaded/, '具体原因不再丢失');
+  assert.ok(r.errorCode === null || /^SDK_/.test(r.errorCode), '稳定码语义保留');
+});

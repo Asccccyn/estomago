@@ -169,7 +169,10 @@ export class ArchiveService {
         return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_NOT_FOUND', boundary: which, detail: `${label}锚点在本次已见范围内没有匹配的原文（说话人：${anchor.speaker}；引语必须是该消息正文的连续逐字片段）` } };
       }
       if (hits.length > 1) {
-        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_AMBIGUOUS', boundary: which, detail: `${label}引语命中 ${hits.length} 条已见消息，未唯一定位不写入；请用更长的原话或前后文区分`, candidates: hits.map((h) => ({ speaker: anchor.speaker, position: visible.indexOf(h.v) + 1, excerpt: excerptAround(h.v.text, h.occStart, anchor.quote) })) } };
+        // P1-12（Codex 审计）：候选摘录必须裁在各自已见区间内（partial 消息的邻文在节选外
+        // 不可外发），并给展示一个实际上限（命中数如实报，列表截断）。
+        const shown = hits.slice(0, 5).map((h) => ({ speaker: anchor.speaker, position: visible.indexOf(h.v) + 1, excerpt: excerptWithinSeen(h, anchor.quote) }));
+        return { ok: false, res: { ok: false, code: 'ARCHIVE_ANCHOR_AMBIGUOUS', boundary: which, detail: `${label}引语命中 ${hits.length} 条已见消息（示前 ${shown.length} 条），未唯一定位不写入；请用更长的原话或前后文区分`, candidates: shown } };
       }
       const hit = hits[0]!.v;
       if (!hit.full) {
@@ -430,12 +433,29 @@ function utf16IndexToCodepoints(s: string, utf16Index: number): number {
   return cp;
 }
 
-/** 消歧候选摘录：命中处前后少量文字（不回读整段）。 */
-function excerptAround(text: string, occStart: number, quote: string): string {
-  const from = Math.max(0, occStart - 10);
-  const to = occStart + quote.length + 14;
-  const raw = text.slice(from, to).replace(/\s+/g, ' ').trim();
-  return `${from > 0 ? '…' : ''}${raw}${to < text.length ? '…' : ''}`.slice(0, 60);
+/** 消歧候选摘录：命中处前后少量文字（不回读整段）。P1-12（Codex 审计）：只见节选的
+ *  消息必须裁在其已见区间内取邻文——旧实现从完整修订取左右文，把节选外文字送进候选。
+ *  full 消息窗口照旧；partial 消息窗口=包含命中的那个已见区间内的裁剪。 */
+function excerptWithinSeen(h: { v: { text: string; full: boolean; ranges: Array<[number, number]> }; occStart: number }, quote: string): string {
+  const text = h.v.text;
+  if (h.v.full) {
+    const from = Math.max(0, h.occStart - 10);
+    const to = h.occStart + quote.length + 14;
+    const raw = text.slice(from, to).replace(/\s+/g, ' ').trim();
+    return `${from > 0 ? '…' : ''}${raw}${to < text.length ? '…' : ''}`.slice(0, 60);
+  }
+  // 码点区间 → 区间文本；在区间文本内定位命中并取窗口（窗口天然不越出已见范围）
+  const cps = Array.from(text);
+  const occCpStart = utf16IndexToCodepoints(text, h.occStart);
+  const occCpEnd = occCpStart + Array.from(quote).length;
+  const range = h.v.ranges.map(([a, b]) => [a, b] as [number, number]).find(([rs, re]) => occCpStart >= rs && occCpEnd <= re);
+  if (!range) return quote.slice(0, 60); // 命中区间缺失（构造上不应发生）：只回引语本身，不外发未核实邻文
+  const segText = cps.slice(range[0], range[1]).join('');
+  const occInSeg = Array.from(text.slice(0, h.occStart)).length - range[0]; // 命中在区间文本内的码点偏移
+  const from = Math.max(0, occInSeg - 10);
+  const to = occInSeg + Array.from(quote).length + 14;
+  const raw = Array.from(segText).slice(from, to).join('').replace(/\s+/g, ' ').trim();
+  return `${from > 0 ? '…' : ''}${raw}${to < Array.from(segText).length ? '…' : ''}`.slice(0, 60);
 }
 
 /** 回执范围摘要：边界消息开头少量文字（成功回执不回显整段）。 */

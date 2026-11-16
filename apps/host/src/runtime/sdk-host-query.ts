@@ -125,6 +125,7 @@ export async function runSdkHostQuery(
   let sessionReceivedInput = false;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
+  let sdkDetailError: string | null = null; // P1-10（Codex 审计）：归一化结果携带的具体错误原因（result.errors/error），最终回执不再只剩稳定码
   let businessCompleted = false; // RB02（复审 20261106）：background_complete 后的合法停发——非异常
   let errorEvidence: Record<string, unknown> | null = null; // B3：错误事件脱敏安全字段（白名单键）
   let round = 0;
@@ -326,6 +327,12 @@ export async function runSdkHostQuery(
         }
       }
       for (const event of normalized) {
+        // P1-10（Codex 审计 2026-11-16）：失败 result 的具体原因（error / errors 数组，如
+        // Overloaded）在归一化层已提取——留档供最终回执使用，避免只剩 SDK_* 稳定码。
+        if (event.kind === 'turn_end' && (event as { outcome?: string; error_message?: unknown }).outcome === 'error') {
+          const em = (event as { error_message?: unknown }).error_message;
+          if (typeof em === 'string' && em.length > 0) sdkDetailError ??= em.slice(0, 200);
+        }
         // Keep partial text in est's protocol ledger too. Waiting for a complete
         // assistant packet would lose a response when the stream breaks mid-block.
         if (event.kind === 'text_delta' && event.channel === 'main') projectText(event.sdk_message_id, event.block_index, event.text, true);
@@ -392,7 +399,7 @@ export async function runSdkHostQuery(
     return {
       outcome, errorCode: failure && /^[A-Z][A-Z0-9_]+$/.test(failure) ? failure : outcome === 'error' ? 'SDK_ERROR' : null,
       errorClassified: failure && /network|timeout|fetch|ECONN/i.test(failure) ? 'network' : outcome === 'error' ? 'unknown' : null,
-      errorMessage: failure, sessionId: normalizer.sessionId, requestId: null,
+      errorMessage: sdkDetailError ?? failure, sessionId: normalizer.sessionId, requestId: null,
       subscriptionLimit: limit, activityStarted, attempts, finalMessages: messages, lastSentMessages,
       resumeDiagnosis, errorEvidence,
     };

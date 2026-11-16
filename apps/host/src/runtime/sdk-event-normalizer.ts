@@ -167,9 +167,12 @@ export class SdkEventNormalizer {
           this.sawSuccessResult = true;
           out.push({ kind: 'turn_end', outcome: 'completed', error_classified: null, error_message: null, session_id: this.session_id, request_id: this.request_id });
         } else {
-          // F10：errors 数组也是错误文本来源（error 字段为空时不至于丢失分类线索）
-          const message = raw.error ?? (Array.isArray(raw.errors) && raw.errors.length > 0 ? raw.errors.join('; ') : null)
-            ?? `result subtype=${raw.subtype ?? 'unknown'} is_error=${raw.is_error ?? false}`;
+          // F10：errors 数组也是错误文本来源。P1-10（Codex 审计）：error 通用码与 errors 具体
+          // 原因（如 Overloaded）合并且都保留——旧实现 error 非空时吞掉 errors 的具体线索。
+          const errList = Array.isArray(raw.errors) ? (raw.errors as unknown[]).filter((e): e is string => typeof e === 'string' && e.length > 0) : [];
+          const message = [typeof raw.error === 'string' && raw.error.length > 0 ? raw.error : null, ...errList]
+            .filter((e): e is string => e !== null).join('; ')
+            || `result subtype=${raw.subtype ?? 'unknown'} is_error=${raw.is_error ?? false}`;
           this.lastError = { classified: classifyError(message), message };
           out.push({ kind: 'turn_end', outcome: 'error', error_classified: this.lastError.classified, error_message: message, session_id: this.session_id, request_id: this.request_id });
         }

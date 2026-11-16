@@ -519,6 +519,12 @@ export class MariposaClient {
     if (args.replacement) payload.replacement = args.replacement;
     return this.transport('memory.our_words.source.correct', payload);
   }
+  /** P1-3（Codex 审计 2026-11-16）：按会话列既有来源绑定（M source.bindings.of_conversation，
+   *  只读）——BIND 自动路径在付费判断前检查该记忆是否已有非本任务建立的绑定。 */
+  async sourceBindingsOfConversation(conversationId: string): Promise<MariposaCallResult> {
+    return this.transport('source.bindings.of_conversation', { conversation_id: conversationId });
+  }
+
   async sourceBindingBind(memoryId: string, selection: HoldSourceSelection): Promise<MariposaCallResult> {
     return this.transport('source.binding.bind', {
       memory_id: memoryId, conversation_id: selection.conversation_id,

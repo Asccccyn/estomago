@@ -24,6 +24,8 @@ type BindCall = { memoryId: string; members: Array<{ source_message_id: string; 
 let bindCalls: BindCall[];
 let bindResult: 'ok' | 'overlap' | 'transport_error';
 let notFoundNext = false; // 下一次 sourceBindingBind 拒 NOT_FOUND（一次性）
+let existingBindings: Array<{ memory_id: string; binding_id: string }> = []; // P1-3 前置检查可编程列表
+let memoryGetVersions: number[] = []; // P1-2 记忆版本按调用次序取（空=恒 3）
 let memoryGetResult: MariposaCallResult;
 
 before(() => {
@@ -33,6 +35,8 @@ before(() => {
   bindCalls = [];
   bindResult = 'ok';
   notFoundNext = false;
+  existingBindings = [];
+  memoryGetVersions = [];
   memoryGetResult = { ok: true, result: { memory_id: 'mem_x', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
 });
 
@@ -41,7 +45,10 @@ after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); del
 function stubMariposa(): MariposaClient {
   return {
     withSignal: () => stubMariposa(),
-    memoryGet: async () => memoryGetResult,
+    sourceBindingsOfConversation: async () => ({ ok: true, result: { bindings: existingBindings } }),
+    memoryGet: async () => memoryGetVersions.length > 0
+      ? { ok: true, result: { memory_id: 'mem_x', version: memoryGetVersions.shift()!, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } }
+      : memoryGetResult,
     sourceBindingBind: async (memoryId: string, sel: { conversation_id?: string; members: BindCall['members'] }) => {
       // 模拟真实 M 的会话解析（BIND-09 生产首批 27 条 NOT_FOUND 的教训）：conversation_id
       // 必须是收据的 source_conversation_id（种子='sc1'）；传 E 会话 id 一律 NOT_FOUND。
@@ -215,6 +222,10 @@ test('BIND-03/B03: failed 可重试态在后续批次自动重取收口；达上
 
 test('BIND-05: 消息编辑出多修订时收据按当前修订取——旧修订 sm 不进 members（SOURCE_RANGE_NOT_PATH 防回归）', async () => {
   bindResult = 'ok'; notFoundNext = false;
+  // P2-2（Codex 审计）：翻转移除"未声明顺序"的默认依赖——旧实现（批量收据查询）在默认
+  // SQLite 顺序下碰巧绿，反转后取到 v1 收据才稳定失败；修复版（逐条按修订）两种顺序皆绿。
+  db.exec('PRAGMA reverse_unordered_selects=ON');
+  try {
   db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
   const seed = seedHoldAndConversation('mem_rev2', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
   // 首条消息编辑出 v2：current_revision=2 + v2 收据（sm 不同）；v1 收据仍在（M 路径上两 sm 并存）
@@ -231,4 +242,98 @@ test('BIND-05: 消息编辑出多修订时收据按当前修订取——旧修�
   const m0 = bindCalls.at(-1)!.members.map((x) => x.source_message_id);
   assert.ok(m0.includes('sm_mem_rev2_v2'), 'members 含当前修订 v2 的 sm');
   assert.ok(!m0.includes('sm_msg_mem_rev2_1'), '旧修订 v1 的 sm 不进 members');
+  } finally { db.exec('PRAGMA reverse_unordered_selects=OFF'); }
+});
+
+
+test('Codex P1-3: 付费判断前查既有绑定——他源绑定跳过且零 GLM 调用；自写绑定放行补段', async () => {
+  bindResult = 'ok'; notFoundNext = false;
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_p13', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  existingBindings = [{ memory_id: 'mem_p13', binding_id: 'bnd_foreign' }];
+  let glmCalls = 0;
+  const glm: GlmChatTransport = async () => { glmCalls++; return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } }; };
+  await makeService(glm).runBatch();
+  const job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_p13'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'skipped_existing', '他源绑定→付费前跳过');
+  assert.equal(glmCalls, 0, '零判断调用（不付费）');
+  assert.match(job.detail ?? '', /付费判断前跳过/);
+  // 自写绑定（binding_ids_json 留存）不构成障碍——继续补段
+  db.prepare("UPDATE source_bind_jobs SET status='failed', binding_ids_json='[\"bnd_own_1\"]' WHERE memory_id='mem_p13'").run();
+  existingBindings = [{ memory_id: 'mem_p13', binding_id: 'bnd_own_1' }];
+  await makeService(glm).runBatch();
+  const job2 = db.prepare("SELECT status, binding_ids_json FROM source_bind_jobs WHERE memory_id='mem_p13'").get() as { status: string; binding_ids_json: string | null };
+  assert.equal(job2.status, 'bound', '自写绑定放行——补段收口');
+  assert.equal(glmCalls, 1);
+});
+
+test('Codex P1-1: 多段 ranges 逐段独立保存——段间消息不进任何成员集合', async () => {
+  bindResult = 'ok'; notFoundNext = false; bindCalls = [];
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_p11', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [
+    { start: seed.msgIds[0], end: seed.msgIds[0], basis: '第一段' },
+    { start: seed.msgIds[2], end: seed.msgIds[3], basis: '第二段' },
+  ], confidence: 'high' }) } }] } });
+  await makeService(glm).runBatch();
+  const job = db.prepare("SELECT status, detail, binding_ids_json FROM source_bind_jobs WHERE memory_id='mem_p11'").get() as { status: string; detail: string; binding_ids_json: string | null };
+  assert.equal(job.status, 'bound', JSON.stringify(job));
+  assert.match(job.detail ?? '', /2 段/);
+  assert.equal(JSON.parse(job.binding_ids_json ?? '[]').length, 2, '两段各一条绑定');
+  // 段成员：第一段只 msg1；第二段 msg3+msg4；中间 msg2 不进任何段
+  const smOf = (i: number) => 'sm_' + seed.msgIds[i - 1];
+  assert.deepEqual(bindCalls.map((c) => c.members.map((m) => m.source_message_id)), [[smOf(1)], [smOf(3), smOf(4)]], '段间消息 2 未被并入（旧实现全局 min/max 会提交 4 条）');
+});
+
+test('Codex P1-5: 判断服务失败≠无匹配——超时记 failed 非 no_match', async () => {
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  seedHoldAndConversation('mem_p15', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm: GlmChatTransport = async () => ({ transportError: 'timeout' });
+  await makeService(glm).runBatch();
+  const job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_p15'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'failed', '服务失败留重试语义');
+  assert.match(job.detail ?? '', /超时|未完成/);
+});
+
+test('Codex P1-2: 判断后消息被编辑→version_conflict；记忆版本变化→version_conflict', async () => {
+  bindResult = 'ok'; notFoundNext = false;
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_p12a', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const t0 = new Date().toISOString();
+  // ① 判断依据消息（msg1）在判断应答返回、写入发生之前被编辑出 v2（编辑时机=transport 回调内）
+  const glmOk: GlmChatTransport = async () => {
+    db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,2,'text',?,?,?,?,'user_input')").run(seed.msgIds[0], '编辑后的正文', sha256Hex('p12a-v2'), t0, t0);
+    db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(seed.msgIds[0]);
+    return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } };
+  };
+  await makeService(glmOk).runBatch();
+  let job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_p12a'").get() as { status: string };
+  assert.equal(job.status, 'version_conflict', '成员修订与判断快照不符→冲突退出，不写新文本');
+  // ② 记忆版本在判断后变化：第一次 memoryGet=3（判断），第二次复核=4（清 jobs+hold，防①残留重跑消耗序列）
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed2 = seedHoldAndConversation('mem_p12b', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  memoryGetVersions = [3, 4];
+  const glm2: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed2.msgIds[0], end: seed2.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  await makeService(glm2).runBatch();
+  job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_p12b'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'version_conflict', '记忆判断后被修改→冲突退出');
+  assert.match(job.detail ?? '', /v3→v4/);
+});
+
+test('Codex P1-9: 提交时刻恰为边界点归下一批（半开区间）+ P1-4: failed 行单独留存也触发 due', async () => {
+  const boundary = SourceBindingService.lastBoundary();
+  const at = (offsetMs: number) => new Date(new Date(boundary).getTime() + offsetMs).toISOString();
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  seedHoldAndConversation('mem_exact', at(0)); // 恰点 00:00:00.000 —— B01 归下一批
+  seedHoldAndConversation('mem_before', at(-1)); // 边界前 1ms —— 本批
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: false, reason: 'x' }) } }] } });
+  const report = await makeService(glm).runBatch();
+  assert.equal(report.collected, 1, '恰点提交不入本批（半开区间）');
+  assert.ok(!db.prepare("SELECT 1 FROM source_bind_jobs WHERE memory_id='mem_exact'").get(), '恰点 hold 未入队');
+  // P1-4：无新 hold、仅留 failed（attempts<上限）时 dueNow 仍为 true
+  db.prepare("UPDATE source_bind_jobs SET status='failed', attempts=2 WHERE memory_id='mem_before'").run();
+  const svc = makeService(glm);
+  assert.equal(svc.dueNow(), true, '可重试 failed 行单独留存也触发 due（旧实现只查 pending 永不重试）');
+  db.prepare("UPDATE source_bind_jobs SET attempts = ? WHERE memory_id='mem_before'").run(SourceBindingService.MAX_ATTEMPTS);
+  assert.equal(svc.dueNow(), false, '达上限后不再触发');
 });

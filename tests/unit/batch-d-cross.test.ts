@@ -50,7 +50,7 @@ const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { co
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((x) => x.length > 0).map((x) => enc.encode(`${x}\n\n`)));
 
 const mariposaOk: MariposaTransport = async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 });
-const SOFT = { windows: { soft_limit_tokens: 27_550 /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移（同 wp3 系） */ } };
+const SOFT = { windows: { soft_limit_tokens: 27_630 /* Codex P2-1：里程碑文案 +50B≈+80 token；包2 DBG-04：锚点参数 +722B≈+400 token（同 wp3 系） */ } };
 const dayAgo = (n: number): string => new Date(Date.now() - n * 86400_000).toISOString();
 
 function seedHist(db: ReturnType<typeof openDatabase>, id: string, content: string, seq: number, speaker: 'owner' | 'assistant', occurredAt: string): void {

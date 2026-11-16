@@ -498,3 +498,26 @@ test('npm test file selectors reject unknown, outside-group and missing paths wi
     assert.doesNotMatch(result.stdout, /串行执行/);
   }
 });
+
+// Codex P1-6（2026-11-16）：M 真实计划续页包形——首页 items/next_cursor 在 plans 节内；
+// 续页 bootstrapNext 返回**顶层** items/next_cursor；末页 cursor={plans_offset:null}。
+// 旧实现只读 page.plans 且把任意非空对象当有效 cursor：51 条计划丢第 51 条且无提示。
+test('plans continuation reads both real packet shapes and recognizes the all-null end cursor', async () => {
+  const plan = (i: number) => ({ plan_id: `plan_${i}`, title: `计划${i}`, version: 1 });
+  const home50 = Array.from({ length: 50 }, (_, i) => plan(i + 1));
+  const { host } = hostFor(async (capability: string, payload: Record<string, unknown>) => {
+    if (capability === 'bootstrap.get') return success({ ...metadata, snapshot_id: 'snap_p16', memory_days: { items: [] }, plans: { items: home50, total: 51, next_cursor: { plans_offset: 50 } }, i: { content: 'I_P16' } });
+    if (capability === 'bootstrap.next') {
+      assert.equal(payload.section, 'plans');
+      return success({ items: [plan(51)], total: 51, next_cursor: { plans_offset: null } }); // M 真实续页：顶层 items + 全 null 末页 cursor
+    }
+    if (capability === 'bootstrap.validate') return success({ unchanged: true, snapshot_id: 'snap_p16', profile: 'estomago' });
+    return failure('CAPABILITY_NOT_FOUND', 404);
+  });
+  const text = await callBootstrap(host as never, 'room_p16');
+  assert.equal(typeof text, 'string');
+  assert.match(text!, /计划51/, '第 51 条（续页顶层包形）已载入——旧实现静默丢失');
+  assert.match(text!, /计划1/);
+  assert.doesNotMatch(text!, /还有更多未载入/, '末页全 null cursor=取尽，不打未载提示');
+  assert.doesNotMatch(text!, /总数对不上/, 'total=51 与实收一致');
+});

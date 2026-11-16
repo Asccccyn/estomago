@@ -13,7 +13,7 @@ export const IDENTITYMILESTONEWRITE_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '缺省=write（整版替换，会覆盖全部现有条目——常规修改请用 add/revise/remove 单条操作，不覆盖其他条目）' },
+          operation: { type: 'string', enum: ['read', 'write', 'add', 'revise', 'remove'], description: '必填且必须显式（缺省调用会被拒绝）：read 读；write 整版替换（覆盖全部现有条目）；add 追加一条；revise/remove 按 item 改/删单条。常规修改用 add/revise/remove，不覆盖其他条目' },
           text: { type: 'string', minLength: 1, maxLength: 65536, description: 'write=完整新版正文；add/revise=该条目新正文' },
           confirm_overwrite: { type: 'boolean', description: '仅 write：新正文未保留既有内容行时必须显式带 true（防误删她写的内容）；带 false/缺省将被拒绝并说明丢了哪些' },
           item: { type: 'integer', minimum: 1, description: 'revise/remove 的目标条目序号（read 结果里带）' },
