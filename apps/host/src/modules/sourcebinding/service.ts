@@ -27,6 +27,8 @@ type JobRow = {
 };
 
 export class SourceBindingService {
+  /** 可重试态的总尝试上限（含首次）：有界防无限付费（B08/B16）。 */
+  static readonly MAX_ATTEMPTS = 4;
   private readonly deps: { db: Db; config: Config; mariposa: MariposaClient | null; glm: GlmChatAdapter | null; log: (level: 'info' | 'warn', event: string, fields?: Record<string, unknown>) => void };
   constructor(deps: SourceBindingService['deps']) { this.deps = deps; }
 
@@ -93,10 +95,13 @@ export class SourceBindingService {
       ).get(boundary, ...facts.map((f) => f.memory_id)) as { n: number }).n;
     }
 
-    // 处理 pending（本批有界；单条失败不阻塞）
+    // 处理 pending + 可重试态（本批有界；单条失败不阻塞）。BIND-03/B03"局部失败留待处理、
+    // 恢复接续"：failed（写入/判断可重试类）与 source_unavailable（原文未同步，落 M 后可收口）
+    // 在后续批次自动重取，attempts 有界防无限付费（B08/B16：无匹配不重复猜测、不虚构 exactly-once）。
+    // version_conflict 不自动重试（版本冲突重判结果不变，按冲突语义待重处理入口）。
     const jobs = this.deps.db.prepare(
-      `SELECT * FROM source_bind_jobs WHERE status = 'pending' AND batch_boundary <= ? ORDER BY created_at ASC LIMIT ?`,
-    ).all(boundary, cfg.max_batch) as JobRow[];
+      `SELECT * FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable') AND batch_boundary <= ? AND attempts < ? ORDER BY created_at ASC LIMIT ?`,
+    ).all(boundary, SourceBindingService.MAX_ATTEMPTS, cfg.max_batch) as JobRow[];
     for (const job of jobs) {
       await this.processJob(job);
       report.processed += 1;
@@ -108,10 +113,13 @@ export class SourceBindingService {
   }
 
   private setStatus(job: JobRow, status: string, detail: string | null, bindingIds?: string[]): void {
+    // 达重试上限的 failed 如实标注停止自动重试（detail 不留"下批重试"的假话）
+    const capped = status === 'failed' && job.attempts + 1 >= SourceBindingService.MAX_ATTEMPTS;
+    const finalDetail = capped ? `${detail}（已达重试上限 ${SourceBindingService.MAX_ATTEMPTS}，停止自动重试——留人工核对）` : detail;
     this.deps.db.prepare(
       `UPDATE source_bind_jobs SET status = ?, detail = ?, attempts = attempts + 1, memory_version = COALESCE(memory_version, ?),
        binding_ids_json = COALESCE(?, binding_ids_json), updated_at = ? WHERE id = ?`,
-    ).run(status, detail, job.memory_version, bindingIds ? JSON.stringify(bindingIds) : null, new Date().toISOString(), job.id);
+    ).run(status, finalDetail, job.memory_version, bindingIds ? JSON.stringify(bindingIds) : null, new Date().toISOString(), job.id);
   }
 
   private async processJob(job: JobRow): Promise<void> {

@@ -23,6 +23,7 @@ let db: ReturnType<typeof openDatabase>;
 type BindCall = { memoryId: string; members: Array<{ source_message_id: string; content_hash: string }> };
 let bindCalls: BindCall[];
 let bindResult: 'ok' | 'overlap' | 'transport_error';
+let notFoundNext = false; // 下一次 sourceBindingBind 拒 NOT_FOUND（一次性）
 let memoryGetResult: MariposaCallResult;
 
 before(() => {
@@ -31,6 +32,7 @@ before(() => {
   migrate(db, sha256Hex);
   bindCalls = [];
   bindResult = 'ok';
+  notFoundNext = false;
   memoryGetResult = { ok: true, result: { memory_id: 'mem_x', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
 });
 
@@ -44,6 +46,7 @@ function stubMariposa(): MariposaClient {
       // 模拟真实 M 的会话解析（BIND-09 生产首批 27 条 NOT_FOUND 的教训）：conversation_id
       // 必须是收据的 source_conversation_id（种子='sc1'）；传 E 会话 id 一律 NOT_FOUND。
       if (sel.conversation_id !== 'sc1') return { ok: false, code: 'NOT_FOUND', httpStatus: 404 };
+      if (notFoundNext) { notFoundNext = false; return { ok: false, code: 'NOT_FOUND', httpStatus: 404 }; }
       bindCalls.push({ memoryId, members: sel.members });
       if (bindResult === 'transport_error') throw new Error('connection reset');
       if (bindResult === 'overlap') return { ok: false, code: 'EVENT_SOURCE_OVERLAP', httpStatus: 409 };
@@ -166,4 +169,46 @@ test('BIND-06: 全程零聊天消息写入（不唤醒、不发气泡）', async
   await makeService(glm).runBatch();
   const after = (db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n;
   assert.equal(after - before, 4, '只有夹具消息，任务零写入');
+});
+
+
+test('BIND-03/B03: failed 可重试态在后续批次自动重取收口；达上限停止并如实标注', async () => {
+  bindResult = 'ok'; notFoundNext = false; // 隔离前序测试遗留状态
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run(); // 隔离：任务行+hold 事实同清（只清 jobs 会让 runBatch 重新收集前序 hold）
+  const seed = seedHoldAndConversation('mem_retry', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  notFoundNext = true;
+  await makeService(glm).runBatch();
+  let job = db.prepare("SELECT status, attempts FROM source_bind_jobs WHERE memory_id='mem_retry'").get() as { status: string; attempts: number };
+  assert.equal(job.status, 'failed', '首次写入被拒=failed 留痕');
+  bindResult = 'ok';
+  notFoundNext = false;
+  await makeService(glm).runBatch();
+  job = db.prepare("SELECT status, attempts, binding_ids_json FROM source_bind_jobs WHERE memory_id='mem_retry'").get() as { status: string; attempts: number; binding_ids_json: string | null };
+  assert.equal(job.status, 'bound', 'failed 在后续批次被自动重取并收口');
+  assert.ok(job.binding_ids_json, '绑定回执留存');
+  // 达上限的 failed 不再重取（attempts 冻结、零判断调用、历史 detail 不改写）
+  seedHoldAndConversation('mem_cap', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  notFoundNext = true;
+  await makeService(glm).runBatch(); // 收集入行：首次写入被拒 → failed attempts=1
+  db.prepare("UPDATE source_bind_jobs SET status='failed', attempts=4, detail='旧失败' WHERE memory_id='mem_cap'").run();
+  const glmCalls: number[] = [];
+  const glmCount: GlmChatTransport = async () => { glmCalls.push(1); return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: false, reason: 'x' }) } }] } }; };
+  await makeService(glmCount).runBatch();
+  const capped = db.prepare("SELECT status, attempts, detail FROM source_bind_jobs WHERE memory_id='mem_cap'").get() as { status: string; attempts: number; detail: string };
+  assert.equal(capped.status, 'failed');
+  assert.equal(capped.attempts, 4, '达上限不再重取（attempts 冻结）');
+  assert.equal(glmCalls.length, 0, '不再产生判断调用（不无限付费）');
+  assert.equal(capped.detail, '旧失败', '历史 detail 不被改写');
+  // 上限内的 failed 重试到上限后如实标注停止
+  seedHoldAndConversation('mem_cap2', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  notFoundNext = true;
+  await makeService(glm).runBatch(); // 收集入行 → failed attempts=1
+  db.prepare("UPDATE source_bind_jobs SET status='failed', attempts=3, detail='绑定写入失败（X）——下批重试' WHERE memory_id='mem_cap2'").run();
+  bindResult = 'ok';
+  notFoundNext = true; // 本次重试的写入被拒 → attempts=4 达上限
+  await makeService(glm).runBatch();
+  const cap2 = db.prepare("SELECT status, attempts, detail FROM source_bind_jobs WHERE memory_id='mem_cap2'").get() as { status: string; attempts: number; detail: string };
+  assert.equal(cap2.attempts, 4, '第 4 次尝试后冻结');
+  assert.match(cap2.detail, /停止自动重试/, '达上限如实标注');
 });
