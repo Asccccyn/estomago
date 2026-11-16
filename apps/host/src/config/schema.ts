@@ -289,6 +289,14 @@ export type Config = {
       assistant_display_name: string;
     };
   };
+  source_binding: {
+    enabled: boolean; // BIND-07：任务开关；未配凭据=如实未启用
+    api_key_env: string | null; // 独立 GLM API 凭据（环境变量名；不用char会话/SDK/Sol/JEV 凭据，BIND-04）
+    base_url: string;
+    model: string;
+    max_batch: number; // 单批记忆条数上限（有界工作）
+    max_candidates: number; // 单条记忆候选消息上限
+  };
   media: {
     max_image_bytes: number; // 存储上限≠供应商请求上限
     max_audio_bytes: number;
@@ -548,6 +556,7 @@ export const CONFIG_DEFAULTS: Config = {
       assistant_display_name: 'char', // 03_SYSTEM（包2 2026-11-16）：模型可见说话人标签统一真实姓名（旧默认 用户/助手）
     },
   },
+  source_binding: { enabled: false, api_key_env: null, base_url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.7', max_batch: 50, max_candidates: 60 },
   media: {
     max_image_bytes: 20971520,
     max_audio_bytes: 33554432,
@@ -677,6 +686,7 @@ const SHAPE: SectionSpec = { section: {
   } },
   system_alerts: { section: { usage_settlement_grace_ms: 'number', summary_refresh_debounce_ms: 'number' } },
   token_estimates: { section: { debounce_ms: 'number', max_body_bytes: 'number' } },
+  source_binding: { section: { enabled: 'boolean', api_key_env: 'string?', base_url: 'string', model: 'string', max_batch: 'number', max_candidates: 'number' } },
   memory_surfacing: { section: {
     enabled: 'boolean', surfacing_credential_ref: 'string?',
     delivery_deadline_ms: 'number', max_added_tokens_per_turn: 'number',

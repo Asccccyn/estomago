@@ -1753,4 +1753,28 @@ ALTER TABLE imagegen_operations ADD COLUMN result_url TEXT;
 `,
 });
 
+// v74（包2 批C BIND 2026-11-16）：午夜来源绑定任务状态——每条已提交记忆的自动补绑
+// 处理状态唯一正本（E 持有调度与状态；绑定写入走 M source.binding.bind 领域服务）。
+MIGRATIONS.push({
+  version: 74,
+  name: 'source-bind-jobs',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

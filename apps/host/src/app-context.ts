@@ -88,6 +88,13 @@ export class Host {
   private mediaSyncTimer: ReturnType<typeof setInterval> | null = null;
   private objectMetaBackfillTimer: ReturnType<typeof setInterval> | null = null;
   private mediaSyncTicking = false;
+  // 包2 批C（BIND）：午夜来源绑定维护 tick（60s 检查是否到边界；实际批处理有界、
+  // 单飞；不进调度器模型串行链——BIND-06 不唤醒char/不触发浮现/不写聊天气泡）。
+  private sourceBindTimer: ReturnType<typeof setInterval> | null = null;
+  private sourceBindService: import('./modules/sourcebinding/service.ts').SourceBindingService | null = null;
+  private bindingMariposa: import('./integrations/mariposa/client.ts').MariposaClient | null = null;
+  wireBindingMariposa(client: import('./integrations/mariposa/client.ts').MariposaClient | null): void { this.bindingMariposa = client; }
+  private sourceBindTicking = false;
   private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
   private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
   /** 同步失败退避（进程内；重启归零重试一轮，与 media/index/backfill.ts 同款如实记录） */
@@ -526,6 +533,7 @@ export class Host {
 
     const host = new Host(opts.config, opts, server, deps, archiveSync);
     host.wireMediaSourceFetch(mediaSourceFetch); // RR4-W2a：集合类索引来源（构造后接线，避免经路由 deps 传递）
+    host.wireBindingMariposa(modelMariposaClient ?? null); // 包2 批C BIND：来源绑定任务用主 M 客户端（构造后接线）
     return host;
   }
 
@@ -571,6 +579,12 @@ export class Host {
     // 不进调度器串行链）。指数退避按行上 attempts 计算（30s·2^min(n,5)）。
     this.mediaSyncTimer = setInterval(() => { void this.mediaMSyncTick(); }, 15_000);
     this.mediaSyncTimer.unref?.();
+    // 包2 批C（BIND-01/02/06）：午夜来源绑定——E 维护 tick 为唯一调度点（M 无调度设施），
+    // 状态唯一正本=source_bind_jobs；60s 检查 due，实际处理沿 Asia/Shanghai 上一 00:00 边界。
+    if (this.config.source_binding.enabled) {
+      this.sourceBindTimer = setInterval(() => { void this.sourceBindTick(); }, 60_000);
+      this.sourceBindTimer.unref?.();
+    }
     // RR5（复审 2026-11-09）：附件对象元数据回推——存量（历史 22 项缺口）/post-ACK
     // 未 synced/推送失败的行按同一幂等 op 键周期补齐（≤50/跳；标记防重放放大）。
     // F3（复审 2026-11-09 二轮）：存档 M 投影（建档/撤销 observation）共用本 60s 周期
@@ -603,6 +617,27 @@ export class Host {
 
   /** 相册重构 P2：M 落正待同步一跳（≤5 资产/跳；进程内指数退避 30s·2^min(n,5)，
    *  与 media/index/backfill.ts 同款——重启后退避归零重试一轮，如实记录） */
+  private async sourceBindTick(): Promise<void> {
+    if (!this.config.source_binding.enabled || this.sourceBindTicking) return;
+    if (!this.sourceBindService) {
+      const { GlmChatAdapter } = await import('./integrations/glm/chat.ts');
+      const { SourceBindingService } = await import('./modules/sourcebinding/service.ts');
+      this.sourceBindService = new SourceBindingService({
+        db: this.db, config: this.config,
+        mariposa: this.bindingMariposa,
+        glm: new GlmChatAdapter({ baseUrl: this.config.source_binding.base_url, apiKeyEnv: this.config.source_binding.api_key_env, model: this.config.source_binding.model }),
+        log: (level, event, fields) => { this.logger[level](event, (fields ?? {}) as Record<string, string | number | boolean | null>); },
+      });
+    }
+    const svc = this.sourceBindService;
+    this.sourceBindTicking = true;
+    try {
+      if (svc.dueNow()) await svc.runBatch();
+    } catch (err) {
+      this.logger.warn('source_bind_tick_failed', { error: String((err as Error).message).slice(0, 120) });
+    } finally { this.sourceBindTicking = false; }
+  }
+
   private async mediaMSyncTick(): Promise<void> {
     if (this.mediaSyncTicking) return;
     const media = this.mediaServiceRef;
@@ -652,6 +687,7 @@ export class Host {
     });
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
+    if (this.sourceBindTimer) { clearInterval(this.sourceBindTimer); this.sourceBindTimer = null; }
     if (this.objectMetaBackfillTimer) { clearInterval(this.objectMetaBackfillTimer); this.objectMetaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
