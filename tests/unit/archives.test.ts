@@ -811,3 +811,57 @@ test('ARC-25: 参数门——三种定位互斥；锚点必须成对；非法说
   assert.equal(emptyQuote.ok, false);
   assert.equal(emptyQuote.output['error_code'], 'TOOL_ARG_INVALID');
 });
+
+test('ARC-26 (批D·编辑冲突×定位三法): 所见版本被编辑→锚点按 STALE 拒；latest_completed_turn 按当前修订照常；未见新修订文字不命中', async () => {
+  messages.ensureConversation('c6');
+  const t1 = 'turn_arc26';
+  const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c6', content: '这段对话今天先记录到这里', clientMessageId: 'arc26-u' });
+  db.prepare('UPDATE messages SET turn_id = ? WHERE id = ?').run(t1, u1.message.id);
+  const a1 = messages.publishAssistantMessage({ conversationId: 'c6', turnId: t1, content: '好的，我会记得。', kind: 'text', clientMessageId: 'arc26-a' });
+  db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, input_message_id, created_at, completed_at) VALUES (?, 'c6','user_input','completed',?,?,?) ON CONFLICT(id) DO NOTHING")
+    .run(t1, u1.message.id, new Date().toISOString(), new Date().toISOString());
+  const t0 = new Date().toISOString();
+  seedReceipt(u1.message.id, 1); seedReceipt(a1.id, 1);
+  // 用户编辑出 v2（含补充），v2 也有收据
+  db.prepare('INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('mrev-arc26-2', u1.message.id, 2, 'text', '这段对话今天先记录到这里（补充了两句）', sha256Hex('arc26-v2'), t0, t0, 'user');
+  db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(u1.message.id);
+  seedReceipt(u1.message.id, 2);
+  const tools = toolsBridge();
+  // ①锚点仍指所见 v1：按 STALE 拒（引用失效给具体冲突，不静默写旧版）
+  const seenV1: SeenRefLite[] = [{ id: u1.message.id, revision: 1 }, { id: a1.id, revision: 1 }];
+  const stale = await tools.execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '记录到这里' },
+    anchor_end: { speaker: 'char', quote: '我会记得' },
+  }, mkCtx('c6', seenV1, 'call-a26-stale'));
+  assert.equal(stale.ok, false);
+  assert.equal(stale.output['error_code'], 'ARCHIVE_ANCHOR_STALE');
+  // ②latest_completed_turn 不受锚点失效影响：按当前修订（v2）正常存档
+  const shortcut = await tools.execute('conversation_archive', { kind: 'sweet', latest_completed_turn: true }, mkCtx('c6', [], 'call-a26-turn'));
+  assert.equal(shortcut.ok, true, JSON.stringify(shortcut.output));
+  const list = await listArchives('c6');
+  const mine = list.find((e) => e.messages.length === 2);
+  assert.ok(mine, '快捷路径建档成功');
+  const pinned = mine!.messages.find((m) => m.message_id === u1.message.id);
+  assert.equal(pinned && pinned.revision, 2, '快捷路径钉当前修订 v2（不因编辑失效）');
+  // ③片段已见 v2 后再编辑出 v3：v2 引语→STALE；v3 独有文字→不在所见视野，NOT_FOUND
+  db.prepare('INSERT INTO message_revisions(id, message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run('mrev-arc26-3', u1.message.id, 3, 'text', '完全改写后的新句子', sha256Hex('arc26-v3'), t0, t0, 'user');
+  db.prepare('UPDATE messages SET current_revision = 3 WHERE id = ?').run(u1.message.id);
+  const seenV2Frag: SeenRefLite[] = [{ id: u1.message.id, revision: 2, char_start: 0, char_end: 8 }, { id: a1.id, revision: 1 }];
+  const staleFrag = await tools.execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '这段对话今天' },
+    anchor_end: { speaker: 'char', quote: '我会记得' },
+  }, mkCtx('c6', seenV2Frag, 'call-a26-frag'));
+  assert.equal(staleFrag.ok, false);
+  assert.equal(staleFrag.output['error_code'], 'ARCHIVE_ANCHOR_EXCERPT_ONLY', '片段已见的边界先报节选（整条不可存与版本无关——比 STALE 更根本的约束）');
+  const unseenV3 = await tools.execute('conversation_archive', {
+    kind: 'sweet',
+    anchor_start: { speaker: '宿主用户', quote: '完全改写后的新句子' },
+    anchor_end: { speaker: 'char', quote: '我会记得' },
+  }, mkCtx('c6', seenV2Frag, 'call-a26-v3'));
+  assert.equal(unseenV3.ok, false);
+  assert.equal(unseenV3.output['error_code'], 'ARCHIVE_ANCHOR_NOT_FOUND', '未见修订的文字不参与匹配');
+});
