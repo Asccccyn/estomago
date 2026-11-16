@@ -216,8 +216,8 @@ test('BD-3 (同时聊天×BIND): 聊天回合在途时午夜批照常处理—�
       .run(id, convBd, i, i === 2 ? 'assistant' : 'owner', 'turn_bd', committedAt, committedAt);
     const content = i === 2 ? '我把落日的照片发给你了' : `第${i}句：海边的风好大`;
     d.db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,1,'text',?,?,?,?,'user_input')").run(id, content, sha256Hex(content), committedAt, committedAt);
-    d.db.prepare('INSERT INTO source_sync_receipts(id, origin_message_id, revision, source_message_id, content_hash, operation_id, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run(genId('ssr'), id, 1, 'sm_' + id, sha256Hex(id), 'op_sync_bd', 'acked', committedAt);
+    d.db.prepare('INSERT INTO source_sync_receipts(id, origin_message_id, revision, source_message_id, source_conversation_id, content_hash, operation_id, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(genId('ssr'), id, 1, 'sm_' + id, 'sc_bd', sha256Hex(id), 'op_sync_bd', 'acked', committedAt);
     bdMsgs.push(id);
   }
   d.db.prepare('UPDATE turns SET input_message_id = ? WHERE id = ?').run(bdMsgs[2], 'turn_bd');
@@ -228,6 +228,8 @@ test('BD-3 (同时聊天×BIND): 聊天回合在途时午夜批照常处理—�
   const bindTransport: MariposaTransport = async (cap, payload) => {
     if (cap === 'memory.get') return { ok: true, result: { memory_id: 'mem_bd', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
     if (cap === 'source.binding.bind') {
+      // 模拟真实 M 会话解析：conversation_id 必须是收据会话（'sc_bd'），传 E 会话 id 一律 NOT_FOUND
+      if (String((payload as { conversation_id?: string }).conversation_id ?? '') !== 'sc_bd') return { ok: false, code: 'NOT_FOUND', httpStatus: 404 };
       bindCalls.push({ memoryId: String((payload as { memory_id?: string }).memory_id), members: ((payload as { members?: Array<{ source_message_id: string }> }).members ?? []).map((m) => m.source_message_id) });
       return { ok: true, result: { binding_id: 'bnd_bd' } };
     }

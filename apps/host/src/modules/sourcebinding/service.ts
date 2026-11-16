@@ -172,18 +172,23 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
        AND sequence BETWEEN ? AND ? AND speaker IN ('owner','assistant') ORDER BY sequence ASC`,
     ).all(job.conversation_id, Math.min(...resolved.map((r) => r.sequence)), Math.max(...resolved.map((r) => r.sequence))) as Array<{ id: string; revision: number; sequence: number }>;
     const receiptRows = span.length > 0 ? this.deps.db.prepare(
-      `SELECT origin_message_id, revision, source_message_id, content_hash FROM source_sync_receipts WHERE origin_message_id IN (${span.map(() => '?').join(',')}) AND source_message_id IS NOT NULL`,
-    ).all(...span.map((r) => r.id)) as Array<{ origin_message_id: string; revision: number; source_message_id: string; content_hash: string }> : [];
+      `SELECT origin_message_id, revision, source_message_id, content_hash, source_conversation_id FROM source_sync_receipts WHERE origin_message_id IN (${span.map(() => '?').join(',')}) AND source_message_id IS NOT NULL`,
+    ).all(...span.map((r) => r.id)) as Array<{ origin_message_id: string; revision: number; source_message_id: string; content_hash: string; source_conversation_id: string }> : [];
     const byMsg = new Map(receiptRows.map((r) => [r.origin_message_id, r]));
     const members: Array<{ source_message_id: string; content_hash: string }> = [];
+    let sourceConversation: string | null = null;
     for (const s of span) {
       const receipt = byMsg.get(s.id);
       if (!receipt) { this.setStatus(job, 'source_unavailable', `范围含未同步消息（${s.id}）——原文落 M 后下批重试`); return; }
+      // 绑定会话=M 侧真实会话（收据 source_conversation_id，与手动绑定 memorySourceBind 同口径）——
+      // 传 E 会话 id 会被 M 的会话解析 NOT_FOUND 拒绝（BIND-09 生产首批 27 条的实际根因）。
+      if (sourceConversation === null) sourceConversation = receipt.source_conversation_id;
+      else if (receipt.source_conversation_id !== sourceConversation) { this.setStatus(job, 'failed', '范围成员收据跨 M 会话——不一致，不写入'); return; }
       members.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
     }
     // ⑤ 绑定写入（M 领域服务；人工已绑/重叠 → skipped_existing 不覆盖）
     try {
-      const r = await m.sourceBindingBind(job.memory_id, { conversation_id: job.conversation_id!, members });
+      const r = await m.sourceBindingBind(job.memory_id, { conversation_id: sourceConversation!, members });
       if (r.ok) {
         const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
         this.setStatus(job, 'bound', `自动补绑（后台任务建立，非本人绑定）`, typeof bindingId === 'string' ? [bindingId] : []);

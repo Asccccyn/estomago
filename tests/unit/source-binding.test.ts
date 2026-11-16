@@ -40,7 +40,10 @@ function stubMariposa(): MariposaClient {
   return {
     withSignal: () => stubMariposa(),
     memoryGet: async () => memoryGetResult,
-    sourceBindingBind: async (memoryId: string, sel: { members: BindCall['members'] }) => {
+    sourceBindingBind: async (memoryId: string, sel: { conversation_id?: string; members: BindCall['members'] }) => {
+      // 模拟真实 M 的会话解析（BIND-09 生产首批 27 条 NOT_FOUND 的教训）：conversation_id
+      // 必须是收据的 source_conversation_id（种子='sc1'）；传 E 会话 id 一律 NOT_FOUND。
+      if (sel.conversation_id !== 'sc1') return { ok: false, code: 'NOT_FOUND', httpStatus: 404 };
       bindCalls.push({ memoryId, members: sel.members });
       if (bindResult === 'transport_error') throw new Error('connection reset');
       if (bindResult === 'overlap') return { ok: false, code: 'EVENT_SOURCE_OVERLAP', httpStatus: 409 };
@@ -69,8 +72,8 @@ function seedHoldAndConversation(memoryId: string, committedAt: string): { turnI
   db.prepare('UPDATE turns SET input_message_id = ? WHERE id = ?').run(msgIds[2], turnId);
   // M 同步收据（members 身份源）
   for (const id of msgIds) {
-    db.prepare('INSERT INTO source_sync_receipts(id, origin_message_id, revision, source_message_id, content_hash, operation_id, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?)')
-      .run(genId('ssr'), id, 1, 'sm_' + id, sha256Hex(id), 'op_sync_' + memoryId, 'acked', committedAt);
+    db.prepare('INSERT INTO source_sync_receipts(id, origin_message_id, revision, source_message_id, source_conversation_id, content_hash, operation_id, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+      .run(genId('ssr'), id, 1, 'sm_' + id, 'sc1', sha256Hex(id), 'op_sync_' + memoryId, 'acked', committedAt);
   }
   db.prepare("INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, memory_id, operation_id, tool_call_id, seen_sequence, created_at, updated_at) VALUES (?,?,?,NULL,'hold','committed',1,?,?,?,0,?,?)")
     .run(genId('tse'), null, turnId, memoryId, 'op_' + memoryId, 'call_' + memoryId, committedAt, committedAt);
