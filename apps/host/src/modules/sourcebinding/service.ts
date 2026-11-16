@@ -179,14 +179,14 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       `SELECT id, current_revision AS revision, sequence FROM messages WHERE conversation_id = ?
        AND sequence BETWEEN ? AND ? AND speaker IN ('owner','assistant') ORDER BY sequence ASC`,
     ).all(job.conversation_id, Math.min(...resolved.map((r) => r.sequence)), Math.max(...resolved.map((r) => r.sequence))) as Array<{ id: string; revision: number; sequence: number }>;
-    const receiptRows = span.length > 0 ? this.deps.db.prepare(
-      `SELECT origin_message_id, revision, source_message_id, content_hash, source_conversation_id FROM source_sync_receipts WHERE origin_message_id IN (${span.map(() => '?').join(',')}) AND source_message_id IS NOT NULL`,
-    ).all(...span.map((r) => r.id)) as Array<{ origin_message_id: string; revision: number; source_message_id: string; content_hash: string; source_conversation_id: string }> : [];
-    const byMsg = new Map(receiptRows.map((r) => [r.origin_message_id, r]));
     const members: Array<{ source_message_id: string; content_hash: string }> = [];
     let sourceConversation: string | null = null;
     for (const s of span) {
-      const receipt = byMsg.get(s.id);
+      // 收据按 span 消息的当前修订精确匹配（与手动绑定 receiptOf 同口径）——消息编辑出多修订时
+      // 旧修订收据的 sm 会留在 M 路径上，选旧 sm 触发 SOURCE_RANGE_NOT_PATH（BIND-09 复放实证）。
+      const receipt = this.deps.db.prepare(
+        'SELECT source_message_id, source_conversation_id, content_hash FROM source_sync_receipts WHERE origin_message_id = ? AND revision = ? AND source_message_id IS NOT NULL',
+      ).get(s.id, s.revision) as { source_message_id: string; source_conversation_id: string; content_hash: string } | undefined;
       if (!receipt) { this.setStatus(job, 'source_unavailable', `范围含未同步消息（${s.id}）——原文落 M 后下批重试`); return; }
       // 绑定会话=M 侧真实会话（收据 source_conversation_id，与手动绑定 memorySourceBind 同口径）——
       // 传 E 会话 id 会被 M 的会话解析 NOT_FOUND 拒绝（BIND-09 生产首批 27 条的实际根因）。

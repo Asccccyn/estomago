@@ -212,3 +212,23 @@ test('BIND-03/B03: failed 可重试态在后续批次自动重取收口；达上
   assert.equal(cap2.attempts, 4, '第 4 次尝试后冻结');
   assert.match(cap2.detail, /停止自动重试/, '达上限如实标注');
 });
+
+test('BIND-05: 消息编辑出多修订时收据按当前修订取——旧修订 sm 不进 members（SOURCE_RANGE_NOT_PATH 防回归）', async () => {
+  bindResult = 'ok'; notFoundNext = false;
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_rev2', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  // 首条消息编辑出 v2：current_revision=2 + v2 收据（sm 不同）；v1 收据仍在（M 路径上两 sm 并存）
+  const t0 = new Date().toISOString();
+  db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,2,'text',?,?,?,?,'user_input')")
+    .run(seed.msgIds[0], '第1句：海边的风好大（补充）', sha256Hex('rev2'), t0, t0);
+  db.prepare('UPDATE messages SET current_revision = 2 WHERE id = ?').run(seed.msgIds[0]);
+  db.prepare('INSERT INTO source_sync_receipts(id, origin_message_id, revision, source_message_id, source_conversation_id, content_hash, operation_id, committed_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+    .run(genId('ssr'), seed.msgIds[0], 2, 'sm_mem_rev2_v2', 'sc1', sha256Hex('rev2'), 'op_rev2', 'acked', t0);
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  const svc = makeService(glm);
+  const report = await svc.runBatch();
+  assert.equal(report.counts['bound'], 1, JSON.stringify(report));
+  const m0 = bindCalls.at(-1)!.members.map((x) => x.source_message_id);
+  assert.ok(m0.includes('sm_mem_rev2_v2'), 'members 含当前修订 v2 的 sm');
+  assert.ok(!m0.includes('sm_msg_mem_rev2_1'), '旧修订 v1 的 sm 不进 members');
+});
