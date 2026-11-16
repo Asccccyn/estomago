@@ -61,15 +61,40 @@ export async function runSdkHostQuery(
   // 被静默丢弃、回合成功仍消费 next_once。把 system 消息的非文本块按原序抬升为输入流首条
   // user 消息（文本块留在 systemPrompt 不重复；本转换仅在输入组装层，账本/锚点哈希基于
   // 原 messages 不受影响）。无 readImage 时维持未核实门，与 tail 物化同款不静默丢图。
+  //
+  // DBG-07（包2 2026-11-16）：带 guide 标记的引导语 system 消息不抬进 systemPrompt
+  // （supervisor 已滤），也不静默丢弃——并回**后继**历史消息的文本块头部，保持
+  // "引导语→原文"相邻与顺序（旧实现全部引导语被抬到所有历史之前，位置关系丢失）。
   const sliced = messages.slice(resume?.messageCount ?? 0);
   const systemMedia = sliced.flatMap((m) => (m.role === 'system' && typeof m.content !== 'string') ? m.content.filter((b) => b.type !== 'text') : []);
   if (systemMedia.length > 0 && !host.readImage) {
     return { outcome: 'error', errorCode: 'SDK_MEDIA_TRANSPORT_UNVERIFIED', errorClassified: 'unknown', errorMessage: '携带图无媒体投影通道（readImage 缺席），不静默丢图', sessionId: null, requestId: null, attempts: 0, activityStarted: false };
   }
-  const inputMessages = [
-    ...(systemMedia.length > 0 ? [{ role: 'user', content: systemMedia }] : []),
-    ...sliced.filter((m) => m.role !== 'system'),
-  ];
+  type SliceMessage = (typeof sliced)[number];
+  const inputMessages: SliceMessage[] = [];
+  let pendingGuide: string | null = null;
+  for (const m of sliced) {
+    const isGuide = m.role === 'system' && (m as { guide?: boolean }).guide === true;
+    if (isGuide) {
+      const blocks = typeof m.content === 'string' ? [{ type: 'text' as const, text: m.content }] : (m.content as Array<{ type: string; text?: string }>).filter((b) => b.type === 'text');
+      const text = blocks.map((b) => b.text ?? '').join('\n');
+      pendingGuide = pendingGuide == null ? text : `${pendingGuide}\n${text}`;
+      continue;
+    }
+    if (pendingGuide != null && m.role !== 'system') {
+      const head = { type: 'text' as const, text: pendingGuide };
+      if (typeof m.content === 'string') m.content = [head, { type: 'text' as const, text: m.content }];
+      else (m.content as unknown[]).unshift(head);
+      pendingGuide = null;
+    }
+    if (m.role === 'system') continue; // 文本已在 systemPrompt（supervisor 组装）、媒体走下方首条抬升
+    inputMessages.push(m);
+  }
+  if (systemMedia.length > 0) inputMessages.unshift({ role: 'user', content: systemMedia } as SliceMessage);
+  if (pendingGuide != null) {
+    // 引导语后无历史消息（构造上不应发生）：作为独立文本注入流首，不静默丢
+    inputMessages.unshift({ role: 'user', content: [{ type: 'text', text: pendingGuide }] } as SliceMessage);
+  }
   const lastUser = inputMessages.findLastIndex(m => m.role === 'user');
   const history = inputMessages.slice(0, Math.max(0, lastUser));
   const tail = inputMessages.slice(Math.max(0, lastUser));

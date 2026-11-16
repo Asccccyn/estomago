@@ -175,8 +175,12 @@ export class IdentityService {
         reasons.push(`${label} 内容 hash 不符：期望 ${expectedHash.slice(0, 8)}… / 实际 ${actual.slice(0, 8)}…`);
       }
     };
-    // F04：I 快照和运行规则必须提供引用并验证实际内容 hash
-    verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
+    // F04：运行规则必须提供引用并验证实际内容 hash。
+    // DBG-05（包2 2026-11-16）：I 唯一注入点=B 段 bootstrap（M 的 I 版本体系，03_SYSTEM）——
+    // 旧占位文件 i-snapshot-pending.md 与空引用退役，gate 不再校验该槽（历史缺陷：占位
+    // "i_documents 为空"与真实 I 同时注入）。非占位的真实快照引用仍照常校验（兼容期）。
+    const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
+    if (!iRefRetired) verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
     verifyFile(manifest.runtime_rules_ref, manifest.rules_hash, '运行规则');
     // F04：verification_evidence 至少一条，且每条必须是非空白字符串（空串不算证据）
     if (
@@ -293,9 +297,11 @@ export class IdentityService {
     const identityText = read(manifest.approved_source_ref);
     const rulesText = read(manifest.runtime_rules_ref);
     if (identityText === null || rulesText === null) return null;
-    // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）
-    const iText = read(manifest.i_snapshot_ref);
-    return { identityText, rulesText, iText, iStatus: iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved' };
+    // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）。
+    // DBG-05：占位/空槽退役——iText 不再装载（真实 I 由 B 段 bootstrap 唯一注入）。
+    const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
+    const iText = iRefRetired ? null : read(manifest.i_snapshot_ref);
+    return { identityText, rulesText, iText, iStatus: iRefRetired ? 'retired_bootstrap_only' : (iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved') };
   }
 
   /** 她授权 2026-10-17（落位裁定：里程碑=身份正文槽）：char自维护长期记忆里程碑。

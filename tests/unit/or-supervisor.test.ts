@@ -21,7 +21,6 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { FIXED_RUNTIME_FRAGMENT } from '../../apps/host/src/context/fixed-runtime.ts';
 import { buildFullTestRegistry, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const enc = new TextEncoder();
@@ -78,7 +77,8 @@ test('OR 分支：完整 turn 发布、or_stream 用量入账、窗口无 SDK se
   const sysText = messages[0]!.content[0]!.text;
   assert.ok(sysText.includes('（测试）经批准身份正文——合成内容，非真实身份'), '批准身份正文进 system（§2.1 首条生成前装载）');
   assert.ok(sysText.includes('（测试）运行规则合成内容'));
-  assert.ok(sysText.includes(FIXED_RUNTIME_FRAGMENT.slice(0, 30)), '固定运行规则片段进 system（缓存点 A 候选）');
+  // DBG-06（包2 2026-11-16）：代码内规则片段已退役——运行规则唯一正本=manifest 文件版（rulesText）
+  assert.ok(sysText.includes('（测试）运行规则合成内容'), '运行规则正本（文件版）进 system A 段');
   assert.equal(messages[1]!.role, 'user');
   const userText = messages[1]!.content[0]!.text;
   assert.ok(userText.includes('[time_context]'), '程序事实标注 provenance（B4：行内短标签，解释入运行边界）');

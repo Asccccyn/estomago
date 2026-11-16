@@ -96,7 +96,7 @@ test('PLAN-5b: R2 残余——同图多条留言逐条保留（不合并、不�
   assert.equal(r.images[0]!.comments.length, 2, '两条留言都在');
   const frag = buildCarryFragment(r.fragmentImages, r.images)!;
   const text = (frag.blocks[0] as { type: 'text'; text: string }).text;
-  assert.match(text, /乔乔：海边的落日/);
+  assert.match(text, /宿主用户：海边的落日/, '03_SYSTEM：模型可见标签用真实姓名（旧硬编码 乔乔）');
   assert.match(text, /char：风好大 \/ 但很开心/, 'caption/meaning 并列且作者随留言保留');
 });
 

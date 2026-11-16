@@ -18,7 +18,12 @@ export class IdentityMilestoneService {
 
   identityMilestoneWrite(args: { operation?: string; confirm_overwrite?: boolean; text?: string; item?: number; change_reason?: string; idempotency_key?: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.identity) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '身份服务未装配' } };
-    const op = args.operation === 'read' || args.operation === 'add' || args.operation === 'revise' || args.operation === 'remove' ? args.operation : 'write';
+    // DBG-08（包2 2026-11-16）：operation 必须显式——旧实现缺省=write（整版替换），
+    // {"operation":"write"} 单独可过 schema、漏 text 到实现层才拦；缺省/未知 op 直接拒绝。
+    if (args.operation !== 'read' && args.operation !== 'write' && args.operation !== 'add' && args.operation !== 'revise' && args.operation !== 'remove') {
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: 'operation 必填且必须显式（read/write/add/revise/remove）——write=整版替换，不允许缺省触发' } };
+    }
+    const op = args.operation;
     if (op === 'read') {
       try {
         const r = this.identity.readMilestone();

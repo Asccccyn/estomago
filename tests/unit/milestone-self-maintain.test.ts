@@ -72,7 +72,7 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const svc = new IdentityService(buildConfig({}), paths);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
-  const args = { confirm_overwrite: true, text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' };
+  const args = { operation: 'write' as const, confirm_overwrite: true, text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' }; // DBG-08：operation 必填显式
   const r1 = await tools.execute('identity_milestone_write', { ...args }, ctx);
   assert.equal(r1.ok, true);
   assert.equal((r1.output as { version: string }).version, 'longterm-milestones-v2');

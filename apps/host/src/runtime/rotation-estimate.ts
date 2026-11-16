@@ -5,14 +5,14 @@ import type { Db } from '../db/connection.ts';
 import type { OrMessage } from './or-payload.ts';
 import type { TrajectoryRow } from './window-trajectory.ts';
 import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
-import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
 
 export type RotationMaterials = { identityText: string; rulesText: string; iText: string | null } | null;
 
 /** 系统段字符（identity+I+规则+固定运行片段+边界规则）——轨迹路径 system 段已在
  *  messages 内时由调用方取 0（F-J-33 只在无轨迹回退时计入）。 */
 export function systemFragmentChars(materials: RotationMaterials): number {
-  return (materials?.identityText.length ?? 0) + (materials?.rulesText.length ?? 0) + (materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
+  return (materials?.identityText.length ?? 0) + (materials?.rulesText.length ?? 0) + (materials?.iText?.length ?? 0) + HOST_BOUNDARY_RULES.length;
 }
 
 export function estimateRotationWorkingSet(input: {

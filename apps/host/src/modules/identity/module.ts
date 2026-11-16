@@ -20,7 +20,7 @@ export const IDENTITYMILESTONEWRITE_DEFINITION: HostToolSpec = {
           change_reason: { type: 'string', minLength: 1, maxLength: 500, description: '一句话说明这次更新了什么（进审计记录，她可见）' },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一版' },
         },
-        required: [], additionalProperties: false,
+        required: ['operation'], additionalProperties: false,
         anyOf: [
           { required: ['operation'] },
           { required: ['text', 'change_reason', 'idempotency_key'] },

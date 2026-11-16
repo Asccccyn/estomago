@@ -6,7 +6,7 @@ import type { Config } from '../config/schema.ts';
 import { sha256Hex } from '../util/id.ts';
 import type { GateResult } from '../identity/service.ts';
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
-import { HOST_BOUNDARY_RULES, FIXED_RUNTIME_FRAGMENT } from '../context/fixed-runtime.ts';
+import { HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
 import { fileURLToPath } from 'node:url';
 
 export const THINKING_LANGUAGE_RULE = '语言要求：思考摘要请使用简体中文；工具标识、代码和原文引用保持原样。思考摘要只进入独立的思考通道，不要在正式回复中复述。';
@@ -62,7 +62,7 @@ export function buildSdkOptions(opts: {
   if (reasons.length > 0) return { status: 'blocked', reasons };
 
   return { status: 'ok', assembled: subscriptionSdkOptions(opts.config,
-    `${opts.identityText}\n\n${opts.approvedRulesText}\n\n${FIXED_RUNTIME_FRAGMENT}\n\n${HOST_BOUNDARY_RULES}`, opts.cwd) };
+    `${opts.identityText}\n\n${opts.approvedRulesText}\n\n${HOST_BOUNDARY_RULES}`, opts.cwd) };
 }
 
 export function subscriptionSdkOptions(config: Config, systemPrompt: string | string[], cwd: string): AssembledSdkOptions {

@@ -46,6 +46,7 @@ export function planCarryImages(o: {
   carryItems: Array<CarrySetItem & { content_sha256?: string | null }>;
   resolveHash?: (assetId: string) => string | null;
   limit?: number;
+  speakerLabels?: Record<'qiaosheng' | 'jiaming', string>; // 03_SYSTEM：称谓统一从身份配置注入，不再散落硬编码
 }): CarryPlan {
   const limit = o.limit ?? CARRY_IMAGE_LIMIT;
   const images: PlannedCarryImage[] = [];
@@ -90,11 +91,12 @@ export function planCarryImages(o: {
   return { ok: true, images, hasNextOnce, fragmentImages };
 }
 
-const SPEAKER_LABELS: Record<string, string> = { qiaosheng: '乔乔', jiaming: 'char' };
+const SPEAKER_LABELS: Record<string, string> = { qiaosheng: '宿主用户', jiaming: 'char' }; // 兜底；实际以 speakerLabels 参数（身份配置）为准
 
-function commentLines(comments: CarryComment[]): string[] {
+function commentLines(comments: CarryComment[], labels?: Record<'qiaosheng' | 'jiaming', string>): string[] {
   if (comments.length === 0) return ['（无留言）'];
-  return comments.map((c) => `${SPEAKER_LABELS[c.added_by] ?? c.added_by}：${[c.caption, c.meaning].filter((t): t is string => typeof t === 'string' && t.length > 0).join(' / ')}`);
+  const table = labels ?? SPEAKER_LABELS;
+  return comments.map((c) => `${table[c.added_by as 'qiaosheng' | 'jiaming'] ?? SPEAKER_LABELS[c.added_by] ?? c.added_by}：${[c.caption, c.meaning].filter((t): t is string => typeof t === 'string' && t.length > 0).join(' / ')}`);
 }
 
 /** 开窗携带块：说明+留言原样文本（选集同图留言单列保留，逐条列出）+ 仅相册携带图的

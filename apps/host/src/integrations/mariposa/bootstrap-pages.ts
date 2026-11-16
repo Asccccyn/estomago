@@ -2,7 +2,7 @@ import type { MariposaCallResult, MariposaClient } from './client.ts';
 
 type PageClient = Pick<MariposaClient, 'bootstrapNext'>;
 type RecordValue = Record<string, unknown>;
-export type BootstrapSectionName = 'mood_text' | 'bootstrap' | 'i' | 'event_text' | 'our_words';
+export type BootstrapSectionName = 'mood_text' | 'bootstrap' | 'i' | 'event_text' | 'our_words' | 'plans'; // plans：DBG-10（包2 2026-11-16）开窗计划续取——M 端 bootstrap.next 枚举本就含 plans
 export type BootstrapGap = { section: BootstrapSectionName; memoryId?: string; code: string; retryable: boolean };
 export type BootstrapCompletion = { data: RecordValue; gaps: BootstrapGap[] };
 

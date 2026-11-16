@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "87e793bdb25b6bf5b3440df457c9632f39648025",
+  "baselineCommit": "a9bf1927b3bfb04f1448f6bca28c16644fa4125d",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -98,7 +98,7 @@
     "oido_view": "td_e2afa71c62d836d5b4359e54",
     "oido_find": "td_4dac90ce5f50d5a00ba5b2db",
     "oido_compare": "td_531c45af21260ea69a6c0fcf",
-    "identity_milestone_write": "td_2aacf56c9f2084112c12fd7e",
+    "identity_milestone_write": "td_f00582bdcebaaccc4baf3ae0",
     "wishstar_write_star": "td_09240106d16047bb5678885d",
     "wishstar_read": "td_8c101051bb0083cf6b9c2fb0",
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
@@ -121,7 +121,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "a4b72161f1ec88cb2171497d4a5475eafe307a7fbb9c4cc570460d49ed126112",
+  "toolsSha256": "c1b8e55c46772d5a15ba1bcc589f67c4ea5352a4d557f8ec16da9e274952b898",
   "tools": [
     {
       "type": "function",
@@ -1766,7 +1766,9 @@
               "description": "幂等键：同键重试只写一版"
             }
           },
-          "required": [],
+          "required": [
+            "operation"
+          ],
           "additionalProperties": false,
           "anyOf": [
             {

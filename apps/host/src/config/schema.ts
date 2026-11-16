@@ -544,8 +544,8 @@ export const CONFIG_DEFAULTS: Config = {
       max_output_tokens: 2048,
       cache_ttl: '12h',
       decision_template: null,
-      user_display_name: '用户',
-      assistant_display_name: '助手',
+      user_display_name: '宿主用户',
+      assistant_display_name: 'char', // 03_SYSTEM（包2 2026-11-16）：模型可见说话人标签统一真实姓名（旧默认 用户/助手）
     },
   },
   media: {

@@ -112,7 +112,7 @@ test('F01：无任何 SDK 前提（不装探针/不锁版本/不确认订阅）�
   ctx.db.close();
 });
 
-test('F02：已验证的当前 I 完整进入 OR 固定前缀（system 首块）', async () => {
+test('F02（DBG-05 后合同）：A 段=身份正本+运行规则正本——I 不再复制进 A 段（唯一注入点=B 段 bootstrap）', async () => {
   const log: PayloadLog = [];
   const t = loggingTransport(log, () => textBody('g1', '回'));
   const root = tempRoot('rm2-f02-');
@@ -120,7 +120,7 @@ test('F02：已验证的当前 I 完整进入 OR 固定前缀（system 首块）
   await say(ctx, '看 I', 'i1', T0);
   const msgs = log[0]!.messages as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
   assert.equal(msgs[0]!.role, 'system');
-  assert.ok(msgs[0]!.content[0]!.text.includes('（测试）I 快照合成内容'), 'I 快照正文进入 A 前缀');
+  assert.ok(!msgs[0]!.content[0]!.text.includes('（测试）I 快照合成内容'), 'I 不再复制进 A 段（DBG-05：与 B 段真实 I 双注入的旧缺陷）');
   assert.ok(msgs[0]!.content[0]!.text.includes('（测试）经批准身份正文'), '身份正文在');
   assert.ok(msgs[0]!.content[0]!.text.includes('（测试）运行规则合成内容'), '批准规则在');
   ctx.db.close();
@@ -131,7 +131,7 @@ test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不�
   const log: PayloadLog = [];
   const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 47050 /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* RT01 后再重标定：D 组完整定义随窗预送后首轮可容纳、携带大工具结果的续轮仍被硬门拦截；相册重构 P4/P3（+conversation_archive/+image_generate）目录增长后再标定 44k→46.5k；2026-11-10 RR4：media_search +photos/creations scope +290B≈+81 token 再标定 45k→45.1k */ , soft_limit_tokens: 800 } } });
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 46550 /* 包2批B：A 段去 I 与重复规则片段后首轮缩小，硬门校准随之下调（批A曾 47050） */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* RT01 后再重标定：D 组完整定义随窗预送后首轮可容纳、携带大工具结果的续轮仍被硬门拦截；相册重构 P4/P3（+conversation_archive/+image_generate）目录增长后再标定 44k→46.5k；2026-11-10 RR4：media_search +photos/creations scope +290B≈+81 token 再标定 45k→45.1k */ , soft_limit_tokens: 800 } } });
   const sub = await say(ctx, '触发工具', 't1', T0);
   assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };

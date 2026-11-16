@@ -34,7 +34,7 @@ import type { Logger } from '../observability/logging.ts';
 import { buildTimeContext, modelTimeContextText } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
 import { assembleContext } from '../context/assembler.ts';
-import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
 import { estimateRotationWorkingSet, systemFragmentChars } from './rotation-estimate.ts';
 import { selectionEstimateContext, selectionCutoffSequence, selectionPendingInputChars } from '../context/selection-estimate.ts';
 import { buildPreRotateReviewMessage } from '../context/review-prompts.ts';
@@ -964,7 +964,7 @@ export class TurnSupervisor {
   private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner;
-    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').flatMap(m => typeof m.content === 'string'
+    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system' && (m as { guide?: boolean }).guide !== true).flatMap(m => typeof m.content === 'string'
       ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text ?? ''));
     const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
     const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
@@ -1264,7 +1264,10 @@ export class TurnSupervisor {
     carryFragment?: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const dv = this.drv()!;
-    const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
+    // DBG-05/06（包2 2026-11-16）：A 段=身份正本+运行规则正本（文件版单一正本）+宿主边界。
+    // I 不再复制进 A 段（唯一注入点=B 段 bootstrap，M I 版本体系）；代码内规则片段退役
+    // （旧实现文件版与代码版双注入、且 I 占位与真实 I 冲突）。
+    const systemText = [o.materials?.identityText ?? '', o.materials?.rulesText ?? '', HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
@@ -1319,7 +1322,9 @@ export class TurnSupervisor {
     }
     for (const m of selected) {
       const guide = guides.get(m.sequence);
-      if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
+      // DBG-07（包2 2026-11-16）：引导语带结构标记 guide——SDK 路径据此把它并回后继
+      // 历史消息（保持"引导语→原文"相邻关系），不再抬进 systemPrompt 丢失位置。
+      if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }], guide: true } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
       const proj = this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
       const dedupedBlocks = proj.blocks.map((b) => {
@@ -1713,7 +1718,10 @@ export class TurnSupervisor {
         }
       }
     }
-    const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash });
+    const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash, speakerLabels: {
+      qiaosheng: this.d.config.memory_surfacing.sol?.user_display_name ?? '宿主用户',
+      jiaming: this.d.config.memory_surfacing.sol?.assistant_display_name ?? 'char',
+    } });
     if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
     // ALB-08（审计 2026-11-08）：计划立即持久化（先落 pending 键行；窗口落地时迁到真实
     // window_id）——旧实现只存进程内 Map，滚窗成功后、首请求前重启即丢，next_once 复活。
@@ -2050,11 +2058,6 @@ export class TurnSupervisor {
     if (dv !== null && (!materials?.identityText || !materials?.rulesText)) {
       // §2.1：信封驱动（OR/DS）首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
-      return;
-    }
-    if (dv !== null && !materials?.iText) {
-      // 审计 F02：当前 I 必须完整进入固定前缀（§5.1/§7.1）——缺必需 I 时阻断，不静默降级
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_I', 'blocked');
       return;
     }
 

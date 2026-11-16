@@ -352,7 +352,11 @@ export class WindowBootstrapMachine {
         if (days.length > 0) {
           seg.push('近三日记忆：');
           for (const it of days) {
-            let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）`;
+            // DBG-09（包2 2026-11-16）：最小对象引用——memory_id 是修订入口（memory_update/
+            //  memory_open）真实接受的标识；详情整篇走检索/浮现后的 memory_read_full（其 ref
+            //  经已见回执门，bootstrap 直算的 ref 不会被接受，不伪造）。
+            const memRef = typeof it.memory_id === 'string' && it.memory_id ? `〔id ${it.memory_id}〕` : '';
+            let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）${memRef}`;
             if (Array.isArray(it.mood_tags) && (it.mood_tags as unknown[]).length > 0) {
               line += ' 心情:' + (it.mood_tags as unknown[]).join('/');
             }
@@ -369,19 +373,40 @@ export class WindowBootstrapMachine {
           }
         }
         const plansSec = data.plans as Record<string, any> | undefined;
-        const plans = ((plansSec?.items ?? []) as Array<Record<string, unknown>>);
+        let plans = ((plansSec?.items ?? []) as Array<Record<string, unknown>>);
+        // DBG-10（包2 2026-11-16）：计划对账——旧实现见 next_cursor 非空就打"还有更多"，
+        // 从不对比 total 也不续取，打出过"已载 2/2"自相矛盾文案。先沿既有续页能力取尽
+        // （有界：≤5 页/≤100 条），再按 total/cursor 对账如实披露。
+        let plansCursor = plansSec?.next_cursor != null ? (plansSec.next_cursor as Record<string, unknown>) : null;
+        let plansPages = 0;
+        while (plansCursor != null && plansPages < 5 && plans.length < 100 && snapId) {
+          try {
+            const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, plansCursor as Record<string, unknown>, 'plans', sg), { signal: lifetime, section: 'plans' });
+            const pageSec = (page.plans ?? {}) as Record<string, any>;
+            plans = plans.concat(((pageSec.items ?? []) as Array<Record<string, unknown>>));
+            plansCursor = pageSec.next_cursor != null ? (pageSec.next_cursor as Record<string, unknown>) : null;
+            plansPages += 1;
+          } catch {
+            plansCursor = null; // 续页失败：按已载如实披露，不阻塞开窗
+            seg.push(`[计划还有更多未载入（已载 ${plans.length} 条；续页读取失败可能不全）——按需可用 plans_read 查询]`);
+            break;
+          }
+        }
         if (plans.length > 0) {
           seg.push('计划：');
           for (const pl of plans) {
             const detail = typeof pl.detail === 'string' && pl.detail.length > 0 ? `（${pl.detail}）` : '';
-            seg.push(`- ${String(pl.title ?? '')}${detail}`);
+            // DBG-09：plan_id/version 供 plans_read/plans_write(complete/cancel/update) 直接使用
+            const planRef = typeof pl.plan_id === 'string' && pl.plan_id ? `〔${pl.plan_id}${typeof pl.version === 'number' ? ` v${pl.version}` : ''}〕` : '';
+            seg.push(`- ${String(pl.title ?? '')}${detail}${planRef}`);
           }
         }
-        if (plansSec?.next_cursor != null) {
-          const total = typeof plansSec.total === 'number' ? plansSec.total : null;
-          seg.push(`[计划还有更多未载入（plans 续页未取；已载 ${plans.length}${total != null ? '/' + total : ''} 条）——按需可用 plans_read 查询]`);
+        const plansTotal = typeof plansSec?.total === 'number' ? plansSec.total : null;
+        if (plansCursor != null) {
+          // 仍未取尽（达有界上限）：如实披露已载数与续读入口
+          seg.push(`[计划还有更多未载入（已载 ${plans.length}${plansTotal != null ? '/' + plansTotal : ''} 条；续页有界未取尽）——按需可用 plans_read 查询]`);
         }
-        if (typeof iText === 'string' && iText.length > 0) seg.push(`I（当前的话）：${iText}${iNote}`);
+        if (typeof iText === 'string' && iText.length > 0) seg.push(`I（当前的话）：${iText}${iNote}〔条目与修订可用 memory_i_read 读取〕`);
         else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
         const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
