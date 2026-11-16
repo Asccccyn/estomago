@@ -42,7 +42,7 @@
 
 ## 4. 流程约定（踩过的坑，照做省时间）
 
-- **测试**：`ESTOMAGO_HOME=$(mktemp -d …) node scripts/run-tests.mjs [--file=…]`；跑完看 `[test] 结束`；某文件无 TAP 汇总=进程级崩溃（模块加载错），用 `node --experimental-strip-types 文件` 直接跑看真错。
+- **测试**：`ESTOMAGO_HOME=$(mktemp -d …) node scripts/run-tests.mjs [--file=…]`；跑完看 `[test] 结束`；某文件无 TAP 汇总=进程级崩溃（模块加载错），用 `node --experimental-strip-types 文件` 直接跑看真错。**全量输出务必落盘**（`> /tmp/x.log`）——失败文件名在对应 `=== tests/… ===` 段的 not ok 行里，只看 tail 会截掉（2026-11-16 教训：三次单文件偶发均因 tail 截断丢失文件名；后续 4 轮复现（含负载并行）全绿，特征指向高负载时段时序抖动，无稳定复现——下次出现按落盘日志直接定位，勿凭猜加防御）。
 - **改工具定义后必做**：`node scripts/export-tool-package.mjs /tmp/x --update-golden`（golden 三件）+ `ESTOMAGO_UPDATE_GOLDEN=1` 跑 envelope/module-contract 两测试 + frozen-tool-package 三处计数（目录 N/ids N/results N）+ examples 表加条目 + 容量预算按目录字节差平移（中文≈÷2~3 token，宁可多移再回调；近期值：soft 27_230/27_150/17_100、capacity 47_050、底座 15_610）+ `npm run build:web`（dist 是发布正本）。
 - **TS 限制**：node strip-types 不支持 constructor 参数属性（写成显式字段+赋值）；tests 目录不在 tsc 覆盖内（导入错要到运行才爆）。
 - **sqlite 夹具**：conversations/turns/messages/message_revisions(content_hash 必填)/tool_side_effects(memory_id 列别漏)/source_sync_receipts(operation_id+committed_at) 的 NOT NULL 列见 migrations.ts；`migrate(db, sha256Hex, 70)` 可造历史版本库。
