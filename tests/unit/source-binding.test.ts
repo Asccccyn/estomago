@@ -26,6 +26,9 @@ let bindResult: 'ok' | 'overlap' | 'transport_error';
 let notFoundNext = false; // 下一次 sourceBindingBind 拒 NOT_FOUND（一次性）
 let existingBindings: Array<{ memory_id: string; binding_id: string }> = []; // P1-3 前置检查可编程列表
 let memoryGetVersions: number[] = []; // P1-2 记忆版本按调用次序取（空=恒 3）
+let failSm: string | null = null; // 联验1：members 首个 sm 命中即 503（按段路由失败）
+let failQuery = false; // 联验2：of_memory 查询返回 503
+let memGetCalls = 0; let memGetFailAt: number | null = null; // 联验2：第 N 次 memory.get 返回 503
 let memoryGetResult: MariposaCallResult;
 
 before(() => {
@@ -37,6 +40,7 @@ before(() => {
   notFoundNext = false;
   existingBindings = [];
   memoryGetVersions = [];
+  failSm = null; failQuery = false; memGetCalls = 0; memGetFailAt = null;
   memoryGetResult = { ok: true, result: { memory_id: 'mem_x', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
 });
 
@@ -46,10 +50,19 @@ function stubMariposa(): MariposaClient {
   return {
     withSignal: () => stubMariposa(),
     sourceBindingsOfConversation: async () => ({ ok: true, result: { bindings: existingBindings } }),
-    memoryGet: async () => memoryGetVersions.length > 0
-      ? { ok: true, result: { memory_id: 'mem_x', version: memoryGetVersions.shift()!, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } }
-      : memoryGetResult,
+    sourceBindingsOfMemory: async (mid: string) => {
+      if (failQuery) return { ok: false, code: 'HTTP_503', httpStatus: 503 };
+      return { ok: true, result: { bindings: existingBindings.filter((b) => b.memory_id === mid) } };
+    },
+    memoryGet: async () => {
+      memGetCalls += 1;
+      if (memGetFailAt === memGetCalls) return { ok: false, code: 'HTTP_503', httpStatus: 503 };
+      return memoryGetVersions.length > 0
+        ? { ok: true, result: { memory_id: 'mem_x', version: memoryGetVersions.shift()!, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } }
+        : memoryGetResult;
+    },
     sourceBindingBind: async (memoryId: string, sel: { conversation_id?: string; members: BindCall['members'] }) => {
+      if (sel.members.length > 0 && sel.members[0]!.source_message_id === failSm) return { ok: false, code: 'HTTP_503', httpStatus: 503 };
       // 模拟真实 M 的会话解析（BIND-09 生产首批 27 条 NOT_FOUND 的教训）：conversation_id
       // 必须是收据的 source_conversation_id（种子='sc1'）；传 E 会话 id 一律 NOT_FOUND。
       if (sel.conversation_id !== 'sc1') return { ok: false, code: 'NOT_FOUND', httpStatus: 404 };
@@ -338,30 +351,144 @@ test('Codex P1-9: 提交时刻恰为边界点归下一批（半开区间）+ P1-
   assert.equal(svc.dueNow(), false, '达上限后不再触发');
 });
 
-test('她 2026-11-16 裁定: 余额不足（402）→failed 留重试 + 幂等宿主通知当日一条', async () => {
+test('返修 P1-4: 402→credential_blocked 当日熔断（attempts 不耗、不反复判断、提醒一条）；跨上海日界自动复活收口', async () => {
   db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run(); db.prepare('DELETE FROM host_notices').run();
-  seedHoldAndConversation('mem_bal', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
-  const glm402: GlmChatTransport = async () => ({ status: 402, json: { error: { message: 'Insufficient Balance' } } });
-  await makeService(glm402).runBatch();
-  let job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; detail: string };
-  assert.equal(job.status, 'failed', '402 留重试语义（非 no_match）');
-  assert.match(job.detail ?? '', /余额不足/);
-  let notices = db.prepare("SELECT payload_json FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ payload_json: string }>;
-  assert.equal(notices.length, 1, '当日恰一条提醒');
-  assert.match(notices[0]!.payload_json, /余额不足|充值/);
-  // 同日再触发：幂等不重复（第二条 hold 也 402）
-  seedHoldAndConversation('mem_bal2', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
-  await makeService(glm402).runBatch();
-  job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_bal2'").get() as { status: string };
-  assert.equal(job.status, 'failed');
-  notices = db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ n: number }>;
-  assert.equal(notices[0]!.n, 1, '同日幂等——不刷屏');
-  // 401 凭据失效同样提醒
-  db.prepare('DELETE FROM host_notices').run();
-  const glm401: GlmChatTransport = async () => ({ status: 401, json: { error: { message: 'invalid api key' } } });
-  db.prepare('DELETE FROM source_bind_jobs').run();
+  const seed = seedHoldAndConversation('mem_bal', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  let glmCalls = 0;
+  let up = false; // 充值开关：false=402，true=正常判断
+  const glm: GlmChatTransport = async () => {
+    glmCalls++;
+    if (!up) return { status: 402, json: { error: { message: 'Insufficient Balance' } } };
+    return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } };
+  };
+  const now = new Date();
+  let svc = makeService(glm);
+  await svc.runBatch(now);
+  let job = db.prepare("SELECT status, attempts, detail FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; attempts: number; detail: string };
+  assert.equal(job.status, 'credential_blocked', '402 熔断（非 failed 不耗额度）');
+  assert.equal(job.attempts, 0, '凭据故障不消耗重试额度');
+  assert.match(job.detail ?? '', /余额不足|充值/);
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").get() as { n: number }).n, 1, '当日恰一条提醒');
+  // 同日后续 tick：dueNow 不触发，判断不再发起
+  assert.equal(svc.dueNow(now), false, '当日熔断——不再触发');
+  await svc.runBatch(now);
+  assert.equal(glmCalls, 1, '同日不反复发起判断');
+  // 模拟充值 + 推进到下一个上海日界：原任务被领取并完成（无需新 hold）
+  up = true;
+  const tomorrow = new Date(now.getTime() + 26 * 3600_000);
+  svc = makeService(glm); // 新实例（进程重启等价）
+  assert.equal(svc.dueNow(tomorrow), true, '跨日界后该跑');
+  const report = await svc.runBatch(tomorrow);
+  assert.equal(report.counts['bound'], 1, `充值后原任务复活收口：${JSON.stringify(report)}`);
+  job = db.prepare("SELECT status, attempts, binding_ids_json FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; attempts: number; binding_ids_json: string };
+  assert.equal(job.status, 'bound');
+  assert.equal(job.attempts, 1, '恢复后一次完成');
+  assert.ok(job.binding_ids_json);
+  // 401 凭据失效同语义
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run(); db.prepare('DELETE FROM host_notices').run();
   seedHoldAndConversation('mem_auth', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
-  await makeService(glm401).runBatch();
-  notices = db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ n: number }>;
-  assert.equal(notices[0]!.n, 1, '凭据失效也提醒');
+  const glm401: GlmChatTransport = async () => ({ status: 401, json: { error: { message: 'invalid api key' } } });
+  await makeService(glm401).runBatch(new Date());
+  const ja = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_auth'").get() as { status: string };
+  assert.equal(ja.status, 'credential_blocked', '凭据失效同熔断');
+  assert.equal((db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").get() as { n: number }).n, 1, '凭据失效也提醒');
+});
+
+
+test('返修联验1（P1-1）: 两段写入 B 段 503——部分成功留痕；恢复后只补 B 段（A 不重复写、不重判）', async () => {
+  bindResult = 'ok'; notFoundNext = false; bindCalls = [];
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_resume', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [
+    { start: seed.msgIds[0], end: seed.msgIds[0], basis: '段A' },
+    { start: seed.msgIds[2], end: seed.msgIds[3], basis: '段B' },
+  ], confidence: 'high' }) } }] } });
+  failSm = 'sm_' + seed.msgIds[2]; // B 段首成员命中 → 503
+  let glmCalls = 0;
+  const glmCount: GlmChatTransport = async (body) => { glmCalls++; return glm(body); };
+  await makeService(glmCount).runBatch();
+  let job = db.prepare("SELECT status, detail, binding_ids_json, pending_segments_json FROM source_bind_jobs WHERE memory_id='mem_resume'").get() as { status: string; detail: string; binding_ids_json: string | null; pending_segments_json: string };
+  assert.equal(job.status, 'failed', '部分成功=任务未完成（不再记 bound）');
+  assert.match(job.detail ?? '', /已成功 1 段/);
+  assert.equal(JSON.parse(job.binding_ids_json ?? '[]').length, 1, 'A 段 binding_id 留存');
+  const pending = JSON.parse(job.pending_segments_json) as Array<{ members: Array<{ source_message_id: string }> }>;
+  assert.equal(pending.length, 1, '剩余 B 段持久化');
+  assert.deepEqual(pending[0]!.members.map((m) => m.source_message_id), ['sm_' + seed.msgIds[2], 'sm_' + seed.msgIds[3]]);
+  const aWritten = bindCalls.length; // =1（只 A 写入成功调用）
+  // 恢复：M 正常；**重建服务实例**（进程等价）沿正式调度路径领取原任务——只补 B，不重新判断
+  failSm = null;
+  const report = await makeService(glmCount).runBatch();
+  assert.equal(report.counts['bound'], 1, JSON.stringify(report));
+  assert.equal(glmCalls, 1, '恢复补段不重新付费判断');
+  assert.equal(bindCalls.length, aWritten + 1, '恰补写 B 段一次（A 无重复写入）');
+  assert.deepEqual(bindCalls.at(-1)!.members.map((m) => m.source_message_id), ['sm_' + seed.msgIds[2], 'sm_' + seed.msgIds[3]], '补写的是原判定的 B 段');
+  job = db.prepare("SELECT status, binding_ids_json, pending_segments_json FROM source_bind_jobs WHERE memory_id='mem_resume'").get() as typeof job;
+  assert.equal(job.status, 'bound', '两段都收口才 bound');
+  assert.equal(JSON.parse(job.binding_ids_json ?? '[]').length, 2);
+  assert.equal(job.pending_segments_json, null, 'pending 清空');
+  const calls = bindCalls.length;
+  await makeService(glmCount).runBatch();
+  assert.equal(bindCalls.length, calls, '再次 tick 不再写入');
+});
+
+test('返修联验2（P1-2）: 按记忆查跨会话人工来源→零判断零写入；查询/复核 503→付费前停止不写入；判断期间新建来源→提交时拦截', async () => {
+  bindResult = 'ok'; notFoundNext = false; bindCalls = [];
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_guard', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  // ① 跨会话人工来源：existingBindings 按 memory 维度（与 hold 会话无关）——自动任务跳过
+  let glmCalls = 0;
+  const glmCount: GlmChatTransport = async (b) => { glmCalls++; return glm(b); };
+  existingBindings = [{ memory_id: 'mem_guard', binding_id: 'bnd_manual_other_conv' }];
+  await makeService(glmCount).runBatch();
+  let job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_guard'").get() as { status: string };
+  assert.equal(job.status, 'skipped_existing', '按记忆核对：跨会话人工来源可见→跳过');
+  assert.equal(glmCalls, 0, '零判断调用');
+  assert.equal(bindCalls.length, 0, '零写入');
+  // ② of_memory 查询 503 → 付费前停止
+  existingBindings = []; failQuery = true;
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  seedHoldAndConversation('mem_q503', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  await makeService(glmCount).runBatch();
+  job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_q503'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'failed');
+  assert.match(job.detail ?? '', /既有绑定查询失败/);
+  assert.equal(glmCalls, 0, '查询失败不进付费判断');
+  // ③ 写前版本复核 503 → 不写入（保留待核）
+  failQuery = false; memGetCalls = 0; memGetFailAt = 2; // 本场景第 1 次判断读取 ok，第 2 次（写前复核）503
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed3 = seedHoldAndConversation('mem_v503', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm3: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed3.msgIds[0], end: seed3.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  await makeService(glm3).runBatch();
+  job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_v503'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'failed');
+  assert.match(job.detail ?? '', /写前版本复核失败/);
+  assert.equal(bindCalls.length, 0, '复核失败零写入');
+  memGetFailAt = null;
+  // ④ 判断期间本人新建非重叠来源 → 写入前按记忆再核，提交时拦截
+  memGetFailAt = null;
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed4 = seedHoldAndConversation('mem_late', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm4: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed4.msgIds[0], end: seed4.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  const glmLate: GlmChatTransport = async (b) => { glmCalls++; existingBindings = [{ memory_id: 'mem_late', binding_id: 'bnd_late_manual' }]; return glm4(b); };
+  await makeService(glmLate).runBatch();
+  job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_late'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'skipped_existing', '判断期间新建来源→提交时拦截');
+  assert.equal(bindCalls.length, 0, '不再追加任何绑定');
+});
+
+test('返修 P1-3: match=true 但 ranges 空=无效回包→failed 可恢复（非永久 no_match）；恢复后正常收口', async () => {
+  bindResult = 'ok'; notFoundNext = false; bindCalls = [];
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_empty_ranges', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  let bad = true;
+  const glm: GlmChatTransport = async () => ({ status: 200, json: { choices: [{ message: { content: JSON.stringify(bad ? { match: true, ranges: [] } : { match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } });
+  await makeService(glm).runBatch();
+  let job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_empty_ranges'").get() as { status: string };
+  assert.equal(job.status, 'failed', '无效回包=判断故障，留恢复资格（非 no_match）');
+  bad = false;
+  const report = await makeService(glm).runBatch();
+  assert.equal(report.counts['bound'], 1, '下批恢复正常收口');
+  job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_empty_ranges'").get() as { status: string };
+  assert.equal(job.status, 'bound');
 });

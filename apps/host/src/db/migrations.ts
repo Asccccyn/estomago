@@ -1777,4 +1777,35 @@ CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(statu
 `,
 });
 
+// v75（包2 返修 2026-11-17，Codex 复审指令）：①status 封闭枚举加 credential_blocked
+//（402/401 凭据余额类故障——当日熔断不耗尝试次数，跨上海日界自动复活；SQLite 不能
+// ALTER CHECK，整表重建保留数据）；②加 pending_segments_json（多段部分成功时存
+// 剩余段——恢复时只补缺段不重新付费判断）。
+MIGRATIONS.push({
+  version: 75,
+  name: 'source-bind-jobs-retry-semantics',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs_v75(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing','credential_blocked')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  pending_segments_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO source_bind_jobs_v75(id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at)
+  SELECT id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, NULL, attempts, created_at, updated_at FROM source_bind_jobs;
+DROP TABLE source_bind_jobs;
+ALTER TABLE source_bind_jobs_v75 RENAME TO source_bind_jobs;
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

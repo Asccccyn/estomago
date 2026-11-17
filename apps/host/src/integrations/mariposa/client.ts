@@ -525,6 +525,12 @@ export class MariposaClient {
     return this.transport('source.bindings.of_conversation', { conversation_id: conversationId });
   }
 
+  /** 返修 P1-2（2026-11-17）：按**记忆**列全部有效来源绑定（M source.bindings.of_memory，
+   *  只读）——会话方向查询看不到跨会话的人工绑定，按记忆核对才能防自动追加。 */
+  async sourceBindingsOfMemory(memoryId: string): Promise<MariposaCallResult> {
+    return this.transport('source.bindings.of_memory', { memory_id: memoryId });
+  }
+
   async sourceBindingBind(memoryId: string, selection: HoldSourceSelection): Promise<MariposaCallResult> {
     return this.transport('source.binding.bind', {
       memory_id: memoryId, conversation_id: selection.conversation_id,
