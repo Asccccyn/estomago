@@ -51,7 +51,13 @@ export class GlmChatAdapter {
         ? { ok: false, retryable: false, reason: '请求超时——判断结果未知，不自动重发（避免重复计费）' }
         : { ok: false, retryable: true, reason: '网络中断前请求未送达，可重试' };
     }
-    if (res.status === 401 || res.status === 403) return { ok: false, retryable: false, reason: `凭据被拒（${res.status}）` };
+    if (res.status === 401 || res.status === 403) return { ok: false, retryable: false, reason: `凭据被拒（${res.status}）——API key 失效或无权，需要更换` };
+    if (res.status === 402) {
+      // 她 2026-11-16 要求：余额不足要提醒她（BIND 按日处理照常，只在凭据/余额类故障通知）。
+      const em = ((res.json as { error?: { message?: unknown } } | null)?.error?.message);
+      const brief = typeof em === 'string' && em.length > 0 ? `：${em.slice(0, 80)}` : '';
+      return { ok: false, retryable: false, reason: `余额不足（HTTP 402${brief}）——API key 需要充值` };
+    }
     if (res.status === 429) return { ok: false, retryable: true, reason: '限流；稍后重试' };
     if (res.status >= 500) return { ok: false, retryable: true, reason: `上游 ${res.status} 明确失败，可重试` };
     if (res.status < 200 || res.status >= 300) return { ok: false, retryable: false, reason: `HTTP ${res.status}` };

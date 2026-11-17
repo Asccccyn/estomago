@@ -337,3 +337,31 @@ test('Codex P1-9: 提交时刻恰为边界点归下一批（半开区间）+ P1-
   db.prepare("UPDATE source_bind_jobs SET attempts = ? WHERE memory_id='mem_before'").run(SourceBindingService.MAX_ATTEMPTS);
   assert.equal(svc.dueNow(), false, '达上限后不再触发');
 });
+
+test('她 2026-11-16 裁定: 余额不足（402）→failed 留重试 + 幂等宿主通知当日一条', async () => {
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run(); db.prepare('DELETE FROM host_notices').run();
+  seedHoldAndConversation('mem_bal', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  const glm402: GlmChatTransport = async () => ({ status: 402, json: { error: { message: 'Insufficient Balance' } } });
+  await makeService(glm402).runBatch();
+  let job = db.prepare("SELECT status, detail FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; detail: string };
+  assert.equal(job.status, 'failed', '402 留重试语义（非 no_match）');
+  assert.match(job.detail ?? '', /余额不足/);
+  let notices = db.prepare("SELECT payload_json FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ payload_json: string }>;
+  assert.equal(notices.length, 1, '当日恰一条提醒');
+  assert.match(notices[0]!.payload_json, /余额不足|充值/);
+  // 同日再触发：幂等不重复（第二条 hold 也 402）
+  seedHoldAndConversation('mem_bal2', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  await makeService(glm402).runBatch();
+  job = db.prepare("SELECT status FROM source_bind_jobs WHERE memory_id='mem_bal2'").get() as { status: string };
+  assert.equal(job.status, 'failed');
+  notices = db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ n: number }>;
+  assert.equal(notices[0]!.n, 1, '同日幂等——不刷屏');
+  // 401 凭据失效同样提醒
+  db.prepare('DELETE FROM host_notices').run();
+  const glm401: GlmChatTransport = async () => ({ status: 401, json: { error: { message: 'invalid api key' } } });
+  db.prepare('DELETE FROM source_bind_jobs').run();
+  seedHoldAndConversation('mem_auth', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  await makeService(glm401).runBatch();
+  notices = db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ n: number }>;
+  assert.equal(notices[0]!.n, 1, '凭据失效也提醒');
+});

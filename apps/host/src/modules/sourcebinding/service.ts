@@ -115,6 +115,17 @@ export class SourceBindingService {
     return report;
   }
 
+  /** 凭据/余额类故障提醒（幂等：当日一条；宿主通知通道，非聊天消息）。 */
+  private notifyCredentialIssue(reason: string): void {
+    const day = new Date().toISOString().slice(0, 10);
+    try {
+      this.deps.db.prepare(
+        'INSERT INTO host_notices(id, conversation_id, kind, payload_json, dedupe_key, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING',
+      ).run(genId('ntc'), 'primary', 'source_bind_credential', JSON.stringify({ text: `[系统通知] 午夜来源绑定的判断服务遇到凭据/余额问题，本日批次暂停重试：${reason.slice(0, 120)}。充值或更换 key 后下一批次自动恢复，无需重启。` }), `bind-credential-alert:${day}`, new Date().toISOString());
+    } catch { /* 通知失败不影响任务状态 */ }
+    this.deps.log('warn', 'source_bind_credential_alert', { day, reason: reason.slice(0, 120) });
+  }
+
   private setStatus(job: JobRow, status: string, detail: string | null, bindingIds?: string[]): void {
     // 达重试上限的 failed 如实标注停止自动重试（detail 不留"下批重试"的假话）
     const capped = status === 'failed' && job.attempts + 1 >= SourceBindingService.MAX_ATTEMPTS;
@@ -184,6 +195,9 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       // P1-5（Codex 审计）：判断服务失败（超时/凭据被拒/缺正文）≠ 无匹配——一律 failed 留重试语义，
       // no_match 只在得到**有效否定判断**时记录（旧实现把不可重试的服务故障永久记成无来源）。
       this.setStatus(job, 'failed', `GLM 判断未完成（${answer.reason}）——${answer.retryable ? '下批重试' : '结果未知/配置类，达上限停止'}`);
+      // 她 2026-11-16 裁定：BIND 按日处理照常，凭据/余额类故障要提醒她（幂等：当日一条宿主通知，
+      // 下次正常请求投递一次；非聊天消息，不违反 BIND-06 零聊天写入）。
+      if (/^凭据被拒|^余额不足/.test(answer.reason)) this.notifyCredentialIssue(answer.reason);
       return;
     }
     let parsed: { match?: unknown; ranges?: Array<{ start?: unknown; end?: unknown; basis?: unknown }>; reason?: unknown };
