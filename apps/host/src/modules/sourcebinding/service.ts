@@ -420,18 +420,22 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
     const pending = [...pendingIn];
     const claimed: string[] = [];
     const stillPending: typeof pending = [];
+    const confirmed: string[] = job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : [];
     for (let i = 0; i < pending.length; i++) {
       const seg = pending[i]!;
       const idemKey = `source-bind:${job.id}:${seg.segIdx ?? i}`;
       try {
         const r = await m.sourceBindingBind(job.memory_id, { conversation_id: seg.conversation, members: seg.members }, {
           expectedMemoryVersion: job.memory_version,
-          expectedBindingIds: [], // 重放：M 幂等层命中即返回原结果，不进业务校验
+          // 键命中→M 幂等层直接返回原结果（不进业务校验）；键未命中→本次为真实写入，
+          // expected 集=当前已确认集（含此前成功段），语义与首轮一致（探针实证：写空集
+          // 会在"前段已成功+本段未提交"的组合下被 M 状态守卫拒）。
+          expectedBindingIds: [...confirmed],
           idempotencyKey: idemKey,
         });
         if (r.ok) {
           const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
-          if (typeof bindingId === 'string') claimed.push(bindingId);
+          if (typeof bindingId === 'string' && !confirmed.includes(bindingId)) { claimed.push(bindingId); confirmed.push(bindingId); }
           continue; // 已提交（回执丢失找回）或本次写入成功——段确认
         }
         if (r.code === 'EVENT_SOURCE_OVERLAP' || r.code === 'SOURCE_ALREADY_BOUND') {
@@ -441,7 +445,9 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
           return;
         }
         if (r.code === 'VERSION_CONFLICT' || r.code === 'EVENT_SOURCE_CHANGED' || r.code === 'EVENT_SOURCE_STATE_CHANGED') {
-          this.setStatus(job, 'version_conflict', `补段提交被拒（${r.code}）——已确认段保留，剩余按冲突语义待重处理`, [...claimed]);
+          // 已确认段全量留存（confirmed 含此前成功段+本轮找回段——探针实证：只传本轮
+          // claimed 会把此前成功段的入账覆盖成空）
+          this.setStatus(job, 'version_conflict', `补段提交被拒（${r.code}）——已确认段保留，剩余按冲突语义待重处理`, [...confirmed]);
           return;
         }
         stillPending.push(seg); // 传输/上游类失败：段仍未确认，留下批再按原键重放
