@@ -531,12 +531,16 @@ export class MariposaClient {
     return this.transport('source.bindings.of_memory', { memory_id: memoryId });
   }
 
-  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection): Promise<MariposaCallResult> {
+  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection, opts: { expectedMemoryVersion?: number | null; expectedBindingIds?: string[] } = {}): Promise<MariposaCallResult> {
     return this.transport('source.binding.bind', {
       memory_id: memoryId, conversation_id: selection.conversation_id,
       start_message_id: selection.members[0]!.source_message_id,
       end_message_id: selection.members.at(-1)!.source_message_id,
       members: selection.members, event_scope: true,
+      // 三轮复审②：提交时原子核对判断快照（M 事务内：版本移动→VERSION_CONFLICT；
+      // 判断后新建绑定→EVENT_SOURCE_STATE_CHANGED——复核与提交之间的窗口在此闭合）。
+      ...(opts.expectedMemoryVersion != null ? { expected_memory_version: opts.expectedMemoryVersion } : {}),
+      ...(opts.expectedBindingIds != null ? { expected_binding_ids: opts.expectedBindingIds } : {}),
     });
   }
   async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {

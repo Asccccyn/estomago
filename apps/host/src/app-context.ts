@@ -627,6 +627,7 @@ export class Host {
         mariposa: this.bindingMariposa,
         glm: new GlmChatAdapter({ baseUrl: this.config.source_binding.base_url, apiKeyEnv: this.config.source_binding.api_key_env, model: this.config.source_binding.model }),
         log: (level, event, fields) => { this.logger[level](event, (fields ?? {}) as Record<string, string | number | boolean | null>); },
+        events: this.events,
       });
     }
     const svc = this.sourceBindService;
