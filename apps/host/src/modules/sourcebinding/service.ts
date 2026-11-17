@@ -10,7 +10,7 @@ import type { Db } from '../../db/connection.ts';
 import type { Config } from '../../config/schema.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 import type { GlmChatAdapter } from '../../integrations/glm/chat.ts';
-import { genId } from '../../util/id.ts';
+import { genId, sha256Hex } from '../../util/id.ts';
 
 export type SourceBindBatchReport = {
   boundary: string; // 本批截止点（Asia/Shanghai 00:00 ISO）
@@ -52,7 +52,7 @@ export class SourceBindingService {
     if (!this.enabled) return false;
     const boundary = SourceBindingService.lastBoundary(now);
     const open = this.deps.db.prepare(
-      `SELECT 1 FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable') AND batch_boundary <= ? AND attempts < ? LIMIT 1`,
+      `SELECT 1 FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable','judging') AND batch_boundary <= ? AND attempts < ? LIMIT 1`,
     ).get(boundary, SourceBindingService.MAX_ATTEMPTS);
     if (open) return true;
     // 返修 P1-4（Codex 复审）：凭据/余额阻塞的任务跨过日界即该跑（充值后自动恢复）；
@@ -120,7 +120,7 @@ export class SourceBindingService {
     // 在后续批次自动重取，attempts 有界防无限付费（B08/B16：无匹配不重复猜测、不虚构 exactly-once）。
     // version_conflict 不自动重试（版本冲突重判结果不变，按冲突语义待重处理入口）。
     const jobs = this.deps.db.prepare(
-      `SELECT * FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable') AND batch_boundary <= ? AND attempts < ? ORDER BY created_at ASC LIMIT ?`,
+      `SELECT * FROM source_bind_jobs WHERE status IN ('pending','failed','source_unavailable','judging') AND batch_boundary <= ? AND attempts < ? ORDER BY created_at ASC LIMIT ?`,
     ).all(boundary, SourceBindingService.MAX_ATTEMPTS, cfg.max_batch) as JobRow[];
     for (const job of jobs) {
       try {
@@ -149,18 +149,27 @@ export class SourceBindingService {
       ).run(genId('ntc'), 'primary', 'source_bind_credential', JSON.stringify({ text: `[系统通知] 午夜来源绑定的判断服务遇到凭据/余额问题，本日批次暂停重试：${reason.slice(0, 120)}。充值或更换 key 后下一批次自动恢复，无需重启。` }), `bind-credential-alert:${day}`, new Date().toISOString());
     } catch { /* 通知失败不影响任务状态 */ }
     try {
-      this.deps.events?.publish('system.notice', { conversationId: 'primary', turnId: null, scope: 'private', payload: { source: 'source_bind', text: `[系统通知] BIND 判断服务凭据/余额问题：${reason.slice(0, 120)}`, day } });
+      // 本人可见出口（生命周期⑥）：活动面板事件流按上海日去重（同日只发一条——host_notices
+      // 的 dedupe 键已按上海日，事件出口同口径；重连/刷新经持久事件快照仍可查）。
+      const dayStartUtc = new Date(`${day}T00:00:00+08:00`).toISOString();
+      const sent = this.deps.db.prepare(
+        "SELECT 1 FROM runtime_stream_events WHERE kind = 'system.notice' AND conversation_id = 'primary' AND occurred_at >= ? AND payload_ref LIKE '%' || ? || '%' LIMIT 1",
+      ).get(dayStartUtc, '"source_bind"');
+      if (!sent) {
+        this.deps.events?.publish('system.notice', { conversationId: 'primary', turnId: null, scope: 'private', payload: { source: 'source_bind', text: `[系统通知] BIND 判断服务凭据/余额问题：${reason.slice(0, 120)}`, day } });
+      }
     } catch { /* 事件出口失败不影响任务状态 */ }
     this.deps.log('warn', 'source_bind_credential_alert', { day, reason: reason.slice(0, 120) });
   }
 
-  private setStatus(job: JobRow, status: string, detail: string | null, bindingIds?: string[], opts: { noAttempt?: boolean } = {}): void {
+  private setStatus(job: JobRow, status: string, detail: string | null, bindingIds?: string[]): void {
+    // 生命周期②：attempts 的唯一计数点=**判断发出**（processJob 落 judging 时 +1）——
+    // 尝试次数=实际判断调用数，跨进程可对账；状态落账不再重复计数（旧实现双计）。
     // 达重试上限的 failed 如实标注停止自动重试（detail 不留"下批重试"的假话）。
-    // noAttempt（返修 P1-4）：凭据/余额类故障不消耗重试额度——充值后跨日界即恢复。
-    const capped = !opts.noAttempt && status === 'failed' && job.attempts + 1 >= SourceBindingService.MAX_ATTEMPTS;
+    const capped = status === 'failed' && job.attempts >= SourceBindingService.MAX_ATTEMPTS;
     const finalDetail = capped ? `${detail}（已达重试上限 ${SourceBindingService.MAX_ATTEMPTS}，停止自动重试——留人工核对）` : detail;
     this.deps.db.prepare(
-      `UPDATE source_bind_jobs SET status = ?, detail = ?, attempts = attempts ${opts.noAttempt ? '' : '+ 1'}, memory_version = COALESCE(memory_version, ?),
+      `UPDATE source_bind_jobs SET status = ?, detail = ?, memory_version = COALESCE(memory_version, ?),
        binding_ids_json = COALESCE(?, binding_ids_json), updated_at = ? WHERE id = ?`,
     ).run(status, finalDetail, job.memory_version, bindingIds ? JSON.stringify(bindingIds) : null, new Date().toISOString(), job.id);
   }
@@ -170,7 +179,7 @@ export class SourceBindingService {
     // 返修 P1-1：部分成功过的任务存有 pending_segments_json——恢复时**只补缺段**，
     // 不重新付费判断（原判定已留存；ownIds 保护已写段不被误判为人工来源）。
     const pendingSegments = job.pending_segments_json
-      ? (JSON.parse(job.pending_segments_json) as Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string }>) : null;
+      ? (JSON.parse(job.pending_segments_json) as Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string; segIdx?: number }>) : null;
     if (pendingSegments && pendingSegments.length > 0) {
       return this.resumePendingSegments(job, pendingSegments);
     }
@@ -220,6 +229,13 @@ export class SourceBindingService {
 候选消息（id/说话人/时间/正文节选）：
 ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n')}
 输出 JSON：找到可靠来源时 {"match":true,"ranges":[{"start":"<消息id>","end":"<消息id>","basis":"<一句话可核验依据>"}],"confidence":"high|low"}（ranges 支持多段不连续）；没有可靠匹配时 {"match":false,"reason":"<短原因>"}。整段无关谈话不要包入；短引语命中不等于整件事来源。`;
+    // 生命周期②：判断**发出前**落账——已发送事实+本次尝试身份可跨进程追溯（修前停在
+    // pending/attempts=0，进程重启后同请求被当首次判断再发，服务端两次接收 E 只记一次）。
+    const promptHash = sha256Hex(prompt).slice(0, 16);
+    this.deps.db.prepare(
+      `UPDATE source_bind_jobs SET status = 'judging', attempts = attempts + 1, detail = ?, updated_at = ? WHERE id = ?`,
+    ).run(`判断已发出（指纹 ${promptHash}，尝试 ${job.attempts + 1}）——响应未到为结果未知，重启后按有界重试接续`, new Date().toISOString(), job.id);
+    job.status = 'judging'; job.attempts += 1;
     const answer = await this.deps.glm!.chat([{ role: 'user', content: prompt }], { responseJson: true, temperature: 0 });
     if (!answer.ok) {
       // P1-5（Codex 审计）：判断服务失败（超时/凭据被拒/缺正文）≠ 无匹配——no_match 只在
@@ -227,7 +243,7 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       // 返修 P1-4：凭据/余额类（401/402/403）→ credential_blocked 熔断——当日不再发起
       // 判断、不消耗重试额度，跨上海日界自动复活（充值/换 key 后恢复）；其他失败照常有界重试。
       if (/^凭据被拒|^余额不足/.test(answer.reason)) {
-        this.setStatus(job, 'credential_blocked', `${answer.reason}——当日熔断，跨日自动恢复（充值/换 key 后无需人工介入）`, undefined, { noAttempt: true });
+        this.setStatus(job, 'credential_blocked', `${answer.reason}——当日熔断，跨日自动恢复（充值/换 key 后无需人工介入）`);
         // 三轮复审④：熔断行的 batch_boundary 推进到**本批边界**——当日后续 tick 不再对该任务
         // 发起判断（旧实现复活后每 tick 一次 402 请求）；次日 boundary 前移即恢复资格。
         this.deps.db.prepare('UPDATE source_bind_jobs SET batch_boundary = ? WHERE id = ?').run(batchBoundary, job.id);
@@ -261,7 +277,7 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
         return;
       }
     }
-    type Segment = { members: Array<{ source_message_id: string; content_hash: string }>; conversation: string };
+    type Segment = { members: Array<{ source_message_id: string; content_hash: string }>; conversation: string; segIdx: number };
     const segments: Segment[] = [];
     const seenSm = new Set<string>();
     let globalConversation: string | null = null;
@@ -294,7 +310,7 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
         seenSm.add(receipt.source_message_id);
         segMembers.push({ source_message_id: receipt.source_message_id, content_hash: receipt.content_hash });
       }
-      if (segMembers.length > 0) segments.push({ members: segMembers, conversation: globalConversation! });
+      if (segMembers.length > 0) segments.push({ members: segMembers, conversation: globalConversation!, segIdx: segments.length });
     }
     if (segments.length === 0) { this.setStatus(job, 'no_match', '判断段内无合格成员——按无来源保留'); return; }
     // P1-2 + 返修 P1-2：写入前复核——失败即停（不写入），不再"不阻断"盲写；
@@ -329,7 +345,7 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
   /** 段写入共用（首轮与补段路径同语义）。返修 P1-1：部分成功=任务未完成——已成功段
    *  binding_id 留存、剩余段存 pending_segments_json（恢复时只补缺段不重判）；
    *  全部段收口才记 bound 并清空 pending；OVERLAP 段=该段已完成（不覆盖）。 */
-  private async writeSegments(job: JobRow, segments: Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string }>): Promise<void> {
+  private async writeSegments(job: JobRow, segments: Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string; segIdx?: number }>): Promise<void> {
     const m = this.deps.mariposa!;
     const prevIds: string[] = job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : [];
     const okIds: string[] = [...prevIds];
@@ -338,24 +354,29 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
     let failedAt = -1;
     for (let idx = 0; idx < segments.length; idx++) {
       const seg = segments[idx]!;
+      // 生命周期④：段操作身份=任务 id+段序（跨进程稳定）——M 幂等层按 key 重放返回原回执，
+      // 回执丢失/结果未知的段靠它找回 binding_id（范围相同不证明操作归属，键才是）。
+      const idemKey = `source-bind:${job.id}:${seg.segIdx ?? idx}`;
       try {
-        const ownIds: string[] = job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : [];
         const r = await m.sourceBindingBind(job.memory_id, { conversation_id: seg.conversation, members: seg.members }, {
           expectedMemoryVersion: job.memory_version,
-          expectedBindingIds: ownIds,
+          // 生命周期③：expected 集=**实时**已确认集（含本轮刚写成的 A——旧实现取循环外快照，
+          // B 段把 A 当"判断后新建"被 M 拒）。
+          expectedBindingIds: [...okIds],
+          idempotencyKey: idemKey,
         });
         if (r.ok) {
           const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
-          if (typeof bindingId === 'string') okIds.push(bindingId);
+          if (typeof bindingId === 'string' && !okIds.includes(bindingId)) okIds.push(bindingId);
           continue;
         }
         if (r.code === 'EVENT_SOURCE_OVERLAP' || r.code === 'SOURCE_ALREADY_BOUND') { overlapped++; continue; }
         if (r.code === 'VERSION_CONFLICT' || r.code === 'EVENT_SOURCE_CHANGED' || r.code === 'EVENT_SOURCE_STATE_CHANGED') { hardFail = `记忆/来源状态在判断后已变化（${r.code}）——前段已成功 ${okIds.length - prevIds.length} 段留存，按冲突语义待重处理`; failedAt = idx; break; }
-        hardFail = `绑定写入失败（${r.code}）——前段已成功留存，剩余段下批补写`;
+        hardFail = `绑定写入失败（${r.code}）——前段已成功留存，失败段按原操作键下批重放核对`;
         failedAt = idx;
         break;
       } catch {
-        hardFail = `绑定写入传输失败（结果未知，不盲重发）——前段已成功留存，剩余段下批核对后补写`;
+        hardFail = `绑定写入传输失败（结果未知）——前段已成功留存，失败段按原操作键下批重放核对（M 幂等层防双写）`;
         failedAt = idx;
         break;
       }
@@ -372,42 +393,20 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
     }
     // 部分成功/中途失败：任务未完成——剩余段（失败段起）持久化。冲突类（版本/来源状态
     // 变化）终态 version_conflict 不再自动重试；传输/上游类 failed 保留恢复资格。
-    const remaining = segments.slice(failedAt);
+    const remaining = segments.slice(failedAt); // 失败段起（含其 segIdx——重放用同一操作键）
     this.deps.db.prepare('UPDATE source_bind_jobs SET pending_segments_json = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(remaining), new Date().toISOString(), job.id);
     const hf = hardFail ?? '绑定写入失败';
     this.setStatus(job, hf.startsWith('记忆/来源状态') ? 'version_conflict' : 'failed', `${hf}（已成功 ${okIds.length} 段留存，剩余 ${remaining.length} 段记录在案）`, okIds);
   }
 
-  /** 补段路径（返修 P1-1）：不重新付费判断，按原判定补写剩余段；
-   *  写前仍做版本复核与人工来源复核（同主路径语义）。 */
-  private async resumePendingSegments(job: JobRow, pendingIn: Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string }>): Promise<void> {
+  /** 补段路径（生命周期④重写）：不重新付费判断。对每个待补段**先按原操作键重放**
+   *  ——M 幂等层返回原回执（已提交→找回 binding_id；未提交→本次执行写入），操作归属
+   *  由键证明（范围相同不证明归属——人工绑定不会被错认）。重放后仍按记忆核人工来源：
+   *  与段无关的新绑定才构成障碍；全部段确认后才 bound。 */
+  private async resumePendingSegments(job: JobRow, pendingIn: Array<{ members: Array<{ source_message_id: string; content_hash: string }>; conversation: string; segIdx?: number }>): Promise<void> {
     const m = this.deps.mariposa!;
-    const foreign = await this.foreignBindingsOf(job);
-    if (foreign === 'unavailable') { this.setStatus(job, 'failed', '补段前既有绑定查询失败（传输/上游）——下批重试'); return; }
-    // 三轮复审①：与待补段有成员交集的"他源"绑定=回执丢失的自写段（M 已提交 E 未记账）——
-    // 认领为已完成并从待补清单移除（binding_id 一并记账）；与全部段无交集才是人工障碍。
-    let pending = pendingIn;
-    const claimed: string[] = [];
-    if (foreign.length > 0) {
-      const blockers = foreign.filter((b) => !pending.some((seg) => SourceBindingService.bindingTouches(b, new Set(seg.members.map((mm) => mm.source_message_id)))));
-      if (blockers.length > 0) { this.setStatus(job, 'skipped_existing', `补段前发现人工/他源绑定（${blockers.length} 条，与本任务范围无关）——停止补写，不覆盖`); return; }
-      const prevIds: string[] = job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : [];
-      const touched = foreign.filter((b) => pending.some((seg) => SourceBindingService.bindingTouches(b, new Set(seg.members.map((mm) => mm.source_message_id)))));
-      pending = pending.filter((seg) => !touched.some((b) => SourceBindingService.bindingTouches(b, new Set(seg.members.map((mm) => mm.source_message_id)))));
-      for (const b of touched) { if (!prevIds.includes(b.binding_id)) { prevIds.push(b.binding_id); claimed.push(b.binding_id); } }
-      if (claimed.length > 0) {
-        this.deps.db.prepare('UPDATE source_bind_jobs SET binding_ids_json = ?, pending_segments_json = ?, updated_at = ? WHERE id = ?')
-          .run(JSON.stringify(prevIds), JSON.stringify(pending), new Date().toISOString(), job.id);
-        job.binding_ids_json = JSON.stringify(prevIds);
-        job.pending_segments_json = pending.length > 0 ? JSON.stringify(pending) : null;
-      }
-    }
-    if (pending.length === 0) {
-      this.deps.db.prepare('UPDATE source_bind_jobs SET pending_segments_json = NULL, updated_at = ? WHERE id = ?').run(new Date().toISOString(), job.id);
-      this.setStatus(job, 'bound', `自动补绑收口（含回执丢失段认领 ${claimed.length} 条；后台任务建立，非本人绑定）`, job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : []);
-      return;
-    }
+    // 版本复核（判断时版本 vs 当前）：移动→冲突终态
     let v2: unknown;
     try {
       const re = await m.memoryGet(job.memory_id);
@@ -418,7 +417,48 @@ ${cand.map((c) => `- [${c.id}] ${c.speaker}（${c.at}）：${c.text}`).join('\n'
       this.setStatus(job, 'version_conflict', `记忆已修改（判断时 v${job.memory_version}→现 v${v2}）——剩余段按冲突语义待重处理`);
       return;
     }
-    await this.writeSegments(job, pending);
+    const pending = [...pendingIn];
+    const claimed: string[] = [];
+    const stillPending: typeof pending = [];
+    for (let i = 0; i < pending.length; i++) {
+      const seg = pending[i]!;
+      const idemKey = `source-bind:${job.id}:${seg.segIdx ?? i}`;
+      try {
+        const r = await m.sourceBindingBind(job.memory_id, { conversation_id: seg.conversation, members: seg.members }, {
+          expectedMemoryVersion: job.memory_version,
+          expectedBindingIds: [], // 重放：M 幂等层命中即返回原结果，不进业务校验
+          idempotencyKey: idemKey,
+        });
+        if (r.ok) {
+          const bindingId = (r.result as { binding_id?: unknown } | null)?.binding_id;
+          if (typeof bindingId === 'string') claimed.push(bindingId);
+          continue; // 已提交（回执丢失找回）或本次写入成功——段确认
+        }
+        if (r.code === 'EVENT_SOURCE_OVERLAP' || r.code === 'SOURCE_ALREADY_BOUND') {
+          // 键未命中（M 未收到过该操作）且范围已有**他人**绑定——人工来源占位，不重放写入
+          stillPending.push(seg);
+          this.setStatus(job, 'skipped_existing', `段 ${seg.segIdx ?? i} 范围已有来源绑定（人工）——停止自动补写，此前成功段保留`);
+          return;
+        }
+        if (r.code === 'VERSION_CONFLICT' || r.code === 'EVENT_SOURCE_CHANGED' || r.code === 'EVENT_SOURCE_STATE_CHANGED') {
+          this.setStatus(job, 'version_conflict', `补段提交被拒（${r.code}）——已确认段保留，剩余按冲突语义待重处理`, [...claimed]);
+          return;
+        }
+        stillPending.push(seg); // 传输/上游类失败：段仍未确认，留下批再按原键重放
+      } catch {
+        stillPending.push(seg); // 结果未知：原键重放下批核对（幂等防双写）
+      }
+    }
+    const prevIds: string[] = job.binding_ids_json ? (JSON.parse(job.binding_ids_json) as string[]) : [];
+    const allIds = [...prevIds, ...claimed.filter((c) => !prevIds.includes(c))];
+    if (stillPending.length > 0) {
+      this.deps.db.prepare('UPDATE source_bind_jobs SET binding_ids_json = ?, pending_segments_json = ?, updated_at = ? WHERE id = ?')
+        .run(JSON.stringify(allIds), JSON.stringify(stillPending), new Date().toISOString(), job.id);
+      this.setStatus(job, 'failed', `补段部分确认（找回/写入 ${claimed.length} 段，${stillPending.length} 段待原键重放核对）`, allIds);
+      return;
+    }
+    this.deps.db.prepare('UPDATE source_bind_jobs SET pending_segments_json = NULL, updated_at = ? WHERE id = ?').run(new Date().toISOString(), job.id);
+    this.setStatus(job, 'bound', `自动补绑收口（含回执丢失段按原操作键找回 ${claimed.length} 条；后台任务建立，非本人绑定）`, allIds);
   }
 
   /** 按记忆核对既有绑定（返修 P1-2：跨会话人工来源可见）。

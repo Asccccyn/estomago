@@ -1808,4 +1808,33 @@ CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(statu
 `,
 });
 
+// v76（包2 生命周期返修 2026-11-17）：status 枚举加 judging（判断已发出的在途事实——
+// 发出前落账，重启后可追溯不重记；SQLite 不能 ALTER CHECK，整表重建保留数据）。
+MIGRATIONS.push({
+  version: 76,
+  name: 'source-bind-jobs-judging',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs_v76(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','judging','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing','credential_blocked')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  pending_segments_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO source_bind_jobs_v76(id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at)
+  SELECT id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at FROM source_bind_jobs;
+DROP TABLE source_bind_jobs;
+ALTER TABLE source_bind_jobs_v76 RENAME TO source_bind_jobs;
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

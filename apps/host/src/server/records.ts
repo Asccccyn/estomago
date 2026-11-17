@@ -202,19 +202,19 @@ export function buildRecordSnapshot(d: {
 }
 
 // 记录事件白名单（§11.2 契约 kind 集合中实际存在的；元数据 payload，不含正文类事件）
-const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated']);
+const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated', 'system.notice']);
 
 export type RecordEventItem = { eventId: string; sequence: number; roomId: string; occurredAt: string; kind: string; payload: unknown };
 export type RecordEventsPage = { events: RecordEventItem[]; nextCursor: string | null; prevCursor: string | null };
 
-const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')`;
+const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')`;
 
 /** forward：游标向后翻页（历史分页）。recent（F21）：返回最新 limit 条（升序）+ prevCursor 向更早翻页。 */
 export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number, mode: 'forward' | 'recent' | 'older' = 'forward', before: number | null = null): RecordEventsPage {
   if (mode === 'recent') {
     const rows = db.prepare(
       `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
-       WHERE conversation_id = ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       WHERE conversation_id = ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')
        ORDER BY sequence DESC LIMIT ?`,
     ).all(conversationId, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
     const events = rows.slice().reverse().map(rowToEvent(conversationId));
@@ -225,7 +225,7 @@ export function listRecordEvents(db: Db, conversationId: string, after: number, 
     // 审计 F26：向更早翻页=严格小于游标序号（旧实现 > cursor 会原样重发当前页）
     const rows = db.prepare(
       `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
-       WHERE conversation_id = ? AND sequence < ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       WHERE conversation_id = ? AND sequence < ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')
        ORDER BY sequence DESC LIMIT ?`,
     ).all(conversationId, before, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
     const events = rows.slice().reverse().map(rowToEvent(conversationId));

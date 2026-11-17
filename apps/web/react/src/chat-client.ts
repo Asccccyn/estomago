@@ -608,8 +608,8 @@ export class EstomagoClient {
       }else{
         const data=await this.request('/conversations/primary/context-records/events?last=1&limit=30')
         if(request!==this.panelRequest)return
-        const labels:Json={'archive.sync':'原文同步','context.warning':'上下文提示','review.sent':'换窗检查','review.failed':'检查未完成','window.rotated':'已换窗'}
-        const events=(data.events??[]).slice().reverse().map((e:Json)=>({id:e.eventId,at:time(e.occurredAt),t:labels[e.kind]??e.kind,d:typeof e.payload?.state==='string'?e.payload.state:''}))
+        const labels:Json={'archive.sync':'原文同步','context.warning':'上下文提示','review.sent':'换窗检查','review.failed':'检查未完成','window.rotated':'已换窗','system.notice':'系统通知'}
+        const events=(data.events??[]).slice().reverse().map((e:Json)=>({id:e.eventId,at:time(e.occurredAt),t:labels[e.kind]??e.kind,d:typeof e.payload?.state==='string'?e.payload.state:(typeof e.payload?.text==='string'?e.payload.text:'')}))
         const usage=Object.entries(this.snapshot.usage).map(([id,value])=>({id:'usage:'+id,at:'',t:'整轮实际用量',d:`输入 ${value.totals?.input_tokens ?? '未知'} · 输出 ${value.totals?.output_tokens ?? '未知'}`}))
         const failures=[...this.turnFailures.values()].reverse()
         this.patch({activity:[...failures,...events,...usage],panelNote:failures.length||events.length||usage.length?'':'暂无活动记录'})

@@ -30,6 +30,7 @@ let failSm: string | null = null; // 联验1：members 首个 sm 命中即 503�
 let failQuery = false; // 联验2：of_memory 查询返回 503
 let failQueryCode = 'HTTP_503'; // 三轮②：查询失败码可设（含 404）
 let lostReceiptSm: { memoryId: string; start: string; end: string } | null = null; // 三轮①：该段 M 实际提交成功但回执丢失（M 记绑定+返回 503）
+let lostReceiptPlayed = false; let lostReceiptPlayedId = ''; // 同操作键重放→返回原回执（模拟 M 幂等层）
 let memGetCalls = 0; let memGetFailAt: number | null = null; // 联验2：第 N 次 memory.get 返回 503
 let memoryGetResult: MariposaCallResult;
 
@@ -42,7 +43,7 @@ before(() => {
   notFoundNext = false;
   existingBindings = [];
   memoryGetVersions = [];
-  failSm = null; failQuery = false; failQueryCode = 'HTTP_503'; lostReceiptSm = null; memGetCalls = 0; memGetFailAt = null;
+  failSm = null; failQuery = false; failQueryCode = 'HTTP_503'; lostReceiptSm = null; lostReceiptPlayed = false; lostReceiptPlayedId = ''; memGetCalls = 0; memGetFailAt = null;
   memoryGetResult = { ok: true, result: { memory_id: 'mem_x', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
 });
 
@@ -65,8 +66,12 @@ function stubMariposa(): MariposaClient {
     },
     sourceBindingBind: async (memoryId: string, sel: { conversation_id?: string; members: BindCall['members'] }) => {
       if (lostReceiptSm && sel.members.length > 0 && sel.members[0]!.source_message_id === lostReceiptSm.start) {
-        // M 实际提交成功（绑定入 M 侧列表）但回执丢失（E 收 503）
-        existingBindings.push({ memory_id: lostReceiptSm.memoryId, binding_id: 'bnd_lost_' + existingBindings.length, start_message_id: lostReceiptSm.start, end_message_id: lostReceiptSm.end } as never);
+        // M 实际提交成功（绑定入 M 侧列表）但回执丢失（E 收 503）；
+        // 同操作键重放（生命周期④幂等层）→ 返回原回执（找回原 binding_id）
+        if (lostReceiptPlayed) return { ok: true, result: { binding_id: lostReceiptPlayedId } };
+        lostReceiptPlayed = true;
+        lostReceiptPlayedId = 'bnd_lost_replay';
+        existingBindings.push({ memory_id: lostReceiptSm.memoryId, binding_id: lostReceiptPlayedId, start_message_id: lostReceiptSm.start, end_message_id: lostReceiptSm.end } as never);
         return { ok: false, code: 'HTTP_503', httpStatus: 503 };
       }
       if (sel.members.length > 0 && sel.members[0]!.source_message_id === failSm) return { ok: false, code: 'HTTP_503', httpStatus: 503 };
@@ -373,7 +378,7 @@ test('返修 P1-4: 402→credential_blocked 当日熔断（attempts 不耗、不
   await svc.runBatch(now);
   let job = db.prepare("SELECT status, attempts, detail FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; attempts: number; detail: string };
   assert.equal(job.status, 'credential_blocked', '402 熔断（非 failed 不耗额度）');
-  assert.equal(job.attempts, 0, '凭据故障不消耗重试额度');
+  assert.equal(job.attempts, 1, 'attempts=判断发出次数（生命周期②唯一计数点；当日不再发起由熔断状态保证，不靠额度）');
   assert.match(job.detail ?? '', /余额不足|充值/);
   assert.equal((db.prepare("SELECT COUNT(*) n FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").get() as { n: number }).n, 1, '当日恰一条提醒');
   // 同日后续 tick：dueNow 不触发，判断不再发起
@@ -389,7 +394,7 @@ test('返修 P1-4: 402→credential_blocked 当日熔断（attempts 不耗、不
   assert.equal(report.counts['bound'], 1, `充值后原任务复活收口：${JSON.stringify(report)}`);
   job = db.prepare("SELECT status, attempts, binding_ids_json FROM source_bind_jobs WHERE memory_id='mem_bal'").get() as { status: string; attempts: number; binding_ids_json: string };
   assert.equal(job.status, 'bound');
-  assert.equal(job.attempts, 1, '恢复后一次完成');
+  assert.equal(job.attempts, 2, '复活后第二次判断完成（发出计数）');
   assert.ok(job.binding_ids_json);
   // 401 凭据失效同语义
   db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run(); db.prepare('DELETE FROM host_notices').run();
@@ -515,8 +520,8 @@ test('三轮①: 回执丢失的自写段——恢复时按成员交集认领，
   await makeService(glmCount).runBatch();
   let job = db.prepare("SELECT status, binding_ids_json, pending_segments_json FROM source_bind_jobs WHERE memory_id='mem_lost'").get() as { status: string; binding_ids_json: string | null; pending_segments_json: string };
   assert.equal(job.status, 'failed', '回执丢失=部分成功未完成');
-  // 恢复：M 正常——resume 应认领 A（M 侧已有、成员交集）并只补 B
-  lostReceiptSm = null;
+  // 恢复：保留 lostReceipt 场景（M 已提交、幂等层有原回执）——重放 A 的原操作键应拿回原 id；
+  // B 段无历史键，正常写入。
   const report = await makeService(glmCount).runBatch();
   assert.equal(report.counts['bound'], 1, JSON.stringify(report));
   assert.equal(glmCalls, 1, '恢复不重新判断');
@@ -526,7 +531,7 @@ test('三轮①: 回执丢失的自写段——恢复时按成员交集认领，
   assert.equal(job.status, 'bound');
   const ids = JSON.parse(job.binding_ids_json ?? '[]') as string[];
   assert.ok(ids.length >= 2, '认领的 A + 新写 B 都入账');
-  assert.ok(ids.some((x) => x.startsWith('bnd_lost_')), 'A 段绑定被认领记账');
+  assert.ok(ids.includes('bnd_lost_replay'), 'A 段按原操作键重放找回原 binding_id（操作归属由键证明）');
 });
 
 test('三轮②: of_memory 404 也付费前停（零判断）；判断后同范围人工绑定→提交时 M 侧拒绝（EVENT_SOURCE_STATE_CHANGED）', async () => {
@@ -628,4 +633,29 @@ test('三轮④: 次日仍欠费每日恰一次判断；旧版耗尽四次的余
   const notices = db.prepare("SELECT dedupe_key FROM host_notices WHERE dedupe_key LIKE 'bind-credential-alert:%'").all() as Array<{ dedupe_key: string }>;
   assert.ok(notices.length >= 1, '有提醒');
   assert.equal(new Set(notices.map((n) => n.dedupe_key)).size, notices.length, 'dedupe 键无重复');
+});
+
+test('生命周期②: 判断超时（响应未到）→attempts=已发次数可追溯；重启等价重试不丢计数；响应到达即正常收口', async () => {
+  bindResult = 'ok'; notFoundNext = false; bindCalls = [];
+  db.prepare('DELETE FROM source_bind_jobs').run(); db.prepare("DELETE FROM tool_side_effects WHERE kind='hold'").run();
+  const seed = seedHoldAndConversation('mem_judge', new Date(new Date(SourceBindingService.lastBoundary()).getTime() - 7200_000).toISOString());
+  let glmCalls = 0; let failFirst = true;
+  const glm: GlmChatTransport = async () => {
+    glmCalls++;
+    if (failFirst) return { transportError: 'timeout' as never } as never; // 响应未到（结果未知）
+    return { status: 200, json: { choices: [{ message: { content: JSON.stringify({ match: true, ranges: [{ start: seed.msgIds[0], end: seed.msgIds[3], basis: 'x' }], confidence: 'high' }) } }] } };
+  };
+  await makeService(glm).runBatch();
+  let job = db.prepare("SELECT status, attempts, detail FROM source_bind_jobs WHERE memory_id='mem_judge'").get() as { status: string; attempts: number; detail: string };
+  assert.equal(job.status, 'failed', '结果未知=failed 留恢复');
+  assert.equal(job.attempts, 1, '一次发出计一次（修前 pending/attempts=0——重启会当首次判断再发且 E 只记一次）');
+  assert.match(job.detail ?? '', /结果未知/, '结果未知如实标注（judging 时点的指纹在过程 detail，计数可对账）');
+  // 进程重启等价（新实例）：领取重发——第二次判断成功收口
+  failFirst = false;
+  const report = await makeService(glm).runBatch();
+  assert.equal(report.counts['bound'], 1);
+  assert.equal(glmCalls, 2, '服务端两次接收=E 两次尝试记录（可对账）');
+  job = db.prepare("SELECT status, attempts FROM source_bind_jobs WHERE memory_id='mem_judge'").get() as { status: string; attempts: number };
+  assert.equal(job.attempts, 2);
+  assert.equal(job.status, 'bound');
 });

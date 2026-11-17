@@ -531,7 +531,7 @@ export class MariposaClient {
     return this.transport('source.bindings.of_memory', { memory_id: memoryId });
   }
 
-  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection, opts: { expectedMemoryVersion?: number | null; expectedBindingIds?: string[] } = {}): Promise<MariposaCallResult> {
+  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection, opts: { expectedMemoryVersion?: number | null; expectedBindingIds?: string[]; idempotencyKey?: string } = {}): Promise<MariposaCallResult> {
     return this.transport('source.binding.bind', {
       memory_id: memoryId, conversation_id: selection.conversation_id,
       start_message_id: selection.members[0]!.source_message_id,
@@ -541,7 +541,7 @@ export class MariposaClient {
       // 判断后新建绑定→EVENT_SOURCE_STATE_CHANGED——复核与提交之间的窗口在此闭合）。
       ...(opts.expectedMemoryVersion != null ? { expected_memory_version: opts.expectedMemoryVersion } : {}),
       ...(opts.expectedBindingIds != null ? { expected_binding_ids: opts.expectedBindingIds } : {}),
-    });
+    }, undefined, opts.idempotencyKey != null ? { idempotency_key: opts.idempotencyKey } : undefined);
   }
   async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { binding_id: args.bindingId, correction_action: args.correctionAction, operation_id: args.operationId };

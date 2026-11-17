@@ -95,6 +95,7 @@ export class Host {
   private bindingMariposa: import('./integrations/mariposa/client.ts').MariposaClient | null = null;
   wireBindingMariposa(client: import('./integrations/mariposa/client.ts').MariposaClient | null): void { this.bindingMariposa = client; }
   private sourceBindTicking = false;
+  private sourceBindStopping = false;
   private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
   private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
   /** 同步失败退避（进程内；重启归零重试一轮，与 media/index/backfill.ts 同款如实记录） */
@@ -618,7 +619,7 @@ export class Host {
   /** 相册重构 P2：M 落正待同步一跳（≤5 资产/跳；进程内指数退避 30s·2^min(n,5)，
    *  与 media/index/backfill.ts 同款——重启后退避归零重试一轮，如实记录） */
   private async sourceBindTick(): Promise<void> {
-    if (!this.config.source_binding.enabled || this.sourceBindTicking) return;
+    if (!this.config.source_binding.enabled || this.sourceBindTicking || this.sourceBindStopping) return;
     if (!this.sourceBindService) {
       const { GlmChatAdapter } = await import('./integrations/glm/chat.ts');
       const { SourceBindingService } = await import('./modules/sourcebinding/service.ts');
@@ -689,6 +690,13 @@ export class Host {
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
     if (this.sourceBindTimer) { clearInterval(this.sourceBindTimer); this.sourceBindTimer = null; }
+    // 生命周期⑤：BIND 停机有界等待——置 stopping（不再领取新任务），等在途批次收口
+    //（已知结果落账；判断在途的落 judging 可恢复事实）再继续关库；上限 30s 不无限等。
+    this.sourceBindStopping = true;
+    const bindDeadline = Date.now() + 30_000;
+    while (this.sourceBindTicking && Date.now() < bindDeadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     if (this.objectMetaBackfillTimer) { clearInterval(this.objectMetaBackfillTimer); this.objectMetaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
