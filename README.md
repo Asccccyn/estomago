@@ -8,6 +8,8 @@
 
 - 2026-11-18（包 3 召回和观察池修复，已成对部署）。E 实现 `070ec0b`、`8b9ea66`，发布 `recallfix-1e44ced`，配套 M 发布 `recallfix-9c53bb7`。太平洋时间 04:37:43 核实两个生产进程均运行目标 release。E live/ready 与 M health 均为 HTTP 200，E schema v77，Sol 持久模型覆盖为 `gpt-6.2-sol`。Qwen 就绪，启动回填 0 个事件、0 条存词。切换期间消息、模型请求、浮现作业与后台派发新增均为 0。业务反例已在隔离库验证，生产验收使用只读状态检查。
 
+- 2026-11-18（包4 §6.2 姓名投影统一，仅 E，本地实现 `ba93204`，待部署）。char在历史材料里看到的宿主生成说话人标签统一为身份配置真实姓名（宿主用户/char）：自动浮现顶层 `speaker`（旧 jiaming/qiaosheng 枚举）、主动召回/续页候选卡、memory_read_full 深读 our_words/source、conversation_read 条目（旧 owner/assistant）、开窗 B 段 our_words 行首署名（旧「他/她」代词）五入口逐项改在 E 投影边界（toModel/装配）映射；M 冻结卡、底层消息 ID/修订/来源、锚点合同（本就用姓名）与 provider role/事件类型不动，第三方署名与未核实身份原样保留，旧冻结窗口已发送历史不回写。身份配置单一来源 `identity/speaker-labels.ts`（sol user/assistant_display_name）。隔离验收 `tests/unit/pkg4-speaker-name-projection.test.ts` 五入口全绿——逐项读最后已确认 provider_requests：同字回应场景（char先说、宿主用户逐字重复）新结果 `"speaker":"宿主用户"` 且已读句不重入记忆块；第三方对照 speaker 空/normalized_sender 原样、正文 user/assistant 字样逐字、信封 role 全合法。全量 242/243（唯一失败 bootstrap-pages 为本机既有 deadline 时序问题，干净树同样失败，与本批无关）。真实供应商调用 0，未部署。
+
 - 2026-11-18（Sol 观察池超限恢复，本地实现 `8b9ea66`，随包 3 待部署）。仅 E 构造 Sol 输入时，双方原话累计超过字节预算才记 `blocked / SURFACE_SOL_INPUT_TOO_LARGE`。聊天正本完整保留，从本轮目标消息的当前修订之后重新判断，超限段不自动补判。observe、超时、检索空结果及 M 容量拒绝都保留当前观察段。原仓 6 个定向文件共 50 项及类型检查通过，正式回合隔离回放覆盖单条超长、累计超限、连续短句、传输超时、宿主截止时间和 M 空结果。上一版生成的隔离库也已验证 E 与 M 超限记录可区分。生产仍为 E `solalign-69023a7`、M `solalign-a7fe3ad`，本批真实模型调用为 0。
 
 - 2026-11-18（包 3 召回修复，本地待成对部署）。E 实现 `070ec0b`，配套 M 实现 `97dca38`。自动浮现按实际送达的同版码点范围投影正文和邻句，部分覆盖保留未读原文及深读引用。首页及后续固定页透传显式重读，旧窗沿冻结坐标翻页。主动卡与对话条目保留内容版本和修订，复合请求保留事件并说明原文缺项，Sol 逐请求记录已知用量及未知次数。原仓 23 个定向测试文件、114 项通过，类型检查与三份既有 golden 通过。E→M 隔离回放核过最终信封，两仓 110 项生成合同一致。生产 release 仍为 E `solalign-69023a7`、M `solalign-a7fe3ad`。该批交付时观察池超限恢复尚待裁定，本批真实供应商请求为 0。
