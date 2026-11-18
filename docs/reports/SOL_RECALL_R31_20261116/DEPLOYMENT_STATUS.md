@@ -37,3 +37,11 @@
 - E 重启核验：live/ready 双 200（端口 18787）、cwd=`estomago-releases/solr31-88e1cb2`；content 服务未动（pkg2-0fb14ac）。
 - 终态核对：memory_embeddings 仅 `Qwen/…|eventbody-v1` 650 行、word_embeddings 仅 Qwen 481 行、BAAI 残留 0；生产模型目录仅剩 CACHEDIR.TAG（Qwen 权重在 release 内）。
 - 新链路首次真实 Sol 判定：待用户下一条消息触发（部署后暂无新消息；重启前最后一笔判定 21:01 正常 none、Sol 前缀缓存命中 2078/2442 input tokens）。
+
+## 5. 成对上线回执（2026-11-18）
+
+- 上线完成于太平洋时间 01:28:56。用户确认当前空档并授权本次重启，依次切换 Mariposa 与 estómago host。
+- M 运行 `solalign-a7fe3ad`（实现 `eeead1b`）；E host 运行 `solalign-69023a7`（实现 `6895224`）。进程工作目录与两份启动脚本相符，合同副本逐字节一致。
+- M `/health` 200，Qwen 就绪，启动回填 0e/0w。沿用原有 Qwen 权重、正式库和白名单。E `/health/live` 与 `/health/ready` 均 200，schema v77，content 发布未切换。
+- 切换前后新增主模型请求、自动浮现作业、后台派发均为 0。验收使用本机健康检查与已有状态，未发消息或触发真实 Sol/JEV。
+- 切换前两份启动脚本保存在私有备份目录 `20261118-012853-pre-solalign-launchers`，对应旧发布 `solr31-2752fea` 和 `solr31-88e1cb2`。
