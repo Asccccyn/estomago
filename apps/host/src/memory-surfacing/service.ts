@@ -612,7 +612,8 @@ export class SurfacingService {
             : data.status === 'rejected' ? 'rejected' : 'blocked';
       this.repo.transition(job.id, ['validating'], state, {
         receipt_id: data.validation_receipt ?? null,
-        items_json: data.items && data.items.length > 0 ? JSON.stringify({ items: data.items, missing: data.missing }) : null,
+        items_json: Array.isArray(data.items) && (data.items.length || data.missing?.length)
+          ? JSON.stringify({ items: data.items, missing: data.missing }) : null,
         reason_code: data.reason_code ?? null,
       });
     })();
@@ -710,6 +711,11 @@ export class SurfacingService {
     const items: SurfaceItem[] = [];
     const refs = new Map<string, string>();
     const refList: FrozenAugmentation['memoryRefs'] = [];
+    const fitsPacket = (packet: string): boolean => {
+      const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + packet;
+      return estimateTokens(wireText) <= this.cfg.max_added_tokens_per_turn
+        && Buffer.byteLength(wireText, 'utf8') <= this.cfg.max_packet_bytes;
+    };
     let droppedCovered = 0;
     let droppedBudget = 0;
     for (const item of itemsAll) {
@@ -720,17 +726,16 @@ export class SurfacingService {
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(key, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs, missing);
-      const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + candidate;
-      const tokens = estimateTokens(wireText);
-      const bytes = Buffer.byteLength(wireText, 'utf8');
-      if (tokens > this.cfg.max_added_tokens_per_turn
-        || bytes > this.cfg.max_packet_bytes) { droppedBudget++; continue; }
+      if (!fitsPacket(candidate)) { droppedBudget++; continue; }
       items.push(it);
       covered.push(...surfaceItemRanges(it));
       refs.set(key, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
-    if (items.length === 0) {
+    const text = renderAugmentation(items, refs, missing);
+    const missingOnly = items.length === 0 && missing.length > 0 && droppedCovered === itemsAll.length;
+    if (missingOnly && !fitsPacket(text)) droppedBudget++;
+    if (items.length === 0 && (!missingOnly || droppedBudget > 0)) {
       // F6：空结果原因分列——"全部已被覆盖"与"容量放不下"不是同一状态，
       // 也不能与"没找到"混同；原因码如实区分
       const reason = droppedBudget > 0
@@ -743,7 +748,6 @@ export class SurfacingService {
       this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_TIMEOUT' });
       return null;
     }
-    const text = renderAugmentation(items, refs, missing);
     const deliveryId = this.repo.freezeDelivery({
       jobId: job.id, attemptId: input.attemptId, windowId: input.windowId,
       text, items, memoryRefs: refList,

@@ -118,7 +118,7 @@ export function projectSurfacedMemory(item: SurfaceItem): { date: string | null;
 export type MissingQuote = { kind: 'raw_context' | 'words_only' | 'words'; status: 'no_match' | 'access_blocked' | 'incomplete' };
 
 export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>, missing: MissingQuote[] = []): string {
-  if (items.length === 0) return '';
+  if (items.length === 0 && missing.length === 0) return '';
   return JSON.stringify({ memories: items.map(item => {
     const key = surfaceItemKey(item);
     const ref = refs?.get(key) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);

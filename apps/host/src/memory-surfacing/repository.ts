@@ -210,7 +210,8 @@ export class SurfacingRepository {
         (j.state='empty' AND j.sol_decision='none' AND j.reason_code='SURFACE_SOL_NONE')
         OR ${SOL_INPUT_OVERFLOW_JOB}
         OR (j.state='retained' AND EXISTS (SELECT 1 FROM surfacing_deliveries d
-          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1)))`
+          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1
+            AND json_array_length(d.selected_refs_json, '$.items') > 0)))`
     ).get(conversationId, beforeSequence) as { seq: number };
     return row.seq;
   }

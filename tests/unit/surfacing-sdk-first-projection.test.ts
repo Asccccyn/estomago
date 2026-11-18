@@ -51,6 +51,14 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
   const events = new EventService(db); const caps: string[] = [];
   const transport: MariposaTransport = async (cap, args) => {
     caps.push(cap);
+    if (cap.endsWith('.prepare') && (args.plan as {route: string}).route === 'mixed') {
+      assert.ok((args.covered_ranges as Array<{resource_ref: string}>).some(r => r.resource_ref === ITEM.resource_ref));
+      return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_missing' } };
+    }
+    if (cap.endsWith('.validate') && args.candidate_snapshot_ref === 'sfr_missing')
+      return { ok: true, result: { status: 'ready', items: [], missing: [{kind:'raw_context',status:'no_match'}], validation_receipt: 'svr_missing' } };
+    if (cap.endsWith('.check') && args.validation_receipt === 'svr_missing')
+      return { ok: true, result: { valid: true, accepted_detail_refs: [] } };
     if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_sdk' } };
     if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_sdk', items: [ITEM] } };
     if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
@@ -78,6 +86,9 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     { decision: 'recall', plan: { ...plan, evidence: [{ user_turn: 1, quote: firstText }] } },
     { decision: 'recall', plan: { ...plan, breadth: 'related', evidence: [{ user_turn: 1, quote: nextText }] } },
     { decision: 'observe' },
+    { decision: 'recall', plan: { ...plan, route: 'mixed', breadth: 'related', queries: [
+      ...plan.queries, { need_kind: 'words', need: '查当天原话', semantic: '当天原话', keywords: ['原话'], source_mode: 'raw_context' },
+    ] } },
   ]);
   const svc = new SurfacingService(db, client, sol.judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v2',
@@ -163,6 +174,14 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     assert.equal(caps.filter(cap => cap.endsWith('.prepare')).length, 2, '没有新的明确需要就不发起检索');
     assert.equal(db.prepare('SELECT reason_code FROM surfacing_jobs WHERE source_message_id=?').get(c.message.id)?.reason_code,
       'SURFACE_SOL_OBSERVE');
+    const d = messages.submitUserMessageWithTurn({conversationId:'c1', content:'查记忆库建设经历和当天原话。', clientMessageId:'sdk-4'});
+    supervisor.enqueue(d.turnId); await supervisor.waitIdle();
+    const blocks = captures.at(-1)!.flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.map(b => b.text ?? ''))
+      .filter(text => text.startsWith('{"memories":'));
+    assert.equal(blocks.length, 2);
+    assert.deepEqual(JSON.parse(blocks[1]!), {memories:[], missing:[{kind:'raw_context',status:'no_match'}]});
+    assert.deepEqual(svc.visibleMemoriesForTurn('c1', d.turnId), []);
+    assert.equal(svc.repo.solInputBoundary('c1', d.message.sequence + 1), a.message.sequence);
     assert.equal(forbiddenNetwork, 0); assert.equal(forbiddenSdkLoads, 0);
   } finally {
     await svc.stop(); db.close(); fs.rmSync(root, { recursive: true, force: true });
