@@ -236,9 +236,9 @@ test('supervisor validates a partial snapshot, keeps I/plans, omits failed mood,
     pages++;return failPage?failure('HTTP_503',503):success(moodPage());
   });
   const first=await callBootstrap(host,'partial');assert.ok(first?.includes('PRIVATE_I_KEEP'));assert.ok(first?.includes('PRIVATE_PLAN_KEEP'));assert.match(first!,/心情.*未完整取得|心情.*未全载|未全载.*心情/);
-  assert.equal(first!.includes('甲😀'),false);assert.equal((host as any).byWindow.has('partial'),false);assert.equal(validations,1);assert.equal(pages,2);
+  assert.equal(first!.includes('甲😀'),false);assert.equal((host as any).take('partial'),undefined,'6895224 后部分交付入缓存（complete:false 供 coverage 计账），take 不得放行');assert.equal(validations,1);assert.equal(pages,2);
   assert.ok(observed.length>0);assert.equal(observed.at(-1)?.severity??'warning','warning');privateDiagnostics(warnings,observed);
-  failPage=false;const recovered=await callBootstrap(host,'partial');assert.ok(recovered?.includes('甲😀乙\n'));assert.equal(gets,2);assert.equal((host as any).byWindow.has('partial'),true);assert.ok(resolved.length>0);
+  failPage=false;const recovered=await callBootstrap(host,'partial');assert.ok(recovered?.includes('甲😀乙\n'));assert.equal(gets,2);assert.equal((host as any).byWindow.get('partial')?.complete,true);assert.ok(resolved.length>0);
 });
 
 test('invalid/failed snapshot validation cannot preserve other private sections',async t=>{
@@ -286,7 +286,7 @@ test('stale final validation rebuilds instead of retaining I/plans from the reje
     }
     return failure('HTTP_503',503);
   });
-  const text=await callBootstrap(host,'validation-stale');assert.equal(gets,2);assert.equal(validations,2);assert.ok(text?.includes('NEW_VERIFY_I'));assert.ok(text?.includes('NEW_VERIFY_PLAN'));assert.equal(text?.includes('OLD_VERIFY_I'),false);assert.equal(text?.includes('OLD_VERIFY_PLAN'),false);assert.equal((host as any).byWindow.has('validation-stale'),false);
+  const text=await callBootstrap(host,'validation-stale');assert.equal(gets,2);assert.equal(validations,2);assert.ok(text?.includes('NEW_VERIFY_I'));assert.ok(text?.includes('NEW_VERIFY_PLAN'));assert.equal(text?.includes('OLD_VERIFY_I'),false);assert.equal(text?.includes('OLD_VERIFY_PLAN'),false);assert.equal((host as any).take('validation-stale'),undefined,'终验陈旧重建后仍以 complete:false 入缓存（mood 仍失败），不得作为完整包复用');
 });
 
 test('persistent stale performs at most two get attempts then returns a critical unavailable marker',async()=>{
@@ -383,7 +383,7 @@ test('moods surrender the remaining preparation time so completed I and snapshot
   });
   const text=await callBootstrap(host,'remaining-budget');
   assert.equal(moodCalls,0);assert.equal(validations,1);assert.ok(text?.includes('我😀当前'));assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));
-  assert.equal(text?.includes('甲😀'),false);assert.equal(observed.at(-1)?.severity,'warning');assert.equal((host as any).byWindow.has('remaining-budget'),false);
+  assert.equal(text?.includes('甲😀'),false);assert.equal(observed.at(-1)?.severity,'warning');assert.equal((host as any).take('remaining-budget'),undefined,'部分交付 complete:false，take 不放行');
 });
 
 test('empty first I fragment follows offset zero and reconstructs Unicode content',async()=>{
@@ -407,7 +407,7 @@ test('explicit malformed I values become critical local gaps after validating th
       pages++;throw new Error('Malformed initial I must not start a continuation');
     });
     const text=await callBootstrap(host,'bad-i');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('BAD_I_PRIVATE'),false);assert.equal(text?.includes('Mariposa开窗资料未取得'),false);
-    assert.equal(validations,1);assert.equal(pages,0);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).byWindow.has('bad-i'),false);privateDiagnostics(warnings,observed);
+    assert.equal(validations,1);assert.equal(pages,0);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).take('bad-i'),undefined,'I 段坏的 partial 包 complete:false，take 不放行');privateDiagnostics(warnings,observed);
   });
 });
 
@@ -415,7 +415,7 @@ test('empty I with a missing required continuation is not cached as a complete e
   let validations=0;
   const packet={...metadata,memory_days:{items:[]},plans:{items:[{title:'PRIVATE_PLAN_KEEP'}]},i:{content:'',truncated:true,total_chars:4}};
   const {host,observed}=hostFor(async(capability,args)=>{assert.equal(capability,'bootstrap.get');if(args.loaded_snapshot_id){validations++;return validSnapshot();}return success(packet);});
-  const text=await callBootstrap(host,'i-missing-cursor');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.match(text!,/I.*未全载/);assert.equal(validations,1);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).byWindow.has('i-missing-cursor'),false);
+  const text=await callBootstrap(host,'i-missing-cursor');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.match(text!,/I.*未全载/);assert.equal(validations,1);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).take('i-missing-cursor'),undefined,'空 I 缺续页的 partial 包不得作为完整空 I 复用');
 });
 
 test('I and event reject wrong offsets, totals and cursor progression before appending any bad suffix',async t=>{
@@ -446,7 +446,7 @@ test('I and event reject wrong offsets, totals and cursor progression before app
       assert.equal(args.section,section==='i'?'i':'memory_item');assert.deepEqual(args.cursor,cursor);pages++;return success(page);
     });
     const text=await callBootstrap(host,'bad-text-page');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('乙🦋'),false);assert.equal(text?.includes('BAD_SUFFIX'),false);assert.equal(text?.includes('甲😀乙'),false);
-    assert.equal(pages,1);assert.equal(validations,1);assert.equal((host as any).byWindow.has('bad-text-page'),false);assert.equal(observed.at(-1)?.severity,section==='i'?'critical':'warning');privateDiagnostics(warnings,observed);
+    assert.equal(pages,1);assert.equal(validations,1);assert.equal((host as any).take('bad-text-page'),undefined,'坏页后的 partial 包 complete:false，take 不放行');assert.equal(observed.at(-1)?.severity,section==='i'?'critical':'warning');privateDiagnostics(warnings,observed);
     if(section==='event_text')assert.ok(text?.includes('PRIVATE_I_KEEP'));
   });
 });

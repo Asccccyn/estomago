@@ -467,7 +467,7 @@ export class WindowBootstrapMachine {
         this.byWindow.set(windowId, { text, ranges: deliveredRanges, complete: gaps.length === 0 });
         if (gaps.length > 0) {
           report(gaps);
-          return text; // 部分交付：如实披露，不进缓存（下次重试）
+          return text; // 部分交付：如实披露；已入缓存但 complete=false（6895224：coverageFor 按实际交付计账），take 不放行，下次重建
         }
         d.alerts?.resolve(dedupeKey, { summary: {} });
         return text;
