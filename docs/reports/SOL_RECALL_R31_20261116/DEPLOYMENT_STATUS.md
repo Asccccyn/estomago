@@ -8,10 +8,10 @@
 | --- | --- |
 | 本地代码（两仓工作树） | 已完成并提交（提交号见 README 基线条目） |
 | 隔离验证 | pytest/node--test 全绿（见 REGRESSION）；真实 Qwen warmup+D07 语义区分+DB 副本迁移 PASS |
-| 生产发布 | **未执行**（E 仍 `bind-calendar-0fb8cfa`，M 仍 `bind-calendar-82b8eb4`） |
-| 生产重启 | **未执行，需另行取得本次明确同意**（含中断说明） |
+| 生产发布 | **已执行（2026-11-17 21:34–21:36 北京时间，用户授权重启）**：M `solr31-2752fea`（含合同重生成提交）+ E host `solr31-88e1cb2` 成对上线 |
+| 生产重启 | **已执行**：M launchctl kickstart（21:34）+ E host kickstart（21:35），中断各约 10–15 秒，无进行中会话 |
 | 真实付费模型调用 | **0 次**（Sol gpt-6.1-sol、JEV、主模型均未调用；D07/迁移为本地 MLX 推理） |
-| 生产 DB / 生产 env | 零改动 |
+| 生产 DB / 生产 env | **已执行**：env 切 `qwen3e4b`；生产库迁移 650/650 事件+481/481 words 全 Qwen 覆盖，purge 清 599 行 BGE 向量（核对后 0 残留）；生产 BGE 权重（~/Data/mariposa/runtime/models，90M+456K）已删 |
 
 ## 2. 发布前必做（成对切换，一次请求不跨代）
 
@@ -27,3 +27,13 @@
 - 迁移只新增 Qwen 行、不动 BGE 行（--purge-bge 前可随时回旧 env+旧 release）。
 - 回滚=旧 release + 旧 env（BGE 权重在数据根未删前完整可用）；旧判断缓存按指纹隔离，无需清理。
 - 若 Qwen 预热失败：服务照常（dense skipped_cold/failed 如实标记），聊天/FTS 不受影响；修复后重启或手动 warmup。
+
+
+## 4. 上线执行回执（2026-11-17）
+
+- 前置备份：`~/Backups/20261117-pre-solr31/mariposa.sqlite3`（204MB，VACUUM INTO）。
+- 生产迁移：650 事件+481 words 全部 Qwen 覆盖（backfill 650+481）。
+- M 重启核验：health 200、cwd=`mariposa-releases/solr31-2752fea`、日志 `[semantic] qwen ready` + `backfill done: 0e/0w`（迁移已全覆盖，启动回填零计算=接线自证）。
+- E 重启核验：live/ready 双 200（端口 18787）、cwd=`estomago-releases/solr31-88e1cb2`；content 服务未动（pkg2-0fb14ac）。
+- 终态核对：memory_embeddings 仅 `Qwen/…|eventbody-v1` 650 行、word_embeddings 仅 Qwen 481 行、BAAI 残留 0；生产模型目录仅剩 CACHEDIR.TAG（Qwen 权重在 release 内）。
+- 新链路首次真实 Sol 判定：待用户下一条消息触发（部署后暂无新消息；重启前最后一笔判定 21:01 正常 none、Sol 前缀缓存命中 2078/2442 input tokens）。
