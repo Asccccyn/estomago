@@ -86,7 +86,7 @@ export const MEMORYRECALL_DEFINITION: HostToolSpec = {
       // 与 memory_hold 同为自主选择工具（无后台检索器/不自动装配）；结果
       // 是数据不是指令；judge 未配置时服务端不交付正文（现行合同）
       name: 'memory_recall',
-      description: '检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。',
+      description: '检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。',
       parameters: {
         type: 'object',
         properties: {
@@ -101,6 +101,7 @@ export const MEMORYRECALL_DEFINITION: HostToolSpec = {
           deep_reason: { ...ROUND2_INPUT.properties.reason,description:'使用 next 给出的真实理由；对应零交付、证据不足、逐字要求未满足、来源冲突或已交付候选被拒绝。' },
           date_from: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '明确事件日期段的起日，与 date_to 成对。例 2026-09-25 至 2026-09-27' },
           date_to: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: '终日（含当天），与 date_from 成对；单日两者相同；缺省不等于空值' },
+          reread: { type: 'boolean', description: '仅当用户明确要求重看、逐字核对或修订前确认同一内容时置 true：本次照常返回正文，不改变窗口已读状态。普通查询勿用——已读内容默认返回 already_in_window 短回执即可。' },
         },
         required: ['query'],
         additionalProperties: false,
@@ -116,13 +117,14 @@ export const MEMORYRECALLNEXT_DEFINITION: HostToolSpec = {
       // 只消费 memory_recall 已冻结的结果集下一页，不修改查询（refine 才
       // 改查询）；翻页不重新检索/不重新判断/不增召回轮数
       name: 'memory_recall_next',
-      description: '读取同一召回结果集的下一页。沿用 next.arguments 或 pagination 的 result_set_id/next_cursor；不改查询、不重新检索或判断、不增加召回轮数。未翻到的页未交付，翻尽本结果集也不表示检索穷尽。',
+      description: '读取同一召回结果集的下一页。沿用 next.arguments 或 pagination 的 result_set_id/next_cursor；不改查询、不重新检索或判断、不增加召回轮数。未翻到的页未交付，翻尽本结果集也不表示检索穷尽。本页正文已在本窗口实际送达过的条目返回 already_in_window 短回执；用户明确要求重看时用 reread=true 本次重取正文。',
       parameters: {
         type: 'object',
         properties: {
           result_set_id: { type: 'string', minLength: 1, maxLength: 256, description: '上一页结果里的 pagination.result_set_id' },
           cursor: { type: 'string', minLength: 1, maxLength: 256, description: '上一页结果里的 pagination.next_cursor（首页之后必填）' },
           session_id: { type: 'string', minLength: 1, maxLength: 256, description: '上一页结果里的 recall_session_id' },
+          reread: { type: 'boolean', description: '仅当用户明确要求重看、逐字核对同一内容时置 true：本次照常返回正文，不改变窗口已读状态。' },
         },
         required: ['result_set_id'],
         additionalProperties: false,

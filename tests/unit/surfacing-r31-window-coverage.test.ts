@@ -13,6 +13,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { projectMemoryToolResult } from '../../apps/host/src/modules/memory/projection.ts';
+import { MEMORYRECALL_DEFINITION, MEMORYRECALLNEXT_DEFINITION } from '../../apps/host/src/modules/memory/module.ts';
 
 function makeDb() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-r31-'));
@@ -76,4 +77,16 @@ test('R31/N17–N18：召回投影白名单保留 already_in_window 短回执标
   assert.equal(cands[0]!.already_in_window, true, '标记随白名单出站');
   assert.equal(cands[0]!.text, '全文正文不再重复', '回执仍可携带行文（宿主决定是否替换正文）');
   assert.equal(cands[1]!.already_in_window, undefined, '未覆盖候选不带标记');
+});
+
+
+test('R31/N20：显式重读为同一读取合同的最小可选参数（不设必填理由/确认往返）', () => {
+  const recall = MEMORYRECALL_DEFINITION.function;
+  const next = MEMORYRECALLNEXT_DEFINITION.function;
+  for (const def of [recall, next]) {
+    const props = (def.parameters as { properties: Record<string, { type?: string }> }).properties;
+    assert.equal(props.reread?.type, 'boolean', `${def.name} reread 为布尔可选参数`);
+    assert.ok(!((def.parameters as { required?: string[] }).required ?? []).includes('reread'), 'reread 不是必填');
+    assert.ok(def.description.includes('already_in_window'), `${def.name} 描述说明已读短回执语义`);
+  }
 });
