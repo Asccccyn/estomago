@@ -1,3 +1,6 @@
+import { coverageRanges } from '../memory-surfacing/window-coverage.ts';
+import type { CoverageRange } from '../capabilities/contracts.ts';
+import { sha256Hex } from '../util/id.ts';
 // 窗口开窗资料（Mariposa bootstrap B 段）分页装配机——R3（2026-11-07）纯搬迁自
 // supervisor.ts：与聊天主链零共享状态，独立缓存与分页协议（SNAPSHOT_STALE 整包重建、
 // 瞬时全局失败一次、完整成功才进缓存）。行为逐字保留。
@@ -21,7 +24,7 @@ export type BootstrapMachineDeps = Pick<SupervisorDeps, 'bootstrap' | 'events' |
 };
 
 export class WindowBootstrapMachine {
-  private byWindow = new Map<string, string>();
+  private byWindow = new Map<string, { text: string; ranges: CoverageRange[]; complete: boolean }>();
   private episodeFragmentByWindow = new Map<string, string>();
 
   private readonly d: BootstrapMachineDeps;
@@ -45,7 +48,24 @@ export class WindowBootstrapMachine {
   }
 
   take(key: string): string | undefined {
-    return this.byWindow.get(key);
+    const value = this.byWindow.get(key);
+    return value?.complete ? value.text : undefined;
+  }
+
+  coverageFor(key: string, messages: readonly { role: string; content: unknown }[]): { window_coverage: CoverageRange[]; window_coverage_block: string } | null {
+    const opening = this.byWindow.get(key);
+    if (!opening?.ranges.length) return null;
+    for (const message of messages) {
+      if (message.role !== 'system') continue;
+      const texts = typeof message.content === 'string' ? [message.content] :
+        Array.isArray(message.content) ? message.content.filter(block => block?.type === 'text').map(block => block.text) : [];
+      for (const text of texts) {
+        if (typeof text === 'string' && (text === opening.text || text.startsWith(opening.text + '\n'))) {
+          return { window_coverage: opening.ranges, window_coverage_block: sha256Hex(text) };
+        }
+      }
+    }
+    return null;
   }
 
   /** 本窗冻结的"运行中事项"片段；null=该窗无片段（未接线/失败冻结/无未了结——内部空串归一为 null） */
@@ -64,7 +84,7 @@ export class WindowBootstrapMachine {
     // episode 片段取数纳入与 B 同一准备生命周期（Codex 审计 P1）：共用父取消
     // 与 BOOTSTRAP_DEADLINE_MS 截止——父取消/截止后不取、不冻结（下轮重拉）。
     const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
-    const t = this.byWindow.get(windowId);
+    const t = this.take(windowId);
     if (t !== undefined) {
       if (this.episodeFragmentByWindow.has(windowId) || !scopeId) return t;
       // B 已有缓存但片段尚未冻结——独立补取后返回缓存（每窗一次）
@@ -253,6 +273,7 @@ export class WindowBootstrapMachine {
             } else {
               const groups = Array.isArray(item.our_words) ? (item.our_words as Array<{ speaker?: string; texts?: unknown[] }>) : [];
               let flat: Array<{ speaker?: string; text: string }> = [];
+              const wordRanges = coverageRanges(item.our_words_coverage);
               for (const g of groups) {
                 if (!g || typeof g !== 'object') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
                 if (g.texts !== undefined && !Array.isArray(g.texts)) throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
@@ -276,6 +297,7 @@ export class WindowBootstrapMachine {
                 const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
                 if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
                 if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
+                wordRanges.push(...coverageRanges(page.coverage_ranges));
                 if (!Array.isArray(page.items) || page.items.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', field);
                 for (const g of page.items as Array<{ speaker?: string; texts?: unknown[] }>) {
                   for (const wt of g?.texts ?? []) {
@@ -305,6 +327,7 @@ export class WindowBootstrapMachine {
                 else regrouped.push({ speaker: w.speaker, texts: [w.text] });
               }
               item.our_words = regrouped;
+              item.our_words_coverage = wordRanges;
               delete item[curKey]; delete item[truncKey];
             }
           } catch (err) {
@@ -348,6 +371,7 @@ export class WindowBootstrapMachine {
             d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'wishstar', code: 'WISHSTAR_UNAVAILABLE', note: '临近纪念日查询不可用——本轮不带提醒，不影响其他开窗资料' } });
           }
         }
+        const deliveredRanges: CoverageRange[] = [];
         const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
         if (days.length > 0) {
           seg.push('近三日记忆：');
@@ -365,7 +389,14 @@ export class WindowBootstrapMachine {
               line += `（心情文字：${it.mood_text}）`;
             }
             seg.push(line);
-            if (typeof it.event_text === 'string' && it.event_text.length > 0) seg.push(`  事件：${it.event_text}`);
+            if (typeof it.event_text === 'string' && it.event_text.length > 0) {
+              seg.push(`  事件：${it.event_text}`);
+              if (typeof it.memory_id === 'string' && Number.isSafeInteger(it.version)) {
+                deliveredRanges.push({ resource_ref: `memory:${it.memory_id}`, content_version: String(it.version),
+                  start_char: 0, end_char: Array.from(it.event_text).length });
+              }
+            }
+            deliveredRanges.push(...coverageRanges(it.our_words_coverage));
             const words0 = it.our_words as unknown;
             for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
               for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? '他' : '她'}：${wt}`);
@@ -429,11 +460,11 @@ export class WindowBootstrapMachine {
           return null;
         }
         const text = seg.join('\n');
+        this.byWindow.set(windowId, { text, ranges: deliveredRanges, complete: gaps.length === 0 });
         if (gaps.length > 0) {
           report(gaps);
           return text; // 部分交付：如实披露，不进缓存（下次重试）
         }
-        this.byWindow.set(windowId, text);
         d.alerts?.resolve(dedupeKey, { summary: {} });
         return text;
       } catch (err) {

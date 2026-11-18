@@ -57,10 +57,9 @@ function identity(v: Obj, history=false): Obj {
 export function candidates(v: any[]): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
-    const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version']);
+    const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
     // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
     // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）
-    if(c.already_in_window===true)out.already_in_window=true;
     if(out.mood)out.mood=select(out.mood,['text','tags','author']);
     // F-05（跨仓预审 2026-10-25）：resource_ref 是 M 候选卡出站的唯一操作
     // 句柄（memory:/our_word:/source_msg:），否定续查 reject_candidate_ref
@@ -70,16 +69,18 @@ export function candidates(v: any[]): Obj[] {
     if(c.memory_ref)out.memory_ref=c.memory_ref;
     if(c.content_complete !== undefined)out.content_complete=c.content_complete;
     Object.assign(out,select(c,['start_char','end_char']));
-    if(c.fragment)out.fragment=select(c.fragment,['kind','evidence_index','start_char','end_char','total_chars','text','content_complete']);
+    if(c.fragment)out.fragment=select(c.fragment,['kind','evidence_index','start_char','end_char','total_chars','text','content_complete','unread_parts','already_in_window','included_in_this_request']);
     if (out.original_title) { if (!out.title) out.title=out.original_title; delete out.original_title; }
     const evidence=list(c.evidence).map(e=>{
-      const x=select(e,['evidence_kind','field','snippet','source_ref','source_version']);
+      const x=select(e,['evidence_kind','field','snippet','source_ref','source_version','unread_parts','already_in_window','included_in_this_request']);
       if(e.structured_value)x.structured_value=select(e.structured_value,['categories','legacy_content_gap','source_ref_state','source_binding_version']);
       if(e.evidence_kind==='word_unverified')x.unverified=true;
       if(e.truncated===true)x.truncated=true;
       return x;
     });
     if(evidence.length)out.evidence=evidence;
+    if (c.content_version !== undefined && [out, out.fragment, ...evidence].some(part =>
+      part?.already_in_window || part?.included_in_this_request || part?.unread_parts)) out.content_version = c.content_version;
     if(out.excerpt && evidence[0]?.snippet===out.excerpt)delete out.excerpt;
     if(c.truncated===true || (Array.isArray(c.budget_flags) && c.budget_flags.length))out.truncated=true;
     if(c.judge && c.judge.evaluation_status!=='evaluated')out.judgement='unconfirmed';

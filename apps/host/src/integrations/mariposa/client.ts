@@ -5,6 +5,8 @@
 //  - 错误码沿用生命周期包 §"必须表达的错误类别"；未识别 code 不吞成成功。
 import { sha256Hex } from '../../util/id.ts';
 import { validateAbsoluteIso } from '../../util/time.ts';
+import { coveredRangesForMariposa } from '../../memory-surfacing/window-coverage.ts';
+import type { CoverageRange } from '../../capabilities/contracts.ts';
 
 export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
@@ -225,7 +227,10 @@ export class MariposaClient {
   withSignal(signal?: AbortSignal): MariposaClient {
     if (!signal) return this;
     const base = this.transport;
-    const bound: MariposaTransport = (cap, payload, _ignored, envelope) => base(cap, payload, signal, envelope);
+    const bound: MariposaTransport = async (cap, payload, _ignored, envelope) => {
+      signal.throwIfAborted();
+      return base(cap, payload, signal, envelope);
+    };
     return new MariposaClient({ transport: bound });
   }
 
@@ -336,11 +341,13 @@ export class MariposaClient {
    *  顶层 continue_request_ref 才是新 burst 许可（M budget.try_new_burst）；
    *  顶层 conversation_scope 供 M require_owned_session 归属核验
    *  （session 绑定 scope 时省略=SCOPE_REQUIRED）。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string; excludedSourceIds?: string[] }): Promise<MariposaCallResult> {
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string; excludedSourceIds?: string[]; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
       continue_request_ref: args.continueRef,
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
       query_plan: {
         original_request: args.query,
         semantic_query: args.query,
@@ -375,13 +382,15 @@ export class MariposaClient {
   /** 找话第二批（2026-10-10）：Round2 原文深搜——M 的独立入口
    *  （S13 门服务端核验：reason 闭集+Round1 完成回执+政策纪元一致）。
    *  operationId 由宿主派生（同 tool_call 重试同幂等身份）。 */
-  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string; continuationToken?: string }): Promise<MariposaCallResult> {
+  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string; continuationToken?: string; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.round2', {
       ...(args.continuationToken ? { continuation_token: args.continuationToken } : {}),
       session_id: args.sessionId,
       reason: args.reason,
       operation_id: args.operationId,
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
     });
   }
 
@@ -602,7 +611,8 @@ export class MariposaClient {
 
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string }; excludedSourceIds?: string[] }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string }; excludedSourceIds?: string[]; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.start', {
       query_plan: {
         original_request: args.query,
@@ -618,11 +628,12 @@ export class MariposaClient {
         // 语义近邻对"日期主导"查询不可靠（9.25-9.27 曾 0 命中而桶实际存在）
         ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
         // RECALL_SOURCE_BOUNDARY（2026-11-01）：历史证据资格排除（当前
-        // 请求/当前窗消息的 sm id）——刚发出的检索请求不能自证"以前说过"；
+        // 请求的 sm id）——刚发出的检索请求不能自证"以前说过"；
         // M 侧 validate_query_plan 归一化并随 session 全程一致（C3）。
         ...(args.excludedSourceIds && args.excludedSourceIds.length > 0 ? { excluded_source_ids: args.excludedSourceIds } : {}),
       },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
       request_ref: args.requestRef,
     });
   }
@@ -631,12 +642,14 @@ export class MariposaClient {
    *  冻结结果集续页——只消费既有 result_set（零检索/零判断/零 COUNT）；
    *  不修改查询（refine 才改查询）。政策切换后服务端返回
    *  RECALL_POLICY_CHANGED，如实上抛。 */
-  async recallPage(args: { resultSetId: string; sessionId?: string; cursor?: string; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallPage(args: { resultSetId: string; sessionId?: string; cursor?: string; conversationScope?: string; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.page', {
       result_set_id: args.resultSetId,
       ...(args.sessionId ? { session_id: args.sessionId } : {}),
       ...(args.cursor ? { cursor: args.cursor } : {}),
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
     });
   }
 
@@ -645,7 +658,7 @@ export class MariposaClient {
   // 不回退聊天凭据，不借归档凭据。
 
   async surfacePrepare(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
-    return this.transport('memory.surfacing.prepare', payload, signal);
+    return this.transport('memory.surfacing.prepare', { ...payload, ...(payload.covered_ranges === undefined ? {} : { covered_ranges: coveredRangesForMariposa(payload.covered_ranges as readonly CoverageRange[]) }) }, signal);
   }
 
   async surfaceValidate(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {

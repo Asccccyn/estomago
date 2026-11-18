@@ -1,3 +1,4 @@
+import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
 import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
 import {memoryRefFor,SURFACE_HOST_NOTICE} from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
@@ -144,11 +145,12 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   // 新尾部不再有回忆块（同事件已覆盖）
   const tail3 = msgs3[msgs3.length - 1]!;
   assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('{"memories":')).length, 0, 'U3 不重复追加');
-  // 覆盖表登记一次
-  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
-  assert.ok(ctx.svc.repo.coveredInWindow('c1', activeWindow, [ITEM]).has(`event:${ITEM.detail_ref}`), 'actual retained trajectory establishes visibility');
-  assert.equal(ctx.svc.repo.coveredInWindow('c1', 'new-window', [ITEM]).size, 0, 'a new window has no inherited visibility claim');
+  assert.deepEqual(windowCoverage(ctx.db, activeWindow).filter(range => range.resource_ref.startsWith('memory:')), [{
+    resource_ref: `memory:${ITEM.memory_id}`, content_version: ITEM.memory_version,
+    start_char: 0, end_char: [...ITEM.event_text].length,
+  }], 'actual retained trajectory establishes exact memory coverage');
+  assert.deepEqual(windowCoverage(ctx.db, 'new-window'), [], 'a new window has no inherited visibility claim');
 
   // 工具集：memory_read_full 进入冻结工具集（docs/06 E：不等首次出现才加）
   const tools1 = (log[0]!.tools as string[]);

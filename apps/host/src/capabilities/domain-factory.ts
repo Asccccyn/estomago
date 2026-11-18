@@ -59,7 +59,9 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
       const r = await o.run(input, ctx);
       if (isCapabilityOutcome<O>(r)) return r;
       // 旧 ToolExecResult 形状适配（逐字搬迁体；失败投影由执行外壳统一做）
-      if (r.ok) return { ok: true, value: r.output as O, ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.imageRefs !== undefined ? { imageRefs: r.imageRefs } : {}) };
+      if (r.ok) return { ok: true, value: r.output as O, ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.coverageAdditions ? { coverageAdditions: r.coverageAdditions } : {}),
+        ...(r.coverageProjection ? { coverageProjection: r.coverageProjection } : {}),
+        ...(r.imageRefs !== undefined ? { imageRefs: r.imageRefs } : {}) };
       return { ok: false, error: r.output };
     },
     toModel: o.toModel,

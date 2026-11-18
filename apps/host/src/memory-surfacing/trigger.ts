@@ -1,7 +1,4 @@
-// 近文窗口构造（SOL_RECALL_REFACTOR 2026-10-30 · docs/01 §2）。
-// 旧 P1 regex 意图门（extractHypotheses/detectRecallNeed）已退役：正式消息
-// 一律登记作业，语义判断交给提交后的 Sol 三态（sol-provider.ts）。本文件只
-// 负责"给 Sol/M 的有限近文"——按用户消息计数，不按混合条数 LIMIT 切。
+// 检索核对和来源回声检测使用的短近文，按用户消息计数。
 export type RecentMessage = {
   message_id: string;
   revision: number;

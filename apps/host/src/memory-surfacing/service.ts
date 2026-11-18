@@ -1,20 +1,23 @@
 // SurfacingService：E 侧编排（docs/02/04 + SOL_RECALL_REFACTOR 2026-10-30）。
 // - MessageService 接受事务内只登记作业（SQL 零网络；旧 regex 意图门已退役，
-//   每条正式消息都登记），提交后唤醒 worker；
-// - worker（提交后）先跑 Sol 三态判断（none/observe 收口；recall 出计划），
+//   每条正式消息都登记），由该消息的目标回合领取；
+// - 目标回合先跑 Sol 三态判断（none/observe 收口；recall 出计划），
 //   计划随既有 prepare 请求进入 M 检索/JEV → 同轮源/目标绑定 →
 //   validate（有界复核）→ supervisor 装配期 check → 冻结注入块；
 // - 每房间串行、全局并发上限；崩溃恢复有界；无后台补扫历史。
 // - 后台零主模型 key / 零主模型 runner：M 走专用 MariposaClient（surfacing
 //   credential_ref，不回退聊天凭据）；Sol 走独立 OpenAI key（sol-provider）。
 import { executeMemoryReadFull } from './detail-tool.ts';
-import { syncedSourceIdsFor, windowContextMessageIds } from './source-boundary.ts';
+import { syncedSourceIdsFor } from './source-boundary.ts';
+import { surfaceItemBodyRanges, surfaceItemRanges, uncoveredRanges, windowCoverage, windowCoverageDigest } from './window-coverage.ts';
+import type { CoverageRange } from '../capabilities/contracts.ts';
 import type { Db } from '../db/connection.ts';
 import { isCallActivityActive } from '../modules/voice/call-service.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SurfacingRepository, type JobRow } from './repository.ts';
 import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
+import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
   estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, SURFACE_HOST_NOTICE, surfaceItemKey,
   type FrozenAugmentation, type SurfaceItem,
@@ -32,17 +35,19 @@ export type SurfacingConfig = {
   max_packet_bytes: number;
   transport_overhead_text?: string;
   worker_concurrency: number;
-  /** 近文窗口：当前消息之外的先前用户消息条数（docs/01 §2 默认 3）。 */
+  /** 检索核对使用的短近文用户消息条数。 */
   recent_user_messages: number;
-  /** 本轮原话窗口字节预算（含当前消息，整轮移除最旧，不截断单条）。 */
+  /** 本轮原话字节预算，含当前消息。 */
   recent_window_bytes: number;
 };
 
 export type AugmentInput = {
   conversationId: string;
   windowId: string;
+  approvedIdentityText?: string | null;
   turnId: string;
   attemptId: string;
+  pendingCoverage?: readonly CoverageRange[];
   message: { id: string; revision: number; sequence: number | null; content: string; hash: string };
 };
 
@@ -51,13 +56,11 @@ export type AugmentResult = FrozenAugmentation & { jobId: string };
 
 export class SurfacingService {
   readonly repo: SurfacingRepository;
-  private wakeScheduled = false;
   private running = 0;
   private roomRunning = new Set<string>();
   private stopped = false;
   private inflightPrepare = new Map<string, Promise<void>>();
   private inflightValidate = new Map<string, Promise<void>>();
-  private active = new Set<Promise<void>>();
   private controllers = new Map<string, Set<AbortController>>();
 
   private async bounded<T>(call: (signal: AbortSignal) => Promise<T>, ms: number, jobId: string): Promise<T> {
@@ -187,48 +190,21 @@ export class SurfacingService {
     if (row) this.onUserMessageEdited({ conversationId: row.conversation_id, messageId: row.id, supersededRevision: row.current_revision });
   }
 
-  afterCommit(): void {
-    if (!this.cfg.enabled) return;
-    this.scheduleWake();
-  }
-
-  // —— worker（每房间串行；全局并发上限）——
-
-  private scheduleWake(): void {
-    if (this.wakeScheduled || this.stopped) return;
-    this.wakeScheduled = true;
-    setImmediate(() => {
-      this.wakeScheduled = false;
-      void this.drain();
-    });
-  }
-
-  private async drain(): Promise<void> {
-    if (this.stopped) return;
-    const jobs = this.repo.pendingJobs(20);
+  finishTurn(turnId: string): void {
+    const jobs = this.db.prepare(
+      `SELECT j.id, j.state FROM surfacing_jobs j
+       JOIN turns t ON t.input_message_id=j.target_message_id AND t.conversation_id=j.conversation_id
+       JOIN messages m ON m.id=t.input_message_id AND m.current_revision=j.target_revision
+       WHERE t.id=? AND t.state IN ('completed','failed','interrupted')
+       AND j.state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
+    ).all(turnId) as Array<{ id: string; state: JobRow['state'] }>;
     for (const job of jobs) {
-      if (this.running >= this.cfg.worker_concurrency) break;
-      if (this.roomRunning.has(job.conversation_id)) continue;
-      // P3（U05）+RB01：调度期复核（真正的请求门在 preparePhase——drain 只负责调度）
-      if (isCallActivityActive(this.db, job.conversation_id) && this.repo.transition(job.id, ['pending'], 'cancelled', { reason_code: 'CALL_ACTIVE' })) {
-        this.log?.info('surface_job_call_gated', { job: job.id, conversation: job.conversation_id });
-        continue;
+      if (job.state === 'reserved') {
+        this.repo.dropAtFinalAdmission(job.id);
+      } else {
+        this.repo.transition(job.id, [job.state], job.state === 'dispatch_started' ? 'attempted_not_retained' : 'expired',
+          { reason_code: 'SURFACE_TURN_ENDED' });
       }
-      const work = this.runJob(job).finally(() => this.active.delete(work));
-      this.active.add(work);
-    }
-  }
-
-  private async runJob(job: JobRow): Promise<void> {
-    try {
-      if (job.state === 'pending') await this.ensurePrepared(job);
-
-    } catch (err) {
-      // prepare/validate 失败：本轮正常聊天不受影响，源作业记原因；
-      // unknown 结果不自动无限重试（docs/08）
-      const code = err instanceof Error && ['SURFACE_TIMEOUT', 'SURFACE_CANCELLED'].includes(err.message) ? err.message : 'SURFACE_UNKNOWN_OUTCOME';
-      this.repo.transition(job.id, ['preparing', 'validating'], code === 'SURFACE_CANCELLED' ? 'cancelled' : code === 'SURFACE_TIMEOUT' ? 'timed_out' : 'blocked', { reason_code: code });
-      this.log?.warn('surface_job_failed', { job: job.id, code });
     }
   }
 
@@ -299,7 +275,7 @@ export class SurfacingService {
       && job.source_revision === job.target_revision && this.targetInputOf(job) !== null;
   }
 
-  private ensurePrepared(job: JobRow): Promise<void> {
+  private ensurePrepared(job: JobRow, input: AugmentInput): Promise<void> {
     const existing = this.inflightPrepare.get(job.id);
     if (existing) return existing;
     if (this.running >= this.cfg.worker_concurrency || this.roomRunning.has(job.conversation_id)) {
@@ -308,17 +284,16 @@ export class SurfacingService {
     }
     this.running++;
     this.roomRunning.add(job.conversation_id);
-    const work = this.preparePhase(job).finally(() => {
+    const work = this.preparePhase(job, input).finally(() => {
       this.inflightPrepare.delete(job.id);
       this.running--;
       this.roomRunning.delete(job.conversation_id);
-      this.scheduleWake();
     });
     this.inflightPrepare.set(job.id, work);
     return work;
   }
 
-  private async preparePhase(job: JobRow): Promise<void> {
+  private async preparePhase(job: JobRow, input: AugmentInput): Promise<void> {
     this.noteStage(job.id, 'firstRun');
     if (!this.current(job)) {
       this.repo.transition(job.id, ['pending'], 'expired', { reason_code: 'SURFACE_BINDING_INVALID' });
@@ -333,21 +308,22 @@ export class SurfacingService {
     }
     if (!this.repo.transition(job.id, ['pending'], 'preparing')) return;
     const src = this.sourceInputOf(job);
-    if (Buffer.byteLength(src.text, 'utf8') > this.cfg.recent_window_bytes) {
+    const recent = this.solCandidateDialogue(job.conversation_id, src.sequence, src.text);
+    if (recent === null) {
       this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: 'SURFACE_BODY_TOO_LARGE' });
       return;
     }
-    const recent = this.recentDialogue(job.conversation_id, src.sequence, src.text);
-    // SOL_R31：本窗口实际已读内容最小摘要（保留交付+开窗资料节选；同一
-    // 真实窗口跨日有效）——进 Sol 动态输入与 M prepare covered_context，
-    // 供"已知信息不重查/明确要原始措辞仍可查"的增量判断。
-    const activeWindow = (this.db.prepare('SELECT active_window_id FROM conversations WHERE id=?')
-      .get(job.conversation_id) as { active_window_id: string | null } | undefined)?.active_window_id;
-    const coveredContext = this.repo.coveredDigest(job.conversation_id, activeWindow ?? '');
+    const activeWindow = input.windowId;
+    const dialogueText = [...recent.map(message => message.text), src.text].join('\n');
+    const identityFacts = this.identityFactsInWindow(activeWindow, input.approvedIdentityText, dialogueText);
+    const coveredContext = [
+      ...identityFacts.map(fact => `本窗口有效身份资料：${fact}`),
+      ...windowCoverageDigest(this.db, activeWindow, 8, 160, dialogueText),
+    ].slice(0, 16).map(line => Array.from(line).slice(0, 320).join(''));
     // —— Sol 三态判断（事务提交后；先于任何 M 检索/JEV）——
     const sol = await this.runSolDecision(job, {
-      currentMessage: { text: src.text },
-      recentDialogue: recent.map(({ role, text }) => ({ role, text })),
+      currentMessage: { text: src.text, occurred_at: src.occurredAt },
+      recentDialogue: recent.map(({ role, text, occurred_at }) => ({ role, text, occurred_at })),
       ...(coveredContext.length > 0 ? { coveredContext } : {}),
     });
     if (!sol.ok) {
@@ -356,7 +332,7 @@ export class SurfacingService {
         reason_code: sol.code,
         sol_usage_json: sol.usage ? JSON.stringify(sol.usage) : null,
       });
-      this.log?.warn('surface_sol_failed', { job: job.id, code: sol.code, elapsed_ms: sol.elapsed_ms });
+      this.log?.warn('surface_sol_failed', { job: job.id, code: sol.code, elapsed_ms: sol.elapsed_ms, ...sol.diagnostic });
       return;
     }
     const d = sol.decision;
@@ -374,7 +350,6 @@ export class SurfacingService {
     });
     this.noteStage(job.id, 'solDone');
     if (d.decision !== 'recall' || !d.plan) {
-      // 原始近文仍在聊天记录中；无需复制一份 observe 内容池。
       this.repo.transition(job.id, ['preparing'], 'empty', {
         reason_code: d.decision === 'observe' ? 'SURFACE_SOL_OBSERVE' : 'SURFACE_SOL_NONE',
       });
@@ -393,6 +368,12 @@ export class SurfacingService {
       }
       needSources.set(original.message_id, { message_id: original.message_id, revision: original.revision });
     }
+    const nameGrounds = [...userInputs.map(message => message.text), ...identityFacts];
+    for (const query of plan.queries) {
+      if (query.person_focus?.names.some(name => !nameGrounds.some(text => text.includes(name)))) {
+        query.person_focus = null;
+      }
+    }
     // 同需身份来自实际用户原话及修订，查询/用途的自然语言改写不产生新身份。
     // 新对象、日期、原句或明确再查由新的原话依据区分，模型改写检索计划
     // 本身不能让同一组已处理原话再次消费。
@@ -406,8 +387,9 @@ export class SurfacingService {
       this.log?.info('surface_need_echo_delivery_bypassed', { job: job.id, previous_job: previous.jobId });
       previous = null;
     }
-    const deliveredHere = previous?.windowId && previous.windowId === activeWindow && previous.items.length > 0
-      && this.repo.coveredInWindow(job.conversation_id, previous.windowId, previous.items).size === previous.items.length;
+    const confirmed = windowCoverage(this.db, activeWindow ?? '');
+    const deliveredHere = previous?.windowId === activeWindow && previous && previous.items.length > 0
+      && previous.items.every(item => surfaceItemBodyRanges(item).some(range => uncoveredRanges(range, confirmed).length === 0));
     if (previous && (previous.outcome === 'no_match' || deliveredHere)) {
       this.repo.transition(job.id, ['preparing'], 'empty', {
         reason_code: previous.outcome === 'delivered' ? 'SURFACE_NEED_ALREADY_DELIVERED' : 'SURFACE_NEED_ALREADY_SEARCHED',
@@ -454,11 +436,6 @@ export class SurfacingService {
       quarrelPushed = quarrel.refs.size;
       if (quarrelPushed > 0) this.log?.info?.('surface_quarrel_boundary_pushed', { job: job.id, quarrel_refs: quarrelPushed });
     }
-    // RR4-F2（复审 2026-11-11）：in_context=**去重提示**（非正确性约束）——按 M 合同
-    // maxItems=128 有界；与 excluded（封存排除=正确性，不截断）分开处理。多修订会使
-    // 128 条消息产生 >128 个来源（128 消息+1 编辑=129 收据曾致整请求被入口校验拒绝）；
-    // 超界截断只降低去重精度（可能重复注入已携带原文），不产生正确性错误。
-    const in_context_source_ids = syncedSourceIdsFor(this.db, windowContextMessageIds(this.db, job.conversation_id)).slice(0, 128);
     // RR4-B：发起 M prepare 前复核作业状态——取消/编辑发生在封存读取与本次调用之间时
     // 不再发起检索（bounded 只 abort 已注册的控制器，竞态窗口内的后续调用不自灭）。
     if (this.repo.jobById(job.id)?.state !== 'preparing') return;
@@ -469,10 +446,11 @@ export class SurfacingService {
         message_id: src.messageId, revision: src.revision, sequence: src.sequence,
         text: src.text, body_hash: src.bodyHash, occurred_at: src.occurredAt,
       },
-      recent_dialogue: recent,
+      recent_dialogue: this.trimJudgeDialogue(recent, src.text, plan),
+      speaker_names: this.speakerNames,
       plan: this.planForMariposa(plan),
       ...(excluded_source_ids.length > 0 ? { excluded_source_ids } : {}),
-      ...(in_context_source_ids.length > 0 ? { in_context_source_ids } : {}),
+      ...(confirmed.length > 0 ? { covered_ranges: confirmed } : {}),
       ...(coveredContext.length > 0 ? { covered_context: coveredContext } : {}),
       deadline_at: new Date(this.deadline(job)).toISOString(),
       // R1/R3（裁定 2026-11-03）：本轮投递预算随载荷过线（最终投影
@@ -503,8 +481,8 @@ export class SurfacingService {
       : data.status === 'empty' ? 'empty'
         : data.status === 'rejected' ? 'rejected'
           : data.status === 'unknown_outcome' ? 'unknown_cost' : 'blocked';
-    if (state === 'empty') {
-      // 只有M正常完成的空结果消费需要；接纳/预算/版本拒绝不等于查过。
+    if (state === 'empty' && data.reason_code !== 'SURFACE_ALREADY_COVERED') {
+      // 覆盖仅对当前有效窗口成立，不登记为全局的已查无匹配。
       this.repo.recordSolRetrievalOutcome(job.id, 'no_match');
     }
     this.repo.transition(job.id, ['preparing'], state, {
@@ -549,6 +527,8 @@ export class SurfacingService {
         keywords: q.keywords,
         time_hint: q.time_hint,
         speaker: this.speakerEnumFor(q.speaker),
+        source_mode: q.source_mode,
+        person_focus: q.person_focus,
       })),
     };
   }
@@ -564,6 +544,10 @@ export class SurfacingService {
     return null;
   }
 
+  private get speakerNames(): { owner: string; assistant: string } {
+    return { owner: this.sol.cfg.userDisplayName, assistant: this.sol.cfg.assistantDisplayName };
+  }
+
   private async validatePhase(job: JobRow, windowId: string): Promise<void> {
     const existing = this.inflightValidate.get(job.id);
     if (existing) return existing;
@@ -574,6 +558,12 @@ export class SurfacingService {
       this.repo.transition(job.id, ['validating', 'target_bound'], 'missed_target');
       return;
     }
+    const recent = this.solCandidateDialogue(job.conversation_id, target.sequence, target.text);
+    if (recent === null) {
+      this.repo.transition(job.id, ['validating'], 'blocked', { reason_code: 'SURFACE_BODY_TOO_LARGE' });
+      return;
+    }
+    const plan = job.sol_plan_json ? JSON.parse(job.sol_plan_json) as SolDecisionPlan : undefined;
     const deadlineAt = new Date(this.deadline(job)).toISOString();
     const p = (async () => {
       // RR4-B：发起 validate 前复核作业仍在 validating——取消/编辑落在上一跳与本次
@@ -588,7 +578,8 @@ export class SurfacingService {
           message_id: target.messageId, revision: target.revision, sequence: target.sequence,
           text: target.text, body_hash: target.bodyHash, occurred_at: target.occurredAt,
         },
-        recent_dialogue: this.recentDialogue(job.conversation_id, target.sequence, target.text),
+        recent_dialogue: this.trimJudgeDialogue(recent, target.text, plan),
+        speaker_names: this.speakerNames,
         window_id: windowId,
         deadline_at: deadlineAt,
         // R1（2026-11-03）：预算贯穿 prepare→validate→check，同 job 同值
@@ -639,7 +630,7 @@ export class SurfacingService {
     if (!job || job.target_revision !== input.message.revision || !this.current(job)) return null;
     const deadline = this.deadline(job);
     try {
-      if (job.state === 'pending' || job.state === 'preparing') await this.ensurePrepared(job);
+      if (job.state === 'pending' || job.state === 'preparing') await this.ensurePrepared(job, input);
       job = this.repo.jobById(job.id)!;
       if (Date.now() >= deadline) throw new Error('SURFACE_TIMEOUT');
       if (!this.current(job)) return null;
@@ -693,20 +684,25 @@ export class SurfacingService {
     const accepted = new Set(ckd.accepted_detail_refs ?? []);
     // 去重（本窗口实际上下文为准；事件正文与引语/来源分开记）+ 预算
     // （按源顺序装入严格赢家；放不下的整条跳过，不截断/不摘要/不换次优——R33/R34）
-    const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, itemsAll);
+    const covered = [...windowCoverage(this.db, input.windowId), ...(input.pendingCoverage ?? [])];
     const items: SurfaceItem[] = [];
     const refs = new Map<string, string>();
     const refList: FrozenAugmentation['memoryRefs'] = [];
     let droppedCovered = 0;
     let droppedBudget = 0;
-    for (const it of itemsAll) {
-      if (!accepted.has(it.detail_ref)) continue;
+    for (const item of itemsAll) {
+      if (!accepted.has(item.detail_ref)) continue;
+      const contextRanges = item.source_context_ranges;
+      const it = contextRanges?.length && contextRanges.every(range => uncoveredRanges(range, covered).length === 0)
+        ? { ...item, source_context_text: null, source_context_ranges: undefined }
+        : item;
       const key = surfaceItemKey(it);
-      // SOL_R31/N04：去重共认本窗全部实际交付——coverage 表（自动保留
-      // 交付）+ 正文逐字出现在当前窗轨迹（主动召回结果/携带原文先交过
-      // 片段或全文）任一成立即视为已覆盖，不重复注入正文。
-      const body = it.quote_text || it.event_text || '';
-      if (covered.has(key) || this.repo.textSeenInWindow(input.windowId, body)) { droppedCovered++; continue; }
+      // Partial overlap cannot justify replaying the full resource when the
+      // new need has no verified unread range.
+      if (surfaceItemBodyRanges(it).some(range => {
+        const unread = uncoveredRanges(range, covered);
+        return unread.length !== 1 || unread[0]!.start_char !== range.start_char || unread[0]!.end_char !== range.end_char;
+      })) { droppedCovered++; continue; }
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(key, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs);
@@ -716,6 +712,7 @@ export class SurfacingService {
       if (tokens > this.cfg.max_added_tokens_per_turn
         || bytes > this.cfg.max_packet_bytes) { droppedBudget++; continue; }
       items.push(it);
+      covered.push(...surfaceItemRanges(it));
       refs.set(key, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
@@ -804,8 +801,11 @@ export class SurfacingService {
           const accepted = new Set(ckd.accepted_detail_refs ?? []);
           if (aug.items.every(it => accepted.has(it.detail_ref))) {
             // 装配间隙同窗重复覆盖防护：任一证据已被实际覆盖即整块丢弃
-            const covered = this.repo.coveredInWindow(input.conversationId, input.windowId, aug.items);
-            if (aug.items.every(it => !covered.has(surfaceItemKey(it)))) return aug;
+            const covered = windowCoverage(this.db, input.windowId);
+            if (aug.items.every(item => surfaceItemBodyRanges(item).every(range => {
+              const unread = uncoveredRanges(range, covered);
+              return unread.length === 1 && unread[0]!.start_char === range.start_char && unread[0]!.end_char === range.end_char;
+            }))) return aug;
           }
         }
       }
@@ -822,15 +822,13 @@ export class SurfacingService {
 
   /** 成功轨迹 retain：写入真实 manifest 后调（不假标 coverage）。 */
   markRetained(result: AugmentResult): void {
-    this.repo.markRetained(result.jobId || '', result.deliveryId, result.items);
+    this.repo.markRetained(result.jobId, result.deliveryId);
     // 检索目的完成状态：delivered（供下一轮 Sol 判断"同一需要已处理"）
     const job = result.jobId ? this.repo.jobById(result.jobId) : null;
     if (job) this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
   }
 
   // —— 设置面（同一功能的唯一设置区域；生效值与实际请求同源）——
-
-  get solJudge(): SolDecisionJudge { return this.sol; }
 
   /** 启动时恢复已保存的设置覆盖（app-context 装配后调用一次）。
    *  F8（审计 2026-10-31）：双向恢复——此前只把保存的"关闭"生效，保存的
@@ -931,16 +929,19 @@ export class SurfacingService {
     // 重启时所有未派发作业收口，包含旧跨轮待绑作业；不恢复到新用户轮。
     // 已派发但未保留的事实单独记录，不重放付费检索。
     for (const job of this.repo.recoverableJobs()) {
+      if (job.state === 'reserved') {
+        this.repo.dropAtFinalAdmission(job.id);
+        continue;
+      }
       this.repo.transition(job.id, ['pending', 'preparing', 'prepared', 'target_bound', 'validating', 'ready', 'reserved', 'dispatch_started'],
         job.state === 'dispatch_started' ? 'attempted_not_retained' : 'expired');
     }
-    this.scheduleWake();
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     for (const controllers of this.controllers.values()) for (const controller of controllers) controller.abort();
-    await Promise.allSettled([...this.active, ...this.inflightPrepare.values(), ...this.inflightValidate.values()]);
+    await Promise.allSettled([...this.inflightPrepare.values(), ...this.inflightValidate.values()]);
   }
 
   // —— 源/目标投影 ——
@@ -966,8 +967,46 @@ export class SurfacingService {
     return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: effectiveRevisionText(this.db, row.id, row.revision, row.content), bodyHash: row.content_hash, occurredAt: row.occurred_at };
   }
 
-  /** 近文窗口：先取有界原始行（混合 ≤40），再按用户消息计数裁窗；
-   *  当前消息不在其中（调用方单独追加，保证只出现一次）。 */
+  /** Sol 在当前输入之前读取最近一次明确收口之后发布的所有原话。 */
+  private solCandidateDialogue(conversationId: string, beforeSequence: number, currentText: string): RecentMessage[] | null {
+    let bytes = Buffer.byteLength(currentText, 'utf8');
+    if (bytes > this.cfg.recent_window_bytes) return null;
+    const boundary = this.db.prepare(`SELECT COALESCE(MAX(j.source_sequence), 0) AS seq
+      FROM surfacing_jobs j JOIN messages m ON m.id=j.source_message_id AND m.current_revision=j.source_revision
+      WHERE j.conversation_id=? AND j.source_sequence<? AND (
+        (j.state='empty' AND j.sol_decision='none' AND j.reason_code='SURFACE_SOL_NONE')
+        OR (j.state='retained' AND EXISTS (SELECT 1 FROM surfacing_deliveries d
+          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1)))`
+    ).get(conversationId, beforeSequence) as { seq: number };
+    const rows = this.db.prepare(`SELECT m.id, m.sequence, m.speaker, m.current_revision AS rev, r.content, r.occurred_at
+      FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      WHERE m.conversation_id=? AND m.sequence>? AND m.sequence<? AND m.published_at IS NOT NULL
+        AND m.speaker IN ('owner','assistant') ORDER BY m.sequence`
+    ).iterate(conversationId, boundary.seq, beforeSequence) as Iterable<{
+      id: string; sequence: number; speaker: RecentMessage['role']; rev: number; content: string; occurred_at: string | null;
+    }>;
+    const dialogue: RecentMessage[] = [];
+    for (const row of rows) {
+      const text = effectiveRevisionText(this.db, row.id, row.rev, row.content);
+      bytes += Buffer.byteLength(text, 'utf8');
+      if (bytes > this.cfg.recent_window_bytes) return null;
+      dialogue.push({ message_id: row.id, revision: row.rev, role: row.speaker, text, sequence: row.sequence, occurred_at: row.occurred_at });
+    }
+    return dialogue;
+  }
+
+  private identityFactsInWindow(windowId: string, approvedText: string | null | undefined, dialogue: string): string[] {
+    if (!approvedText) return [];
+    const row = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
+    if (!row) return [];
+    const [system] = JSON.parse(row.messages_json) as Array<{ role: string; content: unknown }>;
+    const text = Array.isArray(system?.content) ? system.content.find(block => block?.type === 'text')?.text : system?.content;
+    // A newly approved version does not appear in an already frozen window.
+    if (system?.role !== 'system' || typeof text !== 'string' || !text.startsWith(`${approvedText}\n\n`)) return [];
+    return projectIdentityFacts(approvedText, dialogue);
+  }
+
+  /** 来源回声核对使用的短近文。 */
   private recentDialogue(conversationId: string, beforeSequence: number, currentText: string): RecentMessage[] {
     const rows = this.db.prepare(
       `SELECT m.id, m.sequence, m.speaker, m.current_revision AS rev, r.content, r.occurred_at
@@ -978,10 +1017,24 @@ export class SurfacingService {
     const messages: RecentMessage[] = rows.reverse().map((r) => ({
       message_id: r.id, revision: r.rev, role: r.speaker as 'owner' | 'assistant', text: effectiveRevisionText(this.db, r.id, r.rev, r.content), sequence: r.sequence, occurred_at: r.occurred_at,
     }));
-    return buildRecentDialogue(messages, {
+    return this.trimJudgeDialogue(messages, currentText);
+  }
+
+  private trimJudgeDialogue(messages: RecentMessage[], currentText: string, plan?: SolDecisionPlan): RecentMessage[] {
+    // JEV's bounded input still needs the original rows that attest to a date hint.
+    // Keep two matches when ambiguous so dropping a row cannot invent a unique date.
+    const dateAnchors = new Set<RecentMessage>();
+    for (const query of plan?.queries ?? []) {
+      if (!query.time_hint) continue;
+      const hint = query.time_hint;
+      for (const match of messages.filter(row => row.role === 'owner' && row.text.includes(hint)).slice(0, 2)) dateAnchors.add(match);
+    }
+    const trimmed = buildRecentDialogue(messages, {
       priorUserMessages: this.cfg.recent_user_messages,
-      maxMessages: 16,
+      maxMessages: 16 - dateAnchors.size,
       budgetBytes: Math.max(0, this.cfg.recent_window_bytes - Buffer.byteLength(currentText, 'utf8')),
     });
+    if (dateAnchors.size === 0) return trimmed;
+    return [...new Set([...dateAnchors, ...trimmed])].sort((a, b) => a.sequence - b.sequence);
   }
 }

@@ -4,6 +4,7 @@
 // 已冻结旧包原样保留；错误不整串发给主模型。
 import { createHash } from 'node:crypto';
 import { validateAbsoluteIso } from '../util/time.ts';
+import type { CoverageRange } from './window-coverage.ts';
 
 // —— E 作业状态机（docs/02；CAS 边校验 state+generation+source_revision+target_revision）——
 export type SurfacingJobState =
@@ -23,6 +24,7 @@ export type SurfaceItemKind = 'event' | 'words' | 'source';
 
 export type SurfaceItem = {
   kind?: SurfaceItemKind;
+  coverage_ranges?: CoverageRange[];
   event_id: string | null;
   memory_id: string | null;
   memory_version: string | null;
@@ -38,6 +40,7 @@ export type SurfaceItem = {
   source_ref?: string | null;
   /** words/source：M 定向展开的有界来源上下文（完整来源仍可深读）。 */
   source_context_text?: string | null;
+  source_context_ranges?: CoverageRange[];
 };
 
 /**

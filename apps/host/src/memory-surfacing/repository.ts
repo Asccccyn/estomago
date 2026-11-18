@@ -1,7 +1,7 @@
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
-import { projectSurfacedMemory, surfaceItemKey } from './contracts.ts';
+import { projectSurfacedMemory } from './contracts.ts';
 import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
@@ -296,107 +296,12 @@ export class SurfacingRepository {
     return null;
   }
 
-  markRetained(jobId: string, deliveryId: string, items: SurfaceItem[]): void {
+  markRetained(jobId: string, deliveryId: string): void {
     const now = new Date().toISOString();
     const job = this.jobById(jobId);
     if (!job || !['dispatch_started', 'retained'].includes(job.state)) return;
     this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=? WHERE id=?`).run(now, deliveryId);
     this.transition(jobId, ['dispatch_started'], 'retained', {}, { delivery_id: deliveryId });
-    for (const it of items) {
-      // source/words 证据的覆盖键：无桶证据用来源身份，不伪造 memory_id
-      const coverageKey = it.memory_id ?? `src:${it.source_ref ?? it.detail_ref}`;
-      this.db.prepare(
-        `INSERT INTO surfacing_coverage(conversation_id, window_id, memory_id, memory_version, body_hash, occurrence_key, detail_ref, confirmed_at)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(conversation_id, window_id, memory_id, body_hash) DO UPDATE SET
-           memory_version=excluded.memory_version, occurrence_key=excluded.occurrence_key,
-           detail_ref=excluded.detail_ref, confirmed_at=excluded.confirmed_at`,
-      ).run(
-        this.jobById(jobId)?.conversation_id ?? '', this.db.prepare('SELECT window_id FROM surfacing_deliveries WHERE id=?').get(deliveryId)?.window_id ?? '',
-        coverageKey, it.memory_version, it.body_hash, it.event_id, it.detail_ref, now);
-    }
-  }
-
-  /** 覆盖去重（当前窗口上下文为准，非永久 seen）。返回 surfaceItemKey 集合；
-   *  words/source 证据与事件正文分开记，不互相冒充。R33/R34 围栏保持：coverage
-   *  行 + 保留交付必须在当前窗口的规范轨迹中真实可见才算覆盖；SDK/API
-   *  共用同一轨迹和实际请求记录，不从 prepared 推断已送达。 */
-  coveredInWindow(conversationId: string, windowId: string, items: SurfaceItem[]): Set<string> {
-    const visible = this.visibleRetainedItems(conversationId, windowId);
-    const covered = new Set<string>();
-    for (const it of items) {
-      // F5b：与 markRetained 写入同一覆盖键（source 项写入键=src:来源身份，
-      // 查询参数此前传裸 memory_id=null 永不匹配 → source-only 重复注入）
-      const coverageKey = it.memory_id ?? `src:${it.source_ref ?? it.detail_ref}`;
-      const row = this.db.prepare(
-        `SELECT 1 FROM surfacing_coverage WHERE conversation_id=? AND window_id=? AND memory_id IS ? AND memory_version IS ? AND body_hash=?`,
-      ).get(conversationId, windowId, coverageKey, it.memory_version, it.body_hash);
-      if (row && visible.some(v => (v.memory_id ?? `src:${v.source_ref ?? v.detail_ref}`) === coverageKey && v.body_hash === it.body_hash)) covered.add(surfaceItemKey(it));
-    }
-    return covered;
-  }
-
-  /** 当前窗口规范轨迹中真实可见的保留交付条目（coveredInWindow 与
-   *  coveredDigest 的同一事实源：retained=1 且轨迹含交付正文）。 */
-  private visibleRetainedItems(conversationId: string, windowId: string): SurfaceItem[] {
-    if (!windowId) return [];
-    const trajectory = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
-    if (!trajectory) return [];
-    const messages = JSON.parse(trajectory.messages_json) as Array<{ content: unknown }>;
-    const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
-      : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
-    const deliveries = this.db.prepare(`SELECT d.payload_text, d.selected_refs_json FROM surfacing_deliveries d
-      JOIN surfacing_jobs j ON j.id=d.job_id WHERE j.conversation_id=? AND d.window_id=? AND d.retained=1`)
-      .all(conversationId, windowId) as Array<{ payload_text: string; selected_refs_json: string }>;
-    return deliveries.filter(d => texts.some(t => t.includes(d.payload_text)))
-      .flatMap(d => (JSON.parse(d.selected_refs_json) as { items: SurfaceItem[] }).items);
-  }
-
-  /** SOL_R31：当前窗口实际已读内容的最小摘要行（供 Sol 判断已知信息与
-   *  JEV 信息增量；同一窗口跨日有效，不按时间清空）。组成：保留交付条目
-   *  摘要 + 开窗资料段的有界节选——只描述已实际进入主模型投影的内容，
-   *  不新增第二份已读正本（事实源仍是轨迹+retained 交付）。 */
-  coveredDigest(conversationId: string, windowId: string, maxItems = 8, maxChars = 160): string[] {
-    const lines: string[] = [];
-    const items = this.visibleRetainedItems(conversationId, windowId);
-    for (const it of items.slice(-maxItems)) {
-      const label = it.kind === 'words' ? '已送达原话' : it.kind === 'source' ? '已送达原文' : '已送达事件';
-      const meta = [it.memory_date, it.speaker].filter(Boolean).join(' ');
-      const text = (it.quote_text || it.event_text || '').replace(/\s+/g, ' ').slice(0, maxChars);
-      lines.push(`${label}（${meta}）：${text}`);
-    }
-    if (windowId) {
-      const trajectory = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
-      if (trajectory) {
-        const messages = JSON.parse(trajectory.messages_json) as Array<{ content: unknown }>;
-        const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
-          : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
-        const boot = texts.find(t => t.includes('[memory/bootstrap：开窗资料'));
-        if (boot) {
-          const body = boot.replace(/\s+/g, ' ');
-          const excerpt = body.length <= 800 ? body : `${body.slice(0, 320)}……${body.slice(-480)}`;
-          lines.push(`本窗口开窗资料（心情/事件/我们的话/计划/I）已送达，节选：${excerpt}`);
-        }
-      }
-    }
-    return lines.slice(0, 16);
-  }
-
-  /** SOL_R31/N04：正文是否已在本窗口实际出站投影中逐字出现（主动召回/
-   *  先前自动块/携带原文共认；与 coveredInWindow 的轨迹事实同一来源）。
-   *  过短正文不判定（避免子串误命中）；轨迹缺失=false。 */
-  textSeenInWindow(windowId: string, body: string, minLength = 12): boolean {
-    if (!windowId || typeof body !== 'string' || body.length < minLength) return false;
-    const trajectory = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
-    if (!trajectory) return false;
-    try {
-      const messages = JSON.parse(trajectory.messages_json) as Array<{ content: unknown }>;
-      const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
-        : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
-      return texts.some(t => t.includes(body));
-    } catch {
-      return false;
-    }
   }
 
   /** Owner UI projection. Handles stay outside model text and resolve only

@@ -140,13 +140,15 @@ export function fakeSolJudge(
 ): { judge: SolDecisionJudge; requests: Array<Record<string, unknown>>; calls: () => number } {
   const requests: Array<Record<string, unknown>> = [];
   const queue = [...decisions];
+  const config = solJudgeConfigForTest(opts.config);
+  const userPrefix = `${config.userDisplayName}：`;
   const transport: SolTransport = async (_url, _headers, payload) => {
     requests.push(payload as Record<string, unknown>);
     if (opts.response) return opts.response(payload as Record<string, unknown>);
     const scripted = queue.length > 1 ? queue.shift()! : queue[0];
     const decision = scripted ?? { decision: 'none' as const };
     const userLines = String(((payload as { input: Array<{ content: unknown }> }).input[1]).content)
-      .split('\n').filter(line => line.startsWith('用户：')).map(line => line.slice(3));
+      .split('\n').filter(line => line.startsWith(userPrefix)).map(line => line.slice(userPrefix.length));
     const plan = decision.plan ?? {
       purpose: '测试检索目的', route: 'event', breadth: 'single',
       queries: [{ need_kind: 'event', need: '找到相关历史事件证据', semantic: '测试语义查询', keywords: ['测试'], time_hint: null, speaker: null }],
@@ -156,6 +158,7 @@ export function fakeSolJudge(
       topic: decision.topic ?? 'new',
       basis: decision.basis ?? `测试依据：${decision.decision}`,
       plan: decision.decision === 'recall' ? { ...plan,
+        queries: (plan.queries as Array<Record<string, unknown>>).map(query => ({ source_mode: null, person_focus: null, ...query })),
         evidence: plan.evidence ?? [{ user_turn: userLines.length, quote: userLines.at(-1)!.slice(0, 200) }],
       } : null,
     });
@@ -168,7 +171,7 @@ export function fakeSolJudge(
       },
     };
   };
-  const judge = new SolDecisionJudge(solJudgeConfigForTest(opts.config), transport);
+  const judge = new SolDecisionJudge(config, transport);
   return { judge, requests, calls: () => requests.length };
 }
 

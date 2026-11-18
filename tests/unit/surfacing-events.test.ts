@@ -1,4 +1,4 @@
-import { makeDb, pollUntil, fakeSolJudge } from '../helpers.ts';
+import { makeDb, fakeSolJudge } from '../helpers.ts';
 // R05（审计 J02）：后台浮现生命周期事件合同——状态提交处发 surface.job
 // 事件（job/source/target/delivery 身份+reason）；正文绝不进事件；
 // 读取路径零事件；恢复/撤销/重复派发各有真实身份。
@@ -23,7 +23,7 @@ function fixture(opts: { validate?: () => ValidateResult; validateOk?: boolean }
   const transport: MariposaTransport = async (cap) => {
     if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_fixture' } };
     if (cap.endsWith('.validate')) {
-      if (opts.validateOk === false) return { ok: false, code: 'SURFACE_BUDGET_EXHAUSTED' };
+      if (opts.validateOk === false) return { ok: false, code: 'SURFACE_BUDGET_EXHAUSTED', httpStatus: 409 };
       const v = opts.validate?.() ?? { status: 'ready', validation_receipt: 'svr_fixture', items: [item] };
       return { ok: true, result: v };
     }
@@ -35,20 +35,23 @@ function fixture(opts: { validate?: () => ValidateResult; validateOk?: boolean }
     delivery_deadline_ms: 100, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576 }, null, events);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null })); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
+  const augment = (sub: ReturnType<typeof say>) => svc.augmentFor({ conversationId: 'c1', windowId: 'w1',
+    turnId: sub.turnId, attemptId: 'a2', message: { id: sub.message.id, revision: 1,
+      sequence: sub.message.sequence, content: sub.message.content, hash: 'fixture' } });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
   const flush = () => new Promise<void>(r => setImmediate(r));
   const surfaceEvents = () => (db.prepare(
     "SELECT payload_ref FROM runtime_stream_events WHERE kind='surface.job' ORDER BY sequence",
   ).all() as Array<{ payload_ref: string }>).map(r => JSON.parse(r.payload_ref) as Record<string, unknown>);
   const close = async () => { await svc.stop(); await new Promise(r => setTimeout(r, 25)); db.close(); };
-  return { db, svc, messages, say, job, flush, surfaceEvents, close };
+  return { db, svc, messages, say, augment, job, flush, surfaceEvents, close };
 }
 
 test('R05：prepare 链路逐状态发事件，身份齐全且零正文', async () => {
   const f = fixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    assert.ok(await f.augment(a));
     await f.flush();
     const evs = f.surfaceEvents();
     assert.ok(evs.length >= 2, `pending→preparing→prepared 至少两跳，got ${evs.length}`);
@@ -68,15 +71,13 @@ test('R05：prepare 链路逐状态发事件，身份齐全且零正文', async 
 test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派发不重复发声', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = a;
-    const result = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
-      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
+    const a = f.say('a');
+    const result = await f.augment(a);
     assert.ok(result);
     await f.flush();
     const bound = f.surfaceEvents().find(e => e.to === 'target_bound');
     assert.ok(bound, 'target_bound 事件存在');
-    assert.equal(bound!.target_message_id, b.message.id);
+    assert.equal(bound!.target_message_id, a.message.id);
 
     f.svc.markDispatched('a2');
     f.svc.markDispatched('a2'); // 重复派发：第二次 CAS 落空=零事件
@@ -96,12 +97,9 @@ test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派�
 test('R05：装配期 validate 拒绝→rejected 带原因；预算拒绝→blocked 带原因码', async () => {
   const f = fixture({ validate: () => ({ status: 'rejected', reason_code: 'SURFACE_NOT_RELEVANT_NOW' }) });
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = a;
-    const result = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
-      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
+    const a = f.say('a');
+    const result = await f.augment(a);
     assert.equal(result, null);
-    await pollUntil(() => f.job(a.message.id).state === 'rejected');
     await f.flush();
     const ev = f.surfaceEvents().find(e => e.to === 'rejected');
     assert.ok(ev, 'rejected 事件');
@@ -110,12 +108,9 @@ test('R05：装配期 validate 拒绝→rejected 带原因；预算拒绝→bloc
 
   const f2 = fixture({ validateOk: false });
   try {
-    const a = f2.say('a'); await pollUntil(() => f2.job(a.message.id).state === 'prepared');
-    const b = a;
-    const result = await f2.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a2',
-      message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'fixture' } });
+    const a = f2.say('a');
+    const result = await f2.augment(a);
     assert.equal(result, null);
-    await pollUntil(() => f2.job(a.message.id).state === 'blocked');
     await f2.flush();
     const ev = f2.surfaceEvents().find(e => e.to === 'blocked');
     assert.ok(ev, 'blocked 事件（预算/上游拒绝）');
@@ -126,7 +121,7 @@ test('R05：装配期 validate 拒绝→rejected 带原因；预算拒绝→bloc
 test('R05：编辑撤销→cancelled（SOURCE_OR_TARGET_REVISED）；恢复→expired 各有身份', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     f.db.exec('BEGIN IMMEDIATE');
     try { f.messages.editMessageInTx(a.message.id, '合成已修改', { notifySurfacing: true }); f.db.exec('COMMIT'); }
     catch (err) { f.db.exec('ROLLBACK'); throw err; }
@@ -139,8 +134,8 @@ test('R05：编辑撤销→cancelled（SOURCE_OR_TARGET_REVISED）；恢复→ex
 
   const f2 = fixture();
   try {
-    const a = f2.say('a'); await pollUntil(() => f2.job(a.message.id).state === 'preparing' || f2.job(a.message.id).state === 'prepared');
-    f2.db.prepare("UPDATE surfacing_jobs SET state='preparing' WHERE id=?").run(f2.job(a.message.id).id);
+    const a = f2.say('a');
+    assert.equal(f2.job(a.message.id).state, 'pending');
     await f2.svc.start(); // 崩溃恢复：中断态收口
     await f2.flush();
     const ev = f2.surfaceEvents().find(e => e.to === 'expired');
@@ -152,7 +147,7 @@ test('R05：编辑撤销→cancelled（SOURCE_OR_TARGET_REVISED）；恢复→ex
 test('R05：读取路径零事件（刷新不触发任何 surface.job，也不唤醒 recall）', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     await f.flush();
     const before = f.surfaceEvents().length;
     f.svc.repo.jobById(f.job(a.message.id).id);

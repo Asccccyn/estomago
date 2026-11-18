@@ -3,7 +3,9 @@
 // memory 模块不复制聊天 SQL（D25：正本发布/读取走本域与 MessageService 窄端口）。
 import type { Db } from '../../db/connection.ts';
 import { sha256Hex } from '../../util/id.ts';
-import type { SeenRef, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { SeenRef, ToolExecContext, ToolExecResult, ToolCoverageProjection } from '../../capabilities/contracts.ts';
+import { sourceCoverageRange } from '../../memory-surfacing/source-boundary.ts';
+import { projectCoveredText, windowCoverage, type CoverageRange } from '../../memory-surfacing/window-coverage.ts';
 
 /** WP4：conversation_read 的可见消息行（owner 真实消息/已发布 assistant）——原 host-tools 局部类型随迁。 */
 type ReadRow = { id: string; sequence: number; speaker: 'owner' | 'assistant'; revision: number; content: string; content_hash: string; occurred_at: string };
@@ -26,6 +28,42 @@ export class ConversationToolsService {
   }
 
   conversationRead(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
+    const page = this.readConversationPage(args, ctx);
+    if (!page.ok || !Array.isArray(page.output.entries) || !page.seenAdditions?.length) return page;
+    const confirmed = windowCoverage(this.db, ctx.windowId, ctx.requestId);
+    const entries = page.output.entries as Array<Record<string, unknown>>;
+    const refs = page.seenAdditions;
+    const ranges = refs.map((ref, i) => sourceCoverageRange(this.db, ref, entries[i]?.text as string | undefined));
+    const coverageProjection: ToolCoverageProjection = pending => {
+      const coverageAdditions: CoverageRange[] = [];
+      const seenAdditions: SeenRef[] = [];
+      const projected = entries.map((entry, i) => {
+        const range = ranges[i];
+        const ref = refs[i]!;
+        if (!range || typeof entry.text !== 'string') {
+          seenAdditions.push(ref);
+          return entry;
+        }
+        const text = projectCoveredText(entry.text, [range], confirmed, [...pending, ...coverageAdditions], args.reread === true);
+        coverageAdditions.push(...text.delivered);
+        if (text.status === 'full') {
+          seenAdditions.push(ref);
+          return entry;
+        }
+        const { text: _body, ...identity } = entry;
+        if (text.status === 'partial') {
+          for (const part of text.parts) seenAdditions.push({ id: ref.id, revision: ref.revision,
+            char_start: part.start_char, char_end: part.end_char });
+          return { ...identity, unread_parts: text.parts };
+        }
+        return { ...identity, [text.status]: true };
+      });
+      return { output: { ...page.output, entries: projected }, coverageAdditions, seenAdditions };
+    };
+    return { ok: true, ...coverageProjection([]), coverageProjection };
+  }
+
+  private readConversationPage(args: Record<string, unknown>, ctx: ToolExecContext): ToolExecResult {
     const roomId = ctx.roomId;
     const limit = Math.min(Math.max(typeof args.limit === 'number' ? Math.floor(args.limit) : 20, 1), 50);
     // WP-04（JFA-C08）：owner 的 sticker/voice 同为可见面（占位条目+转写正文

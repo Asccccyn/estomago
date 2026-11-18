@@ -53,6 +53,11 @@ export async function executeRegisteredCapability<I, O>(
       ok: true,
       output: descriptor.toModel(outcome.value, checked.value),
       ...(outcome.seenAdditions !== undefined ? { seenAdditions: outcome.seenAdditions } : {}),
+      ...(outcome.coverageAdditions ? { coverageAdditions: outcome.coverageAdditions } : {}),
+      ...(outcome.coverageProjection ? { coverageProjection: pending => {
+        const projected = outcome.coverageProjection!(pending);
+        return { ...projected, output: descriptor.toModel(projected.output as O, checked.value) };
+      } } : {}),
       ...(outcome.imageRefs !== undefined ? { imageRefs: outcome.imageRefs } : {}),
     };
   }

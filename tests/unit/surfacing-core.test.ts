@@ -1,4 +1,4 @@
-import { pollUntil, tempRoot, fakeSolJudge } from '../helpers.ts';
+import { tempRoot, fakeSolJudge } from '../helpers.ts';
 // 自动记忆浮现 · 合同/仓库/服务核心（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 最新合同：整包一次来源声明、日期+正文+短 ref、同步同轮同修订、幂等
 // （AC025）、无次优补位（AC055 由 M 侧合同+本侧预算跳过共保）。
@@ -14,6 +14,7 @@ import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.t
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
+import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
 import type { SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 
 const T0 = '2026-10-19T09:00:00+08:00';
@@ -56,10 +57,10 @@ test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 
   const root = tempRoot('sfrepo-');
   const db = makeDb(root);
   const repo = new SurfacingRepository(db);
-  const j1 = repo.registerAcceptedJob({ conversationId: 'c1', messageId: 'm1', revision: 1, sequence: 5, content: 'x', contentHash: 'h', occurredAt: null, hypotheses: [{ hypothesis_id: 'h1', start_cp: 0, end_cp: 1, inherited_date_span: null }], policyRevision: 1, promptRevision: 'surface_prepare_v1' });
+  const j1 = repo.registerAcceptedJob({ conversationId: 'c1', messageId: 'm1', revision: 1, sequence: 5, content: 'x', contentHash: 'h', occurredAt: null, policyRevision: 1, promptRevision: 'surface_prepare_v1' });
   assert.ok(j1);
   // 同逻辑键幂等
-  const again = repo.registerAcceptedJob({ conversationId: 'c1', messageId: 'm1', revision: 1, sequence: 5, content: 'x', contentHash: 'h', occurredAt: null, hypotheses: [{ hypothesis_id: 'h1', start_cp: 0, end_cp: 1, inherited_date_span: null }], policyRevision: 1, promptRevision: 'surface_prepare_v1' });
+  const again = repo.registerAcceptedJob({ conversationId: 'c1', messageId: 'm1', revision: 1, sequence: 5, content: 'x', contentHash: 'h', occurredAt: null, policyRevision: 1, promptRevision: 'surface_prepare_v1' });
   assert.equal(again, j1);
   assert.equal(repo.jobById(j1!)!.state, 'pending');
   // CAS：pending→preparing→prepared
@@ -76,11 +77,11 @@ test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 
   const frozen = repo.frozenForAttempt('att1')!;
   assert.equal(frozen.payload_hash, sha256Hex('BLOCK'));
   repo.markDispatchStarted(j1!, deliveryId);
-  repo.markRetained(j1!, deliveryId, [ITEM]);
-  const covered = repo.coveredInWindow('c1', 'w1', [ITEM]);
-  assert.equal(covered.size, 0, 'retention bookkeeping without the actual trajectory is not model visibility');
+  repo.markRetained(j1!, deliveryId);
+  const covered = windowCoverage(db, 'w1');
+  assert.equal(covered.length, 0, 'retention bookkeeping without the actual trajectory is not model visibility');
   // 换窗不拦截（coverage 是窗口投影，非永久 seen）
-  assert.equal(repo.coveredInWindow('c1', 'w2', [ITEM]).size, 0);
+  assert.equal(windowCoverage(db, 'w2').length, 0);
   // ref→detail 解析
   assert.equal(repo.refToDetail('sf_x', { roomId: 'c1', windowId: 'w1', requestId: 'unsent' }), null, 'without confirmed provider payload retention is not visibility');
   assert.equal(repo.refToDetail('sf_unknown', { roomId: 'c1', windowId: 'w1', requestId: 'unsent' }), null);
@@ -103,14 +104,6 @@ function fakeMariposa(script: {
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   return { client: new MariposaClient({ transport }), log };
-}
-
-async function waitUntil(cond: () => boolean, ms = 3000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > ms) throw new Error('waitUntil timeout');
-    await new Promise((r) => setTimeout(r, 10));
-  }
 }
 
 function makeService(root: string, enabled = true, solDecisions: Parameters<typeof fakeSolJudge>[0] = [{ decision: 'recall' }]) {
@@ -183,7 +176,7 @@ test('AC031：编辑撤销旧修订作业；AC038：enabled=false 零作业零�
   const root = tempRoot('sfedit-');
   const { db, svc, messages, log } = makeService(root);
   const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得8.19我们结婚那天吗', clientMessageId: 'e1', occurredAt: T0 });
-  await waitUntil(() => svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.state === 'prepared');
+  assert.equal(svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.state, 'pending');
   messages.editUserMessage(u1.message.id, '还记得8.19我们结婚那天吗？');
   const job = svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!;
   assert.equal(job.state, 'cancelled');
@@ -192,11 +185,12 @@ test('AC031：编辑撤销旧修订作业；AC038：enabled=false 零作业零�
   db.close();
 
   const root2 = tempRoot('sfdisabled-');
-  const { db: db2, messages: m2, log: log2 } = makeService(root2, false);
+  const { db: db2, svc: svc2, messages: m2, log: log2 } = makeService(root2, false);
   m2.submitUserMessageWithTurn({ conversationId: 'c1', content: 'x', clientMessageId: 'd1', occurredAt: T0 });
   assert.equal(log2.calls.length, 0, 'disabled=零网络');
   const repo2 = new SurfacingRepository(db2);
   assert.equal(repo2.pendingJobs(10).length, 0, 'disabled=零作业');
+  await svc2.stop();
   db2.close();
 });
 
@@ -205,16 +199,13 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   const db = makeDb(root);
   const big: SurfaceItem = { ...ITEM, event_text: '超'.repeat(30000) };
   const { client } = fakeMariposa({ validate: () => ({ status: 'ready', validation_receipt: 'svr_9', items: [big], reason_code: null }) });
-  const svc = new SurfacingService(db, client, fakeSolJudge([{ decision: "recall" }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2 }, null);
+  const svc = new SurfacingService(db, client, fakeSolJudge([{ decision: "recall" }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576, worker_concurrency: 2, recent_window_bytes: 24576, recent_user_messages: 3 }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   messages.ensureConversation('c1');
   const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '还记得那件大事吗', clientMessageId: 'b1', occurredAt: T0 });
-  // 手动推进到 ready（绕过 prepare 脚本）：
-  const jobId = svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')!.id;
-  svc.repo.transition(jobId, ['pending'], 'preparing');
-  svc.repo.transition(jobId, ['preparing'], 'prepared');
-  const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: 't', attemptId: 'a', message: { id: u1.message.id, revision: 1, sequence: 1, content: u1.message.content, hash: 'h' } });
+  const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: u1.turnId, attemptId: 'a', message: { id: u1.message.id, revision: 1, sequence: 1, content: u1.message.content, hash: 'h' } });
   assert.equal(aug, null, '超大事件零注入，不截断');
+  assert.equal(svc.repo.jobByLogicalKey('c1', u1.message.id, 1, 1, 'surface_prepare_v1')?.reason_code, 'SURFACE_BUDGET_NO_ROOM');
   await svc.stop();
   await new Promise((r) => setTimeout(r, 20));
   db.close();
@@ -254,7 +245,6 @@ test('E-LC1 HTTP 编辑：旧修订作业失效、不登记新作业、零外发
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     const calls0 = f.mariposa();
     const edited = f.messages.editUserMessage(a.message.id, '改口：换个说法');
     assert.ok(edited.current_revision >= 2);
@@ -269,7 +259,6 @@ test('E-LC2 路由 edit 合同：notifySurfacing 失效旧修订（同一路径�
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     // routing/service.ts 现走 editMessageInTx(..., { notifySurfacing: true })——同合同直测
     f.db.exec('BEGIN IMMEDIATE');
     try { f.messages.editMessageInTx(a.message.id, '路由改写正文', { notifySurfacing: true }); f.db.exec('COMMIT'); }
@@ -282,7 +271,6 @@ test('E-LC3 编辑重试/连续编辑：无重复作业，旧修订全失效', a
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     f.messages.editMessageInTx(a.message.id, '第一次改', { notifySurfacing: true });
     f.messages.editMessageInTx(a.message.id, '第二次改', { notifySurfacing: true });
     assert.equal(f.jobOf(a.message.id)!.state, 'cancelled');
@@ -294,11 +282,10 @@ test('E-LC4 事务回滚一致性：编辑回滚则作业恢复有效', async ()
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     f.db.exec('BEGIN IMMEDIATE');
     f.messages.editMessageInTx(a.message.id, '会失败的编辑', { notifySurfacing: true });
     f.db.exec('ROLLBACK');
-    assert.equal(f.jobOf(a.message.id)!.state, 'prepared', '回滚后作业与库一致');
+    assert.equal(f.jobOf(a.message.id)!.state, 'pending', '回滚后作业与库一致');
     assert.equal(f.messages.getMessage(a.message.id)!.current_revision, 1, '消息修订一并回滚');
   } finally { await f.close(); }
 });
@@ -307,7 +294,6 @@ test('E-LC5 迟到旧结果不得进入新修订输入（augmentFor 修订守卫
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     const b = a;
     // 源消息编辑（HTTP）→ 旧修订作业失效
     f.messages.editUserMessage(a.message.id, '改掉源文本');
@@ -321,7 +307,6 @@ test('E-LC6 冻结未派发+编辑：最终准入丢弃，主消息路径不阻�
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     const b = a;
     const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
@@ -343,7 +328,6 @@ test('E-LC7 已派发事实不被事后改写：cancel 只动 jobs 表', async (
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     const b = a;
     const frozen = await f.svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: b.turnId, attemptId: 'a9',
       message: { id: b.message.id, revision: 1, sequence: b.message.sequence, content: b.message.content, hash: 'h' } });
@@ -363,7 +347,6 @@ test('E-LC8 幂等重放：同 client_message_id 重复提交只有一份作业'
     const a1 = f.say('dup');
     const a2 = f.say('dup');
     assert.equal(a2.duplicate, true);
-    await pollUntil(() => f.jobOf(a1.message.id)!.state === 'prepared');
     assert.equal(f.jobs().length, 1);
   } finally { await f.close(); }
 });
@@ -372,7 +355,6 @@ test('E-LC9 开关关闭/重启不复活已失效作业', async () => {
   const f = editFixture();
   try {
     const a = f.say('a');
-    await pollUntil(() => f.jobOf(a.message.id)!.state === 'prepared');
     f.messages.editUserMessage(a.message.id, '关闭前编辑');
     await f.svc.stop();
     const svc2 = new SurfacingService(f.db, new MariposaClient({ transport: async () => { throw new Error('不应外发'); } }), fakeSolJudge([{ decision: 'none' }]).judge, {

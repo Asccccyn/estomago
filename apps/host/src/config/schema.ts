@@ -274,7 +274,7 @@ export type Config = {
     job_policy_revision: number; // R9（2026-11-03）：E 自身调度政策版本——作业唯一键成分；换值=同消息重登记
     job_prompt_revision: string; // R9：E 自身调度提示词版本（同上；不是 M 的远端版本）
     worker_concurrency: number; // 全局 worker 并发上限（每房间恒串行）
-    recent_user_messages: number; // 近文窗口：当前消息之外的先前用户消息条数
+    recent_user_messages: number; // Mariposa 核对近文的先前用户消息数
     recent_window_bytes: number; // 近文窗口字节预算（整轮移除最旧，不截断单条）
     sol: {
       api_key_env: string | null; // OpenAI Responses 独立凭据（环境变量名；不与主模型/M/JEV 复用）

@@ -170,7 +170,10 @@ export async function runSdkHostQuery(
     try {
       const result = await host.executeTool(name, args, id, round);
       executing.delete(id);
-      return { ...result, recordDelivery: delivered => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)}); } };
+      return { ...result, recordDelivery: delivered => {
+        messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
+        host.recordToolDelivery?.(id, delivered);
+      } };
     } catch (error) {
       failure = 'TOOL_EXECUTION_OUTCOME_UNKNOWN';
       messages.push({ role: 'tool', tool_call_id: id, content: '{"error_code":"TOOL_EXECUTION_OUTCOME_UNKNOWN"}' });

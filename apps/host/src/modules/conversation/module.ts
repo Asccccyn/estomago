@@ -17,7 +17,7 @@ export const CONVERSATIONREAD_DEFINITION: HostToolSpec = {
       //（模型不能自填别的房间）；不含 UI 思考/草稿/system/tool；只读无副作用
       //（不推进 hold 书签、不制造气泡、不触发明开续期）
       name: 'conversation_read',
-      description: '读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。',
+      description: '读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。已实际送达的片段返回短回执；用户明确要求重看时用 reread=true。',
       parameters: {
         type: 'object',
         properties: {
@@ -29,6 +29,7 @@ export const CONVERSATIONREAD_DEFINITION: HostToolSpec = {
           to_sequence: { type: 'integer', minimum: 1, description: '范围模式：结束序号（含）' },
           limit: { type: 'integer', minimum: 1, maximum: 50, description: '单页最多条数（默认 20）' },
           cursor: { type: 'object', description: '续页游标（上一页返回的 next_cursor 原样传入）' },
+          reread: { type: 'boolean', description: '仅用户明确要求重看、逐字核对时，本次仍交付正文。' },
         },
         additionalProperties: false,
       },

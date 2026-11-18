@@ -13,7 +13,11 @@ const select = (v: any, keys: string[]): Obj => {
 /** conversation_read 模型投影（原 modelResult 分支逐字）。 */
 export function projectConversationRead(value: unknown): Obj {
   const v = objOf(value);
-  const out: Obj = { entries: list(v.entries).map((x: Obj) => select(x, ['seq', 'speaker', 'at', 'text', 'fragment'])) };
+  const out: Obj = { entries: list(v.entries).map((x: Obj) => {
+    const entry = select(x, ['seq', 'speaker', 'at', 'text', 'fragment', 'unread_parts', 'already_in_window', 'included_in_this_request']);
+    if (x.rev !== undefined && (x.unread_parts || x.already_in_window || x.included_in_this_request)) entry.rev = x.rev;
+    return entry;
+  }) };
   for (const k of ['next_cursor', 'older_cursor', 'newer_cursor']) if (v[k]) out[k] = structuredClone(v[k]);
   return out;
 }

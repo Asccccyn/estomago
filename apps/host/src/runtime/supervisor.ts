@@ -52,7 +52,7 @@ import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
-import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
+import type { ToolExecContext, ToolExecResult, BackgroundToolQuote, CoverageRange, SeenRef } from '../capabilities/contracts.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
@@ -211,6 +211,7 @@ export class TurnSupervisor {
         this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), raw: String((err as Error).message ?? err).slice(0,180), ...(contractCode ? { contract_code: contractCode } : {}) });
         this.failTurnQuietly(turnId, contractCode ?? 'RUNNER_CRASHED');
       } finally {
+        this.d.surfacing?.finishTurn?.(turnId);
         this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
       }
     });
@@ -654,6 +655,7 @@ export class TurnSupervisor {
     };
     try {
     for (let round = 0; ; round++) {
+      const batchRanges: CoverageRange[] = [];
       pendingCalls = [];
       pendingAssistantIndex = -1;
       // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
@@ -693,8 +695,12 @@ export class TurnSupervisor {
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
       // cost-20261018：每轮落上下文指纹（只含 hash/位置/计数）；同轮重试行共用同一指纹
       const fingerprintJson = contextFingerprintJson({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      const manifestJson = this.requestManifest(o.windowId, envelope.messages, [
+        ...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive, ...roundPendingSeen,
+        ...(o.inputBinding ? [{ id: o.inputBinding.messageId, revision: o.inputBinding.revision }] : []),
+      ]);
       d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
+        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
       recordToolContext(d.db,prqId,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
       const capacityNow = d.config.windows.model_context_capacity;
@@ -757,7 +763,7 @@ export class TurnSupervisor {
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no, background_run_id, background_dispatch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
         recordToolContext(d.db,lastPrqId!,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
@@ -911,6 +917,7 @@ export class TurnSupervisor {
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: lastPrqId, // internal request ledger identity; provider generation is separate
+          ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
           // R07（审计 FE-12）：工具生命周期统一身份
           toolCallId: t.tool_id, attemptId: o.attemptId, round, generationId: roundGenerationId,
           ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
@@ -933,6 +940,16 @@ export class TurnSupervisor {
         if (exec.ok && toolDispatch.current?.quote.verifiedFree) {
           settleBackgroundDispatch(d.db, toolDispatch.current.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
         }
+        // RE-05（2026-10-24）：工具结果携带内部图引用（如 oido_view 测量图）且当前型号
+        // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
+        // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
+        // 图未随正文携带，模型不得声称已看图）
+        const modelSupportsImages = visionSupportCached(envelope.model) === true;
+        if (exec.ok && exec.imageRefs?.length && !modelSupportsImages) exec = {ok:false,output:{error_code:'MODEL_VISION_UNAVAILABLE',detail:'工具已执行，但当前型号未核实支持图片，图片未交付。'}};
+        if (exec.ok && batchRanges.length && exec.coverageProjection) {
+          exec = { ...exec, ...exec.coverageProjection(batchRanges) };
+        }
+        if (exec.ok && exec.coverageAdditions) batchRanges.push(...exec.coverageAdditions);
         // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
         // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
         if (exec.seenAdditions && exec.seenAdditions.length > 0) {
@@ -943,13 +960,8 @@ export class TurnSupervisor {
             });
           }
         }
-        // RE-05（2026-10-24）：工具结果携带内部图引用（如 oido_view 测量图）且当前型号
-        // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
-        // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
-        // 图未随正文携带，模型不得声称已看图）
-        const modelSupportsImages = visionSupportCached(envelope.model) === true;
-        if (exec.ok && exec.imageRefs?.length && !modelSupportsImages) exec = {ok:false,output:{error_code:'MODEL_VISION_UNAVAILABLE',detail:'工具已执行，但当前型号未核实支持图片，图片未交付。'}};
         envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
+        this.recordToolCoverage(lastPrqId, t.tool_id, exec);
 
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
@@ -959,6 +971,22 @@ export class TurnSupervisor {
     } catch (error) {
       return failedLoop({ outcome: 'error', errorClassified: 'unknown', errorCode: stableCode(error), errorMessage: String((error as Error).message ?? error), sessionId: null, requestId: null });
     }
+  }
+
+  private requestManifest(windowId: string, messages: readonly OrMessage[], seen: readonly SeenRef[]): string {
+    const opening = this.bootstrapMachine.coverageFor(windowId, messages);
+    return JSON.stringify([
+      ...seen.map(ref => ({ ...ref, visible: true })),
+      ...(opening ? [opening] : []),
+    ]);
+  }
+
+  private recordToolCoverage(requestId: string | null, toolCallId: string | null, result: ToolExecResult): void {
+    if (!requestId || !toolCallId || !result.ok || !result.coverageAdditions?.length) return;
+    // Ranges describe the projected result. The tool ID must later appear in a
+    // confirmed request before this metadata can establish actual coverage.
+    this.d.db.prepare("UPDATE provider_requests SET seen_manifest_json=json_insert(seen_manifest_json, '$[#]', json(?)) WHERE id=?")
+      .run(JSON.stringify({ tool_coverage: [{ tool_call_id: toolCallId, ranges: result.coverageAdditions }] }), requestId);
   }
 
   private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
@@ -971,6 +999,7 @@ export class TurnSupervisor {
     const sdkEffort = o.envelope.reasoning?.effort;
     if (sdkEffort) options.options.effort = sdkEffort as import('../config/schema.ts').ThinkingEffort;
     const toolSeen: ManifestEntry[] = [];
+    const batchRanges: CoverageRange[] = [];
     let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
     let requestId: string | null = null;
     let generationId: string | null = null;
@@ -1022,7 +1051,10 @@ export class TurnSupervisor {
           const at = new Date().toISOString();
           d.db.prepare(`INSERT INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,context_fingerprint_json,payload_format,created_at,dispatch_started_at,attempt_no,background_run_id,background_dispatch_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId, o.windowId, o.attemptId, o.turnId, o.purpose,
-            JSON.stringify(messages.map(m => ({ role: m.role }))), JSON.stringify(envelope),
+            this.requestManifest(o.windowId, messages, [
+              ...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen, ...pendingToolSeen,
+              ...(o.inputBinding ? [{ id: o.inputBinding.messageId, revision: o.inputBinding.revision }] : []),
+            ]), JSON.stringify(envelope),
             contextFingerprintJson({ round, tools: envelope.tools, messages, boundaries: envelope.boundaries }),
             'sdk_projection_v1', at, at, 0, o.background?.runId ?? null, dispatchId);
           recordToolContext(d.db,requestId,o.windowId,messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
@@ -1039,7 +1071,9 @@ export class TurnSupervisor {
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
+          batchRanges.length = 0;
         },
+        recordToolDelivery: (toolCallId, result) => this.recordToolCoverage(requestId, toolCallId, result),
         executeTool: async (name, args, toolCallId, round) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
@@ -1047,12 +1081,13 @@ export class TurnSupervisor {
           if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
           o.background?.observeToolCall?.();
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
-          const executed = await d.tools.execute(name, args, {
+          let executed = await d.tools.execute(name, args, {
             signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
             purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
             activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
             seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
             requestId: requestId!, toolCallId, attemptId: o.attemptId, round, generationId,
+            ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
             ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
               const admission = o.background!.recordDispatch({ logicalActionKey: `tool:${toolCallId}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
               if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
@@ -1061,10 +1096,14 @@ export class TurnSupervisor {
           });
           const settled = toolDispatch as { id: string; quote: BackgroundToolQuote } | null;
           if (executed.ok && settled?.quote.verifiedFree) settleBackgroundDispatch(d.db, settled.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
+          if (executed.ok && batchRanges.length && executed.coverageProjection) {
+            executed = { ...executed, ...executed.coverageProjection(batchRanges) };
+          }
           for (const seen of executed.seenAdditions ?? []) {
             const row = d.db.prepare('SELECT sequence FROM messages WHERE id=?').get(seen.id) as { sequence: number } | undefined;
             pendingToolSeen.push({ ...seen, seq: row?.sequence ?? 0, origin: 'tool', visible: true });
           }
+          if (executed.ok && !executed.imageRefs?.length && executed.coverageAdditions) batchRanges.push(...executed.coverageAdditions);
           return executed;
         },
       },
@@ -2276,6 +2315,8 @@ export class TurnSupervisor {
         const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
           conversationId: turn.conversation_id, windowId: window.id, turnId,
           attemptId: attempt.id,
+          approvedIdentityText: materials?.identityText ?? null,
+          pendingCoverage: this.bootstrapMachine.coverageFor(window.id, d.trajectory?.forWindow(window.id)?.messages ?? [])?.window_coverage,
           message: { id: inputMessage.id, revision: effective.revision, sequence: inputMessage.sequence, content: effective.content, hash: effective.hash },
         });
         surfacingAugment = candidate;

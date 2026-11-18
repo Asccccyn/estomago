@@ -694,7 +694,7 @@ export class Host {
     const linksStopped = this.callReplyLinks?.stop();
     const contentOpsStopped = this.contentOps?.stop(); // P1：停内容写恢复（在途轮收口，不再派新）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
-    await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
+    await this.surfacing?.stop(); // 停止领取，取消并等待在途浮现
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
     await Promise.all([bindingStopped, serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);

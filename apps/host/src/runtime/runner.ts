@@ -30,6 +30,7 @@ export type SdkRunRequest = {
     envelope: OrRequestEnvelope;
     executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number) => Promise<ToolExecResult>;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
+    recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
     /** 2026-11-09 撤销 §8.2 工具轮上限后可选：未设=SDK maxTurns 不传（无限制）；
      *  后台回合仍由 background.maxModelRequests（账本预算）独立约束。 */

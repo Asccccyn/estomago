@@ -140,13 +140,14 @@ export const MEMORYREADFULL_DEFINITION: HostToolSpec = {
       // 全量详情（docs/05）。工具契约从新 epoch 初始即进冻结工具集——
       // 不等首次浮现出现后才动态加（docs/06 E）。
       name: 'memory_read_full',
-      description: '进一步读取已交付记忆、话语或来源的正文与详情。memory_ref 须来自实际交付的 recall 或浮现结果；话语引用只授予该话语及获许可的来源。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。',
+      description: '进一步读取已交付记忆、话语或来源的正文与详情。memory_ref 须来自实际交付的 recall 或浮现结果；话语引用只授予该话语及获许可的来源。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。普通读取只返回必要未读部分，整段已送达时给短回执；仅在用户明确需要重看时用 reread=true。',
       parameters: {
         type: 'object',
         properties: {
           memory_ref: { type: 'string', minLength: 1, maxLength: 64, description: '已交付 recall 候选或浮现 JSON 中的 memory_ref，原样传回；resource_ref 只用于否定候选，不能代替详情引用' },
           cursor: { type: 'string', minLength: 1, maxLength: 128, description: '上一页返回的 next_cursor（首页省略）' },
           section: { type: 'string', enum: ['memory', 'relations', 'source'], description: '默认memory；可直接选relations或source，不必先读memory' },
+          reread: { type: 'boolean', description: '仅用户明确要求重看、逐字核对或修订前确认时，本次仍交付正文。' },
         },
         required: ['memory_ref'],
         additionalProperties: false,

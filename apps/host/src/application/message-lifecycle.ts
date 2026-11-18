@@ -6,8 +6,8 @@ import type { MessageLifecycleFact, MessageLifecycleHooks } from '../messages/li
 import type { SurfacingService } from '../memory-surfacing/service.ts';
 
 export type MessageLifecycleConsumers = {
-  /** 浮现域（登记/撤销/提交后唤醒）。 */
-  surfacing: Pick<SurfacingService, 'onUserMessageAccepted' | 'onUserMessageEdited' | 'afterCommit'> | null;
+  /** 浮现作业随正式输入登记，由目标回合领取。 */
+  surfacing: Pick<SurfacingService, 'onUserMessageAccepted' | 'onUserMessageEdited'> | null;
   /** 活动锚点（wake-activity：正式发布的真实活动记账）。 */
   activity: { noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void } | null;
   /** GLM_VOICE_UNIFICATION P06：语音消息默认分析——接纳即登记观察 sidecar（pending），
@@ -55,7 +55,6 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
       // 保持 L 记账与发布同事务的现行次序——不改为事实流旁路（行为等价红线）。
     },
     afterCommit: (conversationId) => {
-      consumers.surfacing?.afterCommit();
       consumers.voiceObservations?.wake(conversationId);
     },
   };

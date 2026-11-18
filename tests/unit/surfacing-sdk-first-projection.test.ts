@@ -54,6 +54,15 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_sdk' } };
     if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_sdk', items: [ITEM] } };
     if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
+    if (cap === 'memory.recall.start') {
+      const range = { resource_ref: ITEM.resource_ref, content_version: ITEM.memory_version,
+        start_char: 0, end_char: Array.from(ITEM.event_text).length };
+      assert.ok((args.covered_ranges as Array<typeof range>).some(r => r.resource_ref === range.resource_ref
+        && r.content_version === range.content_version && r.start_char === 0 && r.end_char === range.end_char),
+        'M can recognize first-request coverage before turn retain');
+      return { ok: true, result: { recall_session_id: 'rs_sdk', search_status: 'FOUND', judge_mode: 'on', candidates: [{ resource_ref: ITEM.resource_ref,
+        content_version: ITEM.memory_version, excerpt: ITEM.event_text, coverage_ranges: [range] }] } };
+    }
     if (cap === 'memory.detail.read') {
       assert.equal(args.detail_ref, ITEM.detail_ref);
       return { ok: true, result: { memory_id: ITEM.memory_id, text: ITEM.event_text, next_cursor: null } };
@@ -67,8 +76,8 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     queries: [{ need_kind: 'event', need: '找到记忆库建设经历', semantic: '记忆库建设', keywords: ['记忆库'], time_hint: null, speaker: null }] };
   const sol = fakeSolJudge([
     { decision: 'recall', plan: { ...plan, evidence: [{ user_turn: 1, quote: firstText }] } },
-    { decision: 'recall', plan: { ...plan, breadth: 'related', evidence: [{ user_turn: 2, quote: nextText }] } },
-    { decision: 'recall', plan: { ...plan, purpose: '想起当时共同完成的事情', evidence: [{ user_turn: 1, quote: firstText }] } },
+    { decision: 'recall', plan: { ...plan, breadth: 'related', evidence: [{ user_turn: 1, quote: nextText }] } },
+    { decision: 'observe' },
   ]);
   const svc = new SurfacingService(db, client, sol.judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v2',
@@ -97,8 +106,16 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
         assert.ok(block); const ref = JSON.parse(block).memories[0].memory_ref;
         const read = await host.executeTool('memory_read_full', { memory_ref: ref }, 'synthetic-read', 0);
         assert.equal(read.ok, true, 'first-request ref must be usable before retained state'); modelDetail = read.output;
-        sent = [...sent, { role: 'assistant', content: '', tool_calls: [{ id: 'synthetic-read', type: 'function', function: { name: 'memory_read_full', arguments: JSON.stringify({ memory_ref: ref }) } }] },
-          { role: 'tool', tool_call_id: 'synthetic-read', content: JSON.stringify(read.output) }];
+        const recall = await host.executeTool('memory_recall', { query: '再核对建成记忆库的经历' }, 'synthetic-recall', 0);
+        assert.equal(recall.ok, true);
+        assert.equal((recall.output.candidates as Array<Record<string, unknown>>)[0]?.already_in_window, true);
+        assert.equal(JSON.stringify(recall.output).includes(ITEM.event_text), false, 'same-turn recall must not deliver the evidence again');
+        sent = [...sent, { role: 'assistant', content: '', tool_calls: [
+          { id: 'synthetic-read', type: 'function', function: { name: 'memory_read_full', arguments: JSON.stringify({ memory_ref: ref }) } },
+          { id: 'synthetic-recall', type: 'function', function: { name: 'memory_recall', arguments: JSON.stringify({ query: '再核对建成记忆库的经历' }) } },
+        ] },
+          { role: 'tool', tool_call_id: 'synthetic-read', content: JSON.stringify(read.output) },
+          { role: 'tool', tool_call_id: 'synthetic-recall', content: JSON.stringify(recall.output) }];
         await host.beforeModel(sent, 1); host.modelStarted('synthetic-1-1', 1, config.runtime.model!);
         captures.push(structuredClone(sent));
       }
@@ -143,9 +160,9 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     const c = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '嗯，我就是想到那天。', clientMessageId: 'sdk-3' });
     supervisor.enqueue(c.turnId); await supervisor.waitIdle();
     assert.equal(sol.calls(), 3);
-    assert.equal(caps.filter(cap => cap.endsWith('.prepare')).length, 2, '实际已送达同需换purpose措辞不重查');
+    assert.equal(caps.filter(cap => cap.endsWith('.prepare')).length, 2, '没有新的明确需要就不发起检索');
     assert.equal(db.prepare('SELECT reason_code FROM surfacing_jobs WHERE source_message_id=?').get(c.message.id)?.reason_code,
-      'SURFACE_NEED_ALREADY_DELIVERED');
+      'SURFACE_SOL_OBSERVE');
     assert.equal(forbiddenNetwork, 0); assert.equal(forbiddenSdkLoads, 0);
   } finally {
     await svc.stop(); db.close(); fs.rmSync(root, { recursive: true, force: true });
@@ -153,29 +170,23 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
   }
 });
 
-test('enabling surfacing in the existing settings activates the already-bound formal message lifecycle', async () => {
+test('settings enable registration, and only the target turn starts Sol', async () => {
   const { Host } = await import('../../apps/host/src/app-context.ts');
-  const { tempRoot, pollUntil } = await import('../helpers.ts');
+  const { tempRoot } = await import('../helpers.ts');
   const root = tempRoot('surface-enable-');
-  const savedFetch = globalThis.fetch; let solCalls = 0; let otherCalls = 0;
-  globalThis.fetch = async input => {
-    if (String(input) !== 'https://sol.test/v1/responses') { otherCalls++; throw Error('NETWORK_FORBIDDEN'); }
-    solCalls++;
-    return new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text',
-      text: JSON.stringify({ decision: 'none', topic: 'new', basis: '合成当下分享', plan: null }) }] }] }), { status: 200, headers: { 'content-type': 'application/json' } });
-  };
   const host = await Host.create({ stateRoot: root, logDir: null, bind: '127.0.0.1', port: 0,
-    config: buildConfig({ runtime: { provider: 'mock' }, memory_surfacing: { enabled: false,
-      sol: { api_key_env: 'EST_TEST_SOL_KEY', base_url: 'https://sol.test/v1' } } }) });
+    config: buildConfig({ runtime: { provider: 'mock' }, memory_surfacing: { enabled: false } }) });
   try {
     host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '合成：功能尚未开启。', clientMessageId: 'disabled' });
     assert.equal(host.db.prepare('SELECT count(*) n FROM surfacing_jobs').get()?.n, 0);
-    assert.equal(solCalls, 0);
     assert.equal(host.surfacing!.updateSettings({ enabled: true }).ok, true);
     const next = host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '合成：我去倒杯水。', clientMessageId: 'enabled' });
-    await pollUntil(() => host.db.prepare("SELECT 1 FROM surfacing_jobs WHERE source_message_id=? AND state='empty' AND reason_code='SURFACE_SOL_NONE'").get(next.message.id) !== undefined);
-    assert.equal(solCalls, 1); assert.equal(otherCalls, 0);
+    await new Promise(resolve => setImmediate(resolve));
+    const job = host.db.prepare('SELECT state,sol_decision FROM surfacing_jobs WHERE source_message_id=?').get(next.message.id);
+    assert.equal(job?.state, 'pending');
+    assert.equal(job?.sol_decision, null);
   } finally {
-    await host.stop(); globalThis.fetch = savedFetch; fs.rmSync(root, { recursive: true, force: true });
+    await host.stop();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });
