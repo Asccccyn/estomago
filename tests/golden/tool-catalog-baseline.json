@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "77e6e8a5935c0908bd9332a601185887dace3814",
+  "baselineCommit": "68952241fe9bc08aae4d404dd9a0e4d038785625",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -65,11 +65,11 @@
   ],
   "definitionIds": {
     "memory_hold": "td_f073967a38333e9f5eedad23",
-    "memory_recall": "td_3c97452a110827ff34c62d69",
-    "memory_recall_next": "td_94172c95a0354c44875fcdb4",
-    "memory_read_full": "td_38751466a40fa898903ce182",
+    "memory_recall": "td_8025fb9c84eb581e0b9f2897",
+    "memory_recall_next": "td_c159234fa8bf8cd32fcd9ad7",
+    "memory_read_full": "td_5aa135ad50bcff5c497c94bf",
     "memory_update": "td_f96ffcd208abb576b687fbd7",
-    "conversation_read": "td_ede191bcb2588e4994452f65",
+    "conversation_read": "td_5f32e979a38a18ac9ca4932a",
     "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
     "memory_i_write": "td_1ddd3a690ca0bea454930706",
@@ -121,7 +121,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_daedbb82901f5b8273b01e01"
   },
-  "toolsSha256": "a4d07d64a20527cdacb0473491e451f892de886cdab515fe7ce7c6e4e4619ff8",
+  "toolsSha256": "dce52ac922937d4fa18d9d66c05d8e3306360678b8644313b5867a872467176b",
   "tools": [
     {
       "type": "function",
@@ -272,7 +272,7 @@
       "type": "function",
       "function": {
         "name": "memory_recall",
-        "description": "检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。",
+        "description": "检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -348,6 +348,10 @@
               "type": "string",
               "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
               "description": "终日（含当天），与 date_from 成对；单日两者相同；缺省不等于空值"
+            },
+            "reread": {
+              "type": "boolean",
+              "description": "仅当用户明确要求重看、逐字核对或修订前确认同一内容时置 true：本次照常返回正文，不改变窗口已读状态。普通查询勿用——已读内容默认返回 already_in_window 短回执即可。"
             }
           },
           "required": [
@@ -361,7 +365,7 @@
       "type": "function",
       "function": {
         "name": "memory_recall_next",
-        "description": "读取同一召回结果集的下一页。沿用 next.arguments 或 pagination 的 result_set_id/next_cursor；不改查询、不重新检索或判断、不增加召回轮数。未翻到的页未交付，翻尽本结果集也不表示检索穷尽。",
+        "description": "读取同一召回结果集的下一页。沿用 next.arguments 或 pagination 的 result_set_id/next_cursor；不改查询、不重新检索或判断、不增加召回轮数。未翻到的页未交付，翻尽本结果集也不表示检索穷尽。本页正文已在本窗口实际送达过的条目返回 already_in_window 短回执；用户明确要求重看时用 reread=true 本次重取正文。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -382,6 +386,10 @@
               "minLength": 1,
               "maxLength": 256,
               "description": "上一页结果里的 recall_session_id"
+            },
+            "reread": {
+              "type": "boolean",
+              "description": "仅当用户明确要求重看、逐字核对同一内容时置 true：本次照常返回正文，不改变窗口已读状态。"
             }
           },
           "required": [
@@ -395,7 +403,7 @@
       "type": "function",
       "function": {
         "name": "memory_read_full",
-        "description": "进一步读取已交付记忆、话语或来源的正文与详情。memory_ref 须来自实际交付的 recall 或浮现结果；话语引用只授予该话语及获许可的来源。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。",
+        "description": "进一步读取已交付记忆、话语或来源的正文与详情。memory_ref 须来自实际交付的 recall 或浮现结果；话语引用只授予该话语及获许可的来源。section=memory 读普通桶详情；relations 读真实关系及关联内容；source 直接读绑定原文，无需先读详情。不是搜索，不重做JEV判断。续页保留同一section和cursor。普通读取只返回必要未读部分，整段已送达时给短回执；仅在用户明确需要重看时用 reread=true。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -419,6 +427,10 @@
                 "source"
               ],
               "description": "默认memory；可直接选relations或source，不必先读memory"
+            },
+            "reread": {
+              "type": "boolean",
+              "description": "仅用户明确要求重看、逐字核对或修订前确认时，本次仍交付正文。"
             }
           },
           "required": [
@@ -483,7 +495,7 @@
       "type": "function",
       "function": {
         "name": "conversation_read",
-        "description": "读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。",
+        "description": "读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。已实际送达的片段返回短回执；用户明确要求重看时用 reread=true。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -528,6 +540,10 @@
             "cursor": {
               "type": "object",
               "description": "续页游标（上一页返回的 next_cursor 原样传入）"
+            },
+            "reread": {
+              "type": "boolean",
+              "description": "仅用户明确要求重看、逐字核对时，本次仍交付正文。"
             }
           },
           "additionalProperties": false
