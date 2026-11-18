@@ -151,7 +151,6 @@ test('R05：读取路径零事件（刷新不触发任何 surface.job，也不�
     await f.flush();
     const before = f.surfaceEvents().length;
     f.svc.repo.jobById(f.job(a.message.id).id);
-    f.svc.repo.pendingJobs();
     f.svc.repo.recoverableJobs();
     f.svc.reuseFrozen('nonexistent');
     await f.flush();

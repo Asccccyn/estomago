@@ -25,6 +25,9 @@ export type SurfaceItemKind = 'event' | 'words' | 'source';
 export type SurfaceItem = {
   kind?: SurfaceItemKind;
   coverage_ranges?: CoverageRange[];
+  coverage_text_offset?: number;
+  unread_parts?: Array<{ start_char: number; end_char: number; text: string }>;
+  source_context_parts?: Array<{ speaker: string; date: string; text: string; coverage_ranges: CoverageRange[] }>;
   event_id: string | null;
   memory_id: string | null;
   memory_version: string | null;
@@ -112,15 +115,18 @@ export function projectSurfacedMemory(item: SurfaceItem): { date: string | null;
   return { date: date === '不确定' ? null : date, text: item.event_text, kind };
 }
 
-export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>): string {
+export type MissingQuote = { kind: 'raw_context' | 'words_only' | 'words'; status: 'no_match' | 'access_blocked' | 'incomplete' };
+
+export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>, missing: MissingQuote[] = []): string {
   if (items.length === 0) return '';
   return JSON.stringify({ memories: items.map(item => {
     const key = surfaceItemKey(item);
     const ref = refs?.get(key) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
     if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
     const projected = projectSurfacedMemory(item);
-    return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), text: projected.text };
-  }) });
+    return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), ...(item.unread_parts ? { unread_parts: item.unread_parts } :
+      projected.text ? { text: projected.text } : {}) };
+  }), ...(missing.length ? { missing } : {}) });
 }
 
 /** 短 handle：内存安全的不透明引用（完整 UUID/版本/hash/分数不进模型文本）。 */

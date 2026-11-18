@@ -57,7 +57,7 @@ function identity(v: Obj, history=false): Obj {
 export function candidates(v: any[]): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
-    const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
+    const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','content_version','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
     // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
     // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）
     if(out.mood)out.mood=select(out.mood,['text','tags','author']);
@@ -79,8 +79,6 @@ export function candidates(v: any[]): Obj[] {
       return x;
     });
     if(evidence.length)out.evidence=evidence;
-    if (c.content_version !== undefined && [out, out.fragment, ...evidence].some(part =>
-      part?.already_in_window || part?.included_in_this_request || part?.unread_parts)) out.content_version = c.content_version;
     if(out.excerpt && evidence[0]?.snippet===out.excerpt)delete out.excerpt;
     if(c.truncated===true || (Array.isArray(c.budget_flags) && c.budget_flags.length))out.truncated=true;
     if(c.judge && c.judge.evaluation_status!=='evaluated')out.judgement='unconfirmed';
@@ -158,12 +156,4 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
     return out;
   }
   return value; // Other tools have independent contracts; never guess their business shape.
-}
-
-
-
-/** Recall uses the same explicit business/operation whitelist as final tool output.
- *  （原 host-tools projectCandidatesForModel 随迁——memory 域召回白名单投影。） */
-export function projectCandidatesForModel(cands: unknown[]): unknown[] {
-  return candidates(cands);
 }

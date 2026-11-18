@@ -385,13 +385,14 @@ export class SolDecisionJudge {
     };
   }
 
-  async decide(input: SolDecisionInput, signal: AbortSignal): Promise<SolJudgeResult> {
+  async decide(input: SolDecisionInput, signal: AbortSignal, onRequest?: () => void): Promise<SolJudgeResult> {
     const started = Date.now();
     const done = (r: SolJudgeResult): SolJudgeResult => ({ ...r, elapsed_ms: Date.now() - started });
     if (!this.isConfigured()) return done({ ok: false, code: 'SURFACE_SOL_NOT_CONFIGURED', usage: null, elapsed_ms: 0 });
     const apiKey = process.env[this.cfg.apiKeyEnv as string] as string;
     const { url, payload } = this.buildRequest(input);
     let res: { status: number; json: unknown };
+    onRequest?.();
     try {
       res = await this.transport(url, { authorization: `Bearer ${apiKey}` }, payload, signal);
     } catch (err) {

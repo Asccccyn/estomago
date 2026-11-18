@@ -73,6 +73,7 @@ test('O01：锚点前后回读同房间未选段；跨房间锚点拒（房间�
   const out = await executor.execute('conversation_read', { around_seq: 2, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true, JSON.stringify(out.output).slice(0, 300));
   const entries = out.output.entries as Array<{ seq: number; text: string }>;
+  assert.deepEqual(entries.map((e) => (e as { rev?: number }).rev), [1, 1, 1]);
   assert.deepEqual(entries.map((e) => e.seq), [1, 2, 3], '锚点前后各一条，未选段也可读（选择不是读取权限全集）');
   // 跨房间锚点：本房间找不到（不泄漏存在性）
   const cross = await executor.execute('conversation_read', { around_seq: 999 }, CTX);

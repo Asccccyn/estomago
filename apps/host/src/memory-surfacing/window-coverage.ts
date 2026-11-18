@@ -48,6 +48,39 @@ export function surfaceItemRanges(item: SurfaceItem): CoverageRange[] {
   return [...surfaceItemBodyRanges(item), ...context];
 }
 
+/** Project verified body and neighbour ranges in the same coordinate space as active reads. */
+export function unreadSurfaceItem(item: SurfaceItem, covered: readonly CoverageRange[]): SurfaceItem | null {
+  const original = item.quote_text ?? item.event_text;
+  const body = projectCoveredText(original, surfaceItemBodyRanges(item), covered, [], false, item.coverage_text_offset);
+  const metadata = { ...item };
+  delete metadata.source_context_parts;
+  delete metadata.coverage_text_offset;
+  delete metadata.unread_parts;
+  let context = item.source_context_text;
+  let contextRanges = coverageRanges(item.source_context_ranges);
+  if (item.source_context_parts) {
+    const lines: string[] = [];
+    contextRanges = [];
+    for (const part of item.source_context_parts) {
+      const result = projectCoveredText(part.text, coverageRanges(part.coverage_ranges),
+        covered, [...body.delivered, ...contextRanges]);
+      const texts = result.status === 'full' ? [part.text] : result.parts.map(piece => piece.text);
+      for (const text of texts) lines.push(`${part.speaker}(${part.date})：${text}`);
+      contextRanges.push(...result.delivered);
+    }
+    context = lines.join('\n');
+  } else if (contextRanges.length && contextRanges.every(r => !uncoveredRanges(r, covered).length)) {
+    context = null;
+    contextRanges = [];
+  }
+  const pieces = body.parts;
+  const text = body.status === 'full' ? original : pieces.map(piece => piece.text).join('\n…\n');
+  if (!text && !context) return null;
+  return { ...metadata, event_text: text, ...(item.quote_text != null ? { quote_text: text } : {}),
+    ...(pieces.length ? { unread_parts: pieces } : {}),
+    coverage_ranges: body.delivered, source_context_text: context, source_context_ranges: contextRanges };
+}
+
 type CoverageMessage = {
   role: string;
   tool_call_id?: string;

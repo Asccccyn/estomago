@@ -9,7 +9,7 @@
 //   credential_ref，不回退聊天凭据）；Sol 走独立 OpenAI key（sol-provider）。
 import { executeMemoryReadFull } from './detail-tool.ts';
 import { syncedSourceIdsFor } from './source-boundary.ts';
-import { surfaceItemBodyRanges, surfaceItemRanges, uncoveredRanges, windowCoverage, windowCoverageDigest } from './window-coverage.ts';
+import { unreadSurfaceItem, surfaceItemRanges, uncoveredRanges, windowCoverage, windowCoverageDigest } from './window-coverage.ts';
 import type { CoverageRange } from '../capabilities/contracts.ts';
 import type { Db } from '../db/connection.ts';
 import { isCallActivityActive } from '../modules/voice/call-service.ts';
@@ -20,10 +20,10 @@ import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
   estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, SURFACE_HOST_NOTICE, surfaceItemKey,
-  type FrozenAugmentation, type SurfaceItem,
+  type FrozenAugmentation, type SurfaceItem, type MissingQuote,
 } from './contracts.ts';
 import {
-  SolDecisionJudge, type SolDecisionInput, type SolDecisionPlan, type SolJudgeResult,
+  SolDecisionJudge, type SolDecisionInput, type SolDecisionPlan, type SolJudgeResult, type SolUsage,
 } from './sol-provider.ts';
 
 export type SurfacingConfig = {
@@ -330,16 +330,14 @@ export class SurfacingService {
       // 技术失败 ≠ none：独立原因码落作业，主对话照常继续
       this.repo.transition(job.id, ['preparing'], 'blocked', {
         reason_code: sol.code,
-        sol_usage_json: sol.usage ? JSON.stringify(sol.usage) : null,
       });
       this.log?.warn('surface_sol_failed', { job: job.id, code: sol.code, elapsed_ms: sol.elapsed_ms, ...sol.diagnostic });
       return;
     }
     const d = sol.decision;
     this.repo.transition(job.id, ['preparing'], 'preparing', {
-      sol_decision: d.decision, sol_topic: d.topic, sol_basis: d.basis,
+      sol_decision: d.decision, sol_topic: d.topic,
       sol_plan_json: d.plan ? JSON.stringify(d.plan) : null,
-      sol_usage_json: sol.usage ? JSON.stringify(sol.usage) : null,
     });
     this.log?.info('surface_sol_decision', {
       job: job.id, decision: d.decision, topic: d.topic,
@@ -389,7 +387,10 @@ export class SurfacingService {
     }
     const confirmed = windowCoverage(this.db, activeWindow ?? '');
     const deliveredHere = previous?.windowId === activeWindow && previous && previous.items.length > 0
-      && previous.items.every(item => surfaceItemBodyRanges(item).some(range => uncoveredRanges(range, confirmed).length === 0));
+      && previous.items.every(item => {
+        const ranges = surfaceItemRanges(item);
+        return ranges.length > 0 && ranges.every(range => !uncoveredRanges(range, confirmed).length);
+      });
     if (previous && (previous.outcome === 'no_match' || deliveredHere)) {
       this.repo.transition(job.id, ['preparing'], 'empty', {
         reason_code: previous.outcome === 'delivered' ? 'SURFACE_NEED_ALREADY_DELIVERED' : 'SURFACE_NEED_ALREADY_SEARCHED',
@@ -494,9 +495,20 @@ export class SurfacingService {
 
   /** Sol 判断（含一次同任务内的有界技术重试；共享剩余 deadline）。 */
   private async runSolDecision(job: JobRow, input: SolDecisionInput): Promise<SolJudgeResult> {
+    const attempts: Array<SolUsage | null> = [];
     const attempt = (): Promise<SolJudgeResult> => this.bounded(
-      signal => this.sol.decide(input, signal),
-      this.deadline(job) - Date.now(), job.id,
+      async signal => {
+        let index: number | undefined;
+        const result = await this.sol.decide(input, signal, () => {
+          index = attempts.push(null) - 1;
+          this.repo.recordSolUsage(job.id, attempts);
+        });
+        if (index !== undefined && result.usage) {
+          attempts[index] = result.usage;
+          this.repo.recordSolUsage(job.id, attempts);
+        }
+        return result;
+      }, this.deadline(job) - Date.now(), job.id,
     ).catch((err): SolJudgeResult => ({
       ok: false,
       code: err instanceof Error && err.message === 'SURFACE_CANCELLED' ? 'SURFACE_SOL_CANCELLED' : 'SURFACE_SOL_TIMEOUT',
@@ -592,7 +604,7 @@ export class SurfacingService {
         return;
       }
       const data = r.result as {
-        status?: string; validation_receipt?: string | null; items?: SurfaceItem[]; reason_code?: string | null;
+        status?: string; validation_receipt?: string | null; items?: SurfaceItem[]; missing?: MissingQuote[]; reason_code?: string | null;
       };
       const state = data.status === 'ready' ? 'ready'
         : data.status === 'empty' ? 'empty'
@@ -600,7 +612,7 @@ export class SurfacingService {
             : data.status === 'rejected' ? 'rejected' : 'blocked';
       this.repo.transition(job.id, ['validating'], state, {
         receipt_id: data.validation_receipt ?? null,
-        items_json: data.items && data.items.length > 0 ? JSON.stringify(data.items) : null,
+        items_json: data.items && data.items.length > 0 ? JSON.stringify({ items: data.items, missing: data.missing }) : null,
         reason_code: data.reason_code ?? null,
       });
     })();
@@ -648,7 +660,17 @@ export class SurfacingService {
     }
     const fresh = this.repo.jobById(job.id);
     if (!fresh || fresh.state !== 'ready' || !fresh.items_json) return null;
-    const itemsAll = JSON.parse(fresh.items_json) as SurfaceItem[];
+    const saved: SurfaceItem[] | { items: SurfaceItem[]; missing?: MissingQuote[] } = JSON.parse(fresh.items_json);
+    const itemsAll = Array.isArray(saved) ? saved : saved.items;
+    const missing: MissingQuote[] = [];
+    if (!Array.isArray(saved) && Array.isArray(saved.missing)) {
+      for (const part of saved.missing) {
+        if (part && ['words_only', 'raw_context', 'words'].includes(part.kind)
+          && ['access_blocked', 'no_match', 'incomplete'].includes(part.status)) {
+          missing.push({ kind: part.kind, status: part.status });
+        }
+      }
+    }
     // check：经 HTTP 调 Mariposa 的本地校验；回执绑目标消息/修订/窗口。
     let ck;
     try {
@@ -692,20 +714,12 @@ export class SurfacingService {
     let droppedBudget = 0;
     for (const item of itemsAll) {
       if (!accepted.has(item.detail_ref)) continue;
-      const contextRanges = item.source_context_ranges;
-      const it = contextRanges?.length && contextRanges.every(range => uncoveredRanges(range, covered).length === 0)
-        ? { ...item, source_context_text: null, source_context_ranges: undefined }
-        : item;
+      const it = unreadSurfaceItem(item, covered);
+      if (!it) { droppedCovered++; continue; }
       const key = surfaceItemKey(it);
-      // Partial overlap cannot justify replaying the full resource when the
-      // new need has no verified unread range.
-      if (surfaceItemBodyRanges(it).some(range => {
-        const unread = uncoveredRanges(range, covered);
-        return unread.length !== 1 || unread[0]!.start_char !== range.start_char || unread[0]!.end_char !== range.end_char;
-      })) { droppedCovered++; continue; }
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(key, ref);
-      const candidate = renderAugmentation([...items, it], candidateRefs);
+      const candidate = renderAugmentation([...items, it], candidateRefs, missing);
       const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + candidate;
       const tokens = estimateTokens(wireText);
       const bytes = Buffer.byteLength(wireText, 'utf8');
@@ -729,7 +743,7 @@ export class SurfacingService {
       this.repo.transition(job.id, ['ready'], 'timed_out', { reason_code: 'SURFACE_TIMEOUT' });
       return null;
     }
-    const text = renderAugmentation(items, refs);
+    const text = renderAugmentation(items, refs, missing);
     const deliveryId = this.repo.freezeDelivery({
       jobId: job.id, attemptId: input.attemptId, windowId: input.windowId,
       text, items, memoryRefs: refList,
@@ -802,7 +816,7 @@ export class SurfacingService {
           if (aug.items.every(it => accepted.has(it.detail_ref))) {
             // 装配间隙同窗重复覆盖防护：任一证据已被实际覆盖即整块丢弃
             const covered = windowCoverage(this.db, input.windowId);
-            if (aug.items.every(item => surfaceItemBodyRanges(item).every(range => {
+            if (aug.items.every(item => surfaceItemRanges(item).every(range => {
               const unread = uncoveredRanges(range, covered);
               return unread.length === 1 && unread[0]!.start_char === range.start_char && unread[0]!.end_char === range.end_char;
             }))) return aug;
@@ -825,7 +839,7 @@ export class SurfacingService {
     this.repo.markRetained(result.jobId, result.deliveryId);
     // 检索目的完成状态：delivered（供下一轮 Sol 判断"同一需要已处理"）
     const job = result.jobId ? this.repo.jobById(result.jobId) : null;
-    if (job) this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
+    if (job && !JSON.parse(result.text).missing?.length) this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
   }
 
   // —— 设置面（同一功能的唯一设置区域；生效值与实际请求同源）——

@@ -1,3 +1,4 @@
+import type { SolUsage } from './sol-provider.ts';
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
@@ -22,7 +23,6 @@ export type JobRow = {
   prompt_revision: string | null;
   sol_decision: string | null;
   sol_topic: string | null;
-  sol_basis: string | null;
   sol_plan_json: string | null;
   sol_usage_json: string | null;
   receipt_id: string | null;
@@ -37,7 +37,7 @@ export type JobRow = {
   m_prompt_revision: string | null;
 };
 
-const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_basis, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at, m_policy_revision, m_prompt_revision';
+const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at, m_policy_revision, m_prompt_revision';
 
 export class SurfacingRepository {
   private db: Db;
@@ -189,12 +189,6 @@ export class SurfacingRepository {
     return row ?? null;
   }
 
-  pendingJobs(limit = 20): JobRow[] {
-    return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state='pending' ORDER BY created_at ASC LIMIT ?`,
-    ).all(limit) as JobRow[];
-  }
-
   recoverableJobs(): JobRow[] {
     return this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started') ORDER BY created_at ASC`,
@@ -219,6 +213,22 @@ export class SurfacingRepository {
     return row ? { outcome: row.outcome, windowId: row.window_id,
       items: row.selected_refs_json ? (JSON.parse(row.selected_refs_json) as { items: SurfaceItem[] }).items : [],
       jobId: row.job_id, sourceMessageId: row.source_message_id, sourceSequence: row.source_sequence } : null;
+  }
+
+  recordSolUsage(jobId: string, attempts: readonly (SolUsage | null)[]): void {
+    const totals: SolUsage = { input_tokens: null, output_tokens: null, cached_tokens: null,
+      cache_write_tokens: null, reasoning_tokens: null };
+    for (const usage of attempts) {
+      if (!usage) continue;
+      for (const key of Object.keys(totals) as Array<keyof SolUsage>) {
+        if (usage[key] != null) totals[key] = (totals[key] ?? 0) + usage[key];
+      }
+    }
+    this.db.prepare('UPDATE surfacing_jobs SET sol_usage_json=? WHERE id=?').run(JSON.stringify({
+      ...totals, request_count: attempts.length,
+      unknown_usage_count: attempts.filter(u => u?.input_tokens == null || u.output_tokens == null).length,
+      attempts,
+    }), jobId);
   }
 
   recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'no_match'): void {

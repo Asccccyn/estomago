@@ -188,8 +188,7 @@ test('AC031：编辑撤销旧修订作业；AC038：enabled=false 零作业零�
   const { db: db2, svc: svc2, messages: m2, log: log2 } = makeService(root2, false);
   m2.submitUserMessageWithTurn({ conversationId: 'c1', content: 'x', clientMessageId: 'd1', occurredAt: T0 });
   assert.equal(log2.calls.length, 0, 'disabled=零网络');
-  const repo2 = new SurfacingRepository(db2);
-  assert.equal(repo2.pendingJobs(10).length, 0, 'disabled=零作业');
+  assert.equal(db2.prepare('SELECT COUNT(*) AS n FROM surfacing_jobs').get()?.n, 0, 'disabled=零作业');
   await svc2.stop();
   db2.close();
 });

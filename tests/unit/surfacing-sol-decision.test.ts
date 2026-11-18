@@ -14,7 +14,7 @@ import { buildRecentDialogue } from '../../apps/host/src/memory-surfacing/trigge
 import { SolDecisionJudge, validateSolDecision, renderSolDynamicInput, type SolDecisionInput } from '../../apps/host/src/memory-surfacing/sol-provider.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 
-function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { mariposaThrows?: boolean; empty?: boolean; rejected?: boolean; windowBytes?: number; items?: SurfaceItem[] } = {}) {
+function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { solResponse?: NonNullable<Parameters<typeof fakeSolJudge>[1]>['response']; mariposaThrows?: boolean; empty?: boolean; rejected?: boolean; windowBytes?: number; items?: SurfaceItem[] } = {}) {
   const { db } = makeDb();
   const caps: string[] = [];
   const payloads: Array<Record<string, unknown>> = [];
@@ -29,7 +29,7 @@ function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { m
     if (cap.endsWith('.check')) return { ok: true, result: { valid: true, accepted_detail_refs: (opts.items ?? []).map(item => item.detail_ref) } };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const sol = fakeSolJudge(solDecisions);
+  const sol = fakeSolJudge(solDecisions, { response: opts.solResponse });
   const svc = new SurfacingService(db, new MariposaClient({ transport }), sol.judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v2',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096, max_packet_bytes: 24576,
@@ -184,8 +184,6 @@ test('recall：Sol 计划真正进入 prepare 载荷（无 event_hypotheses）',
     assert.equal((plan.queries as Array<{ speaker?: string }>)[0].speaker, 'jiaming', '显示名"助手"映射为查询级 M 内部说话人枚举');
     assert.equal((plan.queries as Array<{ semantic: string }>)[0].semantic, '湖边出门约定');
     assert.equal((plan.queries as Array<{ source_mode: string }>)[0].source_mode, 'words_only');
-    const job = f.svc.repo.pendingJobs(10);
-    assert.equal(job.length, 0, 'recall 后作业离开 pending');
   } finally { await f.close(); }
 });
 
@@ -414,5 +412,25 @@ test('单条和候选池总量超预算都如实阻断，旧长消息不被悄�
     assert.equal(f.jobOf(short.message.id).reason_code, 'SURFACE_BODY_TOO_LARGE');
     assert.equal(f.sol.calls(), 0);
     assert.equal(f.caps.length, 0);
+  } finally { await f.close(); }
+});
+
+test('Sol 重试分别记录已知用量和无用量的超时', async () => {
+  let calls = 0;
+  const f = makeFixture([], { solResponse: () => {
+    if (++calls === 1) return { status: 503, json: { usage: { input_tokens: 100, output_tokens: 5 } } };
+    throw Error('transport timeout');
+  } });
+  try {
+    const turn = f.say('retry', '查一下那条合成记录。');
+    await f.judge(turn);
+    const job = f.jobOf(turn.message.id);
+    assert.equal(job.reason_code, 'SURFACE_SOL_TIMEOUT');
+    const ledger = JSON.parse(job.sol_usage_json!);
+    assert.equal(ledger.request_count, 2);
+    assert.equal(ledger.unknown_usage_count, 1);
+    assert.equal(ledger.input_tokens, 100);
+    assert.equal(ledger.output_tokens, 5);
+    assert.equal(ledger.attempts[1], null);
   } finally { await f.close(); }
 });
