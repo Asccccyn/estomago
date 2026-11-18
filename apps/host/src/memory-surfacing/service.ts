@@ -338,10 +338,17 @@ export class SurfacingService {
       return;
     }
     const recent = this.recentDialogue(job.conversation_id, src.sequence, src.text);
+    // SOL_R31：本窗口实际已读内容最小摘要（保留交付+开窗资料节选；同一
+    // 真实窗口跨日有效）——进 Sol 动态输入与 M prepare covered_context，
+    // 供"已知信息不重查/明确要原始措辞仍可查"的增量判断。
+    const activeWindow = (this.db.prepare('SELECT active_window_id FROM conversations WHERE id=?')
+      .get(job.conversation_id) as { active_window_id: string | null } | undefined)?.active_window_id;
+    const coveredContext = this.repo.coveredDigest(job.conversation_id, activeWindow ?? '');
     // —— Sol 三态判断（事务提交后；先于任何 M 检索/JEV）——
     const sol = await this.runSolDecision(job, {
       currentMessage: { text: src.text },
       recentDialogue: recent.map(({ role, text }) => ({ role, text })),
+      ...(coveredContext.length > 0 ? { coveredContext } : {}),
     });
     if (!sol.ok) {
       // 技术失败 ≠ none：独立原因码落作业，主对话照常继续
@@ -399,8 +406,6 @@ export class SurfacingService {
       this.log?.info('surface_need_echo_delivery_bypassed', { job: job.id, previous_job: previous.jobId });
       previous = null;
     }
-    const activeWindow = (this.db.prepare('SELECT active_window_id FROM conversations WHERE id=?')
-      .get(job.conversation_id) as { active_window_id: string | null } | undefined)?.active_window_id;
     const deliveredHere = previous?.windowId && previous.windowId === activeWindow && previous.items.length > 0
       && this.repo.coveredInWindow(job.conversation_id, previous.windowId, previous.items).size === previous.items.length;
     if (previous && (previous.outcome === 'no_match' || deliveredHere)) {
@@ -468,6 +473,7 @@ export class SurfacingService {
       plan: this.planForMariposa(plan),
       ...(excluded_source_ids.length > 0 ? { excluded_source_ids } : {}),
       ...(in_context_source_ids.length > 0 ? { in_context_source_ids } : {}),
+      ...(coveredContext.length > 0 ? { covered_context: coveredContext } : {}),
       deadline_at: new Date(this.deadline(job)).toISOString(),
       // R1/R3（裁定 2026-11-03）：本轮投递预算随载荷过线（最终投影
       // UTF-8 bytes；属操作载荷，同 operation_id 重试须同值——M 端
@@ -528,15 +534,22 @@ export class SurfacingService {
     return second;
   }
 
-  /** est→M 计划：Sol 输出的说话人显示名映射为 M 内部枚举；其余字段原样。 */
+  /** est→M 计划：Sol 输出的查询级字段原样透传（need_kind/need/time_hint/
+   *  语义与关键词）；说话人显示名映射为 M 内部枚举；evidence 逐字触发
+   *  证据是 E 侧合同字段，不下发 M（M 合同无此字段）。 */
   private planForMariposa(plan: SolDecisionPlan): Record<string, unknown> {
     return {
       purpose: plan.purpose,
       route: plan.route,
       breadth: plan.breadth,
-      queries: plan.queries.map(q => ({ semantic: q.semantic, keywords: q.keywords })),
-      time_hint: plan.time_hint,
-      speaker: this.speakerEnumFor(plan.speaker),
+      queries: plan.queries.map(q => ({
+        need_kind: q.need_kind,
+        need: q.need,
+        semantic: q.semantic,
+        keywords: q.keywords,
+        time_hint: q.time_hint,
+        speaker: this.speakerEnumFor(q.speaker),
+      })),
     };
   }
 
@@ -689,7 +702,11 @@ export class SurfacingService {
     for (const it of itemsAll) {
       if (!accepted.has(it.detail_ref)) continue;
       const key = surfaceItemKey(it);
-      if (covered.has(key)) { droppedCovered++; continue; }
+      // SOL_R31/N04：去重共认本窗全部实际交付——coverage 表（自动保留
+      // 交付）+ 正文逐字出现在当前窗轨迹（主动召回结果/携带原文先交过
+      // 片段或全文）任一成立即视为已覆盖，不重复注入正文。
+      const body = it.quote_text || it.event_text || '';
+      if (covered.has(key) || this.repo.textSeenInWindow(input.windowId, body)) { droppedCovered++; continue; }
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(key, ref);
       const candidate = renderAugmentation([...items, it], candidateRefs);

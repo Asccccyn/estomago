@@ -64,7 +64,7 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
   const firstText = '请查我们7月9日建成记忆库的经历。';
   const nextText = '再找一些其他共同建设的经历。';
   const plan = { purpose: '共同项目的真实记录', route: 'event', breadth: 'single',
-    queries: [{ semantic: '记忆库建设', keywords: ['记忆库'] }], time_hint: null, speaker: null };
+    queries: [{ need_kind: 'event', need: '找到记忆库建设经历', semantic: '记忆库建设', keywords: ['记忆库'], time_hint: null, speaker: null }] };
   const sol = fakeSolJudge([
     { decision: 'recall', plan: { ...plan, evidence: [{ user_turn: 1, quote: firstText }] } },
     { decision: 'recall', plan: { ...plan, breadth: 'related', evidence: [{ user_turn: 2, quote: nextText }] } },

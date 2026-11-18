@@ -149,7 +149,7 @@ export function fakeSolJudge(
       .split('\n').filter(line => line.startsWith('用户：')).map(line => line.slice(3));
     const plan = decision.plan ?? {
       purpose: '测试检索目的', route: 'event', breadth: 'single',
-      queries: [{ semantic: '测试语义查询', keywords: ['测试'] }], time_hint: null, speaker: null,
+      queries: [{ need_kind: 'event', need: '找到相关历史事件证据', semantic: '测试语义查询', keywords: ['测试'], time_hint: null, speaker: null }],
     };
     const outputText = JSON.stringify({
       decision: decision.decision,

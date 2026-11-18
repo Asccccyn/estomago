@@ -1,0 +1,3 @@
+# PRE_IMPLEMENTATION_ALIGNMENT 指针
+
+实施前对照报告即本目录 SOL_READONLY_BASELINE.md（2026-11-17 先行发出后才开始改码；冲突项与验证计划见其第 6–7 节，实施差异更正见 SOL_RECALL_REPAIR_IMPLEMENTATION.md 第 3 节）。

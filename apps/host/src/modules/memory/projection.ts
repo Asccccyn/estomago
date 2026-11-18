@@ -58,6 +58,9 @@ export function candidates(v: any[]): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
     const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version']);
+    // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
+    // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）
+    if(c.already_in_window===true)out.already_in_window=true;
     if(out.mood)out.mood=select(out.mood,['text','tags','author']);
     // F-05（跨仓预审 2026-10-25）：resource_ref 是 M 候选卡出站的唯一操作
     // 句柄（memory:/our_word:/source_msg:），否定续查 reject_candidate_ref

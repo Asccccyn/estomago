@@ -102,7 +102,7 @@ test('observe：不查库、保留线索传给下一条消息的判断输入', a
 });
 
 test('recall：Sol 计划真正进入 prepare 载荷（无 event_hypotheses）', async () => {
-  const f = makeFixture([{ decision: 'recall', plan: { purpose: '找湖边牵手约定的原话', route: 'words', breadth: 'single', queries: [{ semantic: '湖边出门约定', keywords: ['牵手', '约定'] }], time_hint: '去年夏天', speaker: '助手' } }]);
+  const f = makeFixture([{ decision: 'recall', plan: { purpose: '找湖边牵手约定的原话', route: 'words', breadth: 'single', queries: [{ need_kind: 'words', need: '找到湖边牵手约定的原话', semantic: '湖边出门约定', keywords: ['牵手', '约定'], time_hint: '去年夏天', speaker: '助手' }] } }]);
   try {
     f.say('u1', '老公！今天我们也要一起牵手手。');
     await new Promise(r => setTimeout(r, 120));
@@ -112,7 +112,7 @@ test('recall：Sol 计划真正进入 prepare 载荷（无 event_hypotheses）',
     assert.ok(!('event_hypotheses' in prepare), '旧 event_hypotheses 不再发送');
     const plan = prepare.plan as Record<string, unknown>;
     assert.equal(plan.route, 'words');
-    assert.equal(plan.speaker, 'jiaming', '显示名"助手"映射为 M 内部说话人枚举');
+    assert.equal((plan.queries as Array<{ speaker?: string }>)[0].speaker, 'jiaming', '显示名"助手"映射为查询级 M 内部说话人枚举');
     assert.equal((plan.queries as Array<{ semantic: string }>)[0].semantic, '湖边出门约定');
     const job = f.svc.repo.pendingJobs(10);
     assert.equal(job.length, 0, 'recall 后作业离开 pending');
@@ -157,7 +157,7 @@ test('Sol 技术失败：blocked + 独立原因码，绝不回填 none', async (
 
 test('结构合格但语义矛盾（recall 无 plan / none 带 plan）= 判断失败', () => {
   assert.equal(validateSolDecision({ decision: 'recall', topic: 'new', basis: 'b', plan: null }), null);
-  assert.equal(validateSolDecision({ decision: 'none', topic: 'new', basis: 'b', plan: { purpose: 'x', route: 'event', breadth: 'single', queries: [{ semantic: 's', keywords: [] }], time_hint: null, speaker: null } }), null);
+  assert.equal(validateSolDecision({ decision: 'none', topic: 'new', basis: 'b', plan: { purpose: 'x', route: 'event', breadth: 'single', queries: [{ need_kind: 'event', need: 'n', semantic: 's', keywords: [], time_hint: null, speaker: null }] } }), null);
   assert.equal(validateSolDecision({ decision: 'observe', topic: 'same', basis: 'b', plan: null })?.decision, 'observe');
 });
 
@@ -225,10 +225,10 @@ function solInputFixture(current = '当前消息内容'): SolDecisionInput {
   };
 }
 
-const needPlan = (quote: string, userTurn = 1, purpose = '核对湖边约定') => ({
-  purpose, route: 'event', breadth: 'single',
-  queries: [{ semantic: '寻找湖边约定的记录', keywords: ['湖边', '约定'] }],
-  time_hint: null, speaker: null, evidence: [{ user_turn: userTurn, quote }],
+const needPlan = (quote: string, userTurn = 1, purpose = '核对湖边约定', route: 'event' | 'words' = 'event') => ({
+  purpose, route, breadth: 'single',
+  queries: [{ need_kind: route, need: route === 'words' ? '找到当时原话' : '找到相关历史事件证据', semantic: '寻找湖边约定的记录', keywords: ['湖边', '约定'], time_hint: null, speaker: null }],
+  evidence: [{ user_turn: userTurn, quote }],
 });
 
 test('已完成空查询：同一原话依据换用途措辞不重查；新日期/原句/明确重查仍可查', async () => {
@@ -238,9 +238,9 @@ test('已完成空查询：同一原话依据换用途措辞不重查；新日�
   const f = makeFixture([
     { decision: 'recall', plan: needPlan(original) },
     { decision: 'recall', plan: { ...needPlan(original, 1, '找回那晚我们约好的事情'), breadth: 'related' } },
-    { decision: 'recall', plan: { ...needPlan(correction, 3), time_hint: '8月9日' } },
-    { decision: 'recall', plan: { ...needPlan(words, 4), route: 'words' } },
-    { decision: 'recall', plan: { ...needPlan('请再查一次', 4), route: 'words' } },
+    { decision: 'recall', plan: { ...needPlan(correction, 3), queries: [{ ...needPlan(correction, 3).queries[0], time_hint: '8月9日' }] } },
+    { decision: 'recall', plan: { ...needPlan(words, 4, '找回当时的原话', 'words') } },
+    { decision: 'recall', plan: { ...needPlan('请再查一次', 4, '再核对一次原话', 'words') } },
   ], { empty: true });
   const send = async (id: string, text: string) => {
     const u = f.say(id, text);
