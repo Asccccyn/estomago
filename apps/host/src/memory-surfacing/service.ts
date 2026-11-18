@@ -15,7 +15,7 @@ import type { Db } from '../db/connection.ts';
 import { isCallActivityActive } from '../modules/voice/call-service.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
-import { SurfacingRepository, type JobRow } from './repository.ts';
+import { SOL_INPUT_TOO_LARGE, SurfacingRepository, type JobRow } from './repository.ts';
 import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
@@ -310,7 +310,7 @@ export class SurfacingService {
     const src = this.sourceInputOf(job);
     const recent = this.solCandidateDialogue(job.conversation_id, src.sequence, src.text);
     if (recent === null) {
-      this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: 'SURFACE_BODY_TOO_LARGE' });
+      this.repo.transition(job.id, ['preparing'], 'blocked', { reason_code: SOL_INPUT_TOO_LARGE });
       return;
     }
     const activeWindow = input.windowId;
@@ -981,22 +981,16 @@ export class SurfacingService {
     return { messageId: row.id, revision: row.revision, sequence: row.sequence, text: effectiveRevisionText(this.db, row.id, row.revision, row.content), bodyHash: row.content_hash, occurredAt: row.occurred_at };
   }
 
-  /** Sol 在当前输入之前读取最近一次明确收口之后发布的所有原话。 */
+  /** 从最近的 none、确认送达或 Sol 输入超限边界之后读取双方原话。 */
   private solCandidateDialogue(conversationId: string, beforeSequence: number, currentText: string): RecentMessage[] | null {
     let bytes = Buffer.byteLength(currentText, 'utf8');
     if (bytes > this.cfg.recent_window_bytes) return null;
-    const boundary = this.db.prepare(`SELECT COALESCE(MAX(j.source_sequence), 0) AS seq
-      FROM surfacing_jobs j JOIN messages m ON m.id=j.source_message_id AND m.current_revision=j.source_revision
-      WHERE j.conversation_id=? AND j.source_sequence<? AND (
-        (j.state='empty' AND j.sol_decision='none' AND j.reason_code='SURFACE_SOL_NONE')
-        OR (j.state='retained' AND EXISTS (SELECT 1 FROM surfacing_deliveries d
-          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1)))`
-    ).get(conversationId, beforeSequence) as { seq: number };
+    const boundary = this.repo.solInputBoundary(conversationId, beforeSequence);
     const rows = this.db.prepare(`SELECT m.id, m.sequence, m.speaker, m.current_revision AS rev, r.content, r.occurred_at
       FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
       WHERE m.conversation_id=? AND m.sequence>? AND m.sequence<? AND m.published_at IS NOT NULL
         AND m.speaker IN ('owner','assistant') ORDER BY m.sequence`
-    ).iterate(conversationId, boundary.seq, beforeSequence) as Iterable<{
+    ).iterate(conversationId, boundary, beforeSequence) as Iterable<{
       id: string; sequence: number; speaker: RecentMessage['role']; rev: number; content: string; occurred_at: string | null;
     }>;
     const dialogue: RecentMessage[] = [];

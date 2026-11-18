@@ -39,6 +39,12 @@ export type JobRow = {
 
 const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at, m_policy_revision, m_prompt_revision';
 
+export const SOL_INPUT_TOO_LARGE = 'SURFACE_SOL_INPUT_TOO_LARGE';
+// 旧 E 作业共用 BODY_TOO_LARGE。只有构造 Sol 输入时，两端为同一修订，且尚无 Sol 决定和 M 操作号。
+const SOL_INPUT_OVERFLOW_JOB = `(j.state='blocked' AND j.sol_decision IS NULL AND j.m_operation_id IS NULL
+  AND j.target_message_id=j.source_message_id AND j.target_revision=j.source_revision
+  AND j.reason_code IN ('${SOL_INPUT_TOO_LARGE}', 'SURFACE_BODY_TOO_LARGE'))`;
+
 export class SurfacingRepository {
   private db: Db;
   private emit?: (p: SurfaceJobEventPayload) => void;
@@ -131,16 +137,18 @@ export class SurfacingRepository {
   }
 
   cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
-    const affected = this.db.prepare(
-      `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
-         ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
-    ).all(conversationId, messageId, supersededRevision, messageId, supersededRevision) as Array<{ id: string; state: SurfacingJobState }>;
-    // 修订失效原因落行（她 1021 执行稿：修订一致性可取证）；交付行不动
+    // 停止回合也走这里。保留已经发生的输入超限；真正编辑后由当前修订判定边界有效性。
+    const where = `j.conversation_id=? AND ((j.source_message_id=? AND j.source_revision=?)
+      OR (j.target_message_id=? AND j.target_revision=?)) AND j.state NOT IN
+      ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')
+      AND ${SOL_INPUT_OVERFLOW_JOB} IS NOT TRUE`;
+    const args = [conversationId, messageId, supersededRevision, messageId, supersededRevision];
+    const affected = this.db.prepare(`SELECT j.id, j.state FROM surfacing_jobs j WHERE ${where}`)
+      .all(...args) as Array<{ id: string; state: SurfacingJobState }>;
     const r = this.db.prepare(
-      `UPDATE surfacing_jobs SET state='cancelled', reason_code='SOURCE_OR_TARGET_REVISED', updated_at=?
-       WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
-         ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
-    ).run(new Date().toISOString(), conversationId, messageId, supersededRevision, messageId, supersededRevision);
+      `UPDATE surfacing_jobs AS j SET state='cancelled', reason_code='SOURCE_OR_TARGET_REVISED', updated_at=?
+       WHERE ${where}`,
+    ).run(new Date().toISOString(), ...args);
     for (const row of affected) {
       this.emitState(row.id, row.state, 'cancelled', { reason_code: 'SOURCE_OR_TARGET_REVISED' });
     }
@@ -193,6 +201,18 @@ export class SurfacingRepository {
     return this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started') ORDER BY created_at ASC`,
     ).all() as JobRow[];
+  }
+
+  solInputBoundary(conversationId: string, beforeSequence: number): number {
+    const row = this.db.prepare(`SELECT COALESCE(MAX(j.source_sequence), 0) AS seq
+      FROM surfacing_jobs j JOIN messages m ON m.id=j.source_message_id AND m.current_revision=j.source_revision
+      WHERE j.conversation_id=? AND j.source_sequence<? AND (
+        (j.state='empty' AND j.sol_decision='none' AND j.reason_code='SURFACE_SOL_NONE')
+        OR ${SOL_INPUT_OVERFLOW_JOB}
+        OR (j.state='retained' AND EXISTS (SELECT 1 FROM surfacing_deliveries d
+          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1)))`
+    ).get(conversationId, beforeSequence) as { seq: number };
+    return row.seq;
   }
 
   /** 已完成需要来自现有作业与实际交付，不另存会话消费指针。 */

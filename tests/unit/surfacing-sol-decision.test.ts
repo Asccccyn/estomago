@@ -14,7 +14,7 @@ import { buildRecentDialogue } from '../../apps/host/src/memory-surfacing/trigge
 import { SolDecisionJudge, validateSolDecision, renderSolDynamicInput, type SolDecisionInput } from '../../apps/host/src/memory-surfacing/sol-provider.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 
-function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { solResponse?: NonNullable<Parameters<typeof fakeSolJudge>[1]>['response']; mariposaThrows?: boolean; empty?: boolean; rejected?: boolean; windowBytes?: number; items?: SurfaceItem[] } = {}) {
+function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { solResponse?: NonNullable<Parameters<typeof fakeSolJudge>[1]>['response']; mariposaThrows?: boolean; empty?: boolean; capacityStatus?: 'rejected' | 'blocked'; windowBytes?: number; items?: SurfaceItem[] } = {}) {
   const { db } = makeDb();
   const caps: string[] = [];
   const payloads: Array<Record<string, unknown>> = [];
@@ -22,7 +22,7 @@ function makeFixture(solDecisions: Parameters<typeof fakeSolJudge>[0], opts: { s
     caps.push(cap);
     payloads.push(payload as Record<string, unknown>);
     if (opts.mariposaThrows) return { ok: false, code: 'SURFACE_TRANSPORT', httpStatus: 502 };
-    if (cap.endsWith('.prepare') && opts.rejected) return { ok: true, result: { status: 'rejected', reason_code: 'SURFACE_BODY_TOO_LARGE' } };
+    if (cap.endsWith('.prepare') && opts.capacityStatus) return { ok: true, result: { status: opts.capacityStatus, reason_code: 'SURFACE_BODY_TOO_LARGE' } };
     if (cap.endsWith('.prepare') && opts.empty) return { ok: true, result: { status: 'empty', reason_code: null } };
     if (cap.endsWith('.prepare')) return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_t' } };
     if (cap.endsWith('.validate')) return { ok: true, result: { status: 'ready', validation_receipt: 'svr_t', items: opts.items ?? [], reason_code: null } };
@@ -107,7 +107,7 @@ test('observe：不查库、保留线索传给下一条消息的判断输入', a
     assert.ok(!dyn.includes('pending_judgment') && !dyn.includes('last_retrieval')
       && !dyn.includes('business_date') && !dyn.includes('already_in_context'),
       '后台状态字段不进 Sol 输入（F7）');
-    assert.ok(dyn.includes('小浣熊'), '原话进入判断输入');
+    assert.ok(f.dynamic(1).includes(u1.message.revision.content), 'observe 之前的完整原话进入下一次判断');
   } finally { await f.close(); }
 });
 
@@ -347,8 +347,10 @@ test('已完成空查询：同一原话依据换用途措辞不重查；新日�
     return f.jobOf(u.message.id);
   };
   try {
-    await send('u1', original);
+    const empty = await send('u1', original);
+    assert.equal(JSON.parse(empty.sol_plan_json!).need_outcome, 'no_match');
     const ack = await send('u2', '嗯，我就是想到那晚。');
+    assert.ok(f.dynamic(1).includes(original), '检索空结果保留原话池');
     assert.equal(ack.reason_code, 'SURFACE_NEED_ALREADY_SEARCHED');
     assert.equal(f.caps.length, 1);
     await send('u3', correction);
@@ -382,36 +384,92 @@ test('编造或错指用户原话依据是无效输出；技术失败不消费�
   } finally { await f.close(); }
 });
 
-test('M接纳或容量拒绝不登记为正常查完空结果', async () => {
-  const original = '帮我查湖边那晚的约定。';
-  const f = makeFixture([{ decision: 'recall', plan: needPlan(original) }], { rejected: true });
+for (const status of ['blocked', 'rejected'] as const) {
+  test(`M 容量回包 ${status} 保留观察池和未满足的需要`, async () => {
+    const original = '帮我查湖边那晚的约定。';
+    const f = makeFixture([{ decision: 'recall', plan: needPlan(original) }], { capacityStatus: status });
+    try {
+      for (const [id, text] of [['a', original], ['b', '嗯，就是那个约定。']]) {
+        const u = f.say(id, text);
+        await f.judge(u);
+        const job = f.jobOf(u.message.id);
+        assert.equal(job.state, status);
+        assert.equal(job.reason_code, 'SURFACE_BODY_TOO_LARGE');
+        assert.equal(JSON.parse(job.sol_plan_json!).need_outcome, undefined);
+      }
+      assert.ok(f.dynamic(1).includes(original));
+      assert.equal(f.caps.length, 2);
+    } finally { await f.close(); }
+  });
+}
+
+test('单条原话超过默认字节预算，保留正本并从下一条短句恢复', async () => {
+  const f = makeFixture([{ decision: 'observe' }, { decision: 'none' }]);
   try {
-    for (const [id, text] of [['a', original], ['b', '嗯，就是那个约定。']]) {
-      const u = f.say(id, text);
-      await f.judge(u);
-      assert.equal(f.jobOf(u.message.id).state, 'rejected');
-      assert.equal(f.jobOf(u.message.id).reason_code, 'SURFACE_BODY_TOO_LARGE');
-      assert.equal(JSON.parse(f.jobOf(u.message.id).sol_plan_json!).need_outcome, undefined);
-    }
-    assert.equal(f.caps.length, 2, '未检索完成不能抑制仍未满足的需要');
+    const text = '合'.repeat(8193);
+    const long = f.say('long', text);
+    await f.judge(long);
+    const blocked = f.jobOf(long.message.id);
+    assert.equal(blocked.state, 'blocked');
+    assert.equal(blocked.reason_code, 'SURFACE_SOL_INPUT_TOO_LARGE');
+    assert.equal(blocked.sol_decision, null);
+    assert.equal(f.sol.calls(), 0);
+
+    f.svc.cancelForTurn(long.turnId); // 用户在主模型派发前停止本轮，消息修订仍有效。
+    assert.equal(f.jobOf(long.message.id).reason_code, blocked.reason_code);
+    const first = f.say('short1', '新段第一句');
+    await f.judge(first);
+    assert.equal(f.jobOf(first.message.id).sol_decision, 'observe');
+    const second = f.say('short2', '新段第二句');
+    await f.judge(second);
+    assert.equal(f.jobOf(second.message.id).sol_decision, 'none');
+    assert.equal(f.sol.calls(), 2);
+    assert.doesNotMatch(f.dynamic(0), /合/);
+    assert.doesNotMatch(f.dynamic(1), /合/);
+    assert.match(f.dynamic(1), /新段第一句[\s\S]*新段第二句/);
+    assert.equal(f.messages.getMessage(long.message.id)!.revision.content, text);
+    assert.equal(f.caps.length, 0);
   } finally { await f.close(); }
 });
 
-test('单条和候选池总量超预算都如实阻断，旧长消息不被悄悄截丢', async () => {
-  const f = makeFixture([{ decision: 'none' }], { windowBytes: 64 });
+test('双方原话累计超限，边界落在触发回合，之后发布的助手原话进入下一次判断', async () => {
+  const f = makeFixture([{ decision: 'observe' }, { decision: 'none' }], { windowBytes: 24 });
   try {
-    const text = '合成'.repeat(20);
-    const long = f.say('long', text);
-    await f.judge(long);
-    assert.equal(f.jobOf(long.message.id).state, 'blocked');
-    assert.equal(f.jobOf(long.message.id).reason_code, 'SURFACE_BODY_TOO_LARGE');
-    assert.equal(long.message.revision.content, text);
-    assert.equal(f.sol.calls(), 0);
-    const short = f.say('short', '现在正常聊聊。');
-    await f.judge(short);
-    assert.equal(f.jobOf(short.message.id).reason_code, 'SURFACE_BODY_TOO_LARGE');
-    assert.equal(f.sol.calls(), 0);
+    const first = f.say('first', '甲'.repeat(4));
+    await f.judge(first);
+    const reply = f.messages.publishAssistantMessage({ conversationId: 'c1', turnId: first.turnId, content: '乙'.repeat(4) });
+    const last = f.say('last', '丙');
+    await f.judge(last);
+    const job = f.jobOf(last.message.id);
+    assert.equal(job.state, 'blocked');
+    assert.equal(job.reason_code, 'SURFACE_SOL_INPUT_TOO_LARGE');
+    assert.equal(job.sol_decision, null);
+    assert.equal(f.sol.calls(), 1);
+    f.messages.publishAssistantMessage({ conversationId: 'c1', turnId: last.turnId, content: '段后回复' });
+
+    const next = f.say('next', '新短句');
+    await f.judge(next);
+    assert.equal(f.jobOf(next.message.id).sol_decision, 'none');
+    assert.equal(f.sol.calls(), 2);
+    assert.match(f.dynamic(1), /段后回复[\s\S]*新短句/);
+    assert.doesNotMatch(f.dynamic(1), /甲|乙|丙/);
+    assert.equal(f.messages.getMessage(first.message.id)!.revision.content, '甲'.repeat(4));
+    assert.equal(f.messages.getMessage(reply.id)!.revision.content, '乙'.repeat(4));
+    assert.equal(f.messages.getMessage(last.message.id)!.revision.content, '丙');
     assert.equal(f.caps.length, 0);
+  } finally { await f.close(); }
+});
+
+test('超限消息在派发前合法缩短，新修订进入观察池', async () => {
+  const f = makeFixture([{ decision: 'observe' }], { windowBytes: 12 });
+  try {
+    const long = f.say('long', '甲'.repeat(5));
+    await f.judge(long);
+    const edited = f.messages.editUserMessage(long.message.id, '改短');
+    assert.equal(edited.current_revision, 2);
+    await f.judge(f.say('next', '继续'));
+    assert.equal(f.sol.calls(), 1);
+    assert.match(f.dynamic(0), /改短[\s\S]*继续/);
   } finally { await f.close(); }
 });
 
@@ -432,5 +490,7 @@ test('Sol 重试分别记录已知用量和无用量的超时', async () => {
     assert.equal(ledger.input_tokens, 100);
     assert.equal(ledger.output_tokens, 5);
     assert.equal(ledger.attempts[1], null);
+    await f.judge(f.say('after-timeout', '还记得吗？'));
+    assert.ok(f.dynamic(2).includes(turn.message.revision.content), '超时后仍从同一段原话判断');
   } finally { await f.close(); }
 });
