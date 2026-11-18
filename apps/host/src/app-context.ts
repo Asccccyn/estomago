@@ -380,9 +380,12 @@ export class Host {
     // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
     const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
+    // 包4 §6.2（03_PROJECTION_MIGRATION）：模型可见说话人标签统一取身份配置
+    // 的双方真实姓名（宿主用户/char）——memory/conversation 域投影共用同一份。
+    const speakerLabels = (await import('./identity/speaker-labels.ts')).speakerLabelsFromConfig(opts.config);
     // P04.2-4：memory 域（14 工具；同一服务实例供换窗评审恢复窄委托）
     const memoryService = (await import('./modules/memory/module.ts')).registerMemoryCapabilities(capabilityRegistry, {
-      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync,
+      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, speakerLabels,
     });
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: oidoSources, audio: media, artifacts: media,
@@ -461,7 +464,7 @@ export class Host {
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
-      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync,
+      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync, speakerLabels,
     });
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。

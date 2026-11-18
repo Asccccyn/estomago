@@ -1,6 +1,7 @@
 import { coverageRanges } from '../memory-surfacing/window-coverage.ts';
 import type { CoverageRange } from '../capabilities/contracts.ts';
 import { sha256Hex } from '../util/id.ts';
+import { speakerLabelsFromConfig } from '../identity/speaker-labels.ts';
 // 窗口开窗资料（Mariposa bootstrap B 段）分页装配机——R3（2026-11-07）纯搬迁自
 // supervisor.ts：与聊天主链零共享状态，独立缓存与分页协议（SNAPSHOT_STALE 整包重建、
 // 瞬时全局失败一次、完整成功才进缓存）。行为逐字保留。
@@ -372,6 +373,9 @@ export class WindowBootstrapMachine {
           }
         }
         const deliveredRanges: CoverageRange[] = [];
+        // 包4 §6.2：our_words 行首署名用身份配置的双方真实姓名（旧「他/她」
+        // 代词退役）；our_words speaker 域为 jiaming/qiaosheng，其余值沿用旧行为。
+        const wordLabels = speakerLabelsFromConfig(d.config);
         const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
         if (days.length > 0) {
           seg.push('近三日记忆：');
@@ -399,7 +403,7 @@ export class WindowBootstrapMachine {
             deliveredRanges.push(...coverageRanges(it.our_words_coverage));
             const words0 = it.our_words as unknown;
             for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
-              for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? '他' : '她'}：${wt}`);
+              for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? wordLabels.assistant : g?.speaker === 'qiaosheng' ? wordLabels.owner : '她'}：${wt}`);
             }
             if (typeof it.__bootNote === 'string') seg.push(`  ${it.__bootNote}`);
           }

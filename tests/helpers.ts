@@ -191,6 +191,8 @@ export type TestToolDeps = {
   taskService?: unknown; oido?: unknown; mediaIndex?: unknown;
   sirenCall?: unknown; tz?: unknown;
   archives?: unknown; imagegen?: unknown;
+  /** 包4 §6.2：镜像 app-context 的说话人标签注入（缺席=投影原值直通）。 */
+  speakerLabels?: import('../apps/host/src/identity/speaker-labels.ts').SpeakerLabels;
 };
 
 export function assembleTestTools(deps: TestToolDeps): {
@@ -210,11 +212,13 @@ export function assembleTestTools(deps: TestToolDeps): {
     surfaceDetailClient: (deps.surfaceDetailClient ?? null) as never,
     reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never,
     archiveSync: (deps.archiveSync ?? null) as never,
+    speakerLabels: deps.speakerLabels,
   });
   registerConversationCapabilities(registry, {
     db, tz: (deps.tz ?? null) as string | null, messages: (deps.messages ?? null) as never,
     media: (deps.media ?? null) as never, events: (deps.events ?? null) as never,
     archiveSync: (deps.archiveSync ?? null) as never,
+    speakerLabels: deps.speakerLabels,
   });
   registerWishstarCapabilitiesInstance(registry, { wishstar: (deps.wishstar ?? null) as never });
   registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, contentOps: (deps.contentOps ?? null) as never });

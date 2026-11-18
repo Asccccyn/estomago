@@ -4,6 +4,7 @@
 // 已冻结旧包原样保留；错误不整串发给主模型。
 import { createHash } from 'node:crypto';
 import { validateAbsoluteIso } from '../util/time.ts';
+import { speakerLabelFor, type SpeakerLabels } from '../identity/speaker-labels.ts';
 import type { CoverageRange } from './window-coverage.ts';
 
 // —— E 作业状态机（docs/02；CAS 边校验 state+generation+source_revision+target_revision）——
@@ -104,26 +105,28 @@ function eventTimeText(item: SurfaceItem): string {
 
 /** 渲染注入块（docs/04 投影示例；正文逐字原样，日期取真实事件日期，
  * 不确定日期以 null 表达）。kind=words 额外保留真实说话人与引语原文；
- * kind=source 保留来源区间原文——都不截断、不改写。 */
-export function projectSurfacedMemory(item: SurfaceItem): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind } {
+ * kind=source 保留来源区间原文——都不截断、不改写。speaker 按包4 §6.2
+ * 投影为身份配置的双方真实姓名；第三方/未知身份沿用原值。 */
+export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind } {
   const kind = item.kind ?? 'event';
   const date = eventTimeText(item);
   const context = item.source_context_text && item.source_context_text.length > 0 ? item.source_context_text : undefined;
   if (kind === 'words' || kind === 'source') {
-    return { date: date === '不确定' ? null : date, text: item.quote_text ?? item.event_text, speaker: item.speaker ?? null, ...(context !== undefined ? { context } : {}), kind };
+    const speaker = item.speaker ?? null;
+    return { date: date === '不确定' ? null : date, text: item.quote_text ?? item.event_text, speaker: labels ? speakerLabelFor(speaker, labels) as string | null : speaker, ...(context !== undefined ? { context } : {}), kind };
   }
   return { date: date === '不确定' ? null : date, text: item.event_text, kind };
 }
 
 export type MissingQuote = { kind: 'raw_context' | 'words_only' | 'words'; status: 'no_match' | 'access_blocked' | 'incomplete' };
 
-export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>, missing: MissingQuote[] = []): string {
+export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>, missing: MissingQuote[] = [], labels?: SpeakerLabels): string {
   if (items.length === 0 && missing.length === 0) return '';
   return JSON.stringify({ memories: items.map(item => {
     const key = surfaceItemKey(item);
     const ref = refs?.get(key) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
     if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
-    const projected = projectSurfacedMemory(item);
+    const projected = projectSurfacedMemory(item, labels);
     return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), ...(item.unread_parts ? { unread_parts: item.unread_parts } :
       projected.text ? { text: projected.text } : {}) };
   }), ...(missing.length ? { missing } : {}) });

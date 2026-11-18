@@ -725,14 +725,14 @@ export class SurfacingService {
       const key = surfaceItemKey(it);
       const ref = memoryRefFor(it.detail_ref);
       const candidateRefs = new Map(refs).set(key, ref);
-      const candidate = renderAugmentation([...items, it], candidateRefs, missing);
+      const candidate = renderAugmentation([...items, it], candidateRefs, missing, this.speakerNames);
       if (!fitsPacket(candidate)) { droppedBudget++; continue; }
       items.push(it);
       covered.push(...surfaceItemRanges(it));
       refs.set(key, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
-    const text = renderAugmentation(items, refs, missing);
+    const text = renderAugmentation(items, refs, missing, this.speakerNames);
     const missingOnly = items.length === 0 && missing.length > 0 && droppedCovered === itemsAll.length;
     if (missingOnly && !fitsPacket(text)) droppedBudget++;
     if (items.length === 0 && (!missingOnly || droppedBudget > 0)) {

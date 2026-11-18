@@ -409,12 +409,15 @@ export type MemoryModuleDeps = {
   reviews: import('../../context/rotation-review.ts').RotationReviewService;
   checkpoint: import('../../memory/hold-checkpoint.ts').HoldCheckpointService;
   archiveSync?: { drainOnce(): Promise<unknown> } | null;
+  /** 包4 §6.2：召回/深读/订正等结果里的说话人标签投影用（身份配置的双方姓名）。 */
+  speakerLabels?: import('../../identity/speaker-labels.ts').SpeakerLabels;
 };
 
 /** 装配入口：memory 域已迁能力。 */
 export function registerMemoryCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: MemoryModuleDeps, service?: MemoryToolsService): MemoryToolsService {
   const svc = service ?? new MemoryToolsService(deps);
   void svc;
+  const labels = deps.speakerLabels;
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_hold', baselineOrder: 1, definition: memoryHoldDefinition, memoryOnlyAllowed: true, label: '写记忆',
@@ -425,19 +428,19 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     owner: 'memory',
     id: 'memory_recall', baselineOrder: 2, definition: () => MEMORYRECALL_DEFINITION, memoryOnlyAllowed: true, label: '查记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryRecall(input as never, ctx),
-    toModel: (value, input) => projectMemoryToolResult('memory_recall', input as Record<string, unknown>, value as Record<string, unknown>),
+    toModel: (value, input) => projectMemoryToolResult('memory_recall', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_recall_next', baselineOrder: 3, definition: () => MEMORYRECALLNEXT_DEFINITION, memoryOnlyAllowed: true, label: '翻查记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryRecallNext(input as never, ctx),
-    toModel: (value, input) => projectMemoryToolResult('memory_recall_next', input as Record<string, unknown>, value as Record<string, unknown>),
+    toModel: (value, input) => projectMemoryToolResult('memory_recall_next', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_read_full', baselineOrder: 4, free: true, definition: () => MEMORYREADFULL_DEFINITION, memoryOnlyAllowed: true, label: 'memory_read_full',
     run: (input: Record<string, unknown>, ctx) => svc.memoryReadFull(input as never, ctx),
-    toModel: (value, input) => projectMemoryToolResult('memory_read_full', input as Record<string, unknown>, value as Record<string, unknown>),
+    toModel: (value, input) => projectMemoryToolResult('memory_read_full', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
   registry.register(toolCapability({
     owner: 'memory',
@@ -473,13 +476,13 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     owner: 'memory',
     id: 'memory_open', baselineOrder: 10, definition: () => MEMORYOPEN_DEFINITION, memoryOnlyAllowed: true, label: '打开记忆桶',
     run: (input: Record<string, unknown>, ctx) => svc.memoryOpenTool(input as never, ctx),
-    toModel: (value, input) => projectMemoryToolResult('memory_open', input as Record<string, unknown>, value as Record<string, unknown>),
+    toModel: (value, input) => projectMemoryToolResult('memory_open', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_correct', group: 'D', baselineOrder: 11, definition: () => MEMORYCORRECT_DEFINITION, memoryOnlyAllowed: true, label: '订正记忆',
     run: (input: Record<string, unknown>, ctx) => svc.memoryCorrect(input as never, ctx),
-    toModel: (value, input) => projectMemoryToolResult('memory_correct', input as Record<string, unknown>, value as Record<string, unknown>),
+    toModel: (value, input) => projectMemoryToolResult('memory_correct', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
   registry.register(toolCapability({
     owner: 'memory',

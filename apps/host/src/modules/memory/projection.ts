@@ -1,6 +1,9 @@
 // modules/memory/projection.ts（P04.2-4）：memory/plan/episode 域的模型投影（owner 拥有）。
 // 从 runtime/model-results.ts 逐字搬迁：共享选择器与各分支；键序/白名单/逐字正文语义不变（D19/D34）。
 // runtime/model-results.ts 退役后只保留通用 modelFailure（capabilities/executor 使用）。
+// 包4 §6.2：宿主生成的说话人/作者标签按身份配置投影为双方真实姓名
+// （宿主用户/char）；正文、引语与第三方署名逐字保留，labels 缺席=原值直通。
+import { speakerLabelFor, type SpeakerLabels } from '../../identity/speaker-labels.ts';
 type Obj = Record<string, any>;
 const obj = (v: any): Obj => v && typeof v === 'object' && !Array.isArray(v) ? v : {};
 const list = (v: any): any[] => Array.isArray(v) ? v : [];
@@ -21,10 +24,11 @@ function relation(v: Obj): Obj {
   }
   return out;
 }
-function word(v: Obj): Obj { return select(v,['word_id','speaker','text','source_ref','source_binding_version']); }
-function recollection(v: Obj): Obj { return select(v,['recollection_id','author','text','supersedes']); }
-function keep(v: Obj): Obj {
+function word(v: Obj, labels?: SpeakerLabels): Obj { const out = select(v,['word_id','speaker','text','source_ref','source_binding_version']); if(labels && typeof out.speaker === 'string') out.speaker = speakerLabelFor(out.speaker, labels); return out; }
+function recollection(v: Obj, labels?: SpeakerLabels): Obj { const out = select(v,['recollection_id','author','text','supersedes']); if(labels && typeof out.author === 'string') out.author = speakerLabelFor(out.author, labels); return out; }
+function keep(v: Obj, labels?: SpeakerLabels): Obj {
   const out = select(v,['mark_id','owner','recollection_id']);
+  if(labels && typeof out.owner === 'string') out.owner = speakerLabelFor(out.owner, labels);
   if (v.revoked_at) out.revoked = true;
   return out;
 }
@@ -54,13 +58,14 @@ function identity(v: Obj, history=false): Obj {
   if (Array.isArray(v.relations)) out.relations=v.relations.map(relation);
   return out;
 }
-export function candidates(v: any[]): Obj[] {
+export function candidates(v: any[], labels?: SpeakerLabels): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
     const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','content_version','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
+    if(labels && typeof out.speaker === 'string') out.speaker = speakerLabelFor(out.speaker, labels);
     // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
     // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）
-    if(out.mood)out.mood=select(out.mood,['text','tags','author']);
+    if(out.mood){out.mood=select(out.mood,['text','tags','author']);if(labels && typeof out.mood.author === 'string') out.mood.author = speakerLabelFor(out.mood.author, labels);}
     // F-05（跨仓预审 2026-10-25）：resource_ref 是 M 候选卡出站的唯一操作
     // 句柄（memory:/our_word:/source_msg:），否定续查 reject_candidate_ref
     // 按工具声明原样回传它——不能因 memory_id/word_id 在场而删（此前事件卡
@@ -85,8 +90,8 @@ export function candidates(v: any[]): Obj[] {
     return out;
   });
 }
-function recall(v: Obj): Obj {
-  const out: Obj={candidates:candidates(list(v.candidates))};
+function recall(v: Obj, labels?: SpeakerLabels): Obj {
+  const out: Obj={candidates:candidates(list(v.candidates),labels)};
   // Existing argument contracts require session plus continuation reference/channel.
   Object.assign(out,select(v,['recall_session_id','continuation_note','next','missing']));
   if(v.judge_mode==='off')out.judgement='unjudged';
@@ -103,11 +108,34 @@ function recall(v: Obj): Obj {
   return out;
 }
 
+/** memory_read_full 深读投影：M detail 页保持自身独立合同（字段原样），
+ * 仅把宿主生成的双方说话人/作者标签换成身份配置的真实姓名（包4 §6.2）。
+ * source[].normalized_sender 是第三方/协议通道标签，不在映射域。 */
+function readFull(v: Obj, labels?: SpeakerLabels): Obj {
+  if (!labels) return v;
+  const out: Obj = { ...v };
+  const labelSpeaker = (row: Obj): Obj => typeof row.speaker === 'string' ? { ...row, speaker: speakerLabelFor(row.speaker, labels) } : row;
+  const labelAuthor = (row: Obj): Obj => typeof row.author === 'string' ? { ...row, author: speakerLabelFor(row.author, labels) } : row;
+  if (Array.isArray(out.our_words)) out.our_words = (out.our_words as Obj[]).map(labelSpeaker);
+  if (Array.isArray(out.source)) out.source = (out.source as Obj[]).map(labelSpeaker);
+  if (Array.isArray(out.mood)) out.mood = (out.mood as Obj[]).map(labelAuthor);
+  else if (out.mood && typeof out.mood === 'object' && !Array.isArray(out.mood)) out.mood = labelAuthor(out.mood as Obj);
+  if (Array.isArray(out.recollections)) out.recollections = (out.recollections as Obj[]).map(labelAuthor);
+  if (Array.isArray(out.keeps)) out.keeps = (out.keeps as Obj[]).map((k: Obj) => {
+    const next = { ...k };
+    if (Array.isArray(next.marks)) next.marks = (next.marks as Obj[]).map((m: Obj) => typeof m.owner === 'string' ? { ...m, owner: speakerLabelFor(m.owner, labels) } : m);
+    if (Array.isArray(next.by)) next.by = (next.by as unknown[]).map(o => speakerLabelFor(o, labels));
+    return next;
+  });
+  return out;
+}
+
 /** memory/plan/episode 域工具投影（原 modelResult 逐字；conversation_read 分支已归 conversation 域）。
  *  Called after host validation and side-effect accounting, before trajectory serialization. */
-export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Obj {
+export function projectMemoryToolResult(name: string, args: Obj, value: Obj, labels?: SpeakerLabels): Obj {
   const v=obj(value);
-  if(name==='memory_recall'||name==='memory_recall_next')return recall(v);
+  if(name==='memory_recall'||name==='memory_recall_next')return recall(v,labels);
+  if(name==='memory_read_full')return readFull(v,labels);
   if(name==='episode_get'||name==='episode_apply')return episode(v);
   if(name==='episode_list'){
     const out:Obj={episodes:list(v.episodes).map(episode)};
@@ -139,8 +167,8 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
     switch(args.action){
       case 'open': return select(v,['memory_id','date','date_unknown','title','text','categories','mood','view_receipt','content_gap']);
       case 'confirm': return {confirmed:true,...select(v,['memory_id','receipt_id'])};
-      case 'recollections': return {recollections:list(v.recollections).map(recollection)};
-      case 'keeps': return {marks:list(v.marks).map(keep)};
+      case 'recollections': return {recollections:list(v.recollections).map((x:Obj)=>recollection(x,labels))};
+      case 'keeps': return {marks:list(v.marks).map((x:Obj)=>keep(x,labels))};
       case 'unkeep': return select(v,['mark_id','status','revoked']);
       default: {const out=select(v,['memory_id','recollection_id','supersedes']);if(v.keep)out.keep=keep(v.keep);return out;}
     }
@@ -152,7 +180,7 @@ export function projectMemoryToolResult(name: string, args: Obj, value: Obj): Ob
     // Explicit history is a distinct contract, including the human correction reason.
     if(args.action==='corrections')return {corrections:list(v.corrections).map(x=>{const r=select(x,['correction_id','domain','original_instance_id','endpoint_a','endpoint_b','replacement_instance_id','original_created_by','original_created_at','corrected_by','corrected_at','reason_code','note']);if(x.original_meta)r.original_meta=select(x.original_meta,['relation_type','custom_label','reverse_label','source_ref','conversation_id','start_message_id','end_message_id','start_char_offset','end_char_offset','bind_confidence']);return r;})};
     const out=select(v,['memory_id','word_id','word_ids','relation_id','from','to','relation_type','action','removed_relation_id','replacement_relation_id','source_ref','new_source_ref','removed_source_ref','source_binding_version','version','updated','saved']);
-    if(Array.isArray(v.words))out.words=v.words.map(word);
+    if(Array.isArray(v.words))out.words=v.words.map((x:Obj)=>word(x,labels));
     return out;
   }
   return value; // Other tools have independent contracts; never guess their business shape.

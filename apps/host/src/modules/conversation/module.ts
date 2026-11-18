@@ -5,6 +5,7 @@ import { quoteBackgroundTool } from '../../runtime/background-tool-cost.ts';
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
 import type { HostToolSpec } from '../../capabilities/contracts.ts';
+import type { SpeakerLabels } from '../../identity/speaker-labels.ts';
 import { projectConversationRead } from './projection.ts';
 import { ConversationToolsService } from './service.ts';
 
@@ -78,16 +79,19 @@ export type ConversationModuleDeps = {
   media?: import('../../media/assets.ts').MediaService | null;
   events?: import('../../events/service.ts').EventService | null;
   archiveSync?: { drainOnce(): Promise<unknown> } | null;
+  /** 包4 §6.2：conversation_read 的 speaker 标签投影用（身份配置的双方姓名）。 */
+  speakerLabels?: SpeakerLabels;
 };
 
 /** 装配入口：conversation 域已迁能力（conversation_read/chat_send_text/chat_send_attachment）。 */
 export function registerConversationCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ConversationModuleDeps): void {
   const service = new ConversationToolsService(deps);
+  const labels = deps.speakerLabels;
   registry.register(toolCapability({
     owner: 'conversation',
     id: 'conversation_read', baselineOrder: 5, free: true, definition: () => CONVERSATIONREAD_DEFINITION, memoryOnlyAllowed: true, label: '读聊天原文',
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.conversationRead(input, ctx)),
-    toModel: (value) => projectConversationRead(value),
+    toModel: (value) => projectConversationRead(value, labels),
   }));
   registry.register(toolCapability({
     owner: 'conversation',
