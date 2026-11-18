@@ -47,6 +47,8 @@ import { keepwarmSleepState } from '../runtime/keepwarm-sleep.ts';
 import { storedToolset } from '../runtime/tool-discovery.ts';
 
 export type RequestDeps = {
+  sourceBinding?: import('../modules/sourcebinding/service.ts').SourceBindingService;
+  calendarMariposa?: import('../integrations/mariposa/client.ts').MariposaClient;
   config: Config;
   paths: EstomagoPaths;
   db: Db;
@@ -169,7 +171,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return;
     }
     if (req.method === 'GET' && (STATIC_FILES.has(url.pathname) || url.pathname.startsWith('/login/'))) {
-      return serveStatic(res, url.pathname);
+      return serveStatic(res, url.pathname === '/home/feature.html' && url.searchParams.get('feature') === 'calendar'
+        ? '/home/calendar.html' : url.pathname);
     }
 
     // R4/RE-01（2026-10-24 返修）：voice ingress 在 owner 通用认证**之前**分派——
@@ -274,8 +277,8 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
 
     // —— 日历读聚合组——P07.2 迁 server/routes/calendar.ts（逐字）。
-    if (route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
-      return handleCalendarRoutes(req, res, d, route, url);
+    if (route === 'POST /api/v1/calendar/memory/recalculate' || route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
+      return await handleCalendarRoutes(req, res, d, route, url);
     }
 
 

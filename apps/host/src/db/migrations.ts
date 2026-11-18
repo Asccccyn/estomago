@@ -1837,4 +1837,14 @@ CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(statu
 `,
 });
 
+MIGRATIONS.push({
+  version: 77, name: 'source-bind-decision',
+  sql: `ALTER TABLE source_bind_jobs ADD COLUMN operation_id TEXT;
+    ALTER TABLE source_bind_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+    UPDATE source_bind_jobs SET status='failed', detail='上次判断结果未知，请在日历中手动重算。'
+      WHERE status='judging' OR (status='pending' AND attempts>0);
+    UPDATE source_bind_jobs SET detail=substr(detail,1,instr(detail,'——')-1) || '。请在日历中手动重算。'
+      WHERE status IN ('failed','source_unavailable','credential_blocked','version_conflict') AND instr(detail,'——')>0;`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

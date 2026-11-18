@@ -1,7 +1,7 @@
 // E 库种子：与 M 种子共享 sm/sc id；committed hold 在边界前
-import { openDatabase } from '/Users/owner/Projects/estomago/apps/host/src/db/connection.ts';
-import { migrate } from '/Users/owner/Projects/estomago/apps/host/src/db/migrations.ts';
-import { genId, sha256Hex } from '/Users/owner/Projects/estomago/apps/host/src/util/id.ts';
+import { openDatabase } from '../../../apps/host/src/db/connection.ts';
+import { migrate } from '../../../apps/host/src/db/migrations.ts';
+import { genId, sha256Hex } from '../../../apps/host/src/util/id.ts';
 import path from 'node:path';
 const root = process.argv[2];
 const db = openDatabase(path.join(root, 'data')); migrate(db, sha256Hex);

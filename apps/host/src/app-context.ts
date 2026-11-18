@@ -1,3 +1,5 @@
+import { SourceBindingService } from './modules/sourcebinding/service.ts';
+import { GlmChatAdapter } from './integrations/glm/chat.ts';
 import { supportsSurfacingTransport, SURFACE_HOST_NOTICE } from './memory-surfacing/contracts.ts';
 // 组合根：把配置、DB 与各服务装配成一个可启动/可停止的 Host。
 // 测试用 createHost({ stateRoot: 临时目录, config: buildConfig({...}) }) 直接构建。
@@ -91,11 +93,8 @@ export class Host {
   // 包2 批C（BIND）：午夜来源绑定维护 tick（60s 检查是否到边界；实际批处理有界、
   // 单飞；不进调度器模型串行链——BIND-06 不唤醒char/不触发浮现/不写聊天气泡）。
   private sourceBindTimer: ReturnType<typeof setInterval> | null = null;
-  private sourceBindService: import('./modules/sourcebinding/service.ts').SourceBindingService | null = null;
-  private bindingMariposa: import('./integrations/mariposa/client.ts').MariposaClient | null = null;
-  wireBindingMariposa(client: import('./integrations/mariposa/client.ts').MariposaClient | null): void { this.bindingMariposa = client; }
+  private readonly sourceBindService: SourceBindingService;
   private sourceBindTicking = false;
-  private sourceBindStopping = false;
   private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
   private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
   /** 同步失败退避（进程内；重启归零重试一轮，与 media/index/backfill.ts 同款如实记录） */
@@ -124,6 +123,7 @@ export class Host {
     archiveSync: ArchiveSyncService,
   ) {
     this.config = config;
+    this.sourceBindService = deps.sourceBinding!;
     this.opts = opts;
     this.paths = deps.paths;
     this.db = deps.db;
@@ -479,6 +479,10 @@ export class Host {
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
     // AUD-02 P1：注入关闭→终止回调
     bgSettings.onDisable = (kind) => scheduler.disableKind(kind);
+    const bindConfig = opts.config.source_binding;
+    const sourceBinding = new SourceBindingService({db, config:opts.config, mariposa:modelMariposaClient,
+      glm:new GlmChatAdapter({baseUrl:bindConfig.base_url,apiKeyEnv:bindConfig.api_key_env,model:bindConfig.model}),
+      events, log:(level,event,fields)=>logger[level](event,(fields??{}) as Record<string,string|number|boolean|null>)});
     const deps: Omit<RequestDeps, 'config'> = {
       paths,
       db,
@@ -497,6 +501,8 @@ export class Host {
       archiveSync,
       selections,
       settings,
+      sourceBinding,
+      calendarMariposa: modelMariposaClient,
       alerts,
       media,
       bgSettings,
@@ -534,7 +540,6 @@ export class Host {
 
     const host = new Host(opts.config, opts, server, deps, archiveSync);
     host.wireMediaSourceFetch(mediaSourceFetch); // RR4-W2a：集合类索引来源（构造后接线，避免经路由 deps 传递）
-    host.wireBindingMariposa(modelMariposaClient ?? null); // 包2 批C BIND：来源绑定任务用主 M 客户端（构造后接线）
     return host;
   }
 
@@ -616,30 +621,19 @@ export class Host {
     finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
   }
 
-  /** 相册重构 P2：M 落正待同步一跳（≤5 资产/跳；进程内指数退避 30s·2^min(n,5)，
-   *  与 media/index/backfill.ts 同款——重启后退避归零重试一轮，如实记录） */
   private async sourceBindTick(): Promise<void> {
-    if (!this.config.source_binding.enabled || this.sourceBindTicking || this.sourceBindStopping) return;
-    if (!this.sourceBindService) {
-      const { GlmChatAdapter } = await import('./integrations/glm/chat.ts');
-      const { SourceBindingService } = await import('./modules/sourcebinding/service.ts');
-      this.sourceBindService = new SourceBindingService({
-        db: this.db, config: this.config,
-        mariposa: this.bindingMariposa,
-        glm: new GlmChatAdapter({ baseUrl: this.config.source_binding.base_url, apiKeyEnv: this.config.source_binding.api_key_env, model: this.config.source_binding.model }),
-        log: (level, event, fields) => { this.logger[level](event, (fields ?? {}) as Record<string, string | number | boolean | null>); },
-        events: this.events,
-      });
-    }
-    const svc = this.sourceBindService;
+    if (this.sourceBindTicking) return;
     this.sourceBindTicking = true;
     try {
-      if (svc.dueNow()) await svc.runBatch();
+      if (this.sourceBindService.dueNow()) await this.sourceBindService.runBatch();
     } catch (err) {
       this.logger.warn('source_bind_tick_failed', { error: String((err as Error).message).slice(0, 120) });
-    } finally { this.sourceBindTicking = false; }
+    } finally {
+      this.sourceBindTicking = false;
+    }
   }
 
+  /** M 媒体落正的重试退避只保存在当前进程。 */
   private async mediaMSyncTick(): Promise<void> {
     if (this.mediaSyncTicking) return;
     const media = this.mediaServiceRef;
@@ -690,13 +684,7 @@ export class Host {
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
     if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
     if (this.sourceBindTimer) { clearInterval(this.sourceBindTimer); this.sourceBindTimer = null; }
-    // 生命周期⑤：BIND 停机有界等待——置 stopping（不再领取新任务），等在途批次收口
-    //（已知结果落账；判断在途的落 judging 可恢复事实）再继续关库；上限 30s 不无限等。
-    this.sourceBindStopping = true;
-    const bindDeadline = Date.now() + 30_000;
-    while (this.sourceBindTicking && Date.now() < bindDeadline) {
-      await new Promise((r) => setTimeout(r, 100));
-    }
+    const bindingStopped = this.sourceBindService.stop();
     if (this.objectMetaBackfillTimer) { clearInterval(this.objectMetaBackfillTimer); this.objectMetaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
@@ -709,7 +697,7 @@ export class Host {
     await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
-    await Promise.all([serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);
+    await Promise.all([bindingStopped, serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();
   }

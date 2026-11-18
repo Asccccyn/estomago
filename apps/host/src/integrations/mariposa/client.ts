@@ -527,8 +527,17 @@ export class MariposaClient {
 
   /** 返修 P1-2（2026-11-17）：按**记忆**列全部有效来源绑定（M source.bindings.of_memory，
    *  只读）——会话方向查询看不到跨会话的人工绑定，按记忆核对才能防自动追加。 */
-  async sourceBindingsOfMemory(memoryId: string): Promise<MariposaCallResult> {
-    return this.transport('source.bindings.of_memory', { memory_id: memoryId });
+  async sourceBindingsOfMemory(memoryId: string, operationId?: string): Promise<MariposaCallResult> {
+    return this.transport('source.bindings.of_memory', { memory_id: memoryId, ...(operationId ? {operation_id:operationId} : {}) });
+  }
+
+  async sourceBindingDecision(memoryId: string, version: number, existing: string[], ranges: HoldSourceSelection[], operationId: string) {
+    return this.transport('source.binding.bind', {memory_id:memoryId, expected_memory_version:version,
+      expected_binding_ids:existing, event_source_ranges:ranges, operation_id:operationId});
+  }
+
+  async memoryCalendar(period: string, after?: string, limit?: number) {
+    return this.transport('memory.calendar', {period, ...(after ? {after} : {}), ...(limit ? {limit} : {})});
   }
 
   async sourceBindingBind(memoryId: string, selection: HoldSourceSelection, opts: { expectedMemoryVersion?: number | null; expectedBindingIds?: string[]; idempotencyKey?: string } = {}): Promise<MariposaCallResult> {
@@ -654,7 +663,7 @@ export class MariposaClient {
   /** GLM_VOICE_UNIFICATION（02§4/§5.2，F03）：Source 附属信息补同步——晚到的
    *  观察/媒体关联追加到已归档修订（M 端幂等；正文不可变）。 */
   /** ALB-13/R35：原文专项检索（source 层 FTS/BM25；include_ids 限定候选集——存档检索用）。 */
-  async sourceSearch(args: { query: string; include_ids?: string[]; limit?: number; conversation_id?: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
+  async sourceSearch(args: { query?: string; date_from?: string; date_to?: string; include_ids?: string[]; limit?: number; conversation_id?: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('source.search', { ...args, limit: args.limit ?? 10 }, signal);
   }
 

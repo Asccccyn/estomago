@@ -1,10 +1,10 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "dfe12c42ad1e9291a552715cfe16bd21148ebbcd",
+  "source_commit": "ad8713b693cce30a27446130b942092513a3a447",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "67a3858285031e03a8974046ea09fac21cea0e099725f4a4daac2bd8fcc67df8",
-    "backend/mariposa/capabilities/input_schemas.py": "9cfe462954c2184ecb22db4a4aa7e362e7a013354859f197e0cd79805efb1969",
+    "backend/mariposa/capabilities/registry.py": "2215edad73325f69fb022a65d79e0a71edd2eaf5cb4e28ca0f10ae44cd3e3f8c",
+    "backend/mariposa/capabilities/input_schemas.py": "a834982afaf4402d932ca108a9e5193c5b7796b84c51e424ec0c5fb1cffad3f8",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "163c9d6885ae776619fc8a8049ae989ba701509747601fa30e8bf20d4cb8c9dd",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
@@ -1128,6 +1128,40 @@
           },
           "size": {
             "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.calendar",
+      "transport_name": "mariposa_memory_calendar",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "上海日历的记忆桶数量、缺原文数和按日标题，仅读取当前有效桶",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "period"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$"
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
           }
         }
       }
@@ -4557,79 +4591,200 @@
       "description": "把 memory 绑定到原文消息区间（可叠加多个 range；默认消息边界，句内片段用可选 char offset）",
       "input_schema": {
         "type": "object",
-        "required": [
-          "memory_id",
-          "conversation_id",
-          "start_message_id",
-          "end_message_id"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "memory_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "conversation_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "start_message_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "end_message_id": {
-            "type": "string",
-            "minLength": 1
-          },
-          "start_char_offset": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "end_char_offset": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "confidence": {
-            "type": "string",
-            "enum": [
-              "exact",
-              "high",
-              "low"
-            ]
-          },
-          "event_scope": {
-            "type": "boolean"
-          },
-          "members": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 500,
-            "items": {
-              "type": "object",
-              "required": [
-                "source_message_id",
-                "content_hash"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "source_message_id": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "content_hash": {
-                  "type": "string",
-                  "minLength": 64,
-                  "maxLength": 64
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "memory_id",
+              "conversation_id",
+              "start_message_id",
+              "end_message_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "memory_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "conversation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start_message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "end_message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "confidence": {
+                "type": "string",
+                "enum": [
+                  "exact",
+                  "high",
+                  "low"
+                ]
+              },
+              "expected_memory_version": {
+                "type": "integer"
+              },
+              "expected_binding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
                 }
+              },
+              "event_scope": {
+                "type": "boolean"
+              },
+              "members": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "source_message_id",
+                    "content_hash"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "source_message_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "content_hash": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    }
+                  }
+                }
+              },
+              "source_revision": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
               }
             }
           },
-          "source_revision": {
-            "type": "string",
-            "minLength": 64,
-            "maxLength": 64
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "memory_id",
+              "expected_memory_version",
+              "expected_binding_ids",
+              "event_source_ranges",
+              "operation_id"
+            ],
+            "properties": {
+              "memory_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected_memory_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "expected_binding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "event_source_ranges": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "conversation_id",
+                        "members"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "conversation_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "members": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 500,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "source_message_id",
+                              "content_hash"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "source_message_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "content_hash": {
+                                "type": "string",
+                                "minLength": 64,
+                                "maxLength": 64
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "conversation_id",
+                        "start_message_id",
+                        "end_message_id",
+                        "source_revision"
+                      ],
+                      "properties": {
+                        "conversation_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "start_message_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "end_message_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "source_revision": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "minItems": 1
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
           }
-        }
+        ]
       }
     },
     {
@@ -4697,6 +4852,36 @@
           "conversation_id": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.bindings.of_memory",
+      "transport_name": "mariposa_source_bindings_of_memory",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按记忆列全部有效来源绑定（只读）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memory_id"
+        ],
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
           }
         }
       }
@@ -5006,7 +5191,8 @@
                   ]
                 },
                 "text": {
-                  "type": "string"
+                  "type": "string",
+                  "minLength": 0
                 },
                 "assets": {
                   "type": "array",

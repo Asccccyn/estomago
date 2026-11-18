@@ -32,7 +32,7 @@ export class GlmChatAdapter {
   }
 
   /** 单轮补全（判断任务无多轮状态）。响应取 choices[0].message.content；错误脱敏有界。 */
-  async chat(messages: GlmChatMessage[], opts: { temperature?: number; responseJson?: boolean } = {}): Promise<GlmChatResult> {
+  async chat(messages: GlmChatMessage[], opts: { temperature?: number; responseJson?: boolean; signal?: AbortSignal } = {}): Promise<GlmChatResult> {
     if (!this.configured) return { ok: false, retryable: false, reason: 'GLM 凭据未配置（服务端环境）——任务如实未启用' };
     let res: Awaited<ReturnType<GlmChatTransport>>;
     try {
@@ -40,7 +40,7 @@ export class GlmChatAdapter {
         model: this.model, messages,
         temperature: opts.temperature ?? 0,
         ...(opts.responseJson ? { response_format: { type: 'json_object' } } : {}),
-      }, AbortSignal.timeout(this.timeoutMs));
+      }, opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(this.timeoutMs)]) : AbortSignal.timeout(this.timeoutMs));
     } catch (err) {
       const cause = (err as { cause?: { code?: string } }).cause?.code;
       if (cause && REFUSED_CODES.has(cause)) return { ok: false, retryable: true, reason: `连接未建立（${cause}）——请求未送达，可重试` };

@@ -229,10 +229,10 @@ test('BD-3 (同时聊天×BIND): 聊天回合在途时午夜批照常处理—�
     if (cap === 'memory.get') return { ok: true, result: { memory_id: 'mem_bd', version: 3, original_title: '海边的对话', text: '我们聊了在海边看落日的事。' } };
     if (cap === 'source.bindings.of_memory') return { ok: true, result: { bindings: [] } }; // 返修 P1-2：按记忆查既有绑定（无既有→放行）
     if (cap === 'source.binding.bind') {
-      // 模拟真实 M 会话解析：conversation_id 必须是收据会话（'sc_bd'），传 E 会话 id 一律 NOT_FOUND
-      if (String((payload as { conversation_id?: string }).conversation_id ?? '') !== 'sc_bd') return { ok: false, code: 'NOT_FOUND', httpStatus: 404 };
-      bindCalls.push({ memoryId: String((payload as { memory_id?: string }).memory_id), members: ((payload as { members?: Array<{ source_message_id: string }> }).members ?? []).map((m) => m.source_message_id) });
-      return { ok: true, result: { binding_id: 'bnd_bd' } };
+      const ranges = payload.event_source_ranges as {conversation_id:string;members:{source_message_id:string}[]}[];
+      if (ranges[0].conversation_id !== 'sc_bd') return {ok:false,code:'NOT_FOUND',httpStatus:404};
+      bindCalls.push({memoryId:String(payload.memory_id),members:ranges[0].members.map(m=>m.source_message_id)});
+      return {ok:true,result:{memory_id:payload.memory_id,operation_id:payload.operation_id,binding_ids:['bnd_bd']}};
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };

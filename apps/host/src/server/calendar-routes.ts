@@ -12,10 +12,12 @@ export type SourceStatus = 'ready' | 'unavailable' | 'not_configured';
 
 export type MonthDaySummary = {
   date: string;
+  unbound_memories?: number;
   counts: Partial<Record<CalendarSource, number>>;
 };
 
 export type CalendarMonthResult = {
+  memory_error?: string;
   month: string;
   timezone: 'Asia/Shanghai';
   days: MonthDaySummary[];

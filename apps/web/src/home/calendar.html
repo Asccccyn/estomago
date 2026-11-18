@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f6f3e9"><title>日历与记忆 · estómago</title>
+  <style>
+    *{box-sizing:border-box} body{margin:0;background:#f6f3e9;color:#384c40;font:16px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+    main{max-width:44rem;margin:auto;padding:clamp(20px,5vw,54px) 18px 4rem} a{color:#536a57} h1{margin:1.5rem 0 1rem;font:500 2rem/1.2 Georgia,serif}
+    nav,.head,.bucket{display:flex;align-items:center;justify-content:space-between;gap:12px} button{font:inherit;color:inherit;cursor:pointer;background:#fffdf6;border:1px solid #c2cbbd;border-radius:8px;padding:6px 10px} button:disabled{opacity:.55;cursor:wait}
+    #grid,.week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px;text-align:center}.week{margin:1rem 0 .3rem;color:#647368;font-size:.8rem}
+    #grid button{min-height:57px;padding:4px 0;border-color:transparent;background:transparent;font-variant-numeric:tabular-nums} #grid button[aria-pressed=true]{outline:2px solid #657d63;background:#e2e9dc}
+    #grid small{display:block;font-size:.71rem} .warn{color:#913f24} .bucket{border-top:1px solid #ced5c7;padding:14px 0}.bucket div{min-width:0;overflow-wrap:anywhere}.bucket button{flex-shrink:0}
+    .bucket p{margin:3px 0;font-size:.9rem} h2{font-size:1.2rem;margin:1.5rem 0 .4rem} #feedback:empty,#month-error:empty{display:none}
+    :focus-visible{outline:2px solid #386c58;outline-offset:2px}
+  </style>
+</head>
+<body><main>
+  <a id="back" href="/home/index.html?season=spring">返回四季</a><h1>日历与记忆</h1>
+  <nav aria-label="选择月份"><button id="prev" aria-label="上个月">‹</button><strong id="month"></strong><button id="next" aria-label="下个月">›</button></nav>
+  <div class="week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+  <div id="grid" aria-label="选择日期"></div><p class="warn" id="month-error" role="status"></p>
+  <div class="head"><h2 id="day"></h2><button id="refresh">刷新</button></div>
+  <p id="feedback" role="status"></p><div id="items"></div><button id="more" hidden>更多记忆</button>
+</main><script type="module" src="/home/calendar.js"></script></body></html>

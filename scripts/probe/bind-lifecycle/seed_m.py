@@ -3,8 +3,8 @@
 import sys, os, json, secrets
 root = sys.argv[1]
 os.environ['MARIPOSA_ROOT'] = root
-sys.path.insert(0, '/Users/owner/Projects/mariposa/backend')
-sys.path.insert(0, '/Users/owner/Projects/mariposa/scripts')
+sys.path.insert(0, os.path.join(sys.argv[2], 'backend'))
+sys.path.insert(0, os.path.join(sys.argv[2], 'scripts'))
 from mariposa import schema
 from mariposa import db as mdb
 from mariposa.identity import service as identity_svc
@@ -26,7 +26,7 @@ with mdb.formal() as conn:
         "INSERT INTO source_conversations(id, provider, provider_conversation_id,"
         " message_count, first_import_batch_id, last_import_batch_id)"
         " VALUES ('sc_probe','estomago','conv_probe',16,'b1','b1')")
-    for mid in ('probe_a', 'probe_b', 'probe_c', 'probe_d', 'probe_e', 'probe_f'):
+    for mid in ('probe_a', 'probe_b', 'probe_c', 'probe_d', 'probe_e', 'probe_f', 'probe_g'):
         conn.execute(
             "INSERT INTO memories(memory_id, current_version_no, memory_date, created_at, updated_at)"
             " VALUES (?,1,'2026-01-01',?,?)", (mid, t, t))
@@ -43,8 +43,8 @@ with mdb.formal() as conn:
                 "INSERT INTO source_messages(id, conversation_id, provider,"
                 " provider_conversation_id, provider_message_id,"
                 " parent_provider_message_id, normalized_sender,"
-                " sequence, published, content_hash, import_batch_id)"
-                " VALUES (?,'sc_probe','estomago','conv_probe',?,?,?, ?, 1, ?, 'b1')",
+                " sequence, published, content_hash, import_batch_id, occurred_date, text)"
+                " VALUES (?,'sc_probe','estomago','conv_probe',?,?,?, ?, 1, ?, 'b1', '2026-01-01', 'synthetic original')",
                 (smid, f'pm_{smid}', prev,
                  'human' if i != 2 else 'assistant', i,
                  _hl.sha256(('probe:' + smid).encode()).hexdigest()))

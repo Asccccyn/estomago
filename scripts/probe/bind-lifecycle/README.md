@@ -1,21 +1,5 @@
-# BIND 生命周期双进程联验探针（2026-11-17，按 Codex 生命周期返修指令）
+# 午夜来源绑定与日历重算联验
 
-两个不同 PID 的真实 E 宿主（apps/host/src/main.ts）+ 真实 M（uvicorn 隔离库，真实
-registry/schema/事务/幂等层）+ 合成判断服务（与 M 代理合一，可编程注入 503/扣回执/挂起响应）。
+在 E 仓运行 `node scripts/probe/bind-lifecycle/driver.mjs`。默认使用同目录下的 mariposa 仓和其 .venv/bin/python，可通过 PROBE_M_REPO、PROBE_PYTHON 指定。探针创建独立临时库、凭据和回环端口，退出时清理。
 
-## 场景（全部 PASS，见 docs/reports 交付回执）
-- a 正常链：两段+间隔消息逐段对账；停启后判断/绑定零增长
-- b 判断在途停机：等待内返回→P1 完成；直到退出仍未知→P2 重发（两次接收=E 两次计数）
-- c A 成功 B 明确未提交：P2 只补 B、不重判；M 恰 A+B
-- d B 已提交回执丢失：P2 按原操作键重放找回原 binding_id，无第二条 B
-- e B 未提交+人工绑定：人工 ID 不被认领/不覆盖；E 保留 A 原回执；停止自动追加
-
-## 复跑
-```sh
-MR=$(mktemp -d)
-MARIPOSA_ALLOW_CREATE=1 MARIPOSA_ROOT="$MR" \
-  ~/Projects/mariposa/.venv/bin/python scripts/probe/bind-lifecycle/seed_m.py "$MR" > /tmp/token.txt
-PROBE_M_ROOT="$MR" PROBE_M_TOKEN=$(cat /tmp/token.txt) node scripts/probe/bind-lifecycle/driver.mjs
-```
-前置：M 仓在 ~/Projects/mariposa（白名单含 source.binding.bind/of_memory/expected 字段）；
-clock.mjs 把 BIND tick 60s→1500ms；M 限流在探针内放开（隔离库）。
+正常判断、M 事务提交前后停机、明确 503、已提交但回应 503 后手动核回原回执、判断在途停机，以及 M 原生桶连续 402 后在日历手动重算，均通过正式 E HTTP 和 M registry 运行。按有序成员和持久回执核对结果，同时统计判断请求次数。
