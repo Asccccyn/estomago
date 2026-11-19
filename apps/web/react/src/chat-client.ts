@@ -1,8 +1,8 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
-export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; state?: 'running' | 'completed' | 'failed' }
+export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; at?: string; label?: string; state?: 'running' | 'completed' | 'failed' }
 export type Media = { kind: 'voice' | 'image' | 'work'; src: string; text?: string; assetId?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; publicationBreaks?: { before_message_id: string; end_char: number }[]; thinkSecs?: number; thinking?: boolean; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
@@ -282,6 +282,19 @@ export class EstomagoClient {
     }catch{/* Unknown retry eligibility stays disabled; never discard message text. */}
     finally{entry.busy=false}
   }
+  private turnDetails(id: string) {
+    const blocks = this.blocks.get(id) ?? []
+    const tools = this.toolSteps.get(id) ?? []
+    const steps: Step[] = blocks.map(block => ({
+      id: block.id, at: block.created_at, kind: 'think' as const,
+      text: block.text || ({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[block.visibility] || '',
+    })).filter(step => step.text)
+    steps.push(...tools)
+    steps.sort((a,b) => a.at && b.at ? a.at.localeCompare(b.at) : 0)
+    const ms = blocks.reduce((total, b) => total + (Math.max(0, Date.parse(b.updated_at) - Date.parse(b.created_at)) || 0), 0)
+    return { steps, thinking: blocks.some(b => b.visibility === 'summary' && b.state === 'streaming'),
+      thinkSecs: ms > 0 ? Math.max(1, Math.round(ms / 1000)) : undefined }
+  }
   private render() {
     const messages: ChatMessage[]=[]
     const latestOwner=this.latestOwner()?.id
@@ -295,29 +308,20 @@ export class EstomagoClient {
         src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+(a.presentation==='work'?'/preview':'/content'),
         text:a.derived_text??'',assetId:String(a.asset_id),
       }))
-      const blocks=this.blocks.get(m.turn_id)??[]
-      const thinkMs=blocks.length?Math.max(0,new Date(blocks[blocks.length-1]!.updated_at).getTime()-new Date(blocks[0]!.created_at??blocks[0]!.updated_at).getTime()):0
-      const steps:Step[]=[
-        ...blocks.map(b=>({kind:'think' as const,text:b.text||({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[b.visibility]||''})).filter(b=>b.text),
-        ...(this.toolSteps.get(m.turn_id)??[]),
-      ]
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
         time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
-        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
+        publicationBreaks:m.publication_breaks,...this.turnDetails(m.turn_id),turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
         replyState:m.reply_status?.state,
         canEdit:m.speaker==='owner'&&m.mutation_status?.can_edit===true,
         canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
         retryReason:retryReasons[m.reply_status?.reason]??undefined,editPending:this.editBusy.has(m.id),editUnconfirmed:this.edits.has(m.id)&&!this.editBusy.has(m.id),
-        thinkSecs:thinkMs>0?Math.max(1,Math.round(thinkMs/1000)):undefined})
+      })
     }
     for(const id of this.running){
       if(this.snapshot.historyMode==='date'&&!messages.some(m=>m.turnId===id))continue
       const last=messages.filter(m=>m.turnId===id&&m.role==='ai'&&!m.system).at(-1)
       if(last){last.streaming=true;continue}
-      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,steps:[
-        ...(this.blocks.get(id)??[]).filter(b=>b.text).map(b=>({kind:'think' as const,text:b.text})),
-        ...(this.toolSteps.get(id)??[]),
-      ]})
+      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,...this.turnDetails(id)})
     }
     this.patch({messages})
   }
@@ -336,6 +340,7 @@ export class EstomagoClient {
       if(current&&attempt&&current.attempt&&attempt!==current.attempt){
         if(data.kind!=='turn.started'||this.retiredAttempts.has(id+':'+attempt))return
         this.retiredAttempts.add(id+':'+current.attempt)
+        this.blocks.delete(id); this.toolSteps.delete(id); this.detailsLoaded.delete(id)
       }
       if(current&&terminalStates.has(current.state)&&(!attempt||attempt===current.attempt)&&['running','pending'].includes(state))return
       if(state)this.turnStates.set(id,{attempt:attempt??current?.attempt,state})
@@ -378,7 +383,7 @@ export class EstomagoClient {
       this.refreshLatestReply(id)
     }
     if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.markReplyState(id,data.kind==='turn.completed'?'completed':'interrupted',data.attempt_id);this.render();this.refreshLatestReply(id);if(this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
-    if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id)
+    if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.applyReasoning(id,data)
     if(id&&data.kind==='turn.tool'){
       if(this.visibleTurn(id)){this.updateToolStep(id,data);this.render()}
     }
@@ -402,7 +407,7 @@ export class EstomagoClient {
     const errors:Record<string,string>={TOOL_ARG_TYPE:'参数格式错误',TOOL_ARG_INVALID:'参数无效',TOOL_ARG_MISSING:'缺少参数',TOOL_ARG_UNKNOWN:'包含未知参数',TOOL_DEFINITION_NOT_SEEN:'尚未读取工具定义',TOOL_NOT_IN_ALLOWLIST:'本窗口未开放此工具',TOOL_UNAVAILABLE_IN_CALL:'通话期间不可用',I_FORBIDDEN:'无权访问该项',CANCELLED:'已取消'}
     const reason=data.error_code?(errors[data.error_code]?`${errors[data.error_code]}（${data.error_code}）`:String(data.error_code)):''
     const status=state==='failed'?'失败'+(reason?'：'+reason:''):state==='completed'?'完成':'进行中'
-    const step:Step={id,sequence:data.sequence??0,kind:'tool',state,text:label+(tool&&tool!==label?' · '+tool:'')+' · '+status}
+    const step:Step={id,sequence:data.sequence??0,at:steps[index]?.at??data.occurred_at,kind:'tool',state,label,text:label+(tool&&tool!==label?' · '+tool:'')+' · '+status}
     if(index<0)steps.push(step);else steps[index]=step
     this.toolSteps.set(turnId,steps)
   }
@@ -412,6 +417,50 @@ export class EstomagoClient {
       const refresh=this.replyRefreshes.get(id);if(refresh)refresh.dirty=true
     }}
   }
+  private applyReasoning(id: string, event: Json) {
+    const blocks = this.blocks.get(id) ?? []
+    const current = blocks.find(b => b.id === event.block_id)
+    const revision = event.block_revision
+    const change = event.payload
+    // Complete-only provider packets and older events can omit the text.
+    // Recover those (and gaps on reconnect) from the existing turn endpoint.
+    if (!event.block_id || !Number.isSafeInteger(revision) || !change ||
+        (!current && event.kind !== 'reasoning.started' && event.kind !== 'reasoning.snapshot' && !(event.kind === 'reasoning.delta' && revision === 2)) ||
+        (current && revision > current.revision + 1 && event.kind !== 'reasoning.snapshot')) {
+      this.refreshReasoning(id, event.attempt_id)
+      return
+    }
+    if (current && (revision < current.revision ||
+        (revision === current.revision && (event.kind === 'reasoning.delta' || event.kind === 'reasoning.started')))) return
+    const block = current ?? { id: event.block_id, attempt_id: event.attempt_id, visibility: 'summary', text: '', created_at:event.occurred_at }
+    if (event.occurred_at) block.updated_at = event.occurred_at
+    block.eventSequence = event.sequence
+    block.revision = revision
+    block.state = change.state ?? 'streaming'
+    if (change.visibility) block.visibility = change.visibility
+    if (block.visibility !== 'summary') block.text = ''
+    else if (event.kind === 'reasoning.delta') block.text += change.delta
+    else if (event.kind === 'reasoning.snapshot') block.text = change.text
+    if (!current) this.blocks.set(id, [...blocks, block])
+    this.render()
+  }
+  private acceptReasoningSnapshot(id: string, data: Json, readCursor: number, attempt?: string) {
+    const activeAttempt = this.turnStates.get(id)?.attempt
+    if (attempt && activeAttempt && attempt !== activeAttempt) return
+    // An HTTP read begun before a stream update must not rewind the visible
+    // prefix, resurrect a finished block, or remove a newly started one.
+    const latest = new Map((this.blocks.get(id) ?? []).filter(b => !attempt || b.attempt_id === attempt).map(b => [b.id, b]))
+    const merged = (data.blocks ?? []).map((incoming: Json) => {
+      const live = latest.get(incoming.id)
+      latest.delete(incoming.id)
+      if (live && (incoming.revision < live.revision ||
+          (incoming.revision === live.revision && (live.eventSequence > readCursor || (incoming.state === 'streaming' && live.state !== 'streaming'))))) return live
+      return incoming
+    })
+    this.blocks.set(id, [...merged, ...latest.values()])
+    for (const tool of data.tools ?? []) this.updateToolStep(id, tool)
+    this.render()
+  }
   private refreshReasoning(id:string,attempt?:string) {
     let entry=this.refreshes.get(id)
     if(!entry){entry={dirty:false,busy:false};this.refreshes.set(id,entry)}
@@ -419,7 +468,14 @@ export class EstomagoClient {
     if(entry.busy)return
     entry.busy=true
     void (async()=>{
-      try {while(entry!.dirty&&this.started){entry!.dirty=false;const epoch=this.historyEpoch;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));if(epoch===this.historyEpoch&&this.visibleTurn(id)){this.blocks.set(id,result.blocks??[]);for(const tool of result.tools??[])this.updateToolStep(id,tool);this.render()}}}
+      try {
+        while (entry!.dirty && this.started) {
+          entry!.dirty = false
+          const epoch = this.historyEpoch, readCursor = this.cursor, attempt = entry!.attempt
+          const result = await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(attempt?'?attempt_id='+encodeURIComponent(attempt):''))
+          if (epoch === this.historyEpoch && this.visibleTurn(id)) this.acceptReasoningSnapshot(id, result, readCursor, attempt)
+        }
+      }
       catch {/* A failed projection does not discard saved messages. */}
       finally{entry!.busy=false;if(entry!.dirty&&this.started)this.refreshReasoning(id,entry!.attempt)}
     })()
@@ -432,9 +488,11 @@ export class EstomagoClient {
   loadTurnDetails = async (id:string):Promise<void> => {
     if(this.detailsLoaded.has(id)||!this.visibleTurn(id))return
     const epoch=this.historyEpoch
-    const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning')
-    if(epoch!==this.historyEpoch||!this.visibleTurn(id))return
-    this.blocks.set(id,data.blocks??[]);for(const tool of data.tools??[])this.updateToolStep(id,tool);this.detailsLoaded.add(id);this.render()
+    const currentAttempt=this.turnStates.get(id)?.attempt, readCursor=this.cursor
+    const attempt=this.running.has(id)?currentAttempt:undefined
+    const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(attempt?'?attempt_id='+encodeURIComponent(attempt):''))
+    if(epoch!==this.historyEpoch||!this.visibleTurn(id)||currentAttempt!==this.turnStates.get(id)?.attempt)return
+    this.acceptReasoningSnapshot(id,data,readCursor,attempt);this.detailsLoaded.add(id)
     await this.loadUsage(id)
   }
   private async extendHistory(direction:'before'|'after'):Promise<boolean> {
@@ -668,7 +726,14 @@ export class EstomagoClient {
       this.notify('存档暂不可达，选择已保留——稍后重试')
     }
   }
-  select = (id:string) => {const selected=new Set(this.snapshot.selected);selected.has(id)?selected.delete(id):selected.add(id);this.selectionKey??=operationId();this.patch({selected,selectionMode:true})}
+  select = (id: string | string[]) => {
+    const ids = typeof id === 'string' ? [id] : id
+    const selected = new Set(this.snapshot.selected)
+    const remove = ids.every(key => selected.has(key))
+    for (const key of ids) { if (remove) selected.delete(key); else selected.add(key) }
+    this.selectionKey ??= operationId()
+    this.patch({selected, selectionMode:true})
+  }
   cancelSelection = () => {this.selectionKey=null;this.patch({selected:new Set(),selectionMode:false})}
   /** 手动换窗策略（她 2026-10-19 裁定）：选集确认即换窗——确认返回 rotated=false
    *  （无被阻断输入、窗口还开着）时主动调 /rotate 立即换，不等 600k 软线兜底。 */

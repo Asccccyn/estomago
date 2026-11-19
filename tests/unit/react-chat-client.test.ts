@@ -347,3 +347,56 @@ test('SDK model picker writes SDK IDs and does not use the last response model a
   assert.deepEqual(writes.at(-1),{reasoning_effort:'high'});
  }finally{h.client.stop()}
 });
+
+test('one reply keeps live reasoning, media and text when an earlier detail read finishes late', async () => {
+  const {chatRows, replyContent} = await import('../../apps/web/react/src/chat-rows.ts')
+  let resolveDetails!: (response: Response) => void
+  let reads = 0
+  const h = await setup(url => {
+    if (url.includes('/messages?')) return Response.json({messages:[dto('owner','合成请求')]})
+    if (url.includes('/reasoning')) {
+      reads++
+      return new Promise<Response>(resolve => { resolveDetails = resolve })
+    }
+  })
+  const turn_id = 'turn-fixture', attempt_id = 'a1'
+  let sequence = 0
+  const send = (kind: string, data: object = {}) => h.client.handleEvent({kind,turn_id,attempt_id,sequence:++sequence,...data})
+  const reply = () => chatRows(h.client.snapshot.messages).find(row => row.key === 'reply:'+turn_id)!
+  try {
+    send('turn.started')
+    const key = reply().key
+    assert.equal(reply().parts[0].thinking,false)
+    const details = h.client.loadTurnDetails(turn_id)
+    const block = {block_id:'b1',block_revision:1}
+    send('reasoning.started',{...block,payload:{visibility:'summary'}})
+    assert.equal(reply().parts[0].thinking,true)
+    send('reasoning.delta',{...block,block_revision:2,payload:{delta:'合成摘要',state:'streaming'}})
+    assert.equal(reply().parts[0].steps?.[0].text,'合成摘要')
+    send('reasoning.completed',{...block,block_revision:2,payload:{state:'complete'}})
+    assert.equal(reply().parts[0].thinking,false)
+    send('turn.tool',{phase:'start',tool:'image_generate',effective_tool:'image_generate',label:'生成图片',tool_call_id:'c1'})
+    const image={...dto('img',''),sequence:2,speaker:'assistant'}
+    send('message.published',{message:{...image,revision:{...image.revision,attachments:[{asset_id:'pic',presentation:'image'}]}}})
+    send('message.published',{message:{...dto('desc','完成。'),sequence:3,speaker:'assistant'}})
+    resolveDetails(Response.json({blocks:[{id:'b1',revision:2,state:'streaming',visibility:'summary',text:'合成摘要'}]}))
+    await details
+    const row=reply()
+    assert.equal(row.key,key)
+    assert.deepEqual(row.parts.map(p=>p.id),['img','desc'])
+    assert.deepEqual(replyContent(row.parts).map(c=>c.part.kind ?? c.part.text),['image','完成。'])
+    assert.equal(row.parts[0].thinking,false)
+    assert.equal(row.parts[0].steps?.[0].text,'合成摘要')
+    assert.equal(reads,1)
+  } finally { h.client.stop() }
+})
+
+test('text, voice and a later text revision retain publication order and original selection anchors', async () => {
+  const {replyContent} = await import('../../apps/web/react/src/chat-rows.ts')
+  const first={id:'t',role:'ai' as const,time:'',text:'先说🌙\n\n后续文字',publicationBreaks:[{before_message_id:'v',end_char:3}]}
+  const voice={id:'v',role:'ai' as const,time:'',kind:'voice' as const,text:'合成语音'}
+  const segments=replyContent([first,voice])
+  assert.deepEqual(segments.map(c=>c.part.text),['先说🌙','合成语音','后续文字'])
+  assert.deepEqual(segments.map(c=>c.anchor),['t','v',undefined])
+  assert.equal(replyContent([first])[0].part.text,first.text)
+})

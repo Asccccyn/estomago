@@ -16,7 +16,8 @@ import { SurfacedMemories } from './SurfacedMemories'
 import { SurfacingSettings } from './SurfacingSettings'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
-import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
+import { chatRows, replyContent } from './chat-rows'
+import type { ChatMessage as Msg, WorkItem, ActivityItem, EstomagoClient } from './chat-client'
 import {
   Phone, AudioLines, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
   Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square, Star,
@@ -54,20 +55,24 @@ function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpa
     setOpen(!open)
     if (!open) readDetails()
   }
+  const tool = (m.pending || m.streaming) && m.steps?.find(s => s.kind === 'tool' && s.state === 'running')
+  const label = tool ? `正在${tool.label ?? '执行工具'}` : m.pending && m.thinking ? '思考中'
+    : m.pending && !m.steps?.length ? '等待回复'
+    : m.thinkSecs == null ? '思考过程' : `思考 · ${m.thinkSecs} 秒`
   return (
     <div className="mb-2 -ml-[13px]">
       <button onClick={toggle} aria-expanded={open} className="flex items-center gap-1.5 text-[13px] text-[#8a8780] hover:text-[#3d3929]">
-        {m.pending ? <DotSpinner /> : <Sparkle size={14} />}
-        <span>{m.pending ? '思考中' : m.thinkSecs == null ? '思考过程' : `思考 · ${m.thinkSecs} 秒`}</span>
+        {tool || (m.pending && m.thinking) ? <DotSpinner /> : <Sparkle size={14} />}
+        <span>{label}</span>
         <ChevronLeft size={14} className={`transition-transform ${open ? '-rotate-90' : ''}`} />
       </button>
       {open && (
         <div className="mt-2 ml-[6px]">
-          {loading && <p role="status" className="mb-2 text-[12px] text-[#8a8780]">正在读取思考过程…</p>}
+          {loading && !m.steps?.length && <p role="status" className="mb-2 text-[12px] text-[#8a8780]">正在读取思考过程…</p>}
           {!loading && loadError && <button type="button" onClick={readDetails} className="mb-2 text-[12px] text-[#a54b35]">思考过程读取失败 · 点击重试</button>}
-          {!loading && !loadError && !m.steps?.length && <p className="mb-2 text-[12px] text-[#8a8780]">暂无可读摘要</p>}
+          {!m.pending && !loading && !loadError && !m.steps?.length && <p className="mb-2 text-[12px] text-[#8a8780]">暂无可读摘要</p>}
           {m.steps?.map((s, i) => (
-            <div key={i} className="relative flex gap-3 pb-3">
+            <div key={s.id ?? i} className="relative flex gap-3 pb-3">
               {i < m.steps!.length - 1 && <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#dcd8cc]" />}
               <span className="mt-[5px] flex h-[11px] w-[11px] shrink-0 items-center justify-center rounded-full border border-[#c9c4b6] bg-[#faf9f5]">
                 {s.kind === 'tool' && <span className={`h-[5px] w-[5px] rounded-full ${s.state === 'failed' ? 'bg-[#a54b35]' : s.state === 'completed' ? 'bg-[#788269]' : 'bg-[#c96442]'}`} />}
@@ -347,8 +352,9 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
   )
 }
 
-function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
-  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
+function Media({ m, ai, showText = true, onFavorite }: { m: Msg; ai?: boolean; showText?: boolean; onFavorite?: (assetId: string) => void }) {
+  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} onFavorite={onFavorite} m={{...m, media: [item], kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
+  const imageAssetId = m.media?.[0]?.assetId
   const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
   if (m.kind === 'voice') return <VoiceBar text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} instant={m.lateMedia} />
   // M02（包1 2026-11-15）：SVG/HTML 代码作品走沙箱 /preview（同服务端 CSP：脚本
@@ -363,7 +369,53 @@ function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: bo
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />
+      {onFavorite && imageAssetId && <IconBtn title="收藏到我们的相册" onClick={() => onFavorite(imageAssetId)}><Star size={15} /></IconBtn>}
       {showText && m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
+    </div>
+  )
+}
+
+function AssistantReply({ parts, client, copy, selectionMode, selected }: {
+  parts: Msg[]; client: EstomagoClient; copy: (text: string) => Promise<void>; selectionMode: boolean; selected: Set<string>
+}) {
+  const first = parts[0]!
+  const last = parts[parts.length - 1]!
+  const running = last.pending || last.streaming
+  const content = selectionMode ? parts.map(part => ({ part, key: part.id, anchor: part.id })) : replyContent(parts)
+  const tokens = parts.reduce((total, part) => total + (part.tokens ?? 0), 0)
+  return (
+    <div className="mb-8 w-[75%] pl-[2em]" data-reply-turn={first.turnId}>
+      {(!selectionMode || first.pending) && (first.turnId || running || first.steps?.length) ? <Thinking m={last}
+        onExpand={first.turnId ? () => client.loadTurnDetails(first.turnId!) : undefined}
+        onStop={running && first.turnId ? () => void client.stopTurn(first.turnId!) : undefined} /> : null}
+      {!first.pending && <>
+        <div className="flex min-w-0 flex-col gap-3">
+          {content.map(({part, key, anchor}) => {
+            const text = <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
+              {part.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
+            </div>
+            return <div key={key} data-message-id={anchor}>
+              {selectionMode ? <button type="button" onClick={() => client.select(part.id)} aria-pressed={selected.has(part.id)}
+                aria-label={selected.has(part.id) ? '取消选择这条' : '选择这条'} className="flex w-full items-start gap-3 text-left">
+                <SelectionCheck checked={selected.has(part.id)} />
+                <span className="min-w-0">{part.kind ? <SelectionMediaText kind={part.kind} text={part.text} /> : text}
+                  <span className="mt-1 block text-[12px] tabular-nums text-[#a3a099]">{part.time}</span>
+                </span>
+              </button> : part.kind ? <Media m={part} ai onFavorite={id => void client.favoriteImages([id])} /> : text}
+            </div>
+          })}
+        </div>
+        {!selectionMode && <>
+          {first.turnId && <SurfacedMemories turnId={first.turnId} client={client} />}
+          <div className="mt-2 -ml-1.5 flex items-center">
+            <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{last.time}</span>
+            {tokens > 0 && <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">约 {tokens.toLocaleString()}</span>}
+            <IconBtn title="多选" onClick={() => client.select(parts.map(p => p.id))}><ListChecks size={15} /></IconBtn>
+            <IconBtn title="复制" onClick={() => void copy(content.map(({part}) => part.text).filter(Boolean).join('\n\n'))}><Copy size={15} /></IconBtn>
+            <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
+          </div>
+        </>}
+      </>}
     </div>
   )
 }
@@ -399,6 +451,7 @@ export default function App() {
     void el.play().catch(() => client.notify('试听失败，请稍后再试'))
   }
   const msgs = state.messages
+  const rows = chatRows(msgs)
   const model = state.model
   const effort = state.effort
   const MODELS = state.models
@@ -578,9 +631,11 @@ export default function App() {
           error={historyAction === 'earlier' ? state.historyError : undefined} disabled={editing !== null || state.selectionMode || state.historyLoading}
           onLoad={() => void loadEarlier()} />}
         {state.historyMode === 'date' && !state.historyLoading && msgs.length === 0 && <p role="status" className="px-5 py-12 text-center text-[14px] text-[#8a8780]">这一天没有聊天记录，可以选择其他日期或回到最新。</p>}
-        {msgs.map((m, index) => <Fragment key={m.id}>
-          {m.dateKey && (index === 0 || msgs[index - 1]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
-          <div data-message-id={m.id} className="flow-root">
+        {rows.map((row, index) => {
+          const m = row.parts[0]!
+          return <Fragment key={row.key}>
+          {m.dateKey && (index === 0 || rows[index - 1]?.parts[0]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
+          <div data-message-id={m.system || m.role === 'user' ? m.id : undefined} className="flow-root">
           {m.system ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
@@ -622,47 +677,10 @@ export default function App() {
             </button>}
           </div>
           )
-        ) : state.selectionMode && !m.pending ? (
-            <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
-              aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
-              className="mb-8 flex w-full items-start gap-3 pl-5 text-left">
-              <SelectionCheck checked={state.selected.has(m.id)} />
-              <span className="min-w-0 w-[75%]">
-                {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : (
-                <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
-                  {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
-                </div>
-                )}
-                <span className="mt-1 block text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
-              </span>
-            </button>
         ) : (
-          <div key={m.id} className="mb-8 w-[75%] pl-[2em]">
-            {(m.turnId || m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m}
-              onExpand={m.turnId ? () => client.loadTurnDetails(m.turnId!) : undefined}
-              onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
-            {!m.pending && (
-              <>
-                {m.kind ? <Media m={m} ai /> : (
-                <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
-                  {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
-                </div>
-                )}
-                {m.turnId && <SurfacedMemories key={m.turnId} turnId={m.turnId} client={client} />}
-                <div className="mt-2 -ml-1.5 flex items-center">
-                  <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
-                  <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">{m.tokens == null ? '' : `约 ${m.tokens.toLocaleString()}`}</span>
-                  <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
-                  <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
-                  <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
-                  {m.kind === 'image' && m.media?.some((x) => x.assetId) && (
-                    <IconBtn title="收藏到我们的相册" onClick={() => void client.favoriteImages(m.media!.filter((x) => x.kind === 'image' && x.assetId).map((x) => x.assetId!))}><Star size={15} /></IconBtn>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}</div></Fragment>)}
+          <AssistantReply parts={row.parts} client={client} copy={copy} selectionMode={state.selectionMode} selected={state.selected} />
+        )}</div></Fragment>
+        })}
         {(state.hasLater || state.loadingLater || state.historyMode === 'date' && msgs.length > 0 || historyAction === 'later' && state.historyError) && <HistoryBoundary
           direction="later" loading={state.loadingLater} hasMore={state.hasLater} error={historyAction === 'later' ? state.historyError : undefined}
           disabled={editing !== null || state.selectionMode || state.historyLoading} onLoad={() => void loadLater()} />}

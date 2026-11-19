@@ -122,10 +122,11 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
 // 优先级：Last-Event-ID > query cursor。回放分页追平到连接时高水位后转 live（先订阅后回放，无空洞）。
 // 背压：res.write false → await drain（超时断开）；待发字节超上限断开；客户端按游标重连。
 
-export function toSseDto(row: { sequence: number; kind: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): Record<string, unknown> {
+export function toSseDto(row: { sequence: number; kind: string; occurred_at?: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): Record<string, unknown> {
   const payloadRaw = row.payload_ref ?? row.payload ?? '{}';
   return {
     sequence: row.sequence,
+    ...((row.kind.startsWith('reasoning.') || row.kind === 'turn.tool') && row.occurred_at ? { occurred_at: row.occurred_at } : {}),
     kind: row.kind,
     conversation_id: row.conversation_id,
     turn_id: row.turn_id,

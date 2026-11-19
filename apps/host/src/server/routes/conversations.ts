@@ -90,7 +90,7 @@ if (convMsgs) {
 
 const getMsg = /^GET \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.exec(route);
 if (getMsg) {
-  const message = d.messages.getMessage(decodeURIComponent(getMsg[2]!));
+  const message = d.messages.getMessage(decodeURIComponent(getMsg[2]!), true);
   if (!message || message.conversation_id !== decodeURIComponent(getMsg[1]!)) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
   return json(res, 200, { message: new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate([message])[0] });
 }

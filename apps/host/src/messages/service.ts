@@ -331,7 +331,7 @@ export class MessageService {
       // WAKE_KEEPWARM_V1 §05（K-05/B18）：同一 assistant 消息真正追加的新段落=新真实活动
       this.activity?.noteRealPublication(row.conversation_id, messageId, row.current_revision + 1, nowIso);
     });
-    return this.getMessage(messageId);
+    return this.getMessage(messageId, true);
   }
 
   /** EXEC_V1 §04.13：预写提醒投递（speaker=system，宿主消息；幂等键防重复投递；归档 outbox 同链）。 */
@@ -382,7 +382,7 @@ export class MessageService {
       .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source, opts.tokenEstimateJson ?? null, opts.fingerprint ?? null);
   }
 
-  getMessage(messageId: string): MessageDto | null {
+  getMessage(messageId: string, includePublicationBreaks = false): MessageDto | null {
     const row = this.db
       .prepare(
         `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
@@ -391,7 +391,7 @@ export class MessageService {
          WHERE m.id = ?`,
       )
       .get(messageId) as MessageRow | undefined;
-    return row ? rowToDto(row, attachmentsFor(this.db, row.id, row.revision)) : null;
+    return row ? rowToDto(this.db, row, includePublicationBreaks) : null;
   }
 
   listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number; latest?: boolean }): MessageDto[] {
@@ -409,7 +409,7 @@ export class MessageService {
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, limit) as MessageRow[];
-      return rows.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+      return rows.reverse().map((row) => rowToDto(this.db, row));
     }
     // F-J-48（联合审计 2026-10-06）：beforeSequence=反向翻页（历史"加载更早"）——
     // 取 sequence < before 的最新 limit 条后翻回升序，与 after 语义对偶
@@ -423,7 +423,7 @@ export class MessageService {
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, opts.beforeSequence, limit) as MessageRow[];
-      return older.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+      return older.reverse().map((row) => rowToDto(this.db, row));
     }
     const rows = this.db
       .prepare(
@@ -434,7 +434,7 @@ export class MessageService {
          ORDER BY m.sequence LIMIT ?`,
       )
       .all(opts.conversationId, opts.afterSequence ?? 0, limit) as MessageRow[];
-    return rows.map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+    return rows.map((row) => rowToDto(this.db, row));
   }
 
   /** Bounded UI history with global sequence cursors. Date lookup anchors at
@@ -482,7 +482,7 @@ export class MessageService {
         EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND sequence>?) AS later
     `).get(opts.conversationId, first, opts.conversationId, last) as { earlier: number; later: number };
     return {
-      messages: rows.map(row => rowToDto(row, attachmentsFor(this.db, row.id, row.revision))),
+      messages: rows.map(row => rowToDto(this.db, row, true)),
       has_earlier: Boolean(bounds.earlier), has_later: Boolean(bounds.later),
       before_sequence: first, after_sequence: last,
       has_more: Boolean(descending ? bounds.earlier : bounds.later), timezone: 'Asia/Shanghai',
@@ -517,8 +517,22 @@ type MessageRow = {
 };
 
 type AttachmentRow = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
-function rowToDto(r: MessageRow, attachments: AttachmentRow[] = []): MessageDto {
+function rowToDto(db: Db, r: MessageRow, includePublicationBreaks = false): MessageDto {
+  // A later text revision can straddle another assistant publication (e.g. a voice
+  // message). Expose only the original prefix lengths needed to place that sibling.
+  const breaks = includePublicationBreaks && r.speaker === 'assistant' && r.kind === 'text' && r.revision > 1 && r.turn_id
+    ? db.prepare(`SELECT sibling.id AS before_message_id,
+          (SELECT length(rtrim(prior.content, char(10))) FROM message_revisions prior
+           WHERE prior.message_id = ? AND prior.rowid < first.rowid ORDER BY prior.revision DESC LIMIT 1) AS end_char
+        FROM message_revisions first JOIN messages sibling ON sibling.id = first.message_id
+        WHERE first.rowid > (SELECT rowid FROM message_revisions WHERE message_id = ? AND revision = 1)
+          AND first.rowid < (SELECT rowid FROM message_revisions WHERE message_id = ? AND revision = ?)
+          AND first.revision = 1 AND sibling.turn_id = ? AND sibling.speaker = 'assistant'
+        ORDER BY first.rowid`).all(r.id, r.id, r.id, r.revision, r.turn_id) as NonNullable<MessageDto['publication_breaks']>
+    : [];
+  const attachments = attachmentsFor(db, r.id, r.revision);
   return {
+    ...(breaks.length ? { publication_breaks: breaks } : {}),
     id: r.id,
     conversation_id: r.conversation_id,
     sequence: r.sequence,
