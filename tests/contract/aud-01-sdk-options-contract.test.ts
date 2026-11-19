@@ -35,7 +35,7 @@ test('SDK isolation and resume follow the host ledger; stale session IDs cannot 
   assert.equal(o.env.CLAUDE_CODE_ENABLE_FUNCTION_HOOKS, '1');
   assert.equal(o.env.CLAUDE_CODE_EXTRA_BODY, undefined, 'the final system override must not strip native subscription attribution');
   assert.equal(o.systemPrompt.at(-1), THINKING_LANGUAGE_RULE);
-  assert.match(o.systemPrompt.at(-1), /思考摘要请使用简体中文/);
+  assert.doesNotMatch(o.systemPrompt.join('\n'), /简体中文/);
   assert.equal(o.permissionMode, 'default'); assert.equal(o.strictMcpConfig, true);
   assert.equal(o.settings.autoMemoryEnabled, false); assert.equal(o.settings.disableClaudeAiConnectors, true);
   assert.equal(o.env.DISABLE_COMPACT, '1'); assert.equal(o.effort, 'xhigh');

@@ -133,6 +133,8 @@ export async function runSdkHostQuery(
   let requestUsage: RawUsage | null = null;
   let observedRequestUsage = false;
   let lastSentMessages = structuredClone(messages);
+  const savedHoldCalls = new Set<string>();
+  let terminalToolNames = '';
   const callIds = new Map<string, string[]>();
   const executing = new Set<string>();
   const deferredReview: Array<{ name: string; args: Record<string, unknown>; id: string }> = [];
@@ -173,6 +175,10 @@ export async function runSdkHostQuery(
       return { ...result, recordDelivery: delivered => {
         messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
         host.recordToolDelivery?.(id, delivered);
+        if (host.purpose === 'chat' && delivered.ok && delivered.output.saved === true
+            && effectiveToolName(name, args) === 'memory_hold') {
+          savedHoldCalls.add(id);
+        }
       } };
     } catch (error) {
       failure = 'TOOL_EXECUTION_OUTCOME_UNKNOWN';
@@ -219,7 +225,7 @@ export async function runSdkHostQuery(
         ids.push(input.tool_use_id); callIds.set(key, ids);
         return {};
       }] }],
-      PostToolBatch: [{ hooks: [async () => {
+      PostToolBatch: [{ hooks: [async input => {
         try {
           const results = [];
           let completed = false;
@@ -230,6 +236,18 @@ export async function runSdkHostQuery(
             results.push(result.output); completed ||= result.ok;
           }
           if (completed) return { continue: false, stopReason: 'EST_REVIEW_COMPLETED' };
+          // The native terminal list uses outer MCP names. Only arm it for a
+          // confirmed save batch with main-channel text already sent to publication.
+          const calls = input.hook_event_name === 'PostToolBatch' ? input.tool_calls : [];
+          const holdsSaved = !!calls?.length && calls.every(call => savedHoldCalls.has(call.tool_use_id));
+          savedHoldCalls.clear();
+          const hasReply = holdsSaved && [...textBlocks.values()].some(blocks =>
+            [...blocks.values()].some(text => text.trim().length > 0));
+          const names = hasReply ? [...new Set(calls.map(call => call.tool_name))].join(',') : '';
+          if (names !== terminalToolNames) {
+            await run!.applyFlagSettings({ env: { CLAUDE_CODE_TERMINAL_MCP_TOOLS: names } });
+            terminalToolNames = names;
+          }
           round++;
           await beforeModel();
           return results.length ? { hookSpecificOutput: { hookEventName: 'PostToolBatch' as const, additionalContext: JSON.stringify({ review_results: results }) } } : {};

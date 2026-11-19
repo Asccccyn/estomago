@@ -35,6 +35,7 @@ import { BackgroundScheduler } from '../../apps/host/src/runtime/background-sche
 import { createBackgroundExecution } from '../../apps/host/src/application/background-execution.ts';
 import { SystemAlertService } from '../../apps/host/src/observability/system-alerts.ts';
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
+import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 
 const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
@@ -42,7 +43,7 @@ const usage = { subscription_type: 'max', rate_limits_available: true, rate_limi
 
 // Only the two external model transports are simulated. The host queue, input
 // ledger, tool registry, fallback decision and final publication are production code.
-function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any; orFrames?: (round: number) => any[]; withMedia?: boolean } = {}) {
+function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncIterable<any>, options: { windows?: Record<string, unknown>; orUsage?: Record<string, unknown>; orModel?: string; responseModel?: string; provider?: string; deferred?: boolean; sdkUsage?: any; orFrames?: (round: number) => any[]; withMedia?: boolean; mariposa?: MariposaClient; applyFlagSettings?: (settings: unknown) => Promise<void> } = {}) {
   const { db, root } = makeDb(); writeApprovedIdentity(root);
   const paths = makePaths(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime,
@@ -70,7 +71,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
         yield event;
       }
     })();
-    return Object.assign(iterator, { close() {}, accountInfo: async () => account,
+    return Object.assign(iterator, { close() {}, applyFlagSettings: options.applyFlagSettings, accountInfo: async () => account,
       usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => options.sdkUsage === undefined ? usage : options.sdkUsage });
   }) as any);
   const runner = new SubscriptionAccessRunner(config, settings, async cfg => {
@@ -85,7 +86,7 @@ function fixture(t: any, scripted: (round: number, input: any) => any[] | AsyncI
   }, () => clock);
   const backgroundSettings = new BackgroundSettingsService(db, config);
   const taskService = new BackgroundTaskService(db, backgroundSettings);
-  const { tools, registry } = assembleTestTools({ db, messages, taskService, events, reviews, checkpoint });
+  const { tools, registry } = assembleTestTools({ db, messages, taskService, events, reviews, checkpoint, mariposa: options.mariposa });
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, windows, trajectory, selections, reviews, checkpoint, settings, tools, toolCatalog: registry,
     runnerSelection: { status: 'ok', runner }, media, capabilities: new CapabilityMatrix(config), reasoning: new ReasoningService(db, events),
     routing: new RoutingService(db, events, messages), usage: new UsageCollector(db), logger: new Logger(null) });
@@ -423,6 +424,46 @@ test('a native tool continuation keeps last request context separate from turn u
   const day=f.db.prepare('SELECT budget_day FROM usage_observations LIMIT 1').get()!.budget_day as string;
   const daily=new UsageCollector(f.db).summaryByDay(day).purposes[0]!;
   assert.equal(daily.row_count,2); assert.equal(daily.known_input_total,20119);
+});
+
+test('a successful chat hold suppresses the native empty reply retry only after visible text and only for that batch', async t => {
+  const settings: unknown[] = [];
+  const mariposa = new MariposaClient({ transport: async (cap, args) => {
+    if (cap !== 'memory.hold') return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
+    return { ok: true, result: { operation_id: args.operation_id, memory_id: 'saved-' + args.operation_id,
+      version: 1, binding_ids: [], committed_at: '2026-11-18T00:00:00Z' } };
+  } });
+  const f = fixture(t, async function* (_round, input) {
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'synthetic-hold', version: '1' });
+    await input.options.mcpServers.est.instance.connect(b);
+    await client.connect(a);
+    try {
+      const tool_name = 'mcp__est__tool_invoke';
+      for (const [index, name] of ['memory_hold', 'memory_hold', 'wake_manage'].entries()) {
+        const id = 'hold-step-' + index;
+        yield { type: 'stream_event', event: { type: 'message_start', message: { id, model: 'claude-sonnet-4-6' } } };
+        if (index === 1) yield { type: 'assistant', message: { id, content: [{ type: 'text', text: '合成回复。' }] } };
+        const args = { name, arguments: name === 'memory_hold'
+          ? { original_title: '记录', categories: ['daily'], text: '合成记忆' + index, creation_mode: 'contemporaneous' }
+          : { operation: 'list' } };
+        const call = { tool_name, tool_input: args, tool_use_id: 'call-' + id };
+        yield { type: 'assistant', message: { id, content: [{ type: 'tool_use', id: call.tool_use_id, name: tool_name, input: args }] } };
+        await input.options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', ...call });
+        const result = await client.callTool({ name: 'tool_invoke', arguments: args });
+        assert.equal(result.isError, false);
+        await input.options.hooks.PostToolBatch[0].hooks[0]({ hook_event_name: 'PostToolBatch', tool_calls: [call] });
+        if (index === 0) assert.deepEqual(settings, []);
+      }
+      yield { type: 'result', subtype: 'success', session_id: 'synthetic-hold' };
+    } finally { await client.close(); }
+  }, { deferred: true, mariposa, applyFlagSettings: async s => { settings.push(s); } });
+  assert.equal((await f.send('合成存记忆')).state, 'completed');
+  assert.deepEqual(settings, [
+    { env: { CLAUDE_CODE_TERMINAL_MCP_TOOLS: 'mcp__est__tool_invoke' } },
+    { env: { CLAUDE_CODE_TERMINAL_MCP_TOOLS: '' } },
+  ]);
+  assert.equal(f.db.prepare("SELECT count(*) n FROM tool_side_effects WHERE kind='hold' AND state='committed'").get()?.n, 2);
 });
 
 test('SDK complete-only thinking is visible without a contradictory no_block marker', async t => {
