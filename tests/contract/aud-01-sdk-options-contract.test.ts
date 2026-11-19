@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { subscriptionSdkOptions, THINKING_LANGUAGE_RULE } from '../../apps/host/src/runtime/build-options.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { register } from '../../apps/host/src/runtime/sdk-prompt-context/hooks/register.mjs';
 import { runSdkHostQuery } from '../../apps/host/src/runtime/sdk-host-query.ts';
 
 test('SDK isolation and resume follow the host ledger; stale session IDs cannot override it', async () => {
@@ -76,4 +77,19 @@ test('cancelling during history import releases the input stream without dispatc
   }, new Map());
   assert.equal(result.outcome, 'interrupted'); assert.equal(result.attempts, 0);
   assert.equal(dispatches, 0); assert.equal(emitted.length, 0);
+});
+
+test('the SDK context hook removes only the automatic account email', () => {
+  const address = 'author@example.invalid';
+  const project = { name: 'claudeMd', text: 'Example contact: ' + address };
+  const date = { name: 'currentDate', text: '2026-11-18' };
+  const input = { blocks: [project, { name: 'userEmail', text: address }, date], instructionFiles: [] };
+  let projected;
+  register((event, ...registration) => {
+    if (event === 'prompt.context') {
+      const handler = registration.at(-1);
+      projected = handler(null, input, value => value);
+    }
+  });
+  assert.deepEqual(projected, { ...input, blocks: [project, date] });
 });
