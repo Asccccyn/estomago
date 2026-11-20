@@ -1,6 +1,10 @@
 # estómago
 
-当前生产基线（太平洋时间 2026-11-19 16:59）· E host `pkg4-system-guides-3661a851d849`（包 4 基础提交 `6c9aad7e8a9a`，SDK 选集引导 `4126fbbd3fbc`），M `pkg4-mcp-exit-25c6cd15568b`（代码 `d983ba2ad332`），Content `pkg2-0fb14ac`，E schema v77。
+当前生产基线（太平洋时间 2026-11-20 03:46）· Host 和 Content 均为 `full-mcp-20261120-9385da539353`。发布源取本次确认的完整工作树快照，沿已上线通话实现构建前端。Host schema v79，Content schema v7，Mariposa 沿 `pkg4-mcp-exit-25c6cd15568b`。
+
+- 2026-11-20（本地源码基线 `80b24d26f82b`，E 支持 v80，待部署）。包括包 1—4 联合审计返修、网页通话半双工与电话上下文。D02 在同一事务保存自主轨迹与提交标记，旧版半写记录可经手动选集续接原输入。配套 M 源码 `4b88973f3d36`，基线与生成合同 `70c54abec599`。生产 M 仍为上述旧发布，D01 模型面退役随本地 M 修复待部署。
+
+先前生产基线（太平洋时间 2026-11-19 16:59）· E host `pkg4-system-guides-3661a851d849`（包 4 基础提交 `6c9aad7e8a9a`，SDK 选集引导 `4126fbbd3fbc`），M `pkg4-mcp-exit-25c6cd15568b`（代码 `d983ba2ad332`），Content `pkg2-0fb14ac`，E schema v77。
 
 - 2026-11-19（太平洋时间 17:26，容量试切已回退）。同一发布版本上试调上下文容量，随后恢复试切前配置。回退验收时 live/ready 均为 200，活动窗保留。
 
