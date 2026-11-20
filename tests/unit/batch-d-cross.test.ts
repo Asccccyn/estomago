@@ -1,8 +1,6 @@
 // 包2 批D（2026-11-16）：交叉联验——各批隔离验证之外的组合场景（04 §2.D）。
-// ①SDK 与 API 双投影分别核对（DBG-07 引导语归位后）：同一选集窗场景，SDK 走真实
-//   ClaudeSdkRunner→runSdkHostQuery 转换链（systemPrompt 不含引导语；引导语并回后继
-//   历史消息文本块头部、两段顺序保持）；API/DS 信封里引导语 system 块原位带 guide 标记、
-//   A 段正本不含引导语。
+// ①SDK 与 API 双投影分别核对：SDK 的选集引导语进入 systemPrompt，
+//   API/DS 的引导语仍是紧邻所选原文的 system 块。
 // ②BIND 午夜批处理 × 聊天回合并发（B12）：聊天回合在途时维护批照常处理（聊天不等待）、
 //   任务零聊天消息写入、window_toolsets/context_selections/window_trajectories 不被任务
 //   触碰、绑定经真实 SourceBindingService 写入桩 M。
@@ -39,6 +37,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { ManualSelectionService } from '../../apps/host/src/context/manual-selection.ts';
+import { selectionIntroduction } from '../../apps/host/src/context/selection-projection.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { GlmChatAdapter, type GlmChatTransport } from '../../apps/host/src/integrations/glm/chat.ts';
 import { SourceBindingService } from '../../apps/host/src/modules/sourcebinding/service.ts';
@@ -102,7 +101,7 @@ function baseDeps(root: string, config: ReturnType<typeof buildConfig>) {
   return { db, messages, identity, routing, selections, windows, reviews, checkpoint, mariposa, tools, registry, trajectory, events, logger };
 }
 
-test('BD-1 (SDK 投影): 选集引导语经真实 SDK 转换链——systemPrompt 不含引导语，并回后继历史消息头部且两段顺序保持', async () => {
+test('BD-1 (SDK 投影): 首次开窗和旧轨迹重建时，引导语进入 systemPrompt，双方原话独立', async () => {
   const root = tempRoot('bd-sdk-');
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', access_policy: 'subscription-first', model: 'claude-sonnet-4-6', subscription_proxy_url: 'http://127.0.0.1:1' }, openrouter: { model: 'anthropic/claude-sonnet-4.6' }, reminders: { enabled: false }, ...SOFT });
@@ -128,11 +127,14 @@ test('BD-1 (SDK 投影): 选集引导语经真实 SDK 转换链——systemPromp
   }) as never;
   const settings = new RuntimeSettingsService(d.db);
   settings.set('access_policy', 'subscription-first');
-  const runner = new SubscriptionAccessRunner(config, settings, async () => ({ status: 'ok', runner: new ClaudeSdkRunner(fakeQuery) }));
+  const sdkRunner = new ClaudeSdkRunner(fakeQuery);
+  const runner = new SubscriptionAccessRunner(config, settings, async () => ({ status: 'ok', runner: sdkRunner }));
   const supervisor = new TurnSupervisor({ db: d.db, config, messages: d.messages, events: d.events, identity: d.identity, windows: d.windows, trajectory: d.trajectory, settings, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(d.db, d.events), usage: new UsageCollector(d.db), routing: d.routing, logger: d.logger, tools: d.tools, toolCatalog: d.registry, reviews: d.reviews, checkpoint: d.checkpoint, selections: d.selections });
   try {
-    // 存量历史 + 无活动窗（H13 路径，不依赖容量软线——SDK 模型估算档位不同也不影响确定性）
-    seedHist(d.db, 'bd-h1', '十月早餐桌上的原话', 10, 'owner', dayAgo(3));
+    // 同字的用户原话和宿主引导语都必须保留在各自的角色中。
+    const firstDate = dayAgo(3);
+    const firstText = selectionIntroduction(firstDate, new Date().toISOString());
+    seedHist(d.db, 'bd-h1', firstText, 10, 'owner', firstDate);
     seedHist(d.db, 'bd-h2', '第二天我们确认了菜单', 11, 'assistant', dayAgo(1));
     const sub = d.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '看看我们之前说过的话', clientMessageId: 'bd-s1', occurredAt: new Date().toISOString() });
     supervisor.enqueue(sub.turnId);
@@ -145,18 +147,41 @@ test('BD-1 (SDK 投影): 选集引导语经真实 SDK 转换链——systemPromp
     await supervisor.waitIdle();
     const turn = d.db.prepare('SELECT state FROM turns WHERE id = ?').get(sub.turnId) as { state: string };
     assert.equal(turn.state, 'completed', '确认后建窗并恢复输入（经真实 SDK 链发出）');
-    const withHistory = captures.filter((c) => c.frames.some((f) => JSON.stringify(f.message.content).includes('十月早餐桌上的原话')));
-    assert.ok(withHistory.length >= 1, '选集历史经真实转换链进入 SDK prompt 流');
-    const cap = withHistory[0]!;
-    assert.ok(!cap.systemPrompt.includes('这是你们'), 'DBG-07：引导语不进 systemPrompt');
-    const textOf = (f: typeof cap.frames[number]): string => f.message.content.map((b) => b.text ?? '').join('\n');
-    const hist1 = cap.frames.find((f) => textOf(f).includes('十月早餐桌上的原话'))!;
-    assert.ok(hist1.message.content[0]!.text!.startsWith('这是你们'), '引导语并回后继历史消息文本块头部（相邻顺序保持）');
-    assert.ok(hist1.message.role !== 'system', '引导语不再作为独立 system 帧出现');
-    const hist2 = cap.frames.find((f) => textOf(f).includes('第二天我们确认了菜单'))!;
-    assert.ok(hist2.message.content[0]!.text!.startsWith('这是你们'), '第二段引导语同样并回其消息头部');
-    assert.ok(cap.frames.indexOf(hist1) < cap.frames.indexOf(hist2), '两段历史顺序保持');
-    assert.equal(cap.frames.filter((f) => textOf(f).startsWith('这是你们')).length, 2, '恰两段引导语（跨日），无独立引导语帧');
+    const assertSdkHistory = (capture: typeof captures[number]): void => {
+      const introductions = capture.systemPrompt.split('\n').filter(line => line.startsWith('这是你们'));
+      assert.equal(introductions.length, 2);
+      assert.equal(introductions[0], firstText);
+      const history = capture.frames.slice(0, 2).map(frame => frame.message);
+      assert.deepEqual(history, [
+        { role: 'user', content: [{ type: 'text', text: firstText }] },
+        { role: 'assistant', content: [{ type: 'text', text: '第二天我们确认了菜单' }] },
+      ]);
+    };
+    assertSdkHistory(captures.at(-1)!);
+
+    const windowId = d.windows.activeWindow('c1')!.id;
+    const initial = d.trajectory.forWindow(windowId)!;
+    const guideIndexes = initial.messages.flatMap((message, i) => message.guide === true ? [i] : []);
+    assert.equal(guideIndexes.length, 2);
+    const legacy = structuredClone(initial.messages);
+    for (const i of guideIndexes) {
+      const guide = legacy[i]!.content;
+      const original = legacy[i + 1]!.content;
+      assert.ok(Array.isArray(guide) && Array.isArray(original));
+      legacy[i + 1]!.content = [...guide, ...guide, ...original];
+    }
+    d.trajectory.replace(windowId, legacy, initial.lastBoundary, initial.manifest!);
+
+    for (const count of [1, 2]) {
+      sdkRunner.invalidateSession(windowId);
+      const next = d.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '继续聊', clientMessageId: `bd-sdk-rebuild-${count}` });
+      supervisor.enqueue(next.turnId);
+      await supervisor.waitIdle();
+      assert.equal((d.db.prepare('SELECT state FROM turns WHERE id = ?').get(next.turnId) as { state: string }).state, 'completed');
+      assertSdkHistory(captures.at(-1)!);
+      const restored = d.trajectory.forWindow(windowId)!;
+      for (const i of guideIndexes) assert.deepEqual(restored.messages[i + 1], initial.messages[i + 1]);
+    }
   } finally { d.db.close(); }
 });
 
@@ -175,7 +200,7 @@ test('BD-2 (API 投影): 同一选集场景 DS 信封——引导语 system 块�
     assert.ok(withHistory.length >= 1, '恢复请求含选集历史');
     const msgs = msgsOf(withHistory[0]!);
     const textOf = (m: Record<string, unknown>): string => typeof m['content'] === 'string' ? m['content'] : JSON.stringify(m['content']);
-    // DS wire 构建拍平 content 块并剥内部标记（guide 是信封内部标记、SDK 转换消费）——
+    // DS wire 构建拍平 content 块并剥内部 guide 标记，
     // API 投影按文本+位置判别引导语块
     const guideMsgs = msgs.filter((m) => m['role'] === 'system' && textOf(m).includes('这是你们'));
     assert.equal(guideMsgs.length, 2, '两段引导语以 system 块原位出现在信封消息流');

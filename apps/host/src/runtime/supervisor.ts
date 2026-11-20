@@ -593,7 +593,12 @@ export class TurnSupervisor {
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
-    if (this.drv()?.kind === 'claude-agent-sdk' && !o.forceOpenRouter && !(runner instanceof SubscriptionAccessRunner && runner.useOpenRouter())) {
+    const sdkDriver = this.drv()?.kind === 'claude-agent-sdk';
+    if (sdkDriver) {
+      const messages = this.restoreSdkSelectionHistory(o.windowId, o.envelope.messages);
+      if (messages !== o.envelope.messages) o = { ...o, envelope: { ...o.envelope, messages } };
+    }
+    if (sdkDriver && !o.forceOpenRouter && !(runner instanceof SubscriptionAccessRunner && runner.useOpenRouter())) {
       const sdk = await this.runSdkToolLoop(o);
       if (runner instanceof SubscriptionAccessRunner && runner.canFallback(sdk.result)) {
         runner.invalidateSdkSession(o.windowId);
@@ -602,7 +607,7 @@ export class TurnSupervisor {
       return sdk;
     }
     const transportKind = this.drv()?.kind === 'deepseek' ? 'deepseek' : 'openrouter';
-    const orFallback = this.drv()?.kind === 'claude-agent-sdk';
+    const orFallback = sdkDriver;
     if (orFallback && runner instanceof SubscriptionAccessRunner) runner.invalidateSdkSession(o.windowId);
     const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
     let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
@@ -992,10 +997,47 @@ export class TurnSupervisor {
       .run(JSON.stringify({ tool_coverage: [{ tool_call_id: toolCallId, ranges: result.coverageAdditions }] }), requestId);
   }
 
+  /** Older SDK sessions persisted a copy of each guide in the next selected message.
+   * Match those leading blocks against the frozen selection before rebuilding. */
+  private restoreSdkSelectionHistory(windowId: string, messages: OrMessage[]): OrMessage[] {
+    const firstGuide = messages.findIndex(m => m.role === 'system' && m.guide === true);
+    if (firstGuide === -1) return messages;
+    const items = this.d.selections?.forTargetWindow(windowId)?.items;
+    if (!items?.length) return messages;
+
+    let guide: string | undefined;
+    let selectedIndex = 0;
+    let restored: OrMessage[] | undefined;
+    for (let i = firstGuide; i < messages.length && selectedIndex < items.length; i++) {
+      const message = messages[i]!;
+      if (message.role === 'system') {
+        guide = message.guide === true && Array.isArray(message.content) ? message.content[0]?.text : undefined;
+        continue;
+      }
+      const item = items[selectedIndex++]!;
+      if (message.role !== (item.speaker === 'owner' ? 'user' : 'assistant')) return messages;
+      if (guide && Array.isArray(message.content)) {
+        const blocks = message.content;
+        let copies = 0;
+        while (blocks[copies]?.type === 'text' && blocks[copies]?.text === guide) copies++;
+        if (copies > 0) {
+          // A real selected message can itself be the same literal guide.
+          // Legacy sequence-prefixed originals already sit after the added copies.
+          const originalHasGuideText = sha256Hex(guide) === item.content_hash;
+          const originalHasSequencePrefix = blocks[copies]?.text === `[${item.sequence}]\n${guide}`;
+          if (originalHasGuideText && !originalHasSequencePrefix) copies--;
+          if (copies > 0) (restored ??= messages.slice())[i] = { ...message, content: blocks.slice(copies) };
+        }
+      }
+      guide = undefined;
+    }
+    return restored ?? messages;
+  }
+
   private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner;
-    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system' && (m as { guide?: boolean }).guide !== true).flatMap(m => typeof m.content === 'string'
+    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').flatMap(m => typeof m.content === 'string'
       ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text ?? ''));
     const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
     const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
@@ -1370,8 +1412,8 @@ export class TurnSupervisor {
     }
     for (const m of selected) {
       const guide = guides.get(m.sequence);
-      // DBG-07（包2 2026-11-16）：引导语带结构标记 guide——SDK 路径据此把它并回后继
-      // 历史消息（保持"引导语→原文"相邻关系），不再抬进 systemPrompt 丢失位置。
+      // 选集引导来自宿主。API 保留原位，SDK 按顺序装进系统提示。
+      // guide 标记供旧 SDK 轨迹清理定位。
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }], guide: true } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
       const proj = this.revisionBlocks(m.id, m.revision, m.content, { transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
