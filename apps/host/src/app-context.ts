@@ -411,7 +411,10 @@ export class Host {
     const imageGenAdapter = imageGenCfg.api_key_env && process.env[imageGenCfg.api_key_env]
       ? new (await import('./integrations/imagegen/adapter.ts')).ImageGenAdapter({ baseUrl: imageGenCfg.base_url, apiKeyEnv: imageGenCfg.api_key_env, model: imageGenCfg.model })
       : null;
-    const imagegen = new (await import('./modules/imagegen/service.ts')).ImageGenService({ db, adapter: imageGenAdapter, media, contentClient, messages, events, archiveSync });
+    const imagegen = new (await import('./modules/imagegen/service.ts')).ImageGenService({
+      db, adapter: imageGenAdapter, media, contentClient, messages, events, archiveSync,
+      backgroundRunRemainingMs: (runId) => schedulerRef?.remainingRunMs(runId) ?? 0,
+    });
     const { registerImageGenCapabilities } = await import('./modules/imagegen/module.ts');
     registerImageGenCapabilities(capabilityRegistry, { imagegen });
     // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）

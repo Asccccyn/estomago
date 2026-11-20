@@ -48,6 +48,7 @@ import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.t
 import { contextFingerprintJson } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
+import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
@@ -73,7 +74,7 @@ import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactIm
 import { planCarryImages, buildCarryFragment, countCarryImageBlocks } from '../context/carry-images.ts';
 import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
 import { contentForward } from '../integrations/content/client.ts';
-import { storedToolset } from './tool-discovery.ts';
+import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discovery.ts';
 import { catalogUsesLegacySequenceMarkers, stripLegacySequenceMarker } from './legacy-sequence-markers.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 
@@ -510,13 +511,8 @@ export class TurnSupervisor {
   /** 消息→OR 块投影。包4无seq整改（2026-11-18，裁定7）：模型面信封不再携带消息
    *  序号前缀 [N]——普通输入、开窗选集与滚窗追赶一律自然正文；真实 sequence 仍存
    *  于 messages/轨迹 manifest（后台定位正本），工具定位改锚点/游标（见包4报告）。 */
-  /** 2026-11-02 她裁定：通话指引**只给纯技术事实**，不规定说什么/说多少。
-   *  B4（2026-11-04，她裁定）修订：①措辞改为"本轮"——本提示随实发轨迹**持久保留**
-   *  （窗口轨迹存实发正本，见 window-trajectory.ts；旧注释"不持久化"为错误声明，已纠正），
-   *  "你现在正在通话"在挂断后的历史里会成为假话；②不再点名 [数字]/[seq] 原词
-   *  （学舌示范风险——"1051"事故；机械剥离由 voice-stream 按句剥+发布层按行剥双层兜底）；
-   *  ③免责声明合一。 */
-  private static readonly CALL_TTS_FACT = '\n\n[通话轮] 本轮输入来自语音通话，你的回复会被实时语音合成朗读：不要输出方括号形式的宿主内部标记（会被念出来）。内容、长短、分段由你自定。';
+  /** 本轮的通话事实随实发轨迹保留。指明双向电话的输入和回复交付，内容与长度仍由回合决定。 */
+  private static readonly LIVE_CALL_FACT = '这一轮是你和宿主用户在通电话。接下来是她刚在这通电话里对你说的话，经语音识别转写。你要对她说的话直接放在这轮回复里，她会在同一通电话里实时听到。聊天语音条是另一个动作，通话回复无需另外发送语音条。回复正文只放你要说的话，略去宿主的内部标记。';
 
   private isCallTurnMessage(messageId: string | null | undefined): boolean {
     if (!messageId) return false;
@@ -638,6 +634,7 @@ export class TurnSupervisor {
     // active；仅取到工具结果而未发送（停止/轮次耗尽/错误收口）不算已见（O05）
     const toolSeenActive: ManifestEntry[] = [];
     let roundPendingSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    const pendingSeenByTool = new Map<string, ManifestEntry[]>();
     let dispatched = false;
     let toolsExecuted = false; // C03：本轮是否真实执行过工具（含已应答）——失败保留协议的判据
     let lastSentMessages: OrMessage[] | null = null;
@@ -650,13 +647,18 @@ export class TurnSupervisor {
       const answered = new Set(envelope.messages.slice(pendingAssistantIndex + 1).filter(m => m.role === 'tool').map(m => m.tool_call_id));
       return [...envelope.messages, ...pendingCalls.filter(t => !answered.has(t.tool_id)).map(t => ({ role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: code, executed: false }) }) as OrMessage)];
     };
-    const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => ({
+    const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => {
       // C03（四仓审计 20261106）：**执行过工具**的失败轮保留已实际发出的协议前缀与工具
       // 结果（未应答 pending 补显式未执行记录）——下一普通输入从此前缀接续，不丢工具
       // 往来、不重放副作用。无工具的失败轮不保留（消息重试语义：失败输入不进正史）。
-      result, finalMessages: dispatched && (toolsExecuted || pendingCalls.length > 0) ? incompleteProtocol(code) : null,
-      lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen,
-    });
+      const finalMessages = dispatched && (toolsExecuted || pendingCalls.length > 0) ? incompleteProtocol(code) : null;
+      if (finalMessages) {
+        const compacted = this.compactBlockedResults(finalMessages, lastSentMessages?.length ?? 0, o.windowId, envelope.maxTokens);
+        const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
+        roundPendingSeen = roundPendingSeen.filter(entry => !unseen.has(entry));
+      }
+      return { result, finalMessages, lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
+    };
     const seqOf = (id: string): number => {
       const row = d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(id) as { sequence: number } | undefined;
       return row?.sequence ?? 0;
@@ -711,19 +713,10 @@ export class TurnSupervisor {
         .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
       recordToolContext(d.db,prqId,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
-      const capacityNow = d.config.windows.model_context_capacity;
-      if (capacityNow !== null) {
-        const estNow = this.estimateRequestTokens(envelope.messages, o.windowId); // 裁定②：与 rotateIfNeeded 同一口径
-        const planNow = rotationPlan({
-          currentInput: estNow, nextInput: estNow, capacity: capacityNow,
-          maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
-          toolReserve: d.config.windows.tool_input_reserve_tokens, reviewReserve: d.config.windows.review_reserve_tokens,
-          safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens,
-        });
-        if (planNow.action === 'blocked_hard') {
-          d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
-          return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null });
-        }
+      const capacityNow = this.requestCapacity(envelope.messages, o.windowId, envelope.maxTokens);
+      if (capacityNow?.plan.action === 'blocked_hard') {
+        d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
+        return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${capacityNow.estimate} 超过安全上界 ${capacityNow.plan.safeInput}`, sessionId: null, requestId: null });
       }
       const payloadJson = JSON.stringify(envelope);
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
@@ -809,6 +802,7 @@ export class TurnSupervisor {
           if (roundPendingSeen.length > 0) {
             toolSeenActive.push(...roundPendingSeen);
             roundPendingSeen = [];
+            pendingSeenByTool.clear();
           }
         }
       };
@@ -827,7 +821,14 @@ export class TurnSupervisor {
             return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW', errorMessage: '旧窗口缺少已发送的模型协议内容，请通过正常手动换窗选择原文后继续；已有历史保持不变。', sessionId: null, requestId: null });
           }
           // Stored redacted image payloads cannot be compared as exact wire bytes.
-          if (!hasStorageImageRedaction(recorded)) previousPayload = projectModelHistory(recorded as Record<string, unknown> & { messages: OrMessage[] });
+          if (!hasStorageImageRedaction(recorded)) {
+            previousPayload = projectModelHistory(recorded as Record<string, unknown> & { messages: OrMessage[] });
+            // Only the retired binding surface may disappear from a legacy
+            // provider tool list. The recorded wire and message prefix stay intact.
+            if (Array.isArray(previousPayload.tools)) previousPayload = {
+              ...previousPayload, tools: modelToolsAfterBindingRetirement(previousPayload.tools),
+            };
+          }
         }
       }
       const result = await Promise.race([
@@ -921,6 +922,7 @@ export class TurnSupervisor {
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {
           signal: o.controller.signal, // 语音分支：取消传播（电话/检索取消链）
+          remainingResultBytes: () => this.remainingToolResultBytes(envelope.messages, o.windowId, envelope.maxTokens),
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
@@ -961,12 +963,15 @@ export class TurnSupervisor {
         // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
         // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
         if (exec.seenAdditions && exec.seenAdditions.length > 0) {
+          const additions: ManifestEntry[] = [];
           for (const a of exec.seenAdditions) {
-            roundPendingSeen.push({
+            additions.push({
               id: a.id, revision: a.revision, seq: seqOf(a.id), origin: 'tool', visible: true,
               ...(a.char_start !== undefined ? { char_start: a.char_start, char_end: a.char_end } : {}),
             });
           }
+          if (t.tool_id) pendingSeenByTool.set(t.tool_id, additions);
+          roundPendingSeen.push(...additions);
         }
         envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
         this.recordToolCoverage(lastPrqId, t.tool_id, exec);
@@ -1046,6 +1051,7 @@ export class TurnSupervisor {
     const toolSeen: ManifestEntry[] = [];
     const batchRanges: CoverageRange[] = [];
     let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    const pendingSeenByTool = new Map<string, ManifestEntry[]>();
     let requestId: string | null = null;
     let generationId: string | null = null;
     let dispatchId: string | null = null;
@@ -1072,12 +1078,8 @@ export class TurnSupervisor {
           }
           if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
           if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
-          if (d.config.windows.model_context_capacity !== null) {
-            const estimate = this.estimateRequestTokens(messages, o.windowId);
-            const plan = rotationPlan({ currentInput: estimate, nextInput: estimate, capacity: d.config.windows.model_context_capacity,
-              maxOutput: o.envelope.maxTokens, toolReserve: d.config.windows.tool_input_reserve_tokens,
-              reviewReserve: d.config.windows.review_reserve_tokens, safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens });
-            if (plan.action === 'blocked_hard') throw new ContractError('CAPACITY_BLOCKED_HARD_TOOL_ROUND');
+          if (this.requestCapacity(messages, o.windowId, o.envelope.maxTokens)?.plan.action === 'blocked_hard') {
+            throw new ContractError('CAPACITY_BLOCKED_HARD_TOOL_ROUND');
           }
           if (o.background) {
             if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
@@ -1116,10 +1118,11 @@ export class TurnSupervisor {
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
+          pendingSeenByTool.clear();
           batchRanges.length = 0;
         },
         recordToolDelivery: (toolCallId, result) => this.recordToolCoverage(requestId, toolCallId, result),
-        executeTool: async (name, args, toolCallId, round) => {
+        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
           if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
@@ -1128,6 +1131,7 @@ export class TurnSupervisor {
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
           let executed = await d.tools.execute(name, args, {
             signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
+            remainingResultBytes: () => this.remainingToolResultBytes(messages, o.windowId, o.envelope.maxTokens),
             purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
             activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
             seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
@@ -1144,9 +1148,13 @@ export class TurnSupervisor {
           if (executed.ok && batchRanges.length && executed.coverageProjection) {
             executed = { ...executed, ...executed.coverageProjection(batchRanges) };
           }
-          for (const seen of executed.seenAdditions ?? []) {
-            const row = d.db.prepare('SELECT sequence FROM messages WHERE id=?').get(seen.id) as { sequence: number } | undefined;
-            pendingToolSeen.push({ ...seen, seq: row?.sequence ?? 0, origin: 'tool', visible: true });
+          if (executed.seenAdditions?.length) {
+            const additions = executed.seenAdditions.map((seen): ManifestEntry => {
+              const row = d.db.prepare('SELECT sequence FROM messages WHERE id=?').get(seen.id) as { sequence: number } | undefined;
+              return { ...seen, seq: row?.sequence ?? 0, origin: 'tool', visible: true };
+            });
+            pendingSeenByTool.set(toolCallId, additions);
+            pendingToolSeen.push(...additions);
           }
           if (executed.ok && !executed.imageRefs?.length && executed.coverageAdditions) batchRanges.push(...executed.coverageAdditions);
           return executed;
@@ -1160,8 +1168,14 @@ export class TurnSupervisor {
       const old = d.windows.get(o.windowId)?.sdk_session_id ?? null;
       d.windows.rebindSession(o.windowId, old, result.sessionId);
     }
-    return { result, finalMessages: lastSentMessages ? result.finalMessages ?? null : null,
-      lastSentMessages: result.lastSentMessages ?? lastSentMessages, toolSeen, pendingToolSeen };
+    const finalMessages = lastSentMessages ? result.finalMessages ?? null : null;
+    const sent = result.lastSentMessages ?? lastSentMessages;
+    if (result.outcome !== 'completed' && finalMessages) {
+      const compacted = this.compactBlockedResults(finalMessages, sent?.length ?? 0, o.windowId, o.envelope.maxTokens);
+      const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
+      pendingToolSeen = pendingToolSeen.filter(entry => !unseen.has(entry));
+    }
+    return { result, finalMessages, lastSentMessages: sent, toolSeen, pendingToolSeen };
   }
 
   /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
@@ -1288,6 +1302,77 @@ export class TurnSupervisor {
     return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
   }
 
+  private requestCapacity(messages: OrMessage[], windowId: string, maxOutput: number) {
+    const windows = this.d.config.windows;
+    if (windows.model_context_capacity === null) return null;
+    const estimate = this.estimateRequestTokens(messages, windowId);
+    const plan = rotationPlan({
+      currentInput: estimate, capacity: windows.model_context_capacity, maxOutput,
+      toolReserve: windows.tool_input_reserve_tokens, reviewReserve: windows.review_reserve_tokens,
+      safety: windows.safety_reserve_tokens, soft: windows.soft_limit_tokens,
+    });
+    return { estimate, plan };
+  }
+
+  private remainingToolResultBytes(messages: OrMessage[], windowId: string, maxOutput: number): number {
+    const capacity = this.requestCapacity(messages, windowId, maxOutput);
+    if (!capacity) return Infinity;
+    // The result consumes at most as many UTF-16 code units as UTF-8 bytes.
+    // Leave room for the protocol envelope around the result.
+    return Math.max(0, Math.floor((capacity.plan.safeInput - capacity.estimate) * (this.drv()?.charsPerToken ?? 2.5)) - 512);
+  }
+
+  private compactBlockedResults(messages: OrMessage[], sentCount: number, windowId: string, maxOutput: number): Set<string> {
+    if (sentCount >= messages.length || this.requestCapacity(messages, windowId, maxOutput)?.plan.action !== 'blocked_hard') return new Set();
+    return compactUnsentToolResults(messages, sentCount);
+  }
+
+  /** Identify a retained response to the last dispatched request in this window.
+   * A denied continuation can contain a full tool call and a short committed
+   * receipt even after large unsent results have already been compacted. */
+  private rejectedContinuationPrefix(windowId: string, messages: OrMessage[]): number | null {
+    const last = this.d.db.prepare(`
+      SELECT p.payload_json, p.purpose, p.sent_at, a.blocked_reason,
+             wake.trajectory_committed_at AS wake_committed_at
+      FROM provider_requests p LEFT JOIN attempts a ON a.id=p.attempt_id
+      LEFT JOIN background_runs wake ON p.purpose='proactive_turn'
+        AND wake.id=p.background_run_id AND wake.kind='autonomous'
+        AND wake.window_id=p.window_id AND wake.turn_id=p.turn_id AND wake.retention='retained'
+        AND wake.conversation_id=(SELECT conversation_id FROM windows WHERE id=p.window_id)
+        AND a.window_id=p.window_id AND a.turn_id=p.turn_id AND a.state='failed'
+      WHERE p.window_id=? AND (p.dispatch_started_at IS NOT NULL OR p.sent_at IS NOT NULL)
+      ORDER BY p.rowid DESC LIMIT 1
+    `).get(windowId) as {
+      payload_json: string; purpose: string; sent_at: string | null; blocked_reason: string | null;
+      wake_committed_at: string | null;
+    } | undefined;
+    if (!last?.sent_at) return null;
+    const hardLimit = 'CAPACITY_BLOCKED_HARD_TOOL_ROUND';
+    const chatBlocked = last.purpose === 'chat' && last.blocked_reason?.startsWith(`${hardLimit}:`);
+    // Background finalization records the bare attempt error and commits the
+    // trajectory before the scheduler publishes the run's final status.
+    const wakeBlocked = last.wake_committed_at !== null && last.blocked_reason === hardLimit;
+    if (!chatBlocked && !wakeBlocked) return null;
+    const sent = (JSON.parse(last.payload_json) as { messages?: OrMessage[] }).messages;
+    if (!sent?.length || sent.length >= messages.length
+        || JSON.stringify(sent) !== JSON.stringify(messages.slice(0, sent.length))) return null;
+    const tail = messages.slice(sent.length);
+    const toolCalls = new Set(tail.flatMap(m => m.role === 'assistant' && Array.isArray(m.tool_calls)
+      ? m.tool_calls.map((call: { id: string }) => call.id) : []));
+    return tail.some(m => m.role === 'tool' && typeof m.tool_call_id === 'string' && toolCalls.has(m.tool_call_id)) ? sent.length : null;
+  }
+
+  private recoverOverbudgetTrajectory(trajectory: NonNullable<ReturnType<WindowTrajectoryService['forWindow']>>, sentCount: number): boolean {
+    // Older hosts retained giant denied result bodies. Keep sent history and
+    // original calls; only replace oversized results from the unsent tail.
+    if (!trajectory.manifest || trajectory.pendingManifest.length) return false;
+    const messages = trajectory.messages.slice();
+    if (compactUnsentToolResults(messages, sentCount).size === 0) return false;
+    this.d.trajectory!.replace(trajectory.windowId, messages, trajectory.lastBoundary, trajectory.manifest);
+    trajectory.messages = messages;
+    return true;
+  }
+
   /** S17b 批次3：目录来源统一为同一 Registry——生产=显式 toolCatalog 依赖；
    *  直接构造的测试夹具经执行器上的同一注册表回退（BLOCKERS 登记过渡）。 */
   private toolCatalogSource(): import('../capabilities/registry.ts').CatalogProvider {
@@ -1305,7 +1390,7 @@ export class TurnSupervisor {
     if (!t) {
       // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
       // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
-      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode, this.toolCatalogSource().currentGroups?.() ?? {}) as unknown as import('./or-payload.ts').OrTool[];
+      t = modelToolsAfterBindingRetirement(freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode, this.toolCatalogSource().currentGroups?.() ?? {}));
       this.frozenToolsByWindow.set(windowId, t);
     }
     return t;
@@ -1480,30 +1565,47 @@ export class TurnSupervisor {
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // 工作集估算（R4b 迁 runtime/rotation-estimate.ts：D06/F25/1024 裁定②/F-J-33/R21 口径单一正本）
     const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
-    const { workingSet, nextWithIncoming } = estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, o.window.id) });
+    const estimate = () => estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, o.window.id) });
+    let { workingSet, nextWithIncoming } = estimate();
 
         // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=容量软线，2026-10-17 起 600k 兜底）
     const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=容量软线（600k 兜底）
     let plan: ReturnType<typeof rotationPlan> | null = null;
-    if (!o.cause) {
-      plan = rotationPlan({
+    let hardContinuationRecovery = false;
+    if (dv && (!o.cause || o.cause === 'capacity')) {
+      const planForEstimate = () => rotationPlan({
         currentInput: workingSet, // D06：旧窗自身（硬门判这个）
         nextInput: nextWithIncoming, // 新消息并入下一输入预测（触发先提醒再换窗，不直接堵死）
         capacity,
-        maxOutput: dv!.maxTokens,
+        maxOutput: dv.maxTokens,
         toolReserve: d.config.windows.tool_input_reserve_tokens,
         reviewReserve: d.config.windows.review_reserve_tokens,
         safety: d.config.windows.safety_reserve_tokens,
         soft: d.config.windows.soft_limit_tokens,
       });
+      plan = planForEstimate();
+      if (plan.action === 'blocked_hard' && trajForEstimate
+          && this.requestCapacity(trajForEstimate.messages, o.window.id, dv.maxTokens)?.plan.action === 'blocked_hard') {
+        const sentCount = this.rejectedContinuationPrefix(o.window.id, trajForEstimate.messages);
+        if (sentCount !== null) {
+          if (this.recoverOverbudgetTrajectory(trajForEstimate, sentCount)) {
+            ({ workingSet, nextWithIncoming } = estimate());
+            plan = planForEstimate();
+          }
+          hardContinuationRecovery = Boolean(d.selections) && plan.action === 'blocked_hard';
+        }
+      }
+    }
+    if (!o.cause && plan) {
       // WP5（2026-10-08 §1.5 她裁定）：容量预警推送/展示退役——不再发布
       // 预警事件；软线计算（rotate 触发）与硬门（blocked_hard）照常保留。
       // bootstrap 不可用/缓存保护未覆盖等其他 context.warning 诊断不受影响。
       // 审计 F03：blocked_hard 是硬门——超安全输入上界不得继续发送；交调用方按待恢复收口，不静默放行
-      if (plan.action === 'blocked_hard') {
-        return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复` };
+      if (plan.action === 'blocked_hard' && !hardContinuationRecovery) {
+        const recovery = d.selections && !o.preserveWindow ? '；可在手动换窗确认选集后续接这条输入' : '';
+        return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复${recovery}` };
       }
-      if (plan.action !== 'rotate') return { rotated: false, blocked: null };
+      if (plan.action !== 'rotate' && !hardContinuationRecovery) return { rotated: false, blocked: null };
       // A just-prepared target already includes the confirmed selection and
       // pending input budget. Its first input must not rotate the empty window
       // again on the same soft trigger; the per-request hard gate still applies.
@@ -1559,6 +1661,13 @@ export class TurnSupervisor {
       d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { code: reason === 'manual' ? 'manual_review_bypassed' : 'identity_or_transport_review_unavailable', reason } });
       return this.doRotate(o, reason, null, selectionId);
     }
+
+    const rotateWithoutOverbudgetReview = () => {
+      d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private',
+        payload: { code: 'capacity_recovery_review_not_dispatched', reason, selection_id: selectionId } });
+      return this.doRotate(o, reason, null, selectionId);
+    };
+    if (hardContinuationRecovery) return rotateWithoutOverbudgetReview();
 
     // 她裁定 2026-10-07 的总开关：关=换窗不发 hold 提醒（WP5 起该开关只
     // 管提醒——日结已整链退役）。记录 skipped 凭证如实定位（不伪造
@@ -1643,15 +1752,6 @@ export class TurnSupervisor {
       }); // §3.2.5：空范围不叫模型
       return await this.doRotate(o, reason, null, selectionId);
     }
-    // §3.3 有界恢复（审计 P2-1）：同窗评审失败达上限后不再自动发评审（每次评审都是真实付费请求）。
-    // 恢复路径：评审成功换新窗（新窗计数自动重置）或人工处理（修提示/型号后手动换窗）。
-    const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
-    if (failedReviews >= MAX_WINDOW_REVIEW_ATTEMPTS) {
-      return { rotated: false, blocked: `ROTATION_REVIEW_RETRY_EXHAUSTED:本窗评审已失败 ${failedReviews} 次（上限 ${MAX_WINDOW_REVIEW_ATTEMPTS}），不再自动评审——请检查模型对提醒的响应或手动换窗；输入已保存待恢复` };
-    }
-    const review = d.reviews.create(o.window.id, o.conversationId, o.window.revision, range);
-    d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
-
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = trajEarly;
@@ -1661,9 +1761,21 @@ export class TurnSupervisor {
     const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
-    this.windowTools(o.window.id);
-    const reviewDefinition = taskDefinitionContext(storedToolset(d.db,o.window.id)!, 'context_review_complete', review.id);
-    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: [buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }),reviewDefinition].filter(Boolean).join('\n') }] }];
+    const reviewTools = this.windowTools(o.window.id);
+    const reviewId = genId('rev');
+    const reviewDefinition = taskDefinitionContext(storedToolset(d.db, o.window.id)!, 'context_review_complete', reviewId);
+    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: [buildPreRotateReviewMessage({ reviewId, reason, messageRefs: rangeKeys.join(', ') }),reviewDefinition].filter(Boolean).join('\n') }] }];
+    // A rolled-back wake can leave a fitting old prefix but an oversized review
+    // once its already-published message is included. Honor the confirmed selection.
+    if (selectionId && this.requestCapacity(reviewMessages, o.window.id, dv.maxTokens)?.plan.action === 'blocked_hard') {
+      return rotateWithoutOverbudgetReview();
+    }
+    const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
+    if (failedReviews >= MAX_WINDOW_REVIEW_ATTEMPTS) {
+      return { rotated: false, blocked: `ROTATION_REVIEW_RETRY_EXHAUSTED:本窗评审已失败 ${failedReviews} 次（上限 ${MAX_WINDOW_REVIEW_ATTEMPTS}），不再自动评审——请检查模型对提醒的响应或手动换窗；输入已保存待恢复` };
+    }
+    const review = d.reviews.create(o.window.id, o.conversationId, o.window.revision, range, reviewId);
+    d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
     const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: fixedSystemCount(reviewMessages), prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
     if (reviewGDropped) {
@@ -1673,8 +1785,7 @@ export class TurnSupervisor {
       model: dv.model,
       sessionId: dv.sessionId(o.conversationId),
       messages: reviewMessages,
-      // F-J-09：评审请求同窗复用冻结工具快照（epoch 内 tools 恒定）
-      tools: this.windowTools(o.window.id),
+      tools: reviewTools,
       boundaries: reviewBoundaries,
       maxTokens: dv.maxTokens,
       reasoning: dv.reasoning,
@@ -2047,18 +2158,23 @@ export class TurnSupervisor {
         }
       }
       if (!rot || !rot.ok) return { ok: false as const, reason: rot?.reason ?? 'ROTATION_NOT_COMMITTED', resumed: 0 };
-      const rows = d.db.prepare(
-        "SELECT DISTINCT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%') WHERE t.conversation_id = ? AND t.state='blocked'",
-      ).all(conversationId) as Array<{ id: string }>;
-      for (const r of rows) {
-        tx(d.db, () => {
-          d.db.prepare("UPDATE attempts SET state='pending', blocked_reason=NULL WHERE turn_id=? AND state='blocked' AND (blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%')").run(r.id);
-          d.db.prepare("UPDATE turns SET state='pending', completed_at=NULL WHERE id=? AND state='blocked'").run(r.id);
-        });
-        this.enqueue(r.id); // 链尾排队（当前串行任务结束后执行）
-      }
-      return { ok: true as const, windowId: rot.windowId, resumed: rows.length };
+      return { ok: true as const, windowId: rot.windowId, resumed: this.resumeSelectionInputs(conversationId) };
     });
+  }
+
+  private resumeSelectionInputs(conversationId: string): number {
+    const db = this.d.db;
+    const rows = db.prepare(
+      "SELECT DISTINCT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%') WHERE t.conversation_id = ? AND t.state='blocked'",
+    ).all(conversationId) as Array<{ id: string }>;
+    for (const r of rows) {
+      tx(db, () => {
+        db.prepare("UPDATE attempts SET state='pending', blocked_reason=NULL WHERE turn_id=? AND state='blocked' AND (blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%')").run(r.id);
+        db.prepare("UPDATE turns SET state='pending', completed_at=NULL WHERE id=? AND state='blocked'").run(r.id);
+      });
+      this.enqueue(r.id); // 链尾排队（当前串行任务结束后执行）
+    }
+    return rows.length;
   }
 
   async manualRotate(conversationId: string, expectedWindowId?: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
@@ -2068,7 +2184,9 @@ export class TurnSupervisor {
       if (expectedWindowId && this.d.windows.activeWindow(conversationId)?.id !== expectedWindowId) {
         return { ok: false as const, reason: 'WINDOW_STALE:目标窗口已不再活动' };
       }
-      return this.rotateConfirmed(conversationId, 'manual', true);
+      const result = await this.rotateConfirmed(conversationId, 'manual', true);
+      if (result.ok && this.d.selections?.forTargetWindow(result.windowId)) this.resumeSelectionInputs(conversationId);
+      return result;
     });
   }
 
@@ -2084,6 +2202,23 @@ export class TurnSupervisor {
       const prior = d.selections.activeForWindow(conversationId, window.id);
       const selection = prior ?? d.selections.ensureAwaiting({ conversationId, sourceWindowId: window.id, expectedWindowRevision: window.revision, cutoffSequence: cutoff, cause: 'manual' });
       d.selections.recordCause(selection.selection_id, 'manual');
+      // Explicit manual rotation can recover the latest unchanged, never-sent
+      // chat input from a legacy hard block without treating an old wake as committed.
+      d.db.prepare(`
+        UPDATE attempts SET blocked_reason=?
+        WHERE id=(
+          SELECT a.id FROM turns t JOIN messages m ON m.id=t.input_message_id
+          JOIN attempts a ON a.id=(SELECT id FROM attempts WHERE turn_id=t.id ORDER BY attempt_no DESC LIMIT 1)
+          WHERE t.conversation_id=? AND t.trigger='user_message' AND t.state='blocked'
+            AND m.conversation_id=t.conversation_id AND m.speaker='owner'
+            AND m.sequence=(SELECT MAX(sequence) FROM messages WHERE conversation_id=t.conversation_id AND speaker='owner')
+            AND a.state='blocked' AND a.blocked_reason LIKE 'CAPACITY_BLOCKED_HARD:%'
+            AND a.input_revision=m.current_revision AND a.retry_window_id IS NULL
+            AND (a.window_id IS NULL OR a.window_id=?)
+            AND NOT EXISTS(SELECT 1 FROM provider_requests p WHERE p.turn_id=t.id AND (p.dispatch_started_at IS NOT NULL OR p.sent_at IS NOT NULL))
+            AND NOT EXISTS(SELECT 1 FROM voice_stream_turns v WHERE v.est_turn_id=t.id)
+        )
+      `).run(`CONTEXT_SELECTION_REQUIRED:容量阻断的原输入等待手动换窗确认（selection_id=${selection.selection_id}）`, conversationId, window.id);
       d.events.publish('context.warning', { conversationId, entityRef: selection.selection_id, scope: 'private', payload: { code: 'manual_rotation_requested', previous_cause: prior?.rotation_cause ?? null, source_window_id: window.id } });
     }
     const materials = gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
@@ -2399,7 +2534,7 @@ export class TurnSupervisor {
       {
         conversationId: turn.conversation_id, windowId: window?.id ?? null, turnId,
         inputMessageId: inputMessage?.id ?? null,
-        timeContextText: modelTimeContextText(timeCtx) + (this.isCallTurnMessage(inputMessage?.id) ? TurnSupervisor.CALL_TTS_FACT : ''),
+        timeContextText: modelTimeContextText(timeCtx),
         userInput: { revision: effective.revision, content: effective.content },
       },
       {},
@@ -2416,8 +2551,14 @@ export class TurnSupervisor {
       ? (d.db.prepare("SELECT id, fact_text FROM pending_program_facts WHERE conversation_id=? AND consumed_at IS NULL ORDER BY created_at").all(turn.conversation_id) as Array<{ id: string; fact_text: string }>)
         .filter(() => !isVoiceCallActive(d.db, turn.conversation_id)) // E02：窄能力（与 model-bridge/executor 同源判定）
       : [];
+    // 只有经 Siren 实时入口登记、实际接着本轮回复流的回合才声明电话模式。
+    // 普通语音附件、通话时键入的消息、以及挂断后从聊天重试都没有本轮通话输出抽头。
+    const liveCallFact = this.voiceTaps.has(turnId) ? `[program_fact]\n${TurnSupervisor.LIVE_CALL_FACT}` : null;
     const prompt = [
-      ...assembledContext.segments.map((seg) => `[${seg.source}]\n${seg.text}`),
+      ...assembledContext.segments.flatMap((seg) => {
+        const block = `[${seg.source}]\n${seg.text}`;
+        return seg.source === 'user_input' && liveCallFact ? [liveCallFact, block] : [block];
+      }),
       ...(programFact ? [`[program_fact]\n${programFact.fact_text}`] : []),
       ...pendingFacts.map((f) => `[program_fact]\n${f.fact_text}`),
     ].join('\n\n');

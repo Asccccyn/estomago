@@ -7,41 +7,50 @@ import { definitionId, freezeWindowTools, storedToolset } from '../../apps/host/
 
 const expectedResident = [
   'memory_hold', 'memory_update', 'memory_recall', 'memory_read_full',
-  'image_generate', 'media_view', 'wake_manage', 'wishstar_write_star', 'wishstar_request_star',
+  'image_generate', 'media_view', 'chat_send_voice', 'call_control', 'wake_manage', 'wishstar_write_star', 'wishstar_request_star',
   'content_album_entry_write', 'content_albums_read', 'content_post_create',
 ];
 const expectedTask = ['background_complete', 'context_review_complete'];
 
-test('新窗冻结十二份简明用法与一条工具地图提醒，显式选择只影响后续新窗', t => {
+test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
   const { db, root } = makeDb(tempRoot('resident-catalog-policy-'), { seed: false });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const { registry } = assembleTestTools({ db, media: {} as never, messages: {} as never });
   const catalog = registry.currentCatalog();
   const declared = registry.currentGroups();
   db.prepare("INSERT INTO conversations(id,owner_service,scope,created_at) VALUES('c','estomago','private','now')").run();
-  for (const id of ['w-new', 'w-explicit']) {
+  for (const id of ['w-legacy', 'w-new', 'w-explicit']) {
     db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES(?,'c','ACTIVE','now','now')").run(id);
   }
+
+  const storeSelection = db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('tools_initial_visible',?,'now')");
+  storeSelection.run(JSON.stringify(expectedResident.filter(name => name !== 'chat_send_voice' && name !== 'call_control')));
+  freezeWindowTools(db, 'w-legacy', catalog, 'deferred', declared);
+  const legacy = storedToolset(db, 'w-legacy')!;
+  assert.equal(legacy.groups.chat_send_voice, 'D');
+  assert.equal(legacy.groups.call_control, 'D');
+  db.prepare("DELETE FROM runtime_settings WHERE key='tools_initial_visible'").run();
 
   freezeWindowTools(db, 'w-new', catalog, 'deferred', declared);
   const frozen = storedToolset(db, 'w-new')!;
   const initial = frozen.initialText!;
   assert.deepEqual([...initial.matchAll(/^- ([a-z_]+)$/gm)].map(match => match[1]), expectedResident);
   assert.deepEqual(Object.keys(frozen.groups).filter(name => frozen.groups[name] === 'T'), expectedTask);
-  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 41);
+  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 39);
   assert.ok(initial.startsWith('你想记下一件事'));
   assert.equal([...initial.matchAll(/用 tool_catalog 的 query/g)].length, 1);
   assert.match(initial, /发现记错了也可以改/);
   assert.match(initial, /tool_catalog 的 query/);
   assert.match(initial, /expected_version/);
   assert.match(initial, /asset_ref/);
+  assert.match(initial, /^- chat_send_voice\n[^\n]*填 text/m);
+  assert.match(initial, /^- call_control\n[^\n]*action: invite/m);
+  assert.doesNotMatch(initial, /发语音，就到工具地图/);
   assert.ok(!initial.includes('parameters: {'));
   assert.ok(!/^- (conversation_read|background_complete|context_review_complete)$/m.test(initial));
   assert.deepEqual(frozen.catalog, catalog);
 
-  db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('tools_initial_visible',?,'now')").run(
-    JSON.stringify(['memory_hold', 'conversation_read', 'background_complete']),
-  );
+  storeSelection.run(JSON.stringify(['memory_hold', 'conversation_read', 'background_complete']));
   freezeWindowTools(db, 'w-explicit', catalog, 'deferred', declared);
   const explicit = storedToolset(db, 'w-explicit')!;
   assert.equal(explicit.groups.memory_hold, 'C');
@@ -51,6 +60,7 @@ test('新窗冻结十二份简明用法与一条工具地图提醒，显式选�
   assert.match(explicit.initialText!, /- conversation_read/);
   assert.doesNotMatch(explicit.initialText!, /问宿主用户要一颗星/);
   assert.deepEqual(storedToolset(db, 'w-new'), frozen);
+  assert.deepEqual(storedToolset(db, 'w-legacy'), legacy);
 });
 
 test('自然意图匹配真实工具并一次返回该窗口的完整定义', () => {
@@ -65,6 +75,7 @@ test('自然意图匹配真实工具并一次返回该窗口的完整定义', ()
     ['把刚才那句话收进那条记忆里', 'memory_words_write'],
     ['我要把这句话留进我们的记忆里', 'memory_words_write'],
     ['发一条语音给她', 'chat_send_voice'],
+    ['想主动给她打电话', 'call_control'],
     ['帮我改计划', 'plans_write'],
     ['memory_recall', 'memory_recall'],
   ]) {

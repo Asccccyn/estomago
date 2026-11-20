@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
-import { CONTENT_ALBUMS, CARRY_IMAGE_LIMIT, CARRY_MODES, type CarryMode, type CarrySetItem } from '../../../packages/contracts/src/content.ts';
+import { CONTENT_ALBUMS, CONTENT_POST_PREVIEW_CHARS, CARRY_IMAGE_LIMIT, CARRY_MODES, type CarryMode, type CarrySetItem } from '../../../packages/contracts/src/content.ts';
 
 export const ACTORS = ['qiaosheng', 'jiaming'] as const;
 export type Actor = (typeof ACTORS)[number];
@@ -953,7 +953,8 @@ export class ContentServer {
       const filtered = after !== null ? rows.filter((r) => String(r.published_at) < after || (String(r.published_at) === after && String(r.id) < (cursor!.id ?? ''))) : rows;
       const page = filtered.slice(0, limit);
       const hasMore = filtered.length > limit;
-      return { status: 200, body: { items: page.map((r) => this.postDto(r)), next_cursor: hasMore && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.published_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: hasMore } };
+      const preview = url.searchParams.get('body_preview') === '1';
+      return { status: 200, body: { items: page.map((r) => this.postDto(r, true, preview)), next_cursor: hasMore && page.length > 0 ? Buffer.from(JSON.stringify({ scope, after: String(page[page.length - 1]!.published_at), id: String(page[page.length - 1]!.id) })).toString('base64url') : null, has_more: hasMore } };
     }
     m2 = /^GET \/api\/v1\/content\/posts\/([^/]+)$/.exec(route);
     if (m2) return { status: 200, body: this.postDto(this.postRow(String(m2[1])), true) };
@@ -1063,13 +1064,17 @@ export class ContentServer {
     if (!row) throw new ContentError(404, 'POST_NOT_FOUND', '帖子不存在');
     return row;
   }
-  private postDto(r: Record<string, unknown>, withAssets = true): Record<string, unknown> {
+  private postDto(r: Record<string, unknown>, withAssets = true, preview = false): Record<string, unknown> {
     const deleted = r.deleted_at !== null && r.deleted_at !== undefined;
     const assets = deleted ? [] : (this.db.prepare('SELECT asset_id, alt_text FROM feed_post_assets WHERE post_id = ? ORDER BY position').all(String(r.id)) as Array<{ asset_id: string; alt_text: string | null }>);
     const commentCount = (this.db.prepare('SELECT COUNT(*) n FROM feed_comments WHERE post_id = ? AND deleted_at IS NULL').get(String(r.id)) as { n: number }).n;
+    // The regular feed and per-post endpoint still return the full body.
+    const body = deleted ? null : r.body;
+    const bodyPreview = preview && typeof body === 'string' ? [...body].slice(0, CONTENT_POST_PREVIEW_CHARS).join('') : body;
     return {
       id: r.id, author: r.author_actor, presentation: r.presentation,
-      title: deleted ? null : r.title, body: deleted ? null : r.body, // §4.3.5：删除后普通读取不再返回原正文
+      title: deleted ? null : r.title, body: bodyPreview, // §4.3.5：删除后普通读取不再返回原正文
+      ...(bodyPreview !== body ? { body_truncated: true } : {}),
       created_at: r.created_at, published_at: r.published_at, updated_at: r.updated_at,
       revision: r.revision, deleted: deleted, deleted_at: r.deleted_at ?? null,
       asset_ids: withAssets ? assets.map((a) => a.asset_id) : undefined,

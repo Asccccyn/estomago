@@ -37,7 +37,7 @@ function makeTools(calls: ForwardCall[], respond: (c: ForwardCall) => { status: 
 
 test('wishstar_write_star：转发形状+幂等键派生+写回执瘦身', async () => {
   const calls: ForwardCall[] = [];
-  const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '不该回显的正文', visibility: 'visible', state: 'written', extra: 'x' } }));
+  const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '许个愿', visibility: 'visible', state: 'written', extra: 'x' } }));
   try {
     const checked = validateToolArgs('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-1' });
     assert.equal(checked.ok, true);
@@ -48,7 +48,45 @@ test('wishstar_write_star：转发形状+幂等键派生+写回执瘦身', async
     assert.equal(call.method, 'POST');
     assert.equal(call.path, '/api/stars');
     assert.deepEqual(call.body, { content: '许个愿', visibility: 'visible' });
-    assert.match(call.idempotencyKey ?? '', /^ws:t1:req-1:op-1$/, '幂等键由宿主派生');
+    assert.match(call.idempotencyKey ?? '', /^ws:star:v1:[0-9a-f]{64}$/, '写星 HTTP 幂等键由宿主派生');
+  } finally { db.close(); }
+});
+
+test('写星：合法长键可发 HTTP，响应未知后同回合跨请求重试只写一颗', async () => {
+  const calls: ForwardCall[] = [];
+  const receipts = new Map<string, Record<string, unknown>>();
+  const { tools, db } = makeTools(calls, (call) => {
+    const key = new Headers({ 'Idempotency-Key': call.idempotencyKey! }).get('Idempotency-Key')!;
+    if (key.length > 128) return { status: 422, body: { detail: 'Idempotency-Key 不合法' } };
+    const existing = receipts.get(key);
+    if (existing) return { status: 200, body: existing };
+    const receipt = { ...call.body, id: 'star_' + (receipts.size + 1) };
+    receipts.set(key, receipt);
+    if (receipts.size === 1) return { status: 0, body: { error_code: 'WISHSTAR_BODY_UNREADABLE_UNKNOWN' } };
+    return { status: 200, body: receipt };
+  });
+  try {
+    const args = { content: '合成星', visibility: 'hidden', idempotency_key: '星🌟'.repeat(64) };
+    const unknown = await tools.execute('wishstar_write_star', args, CTX);
+    assert.equal(unknown.ok, false);
+    assert.equal(unknown.output.error_code, 'WISHSTAR_OUTCOME_UNKNOWN');
+    assert.equal(calls.length, 1, '结果未知时不自动重发');
+
+    const retry = await tools.execute('wishstar_write_star', args, { ...CTX, requestId: 'req-2', toolCallId: 'call-2' });
+    assert.equal(retry.ok, true);
+    assert.equal(retry.output.id, 'star_1');
+    assert.equal(calls[0]!.idempotencyKey, calls[1]!.idempotencyKey);
+    assert.equal(receipts.size, 1);
+
+    const distinct = await tools.execute('wishstar_write_star', { ...args, idempotency_key: 'a'.repeat(128) }, { ...CTX, requestId: 'req-2' });
+    assert.equal(distinct.ok, true);
+    assert.equal(distinct.output.id, 'star_2', '同回合的不同键各自写入');
+    const later = await tools.execute('wishstar_write_star', args, { ...CTX, turnId: 't2', requestId: 'req-3' });
+    assert.equal(later.ok, true);
+    assert.equal(later.output.id, 'star_1', '显式业务键也可在新回合找回原星');
+    const conflict = await tools.execute('wishstar_write_star', { ...args, content: '不同参数' }, CTX);
+    assert.equal(conflict.output.error_code, 'WISHSTAR_IDEMPOTENCY_CONFLICT');
+    assert.equal(receipts.size, 2);
   } finally { db.close(); }
 });
 

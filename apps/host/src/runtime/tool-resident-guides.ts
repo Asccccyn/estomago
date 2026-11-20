@@ -14,6 +14,8 @@ const GUIDES = new Map<string, string>([
 选填 title、size 和 format。格式可用 png、jpeg、webp、gif。动图要填 format: gif，可填 frame_count 2 到 16、frame_duration_ms 至少 20 毫秒。帧越多，单帧可用尺寸越小。
 结果里的 asset_ref 可以实际看图，asset_id 可以收藏或发图。重试沿用同一 client_operation_id。结果未知先核对，保存或发布失败按回执补那一步。`],
   ['media_view', `想亲自看看相册里那张图，或刚画好的图，把回执给你的 asset_ref 原样传过来。工具实际返回图片时，你就能看见它。`],
+  ['chat_send_voice', `想主动给宿主用户发一条语音，填 text 写下你要说的原话。可以用 tts_script 补充合成表达。回执 state: published 表示已发出。若音频已保存而消息没发出，她只想补发时，按回执用原音频。`],
+  ['call_control', `想主动给宿主用户打电话，在当前私聊用 action: invite 发出来电邀请。等她选择接听或拒接。需要查看已有邀请的状态时用 action: status。拒接或未接后等新的邀约意图再打。`],
   ['wake_manage', `给未来的自己定一次唤醒。operation 用 schedule，填 operation_id 和到点交给自己的 note。时间二选一：at 是带时区的 RFC3339 时间，delay_seconds 是离现在多少秒，填正整数。可以同时有多个预约。
 operation 用 list 查看自己的预约，默认 20 条，可填 limit 1 到 100。续页把回执的 next_cursor 填到 cursor。update 或 cancel 填已有 task_id、当前版本 expected_revision 和 operation_id。update 至少改时间或留言。写操作重试沿用同一个键和同一组参数。`],
   ['wishstar_write_star', `写一颗星。填 content、visibility 和 idempotency_key。正文最多 2000 字。visibility 用 visible 放进共同瓶，两人可见。用 hidden 放进自己的私人瓶。

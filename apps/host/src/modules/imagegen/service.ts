@@ -6,7 +6,7 @@
 // Key 未配置=IMAGEGEN_UNCONFIGURED，如实不可用。
 import type { Db } from '../../db/connection.ts';
 import type { MediaService } from '../../media/assets.ts';
-import type { ImageGenAdapter } from '../../integrations/imagegen/adapter.ts';
+import type { ImageGenAdapter, ImageGenLifetime } from '../../integrations/imagegen/adapter.ts';
 import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
 import { sha256Hex } from '../../util/id.ts';
 
@@ -23,9 +23,31 @@ function requestFingerprint(o: { prompt: string; format?: string; size?: string;
   return sha256Hex(JSON.stringify([o.prompt, o.format ?? null, o.size ?? null, o.frameCount ?? null, o.frameDurationMs ?? null, o.deliver ?? 'send']));
 }
 
+type ImageGenOperation = {
+  prompt: string; opKey: string; title?: string | null; format?: string; size?: string;
+  frameCount?: number; frameDurationMs?: number; deliver?: 'send' | 'save_only';
+  roomId?: string | null; turnId?: string | null; windowId?: string; attemptId?: string | null;
+  backgroundRunId?: string | null; signal?: AbortSignal;
+};
+
+type ImageGenOperationRow = {
+  state: string; result_b64: string | null; asset_id: string | null; creation_id: string | null;
+  revised_prompt: string | null; error: string | null; output_format: string | null;
+  request_fingerprint: string | null; result_url: string | null;
+  origin_room_id: string | null; origin_background_run_id: string | null;
+};
+
+type ImageGenDeps = {
+  db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null;
+  messages?: import('../../messages/service.ts').MessageService | null;
+  events?: import('../../events/service.ts').EventService | null;
+  archiveSync?: { drainOnce(): Promise<unknown> } | null;
+  backgroundRunRemainingMs?: (runId: string) => number;
+};
+
 export class ImageGenService {
-  private readonly deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null; messages?: import('../../messages/service.ts').MessageService | null; events?: import('../../events/service.ts').EventService | null; archiveSync?: { drainOnce(): Promise<unknown> } | null };
-  constructor(deps: { db: Db; adapter: ImageGenAdapter | null; media: MediaService | null; contentClient: ContentClient | null; messages?: import('../../messages/service.ts').MessageService | null; events?: import('../../events/service.ts').EventService | null; archiveSync?: { drainOnce(): Promise<unknown> } | null }) {
+  private readonly deps: ImageGenDeps;
+  constructor(deps: ImageGenDeps) {
     this.deps = deps;
   }
 
@@ -35,12 +57,28 @@ export class ImageGenService {
    *  failed_generation/failed_retryable=生成阶段终态/可重试失败。
    *  M03（包1 2026-11-15）：默认交付=send——saved 后发布到当前聊天；发布幂等靠确定性
    *  clientMessageId（同键重放/发布失败重试都只补发布，不重新生成）。 */
-  async generateAndStore(o: { prompt: string; opKey: string; title?: string | null; format?: string; size?: string; frameCount?: number; frameDurationMs?: number; deliver?: 'send' | 'save_only'; roomId?: string | null; turnId?: string | null }): Promise<ImageGenOutcome> {
+  async generateAndStore(o: ImageGenOperation): Promise<ImageGenOutcome> {
     const db = this.deps.db;
+    const remainingRunMs = o.backgroundRunId ? this.deps.backgroundRunRemainingMs?.(o.backgroundRunId) : undefined;
+    const lifetime = this.deps.adapter?.operationLifetime(o.signal, remainingRunMs);
+    if (o.signal?.aborted || lifetime?.expired() || remainingRunMs === 0) {
+      return { ok: false, code: 'CANCELLED', detail: '本轮已停止，未开始生图操作', retryable: true };
+    }
     // P1-c（审计 2026-11-15，D02）：同键异参=幂等冲突——不把第一次的图当第二次请求
     // 的结果（旧实现 save_only 后同键换 prompt+send 会把第一张图发进聊天）。
     const fingerprint = requestFingerprint(o);
-    const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as { state: string; result_b64: string | null; asset_id: string | null; creation_id: string | null; revised_prompt: string | null; error: string | null; output_format: string | null; request_fingerprint: string | null; result_url: string | null } | undefined;
+    const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as ImageGenOperationRow | undefined;
+    // 旧操作之前没有记录房间；单房间旧窗仍可恢复。在多房间部署需要取到旧消息作为归属证据。
+    const legacyRoomUnknown = existing && existing.origin_room_id === null && o.windowId && db.prepare(
+      'SELECT 1 FROM conversations WHERE id<>? LIMIT 1',
+    ).get(o.roomId ?? null) && !db.prepare(
+      'SELECT 1 FROM messages WHERE conversation_id=? AND client_message_id=?',
+    ).get(o.roomId ?? null, `tool-imagegen:${o.opKey}:publish`);
+    if ((existing?.origin_room_id && existing.origin_room_id !== o.roomId)
+      || (existing && o.backgroundRunId && existing.origin_background_run_id !== o.backgroundRunId)
+      || legacyRoomUnknown) {
+      return { ok: false, code: 'IMAGEGEN_TARGET_CHANGED', detail: '原操作与当前授权房间或后台任务不一致', retryable: false };
+    }
     if (existing?.request_fingerprint && existing.request_fingerprint !== fingerprint) {
       return { ok: false, code: 'IDEMPOTENCY_CONFLICT', detail: '同一 client_operation_id 已对应不同的生成请求（prompt/格式/尺寸/帧参数/交付选择不一致）——重试请沿用原参数；新请求请换新操作标识', retryable: false };
     }
@@ -49,13 +87,10 @@ export class ImageGenService {
     // 旧记录只回读保存结果+显式发送入口，不自动发布；有指纹的新记录照常发布。
     const publishAuthorized = existing == null || existing.request_fingerprint != null;
     if (existing?.state === 'saved' && existing.asset_id) {
-      // M03：saved 后同键重放默认补发布（幂等：clientMessageId 命中返回原消息=D06）
-      const legacyNote = publishAuthorized ? null : `旧版本保存的操作缺少原请求指纹——无法核对本请求与原生成一致，不自动发布；需要发送用 chat_send_attachment（asset_id=${existing.asset_id}）`;
-      const published = o.deliver === 'send' && publishAuthorized ? this.tryPublish(o.opKey, existing.asset_id, o.roomId ?? null, o.turnId ?? null) : null;
-      if (published && !published.ok) {
-        return { ok: false, code: 'IMAGEGEN_PUBLISH_FAILED', detail: `作品已保存，但发布到当前聊天失败（${published.detail}）——同键重试只补发布，不会重新生成`, retryable: true, saved_asset_id: existing.asset_id, saved_creation_id: existing.creation_id };
-      }
-      return { ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '', revised_prompt: existing.revised_prompt, generation_call: 'none', ...(published?.ok ? { published_message_id: published.messageId } : {}), ...(legacyNote ? { note: legacyNote } : {}) };
+      return this.deliverSaved(o, lifetime, {
+        ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '',
+        revised_prompt: existing.revised_prompt, generation_call: 'none',
+      }, publishAuthorized);
     }
     // R8：stored 且作品条目已建（snapshot 未确认）——同键重试只补快照确认与 saved 收口
     const storedResume = existing?.state === 'stored' && existing.asset_id !== null && existing.creation_id !== null
@@ -67,15 +102,10 @@ export class ImageGenService {
         this.deps.media.pinAssetForOperation({ assetId: storedAsset, operationKey: o.opKey });
         this.deps.media.commitContentSnapshot({ type: 'creation', id: storedCreation }, snap, o.opKey);
         db.prepare("UPDATE imagegen_operations SET state='saved', error=NULL, updated_at=? WHERE op_key=?").run(new Date().toISOString(), o.opKey);
-        // P1-d（审计 2026-11-15）：恢复进入 saved 与首次成功同一交付分支——默认 send
-        // 照常发布（旧实现直接返回 ok，聊天 0 条消息、回执却像调用方选了 save_only）。
-        // 二轮返修 P1-1：旧记录（无指纹）恢复到 saved 也不自动发布，同 saved 早退口径。
-        const legacyNote = publishAuthorized ? null : `旧版本保存的操作缺少原请求指纹——无法核对本请求与原生成一致，不自动发布；需要发送用 chat_send_attachment（asset_id=${storedAsset}）`;
-        const published = o.deliver === 'send' && publishAuthorized ? this.tryPublish(o.opKey, storedAsset, o.roomId ?? null, o.turnId ?? null) : null;
-        if (published && !published.ok) {
-          return { ok: false, code: 'IMAGEGEN_PUBLISH_FAILED', detail: `作品已保存，但发布到当前聊天失败（${published.detail}）——同键重试只补发布，不会重新生成`, retryable: true, saved_asset_id: storedAsset, saved_creation_id: storedCreation };
-        }
-        return { ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '', revised_prompt: storedPrompt, generation_call: 'none', ...(published?.ok ? { published_message_id: published.messageId } : {}), ...(legacyNote ? { note: legacyNote } : {}) };
+        return this.deliverSaved(o, lifetime, {
+          ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '',
+          revised_prompt: storedPrompt, generation_call: 'none',
+        }, publishAuthorized);
       }
       // RR7（复审 2026-11-09）：快照仍未确认=stored 未收口——如实返回可重试，不冒充 saved
       return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '作品条目已建但引用快照未确认（content 暂不可达）——同键重试只补快照确认，不会重新生成', retryable: true };
@@ -96,7 +126,7 @@ export class ImageGenService {
       // 二轮返修 P1-2（2026-11-15）：供应商已返回生成结果 URL、字节未取回——同键重放
       // 只重取 URL（同一生成，不重新计费），取回后按既有落盘/条目/发布链继续。
       if (!this.deps.adapter) return { ok: false, code: 'IMAGEGEN_UNCONFIGURED', detail: '图片生成未装配（未配置）', retryable: false };
-      const fetched = await this.deps.adapter.fetchImageResultUrl(existing.result_url);
+      const fetched = await this.deps.adapter.fetchImageResultUrl(existing.result_url, lifetime);
       if (!fetched.ok) {
         this.upsert(o.opKey, { state: 'url_pending', error: fetched.reason });
         return { ok: false, code: 'IMAGEGEN_URL_PENDING', detail: `供应商已返回生成结果与图片 URL，但字节取回失败（${fetched.reason}）——同键重试只重取 URL，不会重新生成`, retryable: true };
@@ -119,17 +149,20 @@ export class ImageGenService {
         this.upsert(o.opKey, { state: 'unknown', error: '上次外呼在进程中断前登记——请求可能已送达，结果未确认' });
         return { ok: false, code: 'IMAGEGEN_RESULT_UNCONFIRMED', detail: '上次生成请求发出前后进程中断，结果未确认——不自动重发（避免重复计费）；确认无需保留时用新操作标识发起', retryable: false };
       }
-      this.upsert(o.opKey, { state: 'calling', error: null, requestFingerprint: fingerprint });
+      this.upsert(o.opKey, {
+        state: 'calling', error: null, requestFingerprint: fingerprint,
+        originRoomId: o.roomId, originBackgroundRunId: o.backgroundRunId,
+      });
       IMAGEGEN_ACTIVE.add(o.opKey);
       try {
         // GIF（她 2026-11-09 裁定+官方文档）：生成格式随操作持久——同键重试的生成调用
         // 沿用首次请求的 output_format（不因模型续轮换格式重画成另一种结果）。
         const effectiveFormat = o.format ?? existing?.output_format ?? undefined;
-        const r = await this.deps.adapter.generate(o.prompt, { format: effectiveFormat, size: o.size, frameCount: o.frameCount, frameDurationMs: o.frameDurationMs });
+        const r = await this.deps.adapter.generate(o.prompt, { format: effectiveFormat, size: o.size, frameCount: o.frameCount, frameDurationMs: o.frameDurationMs }, lifetime);
         if (r.outcome === 'error') {
           // M04（包1 2026-11-15）：UPSTREAM_ERROR（收到完整 5xx 应答）与网络/限流同为
           // 可重试——供应商明确失败，同键重试重新请求上游；不再落 unknown 永久卡死。
-          const retryable = r.code === 'IMAGEGEN_NETWORK' || r.code === 'IMAGEGEN_RATE_LIMITED' || r.code === 'IMAGEGEN_UPSTREAM_ERROR';
+          const retryable = r.code === 'IMAGEGEN_CANCELLED_BEFORE_DISPATCH' || r.code === 'IMAGEGEN_NETWORK' || r.code === 'IMAGEGEN_RATE_LIMITED' || r.code === 'IMAGEGEN_UPSTREAM_ERROR';
           this.upsert(o.opKey, { state: retryable ? 'failed_retryable' : 'failed_generation', error: `${r.code}: ${r.detail}` });
           return { ok: false, code: r.code, detail: r.detail, retryable };
         }
@@ -215,35 +248,54 @@ export class ImageGenService {
 
     db.prepare("UPDATE imagegen_operations SET state='saved', asset_id=?, creation_id=?, result_b64=NULL, error=NULL, updated_at=? WHERE op_key=?")
       .run(asset.id, creationId, new Date().toISOString(), o.opKey);
-    // M03：默认交付 send——发布失败不回滚保存（行已 saved，同键重试只补发布）
-    if (o.deliver === 'send') {
-      const published = this.tryPublish(o.opKey, asset.id, o.roomId ?? null, o.turnId ?? null);
-      if (!published.ok) {
-        return { ok: false, code: 'IMAGEGEN_PUBLISH_FAILED', detail: `作品已保存，但发布到当前聊天失败（${published.detail}）——同键重试只补发布，不会重新生成`, retryable: true, saved_asset_id: asset.id, saved_creation_id: creationId };
-      }
-      return { ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type, revised_prompt: revisedPrompt, generation_call: 'first', published_message_id: published.messageId };
-    }
-    return { ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type, revised_prompt: revisedPrompt, generation_call: 'first' };
+    return this.deliverSaved(o, lifetime, {
+      ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type,
+      revised_prompt: revisedPrompt, generation_call: 'first',
+    }, publishAuthorized);
   }
 
-  /** M03（包1 2026-11-15）：发布到当前聊天——确定性 clientMessageId 使同键重放/中断恢复
-   *  幂等（消息表唯一索引命中即返回原消息，不再发第二条=验收 D06）。与
-   *  chat_send_attachment 同一发布入口（publishAssistantMessage），不另建消息通道。 */
-  private tryPublish(opKey: string, assetId: string, roomId: string | null, turnId: string | null): { ok: true; messageId: string } | { ok: false; detail: string } {
-    if (!this.deps.messages) return { ok: false, detail: '消息服务未装配' };
-    if (!roomId) return { ok: false, detail: '无当前聊天房间' };
+  /** 保存阶段可保留已取得的作品。最后一次同步检查决定是否仍可正式发布。 */
+  private deliverSaved(o: ImageGenOperation, lifetime: ImageGenLifetime | undefined, saved: Extract<ImageGenOutcome, { ok: true }>, publishAuthorized: boolean): ImageGenOutcome {
+    if (o.deliver !== 'send') return saved;
+    if (!publishAuthorized) return { ...saved, note: `旧版本保存的操作缺少原请求指纹，发送可用 chat_send_attachment（asset_id=${saved.asset_id}）` };
+    const fail = (code: string, detail: string, retryable: boolean): ImageGenOutcome => ({
+      ok: false, code, detail, retryable, saved_asset_id: saved.asset_id, saved_creation_id: saved.creation_id,
+    });
+    if (o.signal?.aborted || lifetime?.expired() || (o.backgroundRunId && this.deps.backgroundRunRemainingMs?.(o.backgroundRunId) === 0)) {
+      return fail('IMAGEGEN_PUBLISH_CANCELLED', '作品已保存，本轮已停止或超过期限，图片未发出。本人明确要求补发时，沿用原操作键只补发布。', true);
+    }
+    if (!this.deps.messages || !o.roomId) {
+      return fail('IMAGEGEN_PUBLISH_FAILED', '作品已保存，但没有可用的聊天发布入口。沿用原操作键只补发布。', true);
+    }
+    if (!this.publicationTargetIsCurrent(o)) {
+      return fail('IMAGEGEN_TARGET_CHANGED', '作品已保存，原投递目标或后台任务已失效，图片未发出。', false);
+    }
     try {
       const msg = this.deps.messages.publishAssistantMessage({
-        conversationId: roomId, turnId: turnId ?? 'tool', content: '', kind: 'text',
-        clientMessageId: `tool-imagegen:${opKey}:publish`,
-        attachments: [{ asset_id: assetId, presentation: 'image' }],
+        conversationId: o.roomId, turnId: o.turnId ?? 'tool', content: '', kind: 'text',
+        clientMessageId: `tool-imagegen:${o.opKey}:publish`,
+        attachments: [{ asset_id: saved.asset_id, presentation: 'image' }],
         events: this.deps.events ?? null,
       });
       void this.deps.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
-      return { ok: true, messageId: msg.id };
-    } catch (err) {
-      return { ok: false, detail: String((err as Error).message).slice(0, 120) };
+      return { ...saved, published_message_id: msg.id };
+    } catch {
+      return fail('IMAGEGEN_PUBLISH_FAILED', '作品已保存，但发布到当前聊天失败。沿用原操作键和原参数只补发布。', true);
     }
+  }
+
+  private publicationTargetIsCurrent(o: ImageGenOperation): boolean {
+    if (!o.windowId) return true; // 宿主内部调用无模型窗。
+    const db = this.deps.db;
+    const window = db.prepare(`SELECT 1 FROM windows w JOIN conversations c ON c.active_window_id=w.id
+      WHERE c.id=? AND w.conversation_id=c.id AND w.id=? AND w.status='ACTIVE'`).get(o.roomId ?? null, o.windowId);
+    if (!window) return false;
+    if (o.turnId && o.attemptId && !db.prepare(`SELECT 1 FROM turns t JOIN attempts a ON a.turn_id=t.id
+      WHERE t.id=? AND t.conversation_id=? AND t.state='running' AND a.id=? AND a.window_id=? AND a.state='running'`)
+      .get(o.turnId, o.roomId ?? null, o.attemptId, o.windowId)) return false;
+    return !o.backgroundRunId || Boolean(db.prepare(`SELECT 1 FROM background_runs
+      WHERE id=? AND conversation_id=? AND window_id=? AND turn_id=? AND state='running'`)
+      .get(o.backgroundRunId, o.roomId ?? null, o.windowId, o.turnId ?? null));
   }
 
   /** content 权威快照读取（owner=creation；失败不阻塞收口——pin 仍在保护，恢复消费者对账）。 */
@@ -258,16 +310,16 @@ export class ImageGenService {
     } catch { return null; }
   }
 
-  private upsert(opKey: string, v: { state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null; creationId?: string | null; error?: string | null; outputFormat?: string | null; requestFingerprint?: string | null; resultUrl?: string | null }): void {
+  private upsert(opKey: string, v: { state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null; creationId?: string | null; error?: string | null; outputFormat?: string | null; requestFingerprint?: string | null; resultUrl?: string | null; originRoomId?: string | null; originBackgroundRunId?: string | null }): void {
     const nowIso = new Date().toISOString();
     const db = this.deps.db;
     const row = db.prepare('SELECT op_key FROM imagegen_operations WHERE op_key = ?').get(opKey) as { op_key: string } | undefined;
     if (row) {
-      db.prepare('UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64), revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), creation_id=COALESCE(?, creation_id), output_format=COALESCE(?, output_format), request_fingerprint=COALESCE(?, request_fingerprint), result_url=COALESCE(?, result_url), error=?, updated_at=? WHERE op_key=?')
-        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.error ?? null, nowIso, opKey);
+      db.prepare('UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64), revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), creation_id=COALESCE(?, creation_id), output_format=COALESCE(?, output_format), request_fingerprint=COALESCE(?, request_fingerprint), result_url=COALESCE(?, result_url), origin_room_id=COALESCE(origin_room_id, ?), origin_background_run_id=COALESCE(origin_background_run_id, ?), error=?, updated_at=? WHERE op_key=?')
+        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null, v.originBackgroundRunId ?? null, v.error ?? null, nowIso, opKey);
     } else {
-      db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, creation_id, output_format, request_fingerprint, result_url, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.error ?? null, nowIso, nowIso);
+      db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, creation_id, output_format, request_fingerprint, result_url, origin_room_id, origin_background_run_id, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null, v.originBackgroundRunId ?? null, v.error ?? null, nowIso, nowIso);
     }
   }
 }

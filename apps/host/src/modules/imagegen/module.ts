@@ -2,6 +2,7 @@
 // 密钥不进参数示例/日志。回执给稳定 asset 引用与作品条目——不含供应商原始响应。
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
+import type { ToolExecContext } from '../../capabilities/contracts.ts';
 import type { ImageGenService } from './service.ts';
 import { imageGenOpKey } from './service.ts';
 
@@ -41,7 +42,7 @@ export function registerImageGenCapabilities(registry: { register(d: CapabilityD
   }));
 }
 
-async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: string; client_operation_id: string; title?: string; format?: string; size?: string; frame_count?: number; frame_duration_ms?: number; deliver?: string }, ctx: { roomId: string; turnId: string | null; requestId: string; toolCallId?: string | null }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
+async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: string; client_operation_id: string; title?: string; format?: string; size?: string; frame_count?: number; frame_duration_ms?: number; deliver?: string }, ctx: ToolExecContext): Promise<{ ok: boolean; output: Record<string, unknown> }> {
   if (!deps.imagegen) return { ok: false, output: { error_code: 'IMAGEGEN_UNCONFIGURED', detail: '图片生成未配置（服务端 Key 缺席）——能力如实不可用，不切换其他供应商' } };
   if (typeof input.prompt !== 'string' || !input.prompt.trim()) return { ok: false, output: { error_code: 'IMAGEGEN_PROMPT_INVALID', detail: 'prompt 必填' } };
   if (typeof input.client_operation_id !== 'string' || !input.client_operation_id) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'client_operation_id 必填（重试沿用同一值）' } };
@@ -57,6 +58,10 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
     deliver,
     roomId: ctx.roomId,
     turnId: ctx.turnId,
+    windowId: ctx.windowId,
+    attemptId: ctx.attemptId,
+    backgroundRunId: ctx.backgroundRunId,
+    signal: ctx.signal,
   });
   if (!r.ok) return { ok: false, output: { error_code: r.code, detail: r.detail, ...(r.retryable ? { retryable: true } : {}), ...(r.saved_asset_id ? { saved: true, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}) } };
   return { ok: true, output: {

@@ -28,7 +28,7 @@ export type SdkRunRequest = {
     purpose?: RunnerPurpose;
     windowId: string;
     envelope: OrRequestEnvelope;
-    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number) => Promise<ToolExecResult>;
+    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[]) => Promise<ToolExecResult>;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;

@@ -26,15 +26,15 @@ let serial=0;
 let modelActive=0;
 let maximumModelActive=0;
 function content(p:J):string{return (p.messages??[]).map((m:J)=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');}
-function definition(p:J,name:string):string{
-  const initial=content(p).match(new RegExp(`- ${name}（definition_id: (td_[a-f0-9]+)）`));
-  if(initial)return initial[1];
-  const values=(p.messages??[]).filter((m:J)=>m.role==='tool').map((m:J)=>{try{return JSON.parse(m.content)}catch{return {}}});
-  return values.findLast((v:J)=>v.name===name&&v.definition_id)?.definition_id??'';
+function definition(p:J,name:string):string | undefined{
+  return toolResults(p).findLast((v:J)=>v.name===name&&v.definition_id)?.definition_id;
 }
 function toolResults(p:J):J[]{return (p.messages??[]).filter((m:J)=>m.role==='tool').map((m:J)=>{try{return JSON.parse(m.content)}catch{return {}}});}
 function call(name:string,args:J){return {name,arguments:JSON.stringify(args)};}
-function invoke(p:J,name:string,args:J){return call('tool_invoke',{name,definition_id:definition(p,name),arguments:args});}
+function invoke(p:J,name:string,args:J){
+  const definitionId=definition(p,name);
+  return call('tool_invoke',{name,...(definitionId ? {definition_id:definitionId} : {}),arguments:args});
+}
 function redact(p:J):J{return JSON.parse(JSON.stringify(p,(key,value)=>key==='reasoning_content'?{omitted:true,chars:String(value).length}:value));}
 
 globalThis.fetch=async(input:any,init?:RequestInit)=>{
@@ -51,8 +51,7 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
     else if(c.name==='autonomy-loop'){
       const round=isWake?c.wakeRound++:c.chatRound++;
       if(isWake){
-        assert.equal((p.messages.filter((m:J)=>m.role==='system').map((m:J)=>m.content).join('\n').match(/definition_id: td_/g)??[]).length,40);
-        assert.ok(definition(p,'background_complete'),'T definition supplied by the trusted host task');
+        assert.deepEqual(p.tools.map((t:J)=>t.function.name).sort(),['tool_catalog','tool_define','tool_invoke']);
         if(round===0)calls=c.noop?[invoke(p,'background_complete',{outcome:'noop'})]:[
           invoke(p,'memory_recall',{query:'合成事件',lexical_terms:['合成事件']}),
           invoke(p,'memory_hold',{original_title:'合成醒来记录',text:'合成自主回合的经历与感受。',categories:['daily','sweet'],creation_mode:'contemporaneous'}),
@@ -97,13 +96,14 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
     }else if(String(hostTail?.content).includes('AUDIT_SLOW_REPLY'))delay=1800;
     else if(String(hostTail?.content).includes('AUDIT_CONTINUOUS'))delay=900;
     if(String(hostTail?.content).includes('AUDIT_FOLLOWUP'))text=`青禾；合成自醒正式消息：${c.name}`;
-    const record:J={scenario:c.name,request_id:requestId,started_at:new Date(started).toISOString(),kind:isWake?'wake':isKeepalive?'keepalive':'chat',payload:redact(p),first_chunk_at:null,finished_at:null};bodies.push(record);
+    const toolCalls=calls.map((f,index)=>({index,id:`${requestId}-tool-${index}`,type:'function',function:f}));
+    const record:J={scenario:c.name,request_id:requestId,started_at:new Date(started).toISOString(),kind:isWake?'wake':isKeepalive?'keepalive':'chat',payload:redact(p),tool_call_ids:toolCalls.map(call=>call.id),first_chunk_at:null,finished_at:null};bodies.push(record);
     modelActive++;maximumModelActive=Math.max(maximumModelActive,modelActive);
     const encoder=new TextEncoder();
     return new Response(new ReadableStream({async start(controller){
       try{
         record.first_chunk_at=new Date().toISOString();if(isWake)c.first_chunk_at??=record.first_chunk_at;
-        const delta=calls.length?{tool_calls:calls.map((f,index)=>({index,id:`tool-${serial}-${index}`,type:'function',function:f}))}:{content:text};
+        const delta=toolCalls.length?{tool_calls:toolCalls}:{content:text};
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({id:requestId,model:'deepseek-flash',choices:[{delta}]})}\n\n`));
         if(delay)await sleep(delay);
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({choices:[{delta:{},finish_reason:calls.length?'tool_calls':'stop'}],usage:{prompt_tokens:5000,completion_tokens:32,prompt_cache_hit_tokens:4096,prompt_cache_miss_tokens:904,total_tokens:5032}})}\n\ndata: [DONE]\n\n`));
@@ -276,10 +276,16 @@ async function runAutonomyLoop(){
   const due=(ms:number)=>{(host!.scheduler as any).d.now=()=>ms;(host!.supervisor as any).d.now=()=>ms;};
   due(Date.parse(task.scheduled_at)+1);await host!.scheduler!.tick();await host!.supervisor.waitIdle();
   const run=host!.db.prepare('SELECT * FROM background_runs WHERE task_id=?').get(task.id) as J;
-  const outputs=bodies.filter(b=>b.kind==='wake').flatMap(b=>toolResults(b.payload));
+  assert.equal(run?.state,'completed',JSON.stringify(run));
+  const wakeRequests=bodies.filter(b=>b.kind==='wake');
+  assert.equal(wakeRequests.length,1,'background_complete seals the run without another model request');
+  const ids:string[]=wakeRequests[0].tool_call_ids;
+  const trajectory=host!.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(run.window_id) as J;
+  const receipts=JSON.parse(trajectory.messages_json).filter((m:J)=>m.role==='tool' && ids.includes(m.tool_call_id));
+  assert.deepEqual(receipts.map((m:J)=>m.tool_call_id),ids);
+  const outputs=toolResults({messages:receipts});
   c.first_run=run;c.tool_receipts=outputs;
-  assert.equal(run.state,'completed',JSON.stringify({run,outputs}));
-  assert.ok(outputs.length>=7);assert.ok(outputs.every(r=>!r.error_code),JSON.stringify(outputs));
+  assert.equal(outputs.length,7);assert.ok(outputs.every(r=>!r.error_code),JSON.stringify(outputs));
   assert.ok(outputs.some(r=>r.saved===true&&r.memory_id));
   assert.ok(outputs.some(r=>r.candidates?.some((m:J)=>m.memory_ref)));
   assert.equal(c.invites,1);
@@ -299,6 +305,7 @@ async function runAutonomyLoop(){
   due(Date.parse(next.scheduled_at)+1);await host!.scheduler!.tick();await host!.supervisor.waitIdle();
   const noop=host!.db.prepare('SELECT * FROM background_runs WHERE task_id=?').get(next.id) as J;c.noop_run=noop;
   assert.equal(noop.state,'noop',JSON.stringify(noop));
+  assert.equal(bodies.filter(b=>b.kind==='wake').length,2,'Each occurrence uses one model request');
   assert.equal((host!.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(noop.turn_id) as J).n,0);
   assert.equal((host!.db.prepare("SELECT COUNT(*) n FROM background_tasks WHERE origin='self_schedule'").get() as J).n,2,'no automatic infinite scheduling');
   c.passed=true;results.push(c);fs.writeFileSync(path.join(out,'autonomy-loop.json'),JSON.stringify(c,null,2));

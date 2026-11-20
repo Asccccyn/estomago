@@ -24,7 +24,7 @@ const examples: Record<string, Record<string, unknown>> = {
   content_post_create:{body:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',body:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},content_album_entry_write:{kind:'important_photos',asset_id:'synthetic',idempotency_key:'synthetic'},
   conversation_archive:{kind:'sweet',anchor_start:{speaker:'宿主用户',quote:'合成引语起点'},anchor_end:{speaker:'char',quote:'合成引语终点'}},image_generate:{prompt:'合成画',client_operation_id:'synthetic'},archives_search:{query:'合成'},
   wake_manage:{operation:'list'},chat_send_text:{text:'合成正式消息',idempotency_key:'synthetic'},media_import:{source_url:'https://127.0.0.1/image.png'},
-  chat_send_attachment:{asset_id:'synthetic',presentation:'image'},call_control:{action:'status'},oido_analyze:{audio_ref:'est:synthetic'},
+  chat_send_attachment:{asset_id:'synthetic',presentation:'image'},call_control:{action:'invite'},oido_analyze:{audio_ref:'est:synthetic'},
   chat_send_voice:{text:'合成语音'},media_search:{query:'合成图'},oido_get:{analysis_id:'synthetic'},transcript_read:{audio_ref:'est:synthetic'},
   identity_milestone_write:{operation:'read'},wishstar_write_star:{content:'合成星',visibility:'hidden',idempotency_key:'synthetic'},wishstar_read:{what:'dates'},
   wishstar_start_session:{special_date_id:'synthetic'},wishstar_confirm_session:{session_id:'synthetic'},wishstar_take_star:{session_id:'synthetic'},
@@ -33,7 +33,7 @@ const examples: Record<string, Record<string, unknown>> = {
   memory_words_write:{action:'add',memory_id:'synthetic',refs:[{quote:'合成引语'}]},memory_relations:{action:'list',memory_id:'synthetic'},content_albums_read:{},media_view:{asset_ref:'est:synthetic'},content_creations_read:{},
 };
 
-test('生产装配：独立 Profile 和锚点、十二项常驻、按需发现及冻结重启', async () => {
+test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现及冻结重启', async () => {
   const root=tempRoot('frozen-package-');
   const {manifest}=writeApprovedIdentity(root);
   const paths=makePaths(root);
@@ -61,7 +61,9 @@ test('生产装配：独立 Profile 和锚点、十二项常驻、按需发现�
       if(n===1){
         const system=Array.isArray(input.options.systemPrompt)?input.options.systemPrompt.join('\n'):input.options.systemPrompt;
         assert.equal((system.match(/用 tool_catalog 的 query/g)??[]).length,1);
-        assert.equal((system.match(/^- [a-z_]+$/gm)??[]).length,12);
+        assert.equal((system.match(/^- [a-z_]+$/gm)??[]).length,14);
+        assert.match(system,/^- chat_send_voice\n[^\n]*填 text/m);
+        assert.match(system,/^- call_control\n[^\n]*action: invite/m);
         assert.doesNotMatch(system,/definition_id: td_|parameters: \{/);
         assert.doesNotMatch(system,/^- (memory_correct|conversation_read)$/m);
         assert.ok(system.indexOf(anchors)>=0,'M 失败时 E 的独立锚点仍进入开窗');
@@ -124,8 +126,8 @@ test('生产装配：独立 Profile 和锚点、十二项常驻、按需发现�
     await start();const id=await send();
     const frozen=storedToolset(host!.db,id)!;
     assert.equal(frozen.catalog.length,55); // 目录 55 项（56-memory_source_bind 退出，包4 裁定6）
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,12);
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,41);
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,14);
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,39);
     assert.equal(Object.values(frozen.groups).filter(g=>g==='T').length,2);
     assert.ok(frozen.initialText!.includes('memory_hold'));
     assert.ok(frozen.initialText!.includes('用 tool_catalog 的 query'));

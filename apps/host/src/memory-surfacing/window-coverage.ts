@@ -2,6 +2,7 @@ import type { Db } from '../db/connection.ts';
 import { SURFACE_HOST_NOTICE, type SurfaceItem } from './contracts.ts';
 import { sourceCoverageRange } from './source-boundary.ts';
 import { sha256Hex } from '../util/id.ts';
+import { isWithheldToolResult } from '../runtime/tool-result-retention.ts';
 
 import type { CoverageRange } from '../capabilities/contracts.ts';
 export type { CoverageRange } from '../capabilities/contracts.ts';
@@ -95,7 +96,7 @@ function messagesIn(json: string | null): CoverageMessage[] {
 }
 
 function toolResultIds(messages: readonly CoverageMessage[]): Set<string> {
-  return new Set(messages.flatMap(message => message.role === 'tool' && message.tool_call_id ? [message.tool_call_id] : []));
+  return new Set(messages.flatMap(message => message.role === 'tool' && message.tool_call_id && !isWithheldToolResult(message.content) ? [message.tool_call_id] : []));
 }
 
 function automaticBlocks(messages: readonly CoverageMessage[]): Set<string> {

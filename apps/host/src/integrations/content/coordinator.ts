@@ -17,6 +17,7 @@ import type { MediaService } from '../../media/assets.ts';
 import { MediaError } from '../../media/assets.ts';
 import type { Logger } from '../../observability/logging.ts';
 import { stableErrorCode } from '../../observability/errors.ts';
+import { sha256Hex } from '../../util/id.ts';
 import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient } from './client.ts';
 import { isUserArchiveCreate, registerArchiveCreatedNotice } from './archive-notice.ts';
 
@@ -34,11 +35,33 @@ type IntentPayload = {
   path: string;
   body?: Record<string, unknown>;
   if_match?: string;
+  commit_observed?: 1;
 };
 
 type OutboxRow = { id: string; operation_key: string; payload_ref: string; state: string; attempt: number };
 
 export type ContentWriteResult = { status: number; body: unknown };
+type ContentWriteRequest = {
+  method: 'POST' | 'PUT' | 'DELETE';
+  path: string;
+  actor: 'qiaosheng' | 'jiaming';
+  body?: Record<string, unknown>;
+  headers: Record<string, string>;
+};
+
+const MODEL_OPERATION_PREFIX = 'content:jiaming:';
+const LEGACY_MODEL_OPERATION_PREFIX = `${MODEL_OPERATION_PREFIX}tool:`;
+const OPERATION_CONFLICT: ContentWriteResult = { status: 409, body: { error: {
+  code: 'content_operation_conflict', message: '同一幂等键对应已受理的另一组参数。请用原参数核回，独立的新操作使用新键。',
+} } };
+
+function committedReceiptPending(status?: number): ContentWriteResult {
+  return { status: 502, body: { error: {
+    code: 'content_write_confirmation_pending',
+    message: '提交已成功，回执暂缺。请用原幂等键及原参数核回。',
+    ...(status === undefined ? {} : { raw_status: status }),
+  } } };
+}
 
 export class ContentOperationCoordinator {
   private readonly db: Db;
@@ -55,14 +78,69 @@ export class ContentOperationCoordinator {
     this.logger = deps.logger;
   }
 
-  /** 浏览器代理与模型写工具共用入口。GET 不经此处（无写协调）。 */
-  async write(req: {
-    method: 'POST' | 'PUT' | 'DELETE';
-    path: string; // /api/v1/content/...
-    actor: 'qiaosheng' | 'jiaming';
-    body?: Record<string, unknown>;
-    headers: Record<string, string>; // idempotency-key 必带；if-match 可选
+  /** 模型重试建档时复用首次接纳已经钉住的成员和修订。 */
+  getArchiveCreateIntent(conversationId: string, key: string): Record<string, unknown> | null {
+    const intent = this.intentOf(`content:jiaming:${key}`);
+    if (intent?.actor !== 'jiaming' || intent.method !== 'POST' || intent.path !== '/api/v1/content/archives'
+      || intent.body?.conversation_id !== conversationId) return null;
+    return intent.body;
+  }
+
+  /** 模型显式键按授权房间和写操作类型稳定。历史意图仍用旧 HTTP 键和现有 pin。 */
+  async writeForModel(req: {
+    roomId: string; turnId: string | null; path: string; body: Record<string, unknown>; idempotencyKey: string;
   }): Promise<ContentWriteResult> {
+    const kind = ownerTypeOf(req.path);
+    let key = `tool-content-v2:${sha256Hex(JSON.stringify([req.roomId, kind, req.idempotencyKey]))}`;
+    const stable = this.db.prepare('SELECT 1 FROM outbox WHERE target=? AND operation_key=?')
+      .get(CONTENT_OPERATION_TARGET, MODEL_OPERATION_PREFIX + key);
+    if (!stable) {
+      const original = this.legacyModelKey(req, kind);
+      if (original === false) return { status: 409, body: { error: {
+        code: 'content_legacy_key_ambiguous', message: '该业务键在当前房间对应多笔历史操作，无法唯一核回。请按已知对象 ID 核对历史。',
+      } } };
+      if (original) key = original;
+    }
+    const result = await this.write({ method: 'POST', path: req.path, actor: 'jiaming', body: req.body,
+      headers: { 'idempotency-key': key },
+    }, true);
+    if (result.status < 500 || (result.body as { error?: { code?: string } } | null)?.error?.code === 'content_write_confirmation_pending') {
+      return result;
+    }
+    const retained = this.db.prepare(`SELECT state, payload_ref FROM outbox
+      WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome','acked')`)
+      .get(CONTENT_OPERATION_TARGET, MODEL_OPERATION_PREFIX + key) as { state: string; payload_ref: string } | undefined;
+    if (!retained) return result;
+    if (retained.state === 'acked' || (JSON.parse(retained.payload_ref) as IntentPayload).commit_observed === 1) {
+      return committedReceiptPending();
+    }
+    return { status: 504, body: { error: { code: 'content_write_unknown', message: '操作已受理，结果待核。请使用原键及原参数。' } } };
+  }
+
+  /** 返回原 HTTP 键；false 表示有多笔历史操作，不能自动选择。 */
+  private legacyModelKey(req: { roomId: string; turnId: string | null; idempotencyKey: string }, kind: string): string | null | false {
+    // 同一有效回合中曾受理的操作自身是最精确的旧身份。
+    const exact = `tool:${req.turnId ?? 'noturn'}:${req.idempotencyKey}`;
+    const foundInTurn = this.db.prepare(`SELECT json_extract(payload_ref,'$.path') AS path FROM outbox
+      WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome','acked')`)
+      .get(CONTENT_OPERATION_TARGET, MODEL_OPERATION_PREFIX + exact) as { path: string } | undefined;
+    if (foundInTurn && ownerTypeOf(foundInTurn.path) === kind) {
+      if (!req.turnId && this.db.prepare('SELECT 1 FROM conversations WHERE id<>? LIMIT 1').get(req.roomId)) return false;
+      return exact;
+    }
+
+    // 老键没有房间字段。沿旧键中的 turn ID 与宿主的回合归属关联；键值整体比较保留任何冒号。
+    const entries = this.db.prepare(`SELECT o.operation_key, json_extract(o.payload_ref,'$.path') AS path
+      FROM turns t JOIN outbox o ON o.target=? AND o.operation_key=? || t.id || ':' || ?
+      WHERE t.conversation_id=? AND o.state IN ('pending','unknown_outcome','acked')`)
+      .all(CONTENT_OPERATION_TARGET, LEGACY_MODEL_OPERATION_PREFIX, req.idempotencyKey, req.roomId) as Array<{ operation_key: string; path: string }>;
+    const matching = entries.filter(entry => ownerTypeOf(entry.path) === kind);
+    if (matching.length > 1) return false;
+    return matching[0]?.operation_key.slice(MODEL_OPERATION_PREFIX.length) ?? null;
+  }
+
+  /** 浏览器代理与模型写工具共用入口。GET 不经此处（无写协调）。 */
+  async write(req: ContentWriteRequest, preserveModelIdentity = false): Promise<ContentWriteResult> {
     const key = req.headers['idempotency-key'];
     if (!key) return { status: 400, body: { error: { code: 'missing_idempotency', message: '写请求必须带 Idempotency-Key' } } };
     const opKey = `content:${req.actor}:${key}`;
@@ -73,12 +151,12 @@ export class ContentOperationCoordinator {
     // 接受操作——拒 409；同参重试与恢复 tick 走同一条“推进已接受操作”路径
     // （RF2-01，复审 20261106 第二轮：先核对原操作事实再重放/确认，不再有绕过
     // 结果核对的直达 dispatch 快速路径——HTTP 状态不是原操作事实）。
-    const accepted = this.db.prepare("SELECT state, payload_ref FROM outbox WHERE target = ? AND operation_key = ? AND state IN ('pending','unknown_outcome')").get(CONTENT_OPERATION_TARGET, opKey) as { state: string; payload_ref: string } | undefined;
+    const accepted = this.db.prepare(`SELECT state, payload_ref FROM outbox
+      WHERE target=? AND operation_key=? AND (state IN ('pending','unknown_outcome') OR (? AND state='acked'))`)
+      .get(CONTENT_OPERATION_TARGET, opKey, Number(preserveModelIdentity)) as { state: string; payload_ref: string } | undefined;
     if (accepted) {
       const persisted = JSON.parse(accepted.payload_ref) as IntentPayload;
-      if (intentFingerprint(persisted) !== intentFingerprint(currentIntent)) {
-        return { status: 409, body: { error: { code: 'content_operation_conflict', message: '该幂等键已有未收口的已接受操作（参数不同）。原操作已持久并将按原身份收口；新操作请换幂等键。' } } };
-      }
+      if (intentFingerprint(persisted, preserveModelIdentity) !== intentFingerprint(currentIntent, preserveModelIdentity)) return OPERATION_CONFLICT;
       const advanced = await this.advanceAccepted(opKey);
       return advanced ?? { status: 504, body: { error: { code: 'content_write_unknown', message: '内容服务响应未知；操作已持久，将按原身份恢复收口（同键重试安全）' } } };
     }
@@ -92,6 +170,9 @@ export class ContentOperationCoordinator {
       return { status: 503, body: { error: { code: 'content_unreachable', message: '内容服务不可达，稍后重试（原操作未提交）', detail: String((err as Error).message ?? err).slice(0, 140) } } };
     }
     if (resolved.outcome !== 'new') {
+      if (preserveModelIdentity && resolved.outcome === 'replay' && resolved.status >= 200 && resolved.status < 300 && !hasObjectId(resolved.body)) {
+        return committedReceiptPending(resolved.status);
+      }
       // RR4-W3：同操作成功重放（本宿主此前已收口，或崩溃前 content 已提交）——用户
       // 发起的存档创建经同一登记入口幂等补齐（多数路径已登记，UNIQUE 吞并）。
       this.registerArchiveNoticeIfUserCreate(currentIntent, key, resolved.status, resolved.body);
@@ -116,13 +197,14 @@ export class ContentOperationCoordinator {
     //    不再回放第一个命令的回执。
     let accept: 'new' | 'kept' | 'conflict';
     try {
-      accept = tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates));
+      accept = tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates, preserveModelIdentity));
     } catch (err) {
       this.logger.warn('content_intent_persist_failed', { code: stableErrorCode(err), detail: String((err as Error).message ?? err).slice(0, 140) });
       return { status: 503, body: { error: { code: 'content_intent_persist_failed', message: '本地意图登记失败，操作未提交（可原键重试）' } } };
     }
-    if (accept === 'conflict') {
-      return { status: 409, body: { error: { code: 'content_operation_conflict', message: '该幂等键已有未收口的已接受操作（参数不同）。原操作已持久并将按原身份收口；新操作请换幂等键。' } } };
+    if (accept === 'conflict') return OPERATION_CONFLICT;
+    if (accept === 'kept' && preserveModelIdentity) {
+      return await this.advanceAccepted(opKey) ?? { status: 504, body: { error: { code: 'content_write_unknown' } } };
     }
 
     // ④ 提交——只执行已持久且匹配的原意图（upsert 对 failed/acked 重开时即当前请求）
@@ -134,13 +216,20 @@ export class ContentOperationCoordinator {
    *  身份不一致标待核；本次传输/鉴权失败只推进 attempt，不改变原操作状态。
    *  返回推进结果供 HTTP 调用方如实回执；null=意图已不在（被并发收口）。 */
   private async advanceAccepted(opKey: string): Promise<ContentWriteResult | null> {
-    const row = this.db.prepare('SELECT id, payload_ref FROM outbox WHERE target = ? AND operation_key = ?').get(CONTENT_OPERATION_TARGET, opKey) as { id: string; payload_ref: string } | undefined;
+    const row = this.db.prepare('SELECT id, state, payload_ref, last_error FROM outbox WHERE target = ? AND operation_key = ?')
+      .get(CONTENT_OPERATION_TARGET, opKey) as { id: string; state: string; payload_ref: string; last_error: string | null } | undefined;
     if (!row) return null;
     const p = JSON.parse(row.payload_ref) as IntentPayload;
+    const previouslyCommitted = row.state === 'acked' || p.commit_observed === 1
+      || row.last_error === 'incomplete_success_receipt' || row.last_error === 'snapshot_unavailable';
     const idem = opKey.slice(`content:${p.actor}:`.length);
     try {
       const resolved = await resolveContentOperation(this.client, { actor: p.actor, method: p.method, path: p.path, body: p.body, idempotencyKey: idem, ifMatch: p.if_match });
       if (resolved.outcome === 'replay') {
+        if (resolved.status >= 200 && resolved.status < 300 && !hasObjectId(resolved.body)) {
+          this.markUnknown(opKey, new Error('incomplete_success_receipt'), true);
+          return committedReceiptPending(resolved.status);
+        }
         // RR4-W3：恢复确认成功（回执在=content 保存成功的可信证据）——补登记原本
         // 漏掉的那份用户通知。登记在快照确认**之前**（快照/M 投影不拖延已确定的
         // 成功通知）；登记失败抛出→本 catch 标 unknown，恢复链沿原键再来。
@@ -150,7 +239,8 @@ export class ContentOperationCoordinator {
         return { status: resolved.status, body: resolved.body };
       }
       if (resolved.outcome === 'new') {
-        // 原操作确未提交（content 业务与回执同事务）→ 按原身份重放一次并走同一收口
+        // 本宿主已看见提交成功时，远端暂缺回执不构成重新提交的授权。
+        if (previouslyCommitted) return committedReceiptPending();
         return await this.dispatchPinned(opKey, p);
       }
       // conflict/legacy_unresolved：身份与原意图不一致——保留意图与 pin，标错误待人工
@@ -159,8 +249,9 @@ export class ContentOperationCoordinator {
     } catch (err) {
       // 本次核对不可达/鉴权失败＝推进失败，不是原操作事实：保持原状态（unknown 由
       // 恢复消费者按原身份继续收口），有界累计 attempt
-      this.markUnknown(opKey, err as Error);
+      this.markUnknown(opKey, err as Error, previouslyCommitted);
       this.logger.warn('content_advance_failed', { operation: opKey, code: stableErrorCode(err) });
+      if (previouslyCommitted) return committedReceiptPending();
       return { status: 503, body: { error: { code: 'content_unreachable', message: '内容服务本次不可达/拒绝凭据；原操作已持久并将按原身份恢复收口（同键重试安全）', detail: String((err as Error).message ?? err).slice(0, 140) } } };
     }
   }
@@ -168,7 +259,7 @@ export class ContentOperationCoordinator {
   /** 已有意图的提交与收口（advanceAccepted 与恢复消费者共用）。调用前提：意图+pin 已持久。 */
   private async dispatchPinned(opKey: string, intent: IntentPayload): Promise<ContentWriteResult> {
     const idemKey = opKey.slice(`content:${intent.actor}:`.length);
-    let result: ContentWriteResult;
+    let result: Awaited<ReturnType<typeof contentForward>>;
     try {
       result = await contentForward(this.client, {
         method: intent.method, path: intent.path, actor: intent.actor, body: intent.body,
@@ -193,6 +284,29 @@ export class ContentOperationCoordinator {
       // 仅达此处的前提是 resolve 刚确认无回执（advanceAccepted/新写①），非鉴权层失败。
       this.finishFailed(opKey, `content ${result.status}`);
       return result;
+    }
+    const ownerType = ownerTypeOf(intent.path);
+    const recoverReceipt = ownerType === 'post' || ownerType === 'comment' || ownerType === 'album_entry';
+    if (result.status >= 200 && result.status < 300
+        && (result.bodyFailed || (recoverReceipt && !hasObjectId(result.body)))) {
+      this.markUnknown(opKey, new Error('incomplete_success_receipt'), true);
+      if (recoverReceipt) {
+        try {
+          const resolved = await resolveContentOperation(this.client, {
+            actor: intent.actor, method: intent.method, path: intent.path, body: intent.body,
+            idempotencyKey: idemKey, ifMatch: intent.if_match,
+          });
+          if (resolved.outcome === 'replay' && resolved.status >= 200 && resolved.status < 300 && hasObjectId(resolved.body)) {
+            await this.confirmOperation(opKey, resolved).catch(err => {
+              this.logger.warn('content_confirm_deferred', { code: stableErrorCode(err) });
+            });
+            return { status: resolved.status, body: resolved.body };
+          }
+        } catch (err) {
+          this.logger.warn('content_receipt_recheck_failed', { code: stableErrorCode(err) });
+        }
+      }
+      return committedReceiptPending(result.status);
     }
     // RR4-W3：content 2xx=保存成功回执——用户发起的存档创建在快照确认**之前**登记
     // 通知（快照失败只拖延映射/M 投影，不拖延已确定的成功通知）。登记失败向上抛
@@ -223,10 +337,12 @@ export class ContentOperationCoordinator {
     const intent = this.intentOf(opKey);
     if (!intent) return false;
     const ownerId = (contentResult.body as { id?: string } | null)?.id;
-    if (typeof ownerId !== 'string' || !ownerId) { this.markUnknown(opKey, new Error('no_object_id')); return false; }
+    if (typeof ownerId !== 'string' || !ownerId) { this.markUnknown(opKey, new Error('no_object_id'), true); return false; }
     const ownerType = ownerTypeOf(intent.path);
+    this.db.prepare(`UPDATE outbox SET payload_ref=json_set(payload_ref,'$.commit_observed',1)
+      WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome')`).run(CONTENT_OPERATION_TARGET, opKey);
     const snapshot = await fetchReferenceSnapshot(this.client, ownerType, ownerId);
-    if (!snapshot) { this.markUnknown(opKey, new Error('snapshot_unavailable')); return false; } // 404/不可达≠可释放
+    if (!snapshot) { this.markUnknown(opKey, new Error('snapshot_unavailable'), true); return false; } // 404/不可达≠可释放
     const archive = ownerType === 'conversation_archive' && snapshot.archive
       ? { kind: snapshot.archive.kind, by: intent.actor, count: snapshot.archive.messages.length, refs: snapshot.archive.messages.map((m) => ({ message_id: m.message_id, revision: m.revision })) }
       : undefined;
@@ -281,7 +397,7 @@ export class ContentOperationCoordinator {
    *  R3-C01（第三轮复审）：同键异参判定在**本事务内**权威执行——此前只在 write() 的
    *  await 前预检，两个并发同 key 异参请求可同时通过预检、先后进入接纳，后者静默沿用
    *  前者 payload 并回放前者的命令（受控时序复现 [201,201] 单对象）。 */
-  private upsertIntent(opKey: string, intent: IntentPayload, candidates: string[]): 'new' | 'kept' | 'conflict' {
+  private upsertIntent(opKey: string, intent: IntentPayload, candidates: string[], preserveModelIdentity: boolean): 'new' | 'kept' | 'conflict' {
     const nowIso = new Date().toISOString();
     const payload = JSON.stringify({ ...intent, candidate_assets: candidates });
     const existing = this.db.prepare('SELECT id, state, payload_ref FROM outbox WHERE target = ? AND operation_key = ?').get(CONTENT_OPERATION_TARGET, opKey) as { id: string; state: string; payload_ref: string } | undefined;
@@ -289,13 +405,16 @@ export class ContentOperationCoordinator {
     if (!existing) {
       this.db.prepare('INSERT INTO outbox(id, operation_key, target, payload_ref, state, attempt, last_error, created_at, updated_at) VALUES (?,?,?,?,?,0,NULL,?,?)')
         .run(`cout_${opKey.length}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, opKey, CONTENT_OPERATION_TARGET, payload, 'pending', nowIso, nowIso);
+    } else if (existing.state === 'acked' && preserveModelIdentity) {
+      const persisted = JSON.parse(existing.payload_ref) as IntentPayload;
+      return intentFingerprint(persisted, true) === intentFingerprint(intent, true) ? 'kept' : 'conflict';
     } else if (existing.state === 'failed' || existing.state === 'acked') {
       // 同键再来（此前定局失败后重试，或 ack 后 content 回执已被外部清理）：以当前请求为准重开
       this.db.prepare('UPDATE outbox SET payload_ref = ?, state = ?, attempt = 0, last_error = NULL, updated_at = ? WHERE id = ?').run(payload, 'pending', nowIso, existing.id);
     } else {
       // pending/unknown_outcome：事务内权威判定——同参保留原意图；异参冲突（不得静默沿用）
       const persisted = JSON.parse(existing.payload_ref) as IntentPayload;
-      if (intentFingerprint(persisted) !== intentFingerprint(intent)) return 'conflict';
+      if (intentFingerprint(persisted, preserveModelIdentity) !== intentFingerprint(intent, preserveModelIdentity)) return 'conflict';
       outcome = 'kept';
     }
     for (const assetId of candidates) this.media.pinAssetForOperation({ assetId, operationKey: opKey });
@@ -318,9 +437,11 @@ export class ContentOperationCoordinator {
       .run(JSON.stringify(payload), new Date().toISOString(), CONTENT_OPERATION_TARGET, opKey);
   }
 
-  private markUnknown(opKey: string, err: Error): void {
-    this.db.prepare("UPDATE outbox SET state = 'unknown_outcome', attempt = attempt + 1, last_error = ?, updated_at = ? WHERE target = ? AND operation_key = ? AND state NOT IN ('acked','failed')")
-      .run(String(err.message ?? err).slice(0, 120), new Date().toISOString(), CONTENT_OPERATION_TARGET, opKey);
+  private markUnknown(opKey: string, err: Error, commitObserved = false): void {
+    this.db.prepare(`UPDATE outbox SET state='unknown_outcome', attempt=attempt + 1, last_error=?, updated_at=?,
+      payload_ref=CASE WHEN ? THEN json_set(payload_ref,'$.commit_observed',1) ELSE payload_ref END
+      WHERE target=? AND operation_key=? AND state NOT IN ('acked','failed')`)
+      .run(String(err.message ?? err).slice(0, 120), new Date().toISOString(), Number(commitObserved), CONTENT_OPERATION_TARGET, opKey);
   }
 
   private finishFailed(opKey: string, reason: string): void {
@@ -364,6 +485,11 @@ export class ContentOperationCoordinator {
   }
 }
 
+function hasObjectId(body: unknown): boolean {
+  const id = (body as { id?: unknown } | null)?.id;
+  return typeof id === 'string' && id.length > 0;
+}
+
 /** 请求引用的候选资产（数组 asset_ids 与单值 asset_id/icon_asset_id/work_asset_id）。
  *  仅用于前置可用性核对与 pin；正式成员集合以 content 快照为准。 */
 export function candidateAssetIds(body: Record<string, unknown> | undefined): string[] {
@@ -388,6 +514,12 @@ function canonicalJson(v: unknown): unknown {
   }
   return v;
 }
-function intentFingerprint(intent: IntentPayload): string {
-  return JSON.stringify({ m: intent.method, p: intent.path, im: intent.if_match ?? null, b: canonicalJson(intent.body) ?? null });
+function intentFingerprint(intent: IntentPayload, modelOwned = false): string {
+  let businessBody = intent.body;
+  if (modelOwned && intent.body && ownerTypeOf(intent.path) === 'album_entry') {
+    // content_sha256 由宿主从资产正本派生。回放沿用首次受理的值，即便现在无法重新取到。
+    const { content_sha256: _derived, ...params } = intent.body;
+    businessBody = params;
+  }
+  return JSON.stringify({ m: intent.method, p: intent.path, im: intent.if_match ?? null, b: canonicalJson(businessBody) ?? null });
 }

@@ -6,7 +6,7 @@ import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { modelFailure } from '../runtime/model-results.ts';
-import { buildDeferredTools, storedToolset, definitionId, definitionWasSeen, effectiveToolName } from '../runtime/tool-discovery.ts';
+import { buildDeferredTools, storedToolset, definitionId, definitionWasSeen, effectiveToolName, modelDefinitionAfterBindingRetirement } from '../runtime/tool-discovery.ts';
 import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
 import { DISCOVERY_NAMES } from '../runtime/tool-discovery.ts';
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
@@ -182,7 +182,10 @@ export class ModelToolBridge {
     }
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
-    return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);
+    // Old hold attachments are already inert. Accept a saved old contract so
+    // a remembered attachment does not cause the ordinary memory write to fail.
+    const executionSpec = spec.function.name === 'memory_hold' ? frozen : spec;
+    return this.executeInner(spec.function.name, args.arguments as Record<string, unknown>, ctx, executionSpec);
   }
 
   /** 任务定义根据宿主上下文与现行活动状态交付，执行仍由各业务能力负责。 */
@@ -209,30 +212,7 @@ export class ModelToolBridge {
   private visibleFrozenDefinition(spec: HostToolSpec): HostToolSpec | null {
     const definition = spec.function;
     if (!this.capabilityRegistry?.has(definition.name)) return null;
-    if (definition.name !== 'memory_correct') return spec;
-
-    const properties = definition.parameters.properties as Record<string, Record<string, unknown>> | undefined;
-    const action = properties?.action;
-    if (!properties || !action || !Array.isArray(action.enum) || !action.enum.includes('binding')) return spec;
-    const { binding_id: _removed, ...remaining } = properties;
-    const correction = remaining.correction_action;
-    if (correction && typeof correction.description === 'string') {
-      remaining.correction_action = { ...correction, description: correction.description.replace('/binding/', '/') };
-    }
-    return {
-      ...spec,
-      function: {
-        ...definition,
-        description: definition.description
-          .replace('、binding（原文区间绑定纠错——同两动作）', '')
-          .replace('或原文绑定', '')
-          .replace('、binding、', '、'),
-        parameters: {
-          ...definition.parameters,
-          properties: { ...remaining, action: { ...action, enum: action.enum.filter(value => value !== 'binding') } },
-        },
-      },
-    };
+    return modelDefinitionAfterBindingRetirement(spec);
   }
 
   /** D39：通话 memory_only 资格唯一判定——已迁能力读条目元数据；discovery 入口读自身元数据。
@@ -260,6 +240,11 @@ export class ModelToolBridge {
       if (set) {
         frozenSpec = set.catalog.find(t=>t.function.name===name);
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
+        if (name !== 'memory_hold') {
+          const liveDefinition = this.visibleFrozenDefinition(frozenSpec);
+          if (!liveDefinition) return {ok:false,output:{error_code:'TOOL_NOT_IN_ALLOWLIST'}};
+          frozenSpec = liveDefinition;
+        }
       }
     }
     // P02.6：名称属于已迁集合 → registry 执行外壳（旧业务分支已删，绝不在新路径失败时回退）。

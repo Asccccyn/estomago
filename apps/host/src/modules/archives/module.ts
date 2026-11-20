@@ -6,7 +6,8 @@
 // 看过这些内容，无需回读）。
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
-import type { ArchiveAnchor, ArchiveService } from './service.ts';
+import { sha256Hex } from '../../util/id.ts';
+import type { ArchiveAnchor, ArchiveResult, ArchiveService } from './service.ts';
 
 export const CONVERSATION_ARCHIVE_DEFINITION: import('../../capabilities/contracts.ts').HostToolSpec = {
   type: 'function' as const,
@@ -38,6 +39,7 @@ export const CONVERSATION_ARCHIVE_DEFINITION: import('../../capabilities/contrac
           additionalProperties: false as const,
         },
         note: { type: 'string', description: '可选说明（你的原话，原样保存）' },
+        client_operation_id: { type: 'string', minLength: 1, maxLength: 128, description: '可选的操作标识。重试沿用原定位参数和同一个值。明确要为同一选区另建一份存档时，提供新的值。' },
       },
       required: ['kind'],
       additionalProperties: false,
@@ -50,11 +52,21 @@ export type ArchivesModuleDeps = {
   mariposa?: import('../../integrations/mariposa/client.ts').MariposaClient | null;
 };
 
+type ConversationArchiveInput = {
+  kind: string;
+  message_ids?: string[];
+  latest_completed_turn?: boolean;
+  anchor_start?: { speaker?: string; quote?: string };
+  anchor_end?: { speaker?: string; quote?: string };
+  note?: string;
+  client_operation_id?: string;
+};
+
 export function registerArchivesCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: ArchivesModuleDeps): void {
   registry.register(toolCapability({
     owner: 'archives',
     id: 'conversation_archive', baselineOrder: 49, definition: () => CONVERSATION_ARCHIVE_DEFINITION, memoryOnlyAllowed: false, label: '存档对话',
-    run: (input: { kind: string; message_ids?: string[]; latest_completed_turn?: boolean; anchor_start?: { speaker?: string; quote?: string }; anchor_end?: { speaker?: string; quote?: string }; note?: string }, ctx) => runConversationArchive(deps.archives, input, ctx),
+    run: (input: ConversationArchiveInput, ctx) => runConversationArchive(deps.archives, input, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
@@ -92,7 +104,20 @@ async function runArchivesSearch(deps: ArchivesModuleDeps, input: { query: strin
   return { ok: true, output: { state: 'matches', items: r.items.map((i) => ({ archive_id: i.archive_id, kind: i.kind, note: i.note, snippet: i.snippet })) } };
 }
 
-async function runConversationArchive(archives: ArchiveService, input: { kind: string; message_ids?: string[]; latest_completed_turn?: boolean; anchor_start?: { speaker?: string; quote?: string }; anchor_end?: { speaker?: string; quote?: string }; note?: string }, ctx: { roomId: string; turnId: string | null; requestId: string; toolCallId?: string | null; seenMessages?: ReadonlyArray<{ id: string; revision: number; char_start?: number; char_end?: number }> }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
+function archiveToolReceipt(result: ArchiveResult, note: string | null): { ok: boolean; output: Record<string, unknown> } {
+  if (!result.ok) {
+    const detail = result.retryable
+      ? `${result.detail}。请在同一回合用原参数重试，原来未填 client_operation_id 就继续省略，已填则沿用原值。`
+      : result.detail;
+    return { ok: false, output: { error_code: result.code, detail } };
+  }
+  return { ok: true, output: {
+    archived: true, archive_id: result.archive.id, kind: result.archive.kind, message_count: result.archive.count,
+    note: note !== null ? '已保存你的说明原话' : null,
+  } };
+}
+
+async function runConversationArchive(archives: ArchiveService, input: ConversationArchiveInput, ctx: { roomId: string; turnId: string | null; seenMessages?: ReadonlyArray<{ id: string; revision: number; char_start?: number; char_end?: number }> }): Promise<{ ok: boolean; output: Record<string, unknown> }> {
   const kind = input.kind === 'quarrel' || input.kind === 'sweet' ? input.kind : null;
   if (!kind) return { ok: false, output: { error_code: 'ARCHIVE_KIND_INVALID', detail: 'kind 必须是 quarrel|sweet' } };
   const messageIds = Array.isArray(input.message_ids) ? input.message_ids.filter((x) => typeof x === 'string') : null;
@@ -108,6 +133,16 @@ async function runConversationArchive(archives: ArchiveService, input: { kind: s
   if (hasAnchors && (input.anchor_start === undefined || input.anchor_end === undefined)) {
     return { ok: false, output: { error_code: 'ARCHIVE_ANCHOR_PAIR_REQUIRED', detail: '锚点定位必须同时给 anchor_start 与 anchor_end' } };
   }
+  const note = typeof input.note === 'string' && input.note.trim().length > 0 ? input.note.slice(0, 2000) : null;
+  const selector = messageIds ? [...new Set(messageIds)].sort()
+    : latestTurn ? 'latest_completed_turn'
+    : [input.anchor_start, input.anchor_end].map(anchor => [anchor?.speaker, anchor?.quote?.trim()]);
+  // 旧冻结工具没有显式操作标识。相同回合与定位即同一次写入，供应商请求 ID 和工具调用 ID 不参与。
+  const scope = input.client_operation_id ? ['explicit', input.client_operation_id] : ['turn', ctx.turnId];
+  const idem = `tool-archive-v2:${sha256Hex(JSON.stringify([ctx.roomId, scope, kind, selector, note]))}`;
+  const accepted = await archives.recoverModelArchive(ctx.roomId, idem);
+  if (accepted) return archiveToolReceipt(accepted, note);
+
   let rawRefs: Array<{ message_id: string; revision?: number }>;
   let anchorSummary: { segments: number; skipped_unseen: number; excluded_excerpt_only: number; boundary_excerpts: { start: string; end: string } } | null = null;
   if (hasAnchors) {
@@ -132,28 +167,21 @@ async function runConversationArchive(archives: ArchiveService, input: { kind: s
   } else if (latestTurn) {
     const refs = archives.latestCompletedTurnRefs(ctx.roomId, ctx.turnId);
     if (!refs) return { ok: false, output: { error_code: 'ARCHIVE_TURN_NOT_FOUND', detail: '当前没有可确定的已完成回合（排除你正在进行的这个回合）' } };
-    rawRefs = refs.map((r) => ({ message_id: r.message_id }));
+    rawRefs = refs;
   } else {
     rawRefs = messageIds!.map((id) => ({ message_id: id }));
   }
-  const note = typeof input.note === 'string' && input.note.trim().length > 0 ? input.note.slice(0, 2000) : null;
-  const idem = `tool-archive:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${ctx.toolCallId ?? 'nocall'}`;
   const r = await archives.createArchive({
     conversationId: ctx.roomId, kind, rawRefs, note, actor: 'jiaming', idempotencyKey: idem,
   });
-  if (!r.ok) return { ok: false, output: { error_code: r.code, detail: r.detail } };
+  const receipt = archiveToolReceipt(r, note);
   // 工具回执即通知（单通道，03 §4.2）：本回执就是char收到的通知，不再另发事件。
   // 锚点路径回执带范围摘要（少量边界文字/段数/缺口计数——不回显整段，D14/D18）。
-  if (anchorSummary !== null) {
-    return {
-      ok: true,
-      output: {
-        archived: true, archive_id: r.archive.id, kind: r.archive.kind, message_count: r.archive.count,
-        segments: anchorSummary.segments, skipped_unseen: anchorSummary.skipped_unseen, excluded_excerpt_only: anchorSummary.excluded_excerpt_only,
-        range_summary: { start: anchorSummary.boundary_excerpts.start, end: anchorSummary.boundary_excerpts.end },
-        note: note !== null ? '已保存你的说明原话' : null,
-      },
-    };
+  if (receipt.ok && anchorSummary !== null) {
+    Object.assign(receipt.output, {
+      segments: anchorSummary.segments, skipped_unseen: anchorSummary.skipped_unseen, excluded_excerpt_only: anchorSummary.excluded_excerpt_only,
+      range_summary: { start: anchorSummary.boundary_excerpts.start, end: anchorSummary.boundary_excerpts.end },
+    });
   }
-  return { ok: true, output: { archived: true, archive_id: r.archive.id, kind: r.archive.kind, message_count: r.archive.count, note: note !== null ? '已保存你的说明原话' : null } };
+  return receipt;
 }

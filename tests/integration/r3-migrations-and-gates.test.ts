@@ -54,6 +54,32 @@ test('R3-V02：占位投影回填被 v63 纠正为未采纳；真实证据行不
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('D09：v79 的事务内时间失效，原成功回执和已领取任务保留', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'hold-observation-migration-'));
+  const db = openDatabase(path.join(root, 'data'));
+  try {
+    migrate(db, sha256Hex, 79);
+    db.exec(`INSERT INTO tool_side_effects(id,kind,state,verified,memory_id,operation_id,created_at,updated_at,hold_committed_at)
+      VALUES ('effect','hold','committed',1,'memory','operation','2026-11-20T15:59:59.999Z','2026-11-20T16:00:01.000Z','2026-11-20T15:59:59.999Z');
+      INSERT INTO source_bind_jobs(id,memory_id,batch_boundary,status,created_at,updated_at)
+      VALUES ('job','memory','2026-11-20T16:00:00.000Z','no_match','2026-11-20T16:01:00.000Z','2026-11-20T16:01:00.000Z');`);
+    const originalJob = db.prepare('SELECT * FROM source_bind_jobs WHERE id=?').get('job');
+
+    assert.deepEqual(migrate(db, sha256Hex).applied, [80]);
+    const oldEffect = db.prepare('SELECT state,verified,memory_id,operation_id,updated_at,hold_committed_at FROM tool_side_effects WHERE id=?').get('effect');
+    assert.equal(oldEffect?.state, 'committed');
+    assert.equal(oldEffect?.verified, 1);
+    assert.equal(oldEffect?.memory_id, 'memory');
+    assert.equal(oldEffect?.operation_id, 'operation');
+    assert.equal(oldEffect?.updated_at, '2026-11-20T16:00:01.000Z');
+    assert.equal(oldEffect?.hold_committed_at, null);
+    assert.deepEqual(db.prepare('SELECT * FROM source_bind_jobs WHERE id=?').get('job'), originalJob);
+  } finally {
+    db.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('R3-C01：upsertIntent 事务内同键异参=conflict（并发第二请求 409，不回放第一命令）', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'r3-c01-'));
   try {

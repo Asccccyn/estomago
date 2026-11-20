@@ -20,6 +20,9 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
   }
   if (method === 'GET') {
     const result = await contentForward(d.contentClient, { method, path: url.pathname + url.search, actor });
+    if (result.status >= 200 && result.status < 300 && result.bodyFailed) {
+      return json(res, 502, { error: { code: 'content_response_incomplete', message: '内容服务响应不完整（正文传输失败）' } });
+    }
     return json(res, result.status, result.body);
   }
   if (!d.contentOps) return json(res, 503, { error: { code: 'content_unavailable', message: '内容写协调器未装配（聊天不受影响）' } });

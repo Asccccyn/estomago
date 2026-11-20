@@ -59,6 +59,7 @@ export type ArchiveOriginalsResult =
 
 /** F3：建档写路径经既有协调器（同浏览器/模型写工具一个接受/确认/恢复面）。 */
 export type ContentWritePort = {
+  getArchiveCreateIntent?(conversationId: string, key: string): Record<string, unknown> | null;
   write(req: { method: 'POST' | 'PUT' | 'DELETE'; path: string; actor: 'qiaosheng' | 'jiaming'; body?: Record<string, unknown>; headers: Record<string, string> }): Promise<{ status: number; body: unknown }>;
 };
 
@@ -268,23 +269,33 @@ export class ArchiveService {
     // F3：经既有协调器提交——接受（意图+pin）→ 提交 → 按权威快照确认；确认的同一
     // 本地事务登记 M 投影 outbox（见 coordinator.confirmSnapshot），M observation
     // 由既有周期消费者收口。响应丢失/进程退出沿原键恢复，不再 void 尽力而为。
-    const res = await this.deps.contentOps.write({
-      method: 'POST', actor: o.actor, path: '/api/v1/content/archives',
-      body: { conversation_id: o.conversationId, kind: o.kind, messages: v.refs, note: o.note ?? undefined },
-      headers: { 'idempotency-key': o.idempotencyKey },
+    return this.submitArchive(this.deps.contentOps, o.actor, o.idempotencyKey, {
+      conversation_id: o.conversationId, kind: o.kind, messages: v.refs, note: o.note ?? undefined,
+    });
+  }
+
+  async recoverModelArchive(conversationId: string, idempotencyKey: string): Promise<ArchiveResult | null> {
+    const port = this.deps.contentOps;
+    const accepted = port?.getArchiveCreateIntent?.(conversationId, idempotencyKey);
+    if (!port || !accepted) return null;
+    return this.submitArchive(port, 'jiaming', idempotencyKey, accepted);
+  }
+
+  private async submitArchive(port: ContentWritePort, actor: 'qiaosheng' | 'jiaming', key: string, body: Record<string, unknown>): Promise<ArchiveResult> {
+    const res = await port.write({
+      method: 'POST', actor, path: '/api/v1/content/archives', body, headers: { 'idempotency-key': key },
     });
     if (res.status !== 201 && res.status !== 200) {
       const err = (res.body as { error?: { code?: string; message?: string } }).error;
-      return { ok: false, code: err?.code?.toUpperCase() ?? `HTTP_${res.status}`, detail: err?.message ?? String(res.status) };
+      return { ok: false, code: err?.code?.toUpperCase() ?? `HTTP_${res.status}`, detail: err?.message ?? String(res.status), retryable: res.status >= 500 };
     }
     const created = res.body as { id?: string; kind?: ArchiveKind; messages?: unknown[] };
     // RR4-A：2xx 但正文传输失败（截断/坏 JSON→body 缺字段）不冒充建档成功——协调器
     // 已按 unknown 收口，原键重试经 resolve replay 取回真实结果。
-    if (typeof created.id !== 'string' || !created.id || (created.kind !== 'quarrel' && created.kind !== 'sweet')) {
+    if (typeof created.id !== 'string' || !created.id || (created.kind !== 'quarrel' && created.kind !== 'sweet') || !Array.isArray(created.messages)) {
       return { ok: false, code: 'CONTENT_UNPARSEABLE', detail: '存档服务响应不完整（正文传输失败）；可原键重试', retryable: true };
     }
-    const messages = created.messages ?? [];
-    return { ok: true, archive: { id: created.id, kind: created.kind, count: messages.length }, notified: o.actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
+    return { ok: true, archive: { id: created.id, kind: created.kind, count: created.messages.length }, notified: actor === 'qiaosheng' ? 'queued' : 'tool_receipt' };
   }
 
   /** content 存档列表分页读到底——RR4-F4：改用共享读取器 readAllContentPages（取消/

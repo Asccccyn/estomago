@@ -1,3 +1,5 @@
+export const CONTENT_POST_PREVIEW_CHARS = 256;
+
 export const CONTENT_ALBUMS = [
   { album: 'chat_screenshots', title: '聊天截图' },
   { album: 'important_photos', title: '重要照片' },

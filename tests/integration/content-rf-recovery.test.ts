@@ -103,29 +103,63 @@ test('RF03: 真实旧库迁移的 creation 删除回执不能跨资源路由回�
   } finally { await old?.stop(); await fresh?.stop(); fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('RF02B: 模型同一业务 key 在续轮请求后仍复用原操作，未知提交不重复发帖', async () => {
-  const f = await fixture('openrouter'); let lost = false; const wires: Array<Record<string, unknown>> = [];
+test('RF02B/F2: 中文显式键在同回合和后续回合均核回原帖，异参冲突且换新键独立发帖', async () => {
+  const f = await fixture('openrouter');
+  const wires: Array<Record<string, unknown>> = [];
+  const postKeys: Array<string | null> = [];
+  const commands: Array<{ body: string; idempotency_key: string }> = [];
   try {
     globalThis.fetch = async (input, init) => {
       const response = await realFetch(input, init);
-      if (!lost && String(input) === `http://127.0.0.1:${f.content.port}/api/v1/content/posts` && init?.method === 'POST') {
-        assert.equal(response.status, 201); await response.arrayBuffer(); lost = true; throw new Error('synthetic commit response lost');
+      if (String(input) === `http://127.0.0.1:${f.content.port}/api/v1/content/posts` && init?.method === 'POST') {
+        postKeys.push(new Headers(init.headers).get('Idempotency-Key'));
+        if (postKeys.length === 1) {
+          assert.equal(response.status, 201);
+          await response.arrayBuffer();
+          throw new Error('synthetic commit response lost');
+        }
       }
       return response;
     };
     (f.host.runnerSelection as { runner: unknown }).runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
-      wires.push(structuredClone(payload)); const n = wires.length;
-      const call = n <= 2;
-      const delta = call ? { tool_calls: [{ index: 0, id: `call-${n}`, type: 'function', function: { name: 'content_post_create', arguments: JSON.stringify({ body: 'same intended model post', idempotency_key: 'model-business-once' }) } }] } : { content: 'synthetic finished' };
+      wires.push(structuredClone(payload));
+      const n = wires.length;
+      const call = commands.shift();
+      const delta = call ? { tool_calls: [{ index: 0, id: `call-${n}`, type: 'function', function: { name: 'content_post_create', arguments: JSON.stringify(call) } }] } : { content: 'synthetic finished' };
       return { status: 200, headers: new Headers(), body: Readable.from([Buffer.from(`data: ${JSON.stringify({ id: `gen-${n}`, choices: [{ delta }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: call ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)]) };
     });
-    const msg = await f.send('POST', '/api/v1/conversations/primary/messages', { content: 'synthetic model write', client_message_id: 'synthetic-client' });
-    assert.equal(msg.status, 201); await f.host.supervisor.waitIdle();
-    assert.equal(wires.length, 3); assert.equal(lost, true);
-    const messages = (wires[1] as { messages: Array<{ content: string }> }).messages;
-    const firstResult = JSON.parse(messages.at(-1)!.content) as { error_code: string };
-    assert.equal(firstResult.error_code, 'CONTENT_POST_UNKNOWN', '未知提交以未知文案回给模型，不得伪装普通失败诱导换身份重做');
-    const count = (f.content.db.prepare('SELECT COUNT(*) n FROM feed_posts').get() as { n: number }).n;
-    assert.equal(count, 1, '模型重试复用原操作身份——provider 请求变化不产生第二个帖子');
+    const original = { body: 'same intended model post', idempotency_key: '测试续轮操作' };
+    const send = async (id: string, ...tools: typeof commands) => {
+      const before = wires.length;
+      commands.push(...tools);
+      const user = await f.send('POST', '/api/v1/conversations/primary/messages', { content: 'synthetic model write', client_message_id: id });
+      assert.equal(user.status, 201);
+      await f.host.supervisor.waitIdle();
+      assert.equal(f.host.db.prepare('SELECT state FROM turns WHERE id=?').get(String(user.body.turn_id))?.state, 'completed');
+      assert.equal(wires.length - before, tools.length + 1);
+      return wires.slice(before + 1).map(w => {
+        const msg = (w as { messages: Array<{ role: string; content: string }> }).messages.at(-1)!;
+        assert.equal(msg.role, 'tool');
+        return JSON.parse(msg.content);
+      });
+    };
+
+    const [failure, sameTurn] = await send('initial', original, original);
+    const [sameKey] = await send('later-turn', original);
+    assert.equal(postKeys.length, 1, '两个回合的原键只核回首笔事务');
+    assert.match(postKeys[0] ?? '', /^[\x20-\x7e]+$/u, 'Content 请求头必须可安全传输');
+    assert.equal(failure.error_code, 'CONTENT_POST_UNKNOWN');
+    assert.equal(failure.idempotency_key, original.idempotency_key);
+    assert.equal(failure.retryable, true);
+    assert.equal(sameKey.id, sameTurn.id);
+    const [changed] = await send('changed-args', { ...original, body: 'different content' });
+    assert.equal(changed.error_code, 'IDEMPOTENCY_CONFLICT');
+    assert.equal(postKeys.length, 1, '同键异参在远端写之前被拒绝');
+    const [separate] = await send('separate-operation', { ...original, idempotency_key: '第二个独立操作' });
+    assert.notEqual(separate.id, sameTurn.id);
+    const posts = f.content.db.prepare('SELECT id FROM feed_posts').all().map(row => row.id);
+    assert.deepEqual(new Set(posts), new Set([sameTurn.id, separate.id]));
+    assert.equal(postKeys.length, 2);
+    assert.notEqual(postKeys[0], postKeys[1]);
   } finally { await f.close(); }
 });

@@ -365,6 +365,22 @@ export class BackgroundScheduler {
     return { state: row.state };
   }
 
+  /** 生图可跨过多次 I/O；沿用派发账本的首派发时刻和同一档有效时限。 */
+  remainingRunMs(runId: string): number {
+    if (this.cancelRequested.has(runId) || this.isYieldRequested(runId)) return 0;
+    const row = this.d.db.prepare(`
+      SELECT r.kind, r.first_dispatch_started_at, t.origin
+        FROM background_runs r JOIN background_tasks t ON t.id=r.task_id
+       WHERE r.id=? AND r.state='running' AND t.revision=r.task_revision AND t.enabled=1 AND t.control_reason IS NULL
+    `).get(runId) as { kind: BackgroundKind; first_dispatch_started_at: string | null; origin: string } | undefined;
+    if (!row?.first_dispatch_started_at || row.kind === 'reminder') return 0;
+    const control = backgroundControl(row.kind, row.origin);
+    const settings = this.d.settings.effective();
+    const nowMs = this.now();
+    if (!settings[control].enabled || (row.kind === 'keepwarm' && keepwarmSleepState(settings.keepwarm.sleep_window, nowMs).blocked)) return 0;
+    return Math.max(0, Date.parse(row.first_dispatch_started_at) + settings[control].max_run_ms - nowMs);
+  }
+
   /** 派发记账入口（executor 在每次 transport 前调用；§10.1 唯一预算账本）。
    *  WAKE_KEEPWARM_V1 §09（B-02 收尾）：日占用门=当日（上海日）同 kind 全部 run 的
    *  已结算 actual + 未结算预占（含 unknown）+ 本次上界 ≤ 用户 cap——跨 run 聚合，

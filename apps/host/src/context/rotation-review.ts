@@ -13,8 +13,7 @@ export class RotationReviewService {
     this.db = db;
   }
 
-  create(windowId: string, roomId: string, epochRevision: number, range: ReviewRangeItem[]): ReviewRow {
-    const id = genId('rev');
+  create(windowId: string, roomId: string, epochRevision: number, range: ReviewRangeItem[], id = genId('rev')): ReviewRow {
     const now = new Date().toISOString();
     const rangeKeys = range.map(rawKey);
     tx(this.db, () => {
@@ -127,10 +126,11 @@ export class RotationReviewService {
     return id;
   }
 
-  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null): void {
+  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null, commitObservedAt: string | null = null): void {
+    const committedAtUtc = commitObservedAt === null ? null : new Date(commitObservedAt).toISOString();
     tx(this.db, () => {
-      this.db.prepare('UPDATE tool_side_effects SET state = ?, verified = ?, memory_id = ?, updated_at = ? WHERE id = ?')
-        .run(state, verified ? 1 : 0, memoryId, new Date().toISOString(), id);
+      this.db.prepare('UPDATE tool_side_effects SET state = ?, verified = ?, memory_id = ?, hold_committed_at = ?, updated_at = ? WHERE id = ?')
+        .run(state, verified ? 1 : 0, memoryId, committedAtUtc, new Date().toISOString(), id);
     });
   }
 

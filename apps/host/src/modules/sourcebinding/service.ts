@@ -98,15 +98,20 @@ export class SourceBindingService {
     ).toISOString()
   }
   private uncollected(boundary: string, limit: number) {
+    // hold_committed_at is populated only from M's durable post-commit
+    // observation. Older or unproven rows become eligible by local confirmation time.
     return this.db
-      .prepare(`SELECT e.memory_id,t.conversation_id,e.turn_id FROM tool_side_effects e
+      .prepare(`SELECT e.memory_id,t.conversation_id,e.turn_id,e.hold_committed_at
+      FROM tool_side_effects e
       LEFT JOIN turns t ON t.id=e.turn_id WHERE e.kind='hold' AND e.state='committed' AND e.verified=1
-      AND e.memory_id IS NOT NULL AND e.updated_at < ? AND NOT EXISTS
-      (SELECT 1 FROM source_bind_jobs j WHERE j.memory_id=e.memory_id) ORDER BY e.updated_at LIMIT ?`)
+      AND e.memory_id IS NOT NULL AND COALESCE(e.hold_committed_at,e.updated_at) < ? AND NOT EXISTS
+      (SELECT 1 FROM source_bind_jobs j WHERE j.memory_id=e.memory_id)
+      ORDER BY COALESCE(e.hold_committed_at,e.updated_at) LIMIT ?`)
       .all(boundary, limit) as {
       memory_id: string
       conversation_id: string | null
       turn_id: string | null
+      hold_committed_at: string | null
     }[]
   }
   dueNow(now = new Date()): boolean {
@@ -149,13 +154,17 @@ export class SourceBindingService {
     }
     const facts = this.uncollected(boundary, cfg.max_batch)
     report.collected = facts.length
-    for (const f of facts)
+    for (const f of facts) {
+      const batchBoundary = f.hold_committed_at === null ? boundary : new Date(
+        Date.parse(SourceBindingService.lastBoundary(new Date(f.hold_committed_at))) + 86_400_000,
+      ).toISOString()
       report.inserted += this.enqueue(
         f.memory_id,
         f.conversation_id,
         f.turn_id,
-        boundary,
+        batchBoundary,
       )
+    }
     const rows = this.db
       .prepare(
         "SELECT memory_id FROM source_bind_jobs WHERE status IN ('pending','judging') AND batch_boundary<=? ORDER BY created_at,id LIMIT ?",

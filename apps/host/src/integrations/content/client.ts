@@ -7,6 +7,7 @@
 // 只读面：同操作回查（resolve）与当前引用快照（references）。
 import fs from 'node:fs';
 import path from 'node:path';
+import { sha256Hex } from '../../util/id.ts';
 
 export type ContentClient = {
   baseUrl: string;
@@ -23,6 +24,17 @@ export function contentClientFor(stateRoot: string, port: number, enabled: boole
   return { baseUrl: `http://127.0.0.1:${port}`, token };
 }
 
+/** Keep existing HTTP keys and use the same transport-safe key for resolution and writes. */
+function contentWireIdempotencyKey(key: string): string {
+  try {
+    // Use the same normalization Fetch applies when sending a valid header.
+    return new Headers({ 'Idempotency-Key': key }).get('Idempotency-Key') ?? key;
+  } catch {
+    // Hash the original JSON string so unusual Unicode strings stay distinct.
+    return `est-content-idempotency-v1:${sha256Hex(JSON.stringify(key))}`;
+  }
+}
+
 /** 转发请求到 content——est 唯一通道。actor 从可信上下文派生，不从请求体。
  *  RR4-F4：可选 signal 与每次请求超时合并（取消立即生效，不必等当页超时）。
  *  RR4-A（复审 2026-11-12）：正文读取/JSON 解析失败不再伪装成空对象——保留 {}
@@ -37,13 +49,17 @@ export async function contentForward(client: ContentClient, opts: {
   timeoutMs?: number;
   signal?: AbortSignal;
 }): Promise<{ status: number; body: unknown; bodyFailed: boolean }> {
+  const headers = { ...opts.headers };
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === 'idempotency-key') headers[name] = contentWireIdempotencyKey(value);
+  }
   const res = await fetch(`${client.baseUrl}${opts.path}`, {
     method: opts.method,
     headers: {
       'Authorization': `Bearer ${client.token}`,
       'X-Actor': opts.actor,
       'Content-Type': 'application/json',
-      ...opts.headers,
+      ...headers,
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(opts.timeoutMs ?? 5000), opts.signal]) : AbortSignal.timeout(opts.timeoutMs ?? 5000),
@@ -126,7 +142,7 @@ export async function resolveContentOperation(client: ContentClient, opts: {
 }): Promise<ContentResolveOutcome> {
   const r = await contentForward(client, {
     method: 'POST', path: '/api/v1/content/operations/resolve', actor: opts.actor,
-    body: { method: opts.method, path: opts.path, body: opts.body ?? {}, idempotency_key: opts.idempotencyKey, if_match: opts.ifMatch ?? '' },
+    body: { method: opts.method, path: opts.path, body: opts.body ?? {}, idempotency_key: contentWireIdempotencyKey(opts.idempotencyKey), if_match: opts.ifMatch ?? '' },
   });
   if (r.status !== 200) throw new Error(`content resolve failed: ${r.status}`);
   if (r.bodyFailed) throw new Error('content resolve failed: body'); // RR4-A：截断的 resolve 结果不是任何 outcome——按不可达处理（调用方既有 503 分支）

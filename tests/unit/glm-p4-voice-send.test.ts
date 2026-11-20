@@ -125,6 +125,7 @@ test('A05 模型主动语音：chat_send_voice→真实资产→唯一 assistant
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     const assetId = v['audio_asset_id'] as string;
     // 资产真实存在且 mp3
     const asset = c.db.prepare('SELECT mime_type, state FROM media_assets WHERE id=?').get(assetId) as { mime_type: string; state: string };
@@ -207,6 +208,7 @@ for (const mode of ['drop-persisted', 'drop-body-persisted'] as const) test(`响
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     assert.equal(v['recovered'], true);
     assert.equal(stub.synthCalls, 1, '恢复不重新合成：同操作只有一次 provider 调用');
     // 唯一 assistant 语音消息，附件=取回的同一资产
@@ -238,6 +240,7 @@ test('联合审计 A01-F03：est 已有合成资产（发布前中断）——�
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     assert.equal(v['reused_asset'], true);
     assert.equal(v['audio_asset_id'], saved.id);
     assert.equal(stub.synthCalls, 0, '已有资产：重试零合成');

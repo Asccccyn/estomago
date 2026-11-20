@@ -143,7 +143,7 @@ export async function runSdkHostQuery(
     }
     executing.add(id);
     try {
-      const result = await host.executeTool(name, args, id, round);
+      const result = await host.executeTool(name, args, id, round, messages);
       executing.delete(id);
       return { ...result, recordDelivery: delivered => {
         messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
@@ -203,7 +203,7 @@ export async function runSdkHostQuery(
           const results = [];
           let completed = false;
           for (const call of deferredReview.splice(0)) {
-            const result = await host.executeTool(call.name, call.args, call.id, round);
+            const result = await host.executeTool(call.name, call.args, call.id, round, messages);
             const entry = messages.findLast(m => m.role === 'tool' && m.tool_call_id === call.id)!;
             entry.content = JSON.stringify(result.output);
             results.push(result.output); completed ||= result.ok;

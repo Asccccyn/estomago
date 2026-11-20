@@ -1847,4 +1847,22 @@ MIGRATIONS.push({
       WHERE status IN ('failed','source_unavailable','credential_blocked','version_conflict') AND instr(detail,'——')>0;`,
 });
 
+MIGRATIONS.push({
+  version: 78, name: 'verified-hold-commit-time',
+  sql: 'ALTER TABLE tool_side_effects ADD COLUMN hold_committed_at TEXT;',
+});
+
+MIGRATIONS.push({
+  version: 79, name: 'imagegen-origin-target',
+  sql: `ALTER TABLE imagegen_operations ADD COLUMN origin_room_id TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN origin_background_run_id TEXT;`,
+});
+
+MIGRATIONS.push({
+  version: 80, name: 'require-observed-hold-commit-time',
+  // v78 accepted transaction-internal timestamps. Keep the successful effects
+  // and existing jobs, but handle uncollected ones as unproven for time-of-day.
+  sql: "UPDATE tool_side_effects SET hold_committed_at=NULL WHERE kind='hold' AND hold_committed_at IS NOT NULL;",
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

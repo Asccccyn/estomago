@@ -12,6 +12,7 @@ export type ImageGenTransportResult =
   | { transportError: 'timeout' | 'network_refused' | 'network_unknown' | 'body_truncated'; status?: number; json?: undefined };
 
 export type ImageGenTransport = (body: Record<string, unknown>, signal?: AbortSignal) => Promise<ImageGenTransportResult>;
+export type ImageGenLifetime = { signal: AbortSignal; expired: () => boolean };
 
 export type ImageGenResult =
   | { outcome: 'ok'; bytes: Buffer; mime: string; generationId: string | null; revisedPrompt: string | null }
@@ -41,17 +42,26 @@ export class ImageGenAdapter {
     return typeof v === 'string' && v.length > 0;
   }
 
+  operationLifetime(parent?: AbortSignal, remainingRunMs?: number): ImageGenLifetime {
+    const duration = Math.max(0, Math.trunc(Math.min(this.timeoutMs, remainingRunMs ?? this.timeoutMs)));
+    const deadline = performance.now() + duration;
+    const timeout = AbortSignal.timeout(duration);
+    const signal = parent ? AbortSignal.any([parent, timeout]) : timeout;
+    return { signal, expired: () => signal.aborted || performance.now() >= deadline };
+  }
+
   /** 二轮返修 P1-2（2026-11-15）：取回供应商结果 URL 的字节——同一次生成的恢复动作，
    *  不重新计费。https-only、有界（50MiB 安全上限）、魔数校验须为图片；失败如实返回
    *  原因（调用方落 url_pending，同键重放只重取本 URL）。 */
-  async fetchImageResultUrl(url: string): Promise<{ ok: true; bytes: Buffer; mime: string } | { ok: false; reason: string }> {
+  async fetchImageResultUrl(url: string, lifetime = this.operationLifetime()): Promise<{ ok: true; bytes: Buffer; mime: string } | { ok: false; reason: string }> {
     let u: URL;
     try { u = new URL(url); } catch { return { ok: false, reason: '结果 URL 非法' }; }
     // 公网结果 URL 强制 https；环回（本机供应商部署/隔离验证）允许 http
     const isLoopback = u.hostname === '127.0.0.1' || u.hostname === 'localhost' || u.hostname === '::1';
     if (u.protocol !== 'https:' && !(u.protocol === 'http:' && isLoopback)) return { ok: false, reason: '结果 URL 非 https' };
     try {
-      const res = await fetch(u, { signal: AbortSignal.timeout(this.timeoutMs) });
+      if (lifetime.expired()) return { ok: false, reason: '操作已停止或过期' };
+      const res = await fetch(u, { signal: lifetime.signal });
       if (res.status < 200 || res.status >= 300) return { ok: false, reason: `结果 URL 返回 ${res.status}` };
       const chunks: Buffer[] = [];
       let size = 0;
@@ -73,7 +83,7 @@ export class ImageGenAdapter {
     }
   }
 
-  async generate(prompt: string, opts: { format?: string; size?: string; frameCount?: number; frameDurationMs?: number } = {}): Promise<ImageGenResult> {
+  async generate(prompt: string, opts: { format?: string; size?: string; frameCount?: number; frameDurationMs?: number } = {}, lifetime = this.operationLifetime()): Promise<ImageGenResult> {
     if (!this.configured) return { outcome: 'error', code: 'IMAGEGEN_UNCONFIGURED', detail: '未配置图片生成 Key（服务端设置）——能力如实不可用，不切换其他供应商' };
     if (typeof prompt !== 'string' || prompt.trim().length === 0 || prompt.length > 32000) {
       return { outcome: 'error', code: 'IMAGEGEN_PROMPT_INVALID', detail: 'prompt 必须是 1..32000 字符' };
@@ -114,6 +124,7 @@ export class ImageGenAdapter {
         }
       }
     }
+    if (lifetime.expired()) return { outcome: 'error', code: 'IMAGEGEN_CANCELLED_BEFORE_DISPATCH', detail: '操作已停止或过期，未发起生成请求' };
     let res: ImageGenTransportResult;
     try {
       res = await this.transport({
@@ -122,7 +133,7 @@ export class ImageGenAdapter {
         ...(opts.size ? { size: String(opts.size) } : {}),
         ...(format === 'gif' && frameCount !== undefined ? { frame_count: frameCount } : {}),
         ...(format === 'gif' && frameDurationMs !== undefined ? { frame_duration_ms: frameDurationMs } : {}),
-      }, AbortSignal.timeout(this.timeoutMs));
+      }, lifetime.signal);
     } catch (err) {
       // 自定义 transport 抛错（未走 defaultTransport 的分类）：同一套网络分类语义
       const kind = classifyNetworkError(err);
@@ -164,7 +175,7 @@ export class ImageGenAdapter {
       // 二轮返修 P1-2（2026-11-15）：生成已成功但只有结果 URL——先就地取回字节（同一次
       // 生成，不重新计费）；取不回落 url_pending，同键重放只重取 URL。
       if (typeof item?.url === 'string' && item.url.length > 0) {
-        const fetched = await this.fetchImageResultUrl(item.url);
+        const fetched = await this.fetchImageResultUrl(item.url, lifetime);
         if (fetched.ok) return { outcome: 'ok', bytes: fetched.bytes, mime: fetched.mime, generationId: (res.json as { id?: unknown }).id != null ? String((res.json as { id: unknown }).id) : null, revisedPrompt: typeof item.revised_prompt === 'string' ? item.revised_prompt : null };
         return { outcome: 'url_pending', url: item.url, reason: fetched.reason };
       }

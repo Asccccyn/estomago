@@ -14,7 +14,7 @@ import path from 'node:path';
 import { assembleTestTools, makeDb, tempRoot } from '../helpers.ts';
 import { renderToolContext, resolveToolGroups } from '../../apps/host/src/runtime/tool-initial-visible.ts';
 import { searchToolCatalog } from '../../apps/host/src/runtime/tool-catalog-search.ts';
-import { buildDeferredTools, definitionId, freezeWindowTools, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
+import { buildDeferredTools, definitionId, freezeWindowTools, modelToolsAfterBindingRetirement, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { memoryHoldDefinition, MEMORYCORRECT_DEFINITION } from '../../apps/host/src/modules/memory/module.ts';
 import { ConversationToolsService } from '../../apps/host/src/modules/conversation/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
@@ -34,14 +34,14 @@ function noSeqAnywhere(value: unknown): boolean {
   return !JSON.stringify(value).includes('"seq"');
 }
 
-test('D01：新窗按用户确认的十二项给简明常驻用法和唯一索引提示', () => {
+test('D01：新窗按用户确认的十四项给简明常驻用法和唯一索引提示', () => {
   const { registry } = assembleTestTools({ db: {} as never, media: {} as never, messages: {} as never });
   const catalog = registry.currentCatalog();
   const declared = registry.currentGroups();
   const noConfig = { prepare: () => ({ get: () => undefined }) } as never;
   const groups = resolveToolGroups(noConfig, catalog, declared);
   const cTools = catalog.filter((spec) => groups[spec.function.name] === 'C').map((spec) => spec.function.name);
-  assert.equal(cTools.length, 12);
+  assert.equal(cTools.length, 14);
   assert.ok(cTools.includes('memory_hold') && !cTools.includes('conversation_read'));
   const text = renderToolContext(catalog, groups)!;
   for (const name of cTools) assert.ok(text.includes(`- ${name}\n`));
@@ -140,8 +140,13 @@ test('旧冻结窗仅发现仍能使用的工具与操作，已知有效版本�
   db.prepare("INSERT INTO conversations(id, owner_service, scope, created_at) VALUES (?, 'estomago', 'private', 'now')").run(CTX_BASE.roomId);
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES (?,?,'ACTIVE','now','now')").run(CTX_BASE.windowId, CTX_BASE.roomId);
   const calls: string[] = [];
-  const mariposa = new MariposaClient({ transport: async capability => {
+  let savedHold: Record<string, unknown> | null = null;
+  const mariposa = new MariposaClient({ transport: async (capability, args) => {
     calls.push(capability);
+    if (capability === 'memory.hold') {
+      savedHold = args;
+      return { ok: true, result: { operation_id: args.operation_id, memory_id: 'mem-old', version: 1, binding_ids: [], committed_at: '2026-11-20T12:30:00Z' } };
+    }
     return { ok: true, result: { items: [] } };
   } });
   const { tools, registry } = assembleTestTools({
@@ -149,13 +154,14 @@ test('旧冻结窗仅发现仍能使用的工具与操作，已知有效版本�
   });
   const historic = JSON.parse(fs.readFileSync(new URL('../fixtures/window-tools-before-autonomy.json', import.meta.url), 'utf8')) as { catalog: HostToolSpec[] };
   const oldCorrect = historic.catalog.find(t => t.function.name === 'memory_correct')!;
+  const oldHold = historic.catalog.find(t => t.function.name === 'memory_hold')!;
   const retired: HostToolSpec = { type: 'function', function: {
     name: 'memory_source_bind', description: '给一条已有记忆绑定聊天原文',
     parameters: { type: 'object', properties: {
       memory_id: { type: 'string' }, start_seq: { type: 'integer' }, end_seq: { type: 'integer' },
     }, required: ['memory_id', 'start_seq', 'end_seq'], additionalProperties: false },
   } };
-  const catalog = [...registry.currentCatalog().filter(t => t.function.name !== 'memory_correct'), oldCorrect, retired];
+  const catalog = [...registry.currentCatalog().filter(t => !['memory_correct', 'memory_hold'].includes(t.function.name)), oldCorrect, oldHold, retired];
   const wire = freezeWindowTools(db, CTX_BASE.windowId, catalog, 'deferred').map(t => t.function.name === 'tool_catalog'
     ? { ...t, function: { ...t.function, parameters: { type: 'object', properties: {}, additionalProperties: false } } }
     : t);
@@ -185,6 +191,21 @@ test('旧冻结窗仅发现仍能使用的工具与操作，已知有效版本�
     assert.equal(allowed.ok, true);
   }
   assert.deepEqual(calls, ['relations.corrections.list', 'relations.corrections.list']);
+
+  const hold = await tools.execute('tool_define', { name: 'memory_hold' }, context);
+  assert.equal(hold.ok, true);
+  assert.ok(!('source_ranges' in (hold.output.parameters as { properties: object }).properties));
+  const replay = await tools.execute('tool_invoke', { name: 'memory_hold', definition_id: definitionId(oldHold), arguments: {
+    original_title: '合成记录', text: '普通 hold', categories: ['daily'], creation_mode: 'contemporaneous',
+    source_ranges: [{ start_seq: 1, end_seq: 2 }],
+  } }, context);
+  assert.equal(replay.output.memory_id, 'mem-old');
+  assert.deepEqual(calls, ['relations.corrections.list', 'relations.corrections.list', 'memory.hold']);
+  assert.ok(savedHold && !('source_ranges' in savedHold) && !('source_selections' in savedHold));
+
+  const legacyWire = modelToolsAfterBindingRetirement([oldCorrect, oldHold, retired]);
+  assert.deepEqual(legacyWire.map(t => t.function.name), ['memory_correct', 'memory_hold']);
+  assert.deepEqual(legacyWire[1]!.function.parameters, hold.output.parameters);
   assert.deepEqual(storedToolset(db, CTX_BASE.windowId)!.catalog, catalog);
 });
 

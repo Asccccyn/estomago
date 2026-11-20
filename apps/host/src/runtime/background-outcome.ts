@@ -46,6 +46,15 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const pureAck = loop.result.outcome === 'completed' && !loop.result.errorCode && input.toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
   db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
     .run(input.toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), runId);
+  const commitTrajectory = (manifest: ManifestEntry[]): void => {
+    if (!input.trajectory || loop.finalMessages === null) return;
+    input.trajectory.replace(input.windowId, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), manifest, (conn) => {
+      const now = new Date().toISOString();
+      const stamped = conn.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ? AND window_id = ? AND turn_id = ?')
+        .run(now, now, runId, input.windowId, input.turnId);
+      if (Number(stamped.changes) !== 1) throw new Error('BACKGROUND_TRAJECTORY_RUN_MISMATCH');
+    });
+  };
 
   if (!pureAck) {
     // SUBSTANTIVE（06 §2）：提交最初事件与整个必要协议链——工具调用/结果/续轮/最终文本；
@@ -54,8 +63,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       const baseManifest = input.baseManifest;
       const publishedEntries = (db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(input.turnId) as Array<{ id: string; sequence: number }>)
         .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
-      input.trajectory.replace(input.windowId, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-      db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), runId);
+      commitTrajectory([...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
     }
     // C09（四仓审计 20261106）：工具心跳（substantive）完成同样记维护回执——后继维护
     // 安排与缓存证据独立成立（不记回执→occurrence key 永不变→后继永久停摆，审计实测
@@ -90,16 +98,12 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   // 清单不加可见条目。C08（四仓审计 20261106）：**已发协议保留**——host 事件与
   // assistant "1" 随轨迹提交（缓存前缀延续），下一普通输入/维护从实发前缀接续，
   // 不再出现首差（旧实现整段丢弃→下一请求 messages[4] 起分叉）。
-  if (input.trajectory && loop.finalMessages !== null) {
-    input.trajectory.replace(input.windowId, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), input.baseManifest);
-    db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), runId);
-  }
   // A retained tool result from an earlier interrupted run may have entered
   // the model in this pure maintenance request. Promote only that source
-  // evidence; the canonical messages and cache boundary remain untouched.
-  if (input.trajectory && loop.toolSeen.length > 0) {
-    input.trajectory.replaceManifest(input.windowId, [...input.baseManifest, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-  }
+  // evidence in the same transaction as this run's trajectory and stamp.
+  const ackManifest = loop.toolSeen.length ? [...input.baseManifest, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))] : input.baseManifest;
+  if (loop.finalMessages !== null) commitTrajectory(ackManifest);
+  else if (loop.toolSeen.length) input.trajectory?.replaceManifest(input.windowId, ackManifest);
   if (kind === 'keepwarm' && input.activity && input.capturedActivityRevision !== null) {
     // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
     // 不写"保温成功"，同活动版本不重试）

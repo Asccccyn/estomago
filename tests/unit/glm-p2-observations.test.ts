@@ -323,7 +323,9 @@ test('SDK 正式驱动入口收到转写；深听观察不阻塞派发（A06）'
     assert.equal(prompts.length, 1);
     assert.ok(prompts[0]!.includes('SDK 的原声转写。'));
     assert.ok(prompts[0]!.includes('[语音转写|siren:call|非亲笔]'), '通话轮转写带精简来源标记（B4）');
-    assert.ok(prompts[0]!.includes('[通话轮] 本轮输入来自语音通话'), '通话轮注入技术事实（禁编号；B4 时态/措辞修订）');
+    assert.ok(prompts[0]!.includes('[program_fact]\\n这一轮是你和宿主用户在通电话。'), '当前 SDK 请求区分宿主通话事实与用户转写');
+    assert.ok(prompts[0]!.includes('她会在同一通电话里实时听到'));
+    assert.ok(prompts[0]!.includes('通话回复无需另外发送语音条'));
     assert.ok(!prompts[0]!.includes('[seq]'), '不示范违禁标记原词（B4：学舌风险）');
     assert.ok(!prompts[0]!.includes('一次说一两句'), '不规定说话长度/风格（她 11-02 裁定）');
     // P2（四仓审计 20261106，U04/V01）：deep_listen 通话轮与聊天语音同语义——派发在准备

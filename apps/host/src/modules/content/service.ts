@@ -3,6 +3,16 @@
 // 20261106）：同操作回查、意图+pin、提交、权威快照确认与恢复对浏览器/模型一致。
 // 创作小作品不执行代码（SVG 脚本拒绝）。
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import { CONTENT_POST_PREVIEW_CHARS } from '../../../../../packages/contracts/src/content.ts';
+import { contentForward } from '../../integrations/content/client.ts';
+import { sliceByByteBudget } from '../../media/model-input.ts';
+
+const POST_PAGE_BYTES = 32_768;
+const POST_BODY_CURSOR_PREFIX = 'post-body:';
+const POST_BODY_READ_HINT = '把 body_cursor 传给 content_posts_list 的 cursor 参数，分页读该帖正文；用列表的 next_cursor 继续浏览列表。';
+
+type PostListItem = Record<string, unknown> & { id: string; revision: number; body: string | null; body_truncated?: boolean };
+type PostPage = { items: PostListItem[]; next_cursor: string | null; has_more: boolean };
 
 export class ContentToolsService {
   private readonly contentClient: import('../../integrations/content/client.ts').ContentClient | null;
@@ -17,48 +27,91 @@ export class ContentToolsService {
 
   async contentPostCreate(args: { presentation?: string; title?: string; body: string; asset_ids?: string[]; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
-    // 模型发帖与浏览器入口同一协调面：资产前置保护、意图持久、回放与确认一致。
-    // RF02（复审 20261106）：业务幂等键绑定稳定主体（turn+模型显式 key），不含
-    // provider requestId/attempt——模型续轮重试复用原操作，不因换请求换身份重复发帖。
-    const r = await this.contentOps.write({ method: 'POST', path: '/api/v1/content/posts', actor: 'jiaming',
+    const r = await this.contentOps.writeForModel({
+      roomId: ctx.roomId, turnId: ctx.turnId, path: '/api/v1/content/posts', idempotencyKey: args.idempotency_key,
       body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
-      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
     });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
-    if (isUnknownOutcome(r)) return unknownToolResult('CONTENT_POST_UNKNOWN', r);
-    return { ok: false, output: { error_code: 'CONTENT_POST_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+    if (r.status === 201 || r.status === 200) {
+      const { id, revision, author, presentation, asset_ids, published_at } = r.body as PostListItem;
+      return { ok: true, output: { state: 'committed', id, revision, author, presentation, asset_ids, published_at,
+        body_cursor: postBodyCursor(id, revision, 0), body_read_hint: POST_BODY_READ_HINT } };
+    }
+    return modelWriteFailure(r, args.idempotency_key, 'CONTENT_POST');
   }
 
 
   async contentCommentCreate(args: { post_id: string; body: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    // 评论无资产（无伪 pin），但操作身份/回放与浏览器写一致——不绕过回执规则。
-    // RF02：业务键不含 provider requestId（见 contentPostCreate）。
-    const r = await this.contentOps.write({ method: 'POST', path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`, actor: 'jiaming',
-      body: { body: args.body },
-      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
+    const r = await this.contentOps.writeForModel({
+      roomId: ctx.roomId, turnId: ctx.turnId, path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`,
+      body: { body: args.body }, idempotencyKey: args.idempotency_key,
     });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
-    if (isUnknownOutcome(r)) return unknownToolResult('CONTENT_COMMENT_UNKNOWN', r);
-    return { ok: false, output: { error_code: 'CONTENT_COMMENT_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+    if (r.status === 201 || r.status === 200) {
+      const { id, post_id, author, revision, created_at } = r.body as Record<string, unknown>;
+      return { ok: true, output: { state: 'committed', id, post_id, author, revision, created_at } };
+    }
+    return modelWriteFailure(r, args.idempotency_key, 'CONTENT_COMMENT');
   }
 
 
-  async contentPostsList(args: { cursor?: string; limit?: number; presentation?: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async contentPostsList(args: { cursor?: string; limit?: number; presentation?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
-    const { contentForward } = await import('../../integrations/content/client.ts');
-    const params = new URLSearchParams();
-    if (args.cursor) params.set('cursor', args.cursor);
-    if (args.limit && args.limit > 0 && args.limit <= 100) params.set('limit', String(args.limit));
-    if (args.presentation) params.set('presentation', args.presentation);
-    const r = await contentForward(this.contentClient, { method: 'GET', path: `/api/v1/content/posts?${params}`, actor: 'jiaming' });
-    return { ok: r.status === 200, output: r.body as Record<string, unknown> };
+    const budget = Math.min(ctx.remainingResultBytes?.() ?? POST_PAGE_BYTES, POST_PAGE_BYTES);
+    try {
+      if (args.cursor?.startsWith(POST_BODY_CURSOR_PREFIX)) {
+        const cursor = decodePostBodyCursor(args.cursor);
+        if (!cursor) return postsReadFailed('帖子正文游标无效；请从帖子列表重新取得正文游标。');
+        const r = await contentForward(this.contentClient, {
+          method: 'GET', path: `/api/v1/content/posts/${encodeURIComponent(cursor.id)}`, actor: 'jiaming', signal: ctx.signal,
+        });
+        if (r.bodyFailed) return postsReadFailed('内容服务响应不完整（正文传输失败）。');
+        if (r.status !== 200) return postsReadFailed(`读取帖子失败（HTTP ${r.status}）。`);
+        const post = r.body as Partial<PostListItem> | null;
+        if (post?.id !== cursor.id || post.revision !== cursor.revision || typeof post.body !== 'string') {
+          return postsReadFailed('帖子已修改、删除或正文不可用；请重新读取帖子列表。');
+        }
+        const { pageText, nextOffset, done } = sliceByByteBudget(post.body, cursor.offset, Math.floor(budget / 2), 512);
+        const output = {
+          post_id: post.id, revision: post.revision, body: pageText, body_offset: cursor.offset,
+          next_cursor: done ? null : postBodyCursor(post.id, post.revision, nextOffset), has_more: !done,
+        };
+        return (done || nextOffset > cursor.offset) && postResultBytes(output) <= budget
+          ? { ok: true, output } : postsBudgetLimited(args.cursor);
+      }
+
+      const params = new URLSearchParams({ body_preview: '1' });
+      if (args.cursor) params.set('cursor', args.cursor);
+      if (args.presentation) params.set('presentation', args.presentation);
+      let limit = args.limit !== undefined && args.limit >= 1 && args.limit <= 100 ? Math.floor(args.limit) : 20;
+      for (;;) {
+        params.set('limit', String(limit));
+        const r = await contentForward(this.contentClient, {
+          method: 'GET', path: `/api/v1/content/posts?${params}`, actor: 'jiaming', signal: ctx.signal,
+        });
+        if (r.bodyFailed) return postsReadFailed('内容服务响应不完整（正文传输失败）。');
+        if (r.status !== 200) return postsReadFailed(`读取帖子列表失败（HTTP ${r.status}）。`);
+        const page = r.body as PostPage | null;
+        if (!Array.isArray(page?.items) || typeof page.has_more !== 'boolean'
+            || (page.has_more && typeof page.next_cursor !== 'string')) {
+          return postsReadFailed('内容服务的帖子列表响应格式不完整。');
+        }
+        const items = page.items.map(projectPostPreview);
+        const output = { items, next_cursor: page.next_cursor ?? null, has_more: page.has_more,
+          ...(items.some(item => item.body_truncated) ? { body_read_hint: POST_BODY_READ_HINT } : {}) };
+        if (postResultBytes(output) <= budget) return { ok: true, output };
+        if (items.length <= 1) return postsBudgetLimited(args.cursor);
+        // Fetch the shorter page at the same boundary so the issuing service
+        // supplies the cursor immediately after the last delivered post.
+        limit = Math.floor(items.length / 2);
+      }
+    } catch {
+      return postsReadFailed('内容服务暂不可达（正文传输失败）。');
+    }
   }
 
 
   async contentAlbumsRead(args: Record<string, unknown>, _ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient) return {ok:false,output:{error_code:'INTEGRATION_UNCONFIGURED',detail:'相册服务未装配'}};
-    const { contentForward } = await import('../../integrations/content/client.ts');
     const params = new URLSearchParams();
     for (const key of ['cursor','limit','q','source_service','source_kind','source_id']) if (args[key] !== undefined) params.set(key,String(args[key]));
     const endpoint = args.album ? `/albums/${encodeURIComponent(String(args.album))}/entries?${params}` : '/albums';
@@ -81,7 +134,6 @@ export class ContentToolsService {
    *  看图）。复用 content 正本 API，不另建检索；截断两 flavor 同 RR4-A 口径如实报失败。 */
   async contentCreationsRead(args: { cursor?: string; limit?: number }, _ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
-    const { contentForward } = await import('../../integrations/content/client.ts');
     const params = new URLSearchParams();
     if (args.limit && args.limit > 0 && args.limit <= 100) params.set('limit', String(Math.floor(args.limit)));
     if (args.cursor) params.set('cursor', args.cursor);
@@ -118,20 +170,19 @@ export class ContentToolsService {
     return { ok: true, output: { items, next_cursor: b.next_cursor ?? null, has_more: b.has_more ?? false } };
   }
 
-  /** R5（复审 2026-11-08）：相册写工具——与浏览器写同一协调面（回执/回放/未知收口）。
-   *  幂等键绑定 turn+模型显式 key（RF02 同款，不含 provider requestId）。 */
+  /** 相册追加和修改沿同一协调面，恢复时复用首次受理的资产引用和请求。 */
   async contentAlbumEntryWrite(args: { kind: string; asset_id: string; caption?: string; meaning?: string; carry_mode?: string; idempotency_key: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
     // RR2：补注 M 对象身份（同字节别名在 content 限额/携带集按原图归并）；资产缺席如实不带
     let sha256: string | null = null;
     try { sha256 = this.media?.getAsset(args.asset_id).content_sha256 ?? null; } catch { sha256 = null; }
-    const r = await this.contentOps.write({ method: 'POST', path: `/api/v1/content/albums/${encodeURIComponent(args.kind)}/entries`, actor: 'jiaming',
+    const r = await this.contentOps.writeForModel({
+      roomId: ctx.roomId, turnId: ctx.turnId, path: `/api/v1/content/albums/${encodeURIComponent(args.kind)}/entries`,
       body: { asset_id: args.asset_id, caption: args.caption, meaning: args.meaning, ...(sha256 ? { content_sha256: sha256 } : {}), ...(args.carry_mode ? { carry_mode: args.carry_mode } : {}) },
-      headers: { 'idempotency-key': `tool:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}` },
+      idempotencyKey: args.idempotency_key,
     });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: r.body as Record<string, unknown> };
-    if (isUnknownOutcome(r)) return unknownToolResult('ALBUM_ENTRY_UNKNOWN', r);
-    return { ok: false, output: { error_code: 'ALBUM_ENTRY_WRITE_FAILED', detail: JSON.stringify(r.body).slice(0, 300) } };
+    if (r.status === 201 || r.status === 200) return { ok: true, output: { ...(r.body as Record<string, unknown>), state: 'committed' } };
+    return modelWriteFailure(r, args.idempotency_key, 'ALBUM_ENTRY', 'ALBUM_ENTRY_WRITE_FAILED');
   }
 
   async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -167,7 +218,6 @@ export class ContentToolsService {
       }
     }
     this.media.pinAssetForOperation({ assetId: asset.id, operationKey: opKey });
-    const { contentForward } = await import('../../integrations/content/client.ts');
     try {
       const res = await contentForward(this.contentClient, {
         method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
@@ -209,13 +259,77 @@ export class ContentToolsService {
   }
 }
 
-
-/** RF02（复审 20261106）：未知结果 ≠ 确定失败——协调器已持久意图，将以原身份收口。
- *  以普通失败文案回给模型会诱导换新身份重做（实际已提交→重复发帖）。 */
-function isUnknownOutcome(r: { status: number; body: unknown }): boolean {
-  const code = (r.body as { error?: { code?: string } } | null)?.error?.code;
-  return r.status === 504 && code === 'content_write_unknown';
+function postBodyCursor(id: string, revision: number, offset: number): string {
+  return POST_BODY_CURSOR_PREFIX + Buffer.from(JSON.stringify([id, revision, offset])).toString('base64url');
 }
-function unknownToolResult(errorCode: string, r: { status: number; body: unknown }): ToolExecResult {
-  return { ok: false, output: { error_code: errorCode, detail: '提交结果未知：操作已持久，将以原身份恢复收口；用同一 idempotency_key 重试安全，勿换新键重做。', raw_status: r.status } };
+
+function decodePostBodyCursor(cursor: string): { id: string; revision: number; offset: number } | null {
+  if (cursor.length > 1024) return null;
+  try {
+    const decoded: unknown = JSON.parse(Buffer.from(cursor.slice(POST_BODY_CURSOR_PREFIX.length), 'base64url').toString('utf8'));
+    if (!Array.isArray(decoded) || decoded.length !== 3) return null;
+    const [id, revision, offset] = decoded;
+    if (typeof id !== 'string' || !id || id.length > 128
+        || !Number.isSafeInteger(revision) || revision < 1 || !Number.isSafeInteger(offset) || offset < 0) return null;
+    return { id, revision, offset };
+  } catch { return null; }
+}
+
+function projectPostPreview(post: PostListItem): PostListItem {
+  // Also cap the response from a Content process that predates body_preview.
+  const body = typeof post.body === 'string' ? [...post.body].slice(0, CONTENT_POST_PREVIEW_CHARS).join('') : post.body;
+  if (post.body_truncated || body !== post.body) {
+    return { ...post, body, body_truncated: true, body_cursor: postBodyCursor(post.id, post.revision, 0) };
+  }
+  return post;
+}
+
+function postResultBytes(output: Record<string, unknown>): number {
+  // The provider request carries compact tool JSON as a JSON-encoded string.
+  return Buffer.byteLength(JSON.stringify(JSON.stringify(output)));
+}
+
+function postsReadFailed(detail: string): ToolExecResult {
+  return { ok: false, output: { error_code: 'CONTENT_POSTS_READ_FAILED', detail } };
+}
+
+function postsBudgetLimited(cursor?: string): ToolExecResult {
+  return { ok: false, output: { error_code: 'CONTENT_POSTS_RESULT_BUDGET', retry_cursor: cursor ?? null,
+    detail: '当前请求余量不足以交付这一页。请在有更多上下文余量的回合沿用原游标读取。' } };
+}
+
+function modelWriteFailure(
+  result: { status: number; body: unknown },
+  operationKey: string,
+  codePrefix: string,
+  failureCode = `${codePrefix}_FAILED`,
+): ToolExecResult {
+  const code = (result.body as { error?: { code?: string } } | null)?.error?.code;
+  if (code === 'content_write_confirmation_pending') {
+    return { ok: false, output: {
+      error_code: `${codePrefix}_CONFIRMATION_PENDING`, commit_status: 'committed',
+      idempotency_key: operationKey, retryable: true,
+      detail: '提交已成功，回执待核。可以在下一回合用回执中的 idempotency_key 和原参数核回。',
+    } };
+  }
+  if (code === 'content_write_unknown') {
+    return { ok: false, output: {
+      error_code: `${codePrefix}_UNKNOWN`, commit_status: 'unknown',
+      idempotency_key: operationKey, retryable: true,
+      detail: '操作已受理，结果待核。可以在下一回合用回执中的 idempotency_key 和原参数核回。',
+    } };
+  }
+  if (code === 'idempotency_conflict' || code === 'content_operation_conflict') {
+    return { ok: false, output: {
+      error_code: 'IDEMPOTENCY_CONFLICT', idempotency_key: operationKey,
+      detail: '同一幂等键已对应另一组参数。使用原参数可核回，独立的新操作使用新键。',
+    } };
+  }
+  if (code === 'content_legacy_key_ambiguous' || code === 'legacy_receipt_unresolved') {
+    return { ok: false, output: {
+      error_code: 'CONTENT_OPERATION_IDENTITY_UNCONFIRMED', idempotency_key: operationKey,
+      detail: '无法唯一确认该业务键对应的历史操作。请先核对已有对象。',
+    } };
+  }
+  return { ok: false, output: { error_code: failureCode, detail: JSON.stringify(result.body).slice(0, 300) } };
 }

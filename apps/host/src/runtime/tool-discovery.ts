@@ -19,6 +19,55 @@ export function buildDeferredTools(): HostToolSpec[] {
     {type:'function',function:{name:'tool_invoke',description:'调用工具。可直接按目录名称和 arguments 调用（参数以 tool_define 读取的完整定义为准）；若此前读过该工具的定义，携带返回的 definition_id 以便版本核对。',parameters:{type:'object',properties:{name:{type:'string'},definition_id:{type:'string',description:'可选：沿已读定义调用时携带（tool_define 返回值）；缺省=直接调用'},arguments:{type:'object',additionalProperties:true}},required:['name','arguments'],additionalProperties:false}}},
   ];
 }
+/** Remove the retired binding surface from newly advertised tools. The
+ * persisted schema still proves what an earlier request actually delivered. */
+export function modelDefinitionAfterBindingRetirement(spec: HostToolSpec): HostToolSpec | null {
+  const definition = spec.function;
+  if (definition.name === 'memory_source_bind') return null;
+  const properties = definition.parameters.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties) return spec;
+  if (definition.name === 'memory_hold') {
+    const { source_ranges, source_selections, event_source_ranges, ...remaining } = properties;
+    if (!source_ranges && !source_selections && !event_source_ranges && !definition.description.includes('memory_source_bind')) return spec;
+    return {
+      ...spec,
+      function: {
+        ...definition,
+        description: '直接保存一件事为正式记忆。原文关联由后台任务处理。',
+        parameters: { ...definition.parameters, properties: remaining },
+      },
+    };
+  }
+  if (definition.name !== 'memory_correct') return spec;
+
+  const action = properties.action;
+  if (!action || !Array.isArray(action.enum) || !action.enum.includes('binding')) return spec;
+  const { binding_id: _removed, ...remaining } = properties;
+  const correction = remaining.correction_action;
+  if (correction && typeof correction.description === 'string') {
+    remaining.correction_action = { ...correction, description: correction.description.replace('/binding/', '/') };
+  }
+  return {
+    ...spec,
+    function: {
+      ...definition,
+      description: definition.description
+        .replace('错误的关联或绑定', '错误的关联')
+        .replace('、binding（原文区间绑定纠错——同两动作）', '')
+        .replace('或原文绑定', '')
+        .replace('、binding、', '、'),
+      parameters: {
+        ...definition.parameters,
+        properties: { ...remaining, action: { ...action, enum: action.enum.filter(value => value !== 'binding') } },
+      },
+    },
+  };
+}
+
+export function modelToolsAfterBindingRetirement(specs: readonly HostToolSpec[]): HostToolSpec[] {
+  return specs.flatMap(spec => modelDefinitionAfterBindingRetirement(spec) ?? []);
+}
+
 export type WindowToolset = { protocol:'legacy'|'deferred'; tools:HostToolSpec[]; catalog:HostToolSpec[]; groups:Record<string,ToolGroup>; initialText:string|null; legacyGroups:boolean };
 export function storedToolset(db:Db,windowId:string):WindowToolset|null {
   if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_toolsets'").get())return null;

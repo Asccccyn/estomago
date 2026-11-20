@@ -26,6 +26,7 @@ export type ToolCoverageProjection = (pending: readonly CoverageRange[]) => {
 
 export type ToolExecContext = {
   signal?: AbortSignal; // Host-owned cancellation, never a model parameter.
+  remainingResultBytes?: () => number; // Host estimate for the next continuation; never a model parameter.
   roomId: string;
   backgroundRunId?: string | null; // EXEC_V1 §04.6.2：后台回合上下文（background_complete/noop 记账用）
   windowId: string;

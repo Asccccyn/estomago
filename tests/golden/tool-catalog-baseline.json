@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "971751a8193fd563f64589607f4c8b6b4c4f3408",
+  "baselineCommit": "22b48f98a4a4a3099bdfb310922d719cfa5b092d",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -110,7 +110,7 @@
     "wishstar_accept_offer": "td_fe061dcebb331f5a2c2a00ce",
     "context_review_complete": "td_80e678ecb6056243f20c0d26",
     "memory_words_write": "td_40f60d2daf1bee6f4ae8139b",
-    "conversation_archive": "td_9d83efbbb261155d73df3511",
+    "conversation_archive": "td_8f65c6f3610b6f1171135d4f",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
     "image_generate": "td_07d95a84bbbb2855276a14f8",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
@@ -119,7 +119,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_249b4a683b8cc293ef4a3163"
   },
-  "toolsSha256": "98914ab5adb0914a8a0b57307206bebdb636e8abbc2cbd883ff2cf084c57ccdf",
+  "toolsSha256": "673fd1aa052e66761daf59954570ac76bc517a459db1dd5b0a5831b1eedc4fb0",
   "tools": [
     {
       "type": "function",
@@ -2437,6 +2437,12 @@
             "note": {
               "type": "string",
               "description": "可选说明（你的原话，原样保存）"
+            },
+            "client_operation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "可选的操作标识。重试沿用原定位参数和同一个值。明确要为同一选区另建一份存档时，提供新的值。"
             }
           },
           "required": [

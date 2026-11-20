@@ -364,7 +364,7 @@ export class MemoryToolsService {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
       return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH' } };
     }
-    this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id);
+    this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id, receipt.commit_observed_at);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
     try {
       this.checkpoint.advance(ctx.windowId, {
@@ -1253,7 +1253,7 @@ export class MemoryToolsService {
         stillUnknown++; // 回执错配：不可判定
         continue;
       }
-      this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id);
+      this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id, r.receipt.commit_observed_at);
       if (e.seenSequence !== null) {
         try {
           this.checkpoint.advance(windowId, {

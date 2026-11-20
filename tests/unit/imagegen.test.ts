@@ -687,3 +687,40 @@ test('IG-19 (P2-3): 完整 429 空正文/502 纯文本=明确错误可重试；2
     assert.equal(hits, 1, '未确认不自动重发（上游累计 1 次）');
   } finally { upstream.close(); }
 });
+
+test('IG-20：停止信号到达在途生成，仍收到的图片可保存，续调用只补发布', async () => {
+  const { MessageService } = await import('../../apps/host/src/messages/service.ts');
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary', null);
+  const controller = new AbortController();
+  let dispatched!: (signal: AbortSignal) => void;
+  let respond!: () => void;
+  const sent = new Promise<AbortSignal>(resolve => { dispatched = resolve; });
+  const delivery = new Promise<void>(resolve => { respond = resolve; });
+  const f = fixture(async (body, signal) => {
+    assert.ok(signal);
+    dispatched(signal);
+    await delivery;
+    return okTransport(body, signal);
+  }, { messages });
+  const opKey = imageGenOpKey(CTX1, 'op-20');
+  const args = { opKey, prompt: '画海', deliver: 'send' as const, roomId: 'primary', turnId: 'original' };
+  const pending = f.svc.generateAndStore({ ...args, signal: controller.signal });
+  const supplierSignal = await sent;
+  controller.abort();
+  assert.ok(supplierSignal.aborted);
+  respond();
+  const stopped = await pending;
+  assert.equal(stopped.ok, false);
+  if (stopped.ok) return;
+  assert.equal(stopped.code, 'IMAGEGEN_PUBLISH_CANCELLED');
+  assert.ok(stopped.saved_asset_id);
+  const key = `tool-imagegen:${opKey}:publish`;
+  assert.equal(db.prepare('SELECT turn_id FROM messages WHERE client_message_id=?').get(key), undefined);
+  const resumed = await f.svc.generateAndStore({ ...args, turnId: 'current' });
+  assert.equal(resumed.ok, true);
+  if (!resumed.ok) return;
+  assert.equal(resumed.asset_id, stopped.saved_asset_id);
+  assert.equal(db.prepare('SELECT turn_id FROM messages WHERE client_message_id=?').get(key)?.turn_id, 'current');
+  assert.equal(f.calls(), 1);
+});

@@ -104,7 +104,7 @@ export function registerVoiceCapabilities(registry: { register(d: CapabilityDesc
       quote: (db) => quoteBackgroundTool(db, 'chat_send_voice'),
       parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string },
       run: (input, ctx) => sender.send(input as never, ctx) as never,
-      toModel: (value) => value,
+      toModel: ({ sequence: _sequence, ...value }) => value,
     });
   }
   const calls = new VoiceCallService(deps);

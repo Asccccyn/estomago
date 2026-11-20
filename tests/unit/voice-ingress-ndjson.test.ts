@@ -29,6 +29,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { handleVoiceChatStream } from '../../apps/host/src/server/http.ts';
+import { endCallConfirmed } from '../../apps/host/src/modules/voice/call-service.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -112,7 +113,9 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
   const root = tempRoot('r4-2-');
   process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
   let n = 0;
-  const ctx = compose(root, async () => {
+  const dispatched: Array<Array<{ role: string; content: string }>> = [];
+  const ctx = compose(root, async (payload) => {
+    dispatched.push(payload.messages as Array<{ role: string; content: string }>);
     n += 1;
     return { status: 200, headers: new Map(), body: frameStream(
       sse({ id: `g${n}`, choices: [{ delta: { content: '[12' } }] }) +
@@ -143,6 +146,39 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
     // 轨迹同窗：助手正文进入窗口轨迹（与文字轮同链产物）
     const trajRow = ctx.db.prepare('SELECT messages_json FROM window_trajectories ORDER BY updated_at DESC LIMIT 1').get() as { messages_json: string } | undefined;
     assert.ok(trajRow && trajRow.messages_json.includes('电话回复正文'), '助手正文入窗口轨迹（同窗，不另造历史）');
+
+    const phoneFact = '这一轮是你和宿主用户在通电话。';
+    const firstInput = dispatched[0]!.at(-1)!;
+    assert.equal(firstInput.role, 'user');
+    assert.match(firstInput.content, /\[program_fact\]\n这一轮是你和宿主用户在通电话。/);
+    assert.match(firstInput.content, /她会在同一通电话里实时听到/);
+    assert.match(firstInput.content, /通话回复无需另外发送语音条/);
+    assert.ok(firstInput.content.endsWith('[user_input]\n电话里说的话'));
+
+    const sendTyped = async (content: string, clientMessageId: string) => {
+      const typed = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId });
+      ctx.supervisor.enqueue(typed.turnId);
+      await ctx.supervisor.waitIdle();
+      return dispatched.at(-1)!.at(-1)!.content;
+    };
+    const typedInCall = await sendTyped('电话期间键入的文字', 'voice:synthetic-typed-id');
+    assert.ok(typedInCall.endsWith('[user_input]\n电话期间键入的文字'));
+    assert.ok(!typedInCall.includes(phoneFact), '客户端消息 ID 无法把文字轮变成电话输出');
+
+    const second = new FakeRes();
+    const secondFinished = once(second, 'finish');
+    await handleVoiceChatStream(REQ({ conversation_id: 'c1', call_id: 'call-1', turn_id: 'st-2', text: '电话里说的第二句' },
+      { authorization: 'Bearer tok' }), second as never, ctx.deps);
+    await secondFinished;
+    assert.ok(dispatched.at(-1)!.at(-1)!.content.includes(phoneFact));
+    assert.ok(second.lines.some((line) => JSON.parse(line).type === 'delta'));
+    assert.ok(second.lines.some((line) => JSON.parse(line).type === 'done'));
+
+    assert.equal(endCallConfirmed(ctx.db, 'call-1').factRegistered, true);
+    const typedAfterCall = await sendTyped('挂断后键入的文字', 'typed-after-call');
+    assert.ok(typedAfterCall.includes('语音通话已结束。本轮回到文字聊天。'));
+    assert.ok(!typedAfterCall.includes(phoneFact));
+    assert.deepEqual(dispatched.at(-1)![dispatched[0]!.length - 1], firstInput, '已派发的真实电话轮原样留在同窗历史');
   } finally {
     delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
     ctx.close();
