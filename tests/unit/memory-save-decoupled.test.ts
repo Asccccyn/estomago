@@ -34,9 +34,10 @@ test('零已读、无来源收据直接保存；以后绑定失败不撤销或�
   assert.equal(f.syncs(), 0);
   assert.equal(f.calls[0]!.payload.our_words, undefined);
   assert.equal(f.calls[0]!.payload.event_source_ranges, undefined);
+  // 包4裁定6：手工绑定已退出模型面——旧名称被拒，同样不影响已保存记忆
   const bind = await f.tools.execute('memory_source_bind', { memory_id: 'saved-1', start_seq: 1, end_seq: 1 }, f.ctx);
   assert.equal(bind.ok, false);
-  assert.equal(bind.output.error_code, 'EVENT_SOURCE_NOT_SYNCED');
+  assert.equal(bind.output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
   assert.equal(f.calls.length, 1, '不重新写入记忆');
   assert.equal((f.db.prepare('SELECT state FROM tool_side_effects').get() as any).state, 'committed');
 });

@@ -1,4 +1,4 @@
-// modules/memory/module.ts（P04.2-4）：memory/plan/episode 域能力登记（14 项）。
+// modules/memory/module.ts（P04.2-4）：memory/plan/episode 域能力登记（包4 后 18 项：memory_source_bind 已退出模型面）。
 // 定义逐字正本；投影=projectMemoryToolResult（owner 分发，键序/白名单不变）；
 // quote 沿既有证据（memory_read_full/memory_i_read/plans_read 在 verified-free 名单）；
 // memoryOnly 全 true（D39 精确清单内）；label/silent 沿原值。
@@ -18,14 +18,14 @@ export function memoryHoldDefinition(): HostToolSpec {
     type: 'function',
     function: {
       name: 'memory_hold',
-      description: '直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成；需要时另用 memory_source_bind 绑定原文、memory_words_write 补写原话，也可由她以后补绑定。'+HOLD_MOOD_RULE,
+      description: '直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成——原文关联由后台任务自动处理（无需你绑定），她也可以以后补充。'+HOLD_MOOD_RULE,
       parameters: {
         type: 'object',
         properties: {
           original_title: { ...HOLD_INPUT.properties.original_title, description:'记忆标题（长度按 Unicode 码点计）' },
           categories: {type:HOLD_INPUT.properties.categories.type,items:HOLD_INPUT.properties.categories.items,minItems:1,description:HOLD_INPUT.properties.categories.description},
           text: { ...HOLD_INPUT.properties.text, description: HOLD_INPUT.properties.text.description },
-          plan_ids: { ...HOLD_INPUT.properties.plan_ids,description:'plan 分类必填；使用 plans_read 或已有成功回执的 plan_id。Existing server-issued plan IDs only — never invent IDs; create the plan first if needed; omit if no valid ID is available.' },
+          plan_ids: { ...HOLD_INPUT.properties.plan_ids,description:'仅当 categories 选了 plan 分类时必填：真实服务端 plan_id（plans_read 或已有成功回执中的）。只能用已存在的真实 ID，不得编造；没有合适的真实计划时不要选 plan 分类（不必为分类新建计划）。' },
           creation_mode: { ...HOLD_INPUT.properties.creation_mode },
           memory_date: { type:'string', description:HOLD_INPUT.properties.memory_date.description },
           date_confidence: { ...HOLD_INPUT.properties.date_confidence },
@@ -58,21 +58,6 @@ export const MEMORYUPDATE_DEFINITION: HostToolSpec = {
         categories: { type: 'array', items: { type: 'string' }, minItems: 1, description: '修订后的分类（省略=保持不变）' },
         memory_date: { type: 'string', description: '修订后的事件日期（省略=保持不变）' },
         date_confidence: { type: 'string', description: '修订后的日期置信（省略=保持不变）' },
-      },
-    },
-  },
-};
-
-export const MEMORYSOURCEBIND_DEFINITION: HostToolSpec = {
-  type: 'function', function: {
-    name: 'memory_source_bind',
-    description: '可选：给已有记忆补绑定一段聊天原文，不创建或改写记忆正文。按真实消息序号指定闭区间；多段分别绑定。无需先调用 conversation_read；不确定范围时可先读，也可留给她以后补绑。绑定失败不影响已保存记忆，不能因此重新写记忆。',
-    parameters: {
-      type: 'object', additionalProperties: false, required: ['memory_id', 'start_seq', 'end_seq'],
-      properties: {
-        memory_id: { type: 'string', minLength: 1, description: '已有记忆 ID，来自写入回执或查询结果' },
-        start_seq: { type: 'integer', minimum: 1, description: '当前会话原文起始消息序号（含）' },
-        end_seq: { type: 'integer', minimum: 1, description: '当前会话原文结束消息序号（含）' },
       },
     },
   },
@@ -271,11 +256,12 @@ export const MEMORYOPEN_DEFINITION: HostToolSpec = {
   };
 
 const memoryEditFields: Record<string, any> = {
-          correction_action: { type: 'string', enum: ['remove_wrong_binding', 'replace_wrong_binding'], description: 'relation/word_source/binding/plan_link/i_relation 必填：remove_wrong_binding=撤错误 / replace_wrong_binding=换正确' },
+          // 包4（2026-11-18）：action=binding 随手工绑定退出模型面——创建/替换/撤销原文绑定
+          // 的同义写路径不再经 correct 开放；宿主用户管理与后台绑定保留在各自入口。
+          correction_action: { type: 'string', enum: ['remove_wrong_binding', 'replace_wrong_binding'], description: 'relation/word_source/plan_link/i_relation 必填：remove_wrong_binding=撤错误 / replace_wrong_binding=换正确' },
           relation_id: { type: 'string', minLength: 1, description: 'relation 从 action=relations 取得；i_relation 从 memory_i_read(what=item_history,item_id=…) 的修订关系取得 relation_id' },
-          word_id: { type: 'string', minLength: 1, description: 'word_source/word_revise 必填：话语 ID' },
+          word_id: { type: 'string', minLength: 1, description: 'word_source 必填：话语 ID' },
           expected_source_version: { type: 'integer', minimum: 0, description: 'word_source 必填：来源换代计数 CAS（读取结果里有）' },
-          binding_id: { type: 'string', minLength: 1, description: 'binding 必填：原文绑定 ID' },
           link_id: { type: 'string', minLength: 1, description: 'plan_link 必填：要纠错的计划链接 ID（plans_read(plan_id=…,include_links=true) 的 links 列表里有）' },
           replacement: { type: 'object', description: 'replace_wrong_binding 时必填：正确目标' },
           max_depth: { ...TRACE_INPUT.properties.max_depth,description:TRACE_INPUT.properties.max_depth.description },
@@ -284,23 +270,23 @@ const memoryEditFields: Record<string, any> = {
           to_memory: { type: 'string', minLength: 1, description: 'link 必填：终点记忆 ID' },
           relation_type: { ...RELATION_INPUT.properties.relation_type, description: 'link 必填：关系类型' },
           custom_label: { type: 'string', maxLength: 100, description: 'link 可选：custom 类型的自定义标签' },
-          memory_id: { type: 'string', minLength: 1, description: 'relations/trace/word_add/word_revise 必填：目标记忆 ID' },
+          memory_id: { type: 'string', minLength: 1, description: '目标记忆 ID' },
           refs: {
             type: 'array', minItems: 1, maxItems: 10,
             items: QUOTE_SELECTION,
-            description: 'word_add/word_revise 必填：勾选的新原话（按消息序号和句子范围）',
+            description: '已核对的原话引语列表（逐字锚点）',
           },
 };
-const correctionActions = ['relation','word_source','binding','plan_link','i_relation','corrections'];
+const correctionActions = ['relation','word_source','plan_link','i_relation','corrections'];
 export const MEMORYCORRECT_DEFINITION: HostToolSpec = {
-  type:'function',function:{name:'memory_correct',description:'纠正错误的关联、话语来源或原文绑定，读取纠错历史。relation、word_source、binding、plan_link、i_relation 需 correction_action；corrections 读台账。纠错保留审计；普通补话用 memory_words_write，建立或读取记忆关系用 memory_relations。',parameters:{
-    type:'object',properties:{...Object.fromEntries(['correction_action','relation_id','word_id','expected_source_version','binding_id','link_id','replacement','note'].map(k=>[k,memoryEditFields[k]])),relation_id:{...memoryEditFields.relation_id,description:'relation 从 memory_relations(action=list) 取关系 ID；i_relation 从 memory_i_read(what=item_history,item_id=…) 的修订关系取 ID'},action:{type:'string',enum:correctionActions}},required:['action'],additionalProperties:false,
+  type:'function',function:{name:'memory_correct',description:'纠正错误的关联或话语来源，读取纠错历史。relation、word_source、plan_link、i_relation 需 correction_action；corrections 读台账。纠错保留审计；普通补话用 memory_words_write，建立或读取记忆关系用 memory_relations。',parameters:{
+    type:'object',properties:{...Object.fromEntries(['correction_action','relation_id','word_id','expected_source_version','link_id','replacement','note'].map(k=>[k,memoryEditFields[k]])),relation_id:{...memoryEditFields.relation_id,description:'relation 从 memory_relations(action=list) 取关系 ID；i_relation 从 memory_i_read(what=item_history,item_id=…) 的修订关系取 ID'},action:{type:'string',enum:correctionActions}},required:['action'],additionalProperties:false,
   }},
 };
 export const MEMORYWORDSWRITE_DEFINITION: HostToolSpec = {
-  type:'function',function:{name:'memory_words_write',description:'向已有记忆补写或替换已核对的原话。add 补话；revise 替换一条已存话语。只勾选已读消息，系统逐字录入并解析说话人；缺原文先 conversation_read。目标版本由服务内部读取并 CAS，无需重复获取版本。',parameters:{
-    type:'object',properties:{action:{type:'string',enum:['add','revise']},memory_id:{...memoryEditFields.memory_id,description:'目标记忆 ID，来自 recall/hold 回执'},word_id:{type:'string',minLength:1,description:'revise 必填；memory_read_full 的 our_words 或 memory_recall(channel=words) 返回的 word_id'},refs:{...memoryEditFields.refs,description:'已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间'}},required:['action','memory_id','refs'],additionalProperties:false,
-    allOf:[{if:{properties:{action:{const:'revise'}},required:['action']},then:{required:['word_id']}}],
+  type:'function',function:{name:'memory_words_write',description:'向已有记忆补写或替换已核对的原话。add 补存一至十条原话。revise 替换一条已存的话，填 word_id，并在 refs 中只给一条新引语。refs 给逐字引语锚点：必须与本次已见原文逐字一致，系统逐字核对并解析说话人。当前上下文里已看到的对话直接给引语即可，无需先读取；真正没见过的旧材料才先用 conversation_read 取回。目标版本由服务内部读取并 CAS，无需重复获取版本。',parameters:{
+    type:'object',properties:{action:{type:'string',enum:['add','revise']},memory_id:{...memoryEditFields.memory_id,description:'目标记忆 ID，来自 recall/hold 回执'},word_id:{type:'string',minLength:1,description:'revise 必填；memory_read_full 的 our_words 或 memory_recall(channel=words) 返回的 word_id'},refs:{...memoryEditFields.refs,description:'已核对的原话引语（各 1-300 字、与已见原文逐字一致；同一引语出现在多处时给 speaker 消歧，仍不唯一会返回边界候选）'}},required:['action','memory_id','refs'],additionalProperties:false,
+    allOf:[{if:{properties:{action:{const:'revise'}},required:['action']},then:{required:['word_id'],properties:{refs:{type:'array',maxItems:1}}}}],
   }},
 };
 export const MEMORYRELATIONS_DEFINITION: HostToolSpec = {
@@ -357,7 +343,7 @@ export const EPISODEAPPLY_DEFINITION: HostToolSpec = {
       // R05（复审 2026-10-07）：事件写入口真正可达——五动作；operation_id
       // 由宿主派生（同调用重试同 op，服务端按 op 幂等），模型不能自编
       name: 'episode_apply',
-      description: '操作语义事件线：start（开始跟踪一件事，需 label 与原文引用）、pause（暂停跟踪）、continue（同事件继续，可追加原文引用）、close（完成，需终点与判断依据原文引用）、correct（纠错，需说明理由与判断依据）。事件=数据线（引用原文，不复制正文）。',
+      description: '操作语义事件线：start（开始跟踪一件事，需 label 与原文依据）、pause（暂停跟踪）、continue（同事件继续，可追加原文依据）、close（完成，需终点与判断依据）、correct（纠错，需说明理由与判断依据）。事件=数据线（引用原文，不复制正文）。当前已见对话可直接给起止锚点 anchor_start 和 anchor_end，或给终点 terminal_anchor 和判断依据 decision_anchors，已有合法引用（episode_read 详情或既有回执）也可直接使用——不需要先建记忆、绑定或读取。',
       parameters: {
         type: 'object',
         properties: {
@@ -366,9 +352,13 @@ export const EPISODEAPPLY_DEFINITION: HostToolSpec = {
           label: { type: 'string', minLength: 1, maxLength: 80, description: '仅 start：短标签（≤80 字，导航用）' },
           episode_id: { type: 'string', minLength: 1, maxLength: 256, description: '除 start 外必填；由 episode_read 列表取得 episode_id' },
           expected_revision: { type: 'integer', description: '除 start 外必填：episode_read 详情中的当前修订号（CAS）；冲突时读回，不猜版本' },
-          source_selections: { type: 'array', minItems: 1, maxItems: 16, description: '原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_source_bind 回执里的来源身份' },
-          terminal_source_ref: { type: 'object', description: 'close 必填：截至何处的原文锚点' },
-          decision_source_refs: { type: 'array', minItems: 1, maxItems: 16, description: 'close/correct 必填：判断依据原文引用' },
+          anchor_start: { type: 'object', description: 'start/continue：当前已见对话的起点锚点（与 conversation_archive 同一合同：speaker 宿主用户/char + 该消息正文中一段连续逐字原话）', properties: { speaker: { type: 'string', enum: ['宿主用户', 'char'] }, quote: { type: 'string', minLength: 1, maxLength: 300, description: '逐字原话（1-300 字，来自已见消息正文）' } }, required: ['speaker', 'quote'], additionalProperties: false },
+          anchor_end: { type: 'object', description: 'start/continue：终点锚点；宿主在本次已见范围内解析起止之间（含首尾）全部完整已见的消息为事件来源', properties: { speaker: { type: 'string', enum: ['宿主用户', 'char'] }, quote: { type: 'string', minLength: 1, maxLength: 300, description: '逐字原话（1-300 字）' } }, required: ['speaker', 'quote'], additionalProperties: false },
+          terminal_anchor: { type: 'object', description: 'close 或把事件纠正为 CLOSED 时，给当前已见原文的终点', properties: { speaker: { type: 'string', enum: ['宿主用户', 'char'] }, quote: { type: 'string', minLength: 1, maxLength: 300, description: '逐字原话（1-300 字）' } }, required: ['speaker', 'quote'], additionalProperties: false },
+          decision_anchors: { type: 'array', minItems: 1, maxItems: 16, description: 'close/correct：判断依据的原文锚点（各一条已见消息中的逐字引语）', items: { type: 'object', properties: { speaker: { type: 'string', enum: ['宿主用户', 'char'] }, quote: { type: 'string', minLength: 1, maxLength: 300 } }, required: ['speaker', 'quote'], additionalProperties: false } },
+          source_selections: { type: 'array', minItems: 1, maxItems: 16, description: '既有合法原文引用段（conversation_id+members[source_message_id+content_hash]）——episode_read 详情或既有成功回执中的来源身份，原样使用；当前已见对话不必先取引用，直接用 anchor_start+anchor_end' },
+          terminal_source_ref: { type: 'object', description: 'close 或纠正为 CLOSED 时，可用 episode_read 或已有回执给过的合法终点引用。与 terminal_anchor 二选一' },
+          decision_source_refs: { type: 'array', minItems: 1, maxItems: 16, description: 'close 或 correct 时，可用已有回执给过的合法判断依据引用。与 decision_anchors 二选一' },
           corrected_state: { type: 'string', enum: ['OPEN', 'QUIESCENT', 'CLOSED'], description: '仅 correct：纠正后的状态' },
           note: { type: 'string', maxLength: 500, description: '说明（correct 必填）' },
         },
@@ -411,6 +401,8 @@ export type MemoryModuleDeps = {
   archiveSync?: { drainOnce(): Promise<unknown> } | null;
   /** 包4 §6.2：召回/深读/订正等结果里的说话人标签投影用（身份配置的双方姓名）。 */
   speakerLabels?: import('../../identity/speaker-labels.ts').SpeakerLabels;
+  /** 包4无seq整改：episode 锚点范围解析（注入 archives 的 DBG-04 单一实现，避免模块环）。 */
+  anchorRange?: (roomId: string, seenMessages: ReadonlyArray<{ id: string; revision: number; char_start?: number; char_end?: number }>, start: { speaker: '宿主用户' | 'char'; quote: string }, end: { speaker: '宿主用户' | 'char'; quote: string }) => import('../archives/service.ts').AnchorRangeResolution;
 };
 
 /** 装配入口：memory 域已迁能力。 */
@@ -508,12 +500,8 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     run: (input: Record<string, unknown>, ctx) => svc.episodeGet(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('episode_get', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
-  registry.register(toolCapability({
-    owner: 'memory', id: 'memory_source_bind', baselineOrder: 51, definition: MEMORYSOURCEBIND_DEFINITION,
-    memoryOnlyAllowed: true, label: '绑定记忆原文',
-    run: (input: Record<string, unknown>, ctx) => svc.memorySourceBind(input as never, ctx),
-    toModel: (value) => value as Record<string, unknown>,
-  }));
+  // 包4（2026-11-18）：memory_source_bind 退出char模型面（裁定6）——目录/define/invoke
+  // 不再注册；宿主用户管理与包2午夜后台绑定走各自入口（M 能力与白名单不动，C1 见对照报告）。
   registry.register(toolCapability({owner:'memory',id:'memory_words_write',baselineOrder:49,definition:MEMORYWORDSWRITE_DEFINITION,memoryOnlyAllowed:true,label:'补写原话',
     quote:db=>quoteBackgroundTool(db,'memory_correct'),
     run:(input:Record<string,unknown>,ctx)=>svc.memoryCorrect({...input,action:input.action==='add'?'word_add':'word_revise'},ctx),

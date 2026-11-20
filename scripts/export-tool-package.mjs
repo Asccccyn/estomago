@@ -8,6 +8,8 @@ import {TOOL_DATA_BOUNDARY_RULE} from '../apps/host/src/context/fixed-runtime.ts
 import {Host} from '../apps/host/src/app-context.ts';
 import {buildConfig} from '../apps/host/src/config/schema.ts';
 import {freezeWindowTools,storedToolset,definitionId,buildDeferredTools} from '../apps/host/src/runtime/tool-discovery.ts';
+import {RESIDENT_TOOL_HEADING} from '../apps/host/src/runtime/tool-initial-visible.ts';
+import {toolCatalogIntent} from '../apps/host/src/runtime/tool-catalog-search.ts';
 
 const output=process.argv[2];
 if(!output || output.startsWith('--'))throw Error('Pass an output directory');
@@ -22,19 +24,25 @@ try{
  freezeWindowTools(host.db,'synthetic-package',tools,'deferred',registry.currentGroups());
  const snapshot=storedToolset(host.db,'synthetic-package');
  const sourceCommit=execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
- const matrix=registry.listByBaselineOrder().map(d=>({name:d.id,owner:d.owner,group:d.legacyOnly?'M':snapshot.groups[d.id],memory_only:d.memoryOnlyAllowed,...(d.replacedBy?{replaced_by:d.replacedBy}:{}),definition_id:definitionId(d.definition())}));
+ const matrix=registry.listByBaselineOrder().map(d=>({
+   name:d.id,owner:d.owner,group:d.legacyOnly?'M':snapshot.groups[d.id],memory_only:d.memoryOnlyAllowed,
+   intent:toolCatalogIntent(d.id),...(d.replacedBy?{replaced_by:d.replacedBy}:{}),definition_id:definitionId(d.definition()),
+ }));
  const discovery=buildDeferredTools();
- const split=snapshot.initialText.indexOf('\n[tools/deferred');
+ const initialText=snapshot.initialText??'';
+ const residentStart=initialText.indexOf(RESIDENT_TOOL_HEADING+'\n');
+ const directoryText=residentStart<0?initialText:initialText.slice(0,residentStart);
+ const residentText=residentStart<0?'':initialText.slice(residentStart);
  const bytes={all_definition_json:Buffer.byteLength(JSON.stringify(tools),'utf8'),
-   initial_text:Buffer.byteLength(snapshot.initialText,'utf8'),
-   common_definitions_text:Buffer.byteLength(split<0?snapshot.initialText:snapshot.initialText.slice(0,split),'utf8'),
-   deferred_index_text:split<0?0:Buffer.byteLength(snapshot.initialText.slice(split),'utf8'),
+   initial_text:Buffer.byteLength(initialText,'utf8'),
+   common_definitions_text:Buffer.byteLength(residentText,'utf8'),
+   deferred_index_text:Buffer.byteLength(directoryText,'utf8'),
    discovery_json:Buffer.byteLength(JSON.stringify(discovery),'utf8'),stable_rule_increment:Buffer.byteLength(TOOL_DATA_BOUNDARY_RULE+'\n','utf8'),tokenizer:null};
  bytes.model_tool_package=bytes.initial_text+bytes.discovery_json+bytes.stable_rule_increment;
  const artifact={synthetic:true,source_commit:sourceCommit,assembly:'Host.create (not started)',matrix,bytes,stable_rules:[TOOL_DATA_BOUNDARY_RULE],snapshot};
  fs.writeFileSync(path.join(output,'tool-package.json'),JSON.stringify(artifact,null,2)+'\n');
- fs.writeFileSync(path.join(output,'initial-tools.txt'),snapshot.initialText+'\n');
- fs.writeFileSync(path.join(output,'tool-matrix.md'),'| 工具 | 分组 | 通话 memory_only | 旧名去向 |\n| --- | --- | --- | --- |\n'+matrix.map(d=>`| ${d.name} | ${d.group} | ${d.memory_only} | ${d.replaced_by??''} |`).join('\n')+'\n');
+ fs.writeFileSync(path.join(output,'initial-tools.txt'),initialText+'\n');
+ fs.writeFileSync(path.join(output,'tool-matrix.md'),'| 工具 | 分组 | 通话 memory_only | 旧名去向 | 用途 |\n| --- | --- | --- | --- | --- |\n'+matrix.map(d=>`| ${d.name} | ${d.group} | ${d.memory_only} | ${d.replaced_by??''} | ${d.intent??''} |`).join('\n')+'\n');
  const baseline=JSON.parse(fs.readFileSync(new URL('../tests/fixtures/window-tools-before-autonomy.json',import.meta.url),'utf8'));
  const old=new Map(baseline.catalog.map(spec=>[spec.function.name,spec]));
  const descriptions=[],structures=[];

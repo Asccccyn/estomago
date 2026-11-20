@@ -40,9 +40,11 @@ test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪�
  // 伪造/过期 definition_id=版本不符，如实拒绝（冻结版本校验保留）
  const forged=await f.tools.execute('tool_invoke',{name:'memory_i_read',definition_id:'td_deadbeef',arguments:{what:'emotion'}},f.ctx);
  assert.equal(forged.output.error_code,'TOOL_DEFINITION_STALE');
- // define 交付仍工作（可选说明，不是 unlock）；B 段交付后 already_available
+ // 按需项首次 define 返回完整 schema；常驻的简明用法亦不冒充完整定义
  f.persist([{role:'system',content:set.initialText}]);
- assert.equal((await f.tools.execute('tool_define',{name:'memory_i_read'},f.ctx)).output.already_available,true);
+ const definition = (await f.tools.execute('tool_define',{name:'memory_i_read'},f.ctx)).output;
+ assert.equal(definition.already_available,undefined);
+ assert.ok(definition.parameters);
  // D 组工具不经 define 直接执行（真实断言——替换旧恒真 `!==false||true`）
  const direct=await f.tools.execute('tool_invoke',{name:'memory_correct',arguments:{action:'corrections'}},f.ctx);
  assert.equal(direct.ok,true,'D 组工具未读定义直接执行——阅读与执行解耦');
@@ -57,10 +59,20 @@ test('T 可信任务附加与 define 共用已见谓词；真正完成仍核验�
  f.persist(messages);
  // P6/U01：未附带任务上下文也直接执行——资格核验由 review 活动检查承载（下一行）
  f.persist(messages,task);
- assert.equal((await f.tools.execute('tool_define',{name:task.name},f.ctx)).output.already_available,true);
+ f.db.prepare("UPDATE provider_requests SET purpose='pre_rotate_review' WHERE id=?").run(f.ctx.requestId);
+ const scopedContext = {...f.ctx,turnId:null,purpose:'pre_rotate_review',activeReviewId:review.id} as const;
+ const ordinaryCatalog = await f.tools.execute('tool_catalog',{},f.ctx);
+ assert.ok((ordinaryCatalog.output.tools as Array<{ name: string }>).some(item => item.name === 'memory_hold'));
+ assert.ok(!(ordinaryCatalog.output.tools as Array<{ name: string }>).some(item => item.name === task.name || item.name === 'background_complete'));
+ assert.equal((await f.tools.execute('tool_catalog',{query:task.name},f.ctx)).output.state,'no_match');
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},f.ctx)).output.error_code,'TOOL_NOT_IN_ALLOWLIST');
+ const scopedCatalog = await f.tools.execute('tool_catalog',{query:task.name},scopedContext);
+ assert.equal((scopedCatalog.output.results as Array<{ name: string }>)[0]?.name,task.name);
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},scopedContext)).output.already_available,true);
  assert.equal((await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'})).output.error_code,'REVIEW_NOT_ACTIVE');
- const result=await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'},{...f.ctx,purpose:'pre_rotate_review',activeReviewId:review.id});
+ const result=await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'},scopedContext);
  assert.equal(result.ok,true,JSON.stringify(result));assert.equal(f.reviews.get(review.id)!.status,'completed');
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},scopedContext)).output.error_code,'TOOL_NOT_IN_ALLOWLIST');
 });
 
 test('旧窗旧名/动作沿同一 handler 执行一次；新窗目录无重复旧入口，费用键保留',async t=>{

@@ -127,13 +127,12 @@ test('F02（DBG-05 后合同）：A 段=身份正本+运行规则正本——I �
 });
 
 test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不再发送', async () => {
-  // soft=800（首轮 ~300 不触发换窗）；safeInput=1000（工具参数膨胀后续轮 >1000 → 拦截）
+  // 只要求首请求已派发，工具回执之后的下一请求被容量硬门阻断。
   const log: PayloadLog = [];
-  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
+  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(1_400) }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 47030 /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批B：A 段去 I 与重复规则片段后首轮缩小，硬门校准随之下调（批A曾 47050） */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* RT01 后再重标定：D 组完整定义随窗预送后首轮可容纳、携带大工具结果的续轮仍被硬门拦截；相册重构 P4/P3（+conversation_archive/+image_generate）目录增长后再标定 44k→46.5k；2026-11-10 RR4：media_search +photos/creations scope +290B≈+81 token 再标定 45k→45.1k */ , soft_limit_tokens: 800 } } });
-  const sub = await say(ctx, '触发工具', 't1', T0);
-  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 32_000 /* 合成首请求可发，大工具参数随续轮超过安全输入。 */, soft_limit_tokens: 800 } } });
+  const sub = await say(ctx, '触发工具', 't1', T0);  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };
   assert.equal(att.state, 'failed');
   assert.ok(att.blocked_reason!.includes('CAPACITY_BLOCKED_HARD'), att.blocked_reason ?? '');

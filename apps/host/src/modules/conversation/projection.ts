@@ -17,10 +17,18 @@ const select = (v: any, keys: string[]): Obj => {
 export function projectConversationRead(value: unknown, labels?: SpeakerLabels): Obj {
   const v = objOf(value);
   const out: Obj = { entries: list(v.entries).map((entry: Obj) => {
-    const projected = select(entry, ['seq', 'rev', 'speaker', 'at', 'text', 'fragment', 'unread_parts', 'already_in_window', 'included_in_this_request']);
+    const projected = select(entry, ['seq', 'rev', 'speaker', 'at', 'text', 'voice_transcript', 'fragment', 'unread_parts', 'already_in_window', 'included_in_this_request']);
     if (labels && typeof projected.speaker === 'string') projected.speaker = speakerLabelFor(projected.speaker, labels);
     return projected;
   }) };
+  if (Array.isArray(v.candidates)) {
+    out.candidates = v.candidates.map((candidate: Obj) => {
+      const projected = select(candidate, ['speaker', 'at', 'excerpt', 'voice_transcript', 'cursor']);
+      if (labels && typeof projected.speaker === 'string') projected.speaker = speakerLabelFor(projected.speaker, labels);
+      return projected;
+    });
+  }
+  if (typeof v.missing_archived_revisions === 'number') out.missing_archived_revisions = v.missing_archived_revisions;
   for (const k of ['next_cursor', 'older_cursor', 'newer_cursor']) if (v[k]) out[k] = structuredClone(v[k]);
   return out;
 }

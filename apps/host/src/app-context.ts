@@ -197,6 +197,9 @@ export class Host {
     // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable+complete）。
     // RR4-B：signal 贯穿——作业取消/剩余期限经 SurfacingService 端口传到封存分页读取。
     let quarrelSourceRefsFn: ((conversationId: string, signal?: AbortSignal) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null;
+    // 包4无seq整改（2026-11-18）：episode 锚点范围解析转发——archives 在 memory 之后装配，
+    // 经惰性引用注入同一份 DBG-04 实现（不在 memory 域复制第二套解析）。
+    let anchorRangeFn: import('./modules/archives/service.ts').ArchiveService['resolveAnchorRange'] | null = null;
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
@@ -386,6 +389,7 @@ export class Host {
     // P04.2-4：memory 域（14 工具；同一服务实例供换窗评审恢复窄委托）
     const memoryService = (await import('./modules/memory/module.ts')).registerMemoryCapabilities(capabilityRegistry, {
       db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, speakerLabels,
+      anchorRange: (roomId, seenMessages, start, end) => anchorRangeFn!(roomId, seenMessages, start, end),
     });
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: oidoSources, audio: media, artifacts: media,
@@ -417,6 +421,7 @@ export class Host {
     const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
     registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
     quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
+    anchorRangeFn = (roomId, seenMessages, start, end) => archives.resolveAnchorRange(roomId, seenMessages, start, end);
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,
@@ -464,7 +469,7 @@ export class Host {
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
-      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync, speakerLabels,
+      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync, speakerLabels, archives,
     });
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。

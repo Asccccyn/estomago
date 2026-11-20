@@ -324,7 +324,7 @@ test('pkg4-name conversation_read：entries speaker 投影为宿主用户/char',
   let orCalls = 0;
   const orTransport: OrTransport = async () => {
     orCalls++;
-    if (orCalls === 1) return { status: 200, headers: new Map(), body: frameStream(toolBody('c1', 'call_read', 'conversation_read', { around_seq: 2, before: 1, after: 1 })) };
+    if (orCalls === 1) return { status: 200, headers: new Map(), body: frameStream(toolBody('c1', 'call_read', 'conversation_read', { anchor: { speaker: 'char', quote: '历史第二句' } })) };
     return { status: 200, headers: new Map(), body: frameStream(textBody('c2', '读到了。')) };
   };
   const ctx = compose(root, { orTransport, mariposa });

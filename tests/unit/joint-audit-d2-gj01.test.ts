@@ -7,6 +7,7 @@ import { HOST_BOUNDARY_RULES } from '../../apps/host/src/context/fixed-runtime.t
 import { test } from 'node:test';
 import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -82,7 +83,17 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
     if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const ctx = compose(tempRoot('d2a-'), transport, mariposa, log);
+  const root = tempRoot('d2a-');
+  const ctx = compose(root, transport, mariposa, log);
+  const paths = buildPaths(root);
+  const manifestPath = path.join(paths.configDir, 'identity-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const profile = '合成 Profile';
+  const anchors = '合成记忆锚点';
+  fs.writeFileSync(path.join(paths.identityDir, 'profile-v1.md'), profile);
+  fs.writeFileSync(path.join(paths.identityDir, 'memory-anchors-v1.md'), anchors);
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, approved_source_ref: 'profile-v1.md',
+    approved_source_hash: sha256Hex(profile), memory_anchors_ref: 'memory-anchors-v1.md', memory_anchors_hash: sha256Hex(anchors) }));
   const say = async (id: string) => {
     const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `话${id}`, clientMessageId: id, occurredAt: T0 });
     ctx.supervisor.enqueue(sub.turnId);
@@ -97,6 +108,7 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
   assert.ok(sysText.includes('周末采购'), '含未完成计划');
   assert.ok(!sysText.includes('mood_text'), '渲染为正文，不泄露协议字段名');
   assert.ok(sysText.includes('开心'), '心情标签在场');
+  assert.match(sysText, /合成 Profile[\s\S]*I 当前的话：合成[\s\S]*合成记忆锚点[\s\S]*近三天的记忆[\s\S]*周末采购[\s\S]*运行边界/);
   const second = log[1]!.full as Array<{ role: string; content: unknown }>;
   assert.equal(sysOf(second), sysOf(first), '同窗第二轮 system 块不变（B 已冻结进轨迹正本）');
   ctx.db.close();

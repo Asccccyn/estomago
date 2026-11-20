@@ -2,8 +2,10 @@
 // 合同逐字段对齐 http-core-bridge.ts：POST /v1/chat/stream NDJSON 流（delta*/done|error）。
 // 同窗=supervisor.enqueue 共用串行链/工具/轨迹；断开=stop 同管线；token 未配=503 fail-closed。
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { assembleTestTools, freezeLegacyToolWindow, LEGACY_CONVERSATIONREAD_SPEC, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { once } from 'node:events';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -68,7 +70,7 @@ function compose(root: string, transport: OrTransport) {
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
-  return { db, config, messages, events, supervisor, deps: { config, db, events, messages, supervisor } as never, close() { db.close(); } };
+  return { db, config, messages, events, identity, windows, supervisor, deps: { config, db, events, messages, supervisor } as never, close() { db.close(); } };
 }
 
 const REQ = (obj: unknown, headers: Record<string, string> = {}): never => {
@@ -112,7 +114,11 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
   let n = 0;
   const ctx = compose(root, async () => {
     n += 1;
-    return { status: 200, headers: new Map(), body: frameStream(sse({ id: `g${n}`, choices: [{ delta: { content: '电话回复正文。' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE) };
+    return { status: 200, headers: new Map(), body: frameStream(
+      sse({ id: `g${n}`, choices: [{ delta: { content: '[12' } }] }) +
+      sse({ id: `g${n}`, choices: [{ delta: { content: '3] 电话回复正文。' } }] }) +
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE,
+    ) };
   });
   try {
     const res = new FakeRes();
@@ -126,11 +132,9 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
     });
     await done.catch(() => {});
     assert.equal(res.status, 200, 'NDJSON 200');
-    const evRows = ctx.db.prepare('SELECT kind, turn_id FROM runtime_stream_events ORDER BY sequence').all() as Array<{kind:string;turn_id:string|null}>;
-    const mpRow = ctx.db.prepare("SELECT payload_ref FROM runtime_stream_events WHERE kind='message.published' LIMIT 1").get() as { payload_ref: string };
-    
-    const deltas = lines.filter((l) => l.includes('"type":"delta"'));
-    assert.ok(deltas.length >= 1 && deltas.some((l) => l.includes('电话回复正文')), `lines=${JSON.stringify(lines)} status=${res.status}`);
+    const deltas = lines.map(l => JSON.parse(l) as { type: string; text?: string }).filter(l => l.type === 'delta');
+    assert.equal(deltas.map(l => l.text).join(''), '[123] 电话回复正文。', '新窗通话保留合法编号');
+    assert.equal(assistantContent(ctx.db), '[123] 电话回复正文。', '新窗正式发布保留同一正文');
     assert.ok(lines.some((l) => l.includes('"type":"done"')), 'done 终态');
     // 主聊天留存：用户语音输入与助手正文都入 messages
     const msgs = ctx.db.prepare('SELECT speaker, kind FROM messages WHERE conversation_id=? ORDER BY sequence').all('c1') as Array<{ speaker: string; kind: string }>;
@@ -142,5 +146,47 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
   } finally {
     delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
     ctx.close();
+  }
+});
+
+
+function assistantContent(db: ReturnType<typeof openDatabase>): string | undefined {
+  const row = db.prepare(
+    "SELECT r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.conversation_id = 'c1' AND m.speaker = 'assistant'",
+  ).get() as { content: string } | undefined;
+  return row?.content;
+}
+
+test('旧冻结窗：实际通话轮仍剥除旧编号标记', async () => {
+  const root = tempRoot('r4-legacy-marker-');
+  const previousToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
+  const ctx = compose(root, async () => ({
+    status: 200, headers: new Map(), body: frameStream(
+      sse({ id: 'legacy', choices: [{ delta: { content: '[seq 123] 电话回复正文。' } }] }) +
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE,
+    ),
+  }));
+  try {
+    const gate = ctx.identity.evaluateGate(ctx.db, { driver: 'deepseek' });
+    assert.equal(gate.state, 'READY');
+    const { window } = ctx.windows.createWindow({ conversationId: 'c1', gate });
+    freezeLegacyToolWindow(ctx.db, window.id, {
+      conversation_read: LEGACY_CONVERSATIONREAD_SPEC as { function: { name: string; parameters: Record<string, unknown> } },
+    });
+    const res = new FakeRes();
+    const finished = once(res, 'finish');
+    const req = REQ({ conversation_id: 'c1', call_id: 'legacy-call', turn_id: 'legacy-turn', modality: 'voice', text: '合成输入' }, { authorization: 'Bearer tok' });
+    await handleVoiceChatStream(req, res as never, ctx.deps);
+    await finished;
+    const frames = res.lines.map(l => JSON.parse(l) as { type: string; text?: string });
+    assert.ok(frames.some(frame => frame.type === 'done'), '实际模型替身的通话已完成');
+    assert.equal(frames.filter(frame => frame.type === 'delta').map(frame => frame.text).join(''), '电话回复正文。');
+    assert.equal(assistantContent(ctx.db), '电话回复正文。');
+  } finally {
+    if (previousToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+    else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = previousToken;
+    ctx.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

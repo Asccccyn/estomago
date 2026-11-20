@@ -43,6 +43,20 @@ export type ArchiveResult =
   | { ok: true; archive: { id: string; kind: ArchiveKind; count: number }; notified: 'tool_receipt' | 'queued' | 'none' }
   | { ok: false; code: string; detail: string; retryable?: boolean };
 
+export type ArchiveOriginal = {
+  message_id: string;
+  revision: number;
+  sequence: number | null;
+  speaker: string | null;
+  text: string | null;
+  occurred_at: string | null;
+  attachments: Array<{ asset_id: string; presentation: string; caption: string | null }>;
+};
+
+export type ArchiveOriginalsResult =
+  | { ok: true; kind: string; note: string | null; items: ArchiveOriginal[] }
+  | { ok: false; code: string; detail: string };
+
 /** F3：建档写路径经既有协调器（同浏览器/模型写工具一个接受/确认/恢复面）。 */
 export type ContentWritePort = {
   write(req: { method: 'POST' | 'PUT' | 'DELETE'; path: string; actor: 'qiaosheng' | 'jiaming'; body?: Record<string, unknown>; headers: Record<string, string> }): Promise<{ status: number; body: unknown }>;
@@ -366,24 +380,37 @@ export class ArchiveService {
    *  F2（复审 2026-11-09 二轮）：同修订的附件引用一并返回（message_attachments 按
    *  (message,revision,position) 固定）——前端用既有 /assets/:id/content 媒体代理
    *  渲染图片；不取当前修订附件替代存档版，不因只回文字丢图。 */
-  async archiveOriginals(conversationId: string, archiveId: string): Promise<{ ok: true; kind: string; note: string | null; items: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments: Array<{ asset_id: string; presentation: string; caption: string | null }> }> } | { ok: false; code: string; detail: string }> {
+  async archiveOriginals(conversationId: string, archiveId: string, opts: {
+    actor?: 'qiaosheng' | 'jiaming'; signal?: AbortSignal;
+  } = {}): Promise<ArchiveOriginalsResult> {
     if (!this.deps.contentClient) return { ok: false, code: 'CONTENT_UNAVAILABLE', detail: '内容服务未启用（存档业务正本在 content）' };
-    let detail: { status: number; body: unknown };
+    let detail: Awaited<ReturnType<typeof contentForward>>;
     try {
-      detail = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'qiaosheng', path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}` });
+      detail = await contentForward(this.deps.contentClient, {
+        method: 'GET', actor: opts.actor ?? 'qiaosheng',
+        path: `/api/v1/content/archives/${encodeURIComponent(archiveId)}`, signal: opts.signal,
+      });
     } catch {
       return { ok: false, code: 'CONTENT_UNREACHABLE', detail: '内容服务暂不可达' };
     }
     if (detail.status !== 200) return { ok: false, code: `HTTP_${detail.status}`, detail: '存档不存在或不可读' };
+    if (detail.bodyFailed) return { ok: false, code: 'CONTENT_UNREACHABLE', detail: '存档详情响应不完整' };
     const dto = detail.body as { conversation_id?: string; kind?: string; note?: string | null; messages?: Array<{ message_id?: string; revision?: number; sequence?: number }> };
     if (dto.conversation_id !== conversationId) return { ok: false, code: 'ARCHIVE_CONVERSATION_MISMATCH', detail: '存档不属于当前会话' };
-    const out: Array<{ message_id: string; revision: number; sequence: number | null; speaker: string | null; text: string | null; occurred_at: string | null; attachments: Array<{ asset_id: string; presentation: string; caption: string | null }> }> = [];
+    const out: ArchiveOriginal[] = [];
     for (const m of dto.messages ?? []) {
       if (typeof m.message_id !== 'string' || typeof m.revision !== 'number') continue;
       const row = this.deps.db.prepare(
         'SELECT m.sequence, m.speaker, m.created_at, r.content FROM messages m LEFT JOIN message_revisions r ON r.message_id = m.id AND r.revision = ? WHERE m.id = ? AND m.conversation_id = ?',
       ).get(m.revision, m.message_id, conversationId) as { sequence: number; speaker: string; created_at: string; content: string | null } | undefined;
-      if (!row) continue; // 引用校验在建档时已过；迟到缺席如实跳过
+      if (!row) {
+        // 模型游标按存档成员顺序续页。缺失消息仍占原来的位置，但没有正文或说话人。
+        if (opts.actor === 'jiaming') out.push({
+          message_id: m.message_id, revision: m.revision, sequence: m.sequence ?? null,
+          speaker: null, text: null, occurred_at: null, attachments: [],
+        });
+        continue;
+      }
       const atts = this.deps.db.prepare(
         'SELECT asset_id, presentation, caption FROM message_attachments WHERE message_id = ? AND revision = ? ORDER BY position',
       ).all(m.message_id, m.revision) as Array<{ asset_id: string; presentation: string; caption: string | null }>;

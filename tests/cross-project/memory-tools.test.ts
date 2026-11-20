@@ -37,7 +37,7 @@ try {
     reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const catalog = registry.currentCatalog();
   const frozen = freezeWindowTools(db, 'w1', catalog, 'deferred',registry.currentGroups());
-  const history: any[] = [{role:'user',content:'[1] 合成原话 AbC  原生空格。第二句“引号”。'}];
+  const history: any[] = [{role:'user',content:'合成原话 AbC  原生空格。第二句“引号”。'}];
   const ctx = { roomId: 'primary', windowId: 'w1', turnId: sub.turnId, requestId: 'req1', purpose: 'chat' as const,
     activeReviewId: null, seenSequence: sub.message.sequence, seenMessages: [{id:sub.message.id,revision:1}] };
   let count = 0;
@@ -151,15 +151,19 @@ try {
   ctx.seenMessages = [];
   const held = await invoke('memory_hold',{original_title:'合成引用',categories:['daily','sweet'],text:'合成经历与感受正文',creation_mode:'contemporaneous',mood_note:'合成心情文字'});
   assert.equal(held.ok,true,JSON.stringify(held));assert.equal(held.output.source_status,'unbound');
-  const failedBind = await invoke('memory_source_bind',{memory_id:held.output.memory_id,start_seq:999,end_seq:999});
-  assert.equal(failedBind.ok,false);
+  const beforeRetired = wire.length;
+  const retired = await tools.execute('tool_invoke', {
+    name: 'memory_source_bind', arguments: { memory_id: held.output.memory_id, start_seq: 1, end_seq: 1 },
+  }, ctx);
+  assert.equal(retired.output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
+  assert.equal(wire.length, beforeRetired, 'retired model tool does not reach M');
   const stored = await client.memoryGet(String(held.output.memory_id));
   assert.equal(stored.ok,true);
   assert.equal((stored.result as any).text,'合成经历与感受正文');
-  const bound = await invoke('memory_source_bind',{memory_id:held.output.memory_id,start_seq:1,end_seq:1});
-  assert.equal(bound.ok,true,JSON.stringify(bound));
   ctx.seenMessages = seenBeforeSave;
-  const words = await invoke('memory_words_write',{action:'add',memory_id:held.output.memory_id,refs:[{seq:1,from:1,to:1}]});
+  const firstQuote = { speaker: '宿主用户', quote: '合成原话 AbC  原生空格。' };
+  const lastQuote = { speaker: '宿主用户', quote: '第二句“引号”。' };
+  const words = await invoke('memory_words_write', { action: 'add', memory_id: held.output.memory_id, refs: [firstQuote] });
   assert.equal(words.ok,true,JSON.stringify(words));
   const holdWire = wire.findLast(call=>call.capability==='memory.hold').request.arguments;
   assert.equal(holdWire.our_words,undefined);
@@ -167,7 +171,9 @@ try {
   assert.equal(holdWire.mood.text,'合成心情文字');
   assert.equal(holdWire.event_source_ranges,undefined);
   assert.equal(wire.findLast(call=>call.capability==='memory.hold').response.data.binding_ids.length,0);
-  const episode = await invoke('episode_apply',{action:'start',label:'合成事件线',reason_code:'tracking_requested',source_selections:bound.output.source_selections});
+  const episode = await invoke('episode_apply', { action: 'start', label: '合成事件线', reason_code: 'tracking_requested',
+    anchor_start: firstQuote, anchor_end: lastQuote,
+  });
   assert.equal(episode.ok,true,JSON.stringify(episode));
   let beforeEpisode=wire.length;
   const episodeList=await invoke('episode_read',{});
@@ -178,11 +184,43 @@ try {
   const episodeDetail=await invoke('episode_read',{episode_id:episodeId});
   assert.equal(episodeDetail.ok,true,JSON.stringify(episodeDetail));
   assert.equal(wire.length,beforeEpisode+1);
-  assert.ok(episodeDetail.output.source_selections);
+  const [segment] = episodeDetail.output.source_selections as Array<{ members: Array<{ source_message_id: string; content_hash: string }> }>;
+  const [point] = segment!.members;
+  assert.ok(point?.source_message_id && point.content_hash);
+  const { source_message_id, content_hash } = point;
+  const refFor = (char_offset: number) => ({ source_message_id, content_hash, char_offset });
+  const firstLength = [...firstQuote.quote].length;
+  const totalLength = firstLength + [...lastQuote.quote].length;
 
-  const added = await invoke('memory_words_write',{action:'add',memory_id:held.output.memory_id,refs:[{seq:1,from:2,to:2}]});
+  const closed = await invoke('episode_apply', {
+    action: 'close', reason_code: 'goal_resolved', episode_id: episodeId, expected_revision: episodeDetail.output.revision,
+    terminal_anchor: lastQuote, decision_anchors: [firstQuote],
+  });
+  assert.equal(closed.ok, true, JSON.stringify(closed));
+  assert.equal(closed.output.state, 'CLOSED');
+  let applied = wire.findLast(call => call.capability === 'episode.apply');
+  assert.deepEqual(applied.request.arguments.terminal_source_ref, refFor(totalLength));
+  assert.deepEqual(applied.request.arguments.decision_source_refs, [refFor(0)]);
+
+  const fixed = await invoke('episode_apply', {
+    action: 'correct', reason_code: 'boundary_error', episode_id: episodeId, expected_revision: closed.output.revision,
+    corrected_state: 'CLOSED', note: '合成纠正原文终点与依据',
+    terminal_anchor: firstQuote, decision_anchors: [lastQuote],
+  });
+  assert.equal(fixed.ok, true, JSON.stringify(fixed));
+  applied = wire.findLast(call => call.capability === 'episode.apply');
+  assert.deepEqual(applied.request.arguments.terminal_source_ref, refFor(firstLength));
+  assert.deepEqual(applied.request.arguments.decision_source_refs, [refFor(firstLength)]);
+  const fixedDetail = await invoke('episode_read', { episode_id: episodeId });
+  assert.equal(fixedDetail.ok, true, JSON.stringify(fixedDetail));
+  assert.deepEqual(fixedDetail.output.terminal_source_ref, refFor(firstLength));
+  assert.deepEqual(fixedDetail.output.decision_source_refs, [refFor(firstLength)]);
+
+  const added = await invoke('memory_words_write', { action: 'add', memory_id: held.output.memory_id, refs: [lastQuote] });
   assert.equal(added.ok,true,JSON.stringify(added));assert.equal(added.output.action,'add');
-  const revised = await invoke('memory_words_write',{action:'revise',memory_id:held.output.memory_id,word_id:(added.output.word_ids as string[])[0],refs:[{seq:1,from:1,to:1}]});
+  const revised = await invoke('memory_words_write', { action: 'revise', memory_id: held.output.memory_id,
+    word_id: (added.output.word_ids as string[])[0], refs: [firstQuote],
+  });
   assert.equal(revised.ok,true,JSON.stringify(revised));
   for (const args of [
     {creation_mode:'retrospective'},
@@ -224,7 +262,12 @@ try {
     const wirePage=wire.at(-1)!.response.data;
     const longWire=(wirePage.candidates??[]).filter((c:any)=>c.memory_id===longHold.output.memory_id&&c.fragment?.kind==='evidence_snippet'&&c.fragment.evidence_index===0);
     const cards=(longPage.output.candidates as any[]).filter(c=>c.memory_id===longHold.output.memory_id&&c.fragment?.kind==='evidence_snippet'&&c.fragment.evidence_index===0);
-    assert.deepEqual(cards.map(c=>c.fragment),longWire.map((c:any)=>c.fragment),'authored fragment and incomplete marker survive toModel');
+    const modelFragments = longWire.map((c: any) => {
+      const { coverage_ranges: _hostCoverage, ...fragment } = c.fragment;
+      return fragment;
+    });
+    assert.deepEqual(cards.map(c => c.fragment), modelFragments,
+      'authored fragments and continuation survive toModel; coverage metadata stays in the host');
     for(const card of cards){assert.equal(card.fragment.start_char,offset);delivered+=card.fragment.text;offset=card.fragment.end_char;assert.equal(card.fragment.content_complete,false);}
     const next=longPage.output.next as {tool:string;arguments:Record<string,unknown>}|undefined;
     if(!next||next.tool!=='memory_recall_next')break;
@@ -232,5 +275,5 @@ try {
   }
   assert.equal(delivered,longText,'full authored text reconstructed from actual HTTP pages');
   fs.writeFileSync(process.env.CROSS_MARIPOSA_RESULT!, JSON.stringify({ evidence: 'A01-A04/A09/A10/A12 frozen schema → ModelToolBridge → actual HTTP legacy profile → domain → toModel', wire }, null, 2));
-  console.log('P1/P2: actual HTTP, delivered detail and structured continuation contracts passed; synthetic data only');
+  console.log('P1/P2/P08: actual M HTTP, anchor start/close/correct, delivered detail and continuation passed; synthetic data only');
 } finally { globalThis.fetch = nativeFetch; db.close(); }

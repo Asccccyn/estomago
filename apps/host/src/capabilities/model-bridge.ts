@@ -7,11 +7,13 @@ import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { modelFailure } from '../runtime/model-results.ts';
 import { buildDeferredTools, storedToolset, definitionId, definitionWasSeen, effectiveToolName } from '../runtime/tool-discovery.ts';
+import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
 import { DISCOVERY_NAMES } from '../runtime/tool-discovery.ts';
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from './contracts.ts';
 import type { CapabilityRegistry } from './registry.ts';
 import { executeRegisteredCapability } from './executor.ts';
+import { validateArgsAgainstSchema } from './validation.ts';
 export { DISCOVERY_META, isDiscoveryFree } from './model-bridge-meta.ts';
 import { DISCOVERY_META, isDiscoveryFree, toolPresentation } from './model-bridge-meta.ts';
 
@@ -133,19 +135,32 @@ export class ModelToolBridge {
     const set = storedToolset(this.db, ctx.windowId);
     const deny = (code: string): ToolExecResult => ({ok:false,output:{error_code:code}});
     if (set?.protocol !== 'deferred') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
-    // S17b 批次4：__tool_call_id 不在 wire 协议中——宿主内部身份只走 ctx.toolCallId
-    const allowed = name === 'tool_catalog' ? [] : name === 'tool_define' ? ['name'] : ['name','definition_id','arguments'];
-    if (Object.keys(args).some(k=>!allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
     if (name === 'tool_catalog') {
-      this.admitBackgroundTool(name, ctx); // 保温批（3aa0164）：后台工具准入记账
-      // A04/D39：通话内**新生成**的 catalog 只列记忆与必要通话控制；冻结目录/历史结果不变。
-      // 资格判定统一为"已迁能力查条目元数据 + 未迁名查现行清单"（迁移期共存；P09 收口后只剩元数据）。
-      const listing = this.voiceCallActive(ctx.roomId) && ctx.turnId
-        ? set.catalog.filter(t => this.isMemoryOnlyAllowed(t.function.name))
-        : set.catalog;
-      return {ok:true,output:{tools:listing.map(t=>({name:t.function.name,description:t.function.description.split(/[。\n]/)[0]}))}};
+      const wire = set.tools.find(t => t.function.name === name);
+      if (!wire) return deny('TOOL_PROTOCOL_NOT_ACTIVE');
+      const checked = validateArgsAgainstSchema(args, wire.function.parameters);
+      if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
+      this.admitBackgroundTool(name, ctx);
+      // 新目录服从当前能力与请求的活动任务范围，已发送的冻结快照及历史仍按原样保留。
+      const inCall = Boolean(ctx.turnId) && this.voiceCallActive(ctx.roomId);
+      const listing = set.catalog.flatMap(frozen => {
+        const spec = this.visibleFrozenDefinition(frozen);
+        if (!spec) return [];
+        const toolName = spec.function.name;
+        return (!inCall || this.isMemoryOnlyAllowed(toolName)) && this.discoverableInTaskScope(toolName, ctx) ? [spec] : [];
+      });
+      const query = typeof args.query === 'string' ? args.query.trim() : '';
+      if (query) return { ok: true, output: searchToolCatalog(listing, query, set.groups) };
+      return { ok: true, output: { tools: listing.map(({ function: definition }) => ({
+        name: definition.name,
+        description: toolCatalogIntent(definition.name) ?? definition.description.split(/[。\n]/)[0],
+      })) } };
     }
-    const spec = set.catalog.find(t=>t.function.name===args.name);
+    const allowed = name === 'tool_define' ? ['name'] : ['name', 'definition_id', 'arguments'];
+    if (Object.keys(args).some(k => !allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
+    const frozen = set.catalog.find(t => t.function.name === args.name);
+    if (!frozen) return deny('TOOL_NOT_IN_ALLOWLIST');
+    const spec = this.visibleFrozenDefinition(frozen);
     if (!spec) return deny('TOOL_NOT_IN_ALLOWLIST');
     // D39（审计 B1 修复，2026-10-25）：catalog/define/invoke/直接执行四处同一通话资格判定——
     // 通话内非记忆业务工具的 define 也返回 TOOL_UNAVAILABLE_IN_CALL（旧实现只在 invoke/直接执行设门，
@@ -154,6 +169,7 @@ export class ModelToolBridge {
       return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
     }
     if (name === 'tool_define') {
+      if (!this.discoverableInTaskScope(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
       this.admitBackgroundTool(name, ctx);
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
@@ -161,10 +177,62 @@ export class ModelToolBridge {
     // P6（四仓审计 20261106，U01/R11）：定义阅读凭证不再是授权——tool_invoke 不带
     // definition_id 也直接执行（参数仍按冻结 schema 完整校验；registry 决定真实权限）。
     // 携带 definition_id 且与冻结版本不符=过期/幻觉版本，如实拒绝（冻结版本校验保留）。
-    if (typeof args.definition_id === 'string' && args.definition_id !== definitionId(spec)) return deny('TOOL_DEFINITION_STALE');
+    if (typeof args.definition_id === 'string' && args.definition_id !== definitionId(spec) && args.definition_id !== definitionId(frozen)) {
+      return deny('TOOL_DEFINITION_STALE');
+    }
     if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
     if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     return this.executeInner(spec.function.name, args.arguments as Record<string,unknown>,ctx,spec);
+  }
+
+  /** 任务定义根据宿主上下文与现行活动状态交付，执行仍由各业务能力负责。 */
+  private discoverableInTaskScope(name: string, ctx: ToolExecContext): boolean {
+    switch (name) {
+      case 'context_review_complete':
+        return ctx.purpose === 'pre_rotate_review' && Boolean(ctx.activeReviewId && this.db.prepare(`
+          SELECT 1 FROM rotation_reviews
+          WHERE id = ? AND room_id = ? AND window_id = ? AND status = 'active'
+        `).get(ctx.activeReviewId, ctx.roomId, ctx.windowId));
+      case 'background_complete':
+        return (ctx.purpose === 'proactive_turn' || ctx.purpose === 'cache_keepalive') &&
+          Boolean(ctx.backgroundRunId && this.db.prepare(`
+            SELECT 1 FROM background_runs
+            WHERE id = ? AND conversation_id = ? AND window_id = ? AND turn_id = ? AND state = 'running'
+            AND COALESCE(result_code, '') NOT LIKE 'complete:%'
+          `).get(ctx.backgroundRunId, ctx.roomId, ctx.windowId, ctx.turnId));
+      default:
+        return this.capabilityRegistry?.get(name)?.group !== 'T';
+    }
+  }
+
+  /** 能力退出后，新发的发现结果保留冻结合同中仍可调用的部分。 */
+  private visibleFrozenDefinition(spec: HostToolSpec): HostToolSpec | null {
+    const definition = spec.function;
+    if (!this.capabilityRegistry?.has(definition.name)) return null;
+    if (definition.name !== 'memory_correct') return spec;
+
+    const properties = definition.parameters.properties as Record<string, Record<string, unknown>> | undefined;
+    const action = properties?.action;
+    if (!properties || !action || !Array.isArray(action.enum) || !action.enum.includes('binding')) return spec;
+    const { binding_id: _removed, ...remaining } = properties;
+    const correction = remaining.correction_action;
+    if (correction && typeof correction.description === 'string') {
+      remaining.correction_action = { ...correction, description: correction.description.replace('/binding/', '/') };
+    }
+    return {
+      ...spec,
+      function: {
+        ...definition,
+        description: definition.description
+          .replace('、binding（原文区间绑定纠错——同两动作）', '')
+          .replace('或原文绑定', '')
+          .replace('、binding、', '、'),
+        parameters: {
+          ...definition.parameters,
+          properties: { ...remaining, action: { ...action, enum: action.enum.filter(value => value !== 'binding') } },
+        },
+      },
+    };
   }
 
   /** D39：通话 memory_only 资格唯一判定——已迁能力读条目元数据；discovery 入口读自身元数据。

@@ -19,10 +19,13 @@ import { registerContentCapabilities as registerContentCapabilitiesInstance } fr
 import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '../apps/host/src/modules/wake/module.ts';
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
 import { registerArchivesCapabilities as registerArchivesCapabilitiesInstance } from '../apps/host/src/modules/archives/module.ts';
+import { ArchiveService } from '../apps/host/src/modules/archives/service.ts';
 import { registerImageGenCapabilities as registerImageGenCapabilitiesInstance } from '../apps/host/src/modules/imagegen/module.ts';
 import { registerIdentityCapabilities as registerIdentityCapabilitiesInstance } from '../apps/host/src/modules/identity/module.ts';
 import { registerContextReviewCapabilities as registerContextReviewCapabilitiesInstance } from '../apps/host/src/modules/context-review/module.ts';
 import { validateArgsAgainstSchema } from '../apps/host/src/capabilities/validation.ts';
+import { freezeWindowTools } from '../apps/host/src/runtime/tool-discovery.ts';
+import type { HostToolSpec } from '../apps/host/src/capabilities/contracts.ts';
 import { defaultObservedSdkVersion, REQUIRED_PROBES } from '../apps/host/src/identity/service.ts';
 import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION, type SolJudgeConfig, type SolTransport } from '../apps/host/src/memory-surfacing/sol-provider.ts';
 
@@ -207,12 +210,15 @@ export function assembleTestTools(deps: TestToolDeps): {
     audio: (deps.media ?? null) as never,
     artifacts: (deps.media ?? null) as never,
   });
+  // 包4无seq整改：episode 锚点范围解析——与生产同源（archives 的 DBG-04 实现）。
+  const anchorsArchive = new ArchiveService({ db, contentClient: (deps.contentClient ?? null) as never, contentOps: (deps.contentOps ?? null) as never, logger: null });
   const memoryService = registerMemoryCapabilities(registry, {
     db, tz: (deps.tz ?? null) as string | null, mariposa: (deps.mariposa ?? null) as never,
     surfaceDetailClient: (deps.surfaceDetailClient ?? null) as never,
     reviews: (deps.reviews ?? null) as never, checkpoint: (deps.checkpoint ?? null) as never,
     archiveSync: (deps.archiveSync ?? null) as never,
     speakerLabels: deps.speakerLabels,
+    anchorRange: (roomId, seenMessages, start, end) => anchorsArchive.resolveAnchorRange(roomId, seenMessages, start, end),
   });
   registerConversationCapabilities(registry, {
     db, tz: (deps.tz ?? null) as string | null, messages: (deps.messages ?? null) as never,
@@ -255,6 +261,68 @@ export function buildFullTestRegistry(): CapabilityRegistry {
 /** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */
 export function fullToolCatalog(): import('../apps/host/src/capabilities/contracts.ts').HostToolSpec[] {
   return buildFullTestRegistry().currentCatalog();
+}
+
+
+/** 包4无seq整改（2026-11-18）：旧冻结窗兼容夹具——把指定工具钉在包4 之前的旧
+ *  schema（模拟生产旧窗的 window_toolsets 冻结目录：旧窗模型仍按旧形状调用，
+ *  服务按参数形状分流到旧引擎；新窗 schema 已锁新形状）。engine 语义回归
+ *  （RRA-014 分页等）与旧窗兼容（C3）共用本夹具钉住旧合同。 */
+export const LEGACY_CONVERSATIONREAD_SPEC: HostToolSpec =
+{
+    type: 'function',
+    function: {
+      // WP4（MANUAL_HANDOFF_JUDGE_SWITCH_V1 §7.2，2026-10-08）：主模型只读
+      // 原文回读——已知消息/范围的直接展开，不经判断器；房间由宿主派生
+      //（模型不能自填别的房间）；不含 UI 思考/草稿/system/tool；只读无副作用
+      //（不推进 hold 书签、不制造气泡、不触发明开续期）
+      name: 'conversation_read',
+      description: '读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。已实际送达的片段返回短回执；用户明确要求重看时用 reread=true。',
+      parameters: {
+        type: 'object',
+        properties: {
+          around_seq: { type: 'integer', minimum: 1, description: '定位锚点序号（对话里每条消息开头的 [N]）：读它前后各若干条' },
+          revision: { type: 'integer', minimum: 1, description: '可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）' },
+          before: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之前读几条（默认 5）' },
+          after: { type: 'integer', minimum: 1, maximum: 50, description: '锚点之后读几条（默认 5）' },
+          from_sequence: { type: 'integer', minimum: 1, description: '范围模式：起始序号（含）' },
+          to_sequence: { type: 'integer', minimum: 1, description: '范围模式：结束序号（含）' },
+          limit: { type: 'integer', minimum: 1, maximum: 50, description: '单页最多条数（默认 20）' },
+          cursor: { type: 'object', description: '续页游标（上一页返回的 next_cursor 原样传入）' },
+          reread: { type: 'boolean', description: '仅用户明确要求重看、逐字核对时，本次仍交付正文。' },
+        },
+        additionalProperties: false,
+      },
+    }
+  };
+
+export const LEGACY_MEMORYWORDS_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    action: { type: 'string', enum: ['add', 'revise'] },
+    memory_id: { type: 'string', minLength: 1 },
+    word_id: { type: 'string', minLength: 1 },
+    refs: {
+      type: 'array', minItems: 1, maxItems: 10,
+      items: { type: 'object', additionalProperties: false, required: ['seq'], properties: {
+        seq: { type: 'integer', minimum: 1 }, from: { type: 'integer', minimum: 1 }, to: { type: 'integer', minimum: 1 },
+      }, dependencies: { from: ['to'], to: ['from'] } },
+    },
+  },
+  required: ['action', 'memory_id', 'refs'], additionalProperties: false,
+  allOf: [{ if: { properties: { action: { const: 'revise' } }, required: ['action'] }, then: { required: ['word_id'] } }],
+};
+
+/** 冻结一个"旧窗"：目录=当前注册表正本 + 指定工具替换为旧 spec（protocol=legacy）。 */
+export function freezeLegacyToolWindow(db: Db, windowId: string, overrides: Partial<Record<string, { function: { name: string; parameters: Record<string, unknown>; description?: string } }>> = {}): void {
+  db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1', 'estomago', 'private', '2026-01-01T00:00:00Z')").run();
+  db.prepare("INSERT OR IGNORE INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?, 'c1', 'ACTIVE', 'now', 'now')").run(windowId);
+  const catalog = fullToolCatalog();
+  for (let i = 0; i < catalog.length; i++) {
+    const ov = overrides[catalog[i]!.function.name];
+    if (ov) catalog[i] = { type: 'function', function: { ...catalog[i]!.function, ...ov.function } } as HostToolSpec;
+  }
+  freezeWindowTools(db, windowId, catalog, 'legacy');
 }
 
 /** 旧 hostToolNames 消费者兼容（名称序列与 fullToolCatalog 一致）。 */

@@ -549,24 +549,8 @@ export class MariposaClient {
     return this.transport('memory.calendar', {period, ...(after ? {after} : {}), ...(limit ? {limit} : {})});
   }
 
-  async sourceBindingBind(memoryId: string, selection: HoldSourceSelection, opts: { expectedMemoryVersion?: number | null; expectedBindingIds?: string[]; idempotencyKey?: string } = {}): Promise<MariposaCallResult> {
-    return this.transport('source.binding.bind', {
-      memory_id: memoryId, conversation_id: selection.conversation_id,
-      start_message_id: selection.members[0]!.source_message_id,
-      end_message_id: selection.members.at(-1)!.source_message_id,
-      members: selection.members, event_scope: true,
-      // 三轮复审②：提交时原子核对判断快照（M 事务内：版本移动→VERSION_CONFLICT；
-      // 判断后新建绑定→EVENT_SOURCE_STATE_CHANGED——复核与提交之间的窗口在此闭合）。
-      ...(opts.expectedMemoryVersion != null ? { expected_memory_version: opts.expectedMemoryVersion } : {}),
-      ...(opts.expectedBindingIds != null ? { expected_binding_ids: opts.expectedBindingIds } : {}),
-    }, undefined, opts.idempotencyKey != null ? { idempotency_key: opts.idempotencyKey } : undefined);
-  }
-  async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
-    const payload: Record<string, unknown> = { binding_id: args.bindingId, correction_action: args.correctionAction, operation_id: args.operationId };
-    if (args.replacement) payload.replacement = args.replacement;
-    if (args.note) payload.note = args.note;
-    return this.transport('source.binding.correct', payload);
-  }
+  // 包4（2026-11-18）：sourceBindingBind / sourceBindingCorrect 随模型面手工绑定退役移除——
+  // 午夜后台绑定走 sourceBindingDecision（同能力批量决策形状，见上），本人管理走 M HTTP/UI。
   /** 2026-11-03 她裁补的四个映射缺口（原只存在于 M，E 无消费者） */
   async planMemoryCorrect(args: { linkId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { link_id: args.linkId, correction_action: args.correctionAction, operation_id: args.operationId };

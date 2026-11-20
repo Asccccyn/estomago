@@ -8,8 +8,10 @@ export const RELATION_INPUT = capabilities.get('memory.relations.link') as Recor
 export const I_ITEM_INPUT = capabilities.get('i.item.create') as Record<string, any>;
 export const TRACE_INPUT = capabilities.get('memory.relations.trace') as Record<string, any>;
 export const HOLD_MOOD_RULE: string = HOLD_INPUT.properties.mood.description.replace(/\btags\b/g,'mood_tags').replace(/\btext\b/g,'mood_note');
-export const QUOTE_SELECTION = {type:'object',additionalProperties:false,required:['seq'],properties:{
-  seq:{type:'integer',minimum:1,description:'已读消息的 [N] 序号'},
-  from:{type:'integer',minimum:1,description:'起始句，1 起算'},
-  to:{type:'integer',minimum:1,description:'结束句（含）；与 from 成对'},
-},dependencies:{from:['to'],to:['from']}};
+/** 包4无seq整改（2026-11-18）：原话勾选从消息序号改为逐字引语锚点——引语须与本次请求
+ *  实际装载视野（seenMessages 可见码点区间）逐字一致并由宿主解析说话人，不让模型重写原话、
+ *  不再教模型提交 [N] 序号。旧 {seq,from,to} 形状仅旧冻结窗可用（其冻结 schema 仍锁旧形）。 */
+export const QUOTE_SELECTION = {type:'object',additionalProperties:false,required:['quote'],properties:{
+  quote:{type:'string',minLength:1,maxLength:300,description:'逐字原话引语（1-300 字，与已见原文完全一致；引语本身即所选句段内容）'},
+  speaker:{type:'string',enum:['宿主用户','char'],description:'可选：说话人（引语在双方消息中都出现时用于消歧；省略=按唯一匹配解析）'},
+},};

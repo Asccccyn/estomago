@@ -326,8 +326,10 @@ test('ARC-13: R6 存档打开链——archiveOriginals 返回钉住修订的正�
   assert.deepEqual(opened.items.map((it) => it.speaker), ['owner', 'assistant'], '按会话序');
   assert.match(opened.items[0]!.text ?? '', /话-arc13-u/, '固定版本正文');
   assert.deepEqual(JSON.parse(JSON.stringify(opened.items[0]!.attachments)), [{ asset_id: 'asset-arc13-r1', presentation: 'image', caption: '当时那张' }], 'F2：固定修订的附件引用（不取当前修订冒充）');
-  const wrongConv = await svc.archiveOriginals('c1', r.archive.id);
-  assert.equal(wrongConv.ok, false, '跨会话拒绝');
+  const modelOpened = await svc.archiveOriginals('c2', r.archive.id, { actor: 'jiaming' });
+  assert.deepEqual(modelOpened, opened, '用模型自己的 actor 读取同一个钉住的版本');
+  const wrongConv = await svc.archiveOriginals('c1', r.archive.id, { actor: 'jiaming' });
+  assert.equal(wrongConv.ok, false, '模型路径拒绝跨会话');
 });
 
 test('ARC-11: 存档文本检索——命中归并到存档条目；kind 过滤；无匹配如实 no_match', async () => {

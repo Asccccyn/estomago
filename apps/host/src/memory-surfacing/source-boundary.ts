@@ -2,6 +2,7 @@
 import type { Db } from '../db/connection.ts';
 import type { CoverageRange } from '../capabilities/contracts.ts';
 import { sha256Hex } from '../util/id.ts';
+import { effectiveRevisionText } from '../messages/effective-text.ts';
 
 /** 多个 origin 消息 id → 去重后的 sm id 集（按收据表全修订收全）。
  *  RR4-W2e（林石见 2026-11-10 修正稿）：**不截断**——排除资格是正确性约束，
@@ -35,13 +36,16 @@ export function sourceCoverageRange(
       content: string; source_message_id: string | null; content_hash: string | null;
     } | undefined;
   if (!row) return null;
-  const codePoints = [...row.content];
+  // A blank voice message alone proves no transcript was delivered. Only when
+  // the caller supplies actual projected text may we verify the saved transcript.
+  const content = text === undefined ? row.content : effectiveRevisionText(db, ref.id, ref.revision, row.content);
+  const codePoints = [...content];
   const start = ref.char_start ?? 0;
   const end = ref.char_end ?? codePoints.length;
   if (start < 0 || end > codePoints.length || end <= start
     || (text !== undefined && codePoints.slice(start, end).join('') !== text)) return null;
   const sourceId = row.source_message_id?.replace(/^source_msg:/, '');
-  const identity = sourceId?.startsWith('sm_') && row.content_hash && row.content_hash === sha256Hex(row.content)
+  const identity = sourceId?.startsWith('sm_') && row.content_hash && row.content_hash === sha256Hex(content)
     ? { resource_ref: `source_msg:${sourceId}`, content_version: row.content_hash }
     : { resource_ref: `conversation_message:${ref.id}`, content_version: String(ref.revision) };
   return { ...identity, start_char: start, end_char: end };

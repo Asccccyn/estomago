@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson, ClientBodyError } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
 import { sha256Hex } from '../../util/id.ts';
+import { stripLegacySequenceMarker } from '../../runtime/legacy-sequence-markers.ts';
 import { toSseDto } from './events.ts';
 
 // ── R4（2026-10-23）：voice ingress——Siren CoreBridge 的同窗电话入口（NDJSON）──────────
@@ -198,7 +199,8 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   let pending = '';
   let atLineStart = true;
   const SENTENCE_END = new Set(['。', '！', '？', '!', '?', '…']);
-  const stripMarker = (t: string): string => t.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, '');
+  let legacySequenceMarkers = false;
+  const stripMarker = (text: string): string => legacySequenceMarkers ? stripLegacySequenceMarker(text) : text;
   const emitSentences = (flush: boolean): void => {
     for (;;) {
       const chars = [...pending];
@@ -211,7 +213,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
       pending = chars.slice(cut).join('');
       // 2026-11-02 生产实测修复：模型学舌的 [seq] 标记可能出现在**首句之后**（如
       // "嗯。[1051]…"）——按句成帧后该块不处行首，旧行首剥离漏剥→TTS 把序号念出来。
-      // 聊天发布层按行剥与之同义；此处对每个句块开头剥（[N]/[seq N] 从不是正文）。
+      // 只为含旧编号的窗口保留句首剥离；无编号窗口保留实际生成正文。
       chunk = stripMarker(chunk);
       atLineStart = chunk.endsWith('\n');
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
@@ -224,7 +226,8 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
     }
   };
-  const detachTap = d.supervisor.registerVoiceTap(sub.turnId, (tail) => {
+  const detachTap = d.supervisor.registerVoiceTap(sub.turnId, (tail, fromLegacyWindow) => {
+    legacySequenceMarkers = fromLegacyWindow;
     // 行边界维护：换行符原样保留（拼接与正本逐字一致）；行首标记按聊天发布层同规则剥离
     const lines = tail.split('\n');
     for (let i = 0; i < lines.length; i++) {

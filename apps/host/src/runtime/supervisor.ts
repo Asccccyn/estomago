@@ -74,6 +74,7 @@ import { planCarryImages, buildCarryFragment, countCarryImageBlocks } from '../c
 import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
 import { contentForward } from '../integrations/content/client.ts';
 import { storedToolset } from './tool-discovery.ts';
+import { catalogUsesLegacySequenceMarkers, stripLegacySequenceMarker } from './legacy-sequence-markers.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 
 export type SupervisorDeps = {
@@ -264,8 +265,8 @@ export class TurnSupervisor {
   /** RE-02（2026-10-24 返修）：语音正文抽头——同一生成流（publishText 的真实新增 tail，
    *  与聊天落库同源）逐段供给 voice ingress；不经公共事件总线（不进 SSE/UI 面）。
    *  取消后代际内不再供给（与 publishSegments 同一 fence）。 */
-  private voiceTaps = new Map<string, (text: string) => void>();
-  registerVoiceTap(turnId: string, onTap: (text: string) => void): () => void {
+  private voiceTaps = new Map<string, (text: string, legacySequenceMarkers: boolean) => void>();
+  registerVoiceTap(turnId: string, onTap: (text: string, legacySequenceMarkers: boolean) => void): () => void {
     this.voiceTaps.set(turnId, onTap);
     return () => { this.voiceTaps.delete(turnId); };
   }
@@ -395,7 +396,7 @@ export class TurnSupervisor {
     const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null } | undefined;
     if (!runRow) return { outcome: 'failed', result_code: 'RUN_NOT_FOUND' };
     if (runRow.state !== 'claimed' && runRow.state !== 'running') return { outcome: 'noop', result_code: `CANCELLED_${runRow.state.toUpperCase()}` };
-    const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string } | undefined;
+    const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json, origin FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string; origin: string } | undefined;
     if (!taskRow) return { outcome: 'failed', result_code: 'TASK_NOT_FOUND' };
     if (taskRow.revision !== runRow.task_revision) return { outcome: 'noop', result_code: 'TASK_SUPERSEDED', detail: '任务已修改/取消——旧 revision 零派发' };
     if (taskRow.enabled !== 1) return { outcome: 'noop', result_code: 'TASK_CANCELLED', detail: '任务已禁用——零派发' };
@@ -440,6 +441,9 @@ export class TurnSupervisor {
       tailNote = lines.join('\n');
     }
     this.windowTools(window.id);
+    if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule' && this.windowHasTool(window.id, 'chat_send_text')) {
+      tailNote += '\n自己定的唤醒已经到了。想给宿主用户发一句，可以用 chat_send_text。填你想说的 text 和这条消息的 idempotency_key。同一条重试沿用这个键。';
+    }
     const taskDefinition = taskDefinitionContext(storedToolset(d.db,window.id)!, 'background_complete', opts.runId);
     if (taskDefinition) tailNote += '\n' + taskDefinition;
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
@@ -503,9 +507,9 @@ export class TurnSupervisor {
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
    *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
-  /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
-   *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
-   *  存库/前端内容不带。 */
+  /** 消息→OR 块投影。包4无seq整改（2026-11-18，裁定7）：模型面信封不再携带消息
+   *  序号前缀 [N]——普通输入、开窗选集与滚窗追赶一律自然正文；真实 sequence 仍存
+   *  于 messages/轨迹 manifest（后台定位正本），工具定位改锚点/游标（见包4报告）。 */
   /** 2026-11-02 她裁定：通话指引**只给纯技术事实**，不规定说什么/说多少。
    *  B4（2026-11-04，她裁定）修订：①措辞改为"本轮"——本提示随实发轨迹**持久保留**
    *  （窗口轨迹存实发正本，见 window-trajectory.ts；旧注释"不持久化"为错误声明，已纠正），
@@ -520,8 +524,7 @@ export class TurnSupervisor {
     return (row?.client_message_id ?? '').startsWith('voice:');
   }
 
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
-    const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
     if (this.d.media && messageId && revision) {
       try {
         const proj = this.d.media.projectForRevision(messageId, revision);
@@ -543,12 +546,12 @@ export class TurnSupervisor {
         }
         const extra = hearing || voiceDurations ? { ...opts, ...(hearing ? { hearing } : {}), ...(voiceDurations ? { voiceDurations } : {}) } : opts;
         const snapshots = this.d.voiceObservations?.snapshotsForRevision(messageId, revision, opts.isCurrentInput === true) ?? [];
-        const r = projectRevisionBlocks(withSeq(text), proj.attachments, { ...extra, voiceObservations: new Map(snapshots.map(snapshot => [snapshot.assetId, snapshot.text])) });
+        const r = projectRevisionBlocks(text, proj.attachments, { ...extra, voiceObservations: new Map(snapshots.map(snapshot => [snapshot.assetId, snapshot.text])) });
         const observations = snapshots.filter(snapshot => r.blocks.some(block => block.type === 'text' && block.text === snapshot.text));
         return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript, observations };
       } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
     }
-    return { blocks: [{ type: 'text', text: withSeq(fallbackText) }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
+    return { blocks: [{ type: 'text', text: fallbackText }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
@@ -1286,7 +1289,7 @@ export class TurnSupervisor {
     conversationId: string;
     /** JOINT-VOICE：窗口感知听觉判定（旧窗冻结目录无 oido 工具时退回阻断） */
     windowId?: string;
-    materials: { identityText: string; rulesText: string; iText: string | null } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null; memoryAnchorsText?: string } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
     bootText?: string | null;
@@ -1306,7 +1309,9 @@ export class TurnSupervisor {
     // DBG-05/06（包2 2026-11-16）：A 段=身份正本+运行规则正本（文件版单一正本）+宿主边界。
     // I 不再复制进 A 段（唯一注入点=B 段 bootstrap，M I 版本体系）；代码内规则片段退役
     // （旧实现文件版与代码版双注入、且 I 占位与真实 I 冲突）。
-    const systemText = [o.materials?.identityText ?? '', o.materials?.rulesText ?? '', HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
+    const splitOpening = o.materials?.memoryAnchorsText !== undefined;
+    const runtimeRules = [o.materials?.rulesText, HOST_BOUNDARY_RULES].filter(Boolean).join('\n\n');
+    const systemText = [o.materials?.identityText, splitOpening ? null : runtimeRules].filter(Boolean).join('\n\n');
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
@@ -1322,8 +1327,12 @@ export class TurnSupervisor {
       localTools = this.d.config.runtime.tool_schema_mode === 'deferred'
         ? renderToolContext(catalog,resolveToolGroups(this.d.db,catalog,source.currentGroups?.() ?? {})) : null;
     }
-    const bootstrapText = [o.bootText,localTools].filter(Boolean).join('\n');
+    const bootstrapText = [o.bootText, splitOpening ? null : localTools].filter(Boolean).join('\n');
     if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
+    if (splitOpening) {
+      const runtimeText = [runtimeRules, localTools].filter(Boolean).join('\n\n');
+      messages.push({ role: 'system', content: [{ type: 'text', text: runtimeText }] });
+    }
     if (o.episodeFragment) messages.push({role:'system',content:[{type:'text',text:o.episodeFragment}]});
     if (o.carryFragment) messages.push({ role: 'system', content: o.carryFragment.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     let selected: typeof o.dialogue = [];
@@ -1364,7 +1373,7 @@ export class TurnSupervisor {
       // DBG-07（包2 2026-11-16）：引导语带结构标记 guide——SDK 路径据此把它并回后继
       // 历史消息（保持"引导语→原文"相邻关系），不再抬进 systemPrompt 丢失位置。
       if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }], guide: true } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
       const dedupedBlocks = proj.blocks.map((b) => {
         if (b.type !== 'asset_image') return b;
@@ -1388,12 +1397,8 @@ export class TurnSupervisor {
     // R4（复审 2026-11-08）：通知注入从窗口初始化信封移除——该信封可被 discardUnsent
     // 丢弃重建，而通知曾在取出时即标记 delivered（存档→滚窗→通知丢失的根因）。
     // 唯一注入点=普通轮尾部（orMessages 装配处），按实际投递证据收口。
-    // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
-    // 保温空尾）不带序号
-    const tailSeq = o.tailMessage?.id
-      ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
-      : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    // 包4无seq整改：尾部当前输入不再查询/携带消息序号（旧 tailSeq 注入随裁定7 退役）
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1420,7 +1425,7 @@ export class TurnSupervisor {
     currentInputSequence: number;
     attemptId: string;
     turnId: string | null; // 自动换窗=当前 turn（评审请求可被 stop(turnId) 中断）；手动换窗=null（stopAll 兜底）
-    materials: { identityText: string; rulesText: string; iText: string | null } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null; memoryAnchorsText?: string } | null;
     cause?: RotationCause; // Persisted server intent; absent only during capacity evaluation.
     preserveWindow?: boolean; // Explicit retry may block on capacity but never rotates/rebuilds history.
   }): Promise<{ rotated: boolean; blocked: string | null }> {
@@ -1824,13 +1829,13 @@ export class TurnSupervisor {
     }
     if (!d.trajectory) throw new Error('ROTATION_TRAJECTORY_UNAVAILABLE');
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`, undefined, conversationId);
+    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`, undefined, conversationId, materials?.memoryAnchorsText);
     const sel = selectionId && d.selections ? d.selections.get(selectionId) : null;
     const loadedSelection = d.selections && sel ? d.selections.loadForProjection(sel) : [];
     const carry = await this.resolveWindowCarry(conversationId, `pending:${conversationId}`, loadedSelection);
     const built = this.buildEnvelope({
       conversationId,
-      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+      materials,
       bootText: boot,
       episodeFragment: this.bootstrapMachine.episodeFragmentFor(`pending:${conversationId}`),
       dialogue: [],
@@ -2042,7 +2047,7 @@ export class TurnSupervisor {
     const materials = gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const r = await this.rotateIfNeeded({ conversationId, window, gate, currentInputSequence: cutoff + 1,
       attemptId: 'rotation-resume', turnId: null,
-      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+      materials,
       cause,
     });
     if (!r.rotated) return { ok: false, reason: r.blocked ?? 'ROTATION_NOT_COMMITTED' };
@@ -2201,7 +2206,7 @@ export class TurnSupervisor {
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
         await this.prepareWindowTools(window.id, prepSignal);
-        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id);
+        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id, materials?.memoryAnchorsText);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
         // 相册重构 P5：懒初始化位点解析开窗携带（真实窗 id——直接固化行；选集/携带图
@@ -2210,8 +2215,8 @@ export class TurnSupervisor {
         const carry0 = await this.resolveWindowCarry(turn.conversation_id, window.id, loaded0);
         this.persistCarryPlanForWindow(window.id);
         const built0 = sel0
-          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loaded0, carryFragment: carry0.fragment })
-          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carry0.fragment });
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loaded0, carryFragment: carry0.fragment })
+          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carry0.fragment });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -2224,7 +2229,7 @@ export class TurnSupervisor {
       const rotation = await this.rotateIfNeeded({
         conversationId: turn.conversation_id, window, gate,
         currentInputSequence: inputMessage.sequence, attemptId: attempt.id, turnId,
-        materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+        materials,
         preserveWindow: Boolean(attempt.retry_window_id),
       });
       if (rotation.blocked) {
@@ -2241,7 +2246,7 @@ export class TurnSupervisor {
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
             await this.prepareWindowTools(window.id, prepSignal);
-            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id);
+            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id, materials?.memoryAnchorsText);
             if (stoppedDuringPreparation()) return;
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
             // 绑定 target_window_id；无命中=兼容期自动回退）
@@ -2250,8 +2255,8 @@ export class TurnSupervisor {
             const carryR = await this.resolveWindowCarry(turn.conversation_id, window.id, loadedR);
             this.persistCarryPlanForWindow(window.id);
             const builtR = selR
-              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loadedR, carryFragment: carryR.fragment })
-              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carryR.fragment });
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loadedR, carryFragment: carryR.fragment })
+              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carryR.fragment });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -2393,7 +2398,7 @@ export class TurnSupervisor {
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
     // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
     const catchupContinuation = this.windowHasTool(window.id, 'transcript_read');
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史
@@ -2403,7 +2408,7 @@ export class TurnSupervisor {
     const fallbackBuild = (!orTraj && dv)
       ? this.buildEnvelope({
           conversationId: turn.conversation_id,
-          materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+          materials,
           dialogue: [],
           tailUserText: prompt,
           tailMessage: inputMessage ? { id: inputMessage.id, revision: effective.revision } : null,
@@ -2532,6 +2537,8 @@ export class TurnSupervisor {
     // 记账模型：信封驱动用各自明确型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = dv ? dv.model : d.config.runtime.model;
 
+    // 首发信封已确定本次执行窗口，发布和通话抽头共用该窗的冻结合同。
+    const legacySequenceMarkers = catalogUsesLegacySequenceMarkers(storedToolset(d.db, window.id)?.catalog ?? []);
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;
     // §16 + F11：正文按 (messageId, blockIndex) 跟踪——同一消息多个 text 块各自独立
@@ -2547,7 +2554,7 @@ export class TurnSupervisor {
       publishedByKey.set(key, text);
       // RE-02（2026-10-24）：语音抽头与聊天落库同源（同一真实新增 tail，provider 速度）；
       // 取消后代际内不供给（与下方 publishSegments 的 fence 一致）
-      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail);
+      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail, legacySequenceMarkers);
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
@@ -2559,11 +2566,9 @@ export class TurnSupervisor {
     // 首段创建、后续段落以新修订追加（内容增长）；不再逐段独立成气泡
     let turnAssistantMessageId: string | null = null;
     const publishSegments = (segs: string[]): void => {
-      // 2026-10-19 她报障：模型把消息序号标记学舌进回复开头（前端可见）。
-      // 发表层剥除段首标记（[N]/[seq N] 形态）——提示词已禁写，这里是保险层
-      const stripped = segs.map((s) => s.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, ''));
-      for (const seg of stripped) {
+      for (const part of segs) {
         if (runToken.token.cancelled) return;
+        const seg = legacySequenceMarkers ? stripLegacySequenceMarker(part) : part;
         let msg: ReturnType<import('../messages/service.ts').MessageService['getMessage']> | null;
         if (turnAssistantMessageId === null) {
           msg = d.messages.publishAssistantMessage({ conversationId: turn.conversation_id, turnId, content: seg });

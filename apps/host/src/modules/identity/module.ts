@@ -9,7 +9,7 @@ export const IDENTITYMILESTONEWRITE_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'identity_milestone_write',
-      description: '维护长期记忆里程碑。read 读全文及条目号；write 整版替换；add 追加；revise/remove 按 item 改/删。一行一条，旧版留档，下一新窗生效。写操作需 change_reason 和 idempotency_key；遗漏旧内容须真实 confirm_overwrite=true。',
+      description: '维护我们的记忆锚点。read 读全文及条目号；write 整版替换；add 追加；revise/remove 按 item 改/删。一行一条，旧版留档，下一新窗生效。写操作需 change_reason 和 idempotency_key；遗漏旧内容须真实 confirm_overwrite=true。',
       parameters: {
         type: 'object',
         properties: {

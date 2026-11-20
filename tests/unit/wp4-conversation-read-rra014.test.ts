@@ -3,7 +3,7 @@
 //（漏 1..7 且越过原上界）、range 丢 to_sequence（3..7 读到 12）、锚点被
 // 前邻长文挤掉（所有续页路径到不了它）、控制字符转义后 18479B>16000。
 import test from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { assembleTestTools, freezeLegacyToolWindow, LEGACY_CONVERSATIONREAD_SPEC, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -24,6 +24,9 @@ function makeExecutor(root: string) {
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const { tools: executor } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  // 包4无seq整改：本组是旧引擎（RRA-014 分页/游标语义）的回归——旧窗兼容路径
+  // （C3）按生产旧窗的冻结目录钉住旧 conversation_read 形状（around_seq/范围/裸游标）。
+  freezeLegacyToolWindow(db, 'w1', { conversation_read: { function: { name: 'conversation_read', parameters: LEGACY_CONVERSATIONREAD_SPEC.function.parameters as Record<string, unknown> } } });
   return { executor, db };
 }
 

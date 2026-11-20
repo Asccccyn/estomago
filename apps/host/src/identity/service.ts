@@ -55,6 +55,8 @@ export type IdentityManifestFile = {
   identity_version: string | null;
   approved_source_ref: string | null;
   approved_source_hash: string | null;
+  memory_anchors_ref?: string | null;
+  memory_anchors_hash?: string | null;
   i_version: string | null;
   i_hash: string | null;
   i_snapshot_ref: string | null; // F04：I 快照文件引用（与 i_hash 成对，缺一即阻断）
@@ -182,6 +184,13 @@ export class IdentityService {
     const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
     if (!iRefRetired) verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
     verifyFile(manifest.runtime_rules_ref, manifest.rules_hash, '运行规则');
+    if (manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null) {
+      if (!/^memory-anchors-v[1-9]\d*\.md$/.test(manifest.memory_anchors_ref ?? '')) {
+        reasons.push('记忆锚点引用须指向版本化文件');
+      } else {
+        verifyFile(manifest.memory_anchors_ref, manifest.memory_anchors_hash, '记忆锚点');
+      }
+    }
     // F04：verification_evidence 至少一条，且每条必须是非空白字符串（空串不算证据）
     if (
       !Array.isArray(manifest.verification_evidence) ||
@@ -285,7 +294,7 @@ export class IdentityService {
 
   // F04：已验证材料的单一装载入口——校验（hash）与装配读同一份字节，绝不"校验后再读另一份内容"。
   // 返回 null 表示装载失败（gate 未 READY 或文件读失败），调用方必须阻断，不得回退硬编码正文
-  loadVerifiedMaterials(manifest: IdentityManifestFile): { identityText: string; rulesText: string; iText: string | null; iStatus: string } | null {
+  loadVerifiedMaterials(manifest: IdentityManifestFile): { identityText: string; rulesText: string; iText: string | null; iStatus: string; memoryAnchorsText?: string } | null {
     const read = (ref: string | null | undefined): string | null => {
       if (!ref) return null;
       try {
@@ -301,7 +310,15 @@ export class IdentityService {
     // DBG-05：占位/空槽退役——iText 不再装载（真实 I 由 B 段 bootstrap 唯一注入）。
     const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
     const iText = iRefRetired ? null : read(manifest.i_snapshot_ref);
-    return { identityText, rulesText, iText, iStatus: iRefRetired ? 'retired_bootstrap_only' : (iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved') };
+    const memoryAnchorsText = read(manifest.memory_anchors_ref);
+    if (manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null) {
+      if (memoryAnchorsText === null || sha256Hex(memoryAnchorsText) !== manifest.memory_anchors_hash) return null;
+    }
+    return {
+      identityText, rulesText, iText,
+      iStatus: iRefRetired ? 'retired_bootstrap_only' : (iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved'),
+      ...(memoryAnchorsText !== null ? { memoryAnchorsText } : {}),
+    };
   }
 
   /** 她授权 2026-10-17（落位裁定：里程碑=身份正文槽）：char自维护长期记忆里程碑。
@@ -311,45 +328,65 @@ export class IdentityService {
   updateMilestone(newText: string): { file: string; version: string; hash: string; byteSize: number } {
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING: 里程碑更新需要已批准的 manifest');
-    const currentRef = manifest.approved_source_ref;
-    const m = /^longterm-milestones-v(\d+)\.md$/.exec(currentRef ?? '');
-    if (!m) throw new Error(`IDENTITY_SLOT_NOT_MILESTONE: 身份正文槽当前引用不是里程碑文件（${currentRef ?? 'null'}）`);
-    const nextN = Number(m[1]) + 1;
-    const file = `longterm-milestones-v${nextN}.md`;
-    const filePath = path.join(this.paths.identityDir, file);
-    fs.writeFileSync(filePath, newText, { mode: 0o600 });
-    const bytes = fs.readFileSync(filePath);
-    const hash = sha256Hex(bytes);
-    const manifestPath = this.manifestPath();
-    const updated = { ...manifest, approved_source_ref: file, identity_version: `longterm-milestones-v${nextN}`, approved_source_hash: hash };
-    fs.writeFileSync(manifestPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
-    return { file, version: `longterm-milestones-v${nextN}`, hash, byteSize: bytes.byteLength };
+    const current = this.milestoneRef(manifest);
+    let next = Number(current.match[2]) + 1;
+    let version = `${current.match[1]}-v${next}`;
+    while (fs.existsSync(path.join(this.paths.identityDir, `${version}.md`))) {
+      version = `${current.match[1]}-v${++next}`;
+    }
+    const file = `${version}.md`;
+    fs.writeFileSync(path.join(this.paths.identityDir, file), newText, { flag: 'wx', mode: 0o600 });
+    const hash = sha256Hex(newText);
+    this.saveMilestoneRef(manifest, current.split, file, hash, version);
+    return { file, version, hash, byteSize: Buffer.byteLength(newText, 'utf8') };
   }
 
-  /** 里程碑回滚（她手工操作面）：把身份正文槽指回某个留档旧版。只校验文件与 hash 自洽。 */
+  /** 线上已有组合文件的版本链仍可按原槽回滚。拆出的锚点只允许回滚锚点版本。 */
   rollbackMilestone(version: string): { file: string; hash: string } {
-    if (!/^longterm-milestones-v\d+$/.test(version)) throw new Error('VERSION_INVALID');
-    const file = `${version}.md`;
-    const filePath = path.join(this.paths.identityDir, file);
-    if (!fs.existsSync(filePath)) throw new Error(`ROLLBACK_TARGET_MISSING: ${file}`);
-    const hash = sha256Hex(fs.readFileSync(filePath));
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING');
-    const updated = { ...manifest, approved_source_ref: file, identity_version: version, approved_source_hash: hash };
-    fs.writeFileSync(this.manifestPath(), JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    const current = this.milestoneRef(manifest);
+    const file = `${version}.md`;
+    const target = /^(longterm-milestones|memory-anchors)-v([1-9]\d*)\.md$/.exec(file);
+    if (!target || target[1] !== current.match[1]) throw new Error('VERSION_INVALID');
+    const filePath = path.join(this.paths.identityDir, file);
+    if (!fs.existsSync(filePath)) throw new Error('ROLLBACK_TARGET_MISSING: ' + file);
+    const hash = sha256Hex(fs.readFileSync(filePath));
+    this.saveMilestoneRef(manifest, current.split, file, hash, version);
     return { file, hash };
   }
 
-  /** 2026-10-22 她要求：里程碑条目化——char可编辑/增加/删除。条目=空行分隔的块
-   *  （不依赖特定 markdown 结构）；item 序号 1-based 按出现顺序；至少保留一条。 */
+  private milestoneRef(manifest: IdentityManifestFile): { file: string; split: boolean; match: RegExpExecArray } {
+    const split = manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null;
+    const file = split ? manifest.memory_anchors_ref : manifest.approved_source_ref;
+    const match = /^(longterm-milestones|memory-anchors)-v([1-9]\d*)\.md$/.exec(file ?? '');
+    if (!file || !match || (match[1] === 'memory-anchors') !== split) throw new Error('IDENTITY_SLOT_NOT_MILESTONE');
+    return { file, split, match };
+  }
+
+  private saveMilestoneRef(manifest: IdentityManifestFile, split: boolean, file: string, hash: string, version: string): void {
+    const updated = split
+      ? { ...manifest, memory_anchors_ref: file, memory_anchors_hash: hash }
+      : { ...manifest, approved_source_ref: file, approved_source_hash: hash, identity_version: version };
+    const manifestPath = this.manifestPath();
+    const tempPath = `${manifestPath}.${genId('anchors')}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(updated, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      fs.renameSync(tempPath, manifestPath);
+    } finally {
+      fs.rmSync(tempPath, { force: true });
+    }
+  }
+
   readMilestone(): { text: string; version: string } {
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING');
-    const currentRef = manifest.approved_source_ref;
-    if (!/^longterm-milestones-v\d+\.md$/.test(currentRef ?? '')) throw new Error('IDENTITY_SLOT_NOT_MILESTONE');
-    const filePath = path.join(this.paths.identityDir, currentRef!);
+    const current = this.milestoneRef(manifest);
+    const filePath = path.join(this.paths.identityDir, current.file);
     if (!fs.existsSync(filePath)) throw new Error('MILESTONE_FILE_MISSING');
-    return { text: fs.readFileSync(filePath, 'utf8'), version: manifest.identity_version ?? 'unknown' };
+    const bytes = fs.readFileSync(filePath);
+    if (current.split && sha256Hex(bytes) !== manifest.memory_anchors_hash) throw new Error('MEMORY_ANCHORS_HASH_MISMATCH');
+    return { text: bytes.toString('utf8'), version: current.split ? current.file.slice(0, -3) : manifest.identity_version ?? 'unknown' };
   }
 
   /** 条目=一行一条（她 2026-10-22 裁定：1.2.3.4. 编号、一个换行一条；空行不编号）。

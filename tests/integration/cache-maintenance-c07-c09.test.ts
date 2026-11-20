@@ -186,5 +186,7 @@ test('C07：自醒包装携带设置时间/原due/实际递交；重放不重算
     assert.ok(text.includes(`Scheduled for: ${original.scheduled_at}`), '包装含原due（冻结值）');
     assert.ok(text.includes('Actual delivery:'), '包装含实际递交时间');
     assert.ok(text.includes('Your note: 合成：半小时后问候'), 'note 原文保留');
+    assert.match(text, /想给宿主用户发一句，可以用 chat_send_text/);
+    assert.match(text, /idempotency_key/);
   } finally { await f.shutdown(); }
 });

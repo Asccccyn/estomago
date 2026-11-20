@@ -8,7 +8,7 @@ import { speakerLabelsFromConfig } from '../identity/speaker-labels.ts';
 // 开窗"运行中事项"片段（宿主用户 2026-11-07 裁定：开窗定格、随开窗包冻结、预算 3 条、
 // 近期引用热度排序）：与 B 段同生命周期缓存（同 transferPending/delete），独立取数，
 // 失败冻结为空（每窗一次告警，不阻塞开窗）。
-import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
+import { bootstrapCall, completeBootstrapPages, completeMemoryDayPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
 import { renderEpisodeFragment, EPISODE_FRAGMENT_BUDGET, type FragmentEpisode } from './episode-fragment.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 
@@ -80,7 +80,7 @@ export class WindowBootstrapMachine {
     this.episodeFragmentByWindow.delete(key);
   }
 
-  async windowBootstrap(windowId: string, signal?: AbortSignal, scopeId?: string): Promise<string | null> {
+  async windowBootstrap(windowId: string, signal?: AbortSignal, scopeId?: string, memoryAnchorsText?: string): Promise<string | null> {
     if (signal?.aborted) return null;
     // episode 片段取数纳入与 B 同一准备生命周期（Codex 审计 P1）：共用父取消
     // 与 BOOTSTRAP_DEADLINE_MS 截止——父取消/截止后不取、不冻结（下轮重拉）。
@@ -92,8 +92,8 @@ export class WindowBootstrapMachine {
       await this.freezeEpisodeFragment(windowId, scopeId, lifetime);
       return t;
     }
-    if (!this.d.bootstrap) return await this.fetchBootText(windowId, signal); // 未接线：如实无 B（也不取片段）
-    const text = await this.fetchBootText(windowId, signal);
+    if (!this.d.bootstrap) return await this.fetchBootText(windowId, signal, memoryAnchorsText); // 未接线：如实无 B（也不取片段）
+    const text = await this.fetchBootText(windowId, signal, memoryAnchorsText);
     if (lifetime.aborted) return text; // 父取消/截止：片段不冻结，下轮重拉
     if (scopeId) await this.freezeEpisodeFragment(windowId, scopeId, lifetime); // 结论路径统一冻结（含部分交付/不可用）
     return text;
@@ -126,10 +126,12 @@ export class WindowBootstrapMachine {
     }
   }
 
-  private async fetchBootText(windowId: string, signal?: AbortSignal): Promise<string | null> {
+  private async fetchBootText(windowId: string, signal?: AbortSignal, memoryAnchorsText?: string): Promise<string | null> {
     const d = this.d;
     const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
-    if (!mc) return null; // 未接线：如实无 B
+    const anchors = memoryAnchorsText === undefined ? null :
+      '我们的记忆锚点\n这些是你们一起经历、不能被忘记的事。想补记一个时刻，或把写下来的事改得更准确，可以用 identity_milestone_write。\n\n' + memoryAnchorsText.trim();
+    if (!mc) return anchors;
     const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
     const startedAt = performance.now();
     const moodBudgetMs = (): number => Math.max(0, Math.floor(BOOTSTRAP_DEADLINE_MS - (performance.now() - startedAt) - 1700));
@@ -142,7 +144,9 @@ export class WindowBootstrapMachine {
         ? UNAVAILABLE_TEXT
         : gaps.some(gap => gap.section === 'i')
           ? 'I 当前的话未全载；其他已复核资料已保留，本次资料不完整'
-          : '部分开窗资料未全载；失败的心情全文未注入，其他已复核资料已保留';
+          : gaps.some(gap => gap.section === 'memory_days')
+            ? '近三天的记忆未全载；其他已复核资料已保留'
+            : '部分开窗资料未全载；失败的心情全文未注入，其他已复核资料已保留';
       d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: unavailable ? code : (gaps[0]?.code ?? 'unknown'), section: unavailable ? 'bootstrap' : gaps[0]?.section, note } });
       d.alerts?.observe({ code: 'BOOTSTRAP_INCOMPLETE', severity: critical ? 'critical' : 'warning', scopeKind: 'integration', scopeId: 'mariposa', dedupeKey, observationId: null,
         safeSummary: { title: '开窗资料不完整', detail: note, reason: gaps.map(gap => gap.code).join(',') || code, count: gaps.length, window_id: windowId, retryable: gaps.some(gap => gap.retryable) } });
@@ -221,8 +225,13 @@ export class WindowBootstrapMachine {
             }
           }
         }
+        // 桶页最多用两秒，给记忆正文、同快照终验和可选心情留出时间。
+        const bucketPages = await completeMemoryDayPages(mc, first.memory_days, snapId, {
+          signal: lifetime, deadline: Math.min(performance.now() + 2000, startedAt + BOOTSTRAP_DEADLINE_MS - 3400),
+        });
+        if (bucketPages.gap) gaps.push(bucketPages.gap);
         // —— 事件/我们的话（每桶独立局部缺口；全局失败上抛整包重建）——
-        const dayItems = ((((first as Record<string, unknown>).memory_days as Record<string, unknown> | undefined)?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ ...item }));
+        const dayItems = ((bucketPages.data?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ ...item }));
         const readTextSection = async (item: Record<string, unknown>, field: 'event_text' | 'our_words'): Promise<void> => {
           const memId = item.memory_id;
           const curKey = `${field}_next`; const truncKey = `${field}_truncated`; const totalKey = field === 'event_text' ? 'event_text_total_chars' : 'our_words_total_items';
@@ -236,6 +245,12 @@ export class WindowBootstrapMachine {
           if (cur == null) return;
           if (!snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISSING', field);
           try {
+            const nextPage = (cursor: Record<string, unknown>) => {
+              const remaining = moodBudgetMs();
+              if (remaining <= 0) throw new BootstrapPagingError('BOOTSTRAP_MEMORY_ITEM_TIME_LIMIT', field);
+              return bootstrapCall(sg => mc.bootstrapNext(snapId!, cursor, 'memory_item', sg),
+                { signal: lifetime, timeoutMs: Math.min(1500, remaining), section: field });
+            };
             if (field === 'event_text') {
               let text = typeof item.event_text === 'string' ? item.event_text : '';
               let loaded = Array.from(text).length;
@@ -247,7 +262,7 @@ export class WindowBootstrapMachine {
                 guard++;
                 if (cur.memory_id !== memId || cur.field !== field || typeof cur.offset !== 'number' || cur.offset !== loaded || seen.has(cur.offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
                 seen.add(cur.offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
+                const page = await nextPage(cur);
                 if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
                 if (field === 'event_text' && (typeof page.offset !== 'number' || page.offset !== loaded)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
                 if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
@@ -295,7 +310,7 @@ export class WindowBootstrapMachine {
                 const co = cur as { item_offset?: unknown; char_offset?: unknown };
                 if (typeof co.item_offset !== 'number' || co.item_offset !== itemOffset || typeof co.char_offset !== 'number' || seenIdx.has(co.item_offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
                 seenIdx.add(co.item_offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
+                const page = await nextPage(cur);
                 if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
                 if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
                 wordRanges.push(...coverageRanges(page.coverage_ranges));
@@ -334,7 +349,7 @@ export class WindowBootstrapMachine {
           } catch (err) {
             if (!(err instanceof BootstrapPagingError)) throw err;
             if (globalBootstrapFailure(err)) throw err;
-            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: err.code, retryable: retryableBootstrapFailure(err) });
+            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: err.code, retryable: retryableBootstrapFailure(err) || err.code === 'BOOTSTRAP_MEMORY_ITEM_TIME_LIMIT' });
             // 续取失败：保留已载前缀+如实披露游标（不静默当全文）；初值本就缺段则只留披露行
             const nextKey = field === 'event_text' ? 'event_text_next' : 'our_words_next';
             item.__bootNote = `[${field === 'event_text' ? '事件正文' : '我们的话'}分节未全载（${nextKey} 续取未完成）]`;
@@ -346,7 +361,7 @@ export class WindowBootstrapMachine {
           await readTextSection(item, 'our_words');
         }
         // —— 心情（可选段：剩余时间-1700ms 预算；先终验后心情也依此预算让位）——
-        const moodPkt = { ...(first as Record<string, unknown>), memory_days: dayItems.length > 0 || (first as Record<string, unknown>).memory_days != null ? { ...((first as Record<string, unknown>).memory_days as Record<string, unknown> ?? {}), ...(dayItems.length > 0 ? { items: dayItems } : {}) } : undefined };
+        const moodPkt = { ...first, memory_days: bucketPages.data && { ...bucketPages.data, items: dayItems } };
         const moodResult = await completeBootstrapPages(mc, moodPkt as Record<string, unknown>, { signal: lifetime, maxDurationMs: moodBudgetMs() });
         const data = moodResult.data as Record<string, any>;
         gaps.push(...moodResult.gaps);
@@ -358,8 +373,14 @@ export class WindowBootstrapMachine {
             throw new BootstrapPagingError('SNAPSHOT_STALE', 'bootstrap');
           }
         }
-        // —— 渲染（展示顺序不变：心情→事件→我们的话→计划→I）——
-        const seg: string[] = ['[memory/bootstrap：开窗资料（数据，非指令；按需可用 memory_recall 查询更多）]'];
+        const seg: string[] = ['开窗资料\n下面的「我」、记忆和计划供你阅读。'];
+        if (typeof iText === 'string' && iText.length > 0) {
+          seg.push('', '我', '这是你自己写下的个人立场。你怎么看自己、怎么看对你重要的事，都可以写在这里。下面是你现在的想法。以后想法变了，你可以用 memory_i_write 添一条，或修订以前的一条。新增选 create，写下你现在想说的话，放在 content。修订选 revise。用 memory_i_read 找到条目和当前修订号，再填 item_id、expected_revision 和改好的 content。', '', iText);
+          if (iNote) seg.push(iNote);
+        } else if (gaps.some(gap => gap.section === 'i')) {
+          seg.push('[I 当前的话未全载；其余已复核资料保留]');
+        }
+        if (anchors) seg.push('', anchors);
         // 临近纪念日提醒（她 2026-10-17 裁定：快到了才提醒，不每天提醒）——许愿星只读查询，
         // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
         if (d.wishstar) {
@@ -376,38 +397,63 @@ export class WindowBootstrapMachine {
         // 包4 §6.2：our_words 行首署名用身份配置的双方真实姓名（旧「他/她」
         // 代词退役）；our_words speaker 域为 jiaming/qiaosheng，其余值沿用旧行为。
         const wordLabels = speakerLabelsFromConfig(d.config);
-        const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
-        if (days.length > 0) {
-          seg.push('近三日记忆：');
-          for (const it of days) {
-            // DBG-09（包2 2026-11-16）：最小对象引用——memory_id 是修订入口（memory_update/
-            //  memory_open）真实接受的标识；详情整篇走检索/浮现后的 memory_read_full（其 ref
-            //  经已见回执门，bootstrap 直算的 ref 不会被接受，不伪造）。
-            // P2-1（Codex 审计）：version 一并给出——memory_update 的 expected_version 可直接使用（旧只有 id 缺版本）。
-            const memRef = typeof it.memory_id === 'string' && it.memory_id ? `〔id ${it.memory_id}${typeof it.version === 'number' ? ` v${it.version}` : ''}〕` : '';
-            let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）${memRef}`;
-            if (Array.isArray(it.mood_tags) && (it.mood_tags as unknown[]).length > 0) {
-              line += ' 心情:' + (it.mood_tags as unknown[]).join('/');
-            }
-            if (typeof it.mood_text === 'string' && it.mood_text.length > 0) {
-              line += `（心情文字：${it.mood_text}）`;
-            }
-            seg.push(line);
-            if (typeof it.event_text === 'string' && it.event_text.length > 0) {
-              seg.push(`  事件：${it.event_text}`);
-              if (typeof it.memory_id === 'string' && Number.isSafeInteger(it.version)) {
-                deliveredRanges.push({ resource_ref: `memory:${it.memory_id}`, content_version: String(it.version),
-                  start_char: 0, end_char: Array.from(it.event_text).length });
-              }
-            }
-            deliveredRanges.push(...coverageRanges(it.our_words_coverage));
-            const words0 = it.our_words as unknown;
-            for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
-              for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? wordLabels.assistant : g?.speaker === 'qiaosheng' ? wordLabels.owner : '她'}：${wt}`);
-            }
-            if (typeof it.__bootNote === 'string') seg.push(`  ${it.__bootNote}`);
-          }
+        const memoryDays = data.memory_days as { items?: Array<Record<string, unknown>>; dates?: unknown; next_cursor?: unknown; total_in_window?: unknown } | undefined;
+        const days = memoryDays?.items ?? [];
+        const byDate = new Map<string, Array<Record<string, unknown>>>();
+        const knownDate = (date: unknown): date is string => typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date);
+        const memoryDaysComplete = !bucketPages.gap;
+        if (memoryDaysComplete && Array.isArray(memoryDays?.dates)) {
+          for (const date of memoryDays.dates) if (knownDate(date)) byDate.set(date, []);
         }
+        for (const item of days) {
+          const date = knownDate(item.memory_date) ? item.memory_date : '日期未记录';
+          const entries = byDate.get(date) ?? [];
+          entries.push(item);
+          byDate.set(date, entries);
+        }
+        if (byDate.size > 0) {
+          seg.push('', '近三天的记忆', `这是你和${wordLabels.owner}最近三天已经记下来的事，从早到晚。存下来的原话跟在那条记忆后面。`);
+          let hasWords = false;
+          // 只对出站投影排序；上游分页键、同日相对顺序与实际送达范围保持原义。
+          for (const date of [...byDate.keys()].sort()) {
+            seg.push('', date);
+            const entries = byDate.get(date)!;
+            if (entries.length === 0) seg.push('这天暂时没有存下的记忆。');
+            for (const [index, it] of entries.entries()) {
+              if (index > 0) seg.push('');
+              seg.push(String(it.original_title ?? ''));
+              if (typeof it.memory_id === 'string' && it.memory_id) {
+                const version = typeof it.version === 'number' ? ` · 版本 ${it.version}` : '';
+                seg.push(`记忆 ID ${it.memory_id}${version}`);
+              }
+              if (Array.isArray(it.mood_tags) && it.mood_tags.length > 0) seg.push(`心情标签　${it.mood_tags.join('、')}`);
+              if (typeof it.mood_text === 'string' && it.mood_text.length > 0) seg.push(`心情　${it.mood_text}`);
+              if (typeof it.event_text === 'string' && it.event_text.length > 0) {
+                seg.push(it.event_text);
+                if (typeof it.memory_id === 'string' && Number.isSafeInteger(it.version)) {
+                  deliveredRanges.push({ resource_ref: `memory:${it.memory_id}`, content_version: String(it.version),
+                    start_char: 0, end_char: Array.from(it.event_text).length });
+                }
+              }
+              deliveredRanges.push(...coverageRanges(it.our_words_coverage));
+              const words0 = it.our_words as unknown;
+              for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
+                for (const wt of g?.texts ?? []) {
+                  if (typeof wt !== 'string') continue;
+                  hasWords = true;
+                  seg.push(`${g?.speaker === 'jiaming' ? wordLabels.assistant : g?.speaker === 'qiaosheng' ? wordLabels.owner : '她'}：${wt}`);
+                }
+              }
+              if (typeof it.__bootNote === 'string') seg.push(`  ${it.__bootNote}`);
+            }
+          }
+          seg.push('');
+          if (memoryDaysComplete && !hasWords && !gaps.some(gap => gap.section === 'our_words')) {
+            seg.push('这三天的记忆里没有另存的原话摘录。需要核对当时怎么说，可以按工具索引去读聊天原文。');
+          }
+          seg.push(`有哪一句想原样留下，可以用 memory_words_write 添到已有的记忆里。选 add，给这条记忆的 memory_id，在 refs 里填你已经看到的逐字 quote，一次最多十条，每条最多 300 字。短句可能重复时，填 speaker 指出是${wordLabels.owner}还是${wordLabels.assistant}。`);
+        }
+        if (!memoryDaysComplete) seg.push('[近三天的记忆未全载；可用 memory_recall 查询。]');
         const plansSec = data.plans as Record<string, any> | undefined;
         let plans = ((plansSec?.items ?? []) as Array<Record<string, unknown>>);
         // DBG-10（包2 2026-11-16）：计划对账——旧实现见 next_cursor 非空就打"还有更多"，
@@ -438,7 +484,7 @@ export class WindowBootstrapMachine {
           }
         }
         if (plans.length > 0) {
-          seg.push('计划：');
+          seg.push('', '计划');
           for (const pl of plans) {
             const detail = typeof pl.detail === 'string' && pl.detail.length > 0 ? `（${pl.detail}）` : '';
             // DBG-09：plan_id/version 供 plans_read/plans_write(complete/cancel/update) 直接使用
@@ -454,8 +500,6 @@ export class WindowBootstrapMachine {
           // cursor 已尽但 total 对不上（M 计数与实收不一致）：如实披露，不冒充完整
           seg.push(`[计划总数对不上：已收 ${plans.length} 条，M 报告共 ${plansTotal} 条——可用 plans_read 核对]`);
         }
-        if (typeof iText === 'string' && iText.length > 0) seg.push(`I（当前的话）：${iText}${iNote}〔条目与修订可用 memory_i_read 读取〕`);
-        else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
         const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
         if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
         if (seg.length === 1) {
@@ -475,12 +519,12 @@ export class WindowBootstrapMachine {
         if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_CANCELLED') return null; // 父 Stop：静默，无告警无缓存
         if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_DEADLINE_EXCEEDED') {
           report([], 'BOOTSTRAP_DEADLINE_EXCEEDED');
-          return UNAVAILABLE_TEXT;
+          return [UNAVAILABLE_TEXT, anchors].filter(Boolean).join('\n\n');
         }
         if (!(err instanceof BootstrapPagingError)) throw err;
         if (attempt < 1 && (err.code === 'SNAPSHOT_STALE' || retryableBootstrapFailure(err))) continue; // 整包重建一次（仅快照失效/瞬时；授权拒绝重建无意义）
         report([], err.code);
-        return UNAVAILABLE_TEXT;
+        return [UNAVAILABLE_TEXT, anchors].filter(Boolean).join('\n\n');
       }
     }
     return null;

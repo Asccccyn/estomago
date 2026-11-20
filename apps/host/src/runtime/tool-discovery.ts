@@ -2,13 +2,15 @@ import type { Db } from '../db/connection.ts';
 import { definitionId, renderDefinition } from '../capabilities/definition.ts';
 export { definitionId } from '../capabilities/definition.ts';
 import type { ToolGroup } from '../capabilities/registry.ts';
-import { recoverInitialGroups, resolveToolGroups, renderToolContext } from './tool-initial-visible.ts';
+import { includesInitialDefinition, recoverInitialGroups, resolveToolGroups, renderToolContext } from './tool-initial-visible.ts';
 // P01.4/P01.1：只依赖叶类型（capabilities/contracts），不再从 host-tools 导入。
 import type { HostToolSpec } from '../capabilities/contracts.ts';
 export const DISCOVERY_NAMES = ['tool_catalog','tool_define','tool_invoke'] as const;
 export function buildDeferredTools(): HostToolSpec[] {
   return [
-    {type:'function',function:{name:'tool_catalog',description:'列出可用工具的简短目录，不含参数定义。',parameters:{type:'object',properties:{},additionalProperties:false}}},
+    // 包4发现整改（2026-11-18）：catalog 增可选 query——按意图或准确工具名一次返回
+    // 必要完整定义（含预载工具；索引来自本窗冻结 catalog，不另维护手写 map）。
+    {type:'function',function:{name:'tool_catalog',description:'按业务意图（如"把这句话保存成原话""生成一张图"）或准确工具名查询工具，一次返回完成调用所需的完整定义（含参数）。不带 query 时列出全部工具的简短目录。查到的能力与当前窗口合同一致；搜索本身不是执行授权之外的新权限。',parameters:{type:'object',properties:{query:{type:'string',minLength:1,maxLength:200,description:'业务意图短语或准确工具名'}},additionalProperties:false}}},
     {type:'function',function:{name:'tool_define',description:'需要使用某个工具时，按目录中的名称读取它的完整参数定义。',parameters:{type:'object',properties:{name:{type:'string'}},required:['name'],additionalProperties:false}}},
     // RT01（复审 20261106）：公开 schema 与执行事实一致——P6 起允许不读定义直接
     // invoke（执行侧按冻结业务 schema/权限校验）；definition_id 仅在沿已读定义
@@ -52,8 +54,8 @@ export function freezeWindowTools(db:Db,windowId:string,catalog:HostToolSpec[],m
   db.prepare('INSERT OR IGNORE INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at,groups_json,initial_text) VALUES(?,?,?,?,?,?,?)').run(windowId,protocol,JSON.stringify(tools),JSON.stringify(full),new Date().toISOString(),groups ? JSON.stringify(groups) : null,initialText);
   return storedToolset(db,windowId)!.tools;
 }
-/** A definition is usable only after its real tool result was in this exact
- * sent request. Calling define and invoke in the same batch is not enough. */
+/** Report whether the full definition was actually delivered in this sent request.
+ * A resident usage guide does not count as the full schema, and delivery is not an invocation gate. */
 export function definitionWasSeen(db:Db,scope:{roomId:string;windowId:string;requestId:string},spec:HostToolSpec):boolean {
   const row=db.prepare(`SELECT p.payload_json,p.payload_wire_json,p.tool_context_json FROM provider_requests p JOIN turns t ON t.id=p.turn_id
     WHERE p.id=? AND p.window_id=? AND t.conversation_id=? AND p.sent_at IS NOT NULL`).get(scope.requestId,scope.windowId,scope.roomId) as {payload_json:string;payload_wire_json:string|null;tool_context_json:string|null}|undefined;
@@ -66,7 +68,7 @@ export function definitionWasSeen(db:Db,scope:{roomId:string;windowId:string;req
     const canonical = JSON.parse(row.payload_json).messages as any[];
     if (set?.groups[spec.function.name] === 'C' && canonical.some(m => m.role === 'system' &&
         (typeof m.content === 'string' ? [m.content] : (m.content ?? []).filter((b:any)=>b.type==='text').map((b:any)=>b.text))
-          .some((text:string)=>text.includes('[tools/initial') && text.includes(renderDefinition(spec))))) return true;
+          .some((text:string)=>includesInitialDefinition(text, renderDefinition(spec))))) return true;
     const ids=new Set<string>();
     for(const m of messages){
       if(m.role==='assistant')for(const tc of m.tool_calls??[]){
@@ -98,7 +100,7 @@ export function recordToolContext(db: Db, requestId: string, windowId: string, m
   const systems = texts('system');
   const proofs: Array<{kind:string;name:string;definition_id:string;task_id?:string}> = [];
   for (const spec of set.catalog) {
-    if (set.groups[spec.function.name] === 'C' && systems.some(text => text.includes('[tools/initial') && text.includes(renderDefinition(spec)))) {
+    if (set.groups[spec.function.name] === 'C' && systems.some(text => includesInitialDefinition(text, renderDefinition(spec)))) {
       proofs.push({kind:'initial',name:spec.function.name,definition_id:definitionId(spec)});
     }
   }

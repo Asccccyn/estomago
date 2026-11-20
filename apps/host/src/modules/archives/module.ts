@@ -69,7 +69,7 @@ const ARCHIVESSEARCH_DEFINITION: import('../../capabilities/contracts.ts').HostT
   type: 'function' as const,
   function: {
     name: 'archives_search',
-    description: '按关键词搜索对话存档（争吵/甜蜜）。返回匹配的存档条目与有限摘录；要看完整片段用既有原文读取工具，本工具不回读全文。没有合格匹配会如实返回 no_match；服务忙/不可用单独区分。',
+    description: '按关键词搜索争吵或甜蜜存档，查看匹配的条目和摘录。要读存档时保存的原话，把这次拿到的 archive_id 交给 conversation_read。没有合格匹配时返回 no_match，服务不可用时会说明。',
     parameters: {
       type: 'object' as const,
       properties: {

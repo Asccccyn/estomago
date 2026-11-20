@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "68952241fe9bc08aae4d404dd9a0e4d038785625",
+  "baselineCommit": "971751a8193fd563f64589607f4c8b6b4c4f3408",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -51,7 +51,6 @@
     "conversation_archive",
     "memory_relations",
     "image_generate",
-    "memory_source_bind",
     "content_albums_read",
     "content_album_entry_write",
     "media_view",
@@ -64,28 +63,28 @@
     "tool_invoke"
   ],
   "definitionIds": {
-    "memory_hold": "td_f073967a38333e9f5eedad23",
+    "memory_hold": "td_d14629ae9aab3c7bf2944c9c",
     "memory_recall": "td_8025fb9c84eb581e0b9f2897",
     "memory_recall_next": "td_c159234fa8bf8cd32fcd9ad7",
     "memory_read_full": "td_5aa135ad50bcff5c497c94bf",
     "memory_update": "td_f96ffcd208abb576b687fbd7",
-    "conversation_read": "td_5f32e979a38a18ac9ca4932a",
+    "conversation_read": "td_4d331845495245739155ab45",
     "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
     "memory_i_write": "td_1ddd3a690ca0bea454930706",
     "plans_write": "td_cc397242a8d7a64c03423fcf",
     "memory_open": "td_6f65eb0c5f16a403a5007c39",
-    "memory_correct": "td_c58dab638b2edcb5855b7450",
+    "memory_correct": "td_8d6c957775e66318f1b27de4",
     "deletion_review": "td_1a184b61b7e8219ea84dc25d",
     "episode_read": "td_240a447e6c2fbdb8e8ff6eeb",
-    "episode_apply": "td_1e10dda24f7cec9d85422be4",
+    "episode_apply": "td_fcaf0a0ae3eb215d6c1fe2e6",
     "content_post_create": "td_b0e9999653440c5ae216284f",
     "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
     "creation_save_artifact": "td_7fb41b31a4ac3a851e9f9eb5",
     "wake_manage": "td_cc02e5a1dca761a16aad1398",
     "background_complete": "td_e4bd112b3b94eefbe84a2ffd",
-    "chat_send_text": "td_2eecb84ad9caf01e6364ab07",
+    "chat_send_text": "td_074393184cb1d6f44ce7c25e",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
     "chat_send_attachment": "td_2d582dc311115a57e9cd3dae",
     "call_control": "td_610eb42436fd9ae3782336c6",
@@ -98,7 +97,7 @@
     "oido_view": "td_e2afa71c62d836d5b4359e54",
     "oido_find": "td_4dac90ce5f50d5a00ba5b2db",
     "oido_compare": "td_531c45af21260ea69a6c0fcf",
-    "identity_milestone_write": "td_93479b067f25f5bb779b6f71",
+    "identity_milestone_write": "td_577aa1ab143661c5df508978",
     "wishstar_write_star": "td_09240106d16047bb5678885d",
     "wishstar_read": "td_8c101051bb0083cf6b9c2fb0",
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
@@ -110,24 +109,23 @@
     "wishstar_offer_star": "td_bb605a24b331b6dc1c2d88f8",
     "wishstar_accept_offer": "td_fe061dcebb331f5a2c2a00ce",
     "context_review_complete": "td_80e678ecb6056243f20c0d26",
-    "memory_words_write": "td_f4823cf6cf38cf650274b504",
+    "memory_words_write": "td_40f60d2daf1bee6f4ae8139b",
     "conversation_archive": "td_9d83efbbb261155d73df3511",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
     "image_generate": "td_07d95a84bbbb2855276a14f8",
-    "memory_source_bind": "td_a74b1be99f1e364053c9ee33",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "content_album_entry_write": "td_228924fc50dbf03f78332239",
     "media_view": "td_f72b71bbef701e3714320c82",
     "content_creations_read": "td_439172e960f2ab11a08f7703",
-    "archives_search": "td_daedbb82901f5b8273b01e01"
+    "archives_search": "td_249b4a683b8cc293ef4a3163"
   },
-  "toolsSha256": "dce52ac922937d4fa18d9d66c05d8e3306360678b8644313b5867a872467176b",
+  "toolsSha256": "98914ab5adb0914a8a0b57307206bebdb636e8abbc2cbd883ff2cf084c57ccdf",
   "tools": [
     {
       "type": "function",
       "function": {
         "name": "memory_hold",
-        "description": "直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成；需要时另用 memory_source_bind 绑定原文、memory_words_write 补写原话，也可由她以后补绑定。仅 contemporaneous 可写当下心情；mood_tags 或 mood_note 任一出现都是写心情，两者都省略才是不写。",
+        "description": "直接保存一件事为正式记忆，无需先读取或绑定原文。你可自主选择记录或不记录。保存成功即完成——原文关联由后台任务自动处理（无需你绑定），她也可以以后补充。仅 contemporaneous 可写当下心情；mood_tags 或 mood_note 任一出现都是写心情，两者都省略才是不写。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -168,7 +166,7 @@
                 "type": "string",
                 "minLength": 1
               },
-              "description": "plan 分类必填；使用 plans_read 或已有成功回执的 plan_id。Existing server-issued plan IDs only — never invent IDs; create the plan first if needed; omit if no valid ID is available."
+              "description": "仅当 categories 选了 plan 分类时必填：真实服务端 plan_id（plans_read 或已有成功回执中的）。只能用已存在的真实 ID，不得编造；没有合适的真实计划时不要选 plan 分类（不必为分类新建计划）。"
             },
             "creation_mode": {
               "type": "string",
@@ -495,41 +493,93 @@
       "type": "function",
       "function": {
         "name": "conversation_read",
-        "description": "读取本房间已保存的聊天原文（只读）。围绕某条已知消息读前后文，或按序号范围读，长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。读取不产生任何记录动作。已实际送达的片段返回短回执；用户明确要求重看时用 reread=true。",
+        "description": "读取本房间已发布的聊天原文（只读，无记录动作）。五种进入方式（选一）：①locate——按日期/说话人/关键词定位旧片段，返回最小边界候选（少量摘录+续读 cursor），不展开全文；②anchor——说话人+该消息正文中一段连续逐字原话，围绕那条消息读前后文（用于重看已知内容）；③latest=true——从最新已发布消息往回读一页；④archive_id——用搜索存档回执里的 ID 读取保存时的原文；⑤cursor——上一页或定位候选返回的游标，原样传回续读。长文自动分页。只返回真实用户消息与已正式发布的助手消息；不含思考、草稿或系统内容。已实际送达的片段返回短回执；用户明确要求重看时用 reread=true。当前上下文里已看到的对话不需要本工具——存档/写原话/跟踪事件直接在对应工具里给锚点即可。",
         "parameters": {
           "type": "object",
           "properties": {
-            "around_seq": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "定位锚点序号（对话里每条消息开头的 [N]）：读它前后各若干条"
+            "locate": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "按线索定位旧片段（date 或 text 至少给一项）——只返回最小边界候选，不读全文",
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "那天的日期（本地时区 YYYY-MM-DD）；配 date_to 表区间"
+                },
+                "date_to": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                  "description": "区间终日（含当天）；单日省略"
+                },
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ],
+                  "description": "可选：限定说话人"
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100,
+                  "description": "原话中的连续逐字片段（1-100 字）"
+                }
+              }
             },
-            "revision": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "可选：锚点消息的指定修订号（读不到如实报错，不以当前修订冒充）"
+            "anchor": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "围绕一条已知消息读前后文（说话人+逐字原话定位；多处同字会返回候选）",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ],
+                  "description": "该消息的说话人"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "该消息正文中一段连续的逐字原话（1-300 字）"
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "可选：按你曾见过的指定修订读（读不到如实报错，不以当前修订冒充）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ]
+            },
+            "archive_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "archives_search 命中的 archive_id，读取该存档原样保留的版本"
+            },
+            "latest": {
+              "type": "boolean",
+              "const": true,
+              "description": "从最新已发布消息往回读一页，填 true"
             },
             "before": {
               "type": "integer",
               "minimum": 1,
               "maximum": 50,
-              "description": "锚点之前读几条（默认 5）"
+              "description": "anchor 模式：锚点之前读几条（默认 5）"
             },
             "after": {
               "type": "integer",
               "minimum": 1,
               "maximum": 50,
-              "description": "锚点之后读几条（默认 5）"
-            },
-            "from_sequence": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "范围模式：起始序号（含）"
-            },
-            "to_sequence": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "范围模式：结束序号（含）"
+              "description": "anchor 模式：锚点之后读几条（默认 5）"
             },
             "limit": {
               "type": "integer",
@@ -539,13 +589,51 @@
             },
             "cursor": {
               "type": "object",
-              "description": "续页游标（上一页返回的 next_cursor 原样传入）"
+              "additionalProperties": false,
+              "required": [
+                "c"
+              ],
+              "properties": {
+                "c": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "description": "上一页/定位候选返回的 cursor 原样传入"
+                }
+              }
             },
             "reread": {
               "type": "boolean",
               "description": "仅用户明确要求重看、逐字核对时，本次仍交付正文。"
             }
           },
+          "oneOf": [
+            {
+              "required": [
+                "locate"
+              ]
+            },
+            {
+              "required": [
+                "anchor"
+              ]
+            },
+            {
+              "required": [
+                "archive_id"
+              ]
+            },
+            {
+              "required": [
+                "latest"
+              ]
+            },
+            {
+              "required": [
+                "cursor"
+              ]
+            }
+          ],
           "additionalProperties": false
         }
       }
@@ -832,7 +920,7 @@
       "type": "function",
       "function": {
         "name": "memory_correct",
-        "description": "纠正错误的关联、话语来源或原文绑定，读取纠错历史。relation、word_source、binding、plan_link、i_relation 需 correction_action；corrections 读台账。纠错保留审计；普通补话用 memory_words_write，建立或读取记忆关系用 memory_relations。",
+        "description": "纠正错误的关联或话语来源，读取纠错历史。relation、word_source、plan_link、i_relation 需 correction_action；corrections 读台账。纠错保留审计；普通补话用 memory_words_write，建立或读取记忆关系用 memory_relations。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -842,7 +930,7 @@
                 "remove_wrong_binding",
                 "replace_wrong_binding"
               ],
-              "description": "relation/word_source/binding/plan_link/i_relation 必填：remove_wrong_binding=撤错误 / replace_wrong_binding=换正确"
+              "description": "relation/word_source/plan_link/i_relation 必填：remove_wrong_binding=撤错误 / replace_wrong_binding=换正确"
             },
             "relation_id": {
               "type": "string",
@@ -852,17 +940,12 @@
             "word_id": {
               "type": "string",
               "minLength": 1,
-              "description": "word_source/word_revise 必填：话语 ID"
+              "description": "word_source 必填：话语 ID"
             },
             "expected_source_version": {
               "type": "integer",
               "minimum": 0,
               "description": "word_source 必填：来源换代计数 CAS（读取结果里有）"
-            },
-            "binding_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "binding 必填：原文绑定 ID"
             },
             "link_id": {
               "type": "string",
@@ -883,7 +966,6 @@
               "enum": [
                 "relation",
                 "word_source",
-                "binding",
                 "plan_link",
                 "i_relation",
                 "corrections"
@@ -1013,7 +1095,7 @@
       "type": "function",
       "function": {
         "name": "episode_apply",
-        "description": "操作语义事件线：start（开始跟踪一件事，需 label 与原文引用）、pause（暂停跟踪）、continue（同事件继续，可追加原文引用）、close（完成，需终点与判断依据原文引用）、correct（纠错，需说明理由与判断依据）。事件=数据线（引用原文，不复制正文）。",
+        "description": "操作语义事件线：start（开始跟踪一件事，需 label 与原文依据）、pause（暂停跟踪）、continue（同事件继续，可追加原文依据）、close（完成，需终点与判断依据）、correct（纠错，需说明理由与判断依据）。事件=数据线（引用原文，不复制正文）。当前已见对话可直接给起止锚点 anchor_start 和 anchor_end，或给终点 terminal_anchor 和判断依据 decision_anchors，已有合法引用（episode_read 详情或既有回执）也可直接使用——不需要先建记忆、绑定或读取。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1055,21 +1137,121 @@
               "type": "integer",
               "description": "除 start 外必填：episode_read 详情中的当前修订号（CAS）；冲突时读回，不猜版本"
             },
+            "anchor_start": {
+              "type": "object",
+              "description": "start/continue：当前已见对话的起点锚点（与 conversation_archive 同一合同：speaker 宿主用户/char + 该消息正文中一段连续逐字原话）",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ]
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "逐字原话（1-300 字，来自已见消息正文）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ],
+              "additionalProperties": false
+            },
+            "anchor_end": {
+              "type": "object",
+              "description": "start/continue：终点锚点；宿主在本次已见范围内解析起止之间（含首尾）全部完整已见的消息为事件来源",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ]
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "逐字原话（1-300 字）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ],
+              "additionalProperties": false
+            },
+            "terminal_anchor": {
+              "type": "object",
+              "description": "close 或把事件纠正为 CLOSED 时，给当前已见原文的终点",
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "宿主用户",
+                    "char"
+                  ]
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300,
+                  "description": "逐字原话（1-300 字）"
+                }
+              },
+              "required": [
+                "speaker",
+                "quote"
+              ],
+              "additionalProperties": false
+            },
+            "decision_anchors": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 16,
+              "description": "close/correct：判断依据的原文锚点（各一条已见消息中的逐字引语）",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "speaker": {
+                    "type": "string",
+                    "enum": [
+                      "宿主用户",
+                      "char"
+                    ]
+                  },
+                  "quote": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  }
+                },
+                "required": [
+                  "speaker",
+                  "quote"
+                ],
+                "additionalProperties": false
+              }
+            },
             "source_selections": {
               "type": "array",
               "minItems": 1,
               "maxItems": 16,
-              "description": "原文引用段（conversation_id+members[source_message_id+content_hash]）——用 memory_source_bind 回执里的来源身份"
+              "description": "既有合法原文引用段（conversation_id+members[source_message_id+content_hash]）——episode_read 详情或既有成功回执中的来源身份，原样使用；当前已见对话不必先取引用，直接用 anchor_start+anchor_end"
             },
             "terminal_source_ref": {
               "type": "object",
-              "description": "close 必填：截至何处的原文锚点"
+              "description": "close 或纠正为 CLOSED 时，可用 episode_read 或已有回执给过的合法终点引用。与 terminal_anchor 二选一"
             },
             "decision_source_refs": {
               "type": "array",
               "minItems": 1,
               "maxItems": 16,
-              "description": "close/correct 必填：判断依据原文引用"
+              "description": "close 或 correct 时，可用已有回执给过的合法判断依据引用。与 decision_anchors 二选一"
             },
             "corrected_state": {
               "type": "string",
@@ -1323,7 +1505,7 @@
       "type": "function",
       "function": {
         "name": "chat_send_text",
-        "description": "以你的身份向当前私聊正式发送一条文字消息（自主活动中唯一公开发言途径；普通最终回复不会自动发布）。同一幂等键重试只发一次。",
+        "description": "以你的身份向当前私聊正式发送一条文字消息。仅用于自主活动场景需要主动公开说话时（如预约到点、后台活动的主动汇报）；普通对话的最终回复由发布链自动发出，不需要、也不要用本工具重复发送。同一幂等键重试只发一次。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1739,7 +1921,7 @@
       "type": "function",
       "function": {
         "name": "identity_milestone_write",
-        "description": "维护长期记忆里程碑。read 读全文及条目号；write 整版替换；add 追加；revise/remove 按 item 改/删。一行一条，旧版留档，下一新窗生效。写操作需 change_reason 和 idempotency_key；遗漏旧内容须真实 confirm_overwrite=true。",
+        "description": "维护我们的记忆锚点。read 读全文及条目号；write 整版替换；add 追加；revise/remove 按 item 改/删。一行一条，旧版留档，下一新窗生效。写操作需 change_reason 和 idempotency_key；遗漏旧内容须真实 confirm_overwrite=true。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2096,7 +2278,7 @@
       "type": "function",
       "function": {
         "name": "memory_words_write",
-        "description": "向已有记忆补写或替换已核对的原话。add 补话；revise 替换一条已存话语。只勾选已读消息，系统逐字录入并解析说话人；缺原文先 conversation_read。目标版本由服务内部读取并 CAS，无需重复获取版本。",
+        "description": "向已有记忆补写或替换已核对的原话。add 补存一至十条原话。revise 替换一条已存的话，填 word_id，并在 refs 中只给一条新引语。refs 给逐字引语锚点：必须与本次已见原文逐字一致，系统逐字核对并解析说话人。当前上下文里已看到的对话直接给引语即可，无需先读取；真正没见过的旧材料才先用 conversation_read 取回。目标版本由服务内部读取并 CAS，无需重复获取版本。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2125,35 +2307,26 @@
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
-                  "seq"
+                  "quote"
                 ],
                 "properties": {
-                  "seq": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "已读消息的 [N] 序号"
+                  "quote": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300,
+                    "description": "逐字原话引语（1-300 字，与已见原文完全一致；引语本身即所选句段内容）"
                   },
-                  "from": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "起始句，1 起算"
-                  },
-                  "to": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "结束句（含）；与 from 成对"
+                  "speaker": {
+                    "type": "string",
+                    "enum": [
+                      "宿主用户",
+                      "char"
+                    ],
+                    "description": "可选：说话人（引语在双方消息中都出现时用于消歧；省略=按唯一匹配解析）"
                   }
-                },
-                "dependencies": {
-                  "from": [
-                    "to"
-                  ],
-                  "to": [
-                    "from"
-                  ]
                 }
               },
-              "description": "已读消息 seq；from/to 同时省略选整条，同时提供选 1 起算的句子闭区间"
+              "description": "已核对的原话引语（各 1-300 字、与已见原文逐字一致；同一引语出现在多处时给 speaker 消歧，仍不唯一会返回边界候选）"
             }
           },
           "required": [
@@ -2177,7 +2350,13 @@
               "then": {
                 "required": [
                   "word_id"
-                ]
+                ],
+                "properties": {
+                  "refs": {
+                    "type": "array",
+                    "maxItems": 1
+                  }
+                }
               }
             }
           ]
@@ -2416,39 +2595,6 @@
     {
       "type": "function",
       "function": {
-        "name": "memory_source_bind",
-        "description": "可选：给已有记忆补绑定一段聊天原文，不创建或改写记忆正文。按真实消息序号指定闭区间；多段分别绑定。无需先调用 conversation_read；不确定范围时可先读，也可留给她以后补绑。绑定失败不影响已保存记忆，不能因此重新写记忆。",
-        "parameters": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "memory_id",
-            "start_seq",
-            "end_seq"
-          ],
-          "properties": {
-            "memory_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "已有记忆 ID，来自写入回执或查询结果"
-            },
-            "start_seq": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "当前会话原文起始消息序号（含）"
-            },
-            "end_seq": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "当前会话原文结束消息序号（含）"
-            }
-          }
-        }
-      }
-    },
-    {
-      "type": "function",
-      "function": {
         "name": "content_albums_read",
         "description": "浏览当前身份可读的相册和条目。不带 album 列相册；带 album 分页读条目，可按说明文字或完整来源引用过滤。条目仅给图片引用，用 media_view 实际看图。",
         "parameters": {
@@ -2625,7 +2771,7 @@
       "type": "function",
       "function": {
         "name": "archives_search",
-        "description": "按关键词搜索对话存档（争吵/甜蜜）。返回匹配的存档条目与有限摘录；要看完整片段用既有原文读取工具，本工具不回读全文。没有合格匹配会如实返回 no_match；服务忙/不可用单独区分。",
+        "description": "按关键词搜索争吵或甜蜜存档，查看匹配的条目和摘录。要读存档时保存的原话，把这次拿到的 archive_id 交给 conversation_read。没有合格匹配时返回 no_match，服务不可用时会说明。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2655,10 +2801,17 @@
       "type": "function",
       "function": {
         "name": "tool_catalog",
-        "description": "列出可用工具的简短目录，不含参数定义。",
+        "description": "按业务意图（如\"把这句话保存成原话\"\"生成一张图\"）或准确工具名查询工具，一次返回完成调用所需的完整定义（含参数）。不带 query 时列出全部工具的简短目录。查到的能力与当前窗口合同一致；搜索本身不是执行授权之外的新权限。",
         "parameters": {
           "type": "object",
-          "properties": {},
+          "properties": {
+            "query": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "业务意图短语或准确工具名"
+            }
+          },
           "additionalProperties": false
         }
       }

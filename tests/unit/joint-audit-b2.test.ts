@@ -46,7 +46,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 27_710 /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 2026-11-06 重标定：系统提示/目录增长 */ } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 29_500 /* 合成首次和第二回合应能派发，长输入才越过软线。 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -135,7 +135,7 @@ test('F-J-09 断言有效性：tools 变化会被 assertAppendOnly 识别（对�
 test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——零评审，不猜测或签发范围凭证', async () => {
   const root = tempRoot('jab2-fj10-');
   let gen = 0;
-  const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
+  const transport: OrTransport = async (payload) => { gen++; console.log('FJ10-REQ', gen, (payload.messages as any[]).length, JSON.stringify((payload.messages as any[]).slice(0,2)).slice(0,120)); return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
   const ctx = compose(root, transport, mariposaOk);
   await say(ctx, '第一条', 'f1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
@@ -145,6 +145,7 @@ test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——零评审，
   const r = await ctx.supervisor.manualRotate('c1');
   assert.equal(r.ok, true);
   assert.equal(gen, 1, '手动换窗未发模型请求');
+  console.log('FJ10-REVIEWS', JSON.stringify(ctx.db.prepare('SELECT * FROM rotation_reviews').all()));
   assert.equal(ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get().n, 0);
   ctx.db.close();
 });

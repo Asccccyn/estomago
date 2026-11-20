@@ -55,6 +55,31 @@ test('updateMilestone：v1→v2 新文件+旧版留档+manifest 正文槽原子�
   assert.equal(m.identity_version, 'longterm-milestones-v2');
 });
 
+test('独立锚点的工具改写和回滚均不接触 Profile 正本', () => {
+  const root = tempRoot('ms-split-');
+  try {
+    const { manifest } = writeApprovedIdentity(root, { seedProbes: false });
+    const paths = makePaths(root);
+    const first = '合成锚点。';
+    fs.writeFileSync(path.join(paths.identityDir, 'memory-anchors-v1.md'), first);
+    const manifestPath = path.join(paths.configDir, 'identity-manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest, memory_anchors_ref: 'memory-anchors-v1.md', memory_anchors_hash: sha256Hex(first),
+    }));
+    const svc = new IdentityService(buildConfig({}), paths);
+    assert.equal(svc.readMilestone().text, first);
+    const updated = svc.applyMilestoneEntryOp('add', null, '补充一条。');
+    assert.equal(updated.version, 'memory-anchors-v2');
+    assert.equal(svc.loadManifest().manifest?.approved_source_hash, manifest.approved_source_hash);
+    assert.equal(svc.loadManifest().manifest?.approved_source_ref, manifest.approved_source_ref);
+    assert.equal(svc.loadVerifiedMaterials(svc.loadManifest().manifest!)?.memoryAnchorsText?.includes('补充一条。'), true);
+    svc.rollbackMilestone('memory-anchors-v1');
+    assert.equal(svc.readMilestone().text, first);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('updateMilestone：正文槽不是里程碑文件 → 拒绝（不动 manifest）', () => {
   const root = tempRoot('ms-2-');
   writeApprovedIdentity(root, { seedProbes: false });

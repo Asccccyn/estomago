@@ -8,7 +8,7 @@
 //  - O07：多次回读零副作用（消息/修订/outbox/书签计数不变）
 //  - O08：无 include_cot 参数（思考不可请求）；协议继续态回归随全套件
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
+import { assembleTestTools, freezeLegacyToolWindow, LEGACY_CONVERSATIONREAD_SPEC, LEGACY_MEMORYWORDS_SCHEMA, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { Readable } from 'node:stream';
@@ -53,6 +53,12 @@ function makeExecutor(root: string, mariposa?: MariposaTransport) {
   migrate(db, sha256Hex);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa ?? (async () => ({ ok: false, code: 'X', httpStatus: 404 })) });
   const { tools: executor } = assembleTestTools({ db: db, mariposa: mariposa_wire_1, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  // 包4无seq整改：旧引擎/旧参数形状回归——按生产旧窗冻结目录钉住旧 conversation_read。
+  freezeLegacyToolWindow(db, 'w1', {
+    conversation_read: { function: { name: 'conversation_read', parameters: LEGACY_CONVERSATIONREAD_SPEC.function.parameters as Record<string, unknown> } },
+    // O06 断言"已读片段可被勾选摘录"沿旧 {seq,from,to} 引语合同（生产旧窗冻结目录同形）
+    memory_words_write: { function: { name: 'memory_words_write', parameters: LEGACY_MEMORYWORDS_SCHEMA } },
+  });
   return { executor, db };
 }
 
@@ -277,7 +283,7 @@ test('O05：回读片段进入下一请求→入已见清单；未发出（下�
     const msgs = payload.messages as Array<{ role: string }>;
     genA++;
     if (msgs.some((m) => m.role === 'tool')) return { status: 200, headers: new Map(), body: frameStream(textBody(`a${genA}`, '好的，我看过了')) };
-    return { status: 200, headers: new Map(), body: frameStream(toolBody(`a${genA}`, 'call-read-a', 'conversation_read', { around_seq: 2, before: 1, after: 1 })) };
+    return { status: 200, headers: new Map(), body: frameStream(toolBody(`a${genA}`, 'call-read-a', 'conversation_read', { anchor: { speaker: '宿主用户', quote: '很久以前的一段原文内容' } })) };
   });
   // 存量历史（不经 turn，直接种行）+ 一条会话消息
   const hist = '很久以前的一段原文内容';
@@ -300,7 +306,7 @@ test('O05：回读片段进入下一请求→入已见清单；未发出（下�
     const msgs = payload.messages as Array<{ role: string }>;
     genB++;
     if (msgs.some((m) => m.role === 'tool')) throw new Error('模拟第二轮传输失败');
-    return { status: 200, headers: new Map(), body: frameStream(toolBody(`b${genB}`, 'call-read-b', 'conversation_read', { around_seq: 2 })) };
+    return { status: 200, headers: new Map(), body: frameStream(toolBody(`b${genB}`, 'call-read-b', 'conversation_read', { anchor: { speaker: '宿主用户', quote: '另一段历史原文' } })) };
   });
   const hist2 = '另一段历史原文';
   ctxB.db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES ('hist2','c1',2,'owner','text',1,?,'2026-01-01T00:00:00Z')").run('2026-01-01T00:00:00Z');
@@ -327,13 +333,13 @@ test('O06（集成）：回读片段进入请求后，同回合补话通过已�
     const toolResults = msgs.filter((m) => m.role === 'tool');
     if (toolResults.length === 0) {
       // 第 1 轮：先回读
-      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-read', 'conversation_read', { around_seq: 2 })) };
+      return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-read', 'conversation_read', { anchor: { speaker: '宿主用户', quote: '久远的可引用片段' } })) };
     }
     if (toolResults.length === 1) {
       // 第 2 轮：回读结果已在请求里——hold 引用已读片段
       return { status: 200, headers: new Map(), body: frameStream(toolBody(`g${gen}`, 'call-hold', 'memory_words_write', {
         action: 'add', memory_id: 'mem-x',
-        refs: [{ seq: 2, from: 1, to: 1 }],
+        refs: [{ quote: '久远的可引用片段。', speaker: '宿主用户' }],
       })) };
     }
     return { status: 200, headers: new Map(), body: frameStream(textBody(`g${gen}`, '记好了')) };

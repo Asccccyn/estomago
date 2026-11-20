@@ -47,7 +47,7 @@ test('机器：开窗冻结片段，二窗独立；transferPending 随窗迁移�
     episodes,
   } as never);
   const boot = await machine.windowBootstrap('pending:conv-1', undefined, 'conv-1');
-  assert.ok(boot && boot.includes('I（当前的话）：I'), '开窗包正常');
+  assert.ok(boot && boot.includes('\n我\n') && boot.endsWith('\nI'), '开窗包正常');
   const frag = machine.episodeFragmentFor('pending:conv-1');
   assert.ok(frag && frag.includes('- 装修新房（OPEN'), '片段随开窗包冻结');
   machine.transferPending('pending:conv-1', 'win-1');

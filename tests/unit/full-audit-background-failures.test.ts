@@ -207,11 +207,11 @@ test('FA-F06 retained unread tool fragments stay pending until a later real disp
  const ctx=compose(tempRoot('fa-pending-source-'),async p=>{
   payloads.push(structuredClone(p));
   if(phase==='background'){
-   if(++backgroundRound===1)return response(toolCallBody([{id:'source-read',name:'conversation_read',args:JSON.stringify({from_sequence:1,to_sequence:1})}]));
+   if(++backgroundRound===1)return response(toolCallBody([{id:'source-read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'合成原文片段'}})}]));
    return {status:500,headers:new Headers(),body:Readable.from([])};
   }
   if(phase==='chat_failure')return {status:500,headers:new Headers(),body:Readable.from([])};
-  if(phase==='next_success'&&++nextRound===1)return response(toolCallBody([{id:'probe-seen',name:'conversation_read',args:JSON.stringify({from_sequence:2,to_sequence:2})}]));
+  if(phase==='next_success'&&++nextRound===1)return response(toolCallBody([{id:'probe-seen',name:'conversation_read',args:JSON.stringify({latest:true})}]));
   return response(chatBody('seed'));
  },now);cleanup(t,ctx);
  const source=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成原文片段'.repeat(4000),clientMessageId:'old-unseen-source'}).message;
@@ -236,7 +236,7 @@ test('FA-F06 retained unread tool fragments stay pending until a later real disp
 test('FA-F07 a pure heartbeat can confirm previously pending sources without appending its temporary branch',async t=>{
  let phase='seed',round=0;const now={nowMs:Date.now()};
  const ctx=compose(tempRoot('fa-pending-pure-'),async p=>{
-  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:'{"from_sequence":1,"to_sequence":1}'}]));return {status:500,headers:new Headers(),body:Readable.from([])};}
+  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'pending source for later'}})}]));return {status:500,headers:new Headers(),body:Readable.from([])};}
   return response(chatBody(phase==='pure'?'1':'seed'));
  },now);cleanup(t,ctx);
  const source=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'pending source for later pure heartbeat',clientMessageId:'source'}).message;

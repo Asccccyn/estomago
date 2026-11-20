@@ -23,7 +23,7 @@ import { buildConfig, validateConfig } from '../../apps/host/src/config/schema.t
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { effortsForModel } from '../../apps/host/src/runtime/runtime-settings.ts';
 import { pruneProviderRequests, pruneEvents } from '../../apps/host/src/runtime/prune.ts';
-import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools, freezeLegacyToolWindow, LEGACY_CONVERSATIONREAD_SPEC } from '../helpers.ts';
 import type { Db } from '../../apps/host/src/db/connection.ts';
 
 function freshDb(root: string): { db: Db; root: string } {
@@ -175,6 +175,7 @@ test('bc：conversation_read 中文整条真字节预算；跳过行续页可达
   db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, published_at, created_at) VALUES ('m2','c1',2,'owner','text',1,'2026-01-01','2026-01-01')").run();
   db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('m2',1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(zh2, sha256Hex(zh2));
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  freezeLegacyToolWindow(db, 'w1', { conversation_read: { function: { name: 'conversation_read', parameters: LEGACY_CONVERSATIONREAD_SPEC.function.parameters as Record<string, unknown> } } });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
   const out = await tools.execute('conversation_read', { around_seq: 1, before: 1, after: 1 }, CTX);
   assert.equal(out.ok, true);
@@ -321,6 +322,7 @@ test('RRA-014：older 交付前沿不重复交付（range 全可达归 wp4-conve
     db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES (?,1,'text',?,?,'2026-01-01','2026-01-01','seed')").run(`m${i}`, body, sha256Hex(body));
   }
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) }), reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
+  freezeLegacyToolWindow(db, 'w1', { conversation_read: { function: { name: 'conversation_read', parameters: LEGACY_CONVERSATIONREAD_SPEC.function.parameters as Record<string, unknown> } } });
   const CTX = { roomId: 'c1', windowId: 'w1', turnId: null, purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r' , toolCallId: 'ctx-tool' };
   // range 1..10 翻尽：全部 10 条都到
   const seenIds = new Set<string>();

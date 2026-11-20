@@ -107,11 +107,11 @@ test('跨轮轨迹：append-only + G 断点入 payload + 失败回合不落轨�
   await say(ctx, '第一句', 't1', T(0));
   const win = ctx.windows.activeWindow('c1')!;
   const traj1 = ctx.trajectory.forWindow(win.id)!;
-  // R1′（1023，D2 裁定）：e423220 起开窗 B 含初始可读工具目录（tools/initial 随窗冻结，
+  // R1′（1023，D2 裁定）：e423220 起开窗 B 含初始可读工具目录（常驻用法随窗冻结，
   // 空资料窗也携带已批清单）——轨迹=system+B(user)+user1+assistant1
   assert.equal(traj1.messages.length, 4, '轨迹=system+B(初始可读工具)+user1+assistant1');
   assert.equal(traj1.messages[1]!.role, 'system');
-  assert.ok(JSON.stringify(traj1.messages[1]!.content).includes('tools/initial'), 'B 段携带初始可读工具定义');
+  assert.match(JSON.stringify(traj1.messages[1]!.content), /常驻工具.*memory_hold/, 'B 段携带常驻简明用法');
   assert.equal(traj1.messages[3]!.role, 'assistant');
   // F18（审计整改）：G 候选=本轮实际发送的最后一个 text 块=用户输入（B 后 index 2）；
   // 最终 assistant 回复尚未随任何请求发送，不得作为已发送边界

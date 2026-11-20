@@ -340,7 +340,7 @@ test('retired anniversary fields are ignored while the independent anniversary m
   const {host,warnings}=hostFor(transport);const text=await callBootstrap(host,'retired');assert.ok(text?.includes('纪念分类事件保留'));assert.equal(text?.includes('LEGACY_ANNIV_CANARY'),false);assert.deepEqual(warnings,[]);
 });
 
-test('I, event and words continuations finish before optional moods while presentation order stays unchanged',async()=>{
+test('I, event and words continuations finish before optional moods and I leads the opening',async()=>{
   const packet=moodPacket();
   Object.assign(packet.memory_days.items[0],{
     event_text:'事😀',event_text_truncated:true,event_text_total_chars:4,
@@ -361,9 +361,97 @@ test('I, event and words continuations finish before optional moods while presen
   const text=await callBootstrap(host,'ordered');
   assert.equal(calls.at(-1),'mood_text');assert.deepEqual(new Set(calls.slice(0,-1)),new Set(['i','event_text','our_words']));
   assert.ok(text?.includes('事😀经过'));assert.ok(text?.includes('我😀当前'));assert.ok(text?.includes('后续原话'));
-  const moodAt=text!.indexOf('心情文字：甲😀乙\n'), eventAt=text!.indexOf('事件：事😀经过'), planAt=text!.indexOf('PRIVATE_PLAN_KEEP'), iAt=text!.indexOf('I（当前的话）：我😀当前');
-  assert.ok(moodAt>=0&&moodAt<eventAt&&eventAt<planAt&&planAt<iAt,'Only acquisition order changes; normal output keeps its established order');
+  const moodAt=text!.indexOf('心情　甲😀乙\n'), eventAt=text!.indexOf('事😀经过'), planAt=text!.indexOf('PRIVATE_PLAN_KEEP'), iAt=text!.indexOf('我😀当前');
+  assert.ok(iAt>=0&&iAt<moodAt&&moodAt<eventAt&&eventAt<planAt, 'I comes before memories and plans follow them');
   assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal((host as any).byWindow.has('ordered'),true);
+});
+
+test('opening orders event dates without disturbing same-day order or word coverage', async () => {
+  const word = { resource_ref: 'word:synthetic', content_version: '1', start_char: 0, end_char: 4 };
+  const recent = { memory_id: 'recent', memory_date: '2026-11-19', original_title: '最新记忆' };
+  const first = { memory_id: 'first', memory_date: '2026-11-17', original_title: '同一天第一条', version: 3, event_text: '事😀经过', our_words: [{ speaker: 'jiaming', texts: ['合成原话'] }], our_words_coverage: [word] };
+  const second = { memory_id: 'second', memory_date: '2026-11-17', original_title: '同一天第二条' };
+  const packet = { ...metadata, i: { content: '合成 I' }, plans: { items: [{ title: '合成计划' }] }, memory_days: { items: [recent, first, second], dates: ['2026-11-19','2026-11-17','2026-11-18'], total_in_window: 3, next_cursor: null } };
+  const { host } = hostFor(async () => success(packet));
+
+  const text = await host.windowBootstrap('sorted', undefined, undefined, '合成锚点');
+  assert.ok(text);
+  const ordered = ['合成 I', '我们的记忆锚点', '合成锚点', '近三天的记忆', '2026-11-17', '同一天第一条', '记忆 ID first · 版本 3', 'char：合成原话', '同一天第二条', '2026-11-18', '这天暂时没有存下的记忆。', '2026-11-19', '最新记忆', '合成计划'];
+  let previous = -1;
+  for (const part of ordered) {
+    const index = text.indexOf(part);
+    assert.ok(index > previous, `Expected ${part} after the previous block`);
+    previous = index;
+  }
+  assert.deepEqual(host.coverageFor('sorted', [{ role: 'system', content: [{ type: 'text', text }] }])?.window_coverage, [
+    { resource_ref: 'memory:first', content_version: '3', start_char: 0, end_char: 4 }, word,
+  ]);
+  assert.match(text, /memory_words_write/);
+});
+
+test('opening follows empty first page and later bucket cursors on the same snapshot', async () => {
+  const firstCursor = { memory_before_date: '2026-11-19', memory_last_id: '' };
+  const secondCursor = { memory_before_date: '2026-11-19', memory_last_id: 'newest' };
+  const lastCursor = { memory_before_date: '2026-11-17', memory_last_id: 'oldest' };
+  const word = { resource_ref: 'word:paged', content_version: '2', start_char: 0, end_char: 4 };
+  const bucket = (items: Record<string, unknown>[], next_cursor: Record<string, unknown>) =>
+    success({ ...metadata, section: 'memory_days', items, count: items.length, total_in_window: 2, next_cursor });
+  const { host, warnings } = hostFor(async (cap, args) => {
+    if (cap === 'bootstrap.get') {
+      assert.equal(args.loaded_snapshot_id, undefined, 'complete pages use the original snapshot without an extra validation call');
+      return success({ ...metadata, memory_days: { items: [], dates: ['2026-11-19', '2026-11-18', '2026-11-17'], next_cursor: firstCursor, total_in_window: 2 } });
+    }
+    assert.equal(cap, 'bootstrap.next');
+    assert.equal(args.snapshot_id, metadata.snapshot_id);
+    assert.equal(args.section, 'memory_days');
+    cursors.push(args.cursor);
+    if (cursors.length === 1) {
+      assert.deepEqual(args.cursor, firstCursor);
+      return bucket([{ memory_id: 'newest', memory_date: '2026-11-19', original_title: '后来发生' }], secondCursor);
+    }
+    assert.equal(cursors.length, 2, 'total_in_window prevents fetching the server cursor on a full last page');
+    assert.deepEqual(args.cursor, secondCursor);
+    return bucket([{ memory_id: 'oldest', memory_date: '2026-11-17', original_title: '先前发生', version: 2, event_text: '事件',
+      our_words: [{ speaker: 'jiaming', texts: ['分页原话'] }], our_words_coverage: [word],
+    }], lastCursor);
+  });
+  const cursors: unknown[] = [];
+  const text = await callBootstrap(host, 'memory-days-paged');
+  assert.ok(text);
+  assert.match(text, /先前发生[\s\S]*char：分页原话[\s\S]*这天暂时没有存下的记忆。[\s\S]*后来发生/);
+  assert.doesNotMatch(text, /近三天的记忆未全载/);
+  assert.deepEqual(cursors, [firstCursor, secondCursor]);
+  assert.deepEqual(warnings, []);
+  assert.equal(host.take('memory-days-paged'), text);
+  assert.deepEqual(host.coverageFor('memory-days-paged', [{ role: 'system', content: text }])?.window_coverage, [
+    { resource_ref: 'memory:oldest', content_version: '2', start_char: 0, end_char: 2 }, word,
+  ]);
+});
+
+test('opening discloses a missing bucket page without claiming either day or words are empty', async () => {
+  const packet = { ...metadata, memory_days: {
+    items: [{ memory_id: 'first-page', memory_date: '2026-11-19', original_title: '首桶' }],
+    dates: ['2026-11-17','2026-11-18','2026-11-19'], total_in_window: 2,
+    next_cursor: { memory_before_date: '2026-11-19', memory_last_id: 'first-page' },
+  } };
+  let validations = 0, continuations = 0;
+  const { host } = hostFor(async (cap, args) => {
+    if (cap === 'bootstrap.get') {
+      if (!args.loaded_snapshot_id) return success(packet);
+      validations++;
+      return validSnapshot();
+    }
+    continuations++;
+    assert.equal(args.section, 'memory_days');
+    return failure('BOOTSTRAP_UNAVAILABLE', 503);
+  });
+  const text = await callBootstrap(host, 'missing-day');
+  assert.ok(text);
+  assert.match(text, /首桶[\s\S]*近三天的记忆未全载/);
+  assert.doesNotMatch(text, /没有存下的记忆|没有另存的原话摘录/);
+  assert.equal(continuations, 1);
+  assert.equal(validations, 1, 'partial pages are checked against the same snapshot');
+  assert.equal(host.take('missing-day'), undefined, 'partial content is never cached as complete');
 });
 
 test('moods surrender the remaining preparation time so completed I and snapshot validation survive',async t=>{
@@ -394,7 +482,7 @@ test('empty first I fragment follows offset zero and reconstructs Unicode conten
     assert.equal(args.section,'i');assert.deepEqual(args.cursor,{i_offset:0});pages++;
     return success({...metadata,section:'i',content:'我😀当前',offset:0,total_chars:4,next_cursor:null});
   });
-  const text=await callBootstrap(host,'empty-i');assert.equal(pages,1);assert.ok(text?.includes('I（当前的话）：我😀当前'));assert.equal((host as any).byWindow.has('empty-i'),true);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
+  const text=await callBootstrap(host,'empty-i');assert.equal(pages,1);assert.ok(text?.includes('\n我\n'));assert.ok(text?.includes('我😀当前'));assert.equal((host as any).byWindow.has('empty-i'),true);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
 });
 
 test('explicit malformed I values become critical local gaps after validating the other sections',async t=>{
