@@ -1,8 +1,10 @@
 # estómago
 
-当前生产基线（太平洋时间 2026-11-19 16:59）· E host `pkg4-system-guides-3661a851d849`（包 4 基础提交 `6c9aad7e8a9a`，另含 SDK 选集引导修正），M `pkg4-mcp-exit-25c6cd15568b`（代码 `d983ba2ad332`），Content `pkg2-0fb14ac`，E schema v77。
+当前生产基线（太平洋时间 2026-11-19 16:59）· E host `pkg4-system-guides-3661a851d849`（包 4 基础提交 `6c9aad7e8a9a`，SDK 选集引导 `4126fbbd3fbc`），M `pkg4-mcp-exit-25c6cd15568b`（代码 `d983ba2ad332`），Content `pkg2-0fb14ac`，E schema v77。
 
-- 2026-11-19（16:59，E 后续上线）。`pkg4-system-guides-3661a851d849` 将选集引导恢复到 Claude SDK 系统提示，并在出站投影中去重旧引导。上线时 live/ready 均为 200，原活动窗保留，消息、模型请求和后台派发增量均为 0。
+- 2026-11-19（太平洋时间 17:26，容量试切已回退）。同一发布版本上试调上下文容量，随后恢复试切前配置。回退验收时 live/ready 均为 200，活动窗保留。
+
+- 2026-11-19（16:59，E 后续上线，`4126fbbd3fbc`）。`pkg4-system-guides-3661a851d849` 将选集引导恢复到 Claude SDK 系统提示，并在出站投影中去重旧引导。上线时 live/ready 均为 200，原活动窗保留，消息、模型请求和后台派发增量均为 0。 隔离复跑 6 个文件 72 项及 TypeScript 类型检查通过。
 
 - 2026-11-19（15:54 初次成对部署）。E 初始发布 `pkg4-window-map-1dc2e84a24f3`，对应包 4 基础提交 `6c9aad7e8a9a`。按 [开窗映射与工具地图裁定](docs/specs/ESTOMAGO_CHAT_EXEC_V1/IMPLEMENTATION_MAP.md)，新窗提供 12 项常驻、41 项按需工具和 2 项任务工具。部署时两端健康检查均为 HTTP 200，Mariposa 的千问加载就绪。现有活动窗和冻结工具目录保持原样。16:03 完成资料迁移，estómago 身份清单引用独立的 `profile-v1.md` 与 `memory-anchors-v1.md`，I 正本在 Mariposa，全文校验为 v11，五条的旧修订和关联均已核对。资料迁移无须重启或换窗。后续新窗按现行资料和常驻目录装载。
 

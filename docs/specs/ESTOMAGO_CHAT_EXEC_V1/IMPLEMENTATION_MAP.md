@@ -13,6 +13,7 @@
 - 55 项业务定义含 12 项常驻、41 项按需和 2 项随真实任务交付的能力。常驻是 `memory_hold`、`memory_recall`、`memory_read_full`、`memory_update`、`image_generate`、`media_view`、`wake_manage`、`wishstar_write_star`、`wishstar_request_star`、`content_album_entry_write`、`content_albums_read`、`content_post_create`。开窗给可直接调用的简明参数和一条自然提醒。索引复用 `tool_catalog`，查询当前窗口目录并返回冻结的执行合同；`tool_define` 仍可精确读取。全量目录仅按需返回。
 - I 和原话的入口分别放在相应开窗资料旁。已实际到期的自主预约把主动文字消息的用法放在当轮宿主提示中。任务工具由真实任务提供，目录枚举、意图查询和定义读取均核对当前活动任务；调用仍按现有权限和冻结版本校验。旧窗已发轨迹与缓存保持冻结。退出的来源绑定不再从旧目录重新发出，后台可信绑定仍走原路径。
 - 存档搜索给出 `archive_id`，通过 `conversation_read` 从 Content 同一会话的存档读取固定修订，并使用原文覆盖账本和页游标。聊天定位按原发布日过滤，候选摘要和游标绑定实际命中的修订。候选不会被视为全文，续读的语音转写会明确标注来源。消息行序号留在宿主；旧编号过滤只用于冻结定义仍支持序号的窗口。事件关闭和纠错的单点依据按 Mariposa 的单条来源引用合同映射。
+- Claude SDK 将宿主的选集引导装入系统提示，历史消息保持原有说话人和正文。旧 SDK 轨迹中重复嵌入的引导由出站投影去重。API/DS 的选集引导仍位于对应原文旁。
 
 ## 0. 现场快照
 
