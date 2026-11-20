@@ -8,7 +8,7 @@
 
 本节记录 2026-11-19 的裁定。早期包 4 与下方 WP0 表保留当时的证据，当前实现以本节的正本归属和调用边界为准。
 
-- Profile 位于 estómago 经审批的身份材料。身份清单以 `approved_source_ref`、`approved_source_hash` 和 `identity_version` 指向它。「我们的记忆锚点」沿用原长期里程碑内容，由同一清单的 `memory_anchors_ref` 和 `memory_anchors_hash` 指向独立的版本文件。里程碑工具沿用原调用路径，已拆分的环境中只读写、回滚独立锚点。旧合并材料沿原接口兼容，生产内容按批准材料另行迁移。
+- Profile 位于 estómago 经审批的身份材料。身份清单以 `approved_source_ref`、`approved_source_hash` 和 `identity_version` 指向它。「我们的记忆锚点」沿用原长期里程碑内容，由同一清单的 `memory_anchors_ref` 和 `memory_anchors_hash` 指向独立的版本文件。里程碑工具沿用原调用路径，已拆分的环境中只读写、回滚独立锚点。旧合并材料沿原接口兼容。2026-11-19 已在生产按批准版本切换两份独立身份材料，并核对 Mariposa I 正本 v11。迁移保留当时的活动窗和冻结工具目录。
 - Mariposa 是 I 的唯一当前数据来源。estómago 通过 bootstrap 映射当前 I，`memory_i_write` 调用 M 的条目版本接口。已确认的新本文按原五项映射，保留条目 ID、修订和既有关联。开窗装配依次放 Profile、I、锚点、近三天记忆和计划，再放运行规则与工具。锚点按审批稿顺序展示，预览辅助日期标题无需注入。三天桶按事件日期升序，同日保留服务顺序。原话有独立保存记录时随桶显示，聊天原文另走读取入口。
 - 55 项业务定义含 12 项常驻、41 项按需和 2 项随真实任务交付的能力。常驻是 `memory_hold`、`memory_recall`、`memory_read_full`、`memory_update`、`image_generate`、`media_view`、`wake_manage`、`wishstar_write_star`、`wishstar_request_star`、`content_album_entry_write`、`content_albums_read`、`content_post_create`。开窗给可直接调用的简明参数和一条自然提醒。索引复用 `tool_catalog`，查询当前窗口目录并返回冻结的执行合同；`tool_define` 仍可精确读取。全量目录仅按需返回。
 - I 和原话的入口分别放在相应开窗资料旁。已实际到期的自主预约把主动文字消息的用法放在当轮宿主提示中。任务工具由真实任务提供，目录枚举、意图查询和定义读取均核对当前活动任务；调用仍按现有权限和冻结版本校验。旧窗已发轨迹与缓存保持冻结。退出的来源绑定不再从旧目录重新发出，后台可信绑定仍走原路径。
