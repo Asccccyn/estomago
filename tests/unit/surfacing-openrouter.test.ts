@@ -96,6 +96,12 @@ const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : t
 test('JA-S08: owner can expand the same delivered bucket without exposing refs or retrieving again', async () => {
   const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
   const caps: string[] = [];
+  const words = [{speaker:'qiaosheng',text:'合成的保存原句'},{speaker:'jiaming',text:'同一记忆中的第二句'}];
+  const quote = { ...ITEM, kind: 'words', speaker: 'qiaosheng', quote_text: words[0].text,
+    matched_memory: {text:ITEM.event_text,our_words:words},
+    coverage_ranges: [{resource_ref:'memory:00001',content_version:'1',start_char:0,end_char:[...ITEM.event_text].length},
+      ...words.map((w,i)=>({resource_ref:'our_word:word'+i,content_version:'1:0',start_char:0,end_char:[...w.text].length}))] };
+  const expectedWords = [{speaker:'用户',text:words[0].text},{speaker:'助手',text:words[1].text}];
   const transport: OrTransport = async payload => {
     assert.ok(!JSON.stringify(payload.messages).includes(ITEM.detail_ref));
     return { status: 200, headers: new Map(), body: frameStream(textBody('g1','合成回复')) };
@@ -104,12 +110,15 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     caps.push(cap);
     if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
     if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
-    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } };
+    if (cap === 'memory.surfacing.validate') {
+      assert.equal(payload.words_view,'memory_with_words');
+      return { ok:true, result:{status:'ready',validation_receipt:'svr_wire',items:[quote]} };
+    }
     if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
     if (cap === 'memory.detail.read') {
       assert.equal(payload.detail_ref, ITEM.detail_ref); assert.equal(payload.view,'model');
       assert.equal(payload.section,caps.filter(x=>x==='memory.detail.read').length===1?'source':'memory');
-      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',next_cursor:payload.cursor?null:'memory:p1'}};
+      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',our_words:[{speaker:'qiaosheng',text:quote.quote_text},{speaker:'jiaming',text:'第二句'},{speaker:'第三人',text:'第三句'}],next_cursor:payload.cursor?null:'memory:p1'}};
     }
     throw Error('unexpected '+cap);
   };
@@ -118,10 +127,14 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     const a=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'还记得那次记忆库建成吗？',clientMessageId:'a'});
     ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
     const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
-    assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
+    assert.equal(list.length,1);
+    assert.deepEqual({kind:list[0].kind,words:list[0].our_words,text:list[0].text},
+      {kind:'words',words:expectedWords,text:ITEM.event_text});
     const before=caps.length;
     const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
-    const visibleRef=JSON.parse((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!).memories[0].memory_ref;
+    const packets = JSON.parse((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!).memories;
+    const visibleRef = list[0].memory_ref;
+    assert.deepEqual(packets, [{memory_ref:visibleRef,kind:'words',date:ITEM.memory_date,text:ITEM.event_text,our_words:expectedWords}]);
     assert.equal(visibleRef,list[0].memory_ref);
     const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
       {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
@@ -131,7 +144,13 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     assert.equal((await ctx.svc.readMemoryForTurn('other',a.turnId,list[0].memory_ref)).ok,false);
     assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,'sf_forged')).ok,false);
     assert.equal(caps.length,afterModel);
-    const first=await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);assert.equal(first.ok,true);
+    const detail = await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);
+    assert.ok(detail.ok);
+    assert.deepEqual(detail.data.our_words,[
+      {speaker:'qiaosheng',display_speaker:'用户',text:quote.quote_text},
+      {speaker:'jiaming',display_speaker:'助手',text:'第二句'},
+      {speaker:'第三人',display_speaker:'第三人',text:'第三句'},
+    ]);
     assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'memory:p1')).ok,true);
     assert.deepEqual(caps.slice(afterModel),['memory.detail.read','memory.detail.read']);
     assert.equal(log.length,1,'clicking detail never calls the main model');

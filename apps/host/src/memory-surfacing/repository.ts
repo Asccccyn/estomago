@@ -3,6 +3,7 @@ import type { SolUsage } from './sol-provider.ts';
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
 import { projectSurfacedMemory } from './contracts.ts';
+import type { SpeakerLabels } from '../identity/speaker-labels.ts';
 import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
@@ -337,8 +338,8 @@ export class SurfacingRepository {
 
   /** Owner UI projection. Handles stay outside model text and resolve only
    * through this turn's confirmed, actually sent provider request. */
-  visibleForTurn(conversationId: string, turnId: string): Array<{
-    memory_ref: string; date: string | null; text: string; windowId: string; requestId: string;
+  visibleForTurn(conversationId: string, turnId: string, labels?: SpeakerLabels): Array<ReturnType<typeof projectSurfacedMemory> & {
+    memory_ref: string; windowId: string; requestId: string;
   }> {
     const rows = this.db.prepare(`SELECT d.selected_refs_json, d.window_id, p.id AS request_id
       FROM surfacing_deliveries d JOIN attempts a ON a.id=d.attempt_id
@@ -358,7 +359,7 @@ export class SurfacingRepository {
         const item = data.items.find(i => (ref.detail_ref ? i.detail_ref === ref.detail_ref : i.event_id === ref.event_id));
         if (!item) continue;
         seen.add(ref.ref);
-        out.push({ memory_ref: ref.ref, ...projectSurfacedMemory(item), windowId: row.window_id, requestId: row.request_id });
+        out.push({ memory_ref: ref.ref, ...projectSurfacedMemory(item, labels), windowId: row.window_id, requestId: row.request_id });
       }
     }
     return out;

@@ -25,6 +25,7 @@ export type SurfaceItemKind = 'event' | 'words' | 'source';
 
 export type SurfaceItem = {
   kind?: SurfaceItemKind;
+  matched_memory?: { text: string; our_words: Array<{ speaker: string; text: string }> };
   coverage_ranges?: CoverageRange[];
   coverage_text_offset?: number;
   unread_parts?: Array<{ start_char: number; end_char: number; text: string }>;
@@ -107,10 +108,16 @@ function eventTimeText(item: SurfaceItem): string {
  * 不确定日期以 null 表达）。kind=words 额外保留真实说话人与引语原文；
  * kind=source 保留来源区间原文——都不截断、不改写。speaker 按包4 §6.2
  * 投影为身份配置的双方真实姓名；第三方/未知身份沿用原值。 */
-export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind } {
+export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind; our_words?: Array<{speaker:string;text:string}> } {
   const kind = item.kind ?? 'event';
   const date = eventTimeText(item);
   const context = item.source_context_text && item.source_context_text.length > 0 ? item.source_context_text : undefined;
+  if (kind === 'words' && item.matched_memory) {
+    return { kind, date: date === '不确定' ? null : date, text: item.matched_memory.text,
+      our_words: item.matched_memory.our_words.map(({speaker,text}) => ({
+        speaker: labels ? speakerLabelFor(speaker, labels) as string : speaker, text,
+      })) };
+  }
   if (kind === 'words' || kind === 'source') {
     const speaker = item.speaker ?? null;
     return { date: date === '不确定' ? null : date, text: item.quote_text ?? item.event_text, speaker: labels ? speakerLabelFor(speaker, labels) as string | null : speaker, ...(context !== undefined ? { context } : {}), kind };
@@ -127,7 +134,7 @@ export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, stri
     const ref = refs?.get(key) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
     if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
     const projected = projectSurfacedMemory(item, labels);
-    return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), ...(item.unread_parts ? { unread_parts: item.unread_parts } :
+    return { memory_ref: ref, kind: projected.kind, date: projected.date, ...(projected.our_words ? { our_words: projected.our_words } : {}), ...(projected.speaker !== undefined ? { speaker: projected.speaker } : {}), ...(projected.context !== undefined ? { context: projected.context } : {}), ...(item.unread_parts ? { unread_parts: item.unread_parts } :
       projected.text ? { text: projected.text } : {}) };
   }), ...(missing.length ? { missing } : {}) });
 }

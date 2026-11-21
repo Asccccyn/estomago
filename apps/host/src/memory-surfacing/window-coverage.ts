@@ -51,6 +51,12 @@ export function surfaceItemRanges(item: SurfaceItem): CoverageRange[] {
 
 /** Project verified body and neighbour ranges in the same coordinate space as active reads. */
 export function unreadSurfaceItem(item: SurfaceItem, covered: readonly CoverageRange[]): SurfaceItem | null {
+  if (item.kind === 'words' && item.matched_memory) {
+    // The selected bucket is atomic. Keep the complete body and quotes when
+    // any part is new, and record only the ranges newly delivered in this window.
+    const unread = surfaceItemBodyRanges(item).flatMap(range => uncoveredRanges(range, covered));
+    return unread.length ? { ...item, coverage_ranges: unread } : null;
+  }
   const original = item.quote_text ?? item.event_text;
   const body = projectCoveredText(original, surfaceItemBodyRanges(item), covered, [], false, item.coverage_text_offset);
   const metadata = { ...item };

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
+import { unreadSurfaceItem, windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MemoryToolsService } from '../../apps/host/src/modules/memory/service.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
@@ -80,4 +80,17 @@ test('取消在会话否定与原文二轮之间生效，二轮不发起', async
     assert.equal(result.ok, false);
     assert.deepEqual(calls, ['memory.recall.reject']);
   } finally { db.close(); }
+});
+
+
+test('部分已读的引语命中仍交付完整正文和全部原话，全部覆盖后不再浮现', () => {
+  const body = { resource_ref:'memory:m1', content_version:'3', start_char:0, end_char:4 };
+  const word = { resource_ref:'our_word:w1', content_version:'3:0', start_char:0, end_char:2 };
+  const item = { kind:'words' as const, memory_id:'m1', memory_version:'3', event_id:'ev_1',
+    event_text:'原句', quote_text:'原句', memory_date:null, date_confidence:null, body_hash:'hash', detail_ref:'sdr_1',
+    matched_memory:{text:'完整正文',our_words:[{speaker:'qiaosheng',text:'原句'}]}, coverage_ranges:[body,word] };
+  const partial = unreadSurfaceItem(item, [word]);
+  assert.deepEqual(partial?.matched_memory, item.matched_memory);
+  assert.deepEqual(partial?.coverage_ranges, [body]);
+  assert.equal(unreadSurfaceItem(item, [word,body]), null);
 });

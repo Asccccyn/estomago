@@ -17,6 +17,7 @@ import { effectiveRevisionText } from '../messages/effective-text.ts';
 import type { MariposaClient } from '../integrations/mariposa/client.ts';
 import { SOL_INPUT_TOO_LARGE, SurfacingRepository, type JobRow } from './repository.ts';
 import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
+import { speakerLabelFor } from '../identity/speaker-labels.ts';
 import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
   estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, SURFACE_HOST_NOTICE, surfaceItemKey,
@@ -584,6 +585,7 @@ export class SurfacingService {
       const r = await this.bounded(signal => this.client.surfaceValidate({
         operation_id: `est-surface-v:${job.id}:${target.messageId}:${target.revision}`,
         conversation_scope: job.conversation_id,
+        words_view: 'memory_with_words',
         candidate_snapshot_ref: job.m_snapshot_ref ?? '',
         source_input_ref: { message_id: src.messageId, revision: src.revision },
         target_input: {
@@ -929,15 +931,27 @@ export class SurfacingService {
   }
 
   visibleMemoriesForTurn(conversationId: string, turnId: string) {
-    return this.repo.visibleForTurn(conversationId, turnId)
-      .map(({ memory_ref, date, text }) => ({ memory_ref, date, text }));
+    return this.repo.visibleForTurn(conversationId, turnId, this.speakerNames)
+      .map(({ memory_ref, kind, date, text, speaker, our_words }) => ({ memory_ref, kind, date, text, ...(speaker ? { speaker } : {}), ...(our_words ? { our_words } : {}) }));
   }
 
   async readMemoryForTurn(conversationId: string, turnId: string, ref: string, cursor?: string, section: 'memory' | 'relations' | 'source' = 'memory') {
     const binding = this.repo.visibleForTurn(conversationId, turnId).find(it => it.memory_ref === ref);
     if (!binding) return { ok: false as const, code: 'DETAIL_REF_NOT_SEEN', message: '该回忆不属于本轮已交付内容' };
-    return executeMemoryReadFull(this.repo, this.client, { memory_ref: ref, cursor, section, view: 'model' },
+    const result = await executeMemoryReadFull(this.repo, this.client, { memory_ref: ref, cursor, section, view: 'model' },
       { roomId: conversationId, windowId: binding.windowId, requestId: binding.requestId });
+    if (!result.ok) return result;
+    const data = { ...result.data };
+    const labels = this.speakerNames;
+    for (const field of ['our_words', 'source']) {
+      const entries = data[field];
+      if (!Array.isArray(entries)) continue;
+      data[field] = entries.map(entry => {
+        const speaker = entry?.speaker ?? entry?.normalized_sender;
+        return typeof speaker === 'string' ? { ...entry, display_speaker: speakerLabelFor(speaker, labels) } : entry;
+      });
+    }
+    return { ok: true as const, data };
   }
 
   // —— 生命周期 ——

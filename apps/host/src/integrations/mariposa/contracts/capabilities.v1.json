@@ -1,10 +1,10 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "4b88973f3d36a399bdf06a47463be4efa7e352a8",
+  "source_commit": "d4a13ce255218fcb28c37327f2de150271f650bc",
   "source_files": {
     "backend/mariposa/capabilities/registry.py": "4729e64f7987f6eb9c6ee89b6e95535392d6c7b9e16c98fedf1734c2022df704",
-    "backend/mariposa/capabilities/input_schemas.py": "0dfcfa9629a10a9bbba4d85a12200295093c1bcf7374ded19e7dafe9c63e47fa",
+    "backend/mariposa/capabilities/input_schemas.py": "10c52d33cdd8c206b17dbb8a5f6aee196bfafd2f057fbc1deb702e8759e11b19",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
     "backend/mariposa/memory/service.py": "0917a261d231cea3547a325b59a6c5ca5163a63626e7d7d966b02c71f87a69c7",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
@@ -3968,6 +3968,12 @@
           "candidate_snapshot_ref": {
             "type": "string",
             "minLength": 1
+          },
+          "words_view": {
+            "type": "string",
+            "enum": [
+              "memory_with_words"
+            ]
           },
           "delivery_budget_bytes": {
             "type": "integer",
