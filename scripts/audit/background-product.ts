@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { writeApprovedIdentity, readyRuntimePatch, pollUntil } from '../../tests/helpers.ts';
+import { installHeartbeatFixtureSources } from '../../tests/helpers/heartbeat-sources.ts';
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 
@@ -45,9 +46,13 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
     const c=context!;const requestId=`fake-ds-${++serial}`;const started=Date.now();
     const hostTail=[...p.messages].reverse().find((m:J)=>m.role==='user');
     const isWake=String(hostTail?.content).includes('Host self-wake');
-    const isKeepalive=String(hostTail?.content).includes('Cache keepalive (host event');
+    const hostText=JSON.stringify(hostTail?.content);
+    const isKeepalive=hostText.includes('[心跳唤醒]');
+    const isExhausted=isKeepalive&&hostText.includes('请回复 1 保温');
     let calls:J[]=[];let text='合成回复：青禾';let delay=0;
-    if(c.name==='autonomy-loop'&&isKeepalive)text='1';
+    if(c.name==='autonomy-loop'&&isKeepalive){
+      if(isExhausted)text='1';else calls=[invoke(p,'background_complete',{outcome:'noop'})];
+    }
     else if(c.name==='autonomy-loop'){
       const round=isWake?c.wakeRound++:c.chatRound++;
       if(isWake){
@@ -68,18 +73,21 @@ globalThis.fetch=async(input:any,init?:RequestInit)=>{
       if(!definition(p,'chat_send_text')||!definition(p,'background_complete'))calls=[call('tool_define',{name:'chat_send_text'}),call('tool_define',{name:'background_complete'})];
       else if(!toolResults(p).some((r:J)=>r.published===true||r.message_id))calls=[invoke(p,'chat_send_text',{text:`合成自醒正式消息：${c.name}`,idempotency_key:`wake-${c.name}`}),invoke(p,'background_complete',{outcome:'done'})];
       else text='内部结束，不重复发言';
-    }else if(isKeepalive){
-      text='1';
-      const round=c.keepRound++;
-      if(c.keepwarmMode==='catalog_define'){
-        if(round===0)calls=[call('tool_catalog',{})];
-        if(round===1)calls=[call('tool_define',{name:'wake_manage'})];
-      }
-      if(c.keepwarmMode==='published'){
-        if(round===0)calls=[call('tool_define',{name:'chat_send_text'}),call('tool_define',{name:'background_complete'})];
-        if(round===1)calls=[invoke(p,'chat_send_text',{text:'合成心跳正式消息：青禾',idempotency_key:'heartbeat-publication'}),invoke(p,'background_complete',{outcome:'done'})];
+    }else if(isKeepalive&&c.name==='heartbeat'){
+      if(c.keepwarmMode==='exhausted'){
+        assert.equal(isExhausted,true,'only a genuinely exhausted request can produce the ack');
+        text='1';
+      }else{
+        assert.equal(isExhausted,false);
+        if(c.keepwarmMode==='declined')calls=[invoke(p,'background_complete',{outcome:'noop'})];
+        else if(c.keepRound++===0)calls=[invoke(p,'heartbeat_draw',{card_number:c.cardNumber})];
+        else calls=[
+          ...(c.cardNumber===1?[invoke(p,'chat_send_text',{text:'合成心跳正式消息：青禾',idempotency_key:'heartbeat-publication'})]:[]),
+          invoke(p,'background_complete',{outcome:'done'}),
+        ];
       }
     }
+
     else if(content(p).includes('AUDIT_TOOL_MANAGEMENT')&&!c.managementDone){
       const step=c.managementRound++;
       const receipt=toolResults(p).filter((r:J)=>r.task_id);
@@ -218,48 +226,68 @@ async function run(name:string){
   console.log(JSON.stringify({scenario:name,passed:true,latency_ms:c.latency_ms}));
 }
 async function runHeartbeat(){
-  const c:J={name:'heartbeat',kind:'fake-provider-real-product-http-sse',sse_events:[],sse_errors:[],cases:[],virtual_clock:true};context=c;
-  stateRoot=fs.mkdtempSync(path.join(os.tmpdir(),'audit-heartbeat-product-'));process.env.ESTOMAGO_HOME=stateRoot;writeApprovedIdentity(stateRoot);
-  const env=await startHost(stateRoot,c);const client=env.makeClient();await client.start();
-  const settings=await env.request('/background/settings');await env.request('/background/settings','PUT',{keepwarm:{enabled:true,daily_cost_cap_usd:10}},'heartbeat-enable',settings.revision);
-  let virtualNow=Date.now();(host!.scheduler as any).d.now=()=>virtualNow;(host!.supervisor as any).d.now=()=>virtualNow;
-  for(const mode of ['pure_ack','catalog_define','published']){
-    c.keepwarmMode=mode;c.keepRound=0;
-    await env.request('/conversations/primary/messages','POST',{content:`合成心跳验证 ${mode}，记住青禾。`,client_message_id:`heartbeat-seed-${mode}`},`heartbeat-seed-${mode}`);await host!.supervisor.waitIdle();
-    const win=host!.windows.activeWindow('primary')!;
-    const trajectoryBefore=(host!.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(win.id) as J).messages_json;
-    const countBefore=(host!.db.prepare('SELECT COUNT(*) n FROM messages').get() as J).n;
-    const activityBefore=host!.db.prepare("SELECT * FROM conversation_activity WHERE conversation_id='primary'").get() as J;
-    const latest=host!.db.prepare('SELECT dispatch_started_at FROM provider_requests WHERE outcome=\'completed\' ORDER BY dispatch_started_at DESC LIMIT 1').get() as J;
-    virtualNow=Math.max(Date.parse(activityBefore.last_real_activity_at),Date.parse(latest.dispatch_started_at))+3000001;
-    const requestBefore=bodies.length;
-    await host!.scheduler!.tick();await host!.supervisor.waitIdle();await sleep(30);
-    const run=host!.db.prepare("SELECT * FROM background_runs WHERE kind='keepwarm' ORDER BY created_at DESC LIMIT 1").get() as J;
-    const trajectoryAfter=(host!.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(win.id) as J).messages_json;
-    const countAfter=(host!.db.prepare('SELECT COUNT(*) n FROM messages').get() as J).n;
-    const activityAfter=host!.db.prepare("SELECT * FROM conversation_activity WHERE conversation_id='primary'").get() as J;
-    assert.equal(run.state,'completed');
-    if(mode==='pure_ack'){
-      // C08（四仓审计 20261106）：纯1已发协议保留——轨迹为原前缀追加（心跳事件+assistant"1"），
-      // 聊天原文/L/可见清单不变
-      assert.equal(run.retention,'ephemeral_ack');assert.equal(run.result_code,'ack_only');assert.equal(bodies.length,requestBefore+1);
-      assert.notEqual(trajectoryAfter,trajectoryBefore);assert.ok(trajectoryAfter.startsWith(trajectoryBefore.slice(0,-1)));
-      assert.ok(trajectoryAfter.slice(trajectoryBefore.length-2).includes('Cache keepalive')||trajectoryAfter.includes('Cache keepalive'));
-      assert.equal(countAfter,countBefore);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision);assert.ok(activityAfter.maintenance_request_id);
-    }else if(mode==='catalog_define'){
-      assert.equal(run.retention,'retained');assert.equal(run.tool_calls_observed,2);assert.notEqual(trajectoryAfter,trajectoryBefore);assert.equal(countAfter,countBefore);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision);
-    }else{
-      assert.equal(run.retention,'retained');assert.equal(countAfter,countBefore+1);assert.equal(activityAfter.activity_revision,activityBefore.activity_revision+1);
-      await pollUntil(()=>client.snapshot.messages.some(m=>m.text==='合成心跳正式消息：青禾'),2000,10);
+  const restoreSources=installHeartbeatFixtureSources();
+  try {
+    const c:J={name:'heartbeat',kind:'fake-provider-real-product-http-sse',sse_events:[],sse_errors:[],cases:[],virtual_clock:true};context=c;
+    stateRoot=fs.mkdtempSync(path.join(os.tmpdir(),'audit-heartbeat-product-'));process.env.ESTOMAGO_HOME=stateRoot;writeApprovedIdentity(stateRoot);
+    const env=await startHost(stateRoot,c);const client=env.makeClient();await client.start();
+    const settings=await env.request('/background/settings');
+    await env.request('/background/settings','PUT',{keepwarm:{enabled:true,daily_cost_cap_usd:10}},'heartbeat-enable',settings.revision);
+    let virtualNow=Date.now();
+    (host!.scheduler as any).d.now=()=>virtualNow;
+    (host!.supervisor as any).d.now=()=>virtualNow;
+    const rounds=[{mode:'declined',number:0},...Array.from({length:10},(_,index)=>({mode:'drawn',number:index+1})),{mode:'exhausted',number:0}];
+    for(const [index,{mode,number}] of rounds.entries()){
+      c.keepwarmMode=mode;c.cardNumber=number;c.keepRound=0;
+      await env.request('/conversations/primary/messages','POST',{
+        content:`合成心跳验证 ${mode}，记住青禾。`,client_message_id:`heartbeat-seed-${index}`,
+      },`heartbeat-seed-${index}`);
+      await host!.supervisor.waitIdle();
+      const countBefore=(host!.db.prepare('SELECT COUNT(*) n FROM messages').get() as J).n;
+      const activityBefore=host!.db.prepare("SELECT * FROM conversation_activity WHERE conversation_id='primary'").get() as J;
+      const latest=host!.db.prepare("SELECT dispatch_started_at FROM provider_requests WHERE outcome='completed' ORDER BY dispatch_started_at DESC,rowid DESC LIMIT 1").get() as J;
+      virtualNow=Math.max(Date.parse(activityBefore.last_real_activity_at),Date.parse(latest.dispatch_started_at))+3000001;
+      const requestBefore=bodies.length;
+      await host!.scheduler!.tick();
+      await host!.supervisor.waitIdle();
+      const run=host!.db.prepare("SELECT * FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as J;
+      assert.equal(run.state,mode==='declined'?'noop':'completed',JSON.stringify(run));
+      assert.equal(run.retention,'retained');
+      const condition=mode==='exhausted'?'ack_only':mode==='declined'?'complete:noop':'complete:done';
+      assert.equal(run.result_code,condition);
+      assert.equal(bodies.length-requestBefore,mode==='drawn'?2:1);
+
+      const status=await env.request('/background/heartbeat');
+      assert.equal(status.delivered_numbers.length,mode==='declined'?0:mode==='exhausted'?10:number);
+      if(mode==='drawn')assert.ok(status.delivered_numbers.includes(number));
+      const published=host!.db.prepare(`SELECT m.id,m.speaker,r.content FROM messages m
+        JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+        WHERE m.turn_id=? ORDER BY m.sequence`).all(run.turn_id) as J[];
+      const formalReply=mode==='drawn'&&number===1?'合成心跳正式消息：青禾':mode==='exhausted'?'1':null;
+      assert.deepEqual(published.filter(message=>message.speaker==='assistant').map(message=>message.content),formalReply?[formalReply]:[]);
+      assert.equal(published.filter(message=>message.speaker==='system').length,mode==='exhausted'?1:2);
+      const activityAfter=host!.db.prepare("SELECT * FROM conversation_activity WHERE conversation_id='primary'").get() as J;
+      assert.equal(activityAfter.activity_revision,activityBefore.activity_revision+(mode==='drawn'&&number===1?1:0));
+      if(formalReply)await pollUntil(()=>client.snapshot.messages.some(message=>message.text===formalReply),2000,10);
+      const countAfter=(host!.db.prepare('SELECT COUNT(*) n FROM messages').get() as J).n;
+      c.cases.push({mode,number,passed:true,request_count:bodies.length-requestBefore,run,messages_before:countBefore,messages_after:countAfter,published});
     }
-    c.cases.push({mode,passed:true,request_count:bodies.length-requestBefore,run,messages_before:countBefore,messages_after:countAfter,activity_before:activityBefore,activity_after:activityAfter,canonical_trajectory_unchanged:trajectoryBefore===trajectoryAfter,model_requests:bodies.slice(requestBefore),frontend_messages:client.snapshot.messages});
-  }
-  const before=bodies.length;
-  await env.request('/conversations/primary/messages','POST',{content:'心跳后继续聊天，请确认青禾。',client_message_id:'heartbeat-followup'},'heartbeat-followup');await host!.supervisor.waitIdle();
-  assert.equal(bodies.length,before+1);assert.ok(JSON.stringify(bodies.at(-1)!.payload).includes('合成心跳正式消息：青禾'));
-  const requests=bodies.at(-1)!.payload.messages;assert.equal(requests.filter((m:J)=>m.role==='user'&&String(m.content).includes('Cache keepalive (host event')).length,3,'C08：全部已发心跳事件（纯1+工具轮）均随前缀保留');
-  c.passed=true;c.timing='controlled scheduler/supervisor clock +50 minutes; no wall-time or real cache TTL claim';c.next_user_payload=bodies.at(-1)!.payload;
-  results.push(c);fs.writeFileSync(path.join(out,'heartbeat.json'),JSON.stringify(c,null,2));console.log(JSON.stringify({scenario:'heartbeat',passed:true,cases:c.cases.map((r:J)=>({mode:r.mode,requests:r.request_count,retention:r.run.retention}))}));
+    const before=bodies.length;
+    await env.request('/conversations/primary/messages','POST',{content:'心跳后继续聊天，请确认青禾。',client_message_id:'heartbeat-followup'},'heartbeat-followup');
+    await host!.supervisor.waitIdle();
+    assert.equal(bodies.length,before+1);
+    const next=bodies.at(-1)!.payload;
+    assert.ok(JSON.stringify(next).includes('合成心跳正式消息：青禾'));
+    const warmInput=next.messages.findIndex((message:J)=>message.role==='user'&&JSON.stringify(message.content).includes('请回复 1 保温'));
+    assert.ok(warmInput>=0);
+    assert.equal(next.messages[warmInput+1]?.role,'assistant');
+    assert.equal(next.messages[warmInput+1]?.content,'1');
+    assert.equal(next.messages.filter((message:J)=>message.role==='assistant'&&message.content==='1').length,1);
+    assert.equal(next.messages.filter((message:J)=>message.role==='user'&&JSON.stringify(message.content).includes('[心跳唤醒]')).length,rounds.length);
+    c.passed=true;c.timing='controlled scheduler/supervisor clock +50 minutes; no wall-time or real cache TTL claim';c.next_user_payload=next;
+    results.push(c);fs.writeFileSync(path.join(out,'heartbeat.json'),JSON.stringify(c,null,2));
+    console.log(JSON.stringify({scenario:'heartbeat',passed:true,cases:c.cases.map((r:J)=>({mode:r.mode,requests:r.request_count,retention:r.run.retention}))}));
+  } finally { restoreSources(); }
 }
 async function runAutonomyLoop(){
   assert.ok(process.env.CROSS_MARIPOSA_URL,'use the isolated cross-project runner');

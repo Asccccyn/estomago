@@ -5,10 +5,12 @@
 import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
+import { canDrawHeartbeat, HEARTBEAT_DRAW_TOOL } from '../modules/heartbeat/service.ts';
 import { modelFailure } from '../runtime/model-results.ts';
 import { storedToolset, definitionId, definitionWasSeen, modelDefinitionAfterBindingRetirement, type WindowToolset } from '../runtime/tool-discovery.ts';
 import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
-import { DISCOVERY_NAMES } from '../runtime/tool-discovery.ts';
+import { DISCOVERY_NAMES, effectiveToolName } from '../runtime/tool-discovery.ts';
+import { canDiscoverTurnCompletion, readTurnCompletion, TURN_COMPLETION_TOOL } from '../runtime/turn-completion.ts';
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from './contracts.ts';
 import type { CapabilityRegistry } from './registry.ts';
@@ -74,7 +76,12 @@ export class ModelToolBridge {
    *  view/find/compare 与 get 同门：analysis/源必须绑定当前会话（oidoSourceAllowed），
    *  前后复验；view 的原生图块直送主模型尚未接通（如实声明，图供界面）。 */
   async execute(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if(ctx.signal?.aborted)return {ok:false,output:{error_code:'CANCELLED'}};
+    const effectiveName = effectiveToolName(name, rawArgs);
+    if (ctx.signal?.aborted && effectiveName !== TURN_COMPLETION_TOOL) return { ok: false, output: { error_code: 'CANCELLED' } };
+    if (ctx.attemptId && ctx.turnId && effectiveName !== TURN_COMPLETION_TOOL
+        && readTurnCompletion(this.db, ctx.attemptId, ctx.turnId) !== null) {
+      return { ok: false, output: { error_code: 'TURN_COMPLETED', executed: false } };
+    }
     // R07（审计 FE-12）：工具生命周期事件合同——同一身份贯穿
     // start/result/error 三阶段；执行前后各一次真实回执，0 假成功
     // （ok/error_code 如实来自执行结果）。身份=tool_call_id+turn+attempt+
@@ -103,9 +110,8 @@ export class ModelToolBridge {
     }
     // A04（2026-10-24）：通话 memory_only——catalog/define/invoke/直接执行/执行前最后边界
     // 同一策略（effective name 判定）；仅约束模型发起的调用（ctx.turnId 非空），UI/宿主内部调用不受限
-    if (ctx.turnId) {
-      const effectiveName0 = name === 'tool_invoke' ? String(rawArgs.name ?? '') : name;
-      if (this.voiceCallActive(ctx.roomId) && !this.isMemoryOnlyAllowed(effectiveName0)) {
+    if (ctx.turnId && effectiveName !== TURN_COMPLETION_TOOL) {
+      if (this.voiceCallActive(ctx.roomId) && !this.isMemoryOnlyAllowed(effectiveName)) {
         return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
       }
     }
@@ -206,13 +212,10 @@ export class ModelToolBridge {
           WHERE id = ? AND room_id = ? AND window_id = ?
           AND (status = 'active' OR (? = 1 AND status = 'completed'))
         `).get(ctx.activeReviewId, ctx.roomId, ctx.windowId, mode === 'direct_execution' ? 1 : 0));
-      case 'background_complete':
-        return (ctx.purpose === 'proactive_turn' || (mode === 'deferred' && ctx.purpose === 'cache_keepalive')) &&
-          Boolean(ctx.backgroundRunId && this.db.prepare(`
-            SELECT 1 FROM background_runs
-            WHERE id = ? AND conversation_id = ? AND window_id = ? AND turn_id = ? AND state = 'running'
-            AND COALESCE(result_code, '') NOT LIKE 'complete:%'
-          `).get(ctx.backgroundRunId, ctx.roomId, ctx.windowId, ctx.turnId));
+      case TURN_COMPLETION_TOOL:
+        return canDiscoverTurnCompletion(this.db, ctx);
+      case HEARTBEAT_DRAW_TOOL:
+        return canDrawHeartbeat(this.db, ctx);
       default:
         return this.capabilityRegistry?.get(name)?.group !== 'T';
     }
@@ -222,7 +225,11 @@ export class ModelToolBridge {
    * definitions come from the frozen catalog and are only sent in task requests. */
   private directWindowDefinition(set: WindowToolset, name: string, ctx: ToolExecContext, mode: 'direct' | 'direct_execution' = 'direct'): HostToolSpec | null {
     const task = set.groups[name] === 'T';
-    if (task && !this.taskScopeAllows(name, ctx, mode)) return null;
+    // A historical native window carries completion on autonomous requests
+    // only. New snapshots advertise it in their ordinary frozen tool list.
+    if (name === TURN_COMPLETION_TOOL && task && ctx.purpose !== 'proactive_turn') return null;
+    if ((task || name === TURN_COMPLETION_TOOL || name === HEARTBEAT_DRAW_TOOL) && !(name === TURN_COMPLETION_TOOL && mode === 'direct_execution')
+        && !this.taskScopeAllows(name, ctx, mode)) return null;
     const frozen = (task ? set.catalog : set.tools).find(spec => spec.function.name === name);
     return frozen ? this.visibleFrozenDefinition(frozen) : null;
   }

@@ -101,11 +101,11 @@ test('RB02：background_complete 后的合法停发归一为 completed（不再 
     host: {
       purpose: 'cache_keepalive', windowId: 'w1',
       envelope: { model: 'claude-test-1', tools: [], maxTokens: 64, messages: [sys('S'), user('维护心跳')] },
-      beforeModel: async (_m, round) => { if (round > 0) throw new ContractError('BACKGROUND_COMPLETED_STOP'); },
+      beforeModel: async (_m, round) => { if (round > 0) throw new ContractError('TURN_COMPLETED_STOP'); },
       executeTool: async () => ({ ok: true, output: { completed: true, outcome: 'noop' } }),
     },
   }), sessions, async () => null, (async () => ({ pid: 1 })) as never);
-  assert.deepEqual(stopReason.value, { continue: false, stopReason: 'EST_BACKGROUND_COMPLETED' }, 'PostToolBatch 合法停发与异常分开');
+  assert.deepEqual(stopReason.value, { continue: false, stopReason: 'EST_TURN_COMPLETED' }, 'PostToolBatch 合法停发与异常分开');
   assert.equal(r.outcome, 'completed', 'RB02：合法业务完成=completed（旧实现 error/BACKGROUND_COMPLETED_STOP→failed turn）');
   assert.equal(r.errorCode, null, '不携带失败错误码');
   assert.ok(sessions.get('w1'), '成功收尾保留 SDK 锚（旧实现 error 分支删锚）');

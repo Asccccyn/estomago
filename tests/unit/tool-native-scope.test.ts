@@ -93,9 +93,9 @@ test('新窗评审工具只对可信、实际活跃的换窗评审可发现及�
   assert.equal(completedDefinition.output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
 });
 
-test('新窗后台工具只允许完成当前同窗同轮的真实运行', async t => {
+test('原生完成只接收当前真实回合，结束后按回合重传同一回执', async t => {
   const f = fixture(t);
-  assert.ok(!f.wire.some(tool => tool.function.name === 'background_complete'));
+  assert.ok(f.wire.some(tool => tool.function.name === 'background_complete'));
   const { db, ctx } = f;
   db.prepare("INSERT INTO turns(id,conversation_id,trigger,state,created_at) VALUES ('bg-turn',?,'proactive_turn','running','now')").run(ctx.roomId);
   db.prepare(
@@ -104,7 +104,8 @@ test('新窗后台工具只允许完成当前同窗同轮的真实运行', async
   db.prepare(
     "INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,window_id,turn_id,created_at,updated_at) VALUES ('bg-run','bg-task',?,'jiaming','autonomous',1,'occurrence','running',?,'bg-turn','now','now')",
   ).run(ctx.roomId, ctx.windowId);
-  const scoped: ToolExecContext = { ...ctx, backgroundRunId: 'bg-run', turnId: 'bg-turn',
+  db.prepare("INSERT INTO attempts(id,turn_id,attempt_no,state,window_id) VALUES ('bg-attempt','bg-turn',1,'running',?)").run(ctx.windowId);
+  const scoped: ToolExecContext = { ...ctx, backgroundRunId: 'bg-run', turnId: 'bg-turn', attemptId: 'bg-attempt',
     purpose: 'proactive_turn', beforeBackgroundTool: () => {} };
   const args = { outcome: 'done' };
   assert.equal((await f.tools.execute('background_complete', args, { ...scoped, turnId: ctx.turnId })).ok, false);
@@ -116,15 +117,20 @@ test('新窗后台工具只允许完成当前同窗同轮的真实运行', async
   db.prepare(
     "INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,window_id,turn_id,created_at,updated_at) VALUES ('warm-run','warm-task',?,'jiaming','keepwarm',1,'warm-occurrence','running',?,'warm-turn','now','now')",
   ).run(ctx.roomId, ctx.windowId);
-  const warm = { ...scoped, purpose: 'cache_keepalive' as const, turnId: 'warm-turn', backgroundRunId: 'warm-run' };
-  assert.equal((await f.tools.execute('tool_define', { name: 'background_complete' }, warm)).output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
-  assert.equal((await f.tools.execute('background_complete', args, warm)).ok, false);
+  db.prepare("INSERT INTO attempts(id,turn_id,attempt_no,state,window_id) VALUES ('warm-attempt','warm-turn',1,'running',?)").run(ctx.windowId);
+  const warm = { ...scoped, purpose: 'cache_keepalive' as const, turnId: 'warm-turn', backgroundRunId: 'warm-run', attemptId: 'warm-attempt' };
+  assert.equal((await f.tools.execute('tool_define', { name: 'background_complete' }, warm)).ok, true);
+  assert.equal((await f.tools.execute('background_complete', args, warm)).ok, true);
 
   const definition = await f.tools.execute('tool_define', { name: 'background_complete' }, scoped);
   assert.equal(definition.ok, true, JSON.stringify(definition.output));
   const completed = await f.tools.execute('background_complete', args, scoped);
   assert.equal(completed.ok, true, JSON.stringify(completed.output));
-  const run = db.prepare("SELECT result_code FROM background_runs WHERE id='bg-run'").get() as { result_code: string };
-  assert.equal(run.result_code, 'complete:done');
-  assert.equal((await f.tools.execute('background_complete', args, scoped)).ok, false);
+  db.prepare("UPDATE background_runs SET state='completed' WHERE id='bg-run'").run();
+  db.prepare("UPDATE attempts SET state='completed' WHERE id='bg-attempt'").run();
+  db.prepare("UPDATE turns SET state='completed' WHERE id='bg-turn'").run();
+  const closed = { ...scoped, toolCallId: 'new-wire-id', beforeBackgroundTool: () => assert.fail('replay must not reserve') };
+  assert.deepEqual(await f.tools.execute('background_complete', args, closed), completed);
+  assert.equal((await f.tools.execute('background_complete', { outcome: 'noop' }, closed)).output.error_code, 'IDEMPOTENCY_CONFLICT');
+  assert.equal((await f.tools.execute('tool_catalog', {}, closed)).output.error_code, 'TURN_COMPLETED');
 });

@@ -42,7 +42,7 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
           const tools = (await client.listTools()).tools;
           discovered = tools.map(tool => tool.name);
           assert.ok(!discovered.includes('tool_invoke'));
-          assert.ok(!discovered.includes('background_complete'));
+          assert.ok(discovered.includes('background_complete'));
           assert.ok(!discovered.includes('context_review_complete'));
           const humanText = tools.find(tool => tool.name === 'memory_hold')?.inputSchema.properties?.text as { type?: string; description?: string };
           assert.equal(humanText.type, 'string');

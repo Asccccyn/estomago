@@ -3,6 +3,21 @@ html, body { margin: 0; width: 100%; height: 100%; background: #dde7bf; }
 body { overflow: hidden; overscroll-behavior: none; }
 button { font: inherit; -webkit-tap-highlight-color: transparent; }
 #seasons { position: relative; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; isolation: isolate; touch-action: manipulation; }
+#home-heartbeat {
+  position: absolute;
+  z-index: 7;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  padding: 8px 13px;
+  border: 1px solid #dfccb2;
+  border-radius: 100px;
+  background: #fff9ee;
+  color: #654936;
+  font: 500 14px system-ui, sans-serif;
+  text-decoration: none;
+}
+#home-heartbeat:hover, #home-heartbeat:focus-visible { background: #f9e9cf; }
+html[data-position-editor="true"] #home-heartbeat { display: none; }
 #season-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
 #panorama, #atmosphere, #season-scenes, #travelers { position: absolute; inset: 0; width: 100%; height: 100%; }
 #panorama { display: block; user-select: none; pointer-events: none; }

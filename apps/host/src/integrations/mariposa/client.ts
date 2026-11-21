@@ -291,8 +291,12 @@ export class MariposaClient {
 
   /** 2026-10-18 她裁定：修改入口（就地改+我们的话新增/修改）——话语只存
    *  原文，说话人由服务端按出处推导。expected_version CAS 先 memoryGet 取。 */
-  async memoryGet(memoryId: string): Promise<MariposaCallResult> {
-    return this.transport('memory.get', { memory_id: memoryId });
+  async memoryGet(memoryId: string, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.get', { memory_id: memoryId }, signal);
+  }
+
+  async memoryListForHeartbeat(cursor: { memory_date: string | null; memory_id: string } | null, signal: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.list', { limit: 100, ...(cursor ? { cursor } : {}) }, signal);
   }
 
   async memoryUpdate(args: Record<string, unknown>): Promise<MariposaCallResult> {

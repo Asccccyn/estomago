@@ -125,10 +125,12 @@ test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现�
   try{
     await start();const id=await send();
     const frozen=storedToolset(host!.db,id)!;
-    assert.equal(frozen.catalog.length,55); // 目录 55 项（56-memory_source_bind 退出，包4 裁定6）
+    assert.equal(frozen.catalog.length,56);
+    assert.equal(frozen.groups.heartbeat_draw,'D');
+    assert.equal(frozen.groups.background_complete,'D');
     assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,14);
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,39);
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='T').length,2);
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,41);
+    assert.deepEqual(Object.keys(frozen.groups).filter(name=>frozen.groups[name]==='T'),['context_review_complete']);
     assert.ok(frozen.initialText!.includes('memory_hold'));
     assert.ok(frozen.initialText!.includes('用 tool_catalog 的 query'));
     assert.ok(!frozen.initialText!.includes('episode_list'));

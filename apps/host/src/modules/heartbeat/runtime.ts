@@ -1,0 +1,405 @@
+import type { HeartbeatProjection, HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { toolCapability } from '../../capabilities/domain-factory.ts';
+import type { CapabilityRegistry } from '../../capabilities/registry.ts';
+import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import { tx, type Db } from '../../db/connection.ts';
+import type { EventService, StreamEventRow } from '../../events/service.ts';
+import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
+import { CONTENT_OPERATION_TARGET } from '../../integrations/content/coordinator.ts';
+import { recoverMomentEdits } from '../../integrations/content/moment-edit-outbox.ts';
+import type { MediaService } from '../../media/assets.ts';
+import type { MessageService } from '../../messages/service.ts';
+import type { ManifestEntry } from '../../context/review-policy.ts';
+import { ContractError } from '../../runtime/or-contract.ts';
+import type { OrMessage } from '../../runtime/or-payload.ts';
+import { readTurnCompletion } from '../../runtime/turn-completion.ts';
+import { genId } from '../../util/id.ts';
+import type { ArchiveService } from '../archives/service.ts';
+import { OidoSourceRepository } from '../oido/source-repository.ts';
+import { canDrawHeartbeat, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode } from './service.ts';
+import { HeartbeatSources } from './sources.ts';
+
+export { HEARTBEAT_DRAW_TOOL } from './service.ts';
+const PROJECTION_TARGET = 'content_heartbeat_projection';
+
+export function heartbeatBusinessDate(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+function plainText(message: OrMessage | undefined): string {
+  if (!message) return '';
+  if (typeof message.content === 'string') return message.content;
+  return message.content?.map(block => block.type === 'text' ? block.text : '').join('') ?? '';
+}
+
+function cardOperations(messages: OrMessage[]): string[] {
+  return messages.flatMap(message => {
+    if (message.role !== 'tool' || typeof message.tool_call_id !== 'string') return [];
+    const text = plainText(message);
+    if (!text.includes('"heartbeat_card"')) return [];
+    try {
+      const result = JSON.parse(text) as { heartbeat_card?: { operation_id?: string } };
+      return result.heartbeat_card?.operation_id === message.tool_call_id ? [message.tool_call_id] : [];
+    } catch { return []; }
+  });
+}
+
+type HeartbeatFinish = {
+  runId: string;
+  conversationId: string;
+  turnId: string;
+  attemptId: string;
+  hostText: string;
+  finalMessages: OrMessage[];
+  mode: HeartbeatMode;
+  completed: boolean;
+  hadSent: boolean;
+};
+
+export class HeartbeatRuntime {
+  private readonly db: Db;
+  private readonly content: ContentClient | null;
+  private readonly media: MediaService;
+  private readonly messages: MessageService;
+  private readonly events: EventService;
+  readonly cards: HeartbeatCards;
+  readonly sources: HeartbeatSources;
+  private readonly liveImages = new Map<string, { conversationId: string; ids: string[] }>();
+  private readonly sourceGates = new Map<string, Promise<void>>();
+
+  constructor(
+    db: Db,
+    content: ContentClient | null,
+    media: MediaService,
+    archives: ArchiveService,
+    messages: MessageService,
+    events: EventService,
+    external?: ConstructorParameters<typeof HeartbeatSources>[4],
+  ) {
+    this.db = db;
+    this.content = content;
+    this.media = media;
+    this.messages = messages;
+    this.events = events;
+    this.cards = new HeartbeatCards(db);
+    this.sources = new HeartbeatSources(content, media, archives, messages, { ...external, voice: new OidoSourceRepository(db) });
+  }
+
+  async begin(input: { runId: string; conversationId: string; windowId: string; signal: AbortSignal; retainedMessages: OrMessage[] }): Promise<{
+    mode: HeartbeatMode; hostText: string; unavailable?: HeartbeatSource['kind'][];
+  }> {
+    const businessDate = heartbeatBusinessDate();
+    const unavailable: HeartbeatSource['kind'][] = [];
+    const candidates = this.cards.getDeck(input.conversationId, businessDate) ? undefined
+      : await this.sources.choose(input.conversationId, source => this.cards.isSourceEligible(source),
+        AbortSignal.any([input.signal, AbortSignal.timeout(2800)]), unavailable);
+    if (input.signal.aborted) return { mode: 'unprepared', hostText: '' };
+    const run = this.cards.begin({ runId: input.runId, businessDate, candidates });
+    if (!run || run.mode === 'unprepared' || run.mode === 'source_unavailable') {
+      return { mode: run?.mode ?? 'unprepared', hostText: '', unavailable };
+    }
+    if (run.mode === 'exhausted_keepwarm') {
+      return { mode: run.mode, hostText: '[心跳唤醒] 今天十张牌已经全部交付。请回复 1 保温。' };
+    }
+    // A provider send may survive an interruption without becoming part of the
+    // retained history. Shorten only when the actual outgoing context still
+    // contains this day's earlier full invitation.
+    const previous = this.db.prepare(`
+      SELECT revision.content FROM heartbeat_runs frozen JOIN background_runs run ON run.id=frozen.run_id
+      JOIN messages message ON message.turn_id=run.turn_id AND message.speaker='system'
+        AND message.client_message_id='heartbeat:'||run.id||':invite'
+      JOIN message_revisions revision ON revision.message_id=message.id AND revision.revision=1
+      WHERE frozen.business_date=? AND frozen.mode='draw' AND run.window_id=? AND run.id<>?
+        AND revision.source='heartbeat_host' AND revision.content LIKE '[心跳唤醒] 可选号：%'
+        AND EXISTS (SELECT 1 FROM provider_requests req WHERE req.background_run_id=run.id AND req.sent_at IS NOT NULL)
+    `).all(run.businessDate, input.windowId, input.runId) as Array<{ content: string }>;
+    const retained = input.retainedMessages.filter(message => message.role === 'user').map(plainText);
+    const hasChoiceContext = previous.some(({ content }) =>
+      retained.some(text => text === content || text.startsWith(content + '\n')));
+    const options = hasChoiceContext ? '' : `可选号：${run.deck!.availableNumbers.join('、')}。\n`;
+    return { mode: run.mode, hostText: `[心跳唤醒] ${options}用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。` };
+  }
+
+  async draw(cardNumber: unknown, ctx: ToolExecContext): Promise<ToolExecResult> {
+    if (!ctx.backgroundRunId || !ctx.toolCallId || !canDrawHeartbeat(this.db, ctx)) {
+      return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } };
+    }
+    const operation = { runId: ctx.backgroundRunId, operationId: ctx.toolCallId };
+    let result = this.cards.claim({ ...operation, cardNumber });
+    if (result.status === 'claimed' || result.status === 'prepared') {
+      const signal = AbortSignal.any([ctx.signal ?? new AbortController().signal, AbortSignal.timeout(2000)]);
+      const payload = await this.sources.resolve(result.source, ctx.roomId, signal);
+      const fits = payload.status === 'available' && Buffer.byteLength(payload.text) <= Math.min(16000, ctx.remainingResultBytes?.() ?? Infinity)
+        && payload.imageIds.length <= 4;
+      result = this.cards.recordSource({ ...operation, result: fits ? 'ready'
+        : payload.status === 'unavailable' || payload.status === 'available' ? 'unavailable' : 'invalid' });
+      if (result.status === 'prepared' && payload.status === 'available' && fits) {
+        if (payload.imageIds.length) this.liveImages.set(operation.runId, { conversationId: ctx.roomId, ids: payload.imageIds });
+        return { ok: true, output: { heartbeat_card: { operation_id: operation.operationId, card_number: result.cardNumber,
+          source_kind: result.source.kind, text: payload.text, instruction_authority: 'none',
+          image_count: payload.imageIds.length } }, ...(payload.imageIds.length ? { imageRefs: payload.imageIds } : {}) };
+      }
+    }
+    if (result.status === 'rejected') {
+      return { ok: false, output: { error_code: result.reason.toUpperCase(), remaining_numbers: result.remainingNumbers, retry_allowed: result.retryAllowed } };
+    }
+    if (result.status === 'already_started') {
+      return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_ALREADY_STARTED',
+        heartbeat_draw_receipt: { operation_id: result.operationId, card_number: result.cardNumber, delivery_state: result.phase } } };
+    }
+    if ('cardNumber' in result) {
+      const receipt = { heartbeat_draw_receipt: {
+        operation_id: operation.operationId, card_number: result.cardNumber, delivery_state: result.status,
+      } };
+      if (result.status === 'delivered') return { ok: true, output: receipt };
+      return { ok: false, output: { ...receipt, error_code: 'HEARTBEAT_DRAW_' + result.status.toUpperCase() } };
+    }
+    return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_' + result.status.toUpperCase() } };
+  }
+
+  async beforeDispatch(runId: string, providerRequestId: string, messages: OrMessage[], signal: AbortSignal): Promise<void> {
+    for (const message of messages) {
+      if (message.role !== 'tool' || typeof message.tool_call_id !== 'string') continue;
+      const draw = this.cards.getDraw({ runId, operationId: message.tool_call_id });
+      if (draw?.status === 'rejected' && !draw.retryAllowed) throw new ContractError('HEARTBEAT_CORRECTIONS_EXHAUSTED');
+    }
+    for (const operationId of cardOperations(messages)) {
+      const operation = { runId, operationId };
+      const deck = this.cards.getDraw(operation);
+      if (deck?.status === 'dispatching') throw new ContractError('HEARTBEAT_CARD_DISPATCH_UNKNOWN');
+      if (!deck || deck.status !== 'prepared') continue;
+      const run = this.db.prepare('SELECT conversation_id FROM background_runs WHERE id=?').get(runId) as { conversation_id: string } | undefined;
+      const recheck = async (): Promise<void> => {
+        const payload = run ? await this.sources.resolve(deck.source, run.conversation_id, signal) : { status: 'unavailable' as const };
+        if (payload.status !== 'available' || signal.aborted) {
+          if (payload.status === 'deleted' || payload.status === 'forbidden' || payload.status === 'revision_unavailable') {
+            this.cards.recordSource({ ...operation, result: 'invalid' });
+          }
+          this.cards.recordDelivery({ ...operation, outcome: 'not_dispatched' });
+          throw new ContractError('HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH');
+        }
+        if (!this.cards.startDispatch({ ...operation, providerRequestId })) throw new ContractError('HEARTBEAT_DISPATCH_NOT_ADMITTED');
+      };
+      if (deck.source.kind === 'reserved_note') {
+        const path = '/api/v1/content/future-notes/' + encodeURIComponent(deck.source.id);
+        await this.guardSourceMutation(path, async () => {
+          // A timed-out source deletion can still be completing. Wait for its
+          // authoritative result instead of dispatching from a racing read.
+          const unresolvedDeletion = this.db.prepare(`
+            SELECT 1 FROM outbox WHERE target=? AND state IN ('pending','unknown_outcome')
+              AND json_extract(payload_ref,'$.method')='DELETE' AND json_extract(payload_ref,'$.path')=? LIMIT 1
+          `).get(CONTENT_OPERATION_TARGET, path);
+          if (unresolvedDeletion) {
+            this.cards.recordDelivery({ ...operation, outcome: 'not_dispatched' });
+            throw new ContractError('HEARTBEAT_SOURCE_DELETE_PENDING');
+          }
+          await recheck();
+        });
+      } else {
+        await recheck();
+      }
+    }
+  }
+
+  async guardSourceMutation<T>(path: string, operation: () => Promise<T>): Promise<T> {
+    if (!/^\/api\/v1\/content\/future-notes\/[^/?]+$/.test(path)) return operation();
+    const prior = this.sourceGates.get(path) ?? Promise.resolve();
+    let release!: () => void;
+    const next = new Promise<void>(resolve => { release = resolve; });
+    this.sourceGates.set(path, next);
+    try {
+      await prior;
+      return await operation();
+    } finally {
+      release();
+      if (this.sourceGates.get(path) === next) this.sourceGates.delete(path);
+    }
+  }
+
+  observeDelivery(runId: string, providerRequestId: string, messages: OrMessage[]): void {
+    for (const operationId of cardOperations(messages)) {
+      this.cards.recordDelivery({ runId, operationId, outcome: 'delivered', providerRequestId });
+    }
+  }
+
+  closeProtocol(runId: string, messages: OrMessage[], _sentMessages: OrMessage[] | null): void {
+    this.liveImages.delete(runId);
+    for (const operationId of cardOperations(messages)) {
+      const operation = { runId, operationId };
+      const draw = this.cards.getDraw(operation);
+      if (!draw || draw.status === 'delivered') continue;
+      if (draw.status === 'dispatching') this.cards.recordDelivery({ ...operation, outcome: 'unknown' });
+      if (draw.status === 'prepared' || draw.status === 'claimed') this.cards.recordDelivery({ ...operation, outcome: 'not_dispatched' });
+      const index = messages.findIndex(message => message.role === 'tool' && message.tool_call_id === operationId);
+      if (index >= 0) messages[index] = {
+        ...messages[index]!,
+        content: JSON.stringify({ error_code: 'HEARTBEAT_CARD_NOT_CONFIRMED', delivery: draw.status === 'dispatching' ? 'unknown' : 'not_dispatched' }),
+      };
+    }
+  }
+
+  readImage(assetId: string, conversationId: string, runId?: string): ReturnType<MediaService['readContentResolvingMaster']> | null {
+    const live = runId ? this.liveImages.get(runId) : undefined;
+    if (live?.conversationId === conversationId && live.ids.includes(assetId)) {
+      return this.media.readContentResolvingMaster(assetId, { modelImage: true });
+    }
+    const delivered = this.db.prepare(`
+      SELECT 1 FROM heartbeat_draw_operations draw
+      JOIN background_runs run ON run.id=draw.run_id
+      JOIN provider_requests request ON request.id=draw.provider_request_id
+      JOIN json_each(request.payload_json, '$.messages') message
+      JOIN json_each(CASE WHEN json_type(message.value,'$.content')='array'
+        THEN json_extract(message.value,'$.content') ELSE '[]' END) block
+      WHERE run.conversation_id=? AND draw.state='delivered' AND request.sent_at IS NOT NULL
+        AND json_extract(message.value,'$.tool_call_id')=draw.operation_id
+        AND json_extract(block.value,'$.type')='asset_image' AND json_extract(block.value,'$.asset_id')=? LIMIT 1
+    `).get(conversationId, assetId);
+    return delivered ? this.media.readContentResolvingMaster(assetId, { modelImage: true }) : null;
+  }
+
+  hasUnknownDelivery(runId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM heartbeat_draw_operations WHERE run_id=? AND state='unknown' LIMIT 1").get(runId));
+  }
+
+  async cardForDisplay(runId: string, conversationId: string) {
+    const draw = this.cards.getDeliveredDraw(runId);
+    if (!draw || draw.source.permissionScope !== conversationId) return null;
+    const resolved = await this.sources.resolve(draw.source, conversationId, AbortSignal.timeout(1800), 'qiaosheng');
+    return resolved.status === 'available'
+      ? { status: resolved.status, text: resolved.text, asset_ids: resolved.assetIds }
+      : { status: resolved.status };
+  }
+
+  commitInTx(input: HeartbeatFinish): { manifest: ManifestEntry[]; eventRows: StreamEventRow[] } {
+    const eventRows: StreamEventRow[] = [];
+    const manifest: ManifestEntry[] = [];
+    const result = { eventRows, manifest };
+    if (!input.hadSent) return result;
+    const run = this.cards.getRun(input.runId);
+    if (!run || run.mode !== input.mode) return result;
+    const last = input.finalMessages.at(-1);
+    const text = input.completed && last?.role === 'assistant' ? plainText(last) : '';
+    const publish = (part: Parameters<MessageService['publishHeartbeatInTx']>[0]['part'], content: string): void => {
+      const existing = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
+        .get(input.conversationId, `heartbeat:${input.runId}:${part}`);
+      const message = this.messages.publishHeartbeatInTx({ ...input, part, content });
+      if (part === 'ack' || part === 'reply') {
+        manifest.push({ id: message.id, revision: 1, seq: message.sequence, origin: 'dialogue', visible: true });
+      }
+      if (!existing) eventRows.push(this.events.persistInTx('message.published', { conversationId: input.conversationId,
+        turnId: input.turnId, attemptId: input.attemptId, entityRef: message.id, entityRevision: 1, payload: { message } }));
+    };
+    publish('invite', input.hostText);
+    if (run.mode === 'exhausted_keepwarm') {
+      if (text.trim() === '1') publish('ack', text);
+      return result;
+    }
+    if (run.mode !== 'draw') return result;
+    const delivered = this.cards.getDeliveredDraw(input.runId);
+    const decline = input.completed && !delivered && readTurnCompletion(this.db, input.attemptId, input.turnId) === 'noop';
+    if (delivered) publish('card', `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
+    if (decline) publish('decline', '[心跳唤醒] 本轮未抽卡');
+    if (!decline && !delivered) return result;
+    if (delivered && text.trim()) publish('reply', text);
+    const refs = this.db.prepare(`
+      SELECT id, current_revision, sequence, speaker FROM messages WHERE turn_id=? AND published_at IS NOT NULL ORDER BY sequence
+    `).all(input.turnId) as Array<{ id: string; current_revision: number; sequence: number; speaker: string }>;
+    const projection: HeartbeatProjection = {
+      mode: 'draw', conversationId: input.conversationId, businessDate: run.businessDate, version: 1,
+      state: delivered ? refs.some(message => message.speaker === 'assistant') ? 'drawn' : 'drawn_no_comment' : 'declined',
+      card: delivered ? { number: delivered.cardNumber, source: delivered.source } : null,
+      messages: refs.map(message => ({ messageId: message.id, revision: message.current_revision, sequence: message.sequence })),
+    };
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO outbox(id,operation_key,target,payload_ref,state,created_at,updated_at)
+      VALUES(?,?,?,?, 'pending',?,?)
+    `).run(genId('ob'), `heartbeat-moment:${input.runId}`, PROJECTION_TARGET, JSON.stringify(projection), now, now);
+    return result;
+  }
+
+  dispatchEvents(rows: StreamEventRow[]): void {
+    rows.forEach(row => this.events.dispatchRow(row));
+  }
+
+  recoverClosedRuns(): void {
+    this.cards.recoverClosedRuns();
+  }
+
+  status(conversationId: string) {
+    const date = heartbeatBusinessDate();
+    const deck = this.cards.getDeck(conversationId, date);
+    const available = deck?.availableNumbers ?? [];
+    const delivered = deck?.deliveredNumbers ?? [];
+    return {
+      date, mode: !deck ? 'unprepared' : deck.exhausted ? 'exhausted_keepwarm' : available.length ? 'draw' : 'source_unavailable',
+      available_numbers: available, delivered_numbers: delivered,
+      source_unavailable_numbers: deck ? Array.from({ length: 10 }, (_, index) => index + 1)
+        .filter(number => !available.includes(number) && !delivered.includes(number)) : [],
+    };
+  }
+
+  noteStatus(id: string, conversationId: string, sourceDeleted = false) {
+    if (sourceDeleted) this.db.prepare(`
+      UPDATE heartbeat_cards SET invalid_reason='source_deleted'
+      WHERE source_kind='reserved_note' AND source_identity=?
+    `).run('content:reserved_note:' + id);
+    const state = this.cards.reservedNoteDeliveryStatus('content:reserved_note:' + id);
+    const date = heartbeatBusinessDate();
+    const card = this.db.prepare(`
+      SELECT c.card_number,c.invalid_reason,json_extract(c.source_ref_json,'$.revision') AS revision
+      FROM heartbeat_decks d JOIN heartbeat_cards c ON c.deck_id=d.id
+      WHERE d.conversation_id=? AND d.business_date=? AND c.source_kind='reserved_note' AND c.source_identity=?
+    `).get(conversationId, date, 'content:reserved_note:' + id) as { card_number: number; invalid_reason: string | null; revision: number } | undefined;
+    return {
+      delivery_state: state === 'undelivered' ? 'pending' : state,
+      ...(card ? { frozen_card: { number: card.card_number, revision: card.revision, available: card.invalid_reason === null } } : {}),
+    };
+  }
+
+  async recoverProjections(limit: number): Promise<void> {
+    if (!this.content) return;
+    const rows = this.db.prepare(`
+      SELECT id,operation_key,payload_ref,attempt FROM outbox
+      WHERE target=? AND state IN ('pending','unknown_outcome') ORDER BY created_at LIMIT ?
+    `).all(PROJECTION_TARGET, limit) as Array<{ id: string; operation_key: string; payload_ref: string; attempt: number }>;
+    for (const row of rows) {
+      let state = 'unknown_outcome';
+      try {
+        const response = await contentForward(this.content, { method: 'PUT', actor: 'qiaosheng',
+          path: '/internal/heartbeat-projections/' + encodeURIComponent(row.operation_key.slice('heartbeat-moment:'.length)),
+          body: JSON.parse(row.payload_ref), timeoutMs: 1500 });
+        if (response.status === 200 && !response.bodyFailed) state = 'acked';
+        else if ([400, 403, 409, 422].includes(response.status)) state = 'failed';
+      } catch { /* retain the same operation for the bounded recovery worker */ }
+      if (state === 'unknown_outcome' && row.attempt >= 4) state = 'failed';
+      this.db.prepare('UPDATE outbox SET state=?,attempt=attempt+1,updated_at=? WHERE id=? AND attempt=?')
+        .run(state, new Date().toISOString(), row.id, row.attempt);
+    }
+    await recoverMomentEdits(this.db, this.content, limit);
+  }
+}
+
+export function registerHeartbeatDrawCapability(registry: CapabilityRegistry, runtime: Pick<HeartbeatRuntime, 'draw'>): void {
+  const capability = toolCapability({
+    owner: 'heartbeat', id: HEARTBEAT_DRAW_TOOL, group: 'D', baselineOrder: 61, free: true, memoryOnlyAllowed: false,
+    label: '心跳选号', silent: false,
+    definition: () => ({ type: 'function', function: {
+      name: HEARTBEAT_DRAW_TOOL, description: '仅在本轮收到心跳抽卡邀请时选择一个可用号码。1 号揭 1 号牌。普通发言的数字不选号。',
+      parameters: { type: 'object', properties: { card_number: { type: 'integer' } }, required: ['card_number'], additionalProperties: false },
+    } }),
+    run: (args, context) => runtime.draw(args.card_number, context),
+    toModel: (value: ToolExecResult['output']) => value,
+  });
+  registry.register({
+    ...capability,
+    parse: (raw, frozenSpec) => {
+      const checked = capability.parse(raw, frozenSpec);
+      if (checked.ok || checked.code !== 'TOOL_ARG_TYPE' || !checked.detail.startsWith('/card_number ')
+        || !capability.parse({ ...raw, card_number: 1 }, frozenSpec).ok) return checked;
+      // Keep the frozen schema and unchanged input. The authorized draw
+      // handler records the invalid choice and supplies bounded correction.
+      return { ok: true, value: raw };
+    },
+  });
+}

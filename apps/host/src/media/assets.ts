@@ -13,13 +13,13 @@ import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 import type { MariposaMediaStore } from '../integrations/mariposa/media-store.ts';
+import { renderStaticSvg } from './static-svg.ts';
 
 export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
+const STATIC_SVG_VIEW_SERVICE = 'estomago_static_svg';
+const staticSvgViewOperation = (assetId: string) => `static-svg-view-v1:${assetId}`;
 
-// 相册重构 P2（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：这些用途的媒体字节以 M 为唯一
-// 长期正本，保存成功后落正到 M、缓存缺失时从 M 回源。chat_voice 不在其中——语音原声
-// 另有 oído/Siren 生命周期与远端消费者（执行包 A66：共享资产入口不得误伤既有音频链路），
-// 本轮不迁移；其媒体字节归属仍按原路径处理。
+// 相册重构 P2：这些用途的媒体字节以 M 为唯一长期正本，落正后本地缓存缺失时从 M 回源。
 export const M_MASTER_PURPOSES: ReadonlySet<IngestPurpose> = new Set([
   'chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view',
   // 宿主用户 2026-11-08 裁定：语音同图片——M 唯一正本，E 播放/使用走 M 回源
@@ -157,6 +157,51 @@ export class MediaService {
     return { ...this.getAsset(id), duplicate };
   }
 
+  /** Save the original and a versioned visual derivative. The collection retains the original asset id. */
+  async saveStaticSvg(opts: { bytes: Uint8Array; operationId: string; createdBy: string; origin: 'upload' | 'generated' }): Promise<StoredAsset | null> {
+    const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id=?')
+      .get(opts.operationId) as { id: string; content_sha256: string } | undefined;
+    if (existing && existing.content_sha256 !== sha256Hex(Buffer.from(opts.bytes))) {
+      throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+    }
+    const view = existing ? this.staticSvgView(existing.id) : null;
+    if (existing && view) {
+      await this.attemptMSync(existing.id, opts.bytes);
+      await this.attemptMSync(view.id);
+      return this.getAsset(existing.id);
+    }
+    let png: Buffer | null;
+    try { png = await renderStaticSvg(opts.bytes); }
+    catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
+    if (png === null) return null;
+    const original = await this.saveBuffer({ ...opts, purpose: 'creation_icon' });
+    await this.saveBuffer({
+      bytes: png, purpose: 'derived_view', operationId: staticSvgViewOperation(original.id),
+      createdBy: opts.createdBy, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id,
+    });
+    return original;
+  }
+
+  private staticSvgView(assetId: string): { id: string; m_sync_state: string } | null {
+    const view = this.db.prepare(`
+      SELECT id,m_sync_state FROM media_assets WHERE creation_operation_id=? AND origin_service=?
+      AND origin_ref=? AND ingest_purpose='derived_view' AND mime_type='image/png' AND state='available'
+    `).get(staticSvgViewOperation(assetId), STATIC_SVG_VIEW_SERVICE, assetId) as { id: string; m_sync_state: string } | undefined;
+    return view ?? null;
+  }
+
+  canProvideImage(asset: StoredAsset): boolean {
+    return asset.state === 'available' && (asset.mime_type === 'image/svg+xml'
+      ? isStaticSvgViewReady(this.staticSvgView(asset.id), this.masterStoreConfigured)
+      : PURPOSE_MIMES.chat_image.includes(asset.mime_type));
+  }
+
+  originalImageAsset(asset: StoredAsset): StoredAsset {
+    return asset.ingest_purpose === 'derived_view' && asset.origin_service === STATIC_SVG_VIEW_SERVICE && asset.origin_ref
+      && asset.creation_operation_id === staticSvgViewOperation(asset.origin_ref)
+      ? this.getAsset(asset.origin_ref) : asset;
+  }
+
   // —— 相册重构 P2：M 唯一正本同步/回源。失败不掩盖本地保存成功——状态回 pending
   //    由后台循环退避重试；成功即 m_content_hash 落行，本地文件自此只是可重建缓存。
 
@@ -255,10 +300,17 @@ export class MediaService {
   /** 相册重构 P2：M 正本媒体的读取入口——本地缓存命中即同步返回；缓存缺失且已落正 M 时
    *  从 M 回源（sha256 校验后原子重建本地缓存）；M 也读不到才如实
    *  ASSET_STORAGE_UNAVAILABLE——绝不静默换一张或假装可读。 */
-  async readContentResolvingMaster(id: string): Promise<{ bytes: Buffer; mime: string }> {
+  async readContentResolvingMaster(id: string, options?: { modelImage: true }): Promise<{ bytes: Buffer; mime: string }> {
     const row = this.db.prepare('SELECT storage_key, mime_type, state, content_sha256, m_sync_state, m_content_hash FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string; content_sha256: string; m_sync_state: string; m_content_hash: string | null } | undefined;
     if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
     if (row.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产状态 ${row.state}`);
+    if (options?.modelImage && row.mime_type === 'image/svg+xml') {
+      const view = this.staticSvgView(id);
+      if (!view || !isStaticSvgViewReady(view, this.masterStoreConfigured)) {
+        throw new MediaError('SVG_VIEW_UNAVAILABLE', 422, '原 SVG 未建立可用的 PNG 视图');
+      }
+      return this.readContentResolvingMaster(view.id);
+    }
     const abs = path.join(this.mediaDir, row.storage_key);
     if (fs.existsSync(abs)) {
       // ALB-01：本地缓存命中即触 LRU（同步小写入；NULL=从未读过=逐出时视为最旧）
@@ -437,7 +489,11 @@ export class MediaService {
   isAssetReferenced(assetId: string): { referenced: boolean; by_message_revisions: number; by_external_refs: number } {
     const byMsg = (this.db.prepare('SELECT COUNT(*) n FROM message_attachments WHERE asset_id = ?').get(assetId) as { n: number }).n;
     const byRef = (this.db.prepare("SELECT COUNT(*) n FROM asset_external_refs WHERE asset_id = ? AND state IN ('protected','committed')").get(assetId) as { n: number }).n;
-    return { referenced: byMsg > 0 || byRef > 0, by_message_revisions: byMsg, by_external_refs: byRef };
+    const bySvgSource = this.db.prepare(`
+      SELECT 1 FROM media_assets view JOIN media_assets source ON source.id=view.origin_ref
+      WHERE view.id=? AND view.origin_service=? AND view.ingest_purpose='derived_view' AND source.state='available'
+    `).get(assetId, STATIC_SVG_VIEW_SERVICE) ? 1 : 0;
+    return { referenced: byMsg > 0 || byRef > 0 || bySvgSource > 0, by_message_revisions: byMsg, by_external_refs: byRef + bySvgSource };
   }
 
   /** R6′（2026-10-23，她批 R6P 方案）：源资产删除原语——state→missing（引用守卫外的显式删除）。
@@ -481,9 +537,15 @@ export class MediaService {
         continue;
       }
       const wanted = it.presentation === 'voice' ? PURPOSE_MIMES.chat_voice : PURPOSE_MIMES.chat_image;
-      if (!wanted.includes(a.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      if (!wanted.includes(a.mime_type) && !(it.presentation !== 'voice' && a.mime_type === 'image/svg+xml' && this.canProvideImage(a))) {
+        throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      }
     }
   }
+}
+
+function isStaticSvgViewReady(view: { m_sync_state: string } | null, masterConfigured: boolean): boolean {
+  return view !== null && (view.m_sync_state === 'synced' || !masterConfigured);
 }
 
 /** 公网判定：拒环回/私网/链路本地/唯一本地/云元数据（§7.2）。 */

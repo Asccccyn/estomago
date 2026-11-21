@@ -1,12 +1,13 @@
-// 后台回合结果分类与收尾——R4a（2026-11-07）自 supervisor.runBackgroundTurn 迁出，
-// 行为逐字保留：终态落库、PURE_ACK/Substantive 判定（按整轮不是最后字符串）、
-// 轨迹提交（C08 已发协议保留）、C09/K-13 维护回执、失败/取消/睡眠分类。
-import type { Db } from '../db/connection.ts';
+// 后台回合收口、规范协议提交及现有活动计时。
+import { tx, type Db } from '../db/connection.ts';
+import type { HeartbeatRuntime } from '../modules/heartbeat/runtime.ts';
+import type { HeartbeatMode } from '../modules/heartbeat/service.ts';
 import type { OrMessage } from './or-payload.ts';
 import type { RunnerRunResult } from './runner.ts';
 import { tailBoundaryOf } from './cache-plan.ts';
 import type { ManifestEntry } from '../context/review-policy.ts';
 import type { SupervisorDeps } from './supervisor.ts';
+import { readTurnCompletion } from './turn-completion.ts';
 
 export type BackgroundOutcomeInput = {
   db: Db;
@@ -22,6 +23,8 @@ export type BackgroundOutcomeInput = {
   capturedActivityRevision: number | null;
   toolCallsObserved: number;
   isCancelRequested: () => boolean;
+  recoveredRequestId?: string;
+  heartbeat?: { runtime: HeartbeatRuntime; mode: HeartbeatMode; hostText: string };
   loop: {
     result: RunnerRunResult;
     finalMessages: OrMessage[] | null;
@@ -32,92 +35,104 @@ export type BackgroundOutcomeInput = {
 };
 
 export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string } {
-  const { db, loop, kind, runId } = input;
+  const { db, loop, kind, runId, heartbeat } = input;
+  const completed = loop.result.outcome === 'completed' && !loop.result.errorCode;
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
-  const finishedState = loop.result.outcome === 'completed' || sleepPaused ? 'completed' : 'failed';
-  db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), input.turnId);
-  db.prepare('UPDATE attempts SET state=?,blocked_reason=?,completed_at=? WHERE id=?').run(finishedState, loop.result.errorCode, new Date().toISOString(), input.attemptId);
+  const observed = heartbeat ? db.prepare(`
+    SELECT payload_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL
+    ORDER BY sent_at DESC,rowid DESC LIMIT 1
+  `).get(runId) as { payload_json: string | null } | undefined : null;
+  const last = loop.finalMessages?.at(-1);
+  const lastText = last?.role === 'assistant' && !(Array.isArray(last.tool_calls) && last.tool_calls.length)
+    ? typeof last.content === 'string' ? last.content
+      : last.content.filter(block => block.type === 'text').map(block => block.text).join('')
+    : null;
+  const exhausted = heartbeat?.mode === 'exhausted_keepwarm';
+  const exhaustedReply = exhausted && completed && Boolean(observed) && lastText?.trim() === '1';
+  const missingExhaustedReply = exhausted && completed && !exhaustedReply;
+  const finishedState = (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
+  const finishReason = missingExhaustedReply ? 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' : loop.result.errorCode;
 
-  // —— 结果分类（06 §2：一条执行路径、两种提交结果；判定按整轮不是最后字符串）——
-  const finalText = loop.finalMessages !== null && loop.finalMessages.length > 0
-    ? (() => { const last = loop.finalMessages![loop.finalMessages!.length - 1]!; const c = last.content; return typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => (b as { type?: string }).type === 'text').map((b) => (b as { text?: string }).text ?? '').join('') : ''; })()
-    : '';
-  const publishedCount = Number((db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(input.turnId) as { n: number }).n);
-  const pureAck = loop.result.outcome === 'completed' && !loop.result.errorCode && input.toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
-  db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
-    .run(input.toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), runId);
-  const commitTrajectory = (manifest: ManifestEntry[]): void => {
-    if (!input.trajectory || loop.finalMessages === null) return;
-    input.trajectory.replace(input.windowId, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), manifest, (conn) => {
-      const now = new Date().toISOString();
-      const stamped = conn.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ? AND window_id = ? AND turn_id = ?')
-        .run(now, now, runId, input.windowId, input.turnId);
-      if (Number(stamped.changes) !== 1) throw new Error('BACKGROUND_TRAJECTORY_RUN_MISMATCH');
-    });
+  // Only the current heartbeat's unobserved card payload can be withheld. Its
+  // actual tool call and a protocol-valid same-ID receipt remain in the history.
+  if (heartbeat && loop.finalMessages) {
+    heartbeat.runtime.closeProtocol(runId, loop.finalMessages, loop.lastSentMessages);
+  }
+
+  const published = (conn: Db) => conn.prepare(`
+    SELECT id,sequence,current_revision FROM messages
+    WHERE turn_id=? AND speaker='assistant' ORDER BY sequence
+  `).all(input.turnId) as Array<{ id: string; sequence: number; current_revision: number }>;
+  let heartbeatEvents: ReturnType<HeartbeatRuntime['commitInTx']>['eventRows'] = [];
+  const finishTurn = (conn: Db): void => {
+    const now = new Date().toISOString();
+    conn.prepare('UPDATE turns SET state=?,completed_at=? WHERE id=?').run(finishedState, now, input.turnId);
+    conn.prepare('UPDATE attempts SET state=?,blocked_reason=?,completed_at=? WHERE id=?').run(finishedState, finishReason, now, input.attemptId);
+    conn.prepare("UPDATE background_runs SET tool_calls_observed=?,published_message_count=?,retention='retained',updated_at=? WHERE id=?")
+      .run(input.toolCallsObserved, published(conn).length, now, runId);
+    // A recovered full tool-call batch proves this request even if its local
+    // SDK stop was interrupted. Cache/usage evidence stays untouched.
+    if (kind === 'keepwarm' && completed && input.activity && input.capturedActivityRevision !== null) {
+      const request = db.prepare(`
+        SELECT id,dispatch_started_at FROM provider_requests
+        WHERE background_run_id=? AND (outcome='completed' OR id=?) AND sent_at IS NOT NULL AND dispatch_started_at IS NOT NULL
+        ORDER BY dispatch_started_at DESC,rowid DESC LIMIT 1
+      `).get(runId, input.recoveredRequestId ?? null) as { id: string; dispatch_started_at: string } | undefined;
+      if (request) input.activity.noteMaintenanceReceipt({
+        conversationId: input.conversationId, capturedActivityRevision: input.capturedActivityRevision,
+        requestId: request.id, windowId: input.windowId, dispatchStartedAtIso: request.dispatch_started_at,
+      });
+    }
   };
-
-  if (!pureAck) {
-    // SUBSTANTIVE（06 §2）：提交最初事件与整个必要协议链——工具调用/结果/续轮/最终文本；
-    // 正式发言已在工具执行时入消息库与归档 outbox；已见清单并入轨迹 manifest（B11/C-09）。
-    if (input.trajectory && loop.finalMessages !== null) {
-      const baseManifest = input.baseManifest;
-      const publishedEntries = (db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(input.turnId) as Array<{ id: string; sequence: number }>)
-        .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
-      commitTrajectory([...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
+  if (input.trajectory && loop.finalMessages !== null) {
+    const publishedEntries = published(db).map((message): ManifestEntry => ({
+      id: message.id, revision: message.current_revision, seq: message.sequence, origin: 'dialogue', visible: true,
+    }));
+    const manifest = [...input.baseManifest, ...publishedEntries, ...loop.toolSeen,
+      ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))];
+    const finalMessages = loop.finalMessages;
+    let boundary = input.trajectory.forWindow(input.windowId)?.lastBoundary ?? null;
+    if (!heartbeat) boundary = tailBoundaryOf(loop.lastSentMessages ?? finalMessages);
+    else if (observed?.payload_json) {
+      const payload = JSON.parse(observed.payload_json) as { messages?: OrMessage[] };
+      if (Array.isArray(payload.messages)) boundary = tailBoundaryOf(payload.messages);
     }
-    // C09（四仓审计 20261106）：工具心跳（substantive）完成同样记维护回执——后继维护
-    // 安排与缓存证据独立成立（不记回执→occurrence key 永不变→后继永久停摆，审计实测
-    // 工具心跳后 next_run/model 增量=0）。缓存命中事实仍以真实 usage 为准（K-13 不冒充）。
-    if (kind === 'keepwarm' && loop.result.outcome === 'completed' && input.activity && input.capturedActivityRevision !== null) {
-      const evAny = db.prepare(
-        `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
-         JOIN background_dispatches bd ON bd.provider_request_id = pr.id
-         WHERE bd.run_id = ? AND pr.outcome = 'completed' AND pr.dispatch_started_at IS NOT NULL
-         ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
-      ).get(runId) as { rid: string; started: string } | undefined;
-      if (evAny) {
-        input.activity.noteMaintenanceReceipt({ conversationId: input.conversationId, capturedActivityRevision: input.capturedActivityRevision, requestId: evAny.rid, windowId: input.windowId, dispatchStartedAtIso: evAny.started });
+    input.trajectory.replace(input.windowId, finalMessages, boundary, manifest, (conn) => {
+      if (heartbeat) {
+        const projection = heartbeat.runtime.commitInTx({
+          runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
+          hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode, completed, hadSent: Boolean(observed),
+        });
+        if (projection.manifest.length) {
+          const known = new Set(manifest.map(entry => entry.id));
+          const additions = projection.manifest.filter(entry => !known.has(entry.id));
+          conn.prepare('UPDATE window_trajectories SET manifest_json=? WHERE window_id=?')
+            .run(JSON.stringify([...manifest, ...additions]), input.windowId);
+        }
+        heartbeatEvents = projection.eventRows;
       }
-    }
-    if (loop.result.outcome !== 'completed') {
-      // RB02（复审 20261106）：background_complete 的合法停发已在 runner 控制层归一为
-      // completed（sdk-host-query 与 API complete 门同一出口）——此处只剩真实失败/未知。
-      if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
-      if (input.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-      if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
-      return { outcome: 'failed', result_code: loop.result.errorCode ?? (kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
-    }
-
-    const runCode = db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(runId) as { result_code: string | null };
-    const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
-    // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
-    return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') ? loop.result.errorCode : completion === 'noop' ? 'complete:noop' : 'complete:done' };
+      const at = new Date().toISOString();
+      const stamped = conn.prepare('UPDATE background_runs SET trajectory_committed_at=?,updated_at=? WHERE id=? AND window_id=? AND turn_id=?')
+        .run(at, at, runId, input.windowId, input.turnId);
+      if (Number(stamped.changes) !== 1) throw new Error('BACKGROUND_TRAJECTORY_RUN_MISMATCH');
+      finishTurn(conn);
+    });
+  } else {
+    tx(db, () => finishTurn(db));
   }
+  if (heartbeatEvents.length) heartbeat?.runtime.dispatchEvents(heartbeatEvents);
 
-  // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文、不推进 L、
-  // 清单不加可见条目。C08（四仓审计 20261106）：**已发协议保留**——host 事件与
-  // assistant "1" 随轨迹提交（缓存前缀延续），下一普通输入/维护从实发前缀接续，
-  // 不再出现首差（旧实现整段丢弃→下一请求 messages[4] 起分叉）。
-  // A retained tool result from an earlier interrupted run may have entered
-  // the model in this pure maintenance request. Promote only that source
-  // evidence in the same transaction as this run's trajectory and stamp.
-  const ackManifest = loop.toolSeen.length ? [...input.baseManifest, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))] : input.baseManifest;
-  if (loop.finalMessages !== null) commitTrajectory(ackManifest);
-  else if (loop.toolSeen.length) input.trajectory?.replaceManifest(input.windowId, ackManifest);
-  if (kind === 'keepwarm' && input.activity && input.capturedActivityRevision !== null) {
-    // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
-    // 不写"保温成功"，同活动版本不重试）
-    const evRow = db.prepare(
-      `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
-       JOIN background_dispatches bd ON bd.provider_request_id = pr.id
-       JOIN usage_observations u ON u.request_id = pr.id AND u.completeness = 'complete'
-       WHERE bd.run_id = ? AND pr.outcome = 'completed' AND (u.cache_read_input_tokens > 0 OR u.cache_creation_input_tokens > 0)
-       ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
-    ).get(runId) as { rid: string; started: string } | undefined;
-    if (evRow) {
-      input.activity.noteMaintenanceReceipt({ conversationId: input.conversationId, capturedActivityRevision: input.capturedActivityRevision, requestId: evRow.rid, windowId: input.windowId, dispatchStartedAtIso: evRow.started });
-    }
+  if (loop.result.outcome !== 'completed') {
+    if (input.heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'unknown', result_code: 'HEARTBEAT_CARD_DISPATCH_UNKNOWN' };
+    if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
+    if (input.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
+    if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
+    return { outcome: 'failed', result_code: loop.result.errorCode ?? (kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
   }
-  return { outcome: 'completed', result_code: kind === 'keepwarm' ? 'ack_only' : 'complete:noop' };
+  if (sleepPaused) return { outcome: 'completed', result_code: loop.result.errorCode! };
+  if (missingExhaustedReply) return { outcome: 'failed', result_code: 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' };
+  if (exhaustedReply) return { outcome: 'completed', result_code: 'ack_only' };
+  const completion = readTurnCompletion(db, input.attemptId, input.turnId);
+  return completion === 'noop' ? { outcome: 'noop', result_code: 'complete:noop' }
+    : { outcome: 'completed', result_code: 'complete:done' };
 }
-

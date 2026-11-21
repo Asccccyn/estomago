@@ -17,6 +17,8 @@ import { registerVoiceCapabilities } from '../apps/host/src/modules/voice/module
 import { registerWishstarCapabilities as registerWishstarCapabilitiesInstance } from '../apps/host/src/modules/wishstar/module.ts';
 import { registerContentCapabilities as registerContentCapabilitiesInstance } from '../apps/host/src/modules/content/module.ts';
 import { registerWakeCapabilities as registerWakeCapabilitiesInstance } from '../apps/host/src/modules/wake/module.ts';
+import { registerTurnCompletionCapability } from '../apps/host/src/runtime/turn-completion.ts';
+import { registerHeartbeatDrawCapability } from '../apps/host/src/modules/heartbeat/runtime.ts';
 import { registerMediaCapabilities as registerMediaCapabilitiesInstance } from '../apps/host/src/modules/media/module.ts';
 import { registerArchivesCapabilities as registerArchivesCapabilitiesInstance } from '../apps/host/src/modules/archives/module.ts';
 import { ArchiveService } from '../apps/host/src/modules/archives/service.ts';
@@ -228,7 +230,11 @@ export function assembleTestTools(deps: TestToolDeps): {
   });
   registerWishstarCapabilitiesInstance(registry, { wishstar: (deps.wishstar ?? null) as never });
   registerContentCapabilitiesInstance(registry, { contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, contentOps: (deps.contentOps ?? null) as never });
-  registerWakeCapabilitiesInstance(registry, { db, taskService: (deps.taskService ?? null) as never });
+  registerWakeCapabilitiesInstance(registry, { taskService: (deps.taskService ?? null) as never });
+  registerTurnCompletionCapability(registry, db);
+  registerHeartbeatDrawCapability(registry, {
+    draw: async () => ({ ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } }),
+  });
   registerMediaCapabilitiesInstance(registry, { db, contentClient: (deps.contentClient ?? null) as never, media: (deps.media ?? null) as never, mediaIndex: (deps.mediaIndex ?? null) as never });
   // 相册重构 P4：存档工具（镜像 app-context 无条件注册；archives 服务未注入时定义在、
   // 运行期按服务缺席如实报错——与生产装配一致）

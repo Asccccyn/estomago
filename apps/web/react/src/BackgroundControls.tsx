@@ -293,7 +293,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               </div>
               {runCursor && <button className="mt-2 text-[12px] text-[#a4552f]" disabled={busy} onClick={() => void loadMore('runs')}>加载更多运行</button>}
             </div>
-            <p className="mt-4 text-[11px] leading-relaxed text-[#8a8780]">心跳的纯“1”维护回执不进入聊天与记忆。他正式发出的消息会保存到聊天；工具记录与内部回复不会自动当作发给你的消息。</p>
+            <p className="mt-4 text-[11px] leading-relaxed text-[#8a8780]">当天十张牌都实际交付后，下一次心跳的实际回复“1”会显示在聊天里。</p>
           </>
         )}
       </div>

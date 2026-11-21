@@ -100,7 +100,7 @@ export class MediaIndexService {
     if (!this.worker) return { indexed: false, reason: 'MEDIA_WORKER_UNCONFIGURED' };
     const row = this.db.prepare("SELECT content_sha256 FROM media_assets WHERE id = ? AND state = 'available'").get(assetId) as { content_sha256: string } | undefined;
     if (!row) return { indexed: false, reason: 'ASSET_NOT_FOUND' };
-    const { bytes } = await this.media.readContentResolvingMaster(assetId);
+    const { bytes } = await this.media.readContentResolvingMaster(assetId, { modelImage: true });
     const { fingerprint, vectors } = await this.worker.embed([{ id: assetId, modality: 'image', bytes }], signal);
     signal?.throwIfAborted();
     const current = this.db.prepare("SELECT content_sha256 FROM media_assets WHERE id = ? AND state = 'available'").get(assetId) as { content_sha256: string } | undefined;

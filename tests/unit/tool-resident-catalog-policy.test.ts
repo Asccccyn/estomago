@@ -10,7 +10,7 @@ const expectedResident = [
   'image_generate', 'media_view', 'chat_send_voice', 'call_control', 'wake_manage', 'wishstar_write_star', 'wishstar_request_star',
   'content_album_entry_write', 'content_albums_read', 'content_post_create',
 ];
-const expectedTask = ['background_complete', 'context_review_complete'];
+const expectedTask = ['context_review_complete'];
 
 test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
   const { db, root } = makeDb(tempRoot('resident-catalog-policy-'), { seed: false });
@@ -36,7 +36,8 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   const initial = frozen.initialText!;
   assert.deepEqual([...initial.matchAll(/^- ([a-z_]+)$/gm)].map(match => match[1]), expectedResident);
   assert.deepEqual(Object.keys(frozen.groups).filter(name => frozen.groups[name] === 'T'), expectedTask);
-  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 39);
+  assert.equal(frozen.groups.heartbeat_draw, 'D');
+  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 41);
   assert.ok(initial.startsWith('你想记下一件事'));
   assert.equal([...initial.matchAll(/用 tool_catalog 的 query/g)].length, 1);
   assert.match(initial, /发现记错了也可以改/);
@@ -56,7 +57,7 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   assert.equal(explicit.groups.memory_hold, 'C');
   assert.equal(explicit.groups.conversation_read, 'C');
   assert.equal(explicit.groups.memory_recall, 'D');
-  assert.equal(explicit.groups.background_complete, 'T');
+  assert.equal(explicit.groups.background_complete, 'C');
   assert.match(explicit.initialText!, /- conversation_read/);
   assert.doesNotMatch(explicit.initialText!, /问宿主用户要一颗星/);
   assert.deepEqual(storedToolset(db, 'w-new'), frozen);
@@ -77,6 +78,8 @@ test('自然意图匹配真实工具并一次返回该窗口的完整定义', ()
     ['发一条语音给她', 'chat_send_voice'],
     ['想主动给她打电话', 'call_control'],
     ['帮我改计划', 'plans_write'],
+    ['我想在本轮心跳抽卡选号码', 'heartbeat_draw'],
+    ['拒绝抽卡', 'background_complete'],
     ['memory_recall', 'memory_recall'],
   ]) {
     const result = searchToolCatalog(catalog, query, groups);

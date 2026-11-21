@@ -55,7 +55,8 @@
     "content_album_entry_write",
     "media_view",
     "content_creations_read",
-    "archives_search"
+    "archives_search",
+    "heartbeat_draw"
   ],
   "deferredOrder": [
     "tool_catalog",
@@ -81,16 +82,16 @@
     "content_post_create": "td_b0e9999653440c5ae216284f",
     "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
-    "creation_save_artifact": "td_7fb41b31a4ac3a851e9f9eb5",
-    "wake_manage": "td_cc02e5a1dca761a16aad1398",
-    "background_complete": "td_e4bd112b3b94eefbe84a2ffd",
+    "creation_save_artifact": "td_7c1b28e11ed14c01132f915b",
+    "wake_manage": "td_b2764e2e84d37e720c9b5687",
+    "background_complete": "td_1b8e66dc7581261882524764",
     "chat_send_text": "td_074393184cb1d6f44ce7c25e",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
     "chat_send_attachment": "td_2d582dc311115a57e9cd3dae",
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
-    "media_search": "td_5a5830c2fce44facc1a51ed3",
+    "media_search": "td_e1a4402b8aee85a0aff719a0",
     "oido_get": "td_23e1d4816888a554a3745bf5",
     "transcript_read": "td_f732c725968a0a8aa604f9a8",
     "oido_capabilities": "td_556434ab24001d6f65381d0b",
@@ -112,14 +113,15 @@
     "memory_words_write": "td_40f60d2daf1bee6f4ae8139b",
     "conversation_archive": "td_8f65c6f3610b6f1171135d4f",
     "memory_relations": "td_1505a77313fa5ef555ff0239",
-    "image_generate": "td_07d95a84bbbb2855276a14f8",
+    "image_generate": "td_043e6b44feec1c52bf015e2c",
     "content_albums_read": "td_0fc69806072ab8aa2d59be74",
     "content_album_entry_write": "td_228924fc50dbf03f78332239",
     "media_view": "td_f72b71bbef701e3714320c82",
     "content_creations_read": "td_439172e960f2ab11a08f7703",
-    "archives_search": "td_249b4a683b8cc293ef4a3163"
+    "archives_search": "td_249b4a683b8cc293ef4a3163",
+    "heartbeat_draw": "td_cdd2b5d2062733f663a80868"
   },
-  "toolsSha256": "92115db1d6f2b106678f209b8ea676dd81822c88ce66cf71a02944b411e00094",
+  "toolsSha256": "f0357b7c971ffa32b66987625d3cf881614cd3c5f6c2d1fabdbfc79487680166",
   "tools": [
     {
       "type": "function",
@@ -1391,7 +1393,7 @@
       "type": "function",
       "function": {
         "name": "creation_save_artifact",
-        "description": "保存你写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。",
+        "description": "保存 SVG/HTML 为持久资产（返回 asset_id）。支持的静态 SVG 保存到相册，返回 album_entry_id，可按原资产查看或发送图片。交互或动画 SVG 以及 HTML 保留在作品里，以沙箱预览交付。保存时不执行作品代码。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1426,7 +1428,7 @@
       "type": "function",
       "function": {
         "name": "wake_manage",
-        "description": "给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。预约唤醒、额外自由活动和心跳分别控制；预约关闭时 schedule/update 返回 SELF_WAKE_DISABLED。要对宿主用户说话请走 chat_send_text；本工具只管理预约。",
+        "description": "给自己预约或管理未来的一次自主唤醒。可有多个并存预约。schedule=新预约（at 带时区 RFC3339 或 delay_seconds 正整数秒，恰好一个；note=留给未来自己的话）；list=查看；update/cancel=修改/取消（需当前 revision）。预约唤醒、额外自由活动和心跳分别控制；预约关闭时 schedule/update 返回 SELF_WAKE_DISABLED。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1490,7 +1492,7 @@
       "type": "function",
       "function": {
         "name": "background_complete",
-        "description": "结束本次自主活动/心跳。outcome=noop 表示正常地什么都没做（不需要产出、消息或 hold）；done 表示本轮活动已完成。自主活动与心跳回合均可用。",
+        "description": "结束当前回合。done 表示做完了已有动作，noop 表示不用再做或再回复。心跳邀请后尚未抽卡时，noop 表示这次不抽。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1707,7 +1709,7 @@
       "type": "function",
       "function": {
         "name": "media_search",
-        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 只从\"我们的相册\"精选成员里找（找合照/收藏的照片用这个）；scope=creations 只从作品集的图片作品里找（找生成过的画用这个；语义检索只覆盖位图——要列出/翻页全部作品含 SVG/HTML 用 content_creations_read）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
+        "description": "按中文语义找图片候选。scope=chat（默认）在本会话已发布图片里找；scope=stickers 只从表情包分类成员里找（要发表情时用这个）；scope=photos 从相册找收藏照片、截图和新入册的画；scope=creations 从仍归作品库的历史图片或作品图标找（语义检索只覆盖位图；查看可运行作品用 content_creations_read）。各集合 scope 的候选是该分类全部成员。返回候选 asset 引用或 no_match。候选只回答\"哪张图可能相关\"——图里具体是什么仍用已见图片判断（media_view），不能用检索标签替代看图；不确定就说不确定。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -1731,7 +1733,7 @@
                 "photos",
                 "creations"
               ],
-              "description": "候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员；photos=仅\"我们的相册\"精选成员；creations=仅作品集图片作品"
+              "description": "候选范围：chat=本会话已发布图片（默认）；stickers=仅表情包分类成员；photos=照片、截图和入册画作；creations=作品库的历史图片或作品图标"
             }
           },
           "required": [
@@ -2551,7 +2553,7 @@
       "type": "function",
       "function": {
         "name": "image_generate",
-        "description": "画一张图：默认同一次操作完成 生成→保存为作品→发布到当前聊天（回执 sent=true 即已发送，不要再调用 chat_send_attachment 补发）。她要求先验图再发、或明确只要保存时，传 deliver=save_only 仅保存（之后可用 chat_send_attachment 发送同一 asset_id，不会重新生成）。默认静态图；要 GIF 动图必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒；帧数和尺寸拼成大图受供应商\"最长边≤3840\"限制，大尺寸请减少帧数，超限组合会在请求前被拒）。失败回执如实分阶段：上游明确失败（含 5xx）retryable=true，同键重试会重新请求上游；结果未确认（超时/断连）不自动重发避免重复计费；已生成保存失败、或已保存发布失败时，同键重试只补缺失阶段，不重新付费生成。同一 client_operation_id 重试沿用同一值。",
+        "description": "画一张图：默认同一次操作完成 生成→保存到相册→发布到当前聊天（album_entry_id 是入册关系，sent=true 表示已发送，不要再调用 chat_send_attachment 补发）。她要求先验图再发、或明确只要保存时，传 deliver=save_only 仅保存（之后可用 chat_send_attachment 发送同一 asset_id，不会重新生成）。默认静态图；要 GIF 动图必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒；帧数和尺寸拼成大图受供应商\"最长边≤3840\"限制，大尺寸请减少帧数，超限组合会在请求前被拒）。失败回执如实分阶段：上游明确失败（含 5xx）retryable=true，同键重试会重新请求上游；结果未确认（超时/断连）不自动重发避免重复计费；已生成保存失败、或已保存发布失败时，同键重试只补缺失阶段，不重新付费生成。同一 client_operation_id 重试沿用同一值。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2565,7 +2567,7 @@
             },
             "title": {
               "type": "string",
-              "description": "可选作品标题"
+              "description": "可选相册图片标题"
             },
             "format": {
               "type": "string",
@@ -2804,6 +2806,25 @@
           },
           "required": [
             "query"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "heartbeat_draw",
+        "description": "仅在本轮收到心跳抽卡邀请时选择一个可用号码。1 号揭 1 号牌。普通发言的数字不选号。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "card_number": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "card_number"
           ],
           "additionalProperties": false
         }

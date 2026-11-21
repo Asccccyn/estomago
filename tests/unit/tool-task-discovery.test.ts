@@ -17,6 +17,7 @@ test('D08：后台任务仅在宿主当前运行范围发现，完成后收回�
   messages.ensureConversation(roomId);
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES (?,?,'ACTIVE','now','now')").run(windowId, roomId);
   db.prepare("INSERT INTO turns(id,conversation_id,trigger,state,created_at) VALUES (?,?,'proactive_turn','running','now')").run(turnId, roomId);
+  db.prepare("INSERT INTO attempts(id,turn_id,attempt_no,state,window_id) VALUES ('bg-attempt',?,1,'running',?)").run(turnId, windowId);
   db.prepare(`
     INSERT INTO background_tasks(id,conversation_id,actor_id,kind,schedule_kind,created_by_actor_id,created_at,updated_at)
     VALUES ('bg-task',?,'jiaming','autonomous','once','jiaming','now','now')
@@ -29,7 +30,7 @@ test('D08：后台任务仅在宿主当前运行范围发现，完成后收回�
   freezeWindowTools(db, windowId, registry.currentCatalog(), 'deferred', registry.currentGroups());
   const frozen = storedToolset(db, windowId);
   const context: ToolExecContext = {
-    roomId, windowId, turnId, backgroundRunId: runId, purpose: 'proactive_turn', activeReviewId: null,
+    roomId, windowId, turnId, attemptId: 'bg-attempt', backgroundRunId: runId, purpose: 'proactive_turn', activeReviewId: null,
     seenSequence: 0, seenMessages: [], requestId: 'bg-request', beforeBackgroundTool: () => {},
   };
 
@@ -48,8 +49,11 @@ test('D08：后台任务仅在宿主当前运行范围发现，完成后收回�
 
   const completion = { name: 'background_complete', arguments: { outcome: 'done' } };
   const outside = await tools.execute('tool_invoke', completion, { ...noScope, purpose: 'chat' });
-  assert.equal(outside.output.error_code, 'TOOL_PURPOSE_INVALID');
+  assert.equal(outside.output.error_code, 'TURN_COMPLETION_NOT_ACTIVE');
   assert.equal((await tools.execute('tool_invoke', completion, context)).ok, true);
-  assert.equal((await tools.execute('tool_define', { name: 'background_complete' }, context)).output.error_code, 'TOOL_NOT_IN_ALLOWLIST');
+  const stopped = await tools.execute('tool_define', { name: 'background_complete' }, context);
+  assert.equal(stopped.output.error_code, 'TURN_COMPLETED');
+  const noNewAdmission = { ...context, toolCallId: 'new-wire-id', beforeBackgroundTool: () => assert.fail('replay must not reserve') };
+  assert.deepEqual(await tools.execute('tool_invoke', completion, noNewAdmission), { ok: true, output: { completed: true, outcome: 'done' } });
   assert.deepEqual(storedToolset(db, windowId), frozen);
 });

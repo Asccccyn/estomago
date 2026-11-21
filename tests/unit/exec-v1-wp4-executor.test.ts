@@ -1,7 +1,7 @@
 // ESTOMAGO_CHAT_EXEC_V1 · WP4 收尾 + WAKE_KEEPWARM_V1（2026-10-22 改写）：
 // 后台模型回路执行器整链（04/05/06 §2/§4；K-01/K-12/K-13、C-01/C-02/C-07、B-01/B-10 面）。
 // 2026-10-22 改写：保温零工具封锁（CW-13）与 128 输出封锁退役——心跳=完整回合；
-// PURE_ACK/SUBSTANTIVE 分流；心跳维护回执经活动投影 CAS；执行走会话串行链。
+// v1.2 心跳邀请及工具回执走同一会话串行链，维护时钟经活动投影 CAS。
 import { test } from 'node:test';
 import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
@@ -30,6 +30,8 @@ import { ManualSelectionService } from '../../apps/host/src/context/manual-selec
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { ArchiveService } from '../../apps/host/src/modules/archives/service.ts';
+import { HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
@@ -41,8 +43,13 @@ const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
+const isHeartbeat = (payload: Record<string, unknown>): boolean => {
+  const messages = payload.messages as Array<{ role: string; content: unknown }>;
+  const latest = messages.findLast(message => message.role === 'user');
+  return JSON.stringify(latest?.content ?? '').includes('[心跳唤醒]');
+};
 
-function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' = 'legacy') {
+function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' | 'deferred' = 'legacy') {
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: toolMode }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
   const paths = buildPaths(root);
@@ -61,7 +68,13 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
+  const archives = new ArchiveService({ db, contentClient: null, contentOps: null, logger });
+  const heartbeat = new HeartbeatRuntime(db, null, media, archives, messages, events);
+  heartbeat.sources.choose = async (conversationId) => Array.from({ length: 10 }, (_, index) => ({
+    kind: 'moments', namespace: 'content', id: `fixture-${index + 1}`, revision: 1,
+    identity: `content:moments:fixture-${index + 1}`, permissionScope: conversationId,
+  }));
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, heartbeat, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);
   return { root, db, config, messages, supervisor, alerts, media, tools, bgSettings, trajectory, windows, activity };
@@ -116,7 +129,7 @@ test('睡眠重试边界：首发429后跨23:00，重试不传输且元数据保
   const nowRef = { nowMs: Date.parse('2026-10-23T22:59:59+08:00') };
   let heartbeatRequests = 0;
   const ctx = compose(tempRoot('wp4-sleep-retry-'), async (payload) => {
-    if (JSON.stringify(payload).includes('Cache keepalive')) {
+    if (isHeartbeat(payload)) {
       heartbeatRequests++;
       nowRef.nowMs = Date.parse('2026-10-23T23:00:00+08:00');
       return { status: 429, headers: new Map([['retry-after', '0']]), body: Readable.from([]) };
@@ -137,7 +150,7 @@ test('睡眠工具边界：模型睡前已发，回包时23:00，零工具执行
   const nowRef = { nowMs: Date.parse('2026-10-23T22:59:59+08:00') };
   let heartbeatRequests = 0;
   const ctx = compose(tempRoot('wp4-sleep-tool-'), async (payload) => {
-    if (JSON.stringify(payload).includes('Cache keepalive')) {
+    if (isHeartbeat(payload)) {
       heartbeatRequests++;
       nowRef.nowMs = Date.parse('2026-10-23T23:00:00+08:00');
       return { status: 200, headers: new Map(), body: Readable.from([enc.encode(toolCallBody([{ id: 'sleep-tool', name: 'chat_send_text', args: JSON.stringify({ text: '不应发布', idempotency_key: 'sleep-tool' }) }]))]) };
@@ -146,13 +159,13 @@ test('睡眠工具边界：模型睡前已发，回包时23:00，零工具执行
   }, nowRef, true);
   t.after(() => ctx.db.close());
   await seedChatTurn(ctx, 'sleep-tool');
-  const count = (ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n;
+  const count = (ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant'").get() as { n: number }).n;
   const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
   t.after(() => scheduler.stop());
   const result = await ctx.supervisor.enqueueBackground('c1', run);
   assert.equal(result.result_code, 'KEEPWARM_SLEEP_WINDOW');
   assert.equal(heartbeatRequests, 1);
-  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n, count, '未开始的发送工具零副作用');
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant'").get() as { n: number }).n, count, '未开始的发送工具不发布助手消息');
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM background_dispatches WHERE dispatch_kind = 'tool'").get() as { n: number }).n, 0);
 });
 
@@ -192,7 +205,7 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
   return sched;
 }
 
-test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独立任务缓存不计入心跳', async (t) => {
+test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回合完成能力', async (t) => {
   const payloads: Array<Record<string, unknown>> = [];
   const now = { nowMs: Date.now() };
   const root = tempRoot('direct-background-');
@@ -200,7 +213,9 @@ test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独�
     payloads.push(payload);
     const messages = payload.messages as Array<{ role: string; content: unknown }>;
     const latestUser = JSON.stringify(messages.findLast(message => message.role === 'user')?.content);
-    let body = chatBody(latestUser.includes('Cache keepalive') ? '1' : '合成回复');
+    let body = isHeartbeat(payload)
+      ? toolCallBody([{ id: 'native-heartbeat-decline', name: 'background_complete', args: '{"outcome":"noop"}' }])
+      : chatBody('合成回复');
     if (latestUser.includes('Host self-wake')) {
       const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 500, cache_write_tokens: 1500 }, cost: 0.001 };
       body = toolCallBody([{ id: 'native-complete', name: 'background_complete', args: '{"outcome":"done"}' }], usage);
@@ -216,7 +231,7 @@ test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独�
   const names = (payload: Record<string, unknown>) => (payload.tools as Array<{ function: { name: string } }>).map(spec => spec.function.name);
   const baseline = names(payloads[0]!);
   assert.ok(baseline.includes('memory_hold'));
-  assert.ok(!baseline.includes('tool_invoke') && !baseline.includes('background_complete') && !baseline.includes('context_review_complete'));
+  assert.ok(!baseline.includes('tool_invoke') && baseline.includes('background_complete') && baseline.includes('heartbeat_draw') && !baseline.includes('context_review_complete'));
 
   setPrice(ctx.db);
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: {
@@ -231,23 +246,23 @@ test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独�
   scheduler.start();
   now.nowMs += 1_001;
   await scheduler.tick();
-  assert.deepEqual(names(payloads[1]!), [...baseline, 'background_complete']);
+  assert.deepEqual(names(payloads[1]!), baseline);
   const wake = ctx.db.prepare('SELECT r.state, r.result_code, p.id FROM background_runs r JOIN provider_requests p ON p.background_run_id=r.id WHERE r.task_id=?')
     .get(task.task.task_id) as { state: string; result_code: string; id: string };
   assert.deepEqual({ state: wake.state, result_code: wake.result_code }, { state: 'completed', result_code: 'complete:done' });
   assert.notEqual(wake.id, initialEvidence.requestId);
-  assert.equal(lastCacheEvidence(ctx.db, windowId)?.requestId, initialEvidence.requestId);
+  assert.equal(lastCacheEvidence(ctx.db, windowId)?.requestId, wake.id);
 
   const iso = new Date(now.nowMs).toISOString();
   // The scheduler creates the system heartbeat task for primary by default.
   ctx.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('native-keepwarm','c1','jiaming','keepwarm',1,1,'cache_idle','Asia/Shanghai','{}','system','system_keepwarm',?,?)").run(iso, iso);
   const activity = ctx.activity.get('c1')!;
-  now.nowMs = Date.parse(activity.last_real_activity_at!) + 3_000_001;
+  now.nowMs = Math.max(Date.parse(activity.last_real_activity_at!), Date.parse(lastCacheEvidence(ctx.db, windowId)!.startedAt)) + 3_000_001;
   await scheduler.tick();
   assert.deepEqual(payloads[2]!.tools, payloads[0]!.tools);
   const heartbeatTail = (payloads[2]!.messages as Array<{ role: string; content: unknown }>).findLast(message => message.role === 'user');
-  assert.match(JSON.stringify(heartbeatTail?.content), /Cache keepalive/);
-  assert.doesNotMatch(JSON.stringify(heartbeatTail?.content), /background_complete/);
+  assert.match(JSON.stringify(heartbeatTail?.content), /\[心跳唤醒\]/);
+  assert.doesNotMatch(JSON.stringify(heartbeatTail?.content), /tools\/task:/);
   await seedChatTurn(ctx, 'native-after-task');
   assert.deepEqual(payloads[3]!.tools, payloads[0]!.tools);
   assert.equal(payloads.length, 4);
@@ -255,72 +270,73 @@ test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独�
     message.role === 'tool' && typeof message.content === 'string' && JSON.parse(message.content).completed === true));
 });
 
-test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进聊天原文/气泡/L；协议保留（C08）；维护回执落投影', async () => {
+test('K-01/C-01/C-12：心跳按原有时序派发，无文字拒抽保留协议并推进维护回执', async (t) => {
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
-    const isKeepalive = JSON.stringify(p).includes('Cache keepalive');
-    const body = isKeepalive ? '1' : '你好'; // 纯1=维护回执（05）
-    return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody(body))]) };
+    const body = isHeartbeat(p)
+      ? toolCallBody([{ id: 'heartbeat-decline', name: 'background_complete', args: '{"outcome":"noop"}' }],
+        { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 500 }, cost: 0.001 })
+      : chatBody('你好');
+    return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(body)]) };
   };
   const root = tempRoot('wp4-kw-');
   const nowRef = { nowMs: Date.now() };
   const ctx = compose(root, transport, nowRef);
+  const sched = wireExecutor(ctx, nowRef);
+  t.after(() => { sched.stop(); ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   await seedChatTurn(ctx, 'kw1');
-  const win = ctx.db.prepare("SELECT id FROM windows WHERE conversation_id='c1' AND status='ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string };
-  const trajBefore = (ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string }).messages_json;
-  const msgsBefore = (ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n;
+  const windowId = ctx.windows.activeWindow('c1')!.id;
 
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
   // 系统保温任务（cache_idle）建在 primary；测试会话 c1 手工建同型任务
   const kwTask = `bgt_kw1_${genId('x').slice(2, 8)}`;
   const nowIso = new Date(nowRef.nowMs).toISOString();
   ctx.db.prepare("INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES (?,'c1','jiaming','keepwarm',1,1,'cache_idle',NULL,NULL,'Asia/Shanghai',NULL,NULL,'{}','system','system_keepwarm',?,?)").run(kwTask, nowIso, nowIso);
-  const sched = wireExecutor(ctx, nowRef);
   sched.start();
-  // (a) 目标=L+50min 未到：tick 领取不发生（K-01 前半）
   await sched.tick();
   assert.equal(payloads.length, 1, '未到期零保温请求（此前 1 次是聊天）');
-  sched.stop();
-  // (c) 新真实消息建立新活动版本 + 配置价格 → 心跳纯1（PURE_ACK）
+
   setPrice(ctx.db);
   await seedChatTurn(ctx, 'kw2');
-  // 轨迹/消息基准在心跳前重取（第二次聊天本身合法推进轨迹）
-  const trajBeforeHb = (ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string }).messages_json;
-  const msgsBeforeHb = (ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n;
-  const sched2 = wireExecutor(ctx, nowRef);
-  sched2.start();
-  const L2 = Date.parse((ctx.db.prepare('SELECT last_real_activity_at FROM conversation_activity WHERE conversation_id = ?').get('c1') as { last_real_activity_at: string }).last_real_activity_at);
-  nowRef.nowMs = L2 + 3_000_001;
-  await sched2.tick();
-  const run = ctx.db.prepare('SELECT state, result_code, model_requests_started, retention FROM background_runs WHERE task_id = ? AND state != \'failed\'').get(kwTask) as { state: string; result_code: string | null; model_requests_started: number; retention: string };
-  assert.equal(run.state, 'completed');
-  assert.equal(run.result_code, 'ack_only', '纯1=维护回执（不是聊天成功）');
-  assert.equal(run.retention, 'ephemeral_ack');
+  const before = ctx.trajectory.forWindow(windowId)!.messages;
+  const L = ctx.activity.get('c1')!.last_real_activity_at!;
+  nowRef.nowMs = Date.parse(L) + 3_000_001;
+  await sched.tick();
+  const run = ctx.db.prepare('SELECT id, turn_id, state, result_code, model_requests_started, retention FROM background_runs WHERE task_id=?')
+    .get(kwTask) as { id: string; turn_id: string; state: string; result_code: string; model_requests_started: number; retention: string };
+  assert.equal(run.state, 'noop');
+  assert.equal(run.result_code, 'complete:noop');
+  assert.equal(run.retention, 'retained');
   assert.equal(run.model_requests_started, 1, '恰一次维护请求');
   assert.equal(payloads.length, 3, '聊天(2)+心跳(1)');
-  // 英文 host 提示进入请求（05 固定文本；不伪造用户消息）
   const kwPayload = JSON.stringify(payloads[2]);
-  assert.ok(kwPayload.includes('Cache keepalive (host event, not Qiaosheng)'), '固定英文维护提示');
-  // 轨迹不变、无新聊天气泡、无 owner 消息（C-12：纯1不污染）
-  // C08（四仓审计 20261106）：纯1**已发协议保留**——轨迹追加 host 事件与 assistant "1"
-  // （缓存前缀延续），但聊天原文/气泡/L/可见清单不变（旧"整段不入轨迹"语义退役）
-  const trajAfter = (ctx.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id = ?').get(win.id) as { messages_json: string }).messages_json;
-  assert.notEqual(trajAfter, trajBeforeHb, '纯1已发协议入轨迹（C08：下一请求从前缀接续）');
-  assert.ok(trajAfter.length > trajBeforeHb.length && trajAfter.startsWith(trajBeforeHb.slice(0, -1)), '轨迹为原前缀追加（append-only）');
-  assert.ok(trajAfter.includes('Cache keepalive (host event') && trajAfter.slice(trajBeforeHb.length - 2).includes('1'), '心跳事件与 assistant "1" 均保留');
-  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM messages').get() as { n: number }).n, msgsBeforeHb, '无心跳气泡');
-  // 维护回执已写投影（K-09 基础）
-  const act = ctx.db.prepare('SELECT maintenance_request_id, maintenance_for_activity_revision FROM conversation_activity WHERE conversation_id = ?').get('c1') as { maintenance_request_id: string; maintenance_for_activity_revision: number };
-  assert.ok(act.maintenance_request_id !== null, '维护回执落投影');
-  // 派发结算（费用已知→settled；B-01：预占非 0）
-  const dispatch = ctx.db.prepare('SELECT state, reserved_cost_micro_usd FROM background_dispatches WHERE run_id = (SELECT id FROM background_runs WHERE task_id = ? AND state = \'completed\')').get(kwTask) as { state: string; reserved_cost_micro_usd: number };
+  assert.match(kwPayload, /\[心跳唤醒\]/);
+  assert.doesNotMatch(kwPayload, /请回复 1/);
+  const after = ctx.trajectory.forWindow(windowId)!.messages;
+  assert.deepEqual(after.slice(0, before.length), before, '既有缓存前缀原样保留');
+  const receipts = after.slice(before.length).filter(message => message.role === 'tool' && message.tool_call_id === 'heartbeat-decline');
+  assert.equal(receipts.length, 1);
+  assert.deepEqual(JSON.parse(receipts[0]!.content as string), { completed: true, outcome: 'noop' });
+  const speakers = ctx.db.prepare('SELECT speaker FROM messages WHERE turn_id=? ORDER BY sequence').all(run.turn_id)
+    .map(message => message.speaker);
+  assert.deepEqual(speakers, ['system', 'system'], '邀请和拒抽状态由宿主发布');
+  const act = ctx.activity.get('c1')!;
+  assert.equal(act.last_real_activity_at, L);
+  assert.ok(act.maintenance_request_id, '维护回执落投影');
+  assert.deepEqual(ctx.activity.nextKeepwarmTarget({ conversationId: 'c1', windowId }), {
+    scheduled: true, dueAtMs: Date.parse(act.maintenance_dispatch_started_at!) + 3_000_000,
+    basis: 'maintenance', activityRevision: act.activity_revision,
+  });
+  const dispatch = ctx.db.prepare("SELECT state,reserved_cost_micro_usd FROM background_dispatches WHERE run_id=? AND dispatch_kind='model'")
+    .get(run.id) as { state: string; reserved_cost_micro_usd: number };
   assert.equal(dispatch.state, 'settled');
   assert.ok(dispatch.reserved_cost_micro_usd > 0, 'B-01：真实派发预占非 0');
-  // 下一次正常聊天照常（前缀比较基准不含心跳尾——C-01 面）
+
   await seedChatTurn(ctx, 'kw3');
   assert.equal(payloads.length, 4, '聊天照常');
-  sched2.stop();
+  const next = payloads[3]!.messages as Array<{ role: string; tool_call_id?: string }>;
+  assert.equal(next.filter(message => message.role === 'tool' && message.tool_call_id === 'heartbeat-decline').length, 1);
 });
 
 test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文；工具循环同 run；chat_send_text 单次发布；内部终答不发布', async () => {
@@ -371,16 +387,16 @@ test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文�
   sched.stop();
 });
 
-test('C-02/K-12：心跳调用工具→实质执行+续轮（旧零工具封锁退役）；工具后回1仍 retained', async () => {
+test('C-02/K-12：心跳正式发言后完成，保留工具协议且不派发续轮', async () => {
   const payloads: Array<Record<string, unknown>> = [];
   let bgRound = 0;
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
-    const isBg = JSON.stringify(p).includes('Cache keepalive');
+    const isBg = isHeartbeat(p);
     if (isBg) {
       bgRound++;
       if (bgRound === 1) return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(toolCallBody([{ id: 'tc-kw', name: 'chat_send_text', args: JSON.stringify({ text: '心跳里想跟你说句话', idempotency_key: 'kw-1' }) }, { id: 'tc-kw2', name: 'background_complete', args: JSON.stringify({ outcome: 'done' }) }]))]) };
-      return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('1'))]) };
+      assert.fail('共享完成后不能再发模型请求');
     }
     return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('收到'))]) };
   };
@@ -405,6 +421,8 @@ test('C-02/K-12：心跳调用工具→实质执行+续轮（旧零工具封锁�
   assert.ok(run.tool_calls_started >= 1, '工具真实执行（不再零工具封锁）');
   assert.equal(run.published_message_count, 1, 'C-02：心跳正式发言发布一次');
   assert.equal(run.retention, 'retained', 'K-12：有工具的回合 retained（不走纯回执丢弃）');
+  assert.equal(run.model_requests_started, 1);
+  assert.equal(bgRound, 1);
   assert.equal(run.state, 'completed');
   assert.equal(run.result_code, 'complete:done', 'complete 决定生效');
   // 取消后新派发被挡（旧 CW-15 后半保留）
@@ -453,3 +471,40 @@ test('C-07（收尾）：自醒 chat_send_text 已发 → 下一用户请求恰�
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.speaker = 'assistant' AND r.content LIKE '%主动想说的话C7%'").get() as { n: number }).n, 1, '原文一致不重复');
   sched.stop();
 });
+
+for (const mode of ['legacy', 'direct', 'deferred'] as const) {
+  test(`当前回合主动结束（${mode}）：无补话，旧批回执只在下一次自然请求进入模型`, async t => {
+    const payloads: Array<Record<string, unknown>> = [];
+    const root = tempRoot('turn-completion-');
+    const ctx = compose(root, async payload => {
+      payloads.push(structuredClone(payload));
+      const invoke = (name: string, args: Record<string, unknown>) => mode === 'deferred'
+        ? { name: 'tool_invoke', args: JSON.stringify({ name, arguments: args }) }
+        : { name, args: JSON.stringify(args) };
+      const body = payloads.length === 1
+        ? toolCallBody([
+          { id: 'terminal', ...invoke('background_complete', { outcome: 'noop' }) },
+          { id: 'not-started', ...invoke('chat_send_text', { text: '本轮结束后不应发出', idempotency_key: 'after-finish' }) },
+        ])
+        : chatBody('下一轮正常回复');
+      return { status: 200, headers: new Map(), body: Readable.from([enc.encode(body)]) };
+    }, { nowMs: Date.now() }, false, 0, mode);
+    t.after(() => { ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+    const turnId = await seedChatTurn(ctx, 'turn-first');
+    assert.equal(payloads.length, 1);
+    assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE turn_id=? AND speaker='assistant'").get(turnId)?.n, 0);
+    assert.equal(ctx.db.prepare('SELECT completion_outcome FROM attempts WHERE turn_id=?').get(turnId)?.completion_outcome, 'noop');
+    const windowId = ctx.windows.activeWindow('c1')!.id;
+    const history = ctx.trajectory.forWindow(windowId)!;
+    assert.deepEqual(history.messages.filter(m => m.role === 'tool').map(m => [m.tool_call_id, JSON.parse(m.content as string)]), [
+      ['terminal', { completed: true, outcome: 'noop' }],
+      ['not-started', { error_code: 'TURN_COMPLETED', executed: false }],
+    ]);
+    assert.equal((payloads[0]!.messages as Array<{ role: string }>).some(m => m.role === 'tool'), false);
+    await seedChatTurn(ctx, 'turn-next');
+    assert.equal(payloads.length, 2);
+    assert.equal((payloads[1]!.messages as Array<{ role: string; tool_call_id?: string }>).filter(m => m.role === 'tool' && m.tool_call_id === 'terminal').length, 1);
+    assert.deepEqual(payloads[1]!.tools, payloads[0]!.tools);
+    assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE client_message_id='after-finish'").get()?.n, 0);
+  });
+}

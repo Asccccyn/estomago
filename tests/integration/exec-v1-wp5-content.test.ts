@@ -431,7 +431,7 @@ test('相册：SDK 经冻结 tool_invoke 恢复参数对象，原有校验和幂
 
 test('R5-工具：creation_save_artifact 保存即入作品（svg 免桶+icon=work；同 op 重放不重复建）', async () => {
   const { tools, ctx, client } = await toolHarness();
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"/></svg>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"><animate attributeName="r" values="1;4;1" dur="2s"/></circle></svg>';
   const r1 = await tools.execute('creation_save_artifact', { format: 'svg', content: svg, client_operation_id: 'r5-crt-1' }, ctx);
   assert.equal(r1.ok, true, JSON.stringify(r1.output));
   const out1 = r1.output as { asset_id: string; creation_id: string | null; saved: boolean };

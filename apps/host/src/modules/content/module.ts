@@ -66,7 +66,7 @@ export const CREATIONSAVEARTIFACT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'creation_save_artifact',
-      description: '保存你写好的 SVG/HTML 小作品为持久资产（返回 asset_id）。format=svg 固定对应 image/svg+xml，format=html 固定对应 text/html。不执行作品代码——仅安全保存字节。用途限定纪念图标/作品。',
+      description: '保存 SVG/HTML 为持久资产（返回 asset_id）。支持的静态 SVG 保存到相册，返回 album_entry_id，可按原资产查看或发送图片。交互或动画 SVG 以及 HTML 保留在作品里，以沙箱预览交付。保存时不执行作品代码。',
       parameters: {
         type: 'object',
         properties: {

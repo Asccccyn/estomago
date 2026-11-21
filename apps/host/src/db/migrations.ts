@@ -1865,4 +1865,78 @@ MIGRATIONS.push({
   sql: "UPDATE tool_side_effects SET hold_committed_at=NULL WHERE kind='hold' AND hold_committed_at IS NOT NULL;",
 });
 
+MIGRATIONS.push({
+  version: 81, name: 'turn-completion-intent',
+  sql: `ALTER TABLE attempts ADD COLUMN completion_outcome TEXT CHECK (completion_outcome IN ('done', 'noop'));`,
+});
+
+MIGRATIONS.push({
+  version: 82,
+  name: 'heartbeat-decks-and-delivery',
+  sql: `
+CREATE TABLE heartbeat_decks (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  business_date TEXT NOT NULL,
+  UNIQUE (conversation_id, business_date)
+);
+CREATE TABLE heartbeat_cards (
+  deck_id TEXT NOT NULL REFERENCES heartbeat_decks(id),
+  card_number INTEGER NOT NULL CHECK(card_number BETWEEN 1 AND 10),
+  source_identity TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('wishstar','memory','archive','album','moments','reserved_note')),
+  source_ref_json TEXT NOT NULL,
+  first_response_replay INTEGER NOT NULL DEFAULT 0 CHECK(first_response_replay IN (0,1)),
+  invalid_reason TEXT,
+  PRIMARY KEY (deck_id, card_number),
+  UNIQUE (deck_id, source_identity)
+);
+CREATE TABLE heartbeat_runs (
+  run_id TEXT PRIMARY KEY,
+  business_date TEXT NOT NULL,
+  deck_id TEXT REFERENCES heartbeat_decks(id),
+  mode TEXT NOT NULL CHECK(mode IN ('unprepared','source_unavailable','draw','exhausted_keepwarm')),
+  corrections INTEGER NOT NULL DEFAULT 0 CHECK(corrections BETWEEN 0 AND 2)
+);
+CREATE TABLE heartbeat_draw_operations (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  operation_id TEXT NOT NULL,
+  selection_key TEXT NOT NULL,
+  deck_id TEXT,
+  card_number INTEGER,
+  source_identity TEXT,
+  state TEXT NOT NULL CHECK(state IN ('rejected','claimed','prepared','dispatching','delivered','not_dispatched','unknown')),
+  reason TEXT,
+  remaining_json TEXT,
+  retry_allowed INTEGER CHECK(retry_allowed IN (0,1)),
+  attempted_at TEXT,
+  delivered_at TEXT,
+  provider_request_id TEXT,
+  PRIMARY KEY (run_id, operation_id),
+  FOREIGN KEY (deck_id, card_number) REFERENCES heartbeat_cards(deck_id, card_number),
+  CHECK(state != 'delivered' OR (provider_request_id IS NOT NULL AND delivered_at IS NOT NULL))
+);
+CREATE INDEX idx_heartbeat_draw_source ON heartbeat_draw_operations(source_identity,state,delivered_at,attempted_at);
+CREATE INDEX idx_heartbeat_draw_card ON heartbeat_draw_operations(deck_id,card_number,state);
+CREATE UNIQUE INDEX idx_heartbeat_draw_one_per_run ON heartbeat_draw_operations(run_id)
+  WHERE state IN ('claimed','prepared','dispatching','delivered','unknown');
+CREATE UNIQUE INDEX idx_heartbeat_draw_source_in_flight ON heartbeat_draw_operations(source_identity)
+  WHERE state IN ('claimed','prepared','dispatching');
+CREATE UNIQUE INDEX idx_heartbeat_card_delivered ON heartbeat_draw_operations(deck_id,card_number)
+  WHERE state = 'delivered';
+`,
+});
+
+MIGRATIONS.push({
+  version: 83, name: 'imagegen-photo-album-destination',
+  sql: `ALTER TABLE imagegen_operations ADD COLUMN album_kind TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN album_caption TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN album_entry_id TEXT;`,
+});
+
+MIGRATIONS.push({
+  version: 84, name: 'recoverable-completion-protocol',
+  sql: 'ALTER TABLE attempts ADD COLUMN completion_recovery_json TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

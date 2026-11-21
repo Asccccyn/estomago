@@ -4,7 +4,8 @@
 // 创作小作品不执行代码（SVG 脚本拒绝）。
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 import { CONTENT_POST_PREVIEW_CHARS } from '../../../../../packages/contracts/src/content.ts';
-import { contentForward } from '../../integrations/content/client.ts';
+import { contentForward, resolveContentOperation } from '../../integrations/content/client.ts';
+import type { StoredAsset } from '../../media/assets.ts';
 import { sliceByByteBudget } from '../../media/model-input.ts';
 
 const POST_PAGE_BYTES = 32_768;
@@ -185,7 +186,7 @@ export class ContentToolsService {
     return modelWriteFailure(r, args.idempotency_key, 'ALBUM_ENTRY', 'ALBUM_ENTRY_WRITE_FAILED');
   }
 
-  async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, _ctx: ToolExecContext): Promise<ToolExecResult> {
+  async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.media) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     const mime = args.format === 'svg' ? 'image/svg+xml' : 'text/html';
     // 内容安全检查：SVG 不允许 <script>；HTML 允许内联脚本（在沙箱 iframe 内执行——宿主不执行）
@@ -198,7 +199,13 @@ export class ContentToolsService {
     const opKey = `tool-creation:${args.client_operation_id}`;
     let asset: { id: string; byte_size: number };
     try {
-      asset = await this.media.saveBuffer({ bytes: Buffer.from(args.content, 'utf8'), purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
+      const input = { bytes: Buffer.from(args.content, 'utf8'), operationId: opKey, createdBy: 'jiaming', origin: 'generated' as const };
+      const staticSvg = args.format === 'svg' ? await this.media.saveStaticSvg(input) : null;
+      if (staticSvg) {
+        const photo = await this.saveStaticSvgPhoto(staticSvg, args.client_operation_id, ctx);
+        if (photo) return photo;
+      }
+      asset = staticSvg ?? await this.media.saveBuffer({ ...input, purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work' });
     } catch (err) {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
     }
@@ -255,6 +262,35 @@ export class ContentToolsService {
     } catch (err) {
       this.media.releaseOperationPins(opKey);
       return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——用同一 client_operation_id 重试只补条目` } };
+    }
+  }
+
+  private async saveStaticSvgPhoto(asset: StoredAsset, operationId: string, ctx: ToolExecContext): Promise<ToolExecResult | null> {
+    const output = { asset_id: asset.id, asset_ref: `est:${asset.id}`, mime_type: asset.mime_type, byte_size: asset.byte_size };
+    if (!this.contentClient) return { ok: true, output: { ...output, saved: true, note: '内容服务未配置，原 SVG 已作为资产保存，尚未入册。' } };
+    if (this.media!.masterStoreConfigured && (asset.m_sync_state !== 'synced' || !this.media!.canProvideImage(asset))) {
+      return { ok: false, output: { ...output, error_code: 'CREATION_MASTER_PENDING', detail: 'SVG 原件或 PNG 视图仍待落正，尚未建立相册关系。请用原操作标识重试。' } };
+    }
+    try {
+      // An already committed legacy work stays reachable by its original relationship.
+      const old = await resolveContentOperation(this.contentClient, {
+        method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
+        body: { work_asset_id: asset.id, work_kind: 'svg' }, idempotencyKey: `tool-creation-entry:${operationId}`,
+      });
+      if (old.outcome === 'replay' && (old.status === 200 || old.status === 201)) return null;
+      if (old.outcome !== 'new') return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '未能按原标识确认旧作品关系。' } };
+      if (!this.contentOps) return { ok: false, output: { ...output, error_code: 'INTEGRATION_UNCONFIGURED', detail: '相册协调器未装配，原件已保存。' } };
+      const result = await this.contentOps.writeForModel({
+        roomId: ctx.roomId, turnId: ctx.turnId, path: '/api/v1/content/albums/important_photos/entries',
+        body: { asset_id: asset.id, content_sha256: asset.content_sha256, refs: [{ service: 'est', kind: 'generated_image', source_id: asset.id }] },
+        idempotencyKey: `static-svg:${operationId}`,
+      });
+      if (result.status !== 200 && result.status !== 201) return modelWriteFailure(result, operationId, 'CREATION_ENTRY');
+      const id = (result.body as { id?: unknown } | null)?.id;
+      if (typeof id !== 'string' || !id) return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系回执待确认。请用原操作标识重试。' } };
+      return { ok: true, output: { ...output, saved: true, album_entry_id: id, deliver_hint: '查看用 media_view；发送用 chat_send_attachment，presentation=image。' } };
+    } catch {
+      return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系待确认。请用原操作标识重试。' } };
     }
   }
 }

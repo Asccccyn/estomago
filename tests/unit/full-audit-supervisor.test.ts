@@ -32,6 +32,8 @@ import { ManualSelectionService } from '../../apps/host/src/context/manual-selec
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { ArchiveService } from '../../apps/host/src/modules/archives/service.ts';
+import { HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
@@ -41,10 +43,15 @@ const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
+const isHeartbeat = (payload: Record<string, unknown>): boolean => {
+  const messages = payload.messages as Array<{ role: string; content: unknown }>;
+  const latest = messages.findLast(message => message.role === 'user');
+  return JSON.stringify(latest?.content ?? '').includes('[心跳唤醒]');
+};
 
-function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0) {
+function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' = 'legacy') {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: toolMode }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -61,7 +68,13 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, events: events });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
+  const archives = new ArchiveService({ db, contentClient: null, contentOps: null, logger });
+  const heartbeat = new HeartbeatRuntime(db, null, media, archives, messages, events);
+  heartbeat.sources.choose = async (conversationId) => Array.from({ length: 10 }, (_, index) => ({
+    kind: 'moments', namespace: 'content', id: 'fixture-' + (index + 1), revision: 1,
+    identity: 'content:moments:fixture-' + (index + 1), permissionScope: conversationId,
+  }));
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, heartbeat, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);
   return { root, db, config, messages, supervisor, alerts, media, tools, bgSettings, trajectory, windows, activity, events };
@@ -166,19 +179,28 @@ test('FA-C01 DS final reasoning state is preserved across real driver payloads w
  assert.deepEqual(ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!.messages.slice(0,before.length),before);
 });
 
-test('FA-C02 catalog/define then final 1 remains substantive; heartbeat attempt reaches completed',async t=>{
+test('FA-C02 tool catalog then a natural final 1 stays in normal draw-mode protocol',async t=>{
  let n=0;const now={nowMs:Date.parse('2026-10-23T14:00:00+08:00')};
- const ctx=compose(tempRoot('fa-catalog-'),async p=>JSON.stringify(p).includes('Cache keepalive')&&++n===1?response(toolCallBody([{id:'catalog',name:'tool_catalog',args:'{}'}])):response(chatBody(n?'1':'seed')),now);cleanup(t,ctx);
+ const ctx=compose(tempRoot('fa-catalog-'),async p=>isHeartbeat(p)&&++n===1?response(toolCallBody([{id:'catalog',name:'tool_catalog',args:'{}'}])):response(chatBody(n?'1':'seed')),now,false,0,'direct');cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{scheduler,run}=readySleepBoundaryRun(ctx,now);t.after(()=>scheduler.stop());
- await ctx.supervisor.enqueueBackground('c1',run);
+ const result=await ctx.supervisor.enqueueBackground('c1',run);
+ assert.equal(result.result_code,'complete:done');
+ assert.equal(n,2);
  const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;
- assert.equal(bg.retention,'retained');assert.ok(ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!.messages.some(m=>m.role==='tool'));
+ assert.equal(bg.retention,'retained');
+ const messages=ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!.messages;
+ const catalogue=messages.find(message=>message.role==='tool'&&message.tool_call_id==='catalog');
+ assert.ok(catalogue);
+ assert.ok((JSON.parse(catalogue.content as string) as {tools:unknown[]}).tools.length);
+ const final=messages.at(-1);
+ assert.equal(final?.role,'assistant');
+ assert.deepEqual(final?.content,[{type:'text',text:'1'}]);
  assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE turn_id=?').get(bg.turn_id)as any).state,'completed');
 });
 
 test('FA-C03 background publication and protocol survive a later failed model request; next chat remembers it',async t=>{
  let n=0;let bg=true;const now={nowMs:Date.parse('2026-10-23T14:00:00+08:00')};const payloads:any[]=[];
- const ctx=compose(tempRoot('fa-bg-error-'),async p=>{payloads.push(structuredClone(p));if(bg&&JSON.stringify(p).includes('Cache keepalive')){if(++n===1)return response(toolCallBody([{id:'send',name:'chat_send_text',args:JSON.stringify({text:'published before failure',idempotency_key:'one'})}]));return{status:500,headers:new Headers(),body:Readable.from([])};}return response(chatBody('seed'));},now);cleanup(t,ctx);
+ const ctx=compose(tempRoot('fa-bg-error-'),async p=>{payloads.push(structuredClone(p));if(bg&&isHeartbeat(p)){if(++n===1)return response(toolCallBody([{id:'send',name:'chat_send_text',args:JSON.stringify({text:'published before failure',idempotency_key:'one'})}]));return{status:500,headers:new Headers(),body:Readable.from([])};}return response(chatBody('seed'));},now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{scheduler,run}=readySleepBoundaryRun(ctx,now);t.after(()=>scheduler.stop());
  const result=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(result.outcome,'failed');
  const tr=ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!;assert.match(JSON.stringify(tr.messages),/published before failure/);assert.ok(tr.messages.some(m=>m.role==='tool'));
@@ -198,7 +220,7 @@ test('FA-P01 same business send key across model requests publishes exactly one 
 
 test('FA-B01 price removed during a tool loop cannot turn the next paid request into a zero reservation',async t=>{
  let n=0;const now={nowMs:Date.parse('2026-10-23T14:00:00+08:00')};let ctx:ReturnType<typeof compose>;
- ctx=compose(tempRoot('fa-price-'),async p=>{if(JSON.stringify(p).includes('Cache keepalive')){n++;ctx.db.prepare("DELETE FROM runtime_settings WHERE key='or_model_price'").run();return response(toolCallBody([{id:'cat',name:'tool_catalog',args:'{}'}]));}return response(chatBody('seed'));},now);cleanup(t,ctx);
+ ctx=compose(tempRoot('fa-price-'),async p=>{if(isHeartbeat(p)){n++;ctx.db.prepare("DELETE FROM runtime_settings WHERE key='or_model_price'").run();return response(toolCallBody([{id:'cat',name:'tool_catalog',args:'{}'}]));}return response(chatBody('seed'));},now,false,0,'direct');cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{scheduler,run}=readySleepBoundaryRun(ctx,now);t.after(()=>scheduler.stop());
  const r=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(r.result_code,'BUDGET_ESTIMATE_UNAVAILABLE');assert.equal(n,1);
 });

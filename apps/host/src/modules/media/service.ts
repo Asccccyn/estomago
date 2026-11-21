@@ -6,6 +6,7 @@ import { contentForward, readAllContentPages, type ContentClient } from '../../i
 import { OidoSourceRepository } from '../oido/source-repository.ts';
 import type { Db } from '../../db/connection.ts';
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import { CONTENT_ALBUMS } from '../../../../../packages/contracts/src/content.ts';
 
 export class MediaToolsService {
   private readonly media: import('../../media/assets.ts').MediaService | null;
@@ -64,15 +65,15 @@ export class MediaToolsService {
       allowed = response.status === 200 && Array.isArray(body.items) && body.items.length > 0;
     }
     if (!allowed) throw new MediaError('ASSET_NOT_READABLE', 403, '图片不属于当前房间已发布附件或可读相册');
-    if (asset.mime_type === 'image/svg+xml' || asset.mime_type === 'text/html') {
+    if (asset.mime_type === 'text/html' || (asset.mime_type === 'image/svg+xml' && !this.media.canProvideImage(asset))) {
       // M06/E06（包1 2026-11-15）：SVG/HTML 是隔离预览交付的代码作品——模型视觉通道
       // 只收位图，如实报限制+可用入口，不冒充已看到图片。
       throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `这是 ${asset.mime_type} 代码作品，不能作为图片直接查看；沙箱预览入口 /api/v1/assets/${assetId}/preview，聊天交付用 chat_send_attachment（presentation=work）`);
     }
-    if (!['image/png','image/jpeg','image/gif','image/webp'].includes(asset.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '该资产不是可投递图片');
+    if (!['image/png','image/jpeg','image/gif','image/webp','image/svg+xml'].includes(asset.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '该资产不是可投递图片');
     // Access can be revoked between tool execution and sending/replaying history.
     // Both transports call this same resolver at their actual send boundary.
-    return this.media.readContentResolvingMaster(assetId);
+    return this.media.readContentResolvingMaster(assetId, { modelImage: true });
   }
 
   async mediaView(args: { asset_ref: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -110,8 +111,7 @@ export class MediaToolsService {
     // next_cursor=null 为唯一结束条件（批次大小控制每次工作量，不限制业务范围；
     // 旧实现只取前 100 条）。分类语义保留（表情不混自拍）。集合空或未配置
     // content=如实无匹配/降级说明，不静默放开为全域搜索。
-    const SCOPE_KINDS = { stickers: 'stickers', photos: 'important_photos' } as const;
-    const scopeLabel = args.scope === 'stickers' ? '表情包' : args.scope === 'photos' ? '相册（我们的相册）' : '作品';
+    const scopeLabel = args.scope === 'stickers' ? '表情包' : args.scope === 'photos' ? '相册' : '作品';
     let allowSet: Set<string> | undefined;
     if (args.scope !== undefined && args.scope !== 'chat') {
       if (!this.contentClient) return { ok: false, output: { error_code: 'ALBUM_SCOPE_UNAVAILABLE', detail: `${scopeLabel}集合未接入（content 未配置）——本次不放开为全域搜索` } };
@@ -132,12 +132,16 @@ export class MediaToolsService {
           return out;
         });
       } else {
-        const r = await readAllContentPages<{ asset_id?: string }>(this.contentClient, {
-          buildPath: (cursor) => `/api/v1/content/albums/${SCOPE_KINDS[args.scope as keyof typeof SCOPE_KINDS]}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
-          signal: ctx.signal,
-        });
-        if (!r.ok) return scopeFail(r.reason);
-        collected = r.items.map((i) => i.asset_id).filter((x): x is string => typeof x === 'string');
+        const albums = CONTENT_ALBUMS.filter(({ album }) => (album === 'stickers') === (args.scope === 'stickers'));
+        collected = [];
+        for (const { album } of albums) {
+          const r = await readAllContentPages<{ asset_id?: string }>(this.contentClient, {
+            buildPath: (cursor) => `/api/v1/content/albums/${album}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+            signal: ctx.signal,
+          });
+          if (!r.ok) return scopeFail(r.reason);
+          for (const item of r.items) if (typeof item.asset_id === 'string') collected.push(item.asset_id);
+        }
       }
       allowSet = new Set(collected);
     }

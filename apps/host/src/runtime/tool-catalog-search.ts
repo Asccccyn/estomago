@@ -218,8 +218,12 @@ const INTENTS: ReadonlyMap<string, ToolIntent> = new Map([
     phrases: ["接受星星", "收下星"],
   }],
   ['background_complete', {
-    label: "完成当前真实自主任务时，用它结束这个任务",
-    phrases: ["结束我的后台任务", "结束后台任务", "结束当前自主任务", "完成自唤醒", "结束这次保温"],
+    label: "结束本轮聊天、唤醒或心跳",
+    phrases: ["结束本轮", "不回复", "拒绝抽卡", "完成自唤醒", "结束这次保温"],
+  }],
+  ['heartbeat_draw', {
+    label: "我想从本轮心跳卡牌中选一个号码",
+    phrases: ["心跳抽卡", "心跳选号", "抽一张心跳牌", "选择心跳卡"],
   }],
   ['context_review_complete', {
     label: "完成宿主发起的当前换窗回顾时，用它结束这个回顾",

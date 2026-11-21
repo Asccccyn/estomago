@@ -30,8 +30,10 @@ export type SdkRunRequest = {
     /** Scoped task tools must not consume or replace the main SDK session anchor. */
     isolatedSession?: boolean;
     envelope: OrRequestEnvelope;
-    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[], argumentSource?: string) => Promise<ToolExecResult>;
+    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[], argumentSource?: string, completionBatch?: () => import('./turn-completion-checkpoint.ts').CompletionBatch) => Promise<ToolExecResult>;
+    captureCompletionBatch?: boolean;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
+    completionRequested?: () => boolean;
     recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
     /** 2026-11-09 撤销 §8.2 工具轮上限后可选：未设=SDK maxTurns 不传（无限制）；

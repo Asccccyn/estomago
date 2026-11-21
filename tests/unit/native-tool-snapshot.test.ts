@@ -62,12 +62,12 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   assert.ok(rowAfterUpgrade.groups_json);
   assert.deepEqual({ ...rowAfterUpgrade, groups_json: null }, { ...rowBeforeUpgrade });
 
-  const task = set.catalog.find(tool => tool.function.name === 'background_complete')!;
-  assert.ok(!names(set.tools).includes('background_complete'));
+  const task = set.catalog.find(tool => tool.function.name === 'context_review_complete')!;
+  assert.ok(names(set.tools).includes('background_complete'));
   assert.ok(!names(set.tools).includes('context_review_complete'));
   assert.deepEqual(toolsetForTask(set, task.function.name), [...set.tools, task]);
   assert.deepEqual(toolsetForTask(set, 'memory_hold'), set.tools);
-  assert.match(taskDefinitionContext(set, task.function.name, 'active-run-1') ?? '', /直接调用 background_complete/);
+  assert.match(taskDefinitionContext(set, task.function.name, 'active-run-1') ?? '', /直接调用 context_review_complete/);
 
   const turn = messages.submitUserMessageWithTurn({ conversationId: 'native-fixture', content: '测试普通与任务工具', clientMessageId: 'native-fixture-turn' });
   const saveRequest = db.prepare(`INSERT INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,sent_at,created_at)

@@ -49,6 +49,8 @@ export type ToolExecContext = {
   // before the resolved handler. Neither the quote nor this callback is a model
   // argument; tool_invoke admits the actual capability once, not its wrapper.
   beforeBackgroundTool?: (quote: BackgroundToolQuote) => void;
+  /** Writes the observed protocol only inside the completion handler's transaction. */
+  recordCompletionCheckpoint?: (receipt: ToolExecResult) => void;
 };
 
 export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; seenAdditions?: ReadonlyArray<SeenRef>; coverageAdditions?: readonly CoverageRange[]; coverageProjection?: ToolCoverageProjection; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };

@@ -9,6 +9,7 @@ import { AccessControls } from './AccessControls'
 import { AccountSettings } from './AccountSettings'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import AlbumPanel from './AlbumPanel'
+import HeartbeatChatCard from './HeartbeatChatCard'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
 import { CallInvites } from './CallInvites'
@@ -636,7 +637,8 @@ export default function App() {
           return <Fragment key={row.key}>
           {m.dateKey && (index === 0 || rows[index - 1]?.parts[0]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
           <div data-message-id={m.system || m.role === 'user' ? m.id : undefined} className="flow-root">
-          {m.system ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
+          {m.heartbeatCardRunId ? <HeartbeatChatCard runId={m.heartbeatCardRunId} label={m.text} /> : m.system
+            ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}

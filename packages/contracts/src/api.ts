@@ -38,6 +38,7 @@ export type MessageDto = {
   created_at: string;
   revision: MessageRevisionDto; // 当前有效修订
   publication_breaks?: Array<{ before_message_id: string; end_char: number }>;
+  heartbeat_card?: { run_id: string };
   reply_status?: MessageReplyStatusDto;
   mutation_status?: { can_edit: boolean; can_withdraw: boolean; reason: string | null };
 };

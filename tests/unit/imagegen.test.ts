@@ -119,23 +119,25 @@ const okTransport: ImageGenTransport = async () => ({ status: 200, json: { id: '
 const CTX1 = { roomId: 'primary', turnId: 'turn-1', requestId: 'req-1', toolCallId: 'call-1' } as const;
 const CTX2 = { roomId: 'primary', turnId: 'turn-1', requestId: 'req-2-round', toolCallId: 'call-9' } as const;
 
-test('IG-1: 成功全链——生成 1 次→M 落正→免桶作品→引用保护→media_view 可读；同 op 重放不再生成', async () => {
+test('IG-1: 生成一次，M 落正后进相册，引用可读，同键重放沿用原资产和条目', async () => {
   const f = fixture(okTransport);
   const opKey = imageGenOpKey(CTX1, 'op-1');
   const r = await f.svc.generateAndStore({ prompt: '画一只小水獭', opKey, title: '水獭' });
   assert.equal(r.ok, true, JSON.stringify(r));
   if (!r.ok) return;
   assert.equal(f.calls(), 1);
-  assert.ok(r.creation_id, '作品条目建立');
+  assert.equal(r.creation_id, null);
+  assert.ok(r.album_entry_id, '相册条目建立');
   const asset = f.media.getAsset(r.asset_id);
   assert.equal(asset.m_sync_state, 'synced', '完整成功必须 M synced');
-  const ref = db.prepare("SELECT state FROM asset_external_refs WHERE asset_id=? AND owner_type='creation' AND state='committed'").get(r.asset_id) as { state: string } | undefined;
-  assert.equal(ref?.state, 'committed', '作品资产引用已确认保护（ALB-05③）');
+  const ref = db.prepare("SELECT state FROM asset_external_refs WHERE asset_id=? AND owner_type='album_entry' AND state='committed'").get(r.asset_id) as { state: string } | undefined;
+  assert.equal(ref?.state, 'committed', '相册资产引用已确认保护（ALB-05③）');
   const tools = new MediaToolsService({ db, contentClient: client, media: f.media });
   const img = await tools.readImage(r.asset_id, 'primary');
-  assert.equal(img.mime, 'image/png', 'media_view 经作品成员授权可读（ALB-05④）');
+  assert.equal(img.mime, 'image/png', 'media_view 经相册成员授权可读');
   const r2 = await f.svc.generateAndStore({ prompt: '画一只小水獭', opKey, title: '水獭' });
   assert.equal(r2.ok, true);
+  if (r2.ok) assert.equal(r2.album_entry_id, r.album_entry_id);
   assert.equal(f.calls(), 1, '重放不再次生成');
 });
 
@@ -153,7 +155,7 @@ test('IG-6: M 503→MASTER_PENDING（不建条目）；M 恢复后同键重试�
   assert.equal(retry.ok, true, JSON.stringify(retry));
   assert.equal(f2.calls(), 0, '重试复用暂存字节，不调用生成');
   if (retry.ok) {
-    assert.ok(retry.creation_id, 'M 恢复后补齐作品条目');
+    assert.ok(retry.album_entry_id, 'M 恢复后补齐相册条目');
     assert.equal(f2.media.getAsset(retry.asset_id).m_sync_state, 'synced');
   }
 });
@@ -185,7 +187,7 @@ test('IG-8: 断连分类——连接拒绝=可安全重试；发送后断开=结
   assert.equal(r3.ok, false, 'unknown 状态同键继续拒绝');
 });
 
-test('IG-9: 作品条目失败（content 不可达）→ENTRY_PENDING；恢复后同键补条目（ALB-05②）', async () => {
+test('IG-9: 相册条目失败（content 不可达）→ENTRY_PENDING；恢复后同键补条目（ALB-05②）', async () => {
   const f = fixture(okTransport);
   const opKey = imageGenOpKey(CTX1, 'op-9');
   const badClient = { baseUrl: 'http://127.0.0.1:1', token: 'x' } as never;
@@ -301,11 +303,14 @@ test('IG-GIF: 动图请求带 output_format/frame 参数；M 落实际字节+MIM
     assert.equal(Buffer.compare(body, ANIMATED_GIF), 0, 'HTTP 回读字节与生成字节完全一致（动画帧无损）');
     assert.equal(gifFrameCount(body), 2, '回读仍是两帧（无重编码）');
   } finally { assetServer.close(); }
-  // 作品链：条目（content 正本经 HTTP 读回）+ 引用保护
-  assert.ok(r.creation_id);
+  // 相册条目由正式后端返回，同时保留画作生成来源。
+  assert.ok(r.album_entry_id);
+  assert.equal(r.creation_id, null);
   const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
-  const crt = await contentForward(client as never, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations/${encodeURIComponent(r.creation_id)}` });
-  assert.equal((crt.body as { work_kind?: string }).work_kind, 'image');
+  const entry = await contentForward(client as never, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/album-entries/${encodeURIComponent(r.album_entry_id)}` });
+  assert.equal(entry.status, 200);
+  assert.equal((entry.body as { asset_id: string }).asset_id, r.asset_id);
+  assert.equal((entry.body as { caption: string }).caption, '挥手水獭');
   // 同键同参重放=原结果（P1-c：请求指纹含 prompt/帧参数——同键换参=IDEMPOTENCY_CONFLICT）
   const r2 = await f.svc.generateAndStore({ prompt: '一只圆滚滚的小水獭挥手，循环动画，镜头固定', opKey, format: 'gif', frameCount: 9, frameDurationMs: 200 });
   assert.equal(r2.ok, true);
@@ -327,7 +332,7 @@ test('IG-GIF-2 (参数合同): size=auto 官方形态放行透传；frame_durati
   assert.equal(sawSize, 'auto', '官方 auto 形态透传（不自行发明另一组限制）');
 });
 
-test('IG-10 (RR7): 条目已建但快照 GET 失败→IMAGEGEN_SNAPSHOT_PENDING（行留 stored+creation_id）；恢复后同键只补快照', async () => {
+test('IG-10 (RR7): 相册条目已建但快照失败；恢复按原 album_entry_id 只补快照', async () => {
   // content 框架代理：写路由转发真 content；references 读 503（模拟快照读取故障）
   const proxy = http.createServer((req, res) => {
     let raw = ''; req.on('data', (c) => { raw += c; });
@@ -356,17 +361,48 @@ test('IG-10 (RR7): 条目已建但快照 GET 失败→IMAGEGEN_SNAPSHOT_PENDING�
     if (r1.ok) return;
     assert.equal(r1.code, 'IMAGEGEN_SNAPSHOT_PENDING');
     assert.equal(r1.retryable, true);
-    const row = db.prepare('SELECT state, creation_id FROM imagegen_operations WHERE op_key = ?').get(opKey) as { state: string; creation_id: string };
+    const row = db.prepare('SELECT state, creation_id, album_entry_id FROM imagegen_operations WHERE op_key = ?')
+      .get(opKey) as { state: string; creation_id: string | null; album_entry_id: string | null };
     assert.equal(row.state, 'stored', '快照未确认不再冒充 saved');
-    assert.ok(row.creation_id, 'stored 行带 creation_id——恢复分支真实可达');
+    assert.ok(row.album_entry_id, 'stored 行保留相册关系以便恢复');
+    assert.equal(row.creation_id, null);
     // 恢复：改指真 content，同键重试只补快照（transport 不增）
     const healed = new ImageGenService({ db, adapter: new ImageGenAdapter({ baseUrl: 'http://synthetic', apiKeyEnv: 'EST_TEST_IMAGEGEN_KEY', model: 'm', transport: counting }), media, contentClient: client });
     const r2 = await healed.generateAndStore({ prompt: '快照故障画', opKey });
     assert.equal(r2.ok, true, JSON.stringify(r2));
+    if (r2.ok) assert.equal(r2.album_entry_id, row.album_entry_id);
     assert.equal(n, 1, '恢复不重新生成');
     const row2 = db.prepare('SELECT state FROM imagegen_operations WHERE op_key = ?').get(opKey) as { state: string };
     assert.equal(row2.state, 'saved');
   } finally { proxy.close(); }
+});
+
+test('v80 已提交作品但回执丢失：升级后沿旧回执确认，不重复生成或创建相册关系', async () => {
+  const f = fixture(okTransport);
+  const opKey = imageGenOpKey(CTX1, 'legacy-v80-committed');
+  const asset = await f.media.saveBuffer({ bytes: PNG_FULL, purpose: 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
+  const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
+  assert.ok(client);
+  const previous = await contentForward(client, {
+    method: 'POST', path: '/api/v1/content/creations', actor: 'jiaming',
+    body: { title: '旧画', work_asset_id: asset.id, work_kind: 'image' },
+    headers: { 'idempotency-key': `imagegen:${opKey}` },
+  });
+  assert.equal(previous.status, 201);
+  // v80 在写 content 前最后持久状态仍可能是 generated，响应丢失后不能假定旧关系未提交。
+  const now = new Date().toISOString();
+  db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+    .run(opKey, 'generated', PNG_FULL.toString('base64'), now, now);
+  const resumed = await f.svc.generateAndStore({ prompt: '旧请求', opKey, title: '旧画', deliver: 'save_only' });
+  assert.equal(resumed.ok, true, JSON.stringify(resumed));
+  if (!resumed.ok) return;
+  assert.equal(resumed.creation_id, (previous.body as { id: string }).id);
+  assert.equal(resumed.album_entry_id, undefined);
+  assert.equal(f.calls(), 0);
+  const albums = await contentForward(client, {
+    method: 'GET', path: `/api/v1/content/albums?asset_id=${encodeURIComponent(asset.id)}`, actor: 'jiaming',
+  });
+  assert.deepEqual((albums.body as { albums: unknown[] }).albums, []);
 });
 
 test('IG-11 (RR4): creation_save_artifact 在 M 未落正时 CREATION_MASTER_PENDING（不建条目）；恢复后同键补齐 saved', async () => {
@@ -374,7 +410,7 @@ test('IG-11 (RR4): creation_save_artifact 在 M 未落正时 CREATION_MASTER_PEN
   const f = fixture(okTransport, { mFail: true });
   const tools = new ContentToolsService({ media: f.media, contentClient: client, contentOps: null });
   const ctx = { roomId: 'primary', turnId: 't', requestId: 'r', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [] };
-  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"><animate attributeName="r" values="1;3;1" dur="2s"/></circle></svg>';
   const clientOperationId = '存合成作品';
   const r1 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: clientOperationId }, ctx);
   assert.equal(r1.ok, false, JSON.stringify(r1.output));

@@ -2,7 +2,7 @@
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序/限量门/响应与错误码逐字保持。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
-import { MediaError, type IngestPurpose } from '../../media/assets.ts';
+import { MediaError, sniffMime, type IngestPurpose } from '../../media/assets.ts';
 import type { RequestDeps } from '../http.ts';
 
 /** 二进制原始体读取（自 http.ts 逐字随迁——上传限量门共用）。 */
@@ -101,8 +101,16 @@ if (route === 'POST /api/v1/assets') {
       : Math.max(d.config.media.max_code_artifact_bytes, d.config.media.max_video_bytes);
   try {
     const bytes = await readRawBody(req, cap);
-    const asset = await d.media.saveBuffer({ bytes, purpose: purpose as IngestPurpose, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' });
-    return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate });
+    const upload = { bytes, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' as const };
+    const asset = purpose === 'chat_image' && sniffMime(bytes) === 'image/svg+xml'
+      ? await d.media.saveStaticSvg(upload)
+      : await d.media.saveBuffer({ ...upload, purpose: purpose as IngestPurpose });
+    if (!asset) return json(res, 422, { error: { code: 'unsupported_static_svg', message: '该 SVG 超出相册支持的静态形状范围，可保留为沙箱预览的作品' } });
+    return json(res, 201, {
+      asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state,
+      m_sync_state: asset.m_sync_state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate,
+      ...(asset.mime_type === 'image/svg+xml' ? { model_image_ready: d.media.canProvideImage(asset) } : {}),
+    });
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;
@@ -127,7 +135,10 @@ if (assetGet) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   try {
     const a = d.media.getAsset(decodeURIComponent(assetGet[1]!));
-    return json(res, 200, { ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content` }); // 相对地址；不返回存储绝对路径/源站凭据
+    return json(res, 200, {
+      ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content`,
+      ...(a.mime_type === 'image/svg+xml' ? { model_image_ready: d.media.canProvideImage(a) } : {}),
+    });
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;
@@ -138,7 +149,7 @@ if (assetContent) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   const id = decodeURIComponent(assetContent[1]!);
   try {
-    const { bytes, mime } = await d.media.readContentResolvingMaster(id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(id, url.searchParams.get('view') === 'image' ? { modelImage: true } : undefined);
     return serveAudioContent(req, res, bytes, mime);
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });

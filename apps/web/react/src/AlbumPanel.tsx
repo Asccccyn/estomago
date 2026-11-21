@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Heart, Image as ImageIcon, Library, Sparkles, Upload, X } from 'lucide-react'
+import { uploadAlbumEntry, type AlbumUpload, type PhotoAlbum } from './album-upload'
 
 // 相册重构 P3/P4（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：四个入口的统一面板——
 // 作品（creations）/ 我们的相册（important_photos）/ 对话存档（archives，争吵/甜蜜）/
@@ -23,6 +24,15 @@ const TABS = [
   { key: 'stickers', label: '表情包', icon: ImageIcon },
 ] as const
 type TabKey = (typeof TABS)[number]['key']
+const UPLOAD_RECEIPT_KEY = 'estomago.album-upload.receipt'
+
+function pendingAlbumUpload(): AlbumUpload | null {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(UPLOAD_RECEIPT_KEY) ?? 'null') as AlbumUpload | null
+    return saved && typeof saved.assetId === 'string' && typeof saved.key === 'string'
+      && ['important_photos', 'chat_screenshots', 'stickers'].includes(saved.album) ? saved : null
+  } catch { return null }
+}
 
 const CARRY_LABELS: Record<AlbumEntry['carry_mode'], string> = { none: '仅收藏', next_once: '下次滚窗一次', always: '每次滚窗' }
 const KIND_LABELS: Record<ArchiveItem['kind'], string> = { quarrel: '争吵', sweet: '甜蜜' }
@@ -37,8 +47,8 @@ function opId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
 }
 
-export default function AlbumPanel({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<TabKey>('creations')
+export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onClose: () => void; initialTab?: TabKey }) {
+  const [tab, setTab] = useState<TabKey>(initialTab)
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const [entries, setEntries] = useState<AlbumEntry[]>([])
@@ -46,7 +56,11 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
   const [archives, setArchives] = useState<ArchiveItem[]>([])
   const [openArchive, setOpenArchive] = useState<string | null>(null)
   const [originals, setOriginals] = useState<ArchiveOriginal[] | null>(null)
-  const stickerInputRef = useRef<HTMLInputElement | null>(null)
+  const [photoAlbum, setPhotoAlbum] = useState<PhotoAlbum>('important_photos')
+  const [upload, setUpload] = useState<AlbumUpload | null>(pendingAlbumUpload)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const uploadInputRef = useRef<HTMLInputElement | null>(null)
   // RR4-W2f：分页状态放 ref+state 双份（ref 供 load 回调读当前游标，state 驱动按钮）
   const pageRef = useRef<Partial<Record<TabKey, PageState>>>({})
   const [page, setPage] = useState<Partial<Record<TabKey, PageState>>>({})
@@ -76,13 +90,13 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
         if (status !== 200) throw new Error('存档读取失败 ' + status)
         setArchives((prev) => attach(prev, body))
       } else {
-        const kind = tab === 'photos' ? 'important_photos' : 'stickers'
+        const kind = tab === 'photos' ? photoAlbum : 'stickers'
         const { status, body } = await jfetch<{ items?: AlbumEntry[]; next_cursor?: string | null; has_more?: boolean }>(`/api/v1/content/albums/${kind}/entries?limit=50${suffix}`)
         if (status !== 200) throw new Error('相册读取失败 ' + status)
         setEntries((prev) => attach(prev, body))
       }
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
-  }, [tab])
+  }, [photoAlbum, tab])
   useEffect(() => { void load() }, [load])
 
   const setCarry = async (entry: AlbumEntry, mode: AlbumEntry['carry_mode']) => {
@@ -99,12 +113,12 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
   }
 
   const removeEntry = async (entry: AlbumEntry) => {
-    if (!confirm('从相册移除（只解除关系，不删除图片和历史消息）？')) return
+    if (!confirm(`从${tab === 'stickers' ? '表情包' : '此相册'}移除，保留原件和已发聊天？`)) return
     setBusy(true); setErr(null)
     try {
       const { status, body } = await jfetch<{ error?: { message?: string } }>(`/api/v1/content/album-entries/${encodeURIComponent(entry.id)}`, {
         method: 'DELETE',
-        headers: { 'If-Match': `"${entry.revision}"`, 'Idempotency-Key': `ui-album-del:${entry.id}:${Date.now()}` },
+        headers: { 'If-Match': `"${entry.revision}"`, 'Idempotency-Key': `ui-album-del:${entry.id}:${entry.revision}` },
       })
       if (status !== 200) throw new Error(body?.error?.message ?? ('移除失败 ' + status))
       await load()
@@ -136,50 +150,43 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setOpenArchive(null) }
   }
 
-  /** R5 表情上传归类：上传（purpose=chat_sticker，MIME 白名单在服务端）→ 建 stickers 条目。 */
-  const uploadSticker = async (file: File) => {
-    setBusy(true); setErr(null)
+  const finishUpload = async (attempt: AlbumUpload) => {
+    updateUpload(attempt); setUploading(true); setBusy(true); setUploadError(null)
     try {
-      const key = opId('ui-sticker')
-      const up = await fetch('/api/v1/assets?purpose=chat_sticker', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key }, body: file })
-      const upBody = (await up.json().catch(() => ({}))) as { asset_id?: string; error?: { message?: string } }
-      if (up.status !== 201 && up.status !== 200) throw new Error(upBody.error?.message ?? ('上传失败 ' + up.status))
-      const { status, body } = await jfetch<{ error?: { message?: string } }>('/api/v1/content/albums/stickers/entries', {
-        method: 'POST',
-        headers: { 'Idempotency-Key': `${key}:entry` },
-        body: JSON.stringify({ asset_id: upBody.asset_id }),
-      })
-      if (status !== 201 && status !== 200) throw new Error(body?.error?.message ?? ('归类失败 ' + status))
-      await load()
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+      await uploadAlbumEntry(attempt, updateUpload)
+      updateUpload(null)
+      const target = attempt.album === 'stickers' ? 'stickers' : 'photos'
+      if (tab === target && (target === 'stickers' || photoAlbum === attempt.album)) await load()
+      else {
+        if (attempt.album !== 'stickers') setPhotoAlbum(attempt.album)
+        setTab(target)
+      }
+    } catch (e) { setUploadError(e instanceof Error ? e.message : String(e)) } finally { setUploading(false); setBusy(false) }
   }
 
-  /** R5 作品入表情：作品卡片的 work 资产归入 stickers（同 entries 接口 kind=stickers）。 */
-  const addCreationToStickers = async (c: Creation) => {
-    if (!c.work_asset_id) return
-    setBusy(true); setErr(null)
+  const updateUpload = (next: AlbumUpload | null) => {
+    setUpload(next)
     try {
-      const { status, body } = await jfetch<{ error?: { message?: string } }>('/api/v1/content/albums/stickers/entries', {
-        method: 'POST',
-        headers: { 'Idempotency-Key': opId(`ui-creation-sticker:${c.id}`) },
-        body: JSON.stringify({ asset_id: c.work_asset_id }),
-      })
-      if (status !== 201 && status !== 200) throw new Error(body?.error?.message ?? ('加入失败 ' + status))
-      setErr(null)
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+      if (next?.assetId) sessionStorage.setItem(UPLOAD_RECEIPT_KEY, JSON.stringify(next))
+      else sessionStorage.removeItem(UPLOAD_RECEIPT_KEY)
+    } catch { /* the operation remains available until this view closes */ }
+  }
+
+  const addToStickers = (assetId: string) => {
+    void finishUpload({ assetId, album: 'stickers', key: opId('ui-add-sticker') })
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => { if (!uploading) onClose() }}>
       <div role="dialog" aria-label="相册" onClick={(e) => e.stopPropagation()}
         className="flex h-[78vh] w-full max-w-[560px] flex-col rounded-t-3xl bg-[#faf8f2] shadow-2xl sm:rounded-3xl">
         <div className="flex items-center justify-between px-5 pb-2 pt-4">
           <div className="text-[16px] font-medium text-[#3d3929]">相册</div>
-          <button aria-label="关闭" onClick={onClose} className="rounded-xl p-1.5 text-[#8a8780] hover:bg-black/5"><X size={18} /></button>
+          <button aria-label="关闭" disabled={uploading} onClick={onClose} className="rounded-xl p-1.5 text-[#8a8780] hover:bg-black/5"><X size={18} /></button>
         </div>
         <div className="flex gap-1 px-4 pb-2" role="tablist">
           {TABS.map(({ key, label, icon: I }) => (
-            <button key={key} role="tab" aria-selected={tab === key} onClick={() => setTab(key)}
+            <button key={key} role="tab" aria-selected={tab === key} disabled={uploading} onClick={() => setTab(key)}
               className={`flex flex-1 items-center justify-center gap-1 rounded-xl px-2 py-1.5 text-[13px] transition ${tab === key ? 'bg-[#c96442] text-white' : 'text-[#5e5d59] hover:bg-black/5'}`}>
               <I size={14} />{label}
             </button>
@@ -187,7 +194,16 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
           {err && <p className="rounded-xl bg-[#f7e8e4] px-3 py-2 text-[13px] text-[#b3554d]">{err}</p>}
-          {busy && <p className="py-3 text-center text-[13px] text-[#a3a099]">读取中…</p>}
+          {uploadError && <p role="alert" className="rounded-xl bg-[#f7e8e4] px-3 py-2 text-[13px] text-[#b3554d]">{uploadError}</p>}
+          {upload && !busy && <div className="flex gap-2 py-2 text-[13px]">
+            <button className="rounded-lg bg-[#c96442] px-2 py-1 text-white" onClick={() => void finishUpload(upload)}>
+              {upload.assetId ? '继续入库' : '重试上传'}
+            </button>
+            <button className="rounded-lg bg-black/5 px-2 py-1" onClick={() => { updateUpload(null); setUploadError(null) }}>
+              {upload.assetId ? '暂不入库（保留原件）' : '结束此次操作'}
+            </button>
+          </div>}
+          {busy && <p role="status" className="py-3 text-center text-[13px] text-[#a3a099]">{uploading ? (upload?.assetId ? '确认并入库…' : '上传中…') : '读取中…'}</p>}
           {!busy && tab === 'creations' && (creations.length === 0
             ? <Empty text="还没有作品——char画完会自动进来" />
             : <div className="grid grid-cols-2 gap-3 pt-1 sm:grid-cols-3">
@@ -196,7 +212,7 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                     <img src={`/api/v1/assets/${encodeURIComponent(c.work_asset_id)}/content`} alt={c.title ?? '作品'} className="aspect-square w-full object-cover" />
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5">
                       <span className="truncate text-[12px] text-[#5e5d59]">{c.title ?? '未命名作品'}</span>
-                      <button disabled={busy} onClick={() => void addCreationToStickers(c)} title="加入表情包"
+                      <button disabled={upload !== null} onClick={() => addToStickers(c.work_asset_id!)} title="加入表情包"
                         className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-[#5e5d59] hover:bg-black/5">入表情</button>
                     </div>
                   </div>
@@ -211,21 +227,30 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
           {!busy && tab === 'creations' && <LoadMore tab="creations" />}
           {!busy && (tab === 'photos' || tab === 'stickers') && (
             <div className="flex flex-col gap-2 pt-1">
-              {tab === 'stickers' && (
-                <button disabled={busy} onClick={() => stickerInputRef.current?.click()}
-                  className="flex items-center justify-center gap-1.5 rounded-2xl border border-dashed border-black/15 px-3 py-2.5 text-[13px] text-[#5e5d59] hover:bg-black/5">
-                  <Upload size={14} />上传表情（自动归入表情包）
-                </button>
+              {tab === 'photos' && (
+                <label className="flex items-center gap-2 text-[13px] text-[#5e5d59]">
+                  相册
+                  <select className="rounded-lg border border-black/10 bg-white px-2 py-1" value={photoAlbum} onChange={(e) => setPhotoAlbum(e.target.value as PhotoAlbum)}>
+                    <option value="important_photos">重要照片</option>
+                    <option value="chat_screenshots">聊天截图</option>
+                  </select>
+                </label>
               )}
+              <button disabled={upload !== null} onClick={() => uploadInputRef.current?.click()}
+                className="flex items-center justify-center gap-1.5 rounded-2xl border border-dashed border-black/15 px-3 py-2.5 text-[13px] text-[#5e5d59] hover:bg-black/5 disabled:opacity-50">
+                <Upload size={14} />{tab === 'photos' ? '上传图片到此相册' : '上传表情'}
+              </button>
               {entries.length === 0
-                ? <Empty text={tab === 'photos' ? '还没有精选——点聊天图片下的星标可收藏' : '表情包还是空的——上传图片，或把作品归入表情包'} />
+                ? <Empty text={tab === 'photos' ? '此相册还没有图片' : '表情包还是空的'} />
                 : entries.map((e) => (
                   <div key={e.id} className="flex items-center gap-3 rounded-2xl border border-black/10 bg-white p-2.5">
-                    <img src={`/api/v1/assets/${encodeURIComponent(e.asset_id)}/content`} alt="" className="h-16 w-16 shrink-0 rounded-xl object-cover" />
+                    <a href={`/api/v1/assets/${encodeURIComponent(e.asset_id)}/content?view=image`} target="_blank" rel="noreferrer" aria-label="预览图片">
+                      <img src={`/api/v1/assets/${encodeURIComponent(e.asset_id)}/content?view=image`} alt="" className="h-16 w-16 shrink-0 rounded-xl object-cover" />
+                    </a>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-[13px] text-[#3d3929]">{[e.caption, e.meaning].filter(Boolean).join(' · ') || '（无留言）'}</p>
                       <p className="mt-0.5 text-[11px] text-[#a3a099]">{e.added_by === 'qiaosheng' ? '乔乔' : 'char'} 收藏 · {new Date(e.created_at).toLocaleDateString()}</p>
-                      {tab === 'photos' && (
+                      {tab === 'photos' && photoAlbum === 'important_photos' && (
                         <div className="mt-1.5 flex gap-1">
                           {(['none', 'next_once', 'always'] as const).map((m) => (
                             <button key={m} disabled={busy} onClick={() => void setCarry(e, m)}
@@ -236,6 +261,8 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
                         </div>
                       )}
                     </div>
+                    {tab === 'photos' && <button disabled={upload !== null} onClick={() => addToStickers(e.asset_id)}
+                      className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-[#5e5d59] hover:bg-black/5">入表情</button>}
                     <button aria-label="移除" disabled={busy} onClick={() => void removeEntry(e)} className="shrink-0 rounded-xl p-1.5 text-[#a3a099] hover:bg-black/5 hover:text-[#b3554d]"><X size={15} /></button>
                   </div>
                 ))}
@@ -282,7 +309,13 @@ export default function AlbumPanel({ onClose }: { onClose: () => void }) {
             </div>)}
         </div>
       </div>
-      <input ref={stickerInputRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadSticker(f) }} />
+      <input ref={uploadInputRef} type="file" accept={tab === 'photos' ? 'image/png,image/jpeg,image/webp,image/gif,image/svg+xml' : 'image/png,image/jpeg,image/webp,image/gif'} hidden onChange={(e) => {
+        const file = e.target.files?.[0]
+        e.target.value = ''
+        if (file && (tab === 'photos' || tab === 'stickers')) {
+          void finishUpload({ file, album: tab === 'photos' ? photoAlbum : 'stickers', key: opId('ui-album-upload') })
+        }
+      }} />
     </div>
   )
 }

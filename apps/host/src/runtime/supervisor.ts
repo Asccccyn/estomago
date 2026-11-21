@@ -50,6 +50,9 @@ import type { WindowTrajectoryService } from './window-trajectory.ts';
 import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolName, toolsetForTask } from './tool-discovery.ts';
 import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
+import { readTurnCompletion, TURN_COMPLETION_TOOL } from './turn-completion.ts';
+import { appendCompletionToolReceipt, stageTurnCompletion } from './turn-completion-checkpoint.ts';
+import { recoverAcceptedCompletions } from './completion-recovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
@@ -77,6 +80,8 @@ import { contentForward } from '../integrations/content/client.ts';
 import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discovery.ts';
 import { catalogUsesLegacySequenceMarkers, stripLegacySequenceMarker } from './legacy-sequence-markers.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
+import { HEARTBEAT_DRAW_TOOL, type HeartbeatRuntime } from '../modules/heartbeat/runtime.ts';
+import type { HeartbeatMode } from '../modules/heartbeat/service.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -118,6 +123,7 @@ export type SupervisorDeps = {
   oidoHearing?: boolean;
   // WAKE_KEEPWARM_V1（2026-10-22）：真实活动锚点投影（L/维护回执 CAS）。
   activity?: ConversationActivityService;
+  heartbeat?: HeartbeatRuntime;
   // WAKE_KEEPWARM_V1：后台派发让位检查（用户消息到来→心跳在安全边界让位，S-06）
   keepwarmYieldCheck?: (runId: string) => boolean;
   /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
@@ -192,6 +198,10 @@ export class TurnSupervisor {
   // 撤销/关键身份更正例外走既有安全换窗）。取不到=如实降级不带 B（事件
   // 记录），不阻塞聊天、不伪造"记忆已恢复"。
   private readonly bootstrapMachine: WindowBootstrapMachine;
+
+  recoverAcceptedCompletions(finishBackground?: Parameters<typeof recoverAcceptedCompletions>[1]): void {
+    recoverAcceptedCompletions(this.d, finishBackground);
+  }
 
   constructor(d: SupervisorDeps) {
     this.d = d;
@@ -412,18 +422,44 @@ export class TurnSupervisor {
     if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_BEFORE_START' };
 
     const nowIso0 = new Date().toISOString();
+    const controller = new AbortController();
+    opts.registerAbort(controller);
     let capturedActivityRevision: number | null = null;
+    let heartbeatMode: HeartbeatMode | null = null;
+    let heartbeatHostText: string | null = null;
     // —— 心跳专属派发门（R4a 迁 runtime/background-keepwarm-gate.ts；05 §派发门与异常）——
     if (opts.kind === 'keepwarm') {
       const gate = keepwarmDispatchGate({ db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id, inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs() });
       if (gate.decision === 'noop') return { outcome: 'noop', result_code: gate.resultCode, detail: gate.detail };
       capturedActivityRevision = gate.capturedActivityRevision;
     }
+    const baseTools = this.windowTools(window.id);
+    const toolset = storedToolset(d.db, window.id)!;
 
     // —— 尾部 host 事件（05/04：宿主事件口径，不伪造用户消息；一次冻结，续轮不重生成）——
     let tailNote: string;
     if (opts.kind === 'keepwarm') {
-      tailNote = 'Cache keepalive (host event, not Qiaosheng). Reply 1 by default; you may choose otherwise and use available tools.';
+      if (!d.heartbeat) return { outcome: 'failed', result_code: 'HEARTBEAT_RUNTIME_UNAVAILABLE' };
+      const offered = toolset.protocol === 'deferred' ? toolset.catalog : toolset.tools;
+      const supportsDraw = offered.some(tool => tool.function.name === HEARTBEAT_DRAW_TOOL)
+        && offered.some(tool => tool.function.name === TURN_COMPLETION_TOOL);
+      if (!supportsDraw && d.heartbeat.status(opts.conversationId).mode !== 'exhausted_keepwarm') {
+        return { outcome: 'failed', result_code: 'HEARTBEAT_TOOL_WINDOW_UNAVAILABLE' };
+      }
+      const prepared = await d.heartbeat.begin({
+        runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, signal: controller.signal,
+        retainedMessages: traj.messages,
+      });
+      if (controller.signal.aborted || opts.isCancelRequested() || d.keepwarmYieldCheck?.(opts.runId)) {
+        return { outcome: 'noop', result_code: 'HEARTBEAT_CANCELLED_BEFORE_DISPATCH' };
+      }
+      heartbeatMode = prepared.mode;
+      if (heartbeatMode === 'unprepared' || heartbeatMode === 'source_unavailable') {
+        return { outcome: 'failed', result_code: heartbeatMode === 'unprepared'
+          ? 'HEARTBEAT_DECK_UNPREPARED' : 'HEARTBEAT_SOURCE_UNAVAILABLE',
+          ...(prepared.unavailable?.length ? { detail: '读取不可用的来源：' + prepared.unavailable.join(',') } : {}) };
+      }
+      heartbeatHostText = tailNote = prepared.hostText;
     } else {
       const mergedPayload = { ...JSON.parse(taskRow.payload_json) as Record<string, unknown>, ...opts.payload };
       const note = typeof mergedPayload.note === 'string' ? mergedPayload.note : '';
@@ -438,21 +474,23 @@ export class TurnSupervisor {
       if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
       lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
       lines.push(`Actual delivery: ${nowIso0}${scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs() ? ' (late)' : ''}`);
-      lines.push('You may use available tools and choose whether to speak.');
       tailNote = lines.join('\n');
     }
-    const baseTools = this.windowTools(window.id);
-    const toolset = storedToolset(d.db, window.id)!;
     // Keepwarm must send exactly the same tools as chat for this window.
-    const scopedTaskTools = toolset.protocol === 'direct' && opts.kind === 'autonomous';
-    const tools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, 'background_complete')) : baseTools;
-    if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule' && this.windowHasTool(window.id, 'chat_send_text')) {
-      tailNote += '\n自己定的唤醒已经到了。想给宿主用户发一句，可以用 chat_send_text。填你想说的 text 和这条消息的 idempotency_key。同一条重试沿用这个键。';
+    const scopedTaskTools = toolset.protocol === 'direct' && opts.kind === 'autonomous'
+      && toolset.groups[TURN_COMPLETION_TOOL] === 'T';
+    const tools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, TURN_COMPLETION_TOOL)) : baseTools;
+    if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule') {
+      tailNote += '\n结束前，把要告诉乔乔的话发到聊天；有后续就自行安排。';
     }
-    const taskDefinition = toolset.protocol === 'direct' && !scopedTaskTools
+    const taskDefinition = heartbeatMode === 'exhausted_keepwarm' || (toolset.protocol === 'direct' && !scopedTaskTools)
       ? null
       : taskDefinitionContext(toolset, 'background_complete', opts.runId);
     if (taskDefinition) tailNote += '\n' + taskDefinition;
+    if (heartbeatMode === 'draw' && toolset.protocol === 'deferred') {
+      const drawDefinition = taskDefinitionContext(toolset, HEARTBEAT_DRAW_TOOL, opts.runId);
+      if (drawDefinition) tailNote += '\n' + drawDefinition;
+    }
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
     const baseMessages: OrMessage[] = [
       ...traj.messages,
@@ -483,8 +521,6 @@ export class TurnSupervisor {
     d.db.prepare("UPDATE turns SET state='running',started_at=? WHERE id=?").run(nowIso,turnId);
     d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
-    const controller = new AbortController();
-    opts.registerAbort(controller);
     let toolCallsObserved = 0;
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
@@ -500,6 +536,7 @@ export class TurnSupervisor {
       seenMessages: (traj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })),
       previousEnvelope,
       scopedTaskTools,
+      heartbeatHostText: heartbeatHostText ?? undefined,
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
@@ -510,7 +547,10 @@ export class TurnSupervisor {
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
     settleBackgroundRun(d.db, opts.runId);
     // 结果分类与收尾（R4a 迁 runtime/background-outcome.ts）
-    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop });
+    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop,
+      ...(d.heartbeat && heartbeatMode && heartbeatHostText !== null
+        ? { heartbeat: { runtime: d.heartbeat, mode: heartbeatMode, hostText: heartbeatHostText } } : {}),
+    });
   }
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
@@ -582,6 +622,8 @@ export class TurnSupervisor {
     voiceObservations?: readonly import('../modules/oido/observations.ts').VoiceObservationSnapshot[];
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
     scopedTaskTools?: boolean; // 任务专属工具与主会话使用不同工具前缀。
+    completionManifest?: readonly ManifestEntry[];
+    heartbeatHostText?: string;
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
      *  完整工具循环（2026-10-22：KEEPWARM_TOOL_REFUSED 已删除）。 */
@@ -591,7 +633,7 @@ export class TurnSupervisor {
       maxModelRequests: number;
       recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
       isCancelRequested: () => boolean;
-      observeToolCall?: () => void; // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为
+      observeToolCall?: () => void;
       yieldRequested?: (() => boolean) | null; // S-06：心跳安全边界让位（用户消息到来）
     };
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
@@ -677,15 +719,6 @@ export class TurnSupervisor {
       const batchRanges: CoverageRange[] = [];
       pendingCalls = [];
       pendingAssistantIndex = -1;
-      // P5（四仓审计 20261106，T17/C09）：background_complete 已作出业务结束决定——
-      // 不再开启新的模型请求；本批已发生的工具结果已并入 envelope，按自然完成语义
-      // 收口（与"最终回复无工具调用"同一出口：finalMessages=envelope，不标失败）
-      if (round > 0 && o.background) {
-        const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(o.background.runId) as { result_code: string | null } | undefined;
-        if (rcDone?.result_code?.startsWith('complete:') === true) {
-          return { result: { outcome: 'completed', errorClassified: null, errorCode: null, errorMessage: null, sessionId: null, requestId: null }, finalMessages: envelope.messages, lastSentMessages: envelope.messages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
-        }
-      }
       const captured: MatchedCompleteBlock[] = [];
       let lastText = null as string | null; // 闭包内赋值（wrapped）：外层流分析按声明类型读（F-J-31）
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -732,7 +765,9 @@ export class TurnSupervisor {
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
       // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
       // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
-      const matEnv = async (env: typeof envelope): Promise<typeof envelope> => projectModelHistory(d.media ? await materializeEnvelope(env, d.media, d.mediaTools ? id => d.mediaTools!.readImage(id, o.conversationId) : undefined) as typeof envelope : env);
+      const matEnv = async (env: typeof envelope): Promise<typeof envelope> => projectModelHistory(d.media ? await materializeEnvelope(env, d.media, id =>
+        d.heartbeat?.readImage(id, o.conversationId, o.background?.runId)
+        ?? (d.mediaTools ? d.mediaTools.readImage(id, o.conversationId) : d.media!.readContentResolvingMaster(id, { modelImage: true }))) as typeof envelope : env);
       const runEnvelope = await matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
@@ -794,6 +829,9 @@ export class TurnSupervisor {
             payload:{message:{...message,mutation_status:{can_edit:false,can_withdraw:false,reason:'MESSAGE_ALREADY_DISPATCHED'}}},
           });
         }
+        if (o.background?.kind === 'keepwarm') {
+          await this.admitHeartbeatDispatch(o.background.runId, lastPrqId, bgDispatchId, envelope.messages, o.controller.signal);
+        }
         dispatched = true;
         lastSentMessages = envelope.messages;
       };
@@ -805,6 +843,7 @@ export class TurnSupervisor {
         const nowIso = new Date().toISOString();
         d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
           .run(nowIso, info.attemptIndex, info.generationId ?? null, lastPrqId);
+        if (o.background?.kind === 'keepwarm') d.heartbeat?.observeDelivery(o.background.runId, lastPrqId, envelope.messages);
         if (!roundSeenPromoted) {
           roundSeenPromoted = true;
           // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
@@ -905,6 +944,13 @@ export class TurnSupervisor {
         ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) === 'context_review_complete'),
       ];
       for (const t of ordered) {
+        if (readTurnCompletion(d.db, o.attemptId, o.turnId) &&
+            effectiveToolName(t.tool_name ?? '', t.text) !== TURN_COMPLETION_TOOL) {
+          envelope = { ...envelope, messages: [...envelope.messages, {
+            role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: 'TURN_COMPLETED', executed: false }),
+          } as OrMessage] };
+          continue;
+        }
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
           return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, 'EXECUTION_CANCELLED');
@@ -945,6 +991,14 @@ export class TurnSupervisor {
           ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
           // R07（审计 FE-12）：工具生命周期统一身份
           toolCallId: t.tool_id, attemptId: o.attemptId, round, generationId: roundGenerationId,
+          ...(o.turnId && t.tool_id && lastSentMessages && d.trajectory ? {
+            recordCompletionCheckpoint: receipt => stageTurnCompletion(d.db, {
+              requestId: lastPrqId, windowId: o.windowId, turnId: o.turnId!, attemptId: o.attemptId, callId: t.tool_id!,
+              batch: { tail: envelope.messages.slice(pendingAssistantIndex), inFlight: [], sentMessages: lastSentMessages! },
+              receipt, manifestAdditions: o.completionManifest ?? [], confirmedSeen: toolSeenActive, pendingSeen: roundPendingSeen,
+              heartbeatHostText: o.heartbeatHostText,
+            }),
+          } : {}),
           ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
             const rec = o.background!.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
             if (!rec.allowed) throw new ContractError(rec.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
@@ -991,6 +1045,11 @@ export class TurnSupervisor {
         envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
         this.recordToolCoverage(lastPrqId, t.tool_id, exec);
 
+      }
+      if (readTurnCompletion(d.db, o.attemptId, o.turnId)) {
+        // Final tool receipts are canonical locally; only the previous request
+        // was sent. The next natural request carries the new protocol tail.
+        return { result, finalMessages: envelope.messages, lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
@@ -1082,16 +1141,15 @@ export class TurnSupervisor {
       host: {
         windowId: o.windowId, purpose: o.purpose, envelope: o.envelope,
         isolatedSession: o.scopedTaskTools,
+        completionRequested: () => readTurnCompletion(d.db, o.attemptId, o.turnId) !== null,
+        captureCompletionBatch: Boolean(o.turnId && d.trajectory),
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
-        ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId) } : {}),
+        ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId)
+          ?? (d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId, { modelImage: true })) } : {}),
         beforeModel: async (messages, round) => {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
-          // P5（T17）：background_complete 后不再开新模型请求（PostToolBatch 同一面）
-          if (round > 0 && o.background) {
-            const rcDone = d.db.prepare('SELECT result_code FROM background_runs WHERE id=?').get(o.background.runId) as { result_code: string | null } | undefined;
-            if (rcDone?.result_code?.startsWith('complete:') === true) throw new ContractError('BACKGROUND_COMPLETED_STOP');
-          }
+          if (round > 0 && readTurnCompletion(d.db, o.attemptId, o.turnId)) throw new ContractError('TURN_COMPLETED_STOP');
           if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
           if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
           if (this.requestCapacity(messages, o.envelope.tools, o.envelope.maxTokens)?.plan.action === 'blocked_hard') {
@@ -1124,6 +1182,9 @@ export class TurnSupervisor {
           requestContext.requestId = requestId;
           requestContext.responseModel = null;
           recordRequestExecution(d.db, requestContext, o.background?.runId);
+          if (o.background?.kind === 'keepwarm') {
+            await this.admitHeartbeatDispatch(o.background.runId, requestId, dispatchId, messages, o.controller.signal);
+          }
           lastSentMessages = structuredClone(messages);
           if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
           d.surfacing?.markDispatched?.(o.attemptId);
@@ -1133,12 +1194,20 @@ export class TurnSupervisor {
           requestContext.responseModel = model ?? null;
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
+          if (o.background?.kind === 'keepwarm' && requestId && lastSentMessages) {
+            d.heartbeat?.observeDelivery(o.background.runId, requestId, lastSentMessages);
+          }
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
           pendingSeenByTool.clear();
           batchRanges.length = 0;
         },
-        recordToolDelivery: (toolCallId, result) => this.recordToolCoverage(requestId, toolCallId, result),
-        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource) => {
+        recordToolDelivery: (toolCallId, result) => {
+          this.recordToolCoverage(requestId, toolCallId, result);
+          if (readTurnCompletion(d.db, o.attemptId, o.turnId)) {
+            appendCompletionToolReceipt(d.db, o.attemptId, toolCallId, result, pendingSeenByTool.get(toolCallId) ?? []);
+          }
+        },
+        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource, completionBatch) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
           if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
@@ -1153,6 +1222,18 @@ export class TurnSupervisor {
             activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
             seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
             requestId: requestId!, toolCallId, attemptId: o.attemptId, round, generationId,
+            ...(completionBatch && o.turnId && d.trajectory ? {
+              recordCompletionCheckpoint: receipt => {
+                const batch = completionBatch();
+                const pending = batch.tail.filter(message => message.role === 'tool')
+                  .flatMap(message => pendingSeenByTool.get(String(message.tool_call_id)) ?? []);
+                stageTurnCompletion(d.db, {
+                  requestId: requestId!, windowId: o.windowId, turnId: o.turnId!, attemptId: o.attemptId, callId: toolCallId,
+                  batch, receipt, manifestAdditions: o.completionManifest ?? [], confirmedSeen: toolSeen, pendingSeen: pending,
+                  heartbeatHostText: o.heartbeatHostText,
+                });
+              },
+            } : {}),
             ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
             ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
               const admission = o.background!.recordDispatch({ logicalActionKey: `tool:${toolCallId}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
@@ -1193,6 +1274,23 @@ export class TurnSupervisor {
       pendingToolSeen = pendingToolSeen.filter(entry => !unseen.has(entry));
     }
     return { result, finalMessages, lastSentMessages: sent, toolSeen, pendingToolSeen };
+  }
+
+  private async admitHeartbeatDispatch(
+    runId: string, requestId: string, dispatchId: string | null, messages: OrMessage[], signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.d.heartbeat?.beforeDispatch(runId, requestId, messages, signal);
+    } catch (error) {
+      // The local gate refused before any transport. Close the reservation
+      // rather than carrying this known-zero continuation as an unknown cost.
+      this.d.db.prepare('UPDATE provider_requests SET dispatch_started_at=NULL WHERE id=? AND sent_at IS NULL')
+        .run(requestId);
+      if (dispatchId) settleBackgroundDispatch(this.d.db, dispatchId, {
+        actualCostMicroUsd: 0, outcomeCode: 'HEARTBEAT_BLOCKED_BEFORE_SEND', providerRequestId: requestId,
+      });
+      throw error;
+    }
   }
 
   /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
@@ -1290,7 +1388,10 @@ export class TurnSupervisor {
   // 当前输入之前的双方原话（§3.2.2：范围=本窗实际携带的真实对话；不扩大到全库）
   private dialogueUpTo(conversationId: string, maxSequence: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> {
     const rows = this.d.db.prepare(
-      'SELECT id, sequence, speaker, current_revision, turn_id FROM messages WHERE conversation_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 200',
+      `SELECT id,sequence,speaker,current_revision,turn_id FROM messages
+       WHERE conversation_id=? AND sequence<=?
+         AND NOT (speaker='system' AND COALESCE(client_message_id,'') LIKE 'heartbeat:%')
+       ORDER BY sequence DESC LIMIT 200`,
     ).all(conversationId, maxSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; turn_id: string | null }>;
     const out: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> = [];
     for (const r of rows) {
@@ -2987,7 +3088,8 @@ export class TurnSupervisor {
     let result: import('./runner.ts').RunnerRunResult;
     let orFinalMessages: OrMessage[] | null = null;
     let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
-    let orToolSeen: ManifestEntry[] = []; // WP4：conversation_read 片段已见（实际进入请求的部分）
+    let orToolSeen: ManifestEntry[] = []; // confirmed in a provider request
+    let orPendingToolSeen: ManifestEntry[] = [];
     // R2：orEnvelope 恒非空（四类驱动均信封驱动）；保留块作用域
     {
       // EXEC_V1 §03.6（WP3/M2）媒体门：当前输入无转写语音→不空输入唤起模型；
@@ -3043,13 +3145,18 @@ export class TurnSupervisor {
         turnId, attemptId: attempt.id, controller: runToken.controller,
         trajectoryRebuiltThisTurn: trajInitializedThisTurn,
         onEvent: handleEvent, seenSequence: orSeenHighWater,
-        seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions, // D13：流式发布即时入视野
+        seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions,
+        completionManifest: [
+          ...catchupManifest,
+          ...(inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue' as const, visible: true }] : []),
+        ],
         previousEnvelope: orPreviousPayloadEnvelope,
       });
       result = loop.result;
       orFinalMessages = loop.finalMessages;
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
+      orPendingToolSeen = loop.pendingToolSeen;
       }
     }
     this.active.delete(turnId);
@@ -3090,7 +3197,9 @@ export class TurnSupervisor {
       if (!runToken.token.cancelled) publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
       const base = d.trajectory.forWindow(window.id)?.manifest ?? [];
       const input: ManifestEntry[] = inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }] : [];
-      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orLastSentMessages ?? orFinalMessages), [...base, ...catchupManifest, ...input, ...turnManifestAdditions, ...orToolSeen]);
+      const pending = orPendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }));
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orLastSentMessages ?? orFinalMessages),
+        [...base, ...catchupManifest, ...input, ...turnManifestAdditions, ...orToolSeen, ...pending]);
     }
 
     // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口（bindSession 的
@@ -3151,20 +3260,16 @@ export class TurnSupervisor {
       return;
     }
 
-    // completed（仅当观察到 success result，runner 契约保证）
-    publishSegments(([segmenter.flushTail()].filter(Boolean) as string[]));
+    // Already published segments survive a deliberate finish. Do not publish
+    // an uncommitted trailing segment as an automatic final reply.
+    if (readTurnCompletion(d.db, attempt.id, turnId)) segmenter.drop();
+    else publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
     d.reasoning.markAttemptStreamEnded({ attemptId: attempt.id }); // 仍 streaming 的块 → complete/stream_only（无完整块核对，不伪装已核对）
     if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
-    tx(d.db, () => {
-      d.db.prepare("UPDATE attempts SET state = 'completed', completed_at = ? WHERE id = ?").run(now, attempt.id);
-      d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
-    });
-    // 相册重构 P5 §7.4：本窗初始资料（含携带图）已随本轮请求成功投递——消费 next_once
-    //（before=建窗时刻，不吞投递后新设项；失败保留待补，不影响回合收尾）。
-    void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
-    // ALB-11：本轮请求已成功——尾部通知按投递证据收口
-    this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
-    d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
+    const markCompleted = (conn: Db): void => {
+      conn.prepare("UPDATE attempts SET state = 'completed', completed_at = ?, completion_recovery_json=NULL WHERE id = ?").run(now, attempt.id);
+      conn.prepare("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ?").run(now, turnId);
+    };
     // §2.2/§7：成功回合才推进协议轨迹（append-only）+ 实际已见 manifest（F06：本轮输入与
     // 已发布助手消息入清单——下一轮范围/书签从这份证据出发）；新已发送边界=本轮末 text 块
     if (orFinalMessages !== null && d.trajectory) {
@@ -3178,11 +3283,19 @@ export class TurnSupervisor {
       // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
-      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen]);
+      const pending = orPendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }));
+      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase),
+        [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen, ...pending], markCompleted);
       // 自动浮现：成功轨迹落正本后 retain（真实 manifest 确认，不是入库 ready
       // 就算送达——docs/04 retained 语义）；失败回合不假标 coverage。
       if (surfacingAugment) d.surfacing?.markRetained(surfacingAugment);
+    } else {
+      tx(d.db, () => markCompleted(d.db));
     }
+    // 初始携带及到期通知按实际请求成功事实收口。
+    void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
+    this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
+    d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {
       d.logger.warn('archive_sync_after_turn_failed', { turn_id: turnId, code: stableCode(err) });

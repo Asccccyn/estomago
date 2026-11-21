@@ -140,7 +140,7 @@ export function toolResultContent(result: ToolExecResult): string | ProjectedBlo
     : text;
 }
 
-export async function materializeBlocks(blocks: ProjectedBlock[], media: MediaService, readImage: ReadModelImage = id => media.readContentResolvingMaster(id)): Promise<Array<Record<string, unknown>>> {
+export async function materializeBlocks(blocks: ProjectedBlock[], media: MediaService, readImage: ReadModelImage = id => media.readContentResolvingMaster(id, { modelImage: true })): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = [];
   for (const block of blocks) {
     if (block.type === 'text') out.push({type:'text',text:block.text});

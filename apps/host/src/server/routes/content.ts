@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import { contentForward } from '../../integrations/content/client.ts';
 import type { RequestDeps } from '../http.ts';
+import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference } from './content-moments.ts';
 
 /** EXEC_V1 §06.4/5（WP5）：content 薄代理——浏览器经 est 认证→派生 qiaosheng→转发 loopback。 */
 export async function handleContentProxy(req: IncomingMessage, res: ServerResponse, d: RequestDeps, url: URL): Promise<void> {
@@ -18,12 +19,19 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
     const v = req.headers[h];
     if (typeof v === 'string' && v) fwdHeaders[h] = v;
   }
+  const reference = await handleMomentReference(req, url, d, fwdHeaders);
+  if (reference) return json(res, reference.status, reference.body);
   if (method === 'GET') {
     const result = await contentForward(d.contentClient, { method, path: url.pathname + url.search, actor });
     if (result.status >= 200 && result.status < 300 && result.bodyFailed) {
       return json(res, 502, { error: { code: 'content_response_incomplete', message: '内容服务响应不完整（正文传输失败）' } });
     }
-    return json(res, result.status, result.body);
+    const body = result.status === 200
+      ? decorateFutureNoteResponse(url.pathname, await decorateMomentResponse(url, result.body, d), d) : result.body;
+    if (body === null && (result.body as { kind?: string } | null)?.kind === 'reference') {
+      return json(res, 404, { error: { code: 'reference_not_found', message: '没有找到这条朋友圈映射。' } });
+    }
+    return json(res, result.status, body);
   }
   if (!d.contentOps) return json(res, 503, { error: { code: 'content_unavailable', message: '内容写协调器未装配（聊天不受影响）' } });
   let fwdBody: Record<string, unknown> | undefined;
@@ -49,5 +57,7 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
     } catch { /* 已删自报值：如实不带 */ }
   }
   const result = await d.contentOps.write({ method, path: url.pathname, actor, body: fwdBody, headers: fwdHeaders });
-  return json(res, result.status, result.body);
+  const body = result.status >= 200 && result.status < 300
+    ? decorateFutureNoteResponse(url.pathname, result.body, d) : result.body;
+  return json(res, result.status, body);
 }

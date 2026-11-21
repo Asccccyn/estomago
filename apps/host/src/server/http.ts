@@ -45,6 +45,7 @@ import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../messages/constants.ts';
 import { keepwarmSleepState } from '../runtime/keepwarm-sleep.ts';
 import { storedToolset } from '../runtime/tool-discovery.ts';
+import { ZASHIDELE_MOMENTS_PATH, type ZashideleMoments } from '../integrations/zashidele/moments.ts';
 
 export type RequestDeps = {
   sourceBinding?: import('../modules/sourcebinding/service.ts').SourceBindingService;
@@ -81,6 +82,8 @@ export type RequestDeps = {
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
   taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
   activity?: import('../runtime/wake-activity.ts').ConversationActivityService; // WAKE_KEEPWARM_V1：活动投影/保温状态派生
+  heartbeat?: import('../modules/heartbeat/runtime.ts').HeartbeatRuntime;
+  zashideleMoments?: ZashideleMoments;
   contentClient?: import('../integrations/content/client.ts').ContentClient | null; // EXEC_V1 WP5：内容服务薄代理
   contentOps?: import('../integrations/content/coordinator.ts').ContentOperationCoordinator | null; // P1（F06/F07 20261106）：内容写协调（浏览器/模型/恢复共用）
   surfacing?: import('../memory-surfacing/service.ts').SurfacingService | null; // 自动浮现（默认 disabled）
@@ -98,6 +101,9 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
   ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/album', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/moments', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/heartbeat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/settings/model-access', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/settings/account', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/wishstar', { file: 'wishstar/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
@@ -171,8 +177,14 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       return;
     }
     if (req.method === 'GET' && (STATIC_FILES.has(url.pathname) || url.pathname.startsWith('/login/'))) {
-      return serveStatic(res, url.pathname === '/home/feature.html' && url.searchParams.get('feature') === 'calendar'
-        ? '/home/calendar.html' : url.pathname);
+      if (url.pathname === '/home/feature.html') {
+        const feature = url.searchParams.get('feature');
+        if (feature === 'calendar') return serveStatic(res, '/home/calendar.html');
+        if (feature === 'album') return serveStatic(res, '/home/album');
+        if (feature === 'moments') return serveStatic(res, '/home/moments');
+        if (feature === 'heartbeat') return serveStatic(res, '/home/heartbeat');
+      }
+      return serveStatic(res, url.pathname);
     }
 
     // R4/RE-01（2026-10-24 返修）：voice ingress 在 owner 通用认证**之前**分派——
@@ -283,6 +295,17 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
 
     // —— EXEC_V1 §06.4/5（WP5）：content 薄代理——P07.2 迁 server/routes/content.ts（逐字）
+    if (req.method === 'GET' && (url.pathname === ZASHIDELE_MOMENTS_PATH || url.pathname.startsWith(ZASHIDELE_MOMENTS_PATH + '/'))) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!d.zashideleMoments) return json(res, 503, { error: { code: 'zashidele_feed_unavailable', message: '扎西德勒客厅暂不可用。' } });
+      const suffix = url.pathname.slice(ZASHIDELE_MOMENTS_PATH.length);
+      if (suffix && !/^\/[^/]+$/.test(suffix)) return json(res, 404, { error: { code: 'zashidele_post_unreadable', message: '原帖当前不可读。' } });
+      let id: string | null;
+      try { id = suffix ? decodeURIComponent(suffix.slice(1)) : null; }
+      catch { return json(res, 400, { error: { code: 'zashidele_feed_query_invalid', message: '原帖地址无效。' } }); }
+      const result = await d.zashideleMoments.read(id, url.searchParams);
+      return json(res, result.status, result.body);
+    }
     if (url.pathname.startsWith('/api/v1/content/')) {
       return await handleContentProxy(req, res, d, url);
     }
@@ -297,6 +320,16 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/background/* 子路径继续走链尾 404，不被前缀抢占。
     // RB05（复审 20261106）：free-activity 显式入口接进分派（handler 已在 background.ts，
     // 旧表漏列致正式 HTTP 404——功能不可达）。
+    if (route === 'GET /api/v1/background/heartbeat') {
+      if (!d.heartbeat) return json(res, 503, { error: { code: 'heartbeat_unavailable', message: '心跳服务暂不可用' } });
+      return json(res, 200, d.heartbeat.status(PRIMARY_CONVERSATION));
+    }
+    const heartbeatCard = /^GET \/api\/v1\/background\/heartbeat\/cards\/([\w-]+)$/.exec(route);
+    if (heartbeatCard) {
+      if (!d.heartbeat) return json(res, 503, { status: 'unavailable' });
+      const card = await d.heartbeat.cardForDisplay(heartbeatCard[1]!, PRIMARY_CONVERSATION);
+      return json(res, card ? 200 : 404, card ?? { status: 'unavailable' });
+    }
     if (route === 'GET /api/v1/background/settings' || route === 'PUT /api/v1/background/settings'
       || route === 'GET /api/v1/background/tasks' || route === 'POST /api/v1/background/tasks'
       || route === 'POST /api/v1/background/free-activity'

@@ -1,22 +1,24 @@
 // 相册重构 P3：图片生成用例（生成 ≠ 入库，两阶段幂等恢复——R12/04 §4.2）。
 // ALB-05 整改（审计 2026-11-08）：完整成功条件 = 生成(至多一次，字节暂存) → 资产
-// 落盘且 M 落正确认 → 作品条目建立且资产引用保护（pin/commit，同协调器协议）。
+// 落盘且 M 落正确认 → 相册条目建立且资产引用保护（pin/commit，同协调器协议）。
 // 任一步未完成都如实返回可重试的未完成状态（同 opKey 重试只补缺失步骤，绝不
 // 二次付费生成）；供应商结果未确认（unknown）停在待核实，不自动重发。
 // Key 未配置=IMAGEGEN_UNCONFIGURED，如实不可用。
 import type { Db } from '../../db/connection.ts';
 import type { MediaService } from '../../media/assets.ts';
 import type { ImageGenAdapter, ImageGenLifetime } from '../../integrations/imagegen/adapter.ts';
-import { contentForward, type ContentClient } from '../../integrations/content/client.ts';
+import { contentForward, fetchReferenceSnapshot, resolveContentOperation, type ContentClient } from '../../integrations/content/client.ts';
 import { sha256Hex } from '../../util/id.ts';
 
 export type ImageGenOutcome =
-  | { ok: true; asset_id: string; creation_id: string | null; mime: string; revised_prompt: string | null; generation_call: 'first' | 'none'; published_message_id?: string; note?: string }
-  | { ok: false; code: string; detail: string; retryable: boolean; saved_asset_id?: string; saved_creation_id?: string | null };
+  | { ok: true; asset_id: string; creation_id: string | null; album_entry_id?: string; mime: string; revised_prompt: string | null; generation_call: 'first' | 'none'; published_message_id?: string; note?: string }
+  | { ok: false; code: string; detail: string; retryable: boolean; saved_asset_id?: string; saved_creation_id?: string | null; saved_album_entry_id?: string };
 
 /** P1-c（审计 2026-11-15）：同进程并发同键的进行中标记——跨进程/崩溃由持久
  *  calling 行兜底（重载后 ACTIVE 为空→calling 行按结果未确认收口，不自动重发）。 */
 const IMAGEGEN_ACTIVE = new Set<string>();
+const GENERATED_PHOTOS_ALBUM = 'important_photos';
+type LibraryRelation = { type: 'creation' | 'album_entry'; id: string };
 
 /** 同键业务请求指纹（D02：同键异参=冲突）。title 不参与——不影响生成结果。 */
 function requestFingerprint(o: { prompt: string; format?: string; size?: string; frameCount?: number; frameDurationMs?: number; deliver?: 'send' | 'save_only' }): string {
@@ -35,6 +37,7 @@ type ImageGenOperationRow = {
   revised_prompt: string | null; error: string | null; output_format: string | null;
   request_fingerprint: string | null; result_url: string | null;
   origin_room_id: string | null; origin_background_run_id: string | null;
+  album_kind: string | null; album_caption: string | null; album_entry_id: string | null;
 };
 
 type ImageGenDeps = {
@@ -68,6 +71,8 @@ export class ImageGenService {
     // 的结果（旧实现 save_only 后同键换 prompt+send 会把第一张图发进聊天）。
     const fingerprint = requestFingerprint(o);
     const existing = db.prepare('SELECT * FROM imagegen_operations WHERE op_key = ?').get(o.opKey) as ImageGenOperationRow | undefined;
+    let albumKind = existing ? existing.album_kind : GENERATED_PHOTOS_ALBUM;
+    const albumCaption = existing?.album_kind ? existing.album_caption : o.title ?? null;
     // 旧操作之前没有记录房间；单房间旧窗仍可恢复。在多房间部署需要取到旧消息作为归属证据。
     const legacyRoomUnknown = existing && existing.origin_room_id === null && o.windowId && db.prepare(
       'SELECT 1 FROM conversations WHERE id<>? LIMIT 1',
@@ -89,26 +94,28 @@ export class ImageGenService {
     if (existing?.state === 'saved' && existing.asset_id) {
       return this.deliverSaved(o, lifetime, {
         ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '',
+        ...(existing.album_entry_id ? { album_entry_id: existing.album_entry_id } : {}),
+        ...(existing.album_kind && !existing.album_entry_id ? { note: '图片已作为资产保存，尚未进入相册。' } : {}),
         revised_prompt: existing.revised_prompt, generation_call: 'none',
       }, publishAuthorized);
     }
-    // R8：stored 且作品条目已建（snapshot 未确认）——同键重试只补快照确认与 saved 收口
-    const storedResume = existing?.state === 'stored' && existing.asset_id !== null && existing.creation_id !== null
-      ? { assetId: existing.asset_id as string, creationId: existing.creation_id as string, revisedPrompt: existing.revised_prompt } : null;
-    if (storedResume !== null && this.deps.media !== null) {
-      const { assetId: storedAsset, creationId: storedCreation, revisedPrompt: storedPrompt } = storedResume;
-      const snap = await this.readCreationSnapshot(storedCreation);
+    // 已建立的关系保留原身份。快照未确认时，同键只补确认和交付。
+    const storedRelation: LibraryRelation | null = existing?.album_entry_id
+      ? { type: 'album_entry', id: existing.album_entry_id }
+      : existing?.creation_id ? { type: 'creation', id: existing.creation_id } : null;
+    if (existing?.state === 'stored' && existing.asset_id && storedRelation && this.deps.media) {
+      const snap = await this.readLibrarySnapshot(storedRelation, existing.asset_id);
       if (snap) {
-        this.deps.media.pinAssetForOperation({ assetId: storedAsset, operationKey: o.opKey });
-        this.deps.media.commitContentSnapshot({ type: 'creation', id: storedCreation }, snap, o.opKey);
-        db.prepare("UPDATE imagegen_operations SET state='saved', error=NULL, updated_at=? WHERE op_key=?").run(new Date().toISOString(), o.opKey);
+        this.deps.media.pinAssetForOperation({ assetId: existing.asset_id, operationKey: o.opKey });
+        this.deps.media.commitContentSnapshot(storedRelation, snap, o.opKey);
+        db.prepare("UPDATE imagegen_operations SET state='saved', result_b64=NULL, error=NULL, updated_at=? WHERE op_key=?").run(new Date().toISOString(), o.opKey);
         return this.deliverSaved(o, lifetime, {
-          ok: true, asset_id: storedAsset, creation_id: storedCreation, mime: '',
-          revised_prompt: storedPrompt, generation_call: 'none',
+          ok: true, asset_id: existing.asset_id, creation_id: existing.creation_id, mime: '',
+          ...(existing.album_entry_id ? { album_entry_id: existing.album_entry_id } : {}),
+          revised_prompt: existing.revised_prompt, generation_call: 'none',
         }, publishAuthorized);
       }
-      // RR7（复审 2026-11-09）：快照仍未确认=stored 未收口——如实返回可重试，不冒充 saved
-      return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '作品条目已建但引用快照未确认（content 暂不可达）——同键重试只补快照确认，不会重新生成', retryable: true };
+      return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '收藏关系已建但引用快照未确认——同键重试只补快照确认，不会重新生成', retryable: true };
     }
     if (existing?.state === 'unknown') {
       return { ok: false, code: 'IMAGEGEN_RESULT_UNCONFIRMED', detail: existing.error ?? '上次生成结果未确认——不自动重发（避免重复计费）；如供应商支持查询可人工核实', retryable: false };
@@ -118,7 +125,7 @@ export class ImageGenService {
 
     // —— 阶段 1：生成（同 opKey 至多一次）——
     let bytes: Buffer; let mime = ''; let revisedPrompt: string | null = null;
-    let stagedAssetId = existing?.state === 'stored' ? existing.asset_id : null;
+    const stagedAssetId = existing?.state === 'stored' ? existing.asset_id : null;
     if (existing?.state === 'generated' && existing.result_b64) {
       bytes = Buffer.from(existing.result_b64, 'base64'); // 只重试存储，不再次付费生成
       revisedPrompt = existing.revised_prompt;
@@ -152,6 +159,7 @@ export class ImageGenService {
       this.upsert(o.opKey, {
         state: 'calling', error: null, requestFingerprint: fingerprint,
         originRoomId: o.roomId, originBackgroundRunId: o.backgroundRunId,
+        albumKind, albumCaption,
       });
       IMAGEGEN_ACTIVE.add(o.opKey);
       try {
@@ -184,10 +192,10 @@ export class ImageGenService {
     }
 
     // —— 阶段 2：资产落盘 + M 落正确认（ALB-05①：M 未确认不得报成功）——
-    let asset: { id: string; mime_type: string; m_sync_state: string };
+    let asset: ReturnType<MediaService['getAsset']>;
     try {
       asset = bytes.byteLength > 0 || !stagedAssetId
-        ? await this.deps.media.saveBuffer({ bytes, purpose: 'creation_work', operationId: o.opKey, createdBy: 'jiaming', origin: 'generated' })
+        ? await this.deps.media.saveBuffer({ bytes, purpose: 'chat_image', operationId: o.opKey, createdBy: 'jiaming', origin: 'generated' })
         : this.deps.media.getAsset(stagedAssetId);
     } catch (err) {
       this.upsert(o.opKey, { state: 'generated', resultB64: bytes.byteLength > 0 ? bytes.toString('base64') : (existing?.result_b64 ?? null), error: `IMAGEGEN_STORAGE_FAILED: ${String((err as Error).message).slice(0, 120)}` });
@@ -199,57 +207,69 @@ export class ImageGenService {
       asset = this.deps.media.getAsset(asset.id);
       if (asset.m_sync_state !== 'synced') {
         this.upsert(o.opKey, { state: 'generated', resultB64: bytes.byteLength > 0 ? bytes.toString('base64') : (existing?.result_b64 ?? null), error: 'IMAGEGEN_MASTER_PENDING: M 落正未确认' });
-        return { ok: false, code: 'IMAGEGEN_MASTER_PENDING', detail: '生成已完成，但 M 唯一正本尚未确认落正——未建立作品条目；同键重试只补落正与条目，不会重新生成', retryable: true };
+        return { ok: false, code: 'IMAGEGEN_MASTER_PENDING', detail: '生成已完成，M 唯一正本尚未确认落正，未建立收藏关系。用同键重试可继续保存，无须重新生成。', retryable: true };
       }
     }
 
-    // —— 阶段 3：作品条目 + 引用保护（ALB-05②③：条目未成不标 saved；pin/commit 保护）——
+    // —— 阶段 3：相册成员 + 引用保护 ——
     this.deps.media.pinAssetForOperation({ assetId: asset.id, operationKey: o.opKey });
-    let creationId: string | null = null;
+    let relation: LibraryRelation | null = null;
     if (this.deps.contentClient) {
       try {
-        const res = await contentForward(this.deps.contentClient, {
-          method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
-          body: { title: o.title ?? null, work_asset_id: asset.id, work_kind: 'image' },
-          headers: { 'idempotency-key': `imagegen:${o.opKey}` },
-        });
-        if (res.status === 201 || res.status === 200) {
-          if (res.bodyFailed) {
-            // RR4-A：2xx 但正文截断——条目可能已建（幂等键在）；不冒充成功也不提前
-            // 释放 pin，行留 stored 同键重试（resolve replay 取回真实条目）。
-            this.upsert(o.opKey, { state: 'stored', assetId: asset.id, error: 'IMAGEGEN_ENTRY_PENDING: body truncated' });
-            return { ok: false, code: 'IMAGEGEN_ENTRY_PENDING', detail: '资产已保存且 M 已确认，但作品条目响应不完整（正文传输失败）——同键重试只补条目确认', retryable: true };
+        if (albumKind === null) {
+          // 旧进程可能已提交作品关系但未落本机回执。只查询原命令；有旧回执就补确认。
+          const previous = await resolveContentOperation(this.deps.contentClient, {
+            method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
+            body: { title: o.title ?? null, work_asset_id: asset.id, work_kind: 'image' },
+            idempotencyKey: `imagegen:${o.opKey}`,
+          });
+          if (previous.outcome === 'new') {
+            albumKind = GENERATED_PHOTOS_ALBUM;
+            this.upsert(o.opKey, { state: 'stored', assetId: asset.id, albumKind, albumCaption });
+          } else if (previous.outcome === 'replay' && (previous.status === 200 || previous.status === 201)) {
+            relation = { type: 'creation', id: requireEntryId(previous.body) };
+          } else {
+            throw new Error('旧收藏操作回执无法按原参数确认');
           }
-          const created = res.body as { id?: string; revision?: number };
-          creationId = typeof created.id === 'string' ? created.id : null;
-        } else {
-          this.upsert(o.opKey, { state: 'stored', assetId: asset.id, error: `IMAGEGEN_ENTRY_PENDING: content ${res.status}` });
-          return { ok: false, code: 'IMAGEGEN_ENTRY_PENDING', detail: `资产已保存且 M 已确认，但作品条目被拒（${res.status}）——同键重试只补条目`, retryable: true };
+        }
+        if (albumKind !== null) {
+          const response = await contentForward(this.deps.contentClient, {
+            method: 'POST', actor: 'jiaming', path: `/api/v1/content/albums/${encodeURIComponent(albumKind)}/entries`,
+            body: {
+              asset_id: asset.id, content_sha256: asset.content_sha256,
+              ...(albumCaption !== null ? { caption: albumCaption } : {}),
+              refs: [{ service: 'est', kind: 'generated_image', source_id: asset.id }],
+            },
+            headers: { 'idempotency-key': `imagegen-album:${o.opKey}` },
+          });
+          if (response.bodyFailed) throw new Error('相册条目回执不完整');
+          if (response.status !== 200 && response.status !== 201) throw new Error(`相册条目未确认（HTTP ${response.status}）`);
+          relation = { type: 'album_entry', id: requireEntryId(response.body) };
         }
       } catch (err) {
         this.upsert(o.opKey, { state: 'stored', assetId: asset.id, error: `IMAGEGEN_ENTRY_PENDING: ${String((err as Error).message).slice(0, 100)}` });
-        return { ok: false, code: 'IMAGEGEN_ENTRY_PENDING', detail: `资产已保存且 M 已确认，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——同键重试只补条目`, retryable: true };
+        return { ok: false, code: 'IMAGEGEN_ENTRY_PENDING', detail: `资产 ${asset.id} 已保存，收藏关系待确认（${String((err as Error).message).slice(0, 80)}）。同键重试只核对或补齐收藏关系。`, retryable: true };
       }
     }
-    // 引用保护收口：按 content 权威快照把作品资产落成 committed 关系（防误删；
-    // 与浏览器写协调器同一协议原语，条目幂等键保证不重复建）。
-    // RR7（复审 2026-11-09）：快照未确认=作品关系未闭合——行留 stored（含
-    // creation_id，storedResume 分支自此真实可达），同键重试只补快照；不冒充 saved。
-    if (creationId !== null) {
-      const snap = await this.readCreationSnapshot(creationId);
+    const creationId = relation?.type === 'creation' ? relation.id : null;
+    const albumEntryId = relation?.type === 'album_entry' ? relation.id : null;
+    if (relation) {
+      this.upsert(o.opKey, { state: 'stored', assetId: asset.id, creationId, albumEntryId, error: 'IMAGEGEN_SNAPSHOT_PENDING: content snapshot unconfirmed' });
+      const snap = await this.readLibrarySnapshot(relation, asset.id);
       if (!snap) {
-        this.upsert(o.opKey, { state: 'stored', assetId: asset.id, creationId, error: 'IMAGEGEN_SNAPSHOT_PENDING: content snapshot unconfirmed' });
-        return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '资产已保存且作品条目已建，但引用快照未确认（content 暂不可达）——同键重试只补快照确认，不会重新生成', retryable: true };
+        return { ok: false, code: 'IMAGEGEN_SNAPSHOT_PENDING', detail: '资产已保存且收藏关系已建，但引用快照未确认。同键重试只补快照确认，不会重新生成。', retryable: true };
       }
-      this.deps.media.commitContentSnapshot({ type: 'creation', id: creationId }, snap, o.opKey);
+      this.deps.media.commitContentSnapshot(relation, snap, o.opKey);
     } else {
       this.deps.media.releaseOperationPins(o.opKey); // 无条目即无权威关系可确认（content 未装配边角）：pin 不悬置
     }
 
-    db.prepare("UPDATE imagegen_operations SET state='saved', asset_id=?, creation_id=?, result_b64=NULL, error=NULL, updated_at=? WHERE op_key=?")
-      .run(asset.id, creationId, new Date().toISOString(), o.opKey);
+    db.prepare("UPDATE imagegen_operations SET state='saved', asset_id=?, result_b64=NULL, error=NULL, updated_at=? WHERE op_key=?")
+      .run(asset.id, new Date().toISOString(), o.opKey);
     return this.deliverSaved(o, lifetime, {
       ok: true, asset_id: asset.id, creation_id: creationId, mime: mime || asset.mime_type,
+      ...(albumEntryId ? { album_entry_id: albumEntryId } : {}),
+      ...(!this.deps.contentClient ? { note: '内容服务未配置，图片已作为资产保存，尚未进入相册。' } : {}),
       revised_prompt: revisedPrompt, generation_call: 'first',
     }, publishAuthorized);
   }
@@ -260,6 +280,7 @@ export class ImageGenService {
     if (!publishAuthorized) return { ...saved, note: `旧版本保存的操作缺少原请求指纹，发送可用 chat_send_attachment（asset_id=${saved.asset_id}）` };
     const fail = (code: string, detail: string, retryable: boolean): ImageGenOutcome => ({
       ok: false, code, detail, retryable, saved_asset_id: saved.asset_id, saved_creation_id: saved.creation_id,
+      ...(saved.album_entry_id ? { saved_album_entry_id: saved.album_entry_id } : {}),
     });
     if (o.signal?.aborted || lifetime?.expired() || (o.backgroundRunId && this.deps.backgroundRunRemainingMs?.(o.backgroundRunId) === 0)) {
       return fail('IMAGEGEN_PUBLISH_CANCELLED', '作品已保存，本轮已停止或超过期限，图片未发出。本人明确要求补发时，沿用原操作键只补发布。', true);
@@ -298,30 +319,53 @@ export class ImageGenService {
       .get(o.backgroundRunId, o.roomId ?? null, o.windowId, o.turnId ?? null));
   }
 
-  /** content 权威快照读取（owner=creation；失败不阻塞收口——pin 仍在保护，恢复消费者对账）。 */
-  private async readCreationSnapshot(creationId: string): Promise<{ ownerRevision: number; assetIds: string[] } | null> {
+  private async readLibrarySnapshot(relation: LibraryRelation, assetId: string): Promise<{ ownerRevision: number; assetIds: string[] } | null> {
     if (!this.deps.contentClient) return null;
     try {
-      const res = await contentForward(this.deps.contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/references/creation/${encodeURIComponent(creationId)}` });
-      if (res.status !== 200) return null;
-      const b = res.body as { owner_revision?: number; deleted?: boolean; asset_ids?: string[] };
-      if (typeof b.owner_revision !== 'number' || b.deleted === true) return null;
-      return { ownerRevision: b.owner_revision, assetIds: Array.isArray(b.asset_ids) ? b.asset_ids : [] };
+      const snapshot = await fetchReferenceSnapshot(this.deps.contentClient, relation.type, relation.id);
+      if (!snapshot || snapshot.deleted || snapshot.owner_id !== relation.id || snapshot.owner_type !== relation.type
+        || typeof snapshot.owner_revision !== 'number' || !Array.isArray(snapshot.asset_ids) || !snapshot.asset_ids.includes(assetId)) return null;
+      return { ownerRevision: snapshot.owner_revision, assetIds: snapshot.asset_ids };
     } catch { return null; }
   }
 
-  private upsert(opKey: string, v: { state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null; creationId?: string | null; error?: string | null; outputFormat?: string | null; requestFingerprint?: string | null; resultUrl?: string | null; originRoomId?: string | null; originBackgroundRunId?: string | null }): void {
+  private upsert(opKey: string, v: {
+    state: string; resultB64?: string | null; revisedPrompt?: string | null; assetId?: string | null;
+    creationId?: string | null; albumKind?: string | null; albumCaption?: string | null; albumEntryId?: string | null;
+    error?: string | null; outputFormat?: string | null; requestFingerprint?: string | null;
+    resultUrl?: string | null; originRoomId?: string | null; originBackgroundRunId?: string | null;
+  }): void {
     const nowIso = new Date().toISOString();
     const db = this.deps.db;
     const row = db.prepare('SELECT op_key FROM imagegen_operations WHERE op_key = ?').get(opKey) as { op_key: string } | undefined;
     if (row) {
-      db.prepare('UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64), revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), creation_id=COALESCE(?, creation_id), output_format=COALESCE(?, output_format), request_fingerprint=COALESCE(?, request_fingerprint), result_url=COALESCE(?, result_url), origin_room_id=COALESCE(origin_room_id, ?), origin_background_run_id=COALESCE(origin_background_run_id, ?), error=?, updated_at=? WHERE op_key=?')
-        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null, v.originBackgroundRunId ?? null, v.error ?? null, nowIso, opKey);
+      db.prepare(`UPDATE imagegen_operations SET state=?, result_b64=COALESCE(?, result_b64),
+        revised_prompt=COALESCE(?, revised_prompt), asset_id=COALESCE(?, asset_id), creation_id=COALESCE(?, creation_id),
+        output_format=COALESCE(?, output_format), request_fingerprint=COALESCE(?, request_fingerprint),
+        result_url=COALESCE(?, result_url), origin_room_id=COALESCE(origin_room_id, ?),
+        origin_background_run_id=COALESCE(origin_background_run_id, ?), album_entry_id=COALESCE(album_entry_id, ?),
+        album_caption=CASE WHEN album_kind IS NULL THEN ? ELSE album_caption END,
+        album_kind=COALESCE(album_kind, ?), error=?, updated_at=? WHERE op_key=?`)
+        .run(v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null,
+          v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null,
+          v.originBackgroundRunId ?? null, v.albumEntryId ?? null, v.albumCaption ?? null, v.albumKind ?? null,
+          v.error ?? null, nowIso, opKey);
     } else {
-      db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, creation_id, output_format, request_fingerprint, result_url, origin_room_id, origin_background_run_id, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null, v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null, v.originBackgroundRunId ?? null, v.error ?? null, nowIso, nowIso);
+      db.prepare(`INSERT INTO imagegen_operations(op_key, state, result_b64, revised_prompt, asset_id, creation_id,
+        output_format, request_fingerprint, result_url, origin_room_id, origin_background_run_id,
+        album_entry_id, album_caption, album_kind, error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(opKey, v.state, v.resultB64 ?? null, v.revisedPrompt ?? null, v.assetId ?? null, v.creationId ?? null,
+          v.outputFormat ?? null, v.requestFingerprint ?? null, v.resultUrl ?? null, v.originRoomId ?? null,
+          v.originBackgroundRunId ?? null, v.albumEntryId ?? null, v.albumCaption ?? null, v.albumKind ?? null,
+          v.error ?? null, nowIso, nowIso);
     }
   }
+}
+
+function requireEntryId(body: unknown): string {
+  const id = (body as { id?: unknown } | null)?.id;
+  if (typeof id !== 'string' || id.length === 0) throw new Error('收藏条目回执缺少有效 ID');
+  return id;
 }
 
 export function imageGenOpKey(_toolCtx: { turnId: string | null; requestId: string; toolCallId?: string | null } | null, clientOperationId: string): string {

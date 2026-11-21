@@ -11,6 +11,7 @@ import type { OrMessage } from './or-payload.ts';
 import { sha256Hex } from '../util/id.ts';
 import { proxyOnlySdkSpawn } from './sdk-network.ts';
 import { effectiveToolName } from './tool-discovery.ts';
+import { TURN_COMPLETION_TOOL } from './turn-completion.ts';
 import { materializeImage, toolResultContent, type ModelImageBlock } from '../media/model-input.ts';
 import { SdkHistoryReplay } from './sdk-history.ts';
 
@@ -113,7 +114,9 @@ export async function runSdkHostQuery(
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
   let sdkDetailError: string | null = null; // P1-10（Codex 审计）：归一化结果携带的具体错误原因（result.errors/error），最终回执不再只剩稳定码
-  let businessCompleted = false; // RB02（复审 20261106）：background_complete 后的合法停发——非异常
+  let businessCompleted = false;
+  // Resolved SDK receipts prove native retention, separately from provider input.
+  let retainedCompletionCalls: Set<string> | null = null;
   let errorEvidence: Record<string, unknown> | null = null; // B3：错误事件脱敏安全字段（白名单键）
   let round = 0;
   let attempts = 0;
@@ -127,6 +130,22 @@ export async function runSdkHostQuery(
   const argumentSources = new Map<string, string>();
   let argumentSourceBytes = 0;
   const executing = new Set<string>();
+  const observedCalls = new Set<string>();
+  const pendingBatch = new Map<string, () => void>();
+  async function observedAssistantBatch(callId: string): Promise<boolean> {
+    if (observedCalls.has(callId)) return true;
+    // MCP and stream events are independent SDK surfaces. Do not accept a
+    // terminal operation without the complete assistant packet to recover.
+    const signal = AbortSignal.any([req.abortController.signal, AbortSignal.timeout(3000)]);
+    if (signal.aborted) return false;
+    await new Promise<void>(resolve => {
+      const finish = () => { signal.removeEventListener('abort', finish); resolve(); };
+      pendingBatch.set(callId, finish);
+      signal.addEventListener('abort', finish, { once: true });
+    });
+    pendingBatch.delete(callId);
+    return observedCalls.has(callId) && !signal.aborted;
+  }
   const deferredReview: Array<{ name: string; args: Record<string, unknown>; id: string; argumentSource?: string }> = [];
   const assistantIndexes = new Map<string, number>();
   const textBlocks = new Map<string, Map<number, string>>();
@@ -162,11 +181,20 @@ export async function runSdkHostQuery(
       const pending = { error_code: 'REVIEW_COMPLETION_PENDING', detail: '本批工具结束后由宿主核验；尚未完成检查。' };
       return { ok: false, output: pending, recordDelivery: result => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(result)}); } };
     }
+    const terminal = host.captureCompletionBatch && effectiveToolName(name, args) === TURN_COMPLETION_TOOL;
+    if (terminal && !await observedAssistantBatch(id)) {
+      return {
+        ok: false, output: { error_code: 'TURN_COMPLETION_BATCH_UNOBSERVED' },
+        recordDelivery: receipt => { messages.push({ role: 'tool', tool_call_id: id, content: toolResultContent(receipt) }); },
+      };
+    }
     executing.add(id);
     try {
-      const result = await host.executeTool(name, args, id, round, messages, argumentSource);
-      executing.delete(id);
+      const result = await host.executeTool(name, args, id, round, messages, argumentSource, terminal ? () => ({
+        tail: messages.slice(lastSentMessages.length), inFlight: [...executing], sentMessages: lastSentMessages,
+      }) : undefined);
       return { ...result, recordDelivery: delivered => {
+        executing.delete(id);
         messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
         host.recordToolDelivery?.(id, delivered);
         if (host.purpose === 'chat' && delivered.ok && delivered.output.saved === true
@@ -230,6 +258,12 @@ export async function runSdkHostQuery(
             results.push(result.output); completed ||= result.ok;
           }
           if (completed) return { continue: false, stopReason: 'EST_REVIEW_COMPLETED' };
+          if (host.completionRequested?.()) {
+            businessCompleted = true;
+            retainedCompletionCalls = new Set(input.hook_event_name === 'PostToolBatch'
+              ? (input.tool_calls ?? []).map(call => call.tool_use_id) : []);
+            return { continue: false, stopReason: 'EST_TURN_COMPLETED' };
+          }
           // The native terminal list uses outer MCP names. Only arm it for a
           // confirmed save batch with main-channel text already sent to publication.
           const calls = input.hook_event_name === 'PostToolBatch' ? input.tool_calls : [];
@@ -251,9 +285,9 @@ export async function runSdkHostQuery(
           // complete 门）是合法业务完成，不是异常——归一为共同控制结果，与 API 路径
           // 的 complete 门同一出口；SDK 锚/协议投影/维护回执按成功收尾（不再 failed
           // turn + 后半补 completed）。其余错误照旧为失败。
-          if (error instanceof ContractError && error.message === 'BACKGROUND_COMPLETED_STOP') {
+          if (error instanceof ContractError && error.message === 'TURN_COMPLETED_STOP') {
             businessCompleted = true;
-            return { continue: false, stopReason: 'EST_BACKGROUND_COMPLETED' };
+            return { continue: false, stopReason: 'EST_TURN_COMPLETED' };
           }
           failure = String((error as Error).message); return { continue: false, stopReason: failure };
         }
@@ -397,6 +431,14 @@ export async function runSdkHostQuery(
           return finish('interrupted');
         }
       }
+      if (event.type === 'assistant' && normalized.some(output => output.kind === 'complete_message' && output.channel === 'main')) {
+        for (const block of event.message.content) {
+          if (block.type === 'tool_use') {
+            observedCalls.add(block.id);
+            pendingBatch.get(block.id)?.();
+          }
+        }
+      }
       if (event.type === 'result') finishInput();
     }
     if (req.abortController.signal.aborted) return finish('interrupted');
@@ -409,23 +451,27 @@ export async function runSdkHostQuery(
     return finish(req.abortController.signal.aborted ? 'interrupted' : 'error');
   } finally {
     if (requestUsage) req.onEvent({ kind: 'usage', scope: 'request', usage: requestUsage, source: 'sdk_stream', completeness: 'partial' });
+    for (const release of pendingBatch.values()) release();
     replay.close(); releaseInput(false); finishInput(); run?.close();
   }
 
   function finish(outcome: RunnerRunResult['outcome']): RunnerRunResult {
-    if (outcome !== 'completed') {
-      const answered = new Set(messages.filter(m => m.role === 'tool').map(m => m.tool_call_id));
+    const answered = new Set(messages.filter(m => m.role === 'tool').map(m => m.tool_call_id));
+    if (outcome !== 'completed' || businessCompleted) {
       for (const m of messages) for (const call of (m.tool_calls ?? []) as Array<{ id: string }>) {
         if (!answered.has(call.id)) messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(executing.has(call.id)
           ? { error_code: 'TOOL_EXECUTION_OUTCOME_UNKNOWN', outcome: 'unknown' }
           : { error_code: 'EXECUTION_NOT_STARTED', executed: false }) });
       }
     }
+    const missingNativeReceipt = businessCompleted && messages.slice(lastSentMessages.length)
+      .flatMap(message => (message.tool_calls ?? []) as Array<{ id: string }>)
+      .some(call => !answered.has(call.id) || !retainedCompletionCalls?.has(call.id));
     if (host.isolatedSession) {
       // A scoped request may have appended real task history to est's ledger,
       // but that history will be replayed from the main session's own anchor.
       resumeDiagnosis.anchorOutcome = null;
-    } else if (outcome === 'completed' && normalizer.sessionId) {
+    } else if (outcome === 'completed' && normalizer.sessionId && !missingNativeReceipt) {
       // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
       // 记录属于该会话）。
       sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,

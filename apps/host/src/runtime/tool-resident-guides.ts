@@ -10,7 +10,7 @@ const GUIDES = new Map<string, string>([
   ['memory_recall', `主动回想一件事，或找一句存过的原话。首轮填 query，用自己的话说你在找什么。默认 channel: event 找事，选 words 找原话。可以用 lexical_terms 补关键词，用 date_from 和 date_to 一起限定日期，单日就填同一天。明确要重看或逐字核对时用 reread: true。
 回执给 next 时，可按它给你的 tool 和 arguments 继续。同一组结果翻下一页用 memory_recall_next。想换说法再找，沿用回执里的 refine_session_id 和 refine_continue_ref，并填 channel 和新的 query。想排除一条已交付候选，用它的 resource_ref 填 reject_candidate_ref。需要继续搜聊天原文时，按回执给你的原文续查参数进行。`],
   ['memory_read_full', `已经搜到或想起一条记忆，想仔细看时，把回执里的 memory_ref 原样传回。section 省略时读记忆详情，用 source 读它连着的原文，用 relations 看关系。翻下一页沿用同样的 section，把 next_cursor 填进 cursor。她明确要重看或逐字核对时，填 reread: true。`],
-  ['image_generate', `画一张图。填 prompt 描述画面，再给这次生成的 client_operation_id。默认生成静态图、保存为作品并发到当前聊天。想先自己看，填 deliver: save_only。sent: true 表示已经发出。
+  ['image_generate', `画一张图。填 prompt 描述画面，再给这次生成的 client_operation_id。默认生成静态图、存到相册并发到当前聊天。想先自己看，填 deliver: save_only。sent: true 表示已经发出。
 选填 title、size 和 format。格式可用 png、jpeg、webp、gif。动图要填 format: gif，可填 frame_count 2 到 16、frame_duration_ms 至少 20 毫秒。帧越多，单帧可用尺寸越小。
 结果里的 asset_ref 可以实际看图，asset_id 可以收藏或发图。重试沿用同一 client_operation_id。结果未知先核对，保存或发布失败按回执补那一步。`],
   ['media_view', `想亲自看看相册里那张图，或刚画好的图，把回执给你的 asset_ref 原样传过来。工具实际返回图片时，你就能看见它。`],

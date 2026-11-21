@@ -1,5 +1,5 @@
 // 相册重构 P3：image_generate 模型工具。Key 状态只给"是否已配置/可执行"（R12），
-// 密钥不进参数示例/日志。回执给稳定 asset 引用与作品条目——不含供应商原始响应。
+// 密钥不进参数示例/日志。回执给稳定资产引用与相册关系标识。
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
 import type { ToolExecContext } from '../../capabilities/contracts.ts';
@@ -10,13 +10,13 @@ export const IMAGEGENERATE_DEFINITION: import('../../capabilities/contracts.ts')
   type: 'function' as const,
   function: {
     name: 'image_generate',
-    description: '画一张图：默认同一次操作完成 生成→保存为作品→发布到当前聊天（回执 sent=true 即已发送，不要再调用 chat_send_attachment 补发）。她要求先验图再发、或明确只要保存时，传 deliver=save_only 仅保存（之后可用 chat_send_attachment 发送同一 asset_id，不会重新生成）。默认静态图；要 GIF 动图必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒；帧数和尺寸拼成大图受供应商"最长边≤3840"限制，大尺寸请减少帧数，超限组合会在请求前被拒）。失败回执如实分阶段：上游明确失败（含 5xx）retryable=true，同键重试会重新请求上游；结果未确认（超时/断连）不自动重发避免重复计费；已生成保存失败、或已保存发布失败时，同键重试只补缺失阶段，不重新付费生成。同一 client_operation_id 重试沿用同一值。',
+    description: '画一张图：默认同一次操作完成 生成→保存到相册→发布到当前聊天（album_entry_id 是入册关系，sent=true 表示已发送，不要再调用 chat_send_attachment 补发）。她要求先验图再发、或明确只要保存时，传 deliver=save_only 仅保存（之后可用 chat_send_attachment 发送同一 asset_id，不会重新生成）。默认静态图；要 GIF 动图必须显式 format=gif（可配 frame_count 2..16 帧与 frame_duration_ms 每帧毫秒；帧数和尺寸拼成大图受供应商"最长边≤3840"限制，大尺寸请减少帧数，超限组合会在请求前被拒）。失败回执如实分阶段：上游明确失败（含 5xx）retryable=true，同键重试会重新请求上游；结果未确认（超时/断连）不自动重发避免重复计费；已生成保存失败、或已保存发布失败时，同键重试只补缺失阶段，不重新付费生成。同一 client_operation_id 重试沿用同一值。',
     parameters: {
       type: 'object' as const,
       properties: {
         prompt: { type: 'string' as const, description: '画面描述（你要画什么）' },
         client_operation_id: { type: 'string' as const, description: '本次生成的操作标识（重试沿用同一值）' },
-        title: { type: 'string' as const, description: '可选作品标题' },
+        title: { type: 'string' as const, description: '可选相册图片标题' },
         format: { type: 'string' as const, enum: ['png', 'jpeg', 'webp', 'gif'] as const, description: '输出格式；动图必须显式 gif（不写默认静态图）' },
         size: { type: 'string' as const, description: '可选尺寸，形如 1024x1024 或 auto' },
         frame_count: { type: 'integer' as const, description: '仅 gif：帧数 2..16' },
@@ -63,7 +63,11 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
     backgroundRunId: ctx.backgroundRunId,
     signal: ctx.signal,
   });
-  if (!r.ok) return { ok: false, output: { error_code: r.code, detail: r.detail, ...(r.retryable ? { retryable: true } : {}), ...(r.saved_asset_id ? { saved: true, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}) } };
+  if (!r.ok) return { ok: false, output: {
+    error_code: r.code, detail: r.detail, ...(r.retryable ? { retryable: true } : {}),
+    ...(r.saved_asset_id ? { saved: true, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}),
+    ...(r.saved_album_entry_id ? { album_entry_id: r.saved_album_entry_id } : {}),
+  } };
   return { ok: true, output: {
     generated: true,
     sent: r.published_message_id ? true : false,
@@ -71,6 +75,7 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
       ? { message_id: r.published_message_id }
       : { note: r.note ?? '仅保存未发送（deliver=save_only）——发送用 chat_send_attachment 同一 asset_id' }),
     asset_ref: `est:${r.asset_id}`, asset_id: r.asset_id, creation_id: r.creation_id, mime_type: r.mime,
+    ...(r.album_entry_id ? { album_entry_id: r.album_entry_id } : {}),
     ...(r.revised_prompt ? { revised_prompt: r.revised_prompt } : {}),
   } };
 }

@@ -48,6 +48,7 @@ import { contentClientFor, contentForward } from './integrations/content/client.
 import { ContentOperationCoordinator } from './integrations/content/coordinator.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
 import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION } from './memory-surfacing/sol-provider.ts';
+import { HeartbeatRuntime, registerHeartbeatDrawCapability } from './modules/heartbeat/runtime.ts';
 
 export type HostOptions = {
   stateRoot: string;
@@ -79,6 +80,7 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  private readonly heartbeat: HeartbeatRuntime | null;
   /** R8′（2026-10-23）：媒体索引后台补全——独立定时器/单飞门/批次中止（不经调度器与会话串行链） */
   private mediaBackfillTimer: ReturnType<typeof setInterval> | null = null;
   private mediaBackfillTicking = false;
@@ -141,6 +143,7 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.heartbeat = deps.heartbeat ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
     this.mediaServiceRef = deps.media ?? null; // 相册重构 P2：M 落正待同步循环
     this.mediaSyncStore = deps.mediaMasterStore ?? null;
@@ -400,7 +403,8 @@ export class Host {
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
     (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
     (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media, contentOps });
-    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
+    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { taskService });
+    (await import('./runtime/turn-completion.ts')).registerTurnCompletionCapability(capabilityRegistry, db);
     const mediaTools = (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { db, media, mediaIndex, contentClient });
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
     (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
@@ -425,6 +429,11 @@ export class Host {
     registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
     quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
     anchorRangeFn = (roomId, seenMessages, start, end) => archives.resolveAnchorRange(roomId, seenMessages, start, end);
+    const heartbeat = new HeartbeatRuntime(db, contentClient, media, archives, messages, events, {
+      wishstar, memory: modelMariposaClient,
+    });
+    contentOps?.setSourceMutationGuard((path, operation) => heartbeat.guardSourceMutation(path, operation));
+    registerHeartbeatDrawCapability(capabilityRegistry, heartbeat);
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,
@@ -455,6 +464,7 @@ export class Host {
       alerts,
       media,
       activity,
+      heartbeat,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
       surfacing: surfacing.enabled ? surfacing : undefined,
       // S18 口径：未接线=如实无 B。base_url 未配置（仅开发/测试态）时不装配
@@ -495,6 +505,7 @@ export class Host {
       glm:new GlmChatAdapter({baseUrl:bindConfig.base_url,apiKeyEnv:bindConfig.api_key_env,model:bindConfig.model}),
       events, log:(level,event,fields)=>logger[level](event,(fields??{}) as Record<string,string|number|boolean|null>)});
     const deps: Omit<RequestDeps, 'config'> = {
+      zashideleMoments: new (await import('./integrations/zashidele/moments.ts')).ZashideleMoments(opts.config.integrations.zashidele),
       paths,
       db,
       logger,
@@ -518,6 +529,7 @@ export class Host {
       media,
       bgSettings,
       scheduler,
+      heartbeat,
       mediaIndex: mediaIndex ?? undefined,
       mediaMasterStore: mediaStore ?? undefined,
       archives,
@@ -565,6 +577,9 @@ export class Host {
     });
     const addr = this.server.address();
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.opts.port;
+    // Port ownership is confirmed. Restore synchronously before the event loop
+    // can admit new input or generic orphan recovery marks the turn failed.
+    this.supervisor.recoverAcceptedCompletions(this.scheduler?.finishRecoveredCompletion.bind(this.scheduler));
     // AUD-10（2026-10-24 接线修复）：崩溃清残必须先于重派——running 悬挂 turns/attempts/
     // streaming/PREPARING 窗/孤儿票据 owner 落确定终态，waiting_route_gate 无票释放回
     // pending 后正好被下方 recoverSchedule 接管。此前 recoveryPass 仅被测试直接调用，
@@ -587,6 +602,7 @@ export class Host {
     }
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
+    this.heartbeat?.recoverClosedRuns();
     // R8′（2026-10-23）：媒体索引后台补全——独立任务边界（不经调度器/会话串行链：
     // scheduler 的模型执行经 enqueueBackground 进 runSerialized，搬进去只是换入口排队）。
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
@@ -615,7 +631,7 @@ export class Host {
     this.oidoLifecycle?.start();
     // P1（F06/F07）：内容写恢复消费者——启动清一遍崩溃遗留的 pending/unknown 意图，
     // 运行中有界重试；不调用模型、不碰消息归档消费者。
-    this.contentOps?.start();
+    this.contentOps?.start((limit) => this.heartbeat?.recoverProjections(limit) ?? Promise.resolve());
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });

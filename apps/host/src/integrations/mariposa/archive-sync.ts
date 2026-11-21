@@ -280,10 +280,19 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_ROW_MISSING');
         continue;
       }
-      const pred = msg.sequence > 1
-        ? (this.db.prepare('SELECT id, current_revision FROM messages WHERE conversation_id = ? AND sequence = ?').get(conversationId, msg.sequence - 1) as { id: string; current_revision: number } | undefined)
-        : undefined;
-      if (msg.sequence > 1 && !pred) {
+      const pred = this.db.prepare(`
+        SELECT id,current_revision,sequence FROM messages
+        WHERE conversation_id=? AND sequence<?
+          AND NOT (speaker='system' AND COALESCE(client_message_id,'') LIKE 'heartbeat:%')
+        ORDER BY sequence DESC LIMIT 1
+      `).get(conversationId, msg.sequence) as { id: string; current_revision: number; sequence: number } | undefined;
+      const predSequence = pred?.sequence ?? 0;
+      const missing = msg.sequence - predSequence - 1;
+      const displayRows = missing ? (this.db.prepare(`
+        SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sequence>? AND sequence<?
+          AND speaker='system' AND client_message_id LIKE 'heartbeat:%'
+      `).get(conversationId, predSequence, msg.sequence) as { n: number }).n : 0;
+      if (displayRows !== missing) {
         this.markDeadQuietly(row, 'LOCAL_CHAIN_MISSING');
         continue;
       }

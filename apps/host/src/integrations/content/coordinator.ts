@@ -18,7 +18,7 @@ import { MediaError } from '../../media/assets.ts';
 import type { Logger } from '../../observability/logging.ts';
 import { stableErrorCode } from '../../observability/errors.ts';
 import { sha256Hex } from '../../util/id.ts';
-import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient } from './client.ts';
+import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient, type ContentReferenceSnapshot } from './client.ts';
 import { isUserArchiveCreate, registerArchiveCreatedNotice } from './archive-notice.ts';
 
 export const CONTENT_OPERATION_TARGET = 'content.operation';
@@ -70,12 +70,17 @@ export class ContentOperationCoordinator {
   private readonly logger: Logger;
   private recoverTimer: ReturnType<typeof setInterval> | null = null;
   private recoverInFlight: Promise<void> | null = null;
+  private guardSourceMutation?: <T>(path: string, operation: () => Promise<T>) => Promise<T>;
 
   constructor(deps: { db: Db; client: ContentClient; media: MediaService; logger: Logger }) {
     this.db = deps.db;
     this.client = deps.client;
     this.media = deps.media;
     this.logger = deps.logger;
+  }
+
+  setSourceMutationGuard(guard: NonNullable<ContentOperationCoordinator['guardSourceMutation']>): void {
+    this.guardSourceMutation = guard;
   }
 
   /** 模型重试建档时复用首次接纳已经钉住的成员和修订。 */
@@ -261,10 +266,13 @@ export class ContentOperationCoordinator {
     const idemKey = opKey.slice(`content:${intent.actor}:`.length);
     let result: Awaited<ReturnType<typeof contentForward>>;
     try {
-      result = await contentForward(this.client, {
+      const write = () => contentForward(this.client, {
         method: intent.method, path: intent.path, actor: intent.actor, body: intent.body,
         headers: { ...(intent.if_match !== undefined ? { 'If-Match': intent.if_match } : {}), 'Idempotency-Key': idemKey },
       });
+      result = this.guardSourceMutation && intent.method !== 'POST'
+        ? await this.guardSourceMutation(intent.path, write)
+        : await write();
     } catch (err) {
       this.markUnknown(opKey, err as Error);
       return { status: 504, body: { error: { code: 'content_write_unknown', message: '内容服务响应未知；操作已持久，将按原身份恢复收口（同键重试安全）' } } };
@@ -389,8 +397,13 @@ export class ContentOperationCoordinator {
   async reconcileOwner(ownerType: string, ownerId: string): Promise<boolean> {
     const snapshot = await fetchReferenceSnapshot(this.client, ownerType, ownerId);
     if (!snapshot) return false;
-    this.confirmSnapshot(`reconcile:${ownerType}:${ownerId}`, ownerType, ownerId, { ownerRevision: snapshot.owner_revision, deleted: snapshot.deleted, assetIds: snapshot.asset_ids });
+    this.reconcileKnownOwnerSnapshot(ownerType, ownerId, snapshot);
     return true;
+  }
+
+  /** Used by isolated migrations that already have the content-owned snapshot. */
+  reconcileKnownOwnerSnapshot(ownerType: string, ownerId: string, snapshot: ContentReferenceSnapshot): void {
+    this.confirmSnapshot(`reconcile:${ownerType}:${ownerId}`, ownerType, ownerId, { ownerRevision: snapshot.owner_revision, deleted: snapshot.deleted, assetIds: snapshot.asset_ids });
   }
 
   /** 接纳一个意图：'new'=新接受；'kept'=同键同参沿用既有未收口意图；'conflict'=同键异参。
@@ -454,9 +467,14 @@ export class ContentOperationCoordinator {
   }
 
   // —— 恢复消费者：启动清一遍 + 周期有界处理（运行中不调用模型、不碰归档消费者） ——
-  start(): void {
-    void this.recoverOnce().catch((err) => this.logger.warn('content_recover_failed', { code: stableErrorCode(err) }));
-    this.recoverTimer = setInterval(() => { void this.recoverOnce().catch((err) => this.logger.warn('content_recover_failed', { code: stableErrorCode(err) })); }, RECOVER_INTERVAL_MS);
+  start(recoverHeartbeatProjections?: (limit: number) => Promise<void>): void {
+    if (this.recoverTimer) return;
+    const tick = (): void => {
+      void this.recoverOnce(RECOVER_BATCH, recoverHeartbeatProjections)
+        .catch((err) => this.logger.warn('content_recover_failed', { code: stableErrorCode(err) }));
+    };
+    tick();
+    this.recoverTimer = setInterval(tick, RECOVER_INTERVAL_MS);
     this.recoverTimer.unref?.();
   }
 
@@ -465,7 +483,7 @@ export class ContentOperationCoordinator {
     await this.recoverInFlight?.catch(() => {});
   }
 
-  async recoverOnce(limit = RECOVER_BATCH): Promise<number> {
+  async recoverOnce(limit = RECOVER_BATCH, recoverHeartbeatProjections?: (limit: number) => Promise<void>): Promise<number> {
     if (this.recoverInFlight) return 0;
     const task = (async () => {
       // MAX_ATTEMPTS 筛选在候选 SQL 里完成：超限行不再占用批次（保留意图与 pin 等待人工/对账）
@@ -474,6 +492,10 @@ export class ContentOperationCoordinator {
       for (const row of rows) {
         // RF2-01：恢复 tick 与 HTTP 同参重试共用同一条推进路径（advanceAccepted）
         await this.advanceAccepted(row.operation_key);
+      }
+      if (recoverHeartbeatProjections) {
+        await recoverHeartbeatProjections(Math.min(limit, 5))
+          .catch((error) => this.logger.warn('heartbeat_projection_recover_failed', { code: stableErrorCode(error) }));
       }
       return rows.length;
     })();

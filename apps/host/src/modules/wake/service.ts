@@ -1,13 +1,10 @@
-// modules/wake/service.ts（P04.10）：wake_manage/background_complete 定义与 handler 归属迁移。
-// 回合编排在 P06 收口；本卡不改评审或唤醒政策。BackgroundTaskService 正本不变。
+// 模型通过此工具管理自己的预约。预约事实由 BackgroundTaskService 持有。
 import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 
 export class WakeToolsService {
-  private readonly db: import('../../db/connection.ts').Db;
   private readonly taskService: import('../../runtime/background-task-service.ts').BackgroundTaskService | null;
 
-  constructor(deps: { db: import('../../db/connection.ts').Db; taskService?: import('../../runtime/background-task-service.ts').BackgroundTaskService | null }) {
-    this.db = deps.db;
+  constructor(deps: { taskService?: import('../../runtime/background-task-service.ts').BackgroundTaskService | null }) {
     this.taskService = deps.taskService ?? null;
   }
 
@@ -43,15 +40,6 @@ export class WakeToolsService {
       return { ok: true, output: { task_id: r.task.task_id, revision: r.task.revision, cancelled: true } };
     }
     return err('WAKE_REQUEST_INVALID', `未知操作：${String(op)}`);
-  }
-
-
-  backgroundComplete(args: { outcome: 'done' | 'noop' }, ctx: ToolExecContext): ToolExecResult {
-    if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID', detail: 'background_complete 仅后台回合（自主唤醒/心跳）可用' } };
-    if (ctx.backgroundRunId) {
-      this.db.prepare("UPDATE background_runs SET result_code = ?, updated_at = ? WHERE id = ?").run(`complete:${args.outcome}`, new Date().toISOString(), ctx.backgroundRunId);
-    }
-    return { ok: true, output: { completed: true, outcome: args.outcome } };
   }
 
 }

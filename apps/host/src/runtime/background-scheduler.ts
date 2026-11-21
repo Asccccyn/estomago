@@ -128,6 +128,10 @@ export class BackgroundScheduler {
       // Usage may have reached disk immediately before a crash. Recover its cost
       // without replaying the model or declaring an unknown external action done.
       settleBackgroundRun(this.d.db, r.id);
+      if (r.state === 'running' && r.kind === 'keepwarm' && this.hasCommittedExhaustedReply(r.id)) {
+        this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'ack_only' });
+        continue;
+      }
       const dispatchCount = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id = ?').get(r.id) as { n: number }).n;
       const dispo = restartDisposition({ state: r.state, dispatchCount, kind: r.kind as BackgroundKind });
       if (dispo.resultCode === 'UNCHANGED') continue;
@@ -152,6 +156,21 @@ export class BackgroundScheduler {
         this.d.db.prepare("UPDATE background_tasks SET control_reason = 'unknown_needs_review', updated_at = ? WHERE schedule_kind = 'once' AND id = (SELECT task_id FROM background_runs WHERE id = ?)").run(nowIso, r.id);
       }
     }
+  }
+
+  private hasCommittedExhaustedReply(runId: string): boolean {
+    return Boolean(this.d.db.prepare(`
+      SELECT 1 FROM background_runs run
+      JOIN heartbeat_runs heartbeat ON heartbeat.run_id=run.id AND heartbeat.mode='exhausted_keepwarm'
+      JOIN turns turn ON turn.id=run.turn_id AND turn.state='completed'
+      JOIN messages message ON message.turn_id=turn.id AND message.speaker='assistant'
+        AND message.client_message_id='heartbeat:'||run.id||':ack'
+      JOIN message_revisions revision ON revision.message_id=message.id
+        AND revision.revision=1 AND revision.source='heartbeat_ack'
+      WHERE run.id=? AND run.trajectory_committed_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM provider_requests request
+                    WHERE request.background_run_id=run.id AND request.sent_at IS NOT NULL)
+    `).get(runId));
   }
 
   /** 一次调度心跳：时钟回拨检测 → 到期任务领取与执行。测试可直接调用并虚拟推进时钟。 */
@@ -291,6 +310,12 @@ export class BackgroundScheduler {
     }
   }
 
+  finishRecoveredCompletion(runId: string, result: {
+    outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string;
+  }): void {
+    this.finishRun(runId, this.taskOfRun(runId), result.outcome, result.result_code ?? null);
+  }
+
   /** RB2-02（复审 20261106 第二轮）：结束一次执行的共同领域操作——执行完成、无执行者
    *  停止及需要收尾的恢复入口共用：run 终态、task 资格收尾（finalizeTaskAfterRun）与
    *  本次资源释放在同一出口。删除 stopRun 的独立 run 终态 SQL 旁路（旧旁路绕过任务
@@ -309,6 +334,8 @@ export class BackgroundScheduler {
     const finished = tx(this.d.db, () => {
       const n = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId).changes);
       if (n > 0 && !waiting) {
+        this.d.db.prepare(`UPDATE attempts SET completion_recovery_json=NULL
+          WHERE turn_id=(SELECT turn_id FROM background_runs WHERE id=?)`).run(runId);
         if (state === 'cancelled' && task?.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
         if (task) this.finalizeTaskAfterRun(task, state, nowIso);
       }

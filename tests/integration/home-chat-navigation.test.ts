@@ -27,7 +27,10 @@ before(async () => {
 after(async () => { await host?.stop(); cookie = ''; fs.rmSync(root, { recursive: true, force: true }); });
 
 test('首页、聊天与保留的主页内嵌页都经过既有登录门', async () => {
-  for (const route of ['/', '/chat', '/home/feature.html?feature=calendar']) {
+  for (const route of [
+    '/', '/chat', '/home/feature.html?feature=calendar', '/home/album', '/home/feature.html?feature=album',
+    '/home/moments', '/home/heartbeat', '/home/feature.html?feature=moments',
+  ]) {
     const response = await fetch(base + route, { redirect: 'manual' });
     assert.equal(response.status, 302, route);
     assert.equal(response.headers.get('location'), '/login', route);
@@ -42,9 +45,17 @@ test('登录后四季主页直接加载全屏画布，聊天与许愿星页面�
   assert.match(html, /\/home\/seasons\.js/);
   assert.match(html, /\/home\/home-navigation\.js/);
   assert.doesNotMatch(html, /<iframe\b/);
+  assert.match(html, /href="\/home\/heartbeat"/);
   const chat = await fetch(base + '/chat', { headers: { Cookie: cookie } });
   assert.equal(chat.status, 200, '/chat');
   assert.match(await chat.text(), /chat-app\.js/);
+  for (const route of [
+    '/home/album', '/home/feature.html?feature=album', '/home/moments', '/home/heartbeat', '/home/feature.html?feature=moments',
+  ]) {
+    const management = await fetch(base + route, { headers: { Cookie: cookie } });
+    assert.equal(management.status, 200, route);
+    assert.match(await management.text(), /chat-app\.js/, route);
+  }
   const wishes = await fetch(base + '/wishstar', { headers: { Cookie: cookie } });
   assert.equal(wishes.status, 200, '/wishstar');
   assert.match(await wishes.text(), /许愿星/);
@@ -93,8 +104,8 @@ test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接�
     '/home/feature.html?feature=calendar&season=summer',
     '/home/feature.html?feature=reading',
     '/home/feature.html?feature=anniversaries',
-    '/home/feature.html?feature=moments',
-    '/home/feature.html?feature=album',
+    '/home/moments',
+    '/home/album',
     '/home/feature.html?feature=voice',
     '/home/feature.html?feature=upstairs',
   ];

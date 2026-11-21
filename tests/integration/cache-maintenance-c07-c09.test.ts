@@ -1,4 +1,4 @@
-// C07/C08/C09（四仓合并审计 20261106）：自醒包装时间、纯1心跳协议保留、工具心跳后继维护。
+// C07/C08/C09：自醒包装时间、实际耗尽心跳协议保留、无文字拒抽后的维护机会。
 // 技术=包内 background-lifecycle 探针同法：真实 Host/调度器/DS 序列化，仅伪造 DS 传输与时钟。
 // 外部未验证项（真实 SDK 序列、上游缓存计量命中）由 04 验收矩阵单列，不在本文件冒充。
 import { test } from 'node:test';
@@ -9,6 +9,7 @@ import path from 'node:path';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
+import { installHeartbeatFixtureSources } from '../helpers/heartbeat-sources.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 
@@ -27,21 +28,28 @@ let serial = 0;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const content = (p: J): string => (p.messages ?? []).map((m: J) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
 
-function installFakeDs(script: { mode: string }): void {
+type Script = { mode: 'wake' | 'draw' | 'decline'; cardNumber?: number; keepRound?: number };
+const invoke = (name: string, args: J) => ({ name: 'tool_invoke', arguments: JSON.stringify({ name, arguments: args }) });
+
+function installFakeDs(script: Script): void {
   globalThis.fetch = (async (input: any, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url === 'https://api.deepseek.com/chat/completions') {
       const p = JSON.parse(String(init?.body));
       const hostTail = [...p.messages].reverse().find((m: J) => m.role === 'user');
       const isWake = String(hostTail?.content).includes('Host self-wake');
-      const isKeepalive = String(hostTail?.content).includes('Cache keepalive');
+      const hostText = JSON.stringify(hostTail?.content);
+      const isKeepalive = hostText.includes('[心跳唤醒]');
       let calls: J[] = [];
       let text = '合成回复：青禾';
-      if (isKeepalive) {
+      if (isKeepalive && hostText.includes('请回复 1 保温')) {
         text = '1';
-        const round = (script.keepRound_ = (script.keepRound_ ?? 0) + 1);
-        if (script.mode === 'catalog_define' && round === 1) calls = [{ name: 'tool_catalog', arguments: '{}' }];
-        else if (script.mode === 'catalog_define' && round === 2) calls = [{ name: 'tool_define', arguments: JSON.stringify({ name: 'wake_manage' }) }];
+      } else if (isKeepalive && script.mode === 'draw') {
+        const round = script.keepRound ?? 0;
+        script.keepRound = round + 1;
+        calls = [round === 0 ? invoke('heartbeat_draw', { card_number: script.cardNumber }) : invoke('background_complete', { outcome: 'done' })];
+      } else if (isKeepalive && script.mode === 'decline') {
+        calls = [invoke('background_complete', { outcome: 'noop' })];
       } else if (isWake) {
         text = '内部结束';
       }
@@ -61,8 +69,9 @@ function installFakeDs(script: { mode: string }): void {
   }) as typeof fetch;
 }
 
-async function boot(script: { mode: string }) {
+async function boot(script: Script) {
   installFakeDs(script);
+  const restoreSources = script.mode === 'wake' ? () => {} : installHeartbeatFixtureSources();
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'c789-'));
   process.env.ESTOMAGO_HOME = stateRoot;
   writeApprovedIdentity(stateRoot);
@@ -89,14 +98,14 @@ async function boot(script: { mode: string }) {
     return data;
   };
   const seed = async (id: string) => { await request('/conversations/primary/messages', 'POST', { content: '合成正式聊天', client_message_id: id }, 'seed-' + id); await host.supervisor.waitIdle(); };
-  const shutdown = async () => { await host.stop(); fs.rmSync(stateRoot, { recursive: true, force: true }); };
+  const shutdown = async () => { restoreSources(); await host.stop(); fs.rmSync(stateRoot, { recursive: true, force: true }); };
   return { host, request, seed, shutdown };
 }
 
 test.afterEach(() => { globalThis.fetch = originalFetch; auditNow = RealDate.now(); });
 
 test('RB05：自由活动正式 HTTP 入口可达——真实建窗/幂等/同键异参 409/真实调度执行一次', async () => {
-  const f = await boot({ mode: 'pure_ack' });
+  const f = await boot({ mode: 'wake' });
   try {
     await f.seed('rb05-seed');
     // 自由活动预算门（backgroundControl('free_activity')→autonomous）
@@ -121,13 +130,26 @@ test('RB05：自由活动正式 HTTP 入口可达——真实建窗/幂等/同�
   } finally { await f.shutdown(); }
 });
 
-test('C08：纯1心跳后下一普通输入完全接续已发协议（首差=-1），L 不推进', async () => {
-  const f = await boot({ mode: 'pure_ack' });
+test('C08：十张真实交付后，兜底1发布一次并沿下一普通输入接续，L 不推进', async () => {
+  auditNow = Date.parse('2026-11-20T01:00:00+08:00');
+  const script: Script = { mode: 'draw' };
+  const f = await boot(script);
   try {
     const settings = await f.request('/background/settings');
     await f.request('/background/settings', 'PUT', { keepwarm: { enabled: true, daily_cost_cap_usd: 10 }, autonomous: { enabled: true, daily_cost_cap_usd: 10 } }, 'enable');
     void settings;
     await f.seed('s1');
+    for (let number = 1; number <= 10; number++) {
+      script.cardNumber = number;
+      script.keepRound = 0;
+      auditNow += 3_000_001;
+      await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
+      const run = f.host.db.prepare("SELECT state,result_code FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as J;
+      assert.deepEqual({ ...run }, { state: 'completed', result_code: 'complete:done' });
+    }
+    const status = await f.request('/background/heartbeat');
+    assert.deepEqual(status.delivered_numbers, Array.from({ length: 10 }, (_, index) => index + 1));
+    assert.equal(status.mode, 'exhausted_keepwarm');
     const revBefore = (f.host.db.prepare("SELECT activity_revision FROM conversation_activity WHERE conversation_id='primary'").get() as { activity_revision: number }).activity_revision;
     auditNow += 3_000_001; // 50min+1s：首个心跳机会
     await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
@@ -135,7 +157,12 @@ test('C08：纯1心跳后下一普通输入完全接续已发协议（首差=-1�
     assert.equal(revAfterKeepalive, revBefore, '纯1心跳不推进真实消息时钟 L');
     const prev = bodies.at(-1)!.payload;
     assert.equal(bodies.at(-1)!.kind, 'keepalive', '纯1心跳请求已发出（前置）');
-    assert.ok(f.host.db.prepare("SELECT retention FROM background_runs WHERE kind='keepwarm' ORDER BY created_at DESC LIMIT 1").get().retention === 'ephemeral_ack', '判定为纯1（前置）');
+    const fallback = f.host.db.prepare("SELECT turn_id,result_code,retention FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as J;
+    assert.equal(fallback.result_code, 'ack_only');
+    assert.equal(fallback.retention, 'retained');
+    const published = f.host.db.prepare(`SELECT r.content FROM messages m JOIN message_revisions r
+      ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.turn_id=? AND m.speaker='assistant'`).all(fallback.turn_id);
+    assert.deepEqual(published.map(message => message.content), ['1']);
     const requestIndex = bodies.length;
     await f.request('/conversations/primary/messages', 'POST', { content: '维护后新聊天', client_message_id: 'post-ack' }, 'post-ack');
     await f.host.supervisor.waitIdle();
@@ -143,19 +170,22 @@ test('C08：纯1心跳后下一普通输入完全接续已发协议（首差=-1�
     const firstDiff = prev.messages.findIndex((v: J, i: number) => JSON.stringify(v) !== JSON.stringify(next.messages[i]));
     assert.equal(firstDiff, -1, `纯1协议保留：下一请求以心跳已发前缀为前缀（旧实现首差@4，实际首差=${firstDiff}）`);
     assert.equal(JSON.stringify(prev.tools), JSON.stringify(next.tools), '工具目录不变');
-    assert.ok(next.messages.some((m: J) => m.role === 'assistant' && JSON.stringify(m.content).includes('1')), 'assistant "1" 在续接前缀中');
+    assert.equal(next.messages.filter((m: J) => m.role === 'assistant' && m.content === '1').length, 1);
   } finally { await f.shutdown(); }
 });
 
-test('C09：工具心跳完成后记维护回执——后继维护机会不被永久挡住', async () => {
-  const f = await boot({ mode: 'catalog_define' });
+test('C09：无文字拒抽保留维护回执，下一自然机会仍可调度', async () => {
+  const f = await boot({ mode: 'decline' });
   try {
     await f.request('/background/settings', 'PUT', { keepwarm: { enabled: true, daily_cost_cap_usd: 10 } }, 'enable-kw');
     await f.seed('s1');
     auditNow += 3_000_001;
     await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
     const first = f.host.db.prepare("SELECT * FROM background_runs WHERE kind='keepwarm' ORDER BY created_at DESC LIMIT 1").get() as J;
-    assert.equal(first.state, 'completed', '工具心跳（catalog+define→1）完成（前置）');
+    assert.equal(first.state, 'noop');
+    assert.equal(first.result_code, 'complete:noop');
+    assert.equal(first.model_requests_started, 1);
+    assert.equal(f.host.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE turn_id=? AND speaker='assistant'").get(first.turn_id)?.n, 0);
     const runsAfterFirst = (f.host.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm'").get() as { n: number }).n;
     const maintenance = (f.host.db.prepare("SELECT maintenance_request_id FROM conversation_activity WHERE conversation_id='primary'").get() as { maintenance_request_id: string | null }).maintenance_request_id;
     assert.ok(maintenance, 'substantive 心跳记维护回执（旧实现恒 null）');
@@ -186,7 +216,7 @@ test('C07：自醒包装携带设置时间/原due/实际递交；重放不重算
     assert.ok(text.includes(`Scheduled for: ${original.scheduled_at}`), '包装含原due（冻结值）');
     assert.ok(text.includes('Actual delivery:'), '包装含实际递交时间');
     assert.ok(text.includes('Your note: 合成：半小时后问候'), 'note 原文保留');
-    assert.match(text, /想给宿主用户发一句，可以用 chat_send_text/);
-    assert.match(text, /idempotency_key/);
+    assert.equal((text.match(/结束前，把要告诉乔乔的话发到聊天；有后续就自行安排。/g) ?? []).length, 1);
+    assert.doesNotMatch(text, /想给宿主用户发一句|idempotency_key/);
   } finally { await f.shutdown(); }
 });

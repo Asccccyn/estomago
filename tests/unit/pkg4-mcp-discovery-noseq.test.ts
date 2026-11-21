@@ -106,7 +106,10 @@ test('D05/D06：退出能力不回门；无可靠匹配与任务 scope 说明分
   const none = searchToolCatalog(catalog, '给我订一杯咖啡豆颜色的大象', groups);
   assert.equal(none.state, 'no_match');
   if (none.state === 'no_match') assert.ok(none.hint.includes('不代表系统没有该能力'), 'no_match 不冒充系统无能力');
-  const task = searchToolCatalog(catalog, 'background_complete', groups);
+  const completion = searchToolCatalog(catalog, 'background_complete', groups);
+  assert.equal(completion.state, 'match');
+  if (completion.state === 'match') assert.equal((completion.results[0] as { scope_note?: string }).scope_note, undefined);
+  const task = searchToolCatalog(catalog, 'context_review_complete', groups);
   assert.equal(task.state, 'match');
   if (task.state === 'match') assert.ok((task.results[0] as { scope_note?: string }).scope_note?.includes('任务'), '任务工具带 scope 说明');
   // tool_catalog wire 定义带 query 参数；tool_invoke 仍无 definition_seen 门
