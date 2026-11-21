@@ -67,7 +67,7 @@
     "memory_recall": "td_8025fb9c84eb581e0b9f2897",
     "memory_recall_next": "td_c159234fa8bf8cd32fcd9ad7",
     "memory_read_full": "td_5aa135ad50bcff5c497c94bf",
-    "memory_update": "td_f96ffcd208abb576b687fbd7",
+    "memory_update": "td_e92ca6604bc9de2bf308352a",
     "conversation_read": "td_4d331845495245739155ab45",
     "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
@@ -119,7 +119,7 @@
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_249b4a683b8cc293ef4a3163"
   },
-  "toolsSha256": "673fd1aa052e66761daf59954570ac76bc517a459db1dd5b0a5831b1eedc4fb0",
+  "toolsSha256": "92115db1d6f2b106678f209b8ea676dd81822c88ce66cf71a02944b411e00094",
   "tools": [
     {
       "type": "function",
@@ -463,10 +463,13 @@
             },
             "text": {
               "type": "string",
+              "minLength": 1,
               "description": "修订后的完整记忆正文（省略=保持不变）"
             },
             "original_title": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 30,
               "description": "修订后的标题（省略=保持不变）"
             },
             "categories": {
@@ -483,6 +486,11 @@
             },
             "date_confidence": {
               "type": "string",
+              "enum": [
+                "exact",
+                "inferred",
+                "unknown"
+              ],
               "description": "修订后的日期置信（省略=保持不变）"
             }
           }

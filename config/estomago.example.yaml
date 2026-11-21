@@ -16,8 +16,8 @@ deployment:
   public_enabled: false
   supervisor: launchagent
 runtime:
-  # 新窗口按需读取详细工具定义；既有窗口沿用已发送的冻结工具集。
-  tool_schema_mode: deferred
+  # 新窗口直接调用原生工具；既有窗口沿用冻结协议。legacy 和 deferred 供兼容使用。
+  tool_schema_mode: direct
   provider: claude-agent-sdk
   # configured 保留当前入口；subscription-first 仅在官方订阅额度明确拒绝时回退现有 OR。
   access_policy: configured

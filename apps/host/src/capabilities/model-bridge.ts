@@ -6,7 +6,7 @@ import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { modelFailure } from '../runtime/model-results.ts';
-import { buildDeferredTools, storedToolset, definitionId, definitionWasSeen, effectiveToolName, modelDefinitionAfterBindingRetirement } from '../runtime/tool-discovery.ts';
+import { storedToolset, definitionId, definitionWasSeen, modelDefinitionAfterBindingRetirement, type WindowToolset } from '../runtime/tool-discovery.ts';
 import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
 import { DISCOVERY_NAMES } from '../runtime/tool-discovery.ts';
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
@@ -14,6 +14,7 @@ import type { HostToolSpec, SeenRef, ToolExecContext, ToolExecResult } from './c
 import type { CapabilityRegistry } from './registry.ts';
 import { executeRegisteredCapability } from './executor.ts';
 import { validateArgsAgainstSchema } from './validation.ts';
+import { decodeModelArguments, escapedHanArgumentField } from './model-arguments.ts';
 export { DISCOVERY_META, isDiscoveryFree } from './model-bridge-meta.ts';
 import { DISCOVERY_META, isDiscoveryFree, toolPresentation } from './model-bridge-meta.ts';
 
@@ -134,20 +135,22 @@ export class ModelToolBridge {
   private async executeDiscovery(name: string, args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     const set = storedToolset(this.db, ctx.windowId);
     const deny = (code: string): ToolExecResult => ({ok:false,output:{error_code:code}});
-    if (set?.protocol !== 'deferred') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
+    if (!set || set.protocol === 'legacy') return deny('TOOL_PROTOCOL_NOT_ACTIVE');
+    const wire = set.tools.find(t => t.function.name === name);
+    if (!wire) return deny('TOOL_PROTOCOL_NOT_ACTIVE');
     if (name === 'tool_catalog') {
-      const wire = set.tools.find(t => t.function.name === name);
-      if (!wire) return deny('TOOL_PROTOCOL_NOT_ACTIVE');
       const checked = validateArgsAgainstSchema(args, wire.function.parameters);
       if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
       this.admitBackgroundTool(name, ctx);
       // 新目录服从当前能力与请求的活动任务范围，已发送的冻结快照及历史仍按原样保留。
       const inCall = Boolean(ctx.turnId) && this.voiceCallActive(ctx.roomId);
       const listing = set.catalog.flatMap(frozen => {
-        const spec = this.visibleFrozenDefinition(frozen);
-        if (!spec) return [];
-        const toolName = spec.function.name;
-        return (!inCall || this.isMemoryOnlyAllowed(toolName)) && this.discoverableInTaskScope(toolName, ctx) ? [spec] : [];
+        const toolName = frozen.function.name;
+        if (inCall && !this.isMemoryOnlyAllowed(toolName)) return [];
+        const spec = set.protocol === 'direct'
+          ? this.directWindowDefinition(set, toolName, ctx)
+          : this.taskScopeAllows(toolName, ctx) ? this.visibleFrozenDefinition(frozen) : null;
+        return spec ? [spec] : [];
       });
       const query = typeof args.query === 'string' ? args.query.trim() : '';
       if (query) return { ok: true, output: searchToolCatalog(listing, query, set.groups) };
@@ -160,7 +163,9 @@ export class ModelToolBridge {
     if (Object.keys(args).some(k => !allowed.includes(k))) return deny('TOOL_ARG_UNKNOWN');
     const frozen = set.catalog.find(t => t.function.name === args.name);
     if (!frozen) return deny('TOOL_NOT_IN_ALLOWLIST');
-    const spec = this.visibleFrozenDefinition(frozen);
+    const spec = set.protocol === 'direct'
+      ? this.directWindowDefinition(set, frozen.function.name, ctx)
+      : this.visibleFrozenDefinition(frozen);
     if (!spec) return deny('TOOL_NOT_IN_ALLOWLIST');
     // D39（审计 B1 修复，2026-10-25）：catalog/define/invoke/直接执行四处同一通话资格判定——
     // 通话内非记忆业务工具的 define 也返回 TOOL_UNAVAILABLE_IN_CALL（旧实现只在 invoke/直接执行设门，
@@ -169,7 +174,7 @@ export class ModelToolBridge {
       return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
     }
     if (name === 'tool_define') {
-      if (!this.discoverableInTaskScope(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
+      if (set.protocol === 'deferred' && !this.taskScopeAllows(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
       this.admitBackgroundTool(name, ctx);
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
@@ -180,24 +185,29 @@ export class ModelToolBridge {
     if (typeof args.definition_id === 'string' && args.definition_id !== definitionId(spec) && args.definition_id !== definitionId(frozen)) {
       return deny('TOOL_DEFINITION_STALE');
     }
-    if (!args.arguments || typeof args.arguments !== 'object' || Array.isArray(args.arguments)) return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', detail: 'arguments 必须是符合工具定义的参数对象，不能传字符串；请按已读取的定义重新调用。' } };
-    if (Object.keys(args.arguments).some(k=>k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
+    const input = decodeModelArguments(spec.function.name, args.arguments);
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return { ok: false, output: { error_code: 'TOOL_ARG_TYPE', field: 'arguments', retryable: true,
+        detail: '未执行工具。请按工具定义重新提交 arguments 参数对象。' } };
+    }
+    if (Object.keys(input).some(k => k.startsWith('__'))) return deny('TOOL_ARG_UNKNOWN');
     // Old hold attachments are already inert. Accept a saved old contract so
     // a remembered attachment does not cause the ordinary memory write to fail.
     const executionSpec = spec.function.name === 'memory_hold' ? frozen : spec;
-    return this.executeInner(spec.function.name, args.arguments as Record<string, unknown>, ctx, executionSpec);
+    return this.executeInner(spec.function.name, input as Record<string, unknown>, ctx, executionSpec, true);
   }
 
   /** 任务定义根据宿主上下文与现行活动状态交付，执行仍由各业务能力负责。 */
-  private discoverableInTaskScope(name: string, ctx: ToolExecContext): boolean {
+  private taskScopeAllows(name: string, ctx: ToolExecContext, mode: 'deferred' | 'direct' | 'direct_execution' = 'deferred'): boolean {
     switch (name) {
       case 'context_review_complete':
         return ctx.purpose === 'pre_rotate_review' && Boolean(ctx.activeReviewId && this.db.prepare(`
           SELECT 1 FROM rotation_reviews
-          WHERE id = ? AND room_id = ? AND window_id = ? AND status = 'active'
-        `).get(ctx.activeReviewId, ctx.roomId, ctx.windowId));
+          WHERE id = ? AND room_id = ? AND window_id = ?
+          AND (status = 'active' OR (? = 1 AND status = 'completed'))
+        `).get(ctx.activeReviewId, ctx.roomId, ctx.windowId, mode === 'direct_execution' ? 1 : 0));
       case 'background_complete':
-        return (ctx.purpose === 'proactive_turn' || ctx.purpose === 'cache_keepalive') &&
+        return (ctx.purpose === 'proactive_turn' || (mode === 'deferred' && ctx.purpose === 'cache_keepalive')) &&
           Boolean(ctx.backgroundRunId && this.db.prepare(`
             SELECT 1 FROM background_runs
             WHERE id = ? AND conversation_id = ? AND window_id = ? AND turn_id = ? AND state = 'running'
@@ -206,6 +216,15 @@ export class ModelToolBridge {
       default:
         return this.capabilityRegistry?.get(name)?.group !== 'T';
     }
+  }
+
+  /** Standard tools use exactly the window's native wire definition. Task
+   * definitions come from the frozen catalog and are only sent in task requests. */
+  private directWindowDefinition(set: WindowToolset, name: string, ctx: ToolExecContext, mode: 'direct' | 'direct_execution' = 'direct'): HostToolSpec | null {
+    const task = set.groups[name] === 'T';
+    if (task && !this.taskScopeAllows(name, ctx, mode)) return null;
+    const frozen = (task ? set.catalog : set.tools).find(spec => spec.function.name === name);
+    return frozen ? this.visibleFrozenDefinition(frozen) : null;
   }
 
   /** 能力退出后，新发的发现结果保留冻结合同中仍可调用的部分。 */
@@ -232,12 +251,16 @@ export class ModelToolBridge {
     }
   }
 
-  private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext, frozenSpec?: HostToolSpec): Promise<ToolExecResult> {
+  private async executeInner(name: string, rawArgs: Record<string, unknown>, ctx: ToolExecContext, frozenSpec?: HostToolSpec, viaInvoke = false): Promise<ToolExecResult> {
     if ((DISCOVERY_NAMES as readonly string[]).includes(name)) return this.executeDiscovery(name,rawArgs,ctx);
     if (!frozenSpec) {
       const set = storedToolset(this.db,ctx.windowId);
       if (set?.protocol === 'deferred') return {ok:false,output:{error_code:'USE_TOOL_INVOKE'}};
-      if (set) {
+      if (set?.protocol === 'direct') {
+        const directSpec = this.directWindowDefinition(set, name, ctx, 'direct_execution');
+        if (!directSpec) return { ok: false, output: { error_code: 'TOOL_NOT_IN_WINDOW' } };
+        frozenSpec = directSpec;
+      } else if (set) {
         frozenSpec = set.catalog.find(t=>t.function.name===name);
         if (!frozenSpec) return {ok:false,output:{error_code:'TOOL_NOT_IN_WINDOW'}};
         if (name !== 'memory_hold') {
@@ -250,6 +273,11 @@ export class ModelToolBridge {
     // P02.6：名称属于已迁集合 → registry 执行外壳（旧业务分支已删，绝不在新路径失败时回退）。
     // 集合不相交：未迁名显式走下方旧路径。同一定义/handler 只有一个来源。
     if (this.capabilityRegistry?.has(name)) {
+      const field = escapedHanArgumentField(name, rawArgs, ctx.argumentSource, viaInvoke);
+      if (field) return { ok: false, output: {
+        error_code: 'TOOL_ARG_LITERAL_HAN_REQUIRED', field, retryable: true,
+        detail: '工具未执行。请保留正文和其他参数，把该字段中的中文直接写成汉字后重新调用。',
+      } };
       return executeRegisteredCapability(this.capabilityRegistry.get(name)!, rawArgs, ctx, frozenSpec, {
         db: this.db,
         isVoiceCallActive: (roomId: string) => this.voiceCallActive(roomId),

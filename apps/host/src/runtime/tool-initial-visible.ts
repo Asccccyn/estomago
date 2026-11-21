@@ -25,24 +25,34 @@ export const RESIDENT_TOOL_HEADING = '常驻工具';
 const RESIDENT_REMINDER = '你想记下一件事，可以自己存，发现记错了也可以改。想起旧事，可以自己去找，想往下看也可以点开读。想画图、发语音、打电话、给自己约个时间、写一颗星、问宿主用户要一颗星、翻相册或收藏、发朋友圈，下面的工具就在手边。';
 const MAP_REMINDER = '想做别的事，比如读聊天记录、改计划或找旧存档，就到工具地图里找。用 tool_catalog 的 query 说你想做什么。搜不到时，可以省略 query 看当前目录，再用准确工具名查询。';
 
-export function renderToolContext(specs: readonly HostToolSpec[], groups: Record<string, ToolGroup>): string | null {
+export function renderToolContext(specs: readonly HostToolSpec[], groups: Record<string, ToolGroup>, mode: 'deferred' | 'direct' = 'deferred'): string | null {
   const initial = new Map(specs.filter(spec => groups[spec.function.name] === 'C').map(spec => [spec.function.name, spec]));
   const hasDeferred = specs.some(spec => groups[spec.function.name] === 'D');
   const lines: string[] = [];
   if (hasDeferred) {
     const reminder = residentToolNames.every(name => initial.has(name)) ? RESIDENT_REMINDER : '';
-    lines.push(reminder + MAP_REMINDER);
+    const mapReminder = mode === 'direct'
+      ? '其他可用工具已随当前窗口提供。需要按意图找工具时，可用 tool_catalog 的 query 搜索。'
+      : MAP_REMINDER;
+    lines.push(reminder + mapReminder);
   }
   if (initial.size) {
-    lines.push(RESIDENT_TOOL_HEADING, '这些工具的参数齐了就可以直接用 tool_invoke。');
+    lines.push(RESIDENT_TOOL_HEADING, mode === 'direct'
+      ? '参数齐备时，直接按下列工具名调用。'
+      : '这些工具的参数齐了就可以直接用 tool_invoke。');
     for (const name of residentToolNames) {
       const spec = initial.get(name);
       if (!spec) continue;
       lines.push(`- ${name}\n${residentToolGuide(spec)}`);
       initial.delete(name);
     }
-    // 显式配置也可选其他工具，仍须提供它们完整可调用定义。
-    for (const spec of initial.values()) lines.push(renderDefinition(spec));
+    // Direct windows already advertise their full definitions on the wire.
+    for (const spec of initial.values()) {
+      const definition = spec.function;
+      lines.push(mode === 'direct'
+        ? `- ${definition.name}\n${definition.description.split(/[。\n]/, 1)[0]}`
+        : renderDefinition(spec));
+    }
   }
   return lines.length ? lines.join('\n') : null;
 }

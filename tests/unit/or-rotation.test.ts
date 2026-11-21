@@ -3,6 +3,7 @@
 import { test } from 'node:test';
 import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -115,6 +116,36 @@ async function say(ctx: ReturnType<typeof compose>, content: string, clientMsgId
   await ctx.supervisor.waitIdle();
   return sub;
 }
+
+test('直调换窗评审只附加自己的完成工具，审计实发定义与普通聊天隔离', async (t) => {
+  const requests: Array<{ tools: unknown[]; review: boolean }> = [];
+  const fixture: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];
+  const scripted = scriptedTransport({ firstRound: 'text' }, 'no_new_hold', fixture);
+  const root = tempRoot('direct-review-');
+  const ctx = compose(root, async (payload) => {
+    const messages = payload.messages as Array<{ role: string; content: unknown }>;
+    const tail = messages.findLast(message => message.role === 'user')?.content;
+    requests.push({ tools: payload.tools as unknown[], review: JSON.stringify(tail).includes('换窗前记忆检查') });
+    return scripted(payload);
+  }, mariposaOk, {
+    runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: 'direct' },
+    windows: { soft_limit_tokens: 30_000 },
+  });
+  t.after(() => { ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await say(ctx, '合成首轮', 'direct-review-first', T0);
+  const window = ctx.windows.activeWindow('c1')!;
+  const next = await say(ctx, '容量验证内容'.repeat(12_000), 'direct-review-next', new Date(Date.parse(T0) + H).toISOString());
+  assert.notEqual(ctx.windows.activeWindow('c1')!.id, window.id);
+  assert.equal(ctx.db.prepare('SELECT state FROM turns WHERE id=?').get(next.turnId)?.state, 'completed');
+
+  const names = (specs: unknown[]) => specs.map(spec => (spec as { function: { name: string } }).function.name);
+  const chat = requests.find(request => !request.review)!;
+  const review = requests.find(request => request.review)!;
+  assert.ok(!names(chat.tools).includes('context_review_complete'));
+  assert.deepEqual(names(review.tools), [...names(chat.tools), 'context_review_complete']);
+  const row = ctx.db.prepare("SELECT payload_wire_json FROM provider_requests WHERE window_id=? AND purpose='pre_rotate_review' AND sent_at IS NOT NULL").get(window.id);
+  assert.deepEqual(JSON.parse(String(row?.payload_wire_json)).tools, review.tools);
+});
 
 test('容量触发（原 6h 静默触发，2026-10-08 晚间裁定改为软线唯一基线；现行 600k 兜底）：一次提醒 → 零新增放行 → CAS 换窗 → 本轮输入只进新窗一次', async () => {
   const log: Array<{ purpose: string; roles: string[]; lastUser: string }> = [];

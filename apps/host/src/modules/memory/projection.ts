@@ -62,6 +62,14 @@ export function candidates(v: any[], labels?: SpeakerLabels): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
     const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','content_version','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
+    // Mariposa event cards derive this token from memories.current_version_no.
+    // Keep the token for recall and expose its integer form for memory_update CAS.
+    if (c.channel === 'event' && typeof c.memory_id === 'string' && c.memory_id.length > 0
+        && c.resource_ref === `memory:${c.memory_id}`
+        && typeof c.content_version === 'string' && /^[1-9][0-9]*$/.test(c.content_version)) {
+      const version = Number(c.content_version);
+      if (Number.isSafeInteger(version)) out.version = version;
+    }
     if(labels && typeof out.speaker === 'string') out.speaker = speakerLabelFor(out.speaker, labels);
     // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
     // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）

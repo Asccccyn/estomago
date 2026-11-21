@@ -30,7 +30,7 @@ function fixture(t: any) {
 test('零已读、无来源收据直接保存；以后绑定失败不撤销或重写记忆', async t => {
   const f = fixture(t);
   const saved = await f.tools.execute('memory_hold', f.args, f.ctx);
-  assert.deepEqual(saved, { ok: true, output: { saved: true, memory_id: 'saved-1', source_status: 'unbound' } });
+  assert.deepEqual(saved, { ok: true, output: { saved: true, memory_id: 'saved-1', version: 1, source_status: 'unbound' } });
   assert.equal(f.syncs(), 0);
   assert.equal(f.calls[0]!.payload.our_words, undefined);
   assert.equal(f.calls[0]!.payload.event_source_ranges, undefined);

@@ -382,7 +382,7 @@ export class MemoryToolsService {
     // 已冻结的旧窗口仍可能传附件参数；保存照常完成，并明确告知附件没有执行。
     // 包4（2026-11-18）：手工绑定已退出模型面——回执不再推荐绑定动作。
     return { ok: true, output: {
-      saved: true, memory_id: receipt.memory_id, source_status: 'unbound',
+      saved: true, memory_id: receipt.memory_id, version: receipt.version, source_status: 'unbound',
       ...((args.source_ranges !== undefined || args.quotes !== undefined) ? {
         note: '记忆已保存；旧参数中的原文绑定和摘录未执行。原文关联由后台任务自动处理，不要重写这条记忆。',
       } : {}),
@@ -943,6 +943,11 @@ export class MemoryToolsService {
     if (action === 'revise' && !content) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'revise 必须带 content（新正文）' } };
     }
+    const informedByRevision = typeof args.informed_by_revision === 'number' ? args.informed_by_revision : undefined;
+    if (action === 'revise' && informedByRevision !== undefined && informedByRevision >= expected) {
+      return { ok: false, output: { error_code: 'I_INVALID_ARGUMENT', field: 'informed_by_revision',
+        detail: 'informed_by_revision 必须小于 expected_revision，只能引用更早的历史修订。只参考当前修订时省略 informed_by_revision。' } };
+    }
     const restoreRevision = typeof args.restore_revision === 'number' ? args.restore_revision : 0;
     if (action === 'restore' && !restoreRevision) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'restore 必须带 restore_revision（要恢复到哪条历史修订——item_history 里有）' } };
@@ -956,14 +961,14 @@ export class MemoryToolsService {
     // 提交/确定失败收口；结果未知保持 unknown，跨宿主重启由 recoverUnknownEffects
     // 用原身份原样重放（M 领域原子幂等从回执恢复原成功），不再只有内存 ID+unknown 文本。
     const iArgs = { action, content, itemId, expectedRevision: expected, restoreRevision, changeReason, relations,
-      ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}) };
+      ...(informedByRevision !== undefined ? { informedByRevision } : {}) };
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'i_write', operationId, toolCallId: String(ctx.toolCallId ?? ''), seenSequence: ctx.seenSequence, argsJson: JSON.stringify(iArgs) });
     const settle = (state: 'committed' | 'failed_resolved' | 'unknown'): void => this.reviews.settleEffect(effectId, state, state === 'committed', null);
     try {
       if (action === 'create') {
         r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}), operationId });
       } else if (action === 'revise') {
-        r = await m.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(typeof args.informed_by_revision === 'number' ? { informedByRevision: args.informed_by_revision } : {}), ...(relations ? { relations } : {}), operationId });
+        r = await m.iItemRevise({ itemId, content, expectedRevision: expected, ...(changeReason ? { changeReason } : {}), ...(informedByRevision !== undefined ? { informedByRevision } : {}), ...(relations ? { relations } : {}), operationId });
       } else {
         r = await m.iItemRestore({ itemId, restoreRevision, ...(Array.isArray(args.relations) ? { relations: args.relations } : {}), expectedRevision: expected, ...(changeReason ? { changeReason } : {}), operationId });
       }

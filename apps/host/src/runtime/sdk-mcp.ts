@@ -6,19 +6,24 @@ import type { HostToolSpec, ToolExecResult } from '../capabilities/contracts.ts'
 
 export const sdkToolName = (name: string): string => `mcp__est__${name}`;
 
-/** Keep the registry's JSON Schema intact. Validation and business execution
- * belong to ModelToolBridge (the current HostToolExecutor), not a second Zod schema. */
+/** The Claude SDK skips MCP tools whose input schema uses a top-level
+ * combinator. Native tools expose their ordinary typed fields to the SDK.
+ * The complete frozen schema stays in ModelToolBridge for execution. */
 export function createEstSdkMcp(
   tools: HostToolSpec[],
   execute: (name: string, args: Record<string, unknown>, meta: Record<string, unknown> | undefined) => Promise<ToolExecResult & { recordDelivery?: (result: ToolExecResult) => void }>,
   readImage?: ReadModelImage,
 ): McpSdkServerConfigWithInstance {
   const instance = new McpServer({ name: 'est', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const names = new Set(tools.map(({ function: spec }) => spec.name));
+  const native = names.has('tool_catalog') && names.has('tool_define') && !names.has('tool_invoke');
   instance.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map(({ function: spec }) => ({
-      name: spec.name, description: spec.description,
-      inputSchema: spec.parameters as { type: 'object'; properties?: Record<string, object> },
-    })),
+    tools: tools.map(({ function: spec }) => {
+      const inputSchema = spec.parameters as { type: 'object'; properties?: Record<string, object> };
+      if (!native) return { name: spec.name, description: spec.description, inputSchema };
+      const { allOf: _allOf, anyOf: _anyOf, oneOf: _oneOf, ...sdkSchema } = spec.parameters;
+      return { name: spec.name, description: spec.description, inputSchema: sdkSchema as typeof inputSchema };
+    }),
   }));
   instance.server.setRequestHandler(CallToolRequestSchema, async request => {
     if (!tools.some(t => t.function.name === request.params.name)) {

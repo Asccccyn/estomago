@@ -2,6 +2,7 @@
 import contract from '../../integrations/mariposa/contracts/capabilities.v1.json' with {type:'json'};
 const capabilities = new Map(contract.capabilities.map(cap => [cap.canonical_name, cap.input_schema]));
 export const HOLD_INPUT = capabilities.get('memory.hold') as Record<string, any>;
+export const MEMORY_UPDATE_INPUT = capabilities.get('memory.update') as Record<string, any>;
 export const RECALL_PLAN = (capabilities.get('memory.recall.start') as Record<string, any>).properties.query_plan;
 export const ROUND2_INPUT = capabilities.get('memory.recall.round2') as Record<string, any>;
 export const RELATION_INPUT = capabilities.get('memory.relations.link') as Record<string, any>;

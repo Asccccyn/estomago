@@ -3,12 +3,16 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch, assembleTestTools } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { ContentServer } from '../../apps/content/src/service.ts';
 import { contentForward } from '../../apps/host/src/integrations/content/client.ts';
 import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
+import { createEstSdkMcp } from '../../apps/host/src/runtime/sdk-mcp.ts';
+import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { ContentOperationCoordinator } from '../../apps/host/src/integrations/content/coordinator.ts';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
@@ -361,9 +365,9 @@ async function toolHarness() {
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
   const contentOps = new ContentOperationCoordinator({ db, client, media, logger: new Logger(null) });
-  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages: new MessageService(db), contentClient: client, contentOps });
+  const { tools, registry } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages: new MessageService(db), contentClient: client, contentOps });
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w-r5', turnId: 'turn-r5', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-r5' };
-  return { tools, ctx, media, client };
+  return { db, tools, registry, ctx, media, client };
 }
 
 test('R5-工具：content_album_entry_write（收藏+携带模式一体；同键幂等重放）', async () => {
@@ -378,6 +382,51 @@ test('R5-工具：content_album_entry_write（收藏+携带模式一体；同键
   assert.equal((r2.output as { id: string }).id, e1.id, '同幂等键重放=同一条目');
   const bad = await tools.execute('content_album_entry_write', { kind: 'chat_screenshots', asset_id: asset.id, idempotency_key: 'r5-alb-2' }, ctx);
   assert.equal(bad.ok, false, 'chat_screenshots 不在写工具白名单（只归截图归档链）');
+});
+
+test('相册：SDK 经冻结 tool_invoke 恢复参数对象，原有校验和幂等仍生效', async t => {
+  const { db, tools, registry, ctx, media, client } = await toolHarness();
+  const windowId = 'w-r5-album-sdk';
+  db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES(?,?,'ACTIVE','now','now')").run(windowId, ctx.roomId);
+  const spec = freezeWindowTools(db, windowId, registry.currentCatalog(), 'deferred', registry.currentGroups());
+  const mcp = createEstSdkMcp(spec, (name, args) => tools.execute(name, args, { ...ctx, windowId }));
+  const [sdkTransport, mcpTransport] = InMemoryTransport.createLinkedPair();
+  const sdk = new Client({ name: 'synthetic', version: '1' });
+  t.after(async () => { try { await sdk.close(); } finally { db.close(); } });
+  await mcp.instance.connect(mcpTransport);
+  await sdk.connect(sdkTransport);
+
+  const asset = await media.saveBuffer({ bytes: Buffer.concat([PNG, Buffer.from([9])]), purpose: 'chat_image',
+    operationId: 'r5-sdk-album-asset', createdBy: 'qiaosheng', origin: 'upload' });
+  const input = { kind: 'important_photos', asset_id: asset.id, caption: '合成照片 }',
+    carry_mode: 'next_once', idempotency_key: 'r5-sdk-album' };
+  const call = async (args: unknown, name = 'content_album_entry_write') => {
+    const result = await sdk.callTool({ name: 'tool_invoke', arguments: { name, arguments: args } });
+    assert.ok(Array.isArray(result.content));
+    const block = result.content[0];
+    assert.equal(block?.type, 'text');
+    return { isError: result.isError, output: JSON.parse(block.text) };
+  };
+  const encoded = JSON.stringify(input);
+  assert.equal((await call(encoded + '}}')).output.error_code, 'TOOL_ARG_TYPE');
+  assert.equal((await call('{}', 'content_albums_read')).output.error_code, 'TOOL_ARG_TYPE');
+  assert.equal((await call(JSON.stringify({ ...input, kind: 'chat_screenshots' }) + '}')).output.error_code, 'TOOL_ARG_ENUM');
+  const missing = await call(JSON.stringify({ ...input, asset_id: 'missing-synthetic-asset' }) + '}');
+  assert.equal(missing.isError, true);
+  assert.equal(missing.output.error_code, 'ALBUM_ENTRY_WRITE_FAILED');
+  assert.match(missing.output.detail, /asset_not_found/);
+
+  const saved = await call(encoded + '}');
+  assert.equal(saved.isError, false, JSON.stringify(saved.output));
+  assert.equal(saved.output.caption, input.caption);
+  assert.equal(saved.output.carry_mode, input.carry_mode);
+  assert.equal((await call(encoded)).output.id, saved.output.id);
+  assert.equal((await call(input)).output.id, saved.output.id);
+  const list = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/important_photos/entries',
+    actor: 'jiaming', headers: {} });
+  const entries = (list.body as { items: Array<{ id: string; asset_id: string }> }).items;
+  assert.deepEqual(entries.filter(entry => entry.asset_id === asset.id).map(entry => entry.id), [saved.output.id]);
+  assert.equal(entries.some(entry => entry.asset_id === 'missing-synthetic-asset'), false);
 });
 
 test('R5-工具：creation_save_artifact 保存即入作品（svg 免桶+icon=work；同 op 重放不重复建）', async () => {

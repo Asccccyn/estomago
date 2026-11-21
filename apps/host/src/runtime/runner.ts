@@ -27,8 +27,10 @@ export type SdkRunRequest = {
   host?: {
     purpose?: RunnerPurpose;
     windowId: string;
+    /** Scoped task tools must not consume or replace the main SDK session anchor. */
+    isolatedSession?: boolean;
     envelope: OrRequestEnvelope;
-    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[]) => Promise<ToolExecResult>;
+    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[], argumentSource?: string) => Promise<ToolExecResult>;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;
     modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
@@ -92,7 +94,7 @@ export type RunnerRunResult = {
   lastSentMessages?: OrMessage[];
   /** B3（2026-11-04）：SDK 会话衔接诊断——resume 决策原因 + 锚生命周期（日志专用，不进协议） */
   resumeDiagnosis?: {
-    decision: 'resume_hit' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch';
+    decision: 'resume_hit' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' | 'isolated';
     anchorSessionId: string | null;
     anchorMessageCount: number | null;
     sentMessageCount: number;

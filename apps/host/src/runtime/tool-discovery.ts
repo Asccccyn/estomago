@@ -1,4 +1,6 @@
 import type { Db } from '../db/connection.ts';
+import type { ToolSchemaMode } from '../config/schema.ts';
+import { describeLiteralHanFields } from '../capabilities/model-arguments.ts';
 import { definitionId, renderDefinition } from '../capabilities/definition.ts';
 export { definitionId } from '../capabilities/definition.ts';
 import type { ToolGroup } from '../capabilities/registry.ts';
@@ -68,52 +70,142 @@ export function modelToolsAfterBindingRetirement(specs: readonly HostToolSpec[])
   return specs.flatMap(spec => modelDefinitionAfterBindingRetirement(spec) ?? []);
 }
 
-export type WindowToolset = { protocol:'legacy'|'deferred'; tools:HostToolSpec[]; catalog:HostToolSpec[]; groups:Record<string,ToolGroup>; initialText:string|null; legacyGroups:boolean };
-export function storedToolset(db:Db,windowId:string):WindowToolset|null {
-  if(!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_toolsets'").get())return null;
-  const row=db.prepare('SELECT protocol,wire_tools_json,catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(windowId) as {protocol:'legacy'|'deferred';wire_tools_json:string;catalog_json:string;groups_json:string|null;initial_text:string|null}|undefined;
-  if (!row) return null;
-  const catalog: HostToolSpec[] = JSON.parse(row.catalog_json);
-  const groups: Record<string,ToolGroup> = row.groups_json ? JSON.parse(row.groups_json)
-    : recoverInitialGroups(db,windowId,catalog);
-  return {protocol:row.protocol,tools:JSON.parse(row.wire_tools_json),catalog,groups,initialText:row.initial_text,legacyGroups:row.initial_text===null};
-
+function directCatalog(catalog: readonly HostToolSpec[]): HostToolSpec[] {
+  return modelToolsAfterBindingRetirement(catalog).map(describeLiteralHanFields);
 }
-export function freezeWindowTools(db:Db,windowId:string,catalog:HostToolSpec[],mode:'legacy'|'deferred',declared:Record<string,ToolGroup>={}):HostToolSpec[] {
-  const stored=storedToolset(db,windowId);
-  if(stored){
-    // Upgrade only grouping metadata reconstructed from sent facts, never history.
-    if(stored.legacyGroups)db.prepare('UPDATE window_toolsets SET groups_json=? WHERE window_id=? AND groups_json IS NULL').run(JSON.stringify(stored.groups),windowId);
+
+/** Direct windows advertise ordinary business tools and the two read-only discovery tools. */
+export function buildDirectTools(catalog: readonly HostToolSpec[], groups: Record<string, ToolGroup>): HostToolSpec[] {
+  const [search, define] = buildDeferredTools();
+  return [
+    { ...search!, function: { ...search!.function, description: '按业务意图或名称查询当前可用的工具和完整定义。已有所需参数时，直接按业务工具名调用。' } },
+    { ...define!, function: { ...define!.function, description: '按工具名核对完整参数定义。参数齐备时可直接调用业务工具。' } },
+    ...directCatalog(catalog).filter(spec => groups[spec.function.name] !== 'T'),
+  ];
+}
+
+export type WindowToolset = {
+  protocol: ToolSchemaMode;
+  tools: HostToolSpec[];
+  catalog: HostToolSpec[];
+  groups: Record<string, ToolGroup>;
+  initialText: string | null;
+  legacyGroups: boolean;
+};
+
+function validateDirectSnapshotTools(value: unknown): void {
+  if (!Array.isArray(value) || value.some(tool =>
+    tool?.type !== 'function' || typeof tool.function?.name !== 'string'
+    || !tool.function.name || typeof tool.function.description !== 'string'
+    || !tool.function.parameters || typeof tool.function.parameters !== 'object'
+    || Array.isArray(tool.function.parameters))) {
+    throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+  }
+}
+
+/** Distinguish existing deferred snapshots from native ones without rewriting rows or the CHECK. */
+function snapshotProtocol(physical: 'legacy' | 'deferred', tools: HostToolSpec[]): ToolSchemaMode {
+  if (physical === 'legacy') return 'legacy';
+  if (!Array.isArray(tools)) throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+  const names = new Set(tools.map(tool => tool?.function?.name));
+  if (names.has('tool_invoke')) return 'deferred';
+  if (names.size !== tools.length || !names.has('tool_catalog') || !names.has('tool_define')) {
+    throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+  }
+  return 'direct';
+}
+
+export function storedToolset(db: Db, windowId: string): WindowToolset | null {
+  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_toolsets'").get()) return null;
+  const row = db.prepare('SELECT protocol,wire_tools_json,catalog_json,groups_json,initial_text FROM window_toolsets WHERE window_id=?').get(windowId) as {
+    protocol: 'legacy' | 'deferred'; wire_tools_json: string; catalog_json: string; groups_json: string | null; initial_text: string | null;
+  } | undefined;
+  if (!row) return null;
+  const tools = JSON.parse(row.wire_tools_json) as HostToolSpec[];
+  const catalog = JSON.parse(row.catalog_json) as HostToolSpec[];
+  const protocol = snapshotProtocol(row.protocol, tools);
+  if (protocol === 'direct' && !row.groups_json) throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+  const groups: Record<string, ToolGroup> = row.groups_json
+    ? JSON.parse(row.groups_json) : recoverInitialGroups(db, windowId, catalog);
+  if (protocol === 'direct') {
+    validateDirectSnapshotTools(tools);
+    validateDirectSnapshotTools(catalog);
+    if (!groups || catalog.some(spec => !['C', 'D', 'T'].includes(groups[spec.function.name]!))) {
+      throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+    }
+    const expected = catalog.filter(spec => groups[spec.function.name] !== 'T');
+    const published = tools.filter(spec => !['tool_catalog', 'tool_define'].includes(spec.function.name));
+    if (published.length !== expected.length || published.some((spec, index) => spec.function.name !== expected[index]!.function.name)) {
+      throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+    }
+  }
+  return { protocol, tools, catalog, groups, initialText: row.initial_text, legacyGroups: protocol !== 'direct' && row.initial_text === null };
+}
+
+export function freezeWindowTools(db: Db, windowId: string, catalog: HostToolSpec[], mode: ToolSchemaMode, declared: Record<string, ToolGroup> = {}): HostToolSpec[] {
+  const stored = storedToolset(db, windowId);
+  if (stored) {
+    // Recover old grouping metadata with sent evidence, without changing the wire or catalog.
+    if (stored.legacyGroups) db.prepare('UPDATE window_toolsets SET groups_json=? WHERE window_id=? AND groups_json IS NULL')
+      .run(JSON.stringify(stored.groups), windowId);
     return stored.tools;
   }
-  // Recover the exact previously sent host tools before considering new code.
-  // Old windows, including explicit empty toolsets, never silently adopt v2.
-  const request=db.prepare('SELECT payload_json,payload_wire_json FROM provider_requests WHERE window_id=? AND sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(windowId) as {payload_json:string;payload_wire_json:string|null}|undefined;
-  let tools:HostToolSpec[];let protocol=mode;
-  if(request){
-    let recovered:unknown;
-    try{recovered=JSON.parse(request.payload_json).tools}catch{}
-    if(!Array.isArray(recovered))throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
-    tools=recovered;protocol=tools.some(t=>t.function?.name==='tool_invoke')?'deferred':'legacy';
-    if (protocol==='deferred') throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
-  }else tools=mode==='deferred'?buildDeferredTools():catalog;
-  const full=protocol==='legacy'?tools:catalog;
-  const groups = request ? null : resolveToolGroups(db,full,declared);
-  const initialText = groups && protocol === 'deferred' ? renderToolContext(full,groups) : null;
-  db.prepare('INSERT OR IGNORE INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at,groups_json,initial_text) VALUES(?,?,?,?,?,?,?)').run(windowId,protocol,JSON.stringify(tools),JSON.stringify(full),new Date().toISOString(),groups ? JSON.stringify(groups) : null,initialText);
-  return storedToolset(db,windowId)!.tools;
+
+  // An already-sent legacy wire can be recovered as-is. Discovery tools require
+  // the frozen catalog and task groups, which cannot be inferred from one request.
+  const request = db.prepare('SELECT payload_json FROM provider_requests WHERE window_id=? AND sent_at IS NOT NULL ORDER BY sent_at DESC LIMIT 1').get(windowId) as { payload_json: string } | undefined;
+  let full: HostToolSpec[];
+  let tools: HostToolSpec[];
+  let groups: Record<string, ToolGroup> | null;
+  let initialText: string | null = null;
+  if (request) {
+    let recovered: unknown;
+    try { recovered = JSON.parse(request.payload_json).tools; } catch { /* checked below */ }
+    if (!Array.isArray(recovered)) throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+    tools = recovered;
+    if (tools.some(tool => (DISCOVERY_NAMES as readonly string[]).includes(tool?.function?.name))) {
+      throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
+    }
+    full = tools;
+    groups = null;
+    mode = 'legacy';
+  } else {
+    full = mode === 'direct' ? directCatalog(catalog) : catalog;
+    groups = resolveToolGroups(db, full, declared);
+    tools = mode === 'direct' ? buildDirectTools(full, groups) : mode === 'deferred' ? buildDeferredTools() : full;
+    if (mode !== 'legacy') initialText = renderToolContext(full, groups, mode);
+  }
+  const physical = mode === 'direct' ? 'deferred' : mode;
+  db.prepare('INSERT OR IGNORE INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at,groups_json,initial_text) VALUES(?,?,?,?,?,?,?)')
+    .run(windowId, physical, JSON.stringify(tools), JSON.stringify(full), new Date().toISOString(), groups ? JSON.stringify(groups) : null, initialText);
+  return storedToolset(db, windowId)!.tools;
 }
+
+/** Add a task-only native definition after the caller has verified task scope. */
+export function toolsetForTask(set: WindowToolset, name: string): HostToolSpec[] {
+  if (set.protocol !== 'direct' || set.groups[name] !== 'T') return set.tools;
+  const task = set.catalog.find(spec => spec.function.name === name);
+  return task ? [...set.tools, task] : set.tools;
+}
+
 /** Report whether the full definition was actually delivered in this sent request.
  * A resident usage guide does not count as the full schema, and delivery is not an invocation gate. */
 export function definitionWasSeen(db:Db,scope:{roomId:string;windowId:string;requestId:string},spec:HostToolSpec):boolean {
-  const row=db.prepare(`SELECT p.payload_json,p.payload_wire_json,p.tool_context_json FROM provider_requests p JOIN turns t ON t.id=p.turn_id
-    WHERE p.id=? AND p.window_id=? AND t.conversation_id=? AND p.sent_at IS NOT NULL`).get(scope.requestId,scope.windowId,scope.roomId) as {payload_json:string;payload_wire_json:string|null;tool_context_json:string|null}|undefined;
+  const row=db.prepare(`SELECT p.payload_json,p.payload_wire_json,p.payload_format,p.tool_context_json FROM provider_requests p JOIN turns t ON t.id=p.turn_id
+    WHERE p.id=? AND p.window_id=? AND t.conversation_id=? AND p.sent_at IS NOT NULL`).get(scope.requestId,scope.windowId,scope.roomId) as {payload_json:string;payload_wire_json:string|null;payload_format:string|null;tool_context_json:string|null}|undefined;
   if(!row)return false;
   try {
+    const set = storedToolset(db,scope.windowId);
+    if (set?.protocol === 'direct' && (row.payload_wire_json || row.payload_format !== 'sdk_projection_v1')) {
+      const sent = JSON.parse(row.payload_wire_json ?? row.payload_json);
+      if (Array.isArray(sent.tools) && sent.tools.some((tool: HostToolSpec) =>
+        tool.function?.name === spec.function.name && definitionId(tool) === definitionId(spec))) return true;
+    }
+    // SDK projects provider-compatible schemas. A later tool_define result
+    // can still prove delivery of the complete frozen business definition.
     const proofs=JSON.parse(row.tool_context_json??'[]');
     if(proofs.some((proof:any)=>proof.name===spec.function.name && proof.definition_id===definitionId(spec)))return true;
     const messages=JSON.parse(row.payload_wire_json??row.payload_json).messages as any[];
-    const set = storedToolset(db,scope.windowId);
     const canonical = JSON.parse(row.payload_json).messages as any[];
     if (set?.groups[spec.function.name] === 'C' && canonical.some(m => m.role === 'system' &&
         (typeof m.content === 'string' ? [m.content] : (m.content ?? []).filter((b:any)=>b.type==='text').map((b:any)=>b.text))
@@ -135,9 +227,10 @@ export function definitionWasSeen(db:Db,scope:{roomId:string;windowId:string;req
   return false;
 }
 export function taskDefinitionContext(set: WindowToolset, name: string, taskId: string): string | null {
-  if (set.protocol !== 'deferred') return null;
+  if (set.protocol === 'legacy') return null;
   const spec = set.catalog.find(s => s.function.name === name);
   if (!spec || (!set.legacyGroups && set.groups[name] !== 'T')) return null;
+  if (set.protocol === 'direct') return `[tools/task:${taskId}：当前宿主任务；可直接调用 ${name}。]`;
   return `[tools/task:${taskId}：宿主任务附加定义；完成动作仍核验当前活动任务]\n${renderDefinition(spec)}`;
 }
 

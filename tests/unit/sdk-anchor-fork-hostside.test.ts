@@ -6,6 +6,8 @@
 // - background_complete 后的合法停发归一为 completed（不再 failed turn——RB02）
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { runSdkHostQuery, type SdkQueryFactory, type SdkSessionAnchor } from '../../apps/host/src/runtime/sdk-host-query.ts';
 import { ContractError } from '../../apps/host/src/runtime/or-contract.ts';
 
@@ -123,4 +125,87 @@ test('P1-10: 失败 result 的具体原因进入最终回执 errorMessage', asyn
   assert.equal(r.outcome, 'error');
   assert.match(String(r.errorMessage ?? ''), /Overloaded/, '具体原因不再丢失');
   assert.ok(r.errorCode === null || /^SDK_/.test(r.errorCode), '稳定码语义保留');
+});
+
+test('MCP uses only verified source from its own main stream tool block', async () => {
+  const wireName = 'mcp__est__probe_tool';
+  const args = { text: '中' };
+  const escaped = '{"text":"\\u4e2d"}';
+  const literal = '{"text":"中"}';
+  const calls = ['escaped', 'literal', 'mismatched', 'oversized', 'no-stream'];
+  const observed: Array<[string, string | undefined]> = [];
+  const stream = (event: Record<string, unknown>, parent_tool_use_id: string | null = null) =>
+    ({ type: 'stream_event', event, parent_tool_use_id }) as never;
+  const blockStart = (index: number, id: string) =>
+    ({ type: 'content_block_start', index, content_block: { type: 'tool_use', id, name: wireName, input: {} } });
+  const delta = (index: number, partial_json: string) =>
+    ({ type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json } });
+  const blockStop = (index: number) => ({ type: 'content_block_stop', index });
+
+  const factory: SdkQueryFactory = ({ prompt, options }) => {
+    const run = (async function* () {
+      assert.notEqual(typeof prompt, 'string');
+      const promptInput = (prompt as Exclude<typeof prompt, string>)[Symbol.asyncIterator]();
+      await promptInput.next();
+      const hook = options?.hooks?.PreToolUse?.[0]?.hooks[0];
+      const server = options?.mcpServers?.est;
+      assert.ok(hook && server?.type === 'sdk');
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      const client = new Client({ name: 'synthetic-sdk', version: '1' });
+      try {
+        await server.instance.connect(serverTransport);
+        await client.connect(clientTransport);
+        yield stream({ type: 'message_start', message: { id: 'main', model: 'claude-test-1' } });
+        yield stream(blockStart(0, calls[0]!));
+        yield stream(delta(0, escaped.slice(0, 11)));
+        yield stream(delta(0, escaped.slice(11)));
+        yield stream(blockStart(1, calls[1]!));
+        yield stream(delta(1, literal));
+        yield stream(blockStart(0, 'subagent-collision'), 'parent-block');
+        yield stream(delta(0, '{"text":"subagent"}'), 'parent-block');
+        yield stream(blockStop(0), 'parent-block');
+        yield stream(blockStop(1));
+        yield stream(blockStart(2, calls[2]!));
+        yield stream(delta(2, '{"text":"different"}'));
+        yield stream(blockStop(2));
+        yield stream(blockStart(3, calls[3]!));
+        yield stream(delta(3, literal + ' '.repeat(1024 * 1024)));
+        yield stream(blockStop(3));
+        yield { type: 'assistant', message: { id: 'main', content: calls.map(id => ({ type: 'tool_use', id, name: wireName, input: args })) } } as never;
+        for (const [index, tool_use_id] of calls.entries()) {
+          await hook({ hook_event_name: 'PreToolUse', tool_name: wireName, tool_input: args, tool_use_id,
+            session_id: 'synthetic', transcript_path: '', cwd: '' }, tool_use_id, { signal: new AbortController().signal });
+          const result = await client.callTool({ name: 'probe_tool', arguments: args });
+          assert.equal(result.isError, false);
+          // A complete matching object is already usable before the iterator delivers block stop.
+          if (index === 0) yield stream(blockStop(0));
+        }
+        yield { type: 'result', subtype: 'success', session_id: 'synthetic' } as never;
+      } finally {
+        await client.close();
+        await promptInput.return?.();
+      }
+    })();
+    return Object.assign(run, { close() {} }) as never;
+  };
+  const result = await runSdkHostQuery(factory, req({
+    host: {
+      purpose: 'chat', windowId: 'argument-source', envelope: {
+        model: 'claude-test-1', maxTokens: 64, messages: [sys('S'), user('hi')],
+        tools: [{ type: 'function', function: { name: 'probe_tool', description: 'synthetic', parameters: { type: 'object' } } }],
+      },
+      beforeModel: async () => {},
+      modelStarted: () => {},
+      executeTool: async (_name: string, _args: Record<string, unknown>, id: string, _round: number, messages: unknown, source?: string) => {
+        assert.ok(Array.isArray(messages));
+        observed.push([id, source]);
+        return { ok: true, output: {} };
+      },
+    },
+  }), new Map(), async () => null, (() => ({ pid: 1 })) as never);
+  assert.equal(result.outcome, 'completed');
+  assert.deepEqual(observed, [
+    ['escaped', escaped], ['literal', literal], ['mismatched', undefined],
+    ['oversized', undefined], ['no-stream', undefined],
+  ]);
 });

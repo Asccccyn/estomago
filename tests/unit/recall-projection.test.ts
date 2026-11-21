@@ -21,6 +21,22 @@ test('candidate whitelist preserves content and operation references, omits retr
  for(const k of ['version_receipt','evidence_requirement_met','matched_by','matched_fields','matched','rrf_score']) assert.equal(k in c,false);
  for(const k of ['content_version','memory_id','word_id','speaker','memory_date','excerpt','source_ref','source_binding_version','resource_ref']) assert.deepEqual(c[k],(FULL as any)[k]);
 });
+test('only a canonical Mariposa event card exposes an integer edit version', () => {
+  const event = { channel: 'event', memory_id: '00051', resource_ref: 'memory:00051', content_version: '3' };
+  const [valid, ...other] = candidates([
+    event,
+    { ...event, channel: 'words', resource_ref: 'our_word:w9' },
+    { ...event, channel: 'raw', resource_ref: 'source_msg:sm1' },
+    { ...event, resource_ref: 'memory:different' },
+    { ...event, content_version: '0' },
+    { ...event, content_version: '01' },
+    { ...event, content_version: '3e0' },
+    { ...event, content_version: String(Number.MAX_SAFE_INTEGER + 1) },
+  ]);
+  assert.equal(valid!.version, 3);
+  assert.equal(valid!.content_version, '3');
+  assert.ok(other.every(card => !Object.hasOwn(card, 'version')));
+});
 test('new unexpected technical fields cannot leak through candidates',()=>{
  const [c]=candidates([{memory_id:'m',text:'完整正文',new_debug_hash:'hidden',scores:{x:1}}]) as any[];
  assert.deepEqual(c,{memory_id:'m',text:'完整正文'});

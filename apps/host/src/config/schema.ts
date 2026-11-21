@@ -16,6 +16,9 @@ export type ThinkingConfig = {
 export const RUNTIME_PROVIDER_ENUM = ['claude-agent-sdk', 'openrouter', 'mock', 'deepseek'] as const;
 export type RuntimeProvider = (typeof RUNTIME_PROVIDER_ENUM)[number];
 
+const TOOL_SCHEMA_MODES = ['legacy', 'deferred', 'direct'] as const;
+export type ToolSchemaMode = (typeof TOOL_SCHEMA_MODES)[number];
+
 export type OrModelId = string; // 形状校验见 orModelIdIssue()；null=未配置（selectRunner 阻断，不猜默认型号）
 
 export type OpenRouterConfig = {
@@ -68,7 +71,7 @@ export type Config = {
     supervisor: string;
   };
   runtime: {
-    tool_schema_mode: 'legacy' | 'deferred';
+    tool_schema_mode: ToolSchemaMode;
     provider: string;
     access_policy: 'configured' | 'subscription-first';
     subscription_proxy_url: string | null;
@@ -339,7 +342,7 @@ export const CONFIG_DEFAULTS: Config = {
     supervisor: 'launchagent',
   },
   runtime: {
-    tool_schema_mode: 'deferred',
+    tool_schema_mode: 'direct',
     provider: 'claude-agent-sdk',
     access_policy: 'configured',
     subscription_proxy_url: null,
@@ -912,7 +915,9 @@ export function validateConfig(raw: unknown): { config: Config; issues: Validati
   // ESTOMAGO_OR_SELF_HOLD §1.1：provider 枚举（新增 openrouter 驱动；未知值不得静默落到 SDK）
   const provider = (patched as { runtime?: { provider?: unknown } })?.runtime?.provider;
   const toolMode = (patched as { runtime?: { tool_schema_mode?: unknown } }).runtime?.tool_schema_mode;
-  if (toolMode !== undefined && toolMode !== 'legacy' && toolMode !== 'deferred') issues.push({path:'runtime.tool_schema_mode',message:'必须是 legacy|deferred'});
+  if (toolMode !== undefined && !TOOL_SCHEMA_MODES.some(mode => mode === toolMode)) {
+    issues.push({ path: 'runtime.tool_schema_mode', message: `必须是 ${TOOL_SCHEMA_MODES.join('|')}` });
+  }
   if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
     issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
   }

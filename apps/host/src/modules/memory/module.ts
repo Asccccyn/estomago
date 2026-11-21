@@ -6,8 +6,9 @@ import { quoteBackgroundTool } from '../../runtime/background-tool-cost.ts';
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
 import type { HostToolSpec } from '../../capabilities/contracts.ts';
+import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import { projectMemoryToolResult } from './projection.ts';
-import { HOLD_INPUT, HOLD_MOOD_RULE, RECALL_PLAN, ROUND2_INPUT, TRACE_INPUT, RELATION_INPUT, I_ITEM_INPUT, QUOTE_SELECTION } from './hold-contract.ts';
+import { HOLD_INPUT, HOLD_MOOD_RULE, MEMORY_UPDATE_INPUT, RECALL_PLAN, ROUND2_INPUT, TRACE_INPUT, RELATION_INPUT, I_ITEM_INPUT, QUOTE_SELECTION } from './hold-contract.ts';
 import { currentMoodCategories } from './mood-vocab.ts';
 import { MemoryToolsService } from './service.ts';
 
@@ -41,6 +42,12 @@ export function memoryHoldDefinition(): HostToolSpec {
   }
 }
 
+const memoryUpdateFields = {
+  text: MEMORY_UPDATE_INPUT.properties.text,
+  original_title: MEMORY_UPDATE_INPUT.properties.original_title,
+  date_confidence: MEMORY_UPDATE_INPUT.properties.date_confidence,
+};
+
 /** memory_update 定义（包2 DBG-03 2026-11-16）：M memory.update 领域能力的模型入口——
  *  此前缺失导致写错字只能再 hold 一条，旧错误正文继续参与检索（用户实证"啤啤→啾啾"）。 */
 export const MEMORYUPDATE_DEFINITION: HostToolSpec = {
@@ -53,11 +60,11 @@ export const MEMORYUPDATE_DEFINITION: HostToolSpec = {
       properties: {
         memory_id: { type: 'string', minLength: 1, description: '已有记忆 ID（写入回执/检索/读取结果中的 memory_id）' },
         expected_version: { type: 'integer', minimum: 1, description: '当前版本号（乐观锁；冲突回执会给重读指引）' },
-        text: { type: 'string', description: '修订后的完整记忆正文（省略=保持不变）' },
-        original_title: { type: 'string', description: '修订后的标题（省略=保持不变）' },
+        text: { ...memoryUpdateFields.text, description: '修订后的完整记忆正文（省略=保持不变）' },
+        original_title: { ...memoryUpdateFields.original_title, description: '修订后的标题（省略=保持不变）' },
         categories: { type: 'array', items: { type: 'string' }, minItems: 1, description: '修订后的分类（省略=保持不变）' },
         memory_date: { type: 'string', description: '修订后的事件日期（省略=保持不变）' },
-        date_confidence: { type: 'string', description: '修订后的日期置信（省略=保持不变）' },
+        date_confidence: { ...memoryUpdateFields.date_confidence, description: '修订后的日期置信（省略=保持不变）' },
       },
     },
   },
@@ -434,12 +441,18 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     run: (input: Record<string, unknown>, ctx) => svc.memoryReadFull(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_read_full', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
-  registry.register(toolCapability({
-    owner: 'memory',
-    id: 'memory_update', baselineOrder: 5, definition: () => MEMORYUPDATE_DEFINITION, memoryOnlyAllowed: true, label: '修订记忆',
-    run: (input: Record<string, unknown>, ctx) => Promise.resolve(svc.memoryUpdate(input, ctx)),
-    toModel: (value) => value,
-  }));
+  registry.register({
+    ...toolCapability({
+      owner: 'memory',
+      id: 'memory_update', baselineOrder: 5, definition: () => MEMORYUPDATE_DEFINITION, memoryOnlyAllowed: true, label: '修订记忆',
+      run: (input: Record<string, unknown>, ctx) => svc.memoryUpdate(input, ctx),
+      toModel: (value) => value,
+    }),
+    // Keep stored definitions intact while enforcing the same field rules as Mariposa.
+    parse: (input, frozenSpec) => validateArgsAgainstSchema(input, {
+      allOf: [frozenSpec.function.parameters, { type: 'object', properties: memoryUpdateFields }],
+    }),
+  });
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_i_read', baselineOrder: 6, free: true, definition: () => MEMORYIREAD_DEFINITION, memoryOnlyAllowed: true, label: '读 I',

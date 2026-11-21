@@ -33,6 +33,8 @@ import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
+import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
+import { lastCacheEvidence } from '../../apps/host/src/runtime/cache-observation.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 
 const enc = new TextEncoder();
@@ -40,9 +42,9 @@ const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
 
-function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0) {
+function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' = 'legacy') {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: toolMode }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -189,6 +191,69 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
     } });
   return sched;
 }
+
+test('直调窗口：自主见命令、心跳和聊天共用工具前缀，独立任务缓存不计入心跳', async (t) => {
+  const payloads: Array<Record<string, unknown>> = [];
+  const now = { nowMs: Date.now() };
+  const root = tempRoot('direct-background-');
+  const ctx = compose(root, async (payload) => {
+    payloads.push(payload);
+    const messages = payload.messages as Array<{ role: string; content: unknown }>;
+    const latestUser = JSON.stringify(messages.findLast(message => message.role === 'user')?.content);
+    let body = chatBody(latestUser.includes('Cache keepalive') ? '1' : '合成回复');
+    if (latestUser.includes('Host self-wake')) {
+      const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 500, cache_write_tokens: 1500 }, cost: 0.001 };
+      body = toolCallBody([{ id: 'native-complete', name: 'background_complete', args: '{"outcome":"done"}' }], usage);
+    }
+    return { status: 200, headers: new Map(), body: Readable.from([enc.encode(body)]) };
+  }, now, false, 0, 'direct');
+  const scheduler = wireExecutor(ctx, now);
+  t.after(() => { scheduler.stop(); ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  await seedChatTurn(ctx, 'native-initial');
+  const windowId = ctx.windows.activeWindow('c1')!.id;
+  const initialEvidence = lastCacheEvidence(ctx.db, windowId);
+  assert.ok(initialEvidence);
+  const names = (payload: Record<string, unknown>) => (payload.tools as Array<{ function: { name: string } }>).map(spec => spec.function.name);
+  const baseline = names(payloads[0]!);
+  assert.ok(baseline.includes('memory_hold'));
+  assert.ok(!baseline.includes('tool_invoke') && !baseline.includes('background_complete') && !baseline.includes('context_review_complete'));
+
+  setPrice(ctx.db);
+  ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: {
+    autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5,
+    keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 5,
+  } });
+  const task = new BackgroundTaskService(ctx.db, ctx.bgSettings, () => now.nowMs).schedule({
+    actorId: 'jiaming', conversationId: 'c1', operationId: 'native-task', note: '合成预约',
+    delaySeconds: 1, createdBy: 'jiaming',
+  });
+  assert.ok(task.ok);
+  scheduler.start();
+  now.nowMs += 1_001;
+  await scheduler.tick();
+  assert.deepEqual(names(payloads[1]!), [...baseline, 'background_complete']);
+  const wake = ctx.db.prepare('SELECT r.state, r.result_code, p.id FROM background_runs r JOIN provider_requests p ON p.background_run_id=r.id WHERE r.task_id=?')
+    .get(task.task.task_id) as { state: string; result_code: string; id: string };
+  assert.deepEqual({ state: wake.state, result_code: wake.result_code }, { state: 'completed', result_code: 'complete:done' });
+  assert.notEqual(wake.id, initialEvidence.requestId);
+  assert.equal(lastCacheEvidence(ctx.db, windowId)?.requestId, initialEvidence.requestId);
+
+  const iso = new Date(now.nowMs).toISOString();
+  // The scheduler creates the system heartbeat task for primary by default.
+  ctx.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('native-keepwarm','c1','jiaming','keepwarm',1,1,'cache_idle','Asia/Shanghai','{}','system','system_keepwarm',?,?)").run(iso, iso);
+  const activity = ctx.activity.get('c1')!;
+  now.nowMs = Date.parse(activity.last_real_activity_at!) + 3_000_001;
+  await scheduler.tick();
+  assert.deepEqual(payloads[2]!.tools, payloads[0]!.tools);
+  const heartbeatTail = (payloads[2]!.messages as Array<{ role: string; content: unknown }>).findLast(message => message.role === 'user');
+  assert.match(JSON.stringify(heartbeatTail?.content), /Cache keepalive/);
+  assert.doesNotMatch(JSON.stringify(heartbeatTail?.content), /background_complete/);
+  await seedChatTurn(ctx, 'native-after-task');
+  assert.deepEqual(payloads[3]!.tools, payloads[0]!.tools);
+  assert.equal(payloads.length, 4);
+  assert.ok((payloads[3]!.messages as Array<{ role: string; content: unknown }>).some(message =>
+    message.role === 'tool' && typeof message.content === 'string' && JSON.parse(message.content).completed === true));
+});
 
 test('K-01/C-01/C-12：心跳纯1=PURE_ACK——不进聊天原文/气泡/L；协议保留（C08）；维护回执落投影', async () => {
   const payloads: Array<Record<string, unknown>> = [];

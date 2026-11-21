@@ -45,9 +45,9 @@ import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, withoutCacheMarkers, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
-import { contextFingerprintJson } from './context-fingerprint.ts';
+import { contextFingerprintJson, contextFingerprintOf } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
-import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
+import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolName, toolsetForTask } from './tool-discovery.ts';
 import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
@@ -441,11 +441,17 @@ export class TurnSupervisor {
       lines.push('You may use available tools and choose whether to speak.');
       tailNote = lines.join('\n');
     }
-    this.windowTools(window.id);
+    const baseTools = this.windowTools(window.id);
+    const toolset = storedToolset(d.db, window.id)!;
+    // Keepwarm must send exactly the same tools as chat for this window.
+    const scopedTaskTools = toolset.protocol === 'direct' && opts.kind === 'autonomous';
+    const tools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, 'background_complete')) : baseTools;
     if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule' && this.windowHasTool(window.id, 'chat_send_text')) {
       tailNote += '\n自己定的唤醒已经到了。想给宿主用户发一句，可以用 chat_send_text。填你想说的 text 和这条消息的 idempotency_key。同一条重试沿用这个键。';
     }
-    const taskDefinition = taskDefinitionContext(storedToolset(d.db,window.id)!, 'background_complete', opts.runId);
+    const taskDefinition = toolset.protocol === 'direct' && !scopedTaskTools
+      ? null
+      : taskDefinitionContext(toolset, 'background_complete', opts.runId);
     if (taskDefinition) tailNote += '\n' + taskDefinition;
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
     const baseMessages: OrMessage[] = [
@@ -457,7 +463,7 @@ export class TurnSupervisor {
       model: dv.model,
       sessionId: dv.sessionId(opts.conversationId),
       messages: baseMessages,
-      tools: this.windowTools(window.id), // 同一冻结快照（06 §4：心跳不换 tools）
+      tools,
       boundaries,
       maxTokens: dv.maxTokens, // 主会话有效输出上限（09：不用旧 128 封锁）
       reasoning: dv.reasoning,
@@ -493,6 +499,7 @@ export class TurnSupervisor {
       seenSequence: traj.manifest && traj.manifest.length > 0 ? Math.max(...traj.manifest.map((m) => m.seq)) : 0,
       seenMessages: (traj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })),
       previousEnvelope,
+      scopedTaskTools,
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
@@ -574,6 +581,7 @@ export class TurnSupervisor {
     inputBinding?: { messageId: string; revision: number };
     voiceObservations?: readonly import('../modules/oido/observations.ts').VoiceObservationSnapshot[];
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
+    scopedTaskTools?: boolean; // 任务专属工具与主会话使用不同工具前缀。
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
      *  完整工具循环（2026-10-22：KEEPWARM_TOOL_REFUSED 已删除）。 */
@@ -597,14 +605,15 @@ export class TurnSupervisor {
     if (sdkDriver && !o.forceOpenRouter && !(runner instanceof SubscriptionAccessRunner && runner.useOpenRouter())) {
       const sdk = await this.runSdkToolLoop(o);
       if (runner instanceof SubscriptionAccessRunner && runner.canFallback(sdk.result)) {
-        runner.invalidateSdkSession(o.windowId);
+        if (!o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
         return this.runOrToolLoop({ ...o, forceOpenRouter: true });
       }
       return sdk;
     }
     const transportKind = this.drv()?.kind === 'deepseek' ? 'deepseek' : 'openrouter';
     const orFallback = sdkDriver;
-    if (orFallback && runner instanceof SubscriptionAccessRunner) runner.invalidateSdkSession(o.windowId);
+    if (orFallback && runner instanceof SubscriptionAccessRunner && !o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
+    const usesScopedToolProfiles = storedToolset(d.db, o.windowId)?.protocol === 'direct';
     const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
     let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
       reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
@@ -653,7 +662,7 @@ export class TurnSupervisor {
       // 往来、不重放副作用。无工具的失败轮不保留（消息重试语义：失败输入不进正史）。
       const finalMessages = dispatched && (toolsExecuted || pendingCalls.length > 0) ? incompleteProtocol(code) : null;
       if (finalMessages) {
-        const compacted = this.compactBlockedResults(finalMessages, lastSentMessages?.length ?? 0, o.windowId, envelope.maxTokens);
+        const compacted = this.compactBlockedResults(finalMessages, lastSentMessages?.length ?? 0, envelope.tools, envelope.maxTokens);
         const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
         roundPendingSeen = roundPendingSeen.filter(entry => !unseen.has(entry));
       }
@@ -704,7 +713,8 @@ export class TurnSupervisor {
       };
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
       // cost-20261018：每轮落上下文指纹（只含 hash/位置/计数）；同轮重试行共用同一指纹
-      const fingerprintJson = contextFingerprintJson({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      const fingerprint = contextFingerprintOf({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      const fingerprintJson = JSON.stringify(fingerprint);
       const manifestJson = this.requestManifest(o.windowId, envelope.messages, [
         ...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive, ...roundPendingSeen,
         ...(o.inputBinding ? [{ id: o.inputBinding.messageId, revision: o.inputBinding.revision }] : []),
@@ -713,7 +723,7 @@ export class TurnSupervisor {
         .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
       recordToolContext(d.db,prqId,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
-      const capacityNow = this.requestCapacity(envelope.messages, o.windowId, envelope.maxTokens);
+      const capacityNow = this.requestCapacity(envelope.messages, envelope.tools, envelope.maxTokens);
       if (capacityNow?.plan.action === 'blocked_hard') {
         d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
         return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${capacityNow.estimate} 超过安全上界 ${capacityNow.plan.safeInput}`, sessionId: null, requestId: null });
@@ -807,14 +817,17 @@ export class TurnSupervisor {
         }
       };
       let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(await matEnv(prevEnvelope), transportKind) : null;
+      // Compare against the last real wire request with the same native tool
+      // profile. A scoped task has a different tool list, not a different history.
       // 整合（2026-10-24）：轨迹本轮重建（懒初始化）=合法新基线——旧 wire 锚不再可比，豁免
       if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn && !orFallback) {
         const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
           JOIN turns t ON t.id=p.turn_id LEFT JOIN background_runs b ON b.id=p.background_run_id
           WHERE p.window_id=? AND p.outcome='completed' AND p.sent_at IS NOT NULL
             AND p.payload_format='wire_v1' AND p.payload_wire_json IS NOT NULL
+            AND (? = 0 OR json_extract(p.context_fingerprint_json, '$.tools_hash') = ?)
             AND ((p.purpose='chat' AND t.state='completed') OR (b.retention='retained' AND b.trajectory_committed_at IS NOT NULL))
-          ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1`).get(o.windowId) as { payload_wire_json: string } | undefined;
+          ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1`).get(o.windowId, Number(usesScopedToolProfiles), fingerprint.tools_hash) as { payload_wire_json: string } | undefined;
         if (anchor) {
           const recorded = JSON.parse(anchor.payload_wire_json) as Record<string, unknown>;
           if (this.drv()?.kind === 'deepseek' && legacyDsReasoningGap(recorded, this.buildPayloadFrom(runEnvelope))) {
@@ -912,9 +925,10 @@ export class TurnSupervisor {
         // The real executor validates the frozen definition and arguments before
         // quoting/admitting its effective handler. Never quote tool_invoke as free.
         const toolDispatch: { current: { id: string; quote: BackgroundToolQuote } | null } = { current: null };
+        const argumentSource = t.text ?? undefined;
         let args: Record<string, unknown>;
         try {
-          args = JSON.parse(t.text ?? '{}') as Record<string, unknown>;
+          args = JSON.parse(argumentSource ?? '{}') as Record<string, unknown>;
         } catch {
           args = {}; // 参数非法：执行器会因缺必填字段拒绝（§8.2 输入完整校验后才执行）
         }
@@ -922,7 +936,8 @@ export class TurnSupervisor {
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {
           signal: o.controller.signal, // 语音分支：取消传播（电话/检索取消链）
-          remainingResultBytes: () => this.remainingToolResultBytes(envelope.messages, o.windowId, envelope.maxTokens),
+          argumentSource,
+          remainingResultBytes: () => this.remainingToolResultBytes(envelope.messages, envelope.tools, envelope.maxTokens),
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
@@ -1066,6 +1081,7 @@ export class TurnSupervisor {
       },
       host: {
         windowId: o.windowId, purpose: o.purpose, envelope: o.envelope,
+        isolatedSession: o.scopedTaskTools,
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
         ...(d.media ? { readImage: (assetId: string) => d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId) } : {}),
@@ -1078,7 +1094,7 @@ export class TurnSupervisor {
           }
           if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
           if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
-          if (this.requestCapacity(messages, o.windowId, o.envelope.maxTokens)?.plan.action === 'blocked_hard') {
+          if (this.requestCapacity(messages, o.envelope.tools, o.envelope.maxTokens)?.plan.action === 'blocked_hard') {
             throw new ContractError('CAPACITY_BLOCKED_HARD_TOOL_ROUND');
           }
           if (o.background) {
@@ -1122,7 +1138,7 @@ export class TurnSupervisor {
           batchRanges.length = 0;
         },
         recordToolDelivery: (toolCallId, result) => this.recordToolCoverage(requestId, toolCallId, result),
-        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages) => {
+        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
           if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
@@ -1131,7 +1147,8 @@ export class TurnSupervisor {
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
           let executed = await d.tools.execute(name, args, {
             signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
-            remainingResultBytes: () => this.remainingToolResultBytes(messages, o.windowId, o.envelope.maxTokens),
+            argumentSource,
+            remainingResultBytes: () => this.remainingToolResultBytes(messages, o.envelope.tools, o.envelope.maxTokens),
             purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
             activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
             seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
@@ -1164,14 +1181,14 @@ export class TurnSupervisor {
     if (requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run(result.outcome, requestId);
     // RB03（复审 20261106）：维护轮（cache_keepalive）成功同样 rebind——协议保留后
     // 维护记录属于当前 SDK 会话，宿主会话投影与原生锚同一事实。
-    if (result.sessionId) {
+    if (result.sessionId && !o.scopedTaskTools) {
       const old = d.windows.get(o.windowId)?.sdk_session_id ?? null;
       d.windows.rebindSession(o.windowId, old, result.sessionId);
     }
     const finalMessages = lastSentMessages ? result.finalMessages ?? null : null;
     const sent = result.lastSentMessages ?? lastSentMessages;
     if (result.outcome !== 'completed' && finalMessages) {
-      const compacted = this.compactBlockedResults(finalMessages, sent?.length ?? 0, o.windowId, o.envelope.maxTokens);
+      const compacted = this.compactBlockedResults(finalMessages, sent?.length ?? 0, o.envelope.tools, o.envelope.maxTokens);
       const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
       pendingToolSeen = pendingToolSeen.filter(entry => !unseen.has(entry));
     }
@@ -1298,14 +1315,14 @@ export class TurnSupervisor {
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
   /** 她 1024 裁定（接缝②）：容量按**实际发送载荷**计——消息轨迹 + 冻结工具目录（含 B 段
    *  tools/initial）同一份口径，rotateIfNeeded 预测与工具循环硬门共用本估测，不再各拼一套。 */
-  private estimateRequestTokens(messages: unknown[], windowId: string): number {
-    return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
+  private estimateRequestTokens(messages: unknown[], tools: OrRequestEnvelope['tools']): number {
+    return Math.ceil(JSON.stringify({ messages, tools }).length / (this.drv()?.charsPerToken ?? 2.5));
   }
 
-  private requestCapacity(messages: OrMessage[], windowId: string, maxOutput: number) {
+  private requestCapacity(messages: OrMessage[], tools: OrRequestEnvelope['tools'], maxOutput: number) {
     const windows = this.d.config.windows;
     if (windows.model_context_capacity === null) return null;
-    const estimate = this.estimateRequestTokens(messages, windowId);
+    const estimate = this.estimateRequestTokens(messages, tools);
     const plan = rotationPlan({
       currentInput: estimate, capacity: windows.model_context_capacity, maxOutput,
       toolReserve: windows.tool_input_reserve_tokens, reviewReserve: windows.review_reserve_tokens,
@@ -1314,16 +1331,16 @@ export class TurnSupervisor {
     return { estimate, plan };
   }
 
-  private remainingToolResultBytes(messages: OrMessage[], windowId: string, maxOutput: number): number {
-    const capacity = this.requestCapacity(messages, windowId, maxOutput);
+  private remainingToolResultBytes(messages: OrMessage[], tools: OrRequestEnvelope['tools'], maxOutput: number): number {
+    const capacity = this.requestCapacity(messages, tools, maxOutput);
     if (!capacity) return Infinity;
     // The result consumes at most as many UTF-16 code units as UTF-8 bytes.
     // Leave room for the protocol envelope around the result.
     return Math.max(0, Math.floor((capacity.plan.safeInput - capacity.estimate) * (this.drv()?.charsPerToken ?? 2.5)) - 512);
   }
 
-  private compactBlockedResults(messages: OrMessage[], sentCount: number, windowId: string, maxOutput: number): Set<string> {
-    if (sentCount >= messages.length || this.requestCapacity(messages, windowId, maxOutput)?.plan.action !== 'blocked_hard') return new Set();
+  private compactBlockedResults(messages: OrMessage[], sentCount: number, tools: OrRequestEnvelope['tools'], maxOutput: number): Set<string> {
+    if (sentCount >= messages.length || this.requestCapacity(messages, tools, maxOutput)?.plan.action !== 'blocked_hard') return new Set();
     return compactUnsentToolResults(messages, sentCount);
   }
 
@@ -1446,13 +1463,16 @@ export class TurnSupervisor {
     // A/B 缓存分界（cache-plan 的 B 点分支要求 systemMessageCount>=2），
     // 不把外部资料并入 A 段升级成高优先级指令
     let localTools: string | null;
+    let tools: OrRequestEnvelope['tools'];
     if (o.windowId) {
-      this.windowTools(o.windowId);
+      tools = this.windowTools(o.windowId);
       localTools = storedToolset(this.d.db,o.windowId)?.initialText ?? null;
     } else {
       const source = this.toolCatalogSource(), catalog = source.currentCatalog();
-      localTools = this.d.config.runtime.tool_schema_mode === 'deferred'
-        ? renderToolContext(catalog,resolveToolGroups(this.d.db,catalog,source.currentGroups?.() ?? {})) : null;
+      const groups = resolveToolGroups(this.d.db, catalog, source.currentGroups?.() ?? {});
+      const mode = this.d.config.runtime.tool_schema_mode;
+      tools = mode === 'direct' ? buildDirectTools(catalog, groups) : mode === 'deferred' ? buildDeferredTools() : catalog;
+      localTools = mode === 'legacy' ? null : renderToolContext(catalog, groups, mode);
     }
     const bootstrapText = [o.bootText, splitOpening ? null : localTools].filter(Boolean).join('\n');
     if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
@@ -1535,7 +1555,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? this.toolCatalogSource().currentCatalog() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
+        tools,
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,
@@ -1565,7 +1585,7 @@ export class TurnSupervisor {
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
     // 工作集估算（R4b 迁 runtime/rotation-estimate.ts：D06/F25/1024 裁定②/F-J-33/R21 口径单一正本）
     const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
-    const estimate = () => estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, o.window.id) });
+    const estimate = () => estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, this.windowTools(o.window.id)) });
     let { workingSet, nextWithIncoming } = estimate();
 
         // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=容量软线，2026-10-17 起 600k 兜底）
@@ -1585,7 +1605,7 @@ export class TurnSupervisor {
       });
       plan = planForEstimate();
       if (plan.action === 'blocked_hard' && trajForEstimate
-          && this.requestCapacity(trajForEstimate.messages, o.window.id, dv.maxTokens)?.plan.action === 'blocked_hard') {
+          && this.requestCapacity(trajForEstimate.messages, this.windowTools(o.window.id), dv.maxTokens)?.plan.action === 'blocked_hard') {
         const sentCount = this.rejectedContinuationPrefix(o.window.id, trajForEstimate.messages);
         if (sentCount !== null) {
           if (this.recoverOverbudgetTrajectory(trajForEstimate, sentCount)) {
@@ -1761,13 +1781,16 @@ export class TurnSupervisor {
     const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
-    const reviewTools = this.windowTools(o.window.id);
+    const baseTools = this.windowTools(o.window.id);
+    const toolset = storedToolset(d.db, o.window.id)!;
+    const scopedTaskTools = toolset.protocol === 'direct';
     const reviewId = genId('rev');
-    const reviewDefinition = taskDefinitionContext(storedToolset(d.db, o.window.id)!, 'context_review_complete', reviewId);
+    const reviewDefinition = taskDefinitionContext(toolset, 'context_review_complete', reviewId);
     const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: [buildPreRotateReviewMessage({ reviewId, reason, messageRefs: rangeKeys.join(', ') }),reviewDefinition].filter(Boolean).join('\n') }] }];
+    const reviewTools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, 'context_review_complete')) : baseTools;
     // A rolled-back wake can leave a fitting old prefix but an oversized review
     // once its already-published message is included. Honor the confirmed selection.
-    if (selectionId && this.requestCapacity(reviewMessages, o.window.id, dv.maxTokens)?.plan.action === 'blocked_hard') {
+    if (selectionId && this.requestCapacity(reviewMessages, reviewTools, dv.maxTokens)?.plan.action === 'blocked_hard') {
       return rotateWithoutOverbudgetReview();
     }
     const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
@@ -1810,6 +1833,7 @@ export class TurnSupervisor {
         envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
         conversationId: o.conversationId, windowId: o.window.id,
         turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
+        scopedTaskTools,
         seenMessages: effectiveManifest.map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })), // D13+R12：评审视野=本窗实际已见清单（单一正本，含追赶投影；WP4 保片段范围）
       }));
     } finally {

@@ -98,6 +98,7 @@ test('wishstar_start_session：路径绑定 special_date_id', async () => {
     assert.equal(out.ok, true);
     assert.equal(calls[0]!.path, '/api/sessions');
     assert.deepEqual(calls[0]!.body, { special_date_id: 'sd_79' });
+    assert.equal(calls[0]!.idempotencyKey, 'ws:t1:req-1:ro');
   } finally { db.close(); }
 });
 

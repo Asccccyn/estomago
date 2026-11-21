@@ -158,15 +158,16 @@ test('IG-6: M 503→MASTER_PENDING（不建条目）；M 恢复后同键重试�
   }
 });
 
-test('IG-7: 幂等键=client_operation_id——续轮换 requestId/toolCallId 仍是同一操作（ALB-06①）', async () => {
+test('IG-7: 中文 client_operation_id 可传输且保持幂等——续轮换 requestId/toolCallId 仍是同一操作（ALB-06①）', async () => {
   const f = fixture(okTransport);
-  const r1 = await f.svc.generateAndStore({ prompt: '画山', opKey: imageGenOpKey(CTX1, 'op-7') });
+  const clientOperationId = '画山操作';
+  const r1 = await f.svc.generateAndStore({ prompt: '画山', opKey: imageGenOpKey(CTX1, clientOperationId) });
   assert.equal(r1.ok, true);
-  const r2 = await f.svc.generateAndStore({ prompt: '画山', opKey: imageGenOpKey(CTX2, 'op-7') });
+  const r2 = await f.svc.generateAndStore({ prompt: '画山', opKey: imageGenOpKey(CTX2, clientOperationId) });
   assert.equal(r2.ok, true);
   if (r1.ok && r2.ok) assert.equal(r2.asset_id, r1.asset_id, '同一资产，不二次生成');
   assert.equal(f.calls(), 1);
-  assert.equal((db.prepare('SELECT COUNT(*) n FROM imagegen_operations WHERE op_key=?').get('tool-imagegen:op-7') as { n: number }).n, 1);
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM imagegen_operations WHERE op_key=?').get(`tool-imagegen:${clientOperationId}`) as { n: number }).n, 1);
 });
 
 test('IG-8: 断连分类——连接拒绝=可安全重试；发送后断开=结果待确认不自动重发（ALB-06②）', async () => {
@@ -374,13 +375,14 @@ test('IG-11 (RR4): creation_save_artifact 在 M 未落正时 CREATION_MASTER_PEN
   const tools = new ContentToolsService({ media: f.media, contentClient: client, contentOps: null });
   const ctx = { roomId: 'primary', turnId: 't', requestId: 'r', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [] };
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3"/></svg>';
-  const r1 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: 'crt-m-1' }, ctx);
+  const clientOperationId = '存合成作品';
+  const r1 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: clientOperationId }, ctx);
   assert.equal(r1.ok, false, JSON.stringify(r1.output));
   assert.equal(r1.output['error_code'], 'CREATION_MASTER_PENDING', 'M 唯一正本未落正不得 saved（旧实现 ok=true/saved=true）');
-  assert.equal((db.prepare("SELECT COUNT(*) n FROM media_assets WHERE creation_operation_id = 'tool-creation:crt-m-1'").get() as { n: number }).n, 1, '资产已保存（落正未确认）');
+  assert.equal((db.prepare('SELECT COUNT(*) n FROM media_assets WHERE creation_operation_id = ?').get(`tool-creation:${clientOperationId}`) as { n: number }).n, 1, '资产已保存（落正未确认）');
   // 恢复 M：同键重试只补落正+条目（不重复保存资产）
   fakeM.fail = false;
-  const r2 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: 'crt-m-1' }, ctx);
+  const r2 = await tools.creationSaveArtifact({ format: 'svg', content: svg, client_operation_id: clientOperationId }, ctx);
   assert.equal(r2.ok, true, JSON.stringify(r2.output));
   const assetId = (r2.output as { asset_id: string }).asset_id;
   assert.equal(f.media.getAsset(assetId).m_sync_state, 'synced');

@@ -41,6 +41,7 @@ export type ToolExecContext = {
   // start/result/error 三阶段；round=本轮工具批次序号（模型请求轮）；
   // generationId=provider 生成标识（首字节前可空，如实空不虚构）。
   toolCallId?: string | null;
+  argumentSource?: string; // Original upstream JSON for this call, used only for validation.
   attemptId?: string | null;
   round?: number | null;
   generationId?: string | null;

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { Options, Query, SDKUserMessage, SDKMessage, SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
 import { createEstSdkMcp, sdkToolName } from './sdk-mcp.ts';
 import { subscriptionAdmission, subscriptionRejected, sdkUsesExtraUsage } from './sdk-subscription.ts';
@@ -15,6 +16,18 @@ import { SdkHistoryReplay } from './sdk-history.ts';
 
 export type SdkQueryFactory = (request: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 export type SdkSessionAnchor = { sessionId: string; prefixHash: string; messageCount: number; messagesHash: string };
+
+// Bound retained raw chunks across the current model message.
+const MAX_ARGUMENT_SOURCE_BYTES = 1024 * 1024;
+
+function verifiedArgumentSource(source: string | undefined, args: Record<string, unknown>): string | undefined {
+  if (!source) return undefined;
+  try {
+    return isDeepStrictEqual(JSON.parse(source), args) ? source : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export async function verifySdkSubscription(run: Query): Promise<string | null> {
   const account = await run.accountInfo();
@@ -36,10 +49,11 @@ export async function runSdkHostQuery(
   const messages = structuredClone(host.envelope.messages);
   const tools = host.envelope.tools as unknown as HostToolSpec[];
   const prefixHash = sha256Hex(JSON.stringify([req.options.options.systemPrompt, tools, host.envelope.model]));
-  const previous = sessions.get(host.windowId);
-  // B3（2026-11-04）：衔接诊断——四值枚举如实区分"没锚/前缀变/历史变/命中"。
+  const previous = host.isolatedSession ? undefined : sessions.get(host.windowId);
+  // Preserve the main anchor when a task explicitly uses a separate tool profile.
   // 纯日志信号（supervisor 落 launchd 日志），不新建会话状态机、不影响行为。
-  let resumeDecision: 'resume_hit' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' = 'anchor_missing';
+  let resumeDecision: NonNullable<RunnerRunResult['resumeDiagnosis']>['decision'] =
+    host.isolatedSession ? 'isolated' : 'anchor_missing';
   const resume = (() => {
     if (!previous) return null;
     if (previous.prefixHash !== prefixHash) { resumeDecision = 'prefix_changed'; return null; }
@@ -109,8 +123,11 @@ export async function runSdkHostQuery(
   const savedHoldCalls = new Set<string>();
   let terminalToolNames = '';
   const callIds = new Map<string, string[]>();
+  const toolIdsByBlock = new Map<number, string>();
+  const argumentSources = new Map<string, string>();
+  let argumentSourceBytes = 0;
   const executing = new Set<string>();
-  const deferredReview: Array<{ name: string; args: Record<string, unknown>; id: string }> = [];
+  const deferredReview: Array<{ name: string; args: Record<string, unknown>; id: string; argumentSource?: string }> = [];
   const assistantIndexes = new Map<string, number>();
   const textBlocks = new Map<string, Map<number, string>>();
   const assistantMessage = (id: string): OrMessage => {
@@ -133,17 +150,21 @@ export async function runSdkHostQuery(
     const id = callIds.get(key)?.shift();
     if (!id) throw Error('SDK_TOOL_ID_UNAVAILABLE');
     if (req.abortController.signal.aborted) throw Error('SDK_CANCELLED');
+    // The SDK can call MCP before the iterator has delivered the block stop.
+    // A matching, complete JSON object proves the source even in that order.
+    const argumentSource = verifiedArgumentSource(argumentSources.get(id), args);
+    argumentSources.delete(id);
     // The existing OR loop completes reviews after every other tool in a batch.
     // Native MCP calls may arrive in model order, so postpone only that action
     // until the official PostToolBatch hook. The business executor still runs once.
     if (host.purpose === 'pre_rotate_review' && effectiveToolName(name, args) === 'context_review_complete') {
-      deferredReview.push({ name, args, id });
+      deferredReview.push({ name, args, id, argumentSource });
       const pending = { error_code: 'REVIEW_COMPLETION_PENDING', detail: '本批工具结束后由宿主核验；尚未完成检查。' };
       return { ok: false, output: pending, recordDelivery: result => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(result)}); } };
     }
     executing.add(id);
     try {
-      const result = await host.executeTool(name, args, id, round, messages);
+      const result = await host.executeTool(name, args, id, round, messages, argumentSource);
       executing.delete(id);
       return { ...result, recordDelivery: delivered => {
         messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
@@ -203,7 +224,7 @@ export async function runSdkHostQuery(
           const results = [];
           let completed = false;
           for (const call of deferredReview.splice(0)) {
-            const result = await host.executeTool(call.name, call.args, call.id, round, messages);
+            const result = await host.executeTool(call.name, call.args, call.id, round, messages, call.argumentSource);
             const entry = messages.findLast(m => m.role === 'tool' && m.tool_call_id === call.id)!;
             entry.content = JSON.stringify(result.output);
             results.push(result.output); completed ||= result.ok;
@@ -294,6 +315,34 @@ export async function runSdkHostQuery(
         continue;
       }
       if (event.type === 'stream_event') {
+        const stream = event.event;
+        if (!event.parent_tool_use_id) {
+          if (stream.type === 'message_start') {
+            toolIdsByBlock.clear();
+            argumentSources.clear();
+            argumentSourceBytes = 0;
+          } else if (stream.type === 'content_block_start' && stream.content_block.type === 'tool_use'
+            && typeof stream.content_block.id === 'string' && typeof stream.content_block.name === 'string'
+            && stream.content_block.name.startsWith('mcp__est__')) {
+            toolIdsByBlock.set(stream.index, stream.content_block.id);
+            argumentSources.set(stream.content_block.id, '');
+          } else if (stream.type === 'content_block_delta' && stream.delta.type === 'input_json_delta'
+            && typeof stream.delta.partial_json === 'string') {
+            const toolId = toolIdsByBlock.get(stream.index);
+            const source = toolId === undefined ? undefined : argumentSources.get(toolId);
+            if (toolId !== undefined && source !== undefined) {
+              const chunkBytes = Buffer.byteLength(stream.delta.partial_json);
+              if (argumentSourceBytes + chunkBytes > MAX_ARGUMENT_SOURCE_BYTES) {
+                argumentSources.delete(toolId);
+              } else {
+                argumentSourceBytes += chunkBytes;
+                argumentSources.set(toolId, source + stream.delta.partial_json);
+              }
+            }
+          } else if (stream.type === 'content_block_stop') {
+            toolIdsByBlock.delete(stream.index);
+          }
+        }
         if (event.event.type === 'message_start') {
           host.modelStarted(event.event.message.id, round, event.event.message.model);
           requestUsage = event.event.message.usage ? sdkUsageFields(event.event.message.usage) : null;
@@ -372,7 +421,11 @@ export async function runSdkHostQuery(
           : { error_code: 'EXECUTION_NOT_STARTED', executed: false }) });
       }
     }
-    if (outcome === 'completed' && normalizer.sessionId) {
+    if (host.isolatedSession) {
+      // A scoped request may have appended real task history to est's ledger,
+      // but that history will be replayed from the main session's own anchor.
+      resumeDiagnosis.anchorOutcome = null;
+    } else if (outcome === 'completed' && normalizer.sessionId) {
       // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
       // 记录属于该会话）。
       sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,

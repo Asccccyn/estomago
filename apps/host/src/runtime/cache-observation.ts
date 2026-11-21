@@ -6,6 +6,8 @@
 import type { Db } from '../db/connection.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { evaluateCacheMiss, type SystemAlertService } from '../observability/system-alerts.ts';
+import { toolsFingerprint } from './context-fingerprint.ts';
+import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discovery.ts';
 
 export const CACHE_TTL_MS = 3_600_000; // 与 openrouter.cache_ttl='1h' 同一合同（不在此另设配置）
 
@@ -20,8 +22,14 @@ export type CacheEvidence = {
   writeTokens: number;
 };
 
+function mainToolProfile(db: Db, windowId: string): string | null {
+  const set = storedToolset(db, windowId);
+  return set?.protocol === 'direct' ? toolsFingerprint(modelToolsAfterBindingRetirement(set.tools)) : null;
+}
+
 /** 最近一次有非零缓存读写证据的请求（usage complete；按派发开始时间取最新）。无证据=null（≠0，≠命中）。 */
 export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | null {
+  const toolsHash = mainToolProfile(db, windowId);
   const row = db.prepare(
     `SELECT u.request_id AS request_id, pr.window_id AS window_id, u.model AS model,
             u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
@@ -29,11 +37,12 @@ export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | nul
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
      WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
-  ).get(windowId) as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
+  ).get(windowId, toolsHash, toolsHash) as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
   if (!row) return null;
   const startedAt = row.dispatch_at ?? row.sent_at ?? row.observed_at;
   return {
@@ -61,6 +70,7 @@ export function estimatedCacheExpiryAtMs(evidence: CacheEvidence | null): number
 
 /** 指定请求**之前**的最近证据（评估"本次 read=0 是否意外"的温态前提；不含本次自身）。 */
 function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[], beforeStartedAt: string): CacheEvidence | null {
+  const toolsHash = mainToolProfile(db, windowId);
   const row = db.prepare(
     `SELECT u.request_id AS request_id, pr.window_id AS window_id, u.model AS model,
             u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
@@ -68,13 +78,14 @@ function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
      WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
        AND COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) < ?
        AND u.request_id != ?
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
-  ).get(windowId, beforeStartedAt, beforeRequestIds[0] ?? '') as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
+  ).get(windowId, toolsHash, toolsHash, beforeStartedAt, beforeRequestIds[0] ?? '') as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
   if (!row) return null;
   return {
     requestId: row.request_id, windowId: row.window_id,
