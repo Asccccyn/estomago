@@ -371,6 +371,7 @@ LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 e
 
 ## 2026-10-05 深夜批次（在上述 WP 状态之后；按时间序，多路并行）
 
+- 2026-11-21（上海，联合审计）· `ac5cc65` 核验 API/SDK 心跳续接、朋友圈映射、候选池扩展与相册遗留，结论有阻断。[审计与复验清单](docs/reports/JOINT_AUDIT_20261121/AUDIT.md)
 - **d4884d7（2026-10-21，交接根因修复）**：前端请求取消/迟到响应与终态栏杆、启动测试合同纠偏、同轮记忆 source=target 与接受起绝对 deadline；保留 P2 与新历史/编辑交互，重建 React dist。全量 136/136 文件、918/918 断言通过，前后端 typecheck 通过；[修复与验证说明](docs/reports/CODEX_HANDOFF_FIX_20261021.md)。
 
 - **2026-10-19 联合审计架构清理（独立审计分支，未部署）**：默认会话常量归消息领域以消除 Host/HTTP 运行时循环；删除无调用方的 MCP 客户端/静态集成表、退役事件信封及草案 ReasoningEnvelope，真实事件正本与历史迁移保留。通用 MCP/SDK 宿主工具桥继续 **BLOCKED**；[当前入口与历史能力勘误](docs/current-architecture-20261019.md)。
