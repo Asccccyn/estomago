@@ -53,7 +53,7 @@ function fixture() {
     decide: async () => { solRequests++; return { ok: true, decision: { decision: 'none', topic: null, basis: 'synthetic', plan: null }, usage: null, elapsed_ms: 1 }; },
   } as never;
   const svc = new SurfacingService(db, null as never, sol, {
-    enabled: true, transport_overhead_text: '', policy_revision: 1, prompt_prepare_revision: 'e',
+    enabled: true, policy_revision: 1, prompt_prepare_revision: 'e',
     delivery_deadline_ms: 3000, max_added_tokens_per_turn: 10, max_packet_bytes: 10, worker_concurrency: 2,
     recent_user_messages: 2, recent_window_bytes: 2048,
   } as never, null as never, events);

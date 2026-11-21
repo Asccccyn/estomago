@@ -188,24 +188,18 @@ test('pkg4-name 自动浮现：同字回应投影为宿主用户，char已读句
     const messages2 = lastConfirmedRequest(ctx.db);
     assertProtocolRoles(messages2);
     const texts = messages2.flatMap(m => typeof m.content === 'string' ? [m.content] : Array.isArray(m.content) ? m.content.map((b: { text?: string }) => b.text ?? '') : []);
-    const surfaceText = texts.find(t => t.includes('{"memories":'));
-    const memoryBlock = surfaceText?.slice(surfaceText.indexOf('{"memories":'));
-    assert.ok(memoryBlock, '最终请求必须携带自动浮现块');
-    const memories = JSON.parse(memoryBlock!).memories as Array<{ speaker?: string; text?: string; context?: string }>;
-    // 新增结果：宿主用户说的那句，投影为真实姓名。
-    assert.equal(memories.length, 1);
-    assert.equal(memories[0]!.speaker, '宿主用户');
-    assert.equal(memories[0]!.text, repeat);
-    // 主条目与相邻上下文同用姓名（context 由 M 侧姓名标签展开，E 不再改写）。
-    assert.ok(memories[0]!.context!.includes('char(2026-11-18 08:01)：松针纸条收好。'));
-    assert.ok(memories[0]!.context!.includes('宿主用户(2026-11-18 08:02)：松针纸条收好。'));
+    const surfaceText = texts.find(t => t.startsWith('你想起了一段往事。'));
+    assert.ok(surfaceText, '最终请求必须携带回忆');
+    assert.ok(surfaceText.includes(`宿主用户当时说：“${repeat}”`));
+    assert.ok(surfaceText.includes('char(2026-11-18 08:01)：松针纸条收好。'));
+    assert.ok(surfaceText.includes('宿主用户(2026-11-18 08:02)：松针纸条收好。'));
     // char已读的那句不重发：记忆块内同字句恰好 3 处（宿主用户正文 1 + 邻句 2 行），
     // 且记忆数组只有一条（无 speaker char 的同字条目）；其余 2 处=协议历史 1 + 本轮输入 1。
-    const inMemories = memoryBlock!.split(repeat).length - 1;
+    const inMemories = surfaceText.split(repeat).length - 1;
     assert.equal(inMemories, 3, `记忆块内同字句应为 3 处，实际 ${inMemories}`);
     const outsideMemories = texts.filter(t => t !== surfaceText).join('\n').split(repeat).length - 1;
     assert.equal(outsideMemories, 2, `记忆块外同字句应为 2 处（历史+本轮输入），实际 ${outsideMemories}`);
-    assert.equal(JSON.stringify(memories).includes('"speaker":"char"'), false);
+    assert.ok(!surfaceText.includes(`char当时说：“${repeat}”`));
     const payload = JSON.stringify(messages2);
     for (const token of ['"speaker":"jiaming"', '"speaker":"qiaosheng"', '"speaker":"owner"', '"speaker":"assistant"']) {
       assert.equal(payload.includes(token), false, `最终请求不得再含内部枚举 ${token}`);

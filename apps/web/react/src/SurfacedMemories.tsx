@@ -62,10 +62,10 @@ export function SurfacedMemories({turnId,client}:{turnId:string;client:EstomagoC
   }
   const first=pages[0],last=pages.at(-1)
   // 无浮现（已拉取且空）不渲染；读取中也不占位（不阻塞阅读）
-  if(!busy&&!error&&(items===null||items.length===0))return null
+  if(!items?.length&&!error)return null
   return <div className="mt-2 text-sm text-[#5e5d59]">
     <button type="button" aria-expanded={open} onClick={()=>void toggle()} className="underline underline-offset-4">
-      本轮浮现的记忆{items&&items.length>0?`（${items.length}）`:''}
+      {items?.length===1?'char想起了一段往事':items?.length?`char想起了 ${items.length} 段往事`:'重试读取回忆'}
     </button>
     {open&&<div className="mt-2 space-y-3 rounded-xl border border-[#d4cec0] p-3">
       {busy&&<p role="status">读取中…</p>}{error&&<p role="alert">{error}</p>}

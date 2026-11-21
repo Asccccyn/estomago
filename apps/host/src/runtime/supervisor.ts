@@ -2761,8 +2761,7 @@ export class TurnSupervisor {
     // P2 §6.6：同上——聊天语音观察的有界等待在装配前完成（独立预算，不挂浮现 300s）
     if (inputMessage && this.d.voiceObservations) await this.d.voiceObservations.awaitReadyForDispatch(inputMessage.id, effective.revision, VOICE_OBSERVATION_PREP_BUDGET_MS);
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: Boolean(dv) && voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
-    // Host memory is separate from the real input. OR uses explicitly labelled
-    // user-channel data; DS retains its system data message. Only the tail grows.
+    // Append the recollection before the real input, preserving both the user message and the existing history.
     const hostMemory: OrMessage[] = surfacingAugment
       ? [surfaceTransportMessage(this.drv()?.kind ?? '', surfacingAugment.text)] : [];
     // ALB-11（审计 2026-11-08，03 §4.2）：宿主一次性通知在下一次正常请求尾部追加为

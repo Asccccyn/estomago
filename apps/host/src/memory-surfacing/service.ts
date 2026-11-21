@@ -20,7 +20,7 @@ import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import { speakerLabelFor } from '../identity/speaker-labels.ts';
 import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
-  estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, SURFACE_HOST_NOTICE, surfaceItemKey,
+  estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, surfaceItemKey,
   type FrozenAugmentation, type SurfaceItem, type MissingQuote,
 } from './contracts.ts';
 import {
@@ -34,7 +34,6 @@ export type SurfacingConfig = {
   delivery_deadline_ms: number;
   max_added_tokens_per_turn: number;
   max_packet_bytes: number;
-  transport_overhead_text?: string;
   worker_concurrency: number;
   /** 检索核对使用的短近文用户消息条数。 */
   recent_user_messages: number;
@@ -54,6 +53,15 @@ export type AugmentInput = {
 
 /** supervisor 薄接点拿到的冻结结果。 */
 export type AugmentResult = FrozenAugmentation & { jobId: string };
+
+function readValidatedItems(json: string): { items: SurfaceItem[]; missing: MissingQuote[] } {
+  const saved: SurfaceItem[] | { items: SurfaceItem[]; missing?: MissingQuote[] } = JSON.parse(json);
+  if (Array.isArray(saved)) return { items: saved, missing: [] };
+  const missing = Array.isArray(saved.missing) ? saved.missing.filter(part =>
+    part && ['words_only', 'raw_context', 'words'].includes(part.kind)
+      && ['access_blocked', 'no_match', 'incomplete'].includes(part.status)) : [];
+  return { items: saved.items, missing };
+}
 
 export class SurfacingService {
   readonly repo: SurfacingRepository;
@@ -663,17 +671,7 @@ export class SurfacingService {
     }
     const fresh = this.repo.jobById(job.id);
     if (!fresh || fresh.state !== 'ready' || !fresh.items_json) return null;
-    const saved: SurfaceItem[] | { items: SurfaceItem[]; missing?: MissingQuote[] } = JSON.parse(fresh.items_json);
-    const itemsAll = Array.isArray(saved) ? saved : saved.items;
-    const missing: MissingQuote[] = [];
-    if (!Array.isArray(saved) && Array.isArray(saved.missing)) {
-      for (const part of saved.missing) {
-        if (part && ['words_only', 'raw_context', 'words'].includes(part.kind)
-          && ['access_blocked', 'no_match', 'incomplete'].includes(part.status)) {
-          missing.push({ kind: part.kind, status: part.status });
-        }
-      }
-    }
+    const { items: itemsAll, missing } = readValidatedItems(fresh.items_json);
     // check：经 HTTP 调 Mariposa 的本地校验；回执绑目标消息/修订/窗口。
     let ck;
     try {
@@ -714,9 +712,8 @@ export class SurfacingService {
     const refs = new Map<string, string>();
     const refList: FrozenAugmentation['memoryRefs'] = [];
     const fitsPacket = (packet: string): boolean => {
-      const wireText = (this.cfg.transport_overhead_text || SURFACE_HOST_NOTICE) + packet;
-      return estimateTokens(wireText) <= this.cfg.max_added_tokens_per_turn
-        && Buffer.byteLength(wireText, 'utf8') <= this.cfg.max_packet_bytes;
+      return estimateTokens(packet) <= this.cfg.max_added_tokens_per_turn
+        && Buffer.byteLength(packet, 'utf8') <= this.cfg.max_packet_bytes;
     };
     let droppedCovered = 0;
     let droppedBudget = 0;
@@ -845,7 +842,9 @@ export class SurfacingService {
     this.repo.markRetained(result.jobId, result.deliveryId);
     // 检索目的完成状态：delivered（供下一轮 Sol 判断"同一需要已处理"）
     const job = result.jobId ? this.repo.jobById(result.jobId) : null;
-    if (job && !JSON.parse(result.text).missing?.length) this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
+    if (job && !readValidatedItems(job.items_json ?? '[]').missing.length) {
+      this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
+    }
   }
 
   // —— 设置面（同一功能的唯一设置区域；生效值与实际请求同源）——

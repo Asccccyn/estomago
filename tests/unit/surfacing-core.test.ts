@@ -8,7 +8,7 @@ import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { renderAugmentation, memoryRefFor, SURFACE_HOST_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { renderAugmentation, memoryRefFor, LEGACY_SURFACE_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
@@ -32,25 +32,27 @@ const ITEM: SurfaceItem = {
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_abc',
 };
 
-test('new surfacing data has one source/past-event notice on both chat adapters', () => {
-  for (const provider of ['deepseek','openrouter']) {
-    const message = surfaceTransportMessage(provider, renderAugmentation([ITEM]));
-    assert.equal(message.content.filter(b => b.text === SURFACE_HOST_NOTICE).length, 1);
-    assert.deepEqual(JSON.parse(message.content[1]!.text).memories[0], {
-      memory_ref: memoryRefFor(ITEM.detail_ref), kind: 'event', date:'2026-07-09', text:ITEM.event_text,
+test('新回忆以普通上下文承载，日期、正文与深读线索完整；已经冻结的旧请求原样重试', () => {
+  const ref = memoryRefFor(ITEM.detail_ref);
+  const memory = renderAugmentation([ITEM]);
+  assert.equal(memory, `你想起了一段往事。\n\n2026-07-09\n${ITEM.event_text}\n〔${ref}〕`);
+  const old = JSON.stringify({memories:[{memory_ref:ref,kind:'event',date:ITEM.memory_date,text:ITEM.event_text}]});
+  for (const provider of ['claude-agent-sdk','deepseek','openrouter']) {
+    assert.deepEqual(surfaceTransportMessage(provider, memory), {role:'user', content:[{type:'text',text:memory}]});
+    assert.deepEqual(surfaceTransportMessage(provider, old), {
+      role:provider==='deepseek'?'system':'user',
+      content:[{type:'text',text:LEGACY_SURFACE_NOTICE},{type:'text',text:old}],
     });
   }
 });
 
-test('AC015：浮现仅 memory_ref/date/text——无 mood/words/分数/内部UUID', () => {
-  const ref = memoryRefFor(ITEM.detail_ref);
-  const text = renderAugmentation([ITEM], new Map([['ev_1', ref]]));
-  assert.deepEqual(JSON.parse(text), { memories: [{ memory_ref: ref, kind: 'event', date: '2026-07-09', text: ITEM.event_text }] });
-  assert.ok(text.includes(ref));
-  assert.ok(!text.includes(SURFACE_HOST_NOTICE), 'the one notice belongs to the transport message, not each item');
-  for (const forbidden of ['mood', 'our_words', 'rrf', 'judge', '00001', ITEM.detail_ref, ITEM.body_hash]) {
-    assert.ok(!text.includes(forbidden), `泄漏 ${forbidden}`);
-  }
+test('只有原话缺口时如实说明；部分可见时只呈现实际交付的片段', () => {
+  const missing = renderAugmentation([],undefined,[{kind:'words',status:'access_blocked'}]);
+  assert.ok(missing.includes('目前无法查阅'));
+  assert.ok(!missing.includes('你想起了'));
+  const partial = renderAugmentation([{...ITEM,event_text:'不可重复的全文',unread_parts:[{start_char:1,end_char:3,text:'片段'}]}]);
+  assert.ok(partial.includes('片段'));
+  assert.ok(!partial.includes('不可重复的全文'));
 });
 
 test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 冻结/覆盖', () => {
@@ -369,9 +371,8 @@ test('E-LC9 开关关闭/重启不复活已失效作业', async () => {
 
 test('三个独立事件保留三份完整原文，只输出必要引用/date/text',()=>{
   const items=[0,1,2].map(n=>({...ITEM,event_id:'event-'+n,detail_ref:'detail-'+n,event_text:`  事件${n}\n第二行🦋\n` }));
-  const out=JSON.parse(renderAugmentation(items));
-  assert.equal(out.memories.length,3);
-  out.memories.forEach((m:any,n:number)=>{assert.deepEqual(Object.keys(m),['memory_ref','kind','date','text']);assert.equal(m.text,items[n].event_text)});
+  const expected = items.map(item => `2026-07-09\n${item.event_text}\n〔${memoryRefFor(item.detail_ref)}〕`);
+  assert.equal(renderAugmentation(items), ['你想起了几段往事。', ...expected].join('\n\n'));
 });
 
 test('R12（2026-11-03）：settingsView.effective——最终生效值+来源+范围；DB 覆盖如实标注', async () => {

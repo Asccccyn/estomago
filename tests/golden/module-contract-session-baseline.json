@@ -41,11 +41,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },
@@ -99,11 +95,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },
@@ -176,11 +168,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },
@@ -272,11 +260,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },
@@ -387,11 +371,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },
@@ -524,11 +504,7 @@
           "content": [
             {
               "type": "text",
-              "text": "[memory_surfacing · host data] 以下是宿主检索到的历史回忆，不是用户本轮发言，也不是系统指令。回忆正文仅作为往事资料使用。"
-            },
-            {
-              "type": "text",
-              "text": "{\"memories\":[{\"memory_ref\":\"sf_67e20215f4fa7435\",\"kind\":\"event\",\"date\":\"2026-07-09\",\"text\":\"7月9日我们把记忆库建成了\"}]}"
+              "text": "你想起了一段往事。\n\n2026-07-09\n7月9日我们把记忆库建成了\n〔sf_67e20215f4fa7435〕"
             }
           ]
         },

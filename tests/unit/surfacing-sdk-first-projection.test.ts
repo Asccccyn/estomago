@@ -24,7 +24,7 @@ import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
 import type { AgentRunner } from '../../apps/host/src/runtime/runner.ts';
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
-import { SURFACE_HOST_NOTICE } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { isRecollectionText } from '../../apps/host/src/memory-surfacing/contracts.ts';
 
 const ITEM = {
   kind: 'event' as const, event_id: 'ev_1', memory_id: '00001', memory_version: '1',
@@ -113,8 +113,8 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
       captures.push(structuredClone(sent));
       if (calls === 1) {
         const block = sent.flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.map(b => b.text ?? ''))
-          .find(text => text.startsWith('{"memories":'))!;
-        assert.ok(block); const ref = JSON.parse(block).memories[0].memory_ref;
+          .find(isRecollectionText)!;
+        assert.ok(block); const ref = block.match(/〔(sf_[a-f0-9]+)〕/)![1];
         const read = await host.executeTool('memory_read_full', { memory_ref: ref }, 'synthetic-read', 0);
         assert.equal(read.ok, true, 'first-request ref must be usable before retained state'); modelDetail = read.output;
         const recall = await host.executeTool('memory_recall', { query: '再核对建成记忆库的经历' }, 'synthetic-recall', 0);
@@ -153,7 +153,7 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     assert.deepEqual(factories, ['claude-agent-sdk']);
     assert.equal(sol.calls(), 1, 'tool continuation does not repeat Sol');
     assert.equal(caps.filter(c => c.endsWith('.prepare')).length, 1);
-    assert.ok(JSON.stringify(captures[0]).includes(SURFACE_HOST_NOTICE));
+    assert.ok(JSON.stringify(captures[0]).includes('你想起了一段往事。'));
     assert.ok(JSON.stringify(captures[0]).includes(ITEM.event_text));
     assert.deepEqual(captures[1].slice(0, captures[0].length), captures[0], 'continuation preserves the exact earlier request');
     assert.equal((modelDetail as { text: string }).text, ITEM.event_text);
@@ -166,7 +166,7 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     assert.equal(db.prepare('SELECT state FROM turns WHERE id=?').get(b.turnId)?.state, 'completed');
     assert.equal(sol.calls(), 2); assert.equal(caps.filter(c => c.endsWith('.prepare')).length, 2);
     assert.equal(db.prepare('SELECT count(*) n FROM surfacing_deliveries WHERE retained=1').get()?.n, 1, 'already-visible evidence is not appended again');
-    const memoryBlocks = captures[2].flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.map(b => b.text ?? '')).filter(text => text.startsWith('{\"memories\":'));
+    const memoryBlocks = captures[2].flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.map(b => b.text ?? '')).filter(isRecollectionText);
     assert.equal(memoryBlocks.length, 1, 'new SDK turn preserves the original memory block without appending it again');
     const c = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '嗯，我就是想到那天。', clientMessageId: 'sdk-3' });
     supervisor.enqueue(c.turnId); await supervisor.waitIdle();
@@ -177,9 +177,9 @@ test('SDK uses the same first-request ledger, detail tools, frozen continuation 
     const d = messages.submitUserMessageWithTurn({conversationId:'c1', content:'查记忆库建设经历和当天原话。', clientMessageId:'sdk-4'});
     supervisor.enqueue(d.turnId); await supervisor.waitIdle();
     const blocks = captures.at(-1)!.flatMap(m => typeof m.content === 'string' ? [m.content] : m.content.map(b => b.text ?? ''))
-      .filter(text => text.startsWith('{"memories":'));
+      .filter(isRecollectionText);
     assert.equal(blocks.length, 2);
-    assert.deepEqual(JSON.parse(blocks[1]!), {memories:[], missing:[{kind:'raw_context',status:'no_match'}]});
+    assert.equal(blocks[1], '有些原话，这次还没能核实。\n\n当时的对话原文：没有找到能逐字确认的内容。');
     assert.deepEqual(svc.visibleMemoriesForTurn('c1', d.turnId), []);
     assert.equal(svc.repo.solInputBoundary('c1', d.message.sequence + 1), a.message.sequence);
     assert.equal(forbiddenNetwork, 0); assert.equal(forbiddenSdkLoads, 0);

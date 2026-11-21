@@ -1,5 +1,5 @@
 import type { Db } from '../db/connection.ts';
-import { SURFACE_HOST_NOTICE, type SurfaceItem } from './contracts.ts';
+import { isRecollectionText, LEGACY_SURFACE_NOTICE, type SurfaceItem } from './contracts.ts';
 import { sourceCoverageRange } from './source-boundary.ts';
 import { sha256Hex } from '../util/id.ts';
 import { isWithheldToolResult } from '../runtime/tool-result-retention.ts';
@@ -109,13 +109,15 @@ function automaticBlocks(messages: readonly CoverageMessage[]): Set<string> {
   return new Set(messages.flatMap(message => {
     if (Array.isArray(message.content)) {
       const [notice, packet] = message.content;
-      return notice?.type === 'text' && notice.text === SURFACE_HOST_NOTICE && packet?.type === 'text' && packet.text
+      if (message.role === 'user' && message.content.length === 1 && notice?.type === 'text' && notice.text && isRecollectionText(notice.text)) return [notice.text];
+      return notice?.type === 'text' && notice.text === LEGACY_SURFACE_NOTICE && packet?.type === 'text' && packet.text
         ? [packet.text] : [];
     }
     // DeepSeek concatenates text blocks without a delimiter. The host envelope
     // and the receipt still share the unchanged frozen packet.
-    if (typeof message.content === 'string' && message.content.startsWith(SURFACE_HOST_NOTICE)) {
-      return [message.content.slice(SURFACE_HOST_NOTICE.length).replace(/^\n/, '')];
+    if (message.role === 'user' && typeof message.content === 'string' && isRecollectionText(message.content)) return [message.content];
+    if (typeof message.content === 'string' && message.content.startsWith(LEGACY_SURFACE_NOTICE)) {
+      return [message.content.slice(LEGACY_SURFACE_NOTICE.length).replace(/^\n/, '')];
     }
     return [];
   }));

@@ -254,7 +254,7 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
 test('M01-M04/C02: full memory text/date and minimal deep-read reference; no summary or internal metadata', () => {
   const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
   const second = {...item,event_id:'e2',detail_ref:'sdr2',memory_date:null,event_text:'第二个事件'};
-  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{memory_ref:memoryRefFor('sdr1'),kind:'event',date:'2026-07-09',text:item.event_text},{memory_ref:memoryRefFor('sdr2'),kind:'event',date:null,text:second.event_text}]});
+  assert.equal(renderAugmentation([item,second]), `你想起了几段往事。\n\n2026-07-09\n${item.event_text}\n〔${memoryRefFor('sdr1')}〕\n\n确切的日子记不清了。\n${second.event_text}\n〔${memoryRefFor('sdr2')}〕`);
   assert.equal(renderAugmentation([]),'');
 });
 
@@ -331,7 +331,7 @@ test('M02: valid stored occurrence time survives legacy confidence metadata; inv
   const refs = new Map([['e', memoryRefFor('detail')]]);
   assert.ok(renderAugmentation([item], refs).includes('2026-07-09 09:12'));
   assert.ok(renderAugmentation([{ ...item, date_confidence: 'unknown' }], refs).includes('2026-07-09 09:12'), 'current model-result-whitelist contract retains a valid stored occurrence date independently of legacy date_confidence');
-  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
+  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('确切的日子记不清了。'));
 });
 
 test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampering still fails', async () => {

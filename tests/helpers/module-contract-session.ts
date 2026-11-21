@@ -179,7 +179,7 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
     const hasMemoriesBlock = (full: unknown[]): boolean => full.some((m) => {
       const c = (m as { content?: unknown }).content;
       const texts = Array.isArray(c) ? c.map((b) => String((b as { text?: string }).text ?? '')) : [typeof c === 'string' ? c : ''];
-      return texts.some((t) => t.includes('{"memories":'));
+      return texts.some((t) => t.startsWith('你想起了'));
     });
     const firstMemoriesReq = log.findIndex((r) => hasMemoriesBlock(r.full));
     facts.surfacing_block_request = firstMemoriesReq + 1; // 1-based；0=未出现

@@ -83,7 +83,7 @@ try {
   await page.getByRole('button', { name: '发送' }).click();
 
   // 浮现区块挂载即拉取且默认展开（2026-10-22 她要求）
-  const surfacePanel = page.getByRole('button', { name: /本轮浮现的记忆（1）/ });
+  const surfacePanel = page.getByRole('button', { name: 'char想起了一段往事', exact: true });
   await surfacePanel.waitFor();
   const panel = page.getByText('char：我们做到了', {exact:true});
   await panel.waitFor();

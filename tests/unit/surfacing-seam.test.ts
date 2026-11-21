@@ -1,6 +1,6 @@
 import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
 import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
-import {memoryRefFor,SURFACE_HOST_NOTICE} from '../../apps/host/src/memory-surfacing/contracts.ts';
+import {memoryRefFor,isRecollectionText} from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -90,9 +90,6 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
 
 type Block = { type: string; text?: string };
 const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : typeof c === 'string' ? [{ type: 'text', text: c }] : []);
-// DS serializes content blocks into one string at its wire boundary.
-const memoryJson = (text: string): string => text.slice(text.indexOf('{"memories":'));
-
 test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；retain 落账', async () => {
   const root = tempRoot('sfseam-');
   const log: Array<Record<string, unknown>> = [];
@@ -122,16 +119,14 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   // docs/04：content 数组独立块；provider 只能接受字符串时确定性序列化
   // 两个有来源边界的段（分段 manifest 在 surfacing_deliveries）。
   const memoryMessage = msgs2[msgs2.length - 2]!;
-  assert.equal(memoryMessage.role, 'system', 'host data is not a user message');
-  const fullMemoryText = toBlocks(memoryMessage.content).map(b => b.text ?? '').join('\n');
-  assert.equal(fullMemoryText.split(SURFACE_HOST_NOTICE).length - 1, 1);
-  const memoryText = memoryJson(fullMemoryText);
+  assert.equal(memoryMessage.role, 'user', 'DeepSeek keeps the recollection separate from the system prompt and the actual user input');
+  const memoryText = toBlocks(memoryMessage.content)[0]!.text!;
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
-  assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), kind: 'event', date: '2026-07-09', text: ITEM.event_text }] });
+  assert.equal(memoryText, `你想起了一段往事。\n\n2026-07-09\n${ITEM.event_text}\n〔${memoryRefFor(ITEM.detail_ref)}〕`);
   assert.ok(memoryText.includes(memoryRefFor(ITEM.detail_ref)));
 
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
-  assert.ok(!tail2Text.includes('{"memories":'), 'real user input is not rewritten with host memory');
+  assert.ok(!tail2Text.includes(ITEM.event_text), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_deliveries WHERE retained=1').get() as { n: number }).n, 1);
@@ -140,11 +135,11 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   await say('c');
   const msgs3 = log[1]!.full as Array<{ role: string; content: unknown }>;
   // 旧回忆块仍在轨迹原位（未删除/未移动到新尾部）
-  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('{"memories":')));
+  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => isRecollectionText(b.text ?? '')));
   assert.equal(oldBlocks.length, 1, '旧回忆块仍在轨迹原位且仅一份');
   // 新尾部不再有回忆块（同事件已覆盖）
   const tail3 = msgs3[msgs3.length - 1]!;
-  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('{"memories":')).length, 0, 'U3 不重复追加');
+  assert.equal(toBlocks(tail3.content).filter((b) => isRecollectionText(b.text ?? '')).length, 0, 'U3 不重复追加');
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
   assert.deepEqual(windowCoverage(ctx.db, activeWindow).filter(range => range.resource_ref.startsWith('memory:')), [{
     resource_ref: `memory:${ITEM.memory_id}`, content_version: ITEM.memory_version,

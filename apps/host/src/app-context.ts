@@ -1,6 +1,6 @@
 import { SourceBindingService } from './modules/sourcebinding/service.ts';
 import { GlmChatAdapter } from './integrations/glm/chat.ts';
-import { supportsSurfacingTransport, SURFACE_HOST_NOTICE } from './memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport } from './memory-surfacing/contracts.ts';
 // 组合根：把配置、DB 与各服务装配成一个可启动/可停止的 Host。
 // 测试用 createHost({ stateRoot: 临时目录, config: buildConfig({...}) }) 直接构建。
 import http from 'node:http';
@@ -213,7 +213,6 @@ export class Host {
       solJudge,
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
-        transport_overhead_text: SURFACE_HOST_NOTICE,
         // R9（裁定 2026-11-03）：调度身份来自配置（E 自身版本，不再是
         // 冒充 M 的硬编码 1/surface_prepare_v2）；M 实际执行版本由
         // prepare 响应读取落盘（surfacing_jobs.m_policy_revision 等）
