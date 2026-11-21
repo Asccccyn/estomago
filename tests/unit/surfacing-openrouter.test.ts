@@ -98,7 +98,7 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
   const caps: string[] = [];
   const words = [{speaker:'qiaosheng',text:'合成的保存原句'},{speaker:'jiaming',text:'同一记忆中的第二句'}];
   const quote = { ...ITEM, kind: 'words', speaker: 'qiaosheng', quote_text: words[0].text,
-    matched_memory: {text:ITEM.event_text,our_words:words},
+    matched_memory: {title:'记忆库建成',mood_tags:['开心','期待'],text:ITEM.event_text,our_words:words},
     coverage_ranges: [{resource_ref:'memory:00001',content_version:'1',start_char:0,end_char:[...ITEM.event_text].length},
       ...words.map((w,i)=>({resource_ref:'our_word:word'+i,content_version:'1:0',start_char:0,end_char:[...w.text].length}))] };
   const expectedWords = [{speaker:'用户',text:words[0].text},{speaker:'助手',text:words[1].text}];
@@ -128,13 +128,13 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
     const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
     assert.equal(list.length,1);
-    assert.deepEqual({kind:list[0].kind,words:list[0].our_words,text:list[0].text},
-      {kind:'words',words:expectedWords,text:ITEM.event_text});
+    assert.deepEqual({kind:list[0].kind,words:list[0].our_words,text:list[0].text,title:list[0].title,moods:list[0].mood_tags},
+      {kind:'words',words:expectedWords,text:ITEM.event_text,title:'记忆库建成',moods:['开心','期待']});
     const before=caps.length;
     const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
     const packet = (log[0].full as any[]).flatMap(m => toBlocks(m.content)).find(b => b.text && isRecollectionText(b.text))!.text!;
     const visibleRef = list[0].memory_ref;
-    assert.equal(packet, `你想起了一段往事。\n\n${ITEM.memory_date}\n${ITEM.event_text}\n\n我们的话\n用户：“${words[0].text}”\n助手：“${words[1].text}”\n〔${visibleRef}〕`);
+    assert.equal(packet, `你想起了一件事——记忆库建成，${ITEM.memory_date}。\n${ITEM.event_text}\n当时的心情：开心、期待。\n当时用户说过：「${words[0].text}」\n当时助手说过：「${words[1].text}」\n〔${visibleRef}〕`);
     const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
       {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
     assert.equal(modelRead.ok,true);assert.equal((modelRead.output.source as any[])[0].text,'绑定的原文');

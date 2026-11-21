@@ -276,7 +276,10 @@ export class SurfacingService {
     const triggerText = effectiveRevisionText(this.db, previous.sourceMessageId, row.revision, row.content);
     const contextTexts = new Set<string>([triggerText]);
     for (const m of this.recentDialogue(conversationId, row.sequence, triggerText)) contextTexts.add(m.text);
-    return previous.items.every(it => { const text = projectSurfacedMemory(it).text; return typeof text === 'string' && contextTexts.has(text); });
+    return previous.items.every(item => {
+      const memory = projectSurfacedMemory(item);
+      return contextTexts.has(memory.text) && (memory.our_words ?? []).every(word => contextTexts.has(word.text));
+    });
   }
 
   private current(job: JobRow): boolean {
@@ -931,7 +934,10 @@ export class SurfacingService {
 
   visibleMemoriesForTurn(conversationId: string, turnId: string) {
     return this.repo.visibleForTurn(conversationId, turnId, this.speakerNames)
-      .map(({ memory_ref, kind, date, text, speaker, our_words }) => ({ memory_ref, kind, date, text, ...(speaker ? { speaker } : {}), ...(our_words ? { our_words } : {}) }));
+      .map(({ memory_ref, kind, date, text, speaker, title, mood_tags, our_words }) => ({
+        memory_ref, kind, date, text, ...(speaker ? { speaker } : {}), ...(title ? { title } : {}),
+        ...(mood_tags ? { mood_tags } : {}), ...(our_words ? { our_words } : {}),
+      }));
   }
 
   async readMemoryForTurn(conversationId: string, turnId: string, ref: string, cursor?: string, section: 'memory' | 'relations' | 'source' = 'memory') {

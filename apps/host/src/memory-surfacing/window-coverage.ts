@@ -51,7 +51,7 @@ export function surfaceItemRanges(item: SurfaceItem): CoverageRange[] {
 
 /** Project verified body and neighbour ranges in the same coordinate space as active reads. */
 export function unreadSurfaceItem(item: SurfaceItem, covered: readonly CoverageRange[]): SurfaceItem | null {
-  if (item.kind === 'words' && item.matched_memory) {
+  if (item.kind !== 'source' && item.matched_memory) {
     // The selected bucket is atomic. Keep the complete body and quotes when
     // any part is new, and record only the ranges newly delivered in this window.
     const unread = surfaceItemBodyRanges(item).flatMap(range => uncoveredRanges(range, covered));
@@ -175,7 +175,11 @@ function projectWindow(db: Db, windowId: string, requestId?: string | null, incl
         for (const item of items) {
           ranges.push(...surfaceItemRanges(item));
           if (includeKnown) {
-            known.push(item.quote_text ?? item.event_text);
+            if (item.kind !== 'source' && item.matched_memory) {
+              known.push(item.matched_memory.text, ...item.matched_memory.our_words.map(word => word.text));
+            } else {
+              known.push(item.quote_text ?? item.event_text);
+            }
             if ((item.kind === 'words' || item.kind === 'source') && item.source_context_text) known.push(item.source_context_text);
           }
         }

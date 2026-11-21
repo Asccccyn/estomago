@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { EstomagoClient } from './chat-client'
 type Section = 'memory' | 'relations' | 'source'
-type Memory = { memory_ref:string; kind?:'event'|'words'|'source'; speaker?:string; our_words?:Entry[]; date:string|null; text:string }
+type Memory = { memory_ref:string; kind?:'event'|'words'|'source'; speaker?:string; our_words?:Entry[]; title?:string; mood_tags?:string[]; date:string|null; text:string }
 type Entry = { display_speaker?:string; speaker?:string; normalized_sender?:string; text?:string; source_gap?:string; unavailable?:boolean; changed?:boolean; uncertain?:boolean; attachments?:unknown[]; reason?:string; conversation_title?:string; occurred_date?:string; occurred_at?:string; direction?:string; relation_type?:string; target?:{title?:string;memory_id?:string;plan_id?:string} }
 type Page = { date?:string; title?:string; text?:string; categories?:string[]; mood?:{text?:string;tags?:string[]}; our_words?:Entry[]; relations?:Entry[]; source?:Entry[]; next_cursor?:string|null; previous_cursor?:string|null; incomplete_sections?:Record<string,string>; changed_since_surface?:boolean }
 const names:Record<Section,string>={memory:'记忆详情',relations:'关系与关联内容',source:'绑定原文'}
@@ -71,8 +71,10 @@ export function SurfacedMemories({turnId,client}:{turnId:string;client:EstomagoC
       {busy&&<p role="status">读取中…</p>}{error&&<p role="alert">{error}</p>}
       {items?.length===0&&<p>本轮没有自动浮现的记忆。</p>}
       {items?.map(item=><section key={item.memory_ref}>
+        {item.title&&<h4 className="font-medium">{item.title}</h4>}
         <p>{item.kind==='words'?(item.our_words?'命中我们的话 · ':'我们的话 · '):item.kind==='source'?'聊天原文 · ':''}{item.date??'日期不确定'}</p>
         <p className="whitespace-pre-wrap break-words">{item.speaker&&<>{item.speaker}：</>}{item.text}</p>
+        {!!item.mood_tags?.length&&<p>当时的心情：{item.mood_tags.join('、')}</p>}
         {item.our_words&&!(selected===item.memory_ref&&section==='memory'&&pages.length>0)&&<SavedWords words={item.our_words} />}
         <div className="mt-1 flex flex-wrap gap-3">{(['memory','relations','source'] as Section[]).map(part=><button key={part} type="button" disabled={busy} onClick={()=>void detail(item.memory_ref,part)} className="underline">{part==='memory'?'查看详情':part==='relations'?'查看关系':'查看绑定原文'}</button>)}</div>
       </section>)}

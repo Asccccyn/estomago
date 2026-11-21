@@ -83,10 +83,10 @@ test('取消在会话否定与原文二轮之间生效，二轮不发起', async
 });
 
 
-test('部分已读的引语命中仍交付完整正文和全部原话，全部覆盖后不再浮现', () => {
+for (const kind of ['event','words'] as const) test(`${kind} 命中部分已读的记忆仍交付完整正文和全部原话，全部覆盖后不再浮现`, () => {
   const body = { resource_ref:'memory:m1', content_version:'3', start_char:0, end_char:4 };
   const word = { resource_ref:'our_word:w1', content_version:'3:0', start_char:0, end_char:2 };
-  const item = { kind:'words' as const, memory_id:'m1', memory_version:'3', event_id:'ev_1',
+  const item = { kind, memory_id:'m1', memory_version:'3', event_id:'ev_1',
     event_text:'原句', quote_text:'原句', memory_date:null, date_confidence:null, body_hash:'hash', detail_ref:'sdr_1',
     matched_memory:{text:'完整正文',our_words:[{speaker:'qiaosheng',text:'原句'}]}, coverage_ranges:[body,word] };
   const partial = unreadSurfaceItem(item, [word]);

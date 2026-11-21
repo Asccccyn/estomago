@@ -35,7 +35,7 @@ let browser;
 try {
   // 浮现数据注入（真实链路已由 surfacing-core/seam/detail-http 验收；本 smoke 职责=DOM 渲染
   // 与交互闭环）。visibleMemoriesForTurn=AC015 形状（memory_ref/date/text，无内部字段）。
-  const SURFACE = { memory_ref: 'sf_dom_1', kind: 'words', date: '2026-07-09', text: '记忆库在那天建成。', our_words: [{speaker:'char',text:'我们做到了'},{speaker:'宿主用户',text:'这一句也存着'}] };
+  const SURFACE = { memory_ref: 'sf_dom_1', kind: 'words', title: '记忆库建成', mood_tags:['开心','期待'], date: '2026-07-09', text: '记忆库在那天建成。', our_words: [{speaker:'char',text:'我们做到了'},{speaker:'宿主用户',text:'这一句也存着'}] };
   host.surfacing.visibleMemoriesForTurn = (_room, turn) => turn ? [SURFACE] : [];
   const reads = [];
   host.surfacing.readMemoryForTurn = async (_room, _turn, ref, cursor, section) => {
@@ -87,6 +87,8 @@ try {
   await surfacePanel.waitFor();
   const panel = page.getByText('char：我们做到了', {exact:true});
   await panel.waitFor();
+  await page.getByRole('heading', { name: '记忆库建成', exact:true }).waitFor();
+  await page.getByText('当时的心情：开心、期待', {exact:true}).waitFor();
   assert.ok(enqueued.length > enqueuedBefore, '消息真实进入宿主 turn 链');
   await page.getByText('命中我们的话 · 2026-07-09', {exact:true}).waitFor();
   const enqueuedBeforeDetail = enqueued.length;

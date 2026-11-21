@@ -8,7 +8,7 @@ import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { renderAugmentation, memoryRefFor, LEGACY_SURFACE_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { renderAugmentation, memoryRefFor, isRecollectionText, LEGACY_SURFACE_NOTICE, surfaceTransportMessage } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { SurfacingRepository } from '../../apps/host/src/memory-surfacing/repository.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
@@ -36,6 +36,7 @@ test('新回忆以普通上下文承载，日期、正文与深读线索完整�
   const ref = memoryRefFor(ITEM.detail_ref);
   const memory = renderAugmentation([ITEM]);
   assert.equal(memory, `你想起了一段往事。\n\n2026-07-09\n${ITEM.event_text}\n〔${ref}〕`);
+  assert.ok(isRecollectionText(memory));
   const old = JSON.stringify({memories:[{memory_ref:ref,kind:'event',date:ITEM.memory_date,text:ITEM.event_text}]});
   for (const provider of ['claude-agent-sdk','deepseek','openrouter']) {
     assert.deepEqual(surfaceTransportMessage(provider, memory), {role:'user', content:[{type:'text',text:memory}]});
@@ -44,6 +45,20 @@ test('新回忆以普通上下文承载，日期、正文与深读线索完整�
       content:[{type:'text',text:LEGACY_SURFACE_NOTICE},{type:'text',text:old}],
     });
   }
+});
+
+test('事件命中带出同桶授权字段，缺失标题、日期和心情时仍保留原话', () => {
+  const word = {speaker:'qiaosheng',text:'换行\n  也保留'};
+  const bundle = {text:'第一行。\n第二行。',our_words:[word]};
+  const item = {...ITEM,kind:'event' as const,memory_date:null,matched_memory:bundle};
+  const actual = renderAugmentation([item],undefined,[],{owner:'宿主用户',assistant:'char'});
+  assert.equal(actual,`你想起了一件事。\n${bundle.text}\n当时宿主用户说过：「${word.text}」\n〔${memoryRefFor(ITEM.detail_ref)}〕`);
+  assert.ok(isRecollectionText(actual));
+  const titled = renderAugmentation([{...item,matched_memory:{...bundle,title:'不知日期的一天',mood_tags:['想念']}}]);
+  assert.ok(titled.startsWith('你想起了一件事——不知日期的一天。\n'));
+  assert.ok(titled.includes('当时的心情：想念。'));
+  const source = renderAugmentation([{...ITEM,kind:'source',speaker:'宿主用户',quote_text:'只有这句话'}]);
+  assert.ok(!source.includes('当时的心情') && !source.includes('不知日期的一天'));
 });
 
 test('只有原话缺口时如实说明；部分可见时只呈现实际交付的片段', () => {

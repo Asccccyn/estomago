@@ -25,7 +25,7 @@ export type SurfaceItemKind = 'event' | 'words' | 'source';
 
 export type SurfaceItem = {
   kind?: SurfaceItemKind;
-  matched_memory?: { text: string; our_words: Array<{ speaker: string; text: string }> };
+  matched_memory?: { text: string; our_words: Array<{ speaker: string; text: string }>; title?: string; mood_tags?: string[] };
   coverage_ranges?: CoverageRange[];
   coverage_text_offset?: number;
   unread_parts?: Array<{ start_char: number; end_char: number; text: string }>;
@@ -108,13 +108,18 @@ function eventTimeText(item: SurfaceItem): string {
  * 不确定日期以 null 表达）。kind=words 额外保留真实说话人与引语原文；
  * kind=source 保留来源区间原文——都不截断、不改写。speaker 按包4 §6.2
  * 投影为身份配置的双方真实姓名；第三方/未知身份沿用原值。 */
-export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels): { date: string | null; text: string; speaker?: string | null; context?: string; kind: SurfaceItemKind; our_words?: Array<{speaker:string;text:string}> } {
+export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels): {
+  date: string | null; text: string; kind: SurfaceItemKind; speaker?: string | null; context?: string;
+  title?: string; mood_tags?: string[]; our_words?: Array<{speaker:string;text:string}>;
+} {
   const kind = item.kind ?? 'event';
   const date = eventTimeText(item);
   const context = item.source_context_text && item.source_context_text.length > 0 ? item.source_context_text : undefined;
-  if (kind === 'words' && item.matched_memory) {
-    return { kind, date: date === '不确定' ? null : date, text: item.matched_memory.text,
-      our_words: item.matched_memory.our_words.map(({speaker,text}) => ({
+  if (kind !== 'source' && item.matched_memory) {
+    const { title, text, mood_tags, our_words } = item.matched_memory;
+    return { kind, date: date === '不确定' ? null : date, text,
+      ...(title ? { title } : {}), ...(mood_tags?.length ? { mood_tags } : {}),
+      our_words: our_words.map(({speaker,text}) => ({
         speaker: labels ? speakerLabelFor(speaker, labels) as string : speaker, text,
       })) };
   }
@@ -129,21 +134,29 @@ export type MissingQuote = { kind: 'raw_context' | 'words_only' | 'words'; statu
 
 const SINGLE_MEMORY = '你想起了一段往事。';
 const SEVERAL_MEMORIES = '你想起了几段往事。';
+const BUCKET_OPENING = '你想起了一件事';
 const MISSING_WORDS = '有些原话，这次还没能核实。';
 
 export function isRecollectionText(text: string): boolean {
+  if (text.startsWith(BUCKET_OPENING + '——') || text.startsWith(BUCKET_OPENING + '。\n')) return true;
   return [SINGLE_MEMORY, SEVERAL_MEMORIES, MISSING_WORDS].some(heading => text.startsWith(heading + '\n\n'));
 }
 
 export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, string>, missing: MissingQuote[] = [], labels?: SpeakerLabels): string {
   if (!items.length && !missing.length) return '';
-  const opening = items.length > 1 ? SEVERAL_MEMORIES : items.length ? SINGLE_MEMORY : MISSING_WORDS;
-  const paragraphs = [opening];
+  const paragraphs: string[] = items.length ? [] : [MISSING_WORDS];
   for (const item of items) {
     const ref = refs?.get(surfaceItemKey(item)) ?? (item.detail_ref ? memoryRefFor(item.detail_ref) : null);
     if (!ref) throw new Error('SURFACE_REFERENCE_MISSING');
     const memory = projectSurfacedMemory(item, labels);
-    const lines = [memory.date ?? '确切的日子记不清了。'];
+    const lines: string[] = [];
+    if (memory.our_words) {
+      const when = [memory.title, memory.date].filter(Boolean).join('，');
+      lines.push(when ? `${BUCKET_OPENING}——${when}。` : `${BUCKET_OPENING}。`);
+    } else {
+      if (!paragraphs.length) paragraphs.push(items.length > 1 ? SEVERAL_MEMORIES : SINGLE_MEMORY);
+      lines.push(memory.date ?? '确切的日子记不清了。');
+    }
     const remembered = item.unread_parts ? item.unread_parts.map(part => part.text).join('\n…\n') : memory.text;
     if (remembered) {
       if (item.unread_parts?.length) lines.push('还记得其中的片段：');
@@ -151,9 +164,8 @@ export function renderAugmentation(items: SurfaceItem[], refs?: Map<string, stri
       else if (memory.kind !== 'event' && !memory.our_words) lines.push(`当时留下的话：“${remembered}”`);
       else lines.push(remembered);
     }
-    if (memory.our_words?.length) {
-      lines.push('', '我们的话', ...memory.our_words.map(word => `${word.speaker}：“${word.text}”`));
-    }
+    if (memory.mood_tags?.length) lines.push(`当时的心情：${memory.mood_tags.join('、')}。`);
+    for (const word of memory.our_words ?? []) lines.push(`当时${word.speaker}说过：「${word.text}」`);
     if (memory.context) lines.push('', '那时前后还说过这些话：', memory.context);
     lines.push(`〔${ref}〕`);
     paragraphs.push(lines.join('\n'));
