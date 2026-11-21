@@ -43,11 +43,13 @@ const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
-const isHeartbeat = (payload: Record<string, unknown>): boolean => {
+const latestUserContent = (payload: Record<string, unknown>): string => {
   const messages = payload.messages as Array<{ role: string; content: unknown }>;
   const latest = messages.findLast(message => message.role === 'user');
-  return JSON.stringify(latest?.content ?? '').includes('[心跳唤醒]');
+  return JSON.stringify(latest?.content ?? '');
 };
+const isHeartbeat = (payload: Record<string, unknown>): boolean => latestUserContent(payload).includes('[心跳唤醒]');
+const isSelfWake = (payload: Record<string, unknown>): boolean => latestUserContent(payload).includes('[Host self-wake;');
 
 function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' | 'deferred' = 'legacy') {
   writeApprovedIdentity(root);
@@ -343,13 +345,21 @@ test('K-01/C-01/C-12：心跳按原有时序派发，无文字拒抽保留协议
   assert.equal(next.filter(message => message.role === 'tool' && message.tool_call_id === 'heartbeat-decline').length, 1);
 });
 
+function scheduleDueSelfWake(ctx: ReturnType<typeof compose>, clock: { nowMs: number }, operationId: string, note: string): string {
+  const result = new BackgroundTaskService(ctx.db, ctx.bgSettings, () => clock.nowMs).schedule({
+    actorId: 'jiaming', createdBy: 'jiaming', conversationId: 'c1', operationId, note, delaySeconds: 1,
+  });
+  assert.ok(result.ok);
+  clock.nowMs += 1_000;
+  return result.task.task_id;
+}
+
 test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文；工具循环同 run；chat_send_text 单次发布；内部终答不发布', async () => {
   const payloads: Array<Record<string, unknown>> = [];
   let bgRound = 0;
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
-    const isBg = JSON.stringify(p).includes('Host self-wake');
-    if (isBg) {
+    if (isSelfWake(p)) {
       bgRound++;
       if (bgRound === 1) return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(toolCallBody([{ id: 'tc-1', name: 'chat_send_text', args: JSON.stringify({ text: '自主活动里跟你说一声', idempotency_key: 'auto-1' }) }, { id: 'tc-2', name: 'background_complete', args: JSON.stringify({ outcome: 'noop' }) }]))]) };
       return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('（内部结束）'))]) };
@@ -362,9 +372,7 @@ test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文�
   await seedChatTurn(ctx, 'auto0');
   setPrice(ctx.db);
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
-  const autoTask = `bgt_auto1_${genId('x').slice(2, 8)}`;
-  const nowIso = new Date(nowRef.nowMs).toISOString();
-  ctx.db.prepare("INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES (?,'c1','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,?,'qiaosheng','self_schedule',?,?)").run(autoTask, nowIso, nowIso, JSON.stringify({ note: '提醒宿主用户读书。', source: 'self_schedule', scheduled_for: nowIso }), nowIso, nowIso);
+  const autoTask = scheduleDueSelfWake(ctx, nowRef, 'auto1-wake', '提醒宿主用户读书。');
   const sched = wireExecutor(ctx, nowRef);
   sched.start();
   await sched.tick();
@@ -374,7 +382,7 @@ test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文�
   assert.ok(run.model_requests_started >= 1, '工具链共用同一 run 计数');
   assert.equal(run.retention, 'retained', '有工具/发布=SUBSTANTIVE 保留');
   // W-07 面：note 原文进入请求（不截断 200）
-  const bgPayload = JSON.stringify(payloads.filter((p) => JSON.stringify(p).includes('Host self-wake')));
+  const bgPayload = JSON.stringify(payloads.filter(isSelfWake));
   assert.ok(bgPayload.includes('Your note: 提醒宿主用户读书。'), 'note 全文投递');
   assert.ok(bgPayload.includes('not a message from Qiaosheng'), '来源可辨（host 事件口径）');
   // chat_send_text 恰发布一条正式助手消息；工具后的内部续答不发布
@@ -443,8 +451,7 @@ test('C-07（收尾）：自醒 chat_send_text 已发 → 下一用户请求恰�
   let bgRound = 0;
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
-    const isBg = JSON.stringify(p).includes('Host self-wake');
-    if (isBg) {
+    if (isSelfWake(p)) {
       bgRound++;
       if (bgRound === 1) return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(toolCallBody([{ id: 'tc-c7', name: 'chat_send_text', args: JSON.stringify({ text: '主动想说的话C7', idempotency_key: 'c7-1' }) }, { id: 'tc-c7b', name: 'background_complete', args: JSON.stringify({ outcome: 'done' }) }]))]) };
       return { status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(chatBody('（收尾）'))]) };
@@ -457,9 +464,7 @@ test('C-07（收尾）：自醒 chat_send_text 已发 → 下一用户请求恰�
   await seedChatTurn(ctx, 'c7-0');
   setPrice(ctx.db);
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
-  const autoTask = `bgt_c7_${genId('x').slice(2, 8)}`;
-  const nowIso = new Date(nowRef.nowMs).toISOString();
-  ctx.db.prepare("INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, created_at, updated_at) VALUES (?,'c1','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,'{}','qiaosheng','self_schedule',?,?)").run(autoTask, nowIso, nowIso, nowIso, nowIso);
+  scheduleDueSelfWake(ctx, nowRef, 'c7-wake', '主动聊一句。');
   const sched = wireExecutor(ctx, nowRef);
   sched.start();
   await sched.tick(); // 自醒执行：chat_send_text 发布一条正式消息

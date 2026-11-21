@@ -29,6 +29,8 @@ import { MariposaClient, type MariposaTransport } from '../../apps/host/src/inte
 
 const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
+// The long input alone reaches the fixture's soft limit, independently of the tool catalog size.
+const ROTATION_INPUT = '容量验证内容'.repeat(12_000);
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
 const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { content: text } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }] }) + DONE;
@@ -82,10 +84,10 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
 
 function compose(root: string, orTransport: OrTransport, mariposa: MariposaTransport, configOver: Record<string, unknown> = {}) {
   writeApprovedIdentity(root);
-  // 裁定②（2026-10-24）：容量口径统一含冻结工具目录（底座随目录增长标定——相册重构
-  // P4/P5/P3 依次 +conversation_archive/+image_generate 后底座 ≈13.2k token）——软线=
-  // 底座+1500（原相对位置不变：首轮不触发，第二轮长消息≈+3.2k token 触发）
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: MODEL }, windows: { soft_limit_tokens: 17_580 /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 47706→48991B（≈+356 token）——底座+1500 相对位不变：首轮不触发，第二轮长消息≈+3.2k token 触发 */ }, ...configOver });
+  const config = buildConfig({
+    ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' },
+    openrouter: { model: MODEL }, windows: { soft_limit_tokens: 24_000 }, ...configOver,
+  });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -134,7 +136,7 @@ test('直调换窗评审只附加自己的完成工具，审计实发定义与�
   t.after(() => { ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   await say(ctx, '合成首轮', 'direct-review-first', T0);
   const window = ctx.windows.activeWindow('c1')!;
-  const next = await say(ctx, '容量验证内容'.repeat(12_000), 'direct-review-next', new Date(Date.parse(T0) + H).toISOString());
+  const next = await say(ctx, ROTATION_INPUT, 'direct-review-next', new Date(Date.parse(T0) + H).toISOString());
   assert.notEqual(ctx.windows.activeWindow('c1')!.id, window.id);
   assert.equal(ctx.db.prepare('SELECT state FROM turns WHERE id=?').get(next.turnId)?.state, 'completed');
 
@@ -152,19 +154,22 @@ test('容量触发（原 6h 静默触发，2026-10-08 晚间裁定改为软线�
   const root = tempRoot('orrot1-');
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'no_new_hold', log), mariposaOk);
   await say(ctx, '早上的话', 'r1', T0);
+  assert.equal(ctx.db.prepare('SELECT COUNT(*) AS n FROM rotation_reviews').get()?.n, 0, '首条短消息留在初始窗口');
   const win1 = ctx.windows.activeWindow('c1')!;
-  const sub2 = await say(ctx, `七小时后的新话题${'很长的容量触发内容。'.repeat(450)}`, 'r2', new Date(Date.parse(T0) + 7 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低+长消息容量触发
+  const sub2 = await say(ctx, `七小时后的新话题${ROTATION_INPUT}`, 'r2', new Date(Date.parse(T0) + 7 * H).toISOString()); // 2026-10-08：静默不换窗——软线压低+长消息容量触发
   // 评审发生了（一次、零新增）并完成
-    const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE status = 'completed'").get() as { id: string; decision: string };
+  const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE window_id=? AND status='completed'").get(win1.id) as { id: string; decision: string };
   assert.equal(reviewRow.decision, 'no_new_hold');
-  assert.ok(log.some((l) => l.purpose === 'pre_rotate_review' && l.lastUser.includes(reviewRow.id)), '提醒携带宿主签发的 review_id');
+  const reviewRequests = log.filter(request => request.purpose === 'pre_rotate_review');
+  assert.equal(reviewRequests.length, 1, '只派发一次评审请求');
+  assert.ok(reviewRequests[0]!.lastUser.includes(reviewRow.id), '提醒携带宿主签发的 review_id');
   // 换窗：旧窗 CLOSED，新窗 ACTIVE，本轮 turn 在新窗
   const win2 = ctx.windows.activeWindow('c1')!;
   assert.notEqual(win2.id, win1.id);
   const att = ctx.db.prepare('SELECT window_id, state FROM attempts WHERE id = ?').get(sub2.attemptId) as { window_id: string; state: string };
   assert.equal(att.window_id, win2.id, '新输入只进新窗');
   assert.equal(att.state, 'completed');
-  assert.equal(ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get().n, 1, '只有一次评审（不多收费）');
+  assert.equal(ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get().n, 1, '只建立一个评审记录');
   ctx.db.close();
 });
 
@@ -174,7 +179,7 @@ test('评审中 hold：收据落账本 → holds_completed 放行 → 书签推�
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'hold_then_complete', log), mariposaOk);
   await say(ctx, '第一天', 'h1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
-  await say(ctx, `第二天回来${'很长的容量触发内容。'.repeat(450)}`, 'h2', new Date(Date.parse(T0) + 25 * H).toISOString());
+  await say(ctx, `第二天回来${ROTATION_INPUT}`, 'h2', new Date(Date.parse(T0) + 25 * H).toISOString());
   // 评审：模型 hold（真实收据）→ holds_completed → 换窗
   const reviewRow = ctx.db.prepare("SELECT * FROM rotation_reviews WHERE status='completed'").get() as { decision: string; memory_ids_json: string };
   assert.equal(reviewRow.decision, 'holds_completed');
@@ -214,13 +219,14 @@ test('模型不完成评审：如实阻断（不伪造完成凭证、不换窗�
   const root = tempRoot('orrot4-');
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'incomplete', log), mariposaOk);
   await say(ctx, '第一句', 'b1', T0);
+  assert.equal(ctx.db.prepare('SELECT COUNT(*) AS n FROM rotation_reviews').get()?.n, 0, '首条短消息留在初始窗口');
   const win1 = ctx.windows.activeWindow('c1')!;
-  const sub2 = await say(ctx, `第二句${'很长的容量触发内容。'.repeat(450)}`, 'b2', new Date(Date.parse(T0) + 8 * H).toISOString());
+  const sub2 = await say(ctx, `第二句${ROTATION_INPUT}`, 'b2', new Date(Date.parse(T0) + 8 * H).toISOString());
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub2.attemptId) as { state: string; blocked_reason: string };
   assert.equal(att.state, 'blocked');
   assert.ok(att.blocked_reason.startsWith('ROTATION_REVIEW_FAILED'), '评审未完成不绕过');
   assert.equal(ctx.windows.activeWindow('c1')!.id, win1.id, '旧窗保持 ACTIVE');
-  const reviewRow = ctx.db.prepare("SELECT status FROM rotation_reviews").get() as { status: string };
+  const reviewRow = ctx.db.prepare("SELECT status FROM rotation_reviews WHERE window_id=?").get(win1.id) as { status: string };
   assert.equal(reviewRow.status, 'failed', '失败如实记录');
   ctx.db.close();
 });
@@ -248,9 +254,9 @@ test('跨窗继承：旧窗书签前内容焦点豁免，不重复评审（§3.2
   const ctx = compose(root, scriptedTransport({ firstRound: 'text' }, 'hold_then_complete', log), mariposaOk);
   await say(ctx, '第一段话', 'k1', T0);
   // 2026-10-08 晚间：静默不换窗——长消息容量触发（时间间隔保留证明与静默无关）
-  await say(ctx, `触发并 hold${'很长的容量触发内容。'.repeat(450)}`, 'k2', new Date(Date.parse(T0) + 25 * H).toISOString());
+  await say(ctx, `触发并 hold${ROTATION_INPUT}`, 'k2', new Date(Date.parse(T0) + 25 * H).toISOString());
   assert.equal(log.filter((l) => l.purpose === 'pre_rotate_review').length, 2, '评审#1：hold + complete 两轮');
-  await say(ctx, `再触发${'很长的容量触发内容。'.repeat(450)}`, 'k3', new Date(Date.parse(T0) + 51 * H).toISOString());
+  await say(ctx, `再触发${ROTATION_INPUT}`, 'k3', new Date(Date.parse(T0) + 51 * H).toISOString());
   // 评审#2 焦点只含未检查内容；k1/a1（书签之前/已检查）不重复出现
   const secondReview = log.filter((l) => l.purpose === 'pre_rotate_review')[2];
   assert.ok(secondReview, '评审#2 发生（有新未检查内容 k2/a2）');

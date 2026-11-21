@@ -436,18 +436,18 @@ test('T9：选集确认后的首发轨迹携带 episode 片段且唯一（Codex 
   };
   let episodeCalls = 0;
   const episodes = { list: async (a: { scopeId: string }) => { episodeCalls++; assert.equal(a.scopeId, 'c1'); return await mariposa('episode.list', a); } };
-  const ctx = compose(root, dsTransport(seen), mariposa as never, { windows: { soft_limit_tokens: 29_500 /* 合成短轮可发，长输入才触发容量换窗。 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录+content_creations_read+工具说明 +2059B≈+572 token 平移 */ /* 2026-11-10 RR4 重标定：media_search 目录 +photos/creations scope +290B≈+80 token（首轮之上、长输入之下，相对位不变）；此前 2026-11-09 R5 +1285B≈+356 token */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ } }, episodes as never);
-  await say(ctx, '首窗第一句', 't9m1', T0);
+  const ctx = compose(root, dsTransport(seen), mariposa as never, { windows: { soft_limit_tokens: 40_000 } }, episodes as never);
+  const first = await say(ctx, '首窗第一句', 't9m1', T0);
+  assert.equal(ctx.db.prepare('SELECT state FROM turns WHERE id=?').get(first.turnId)?.state, 'completed', '先产生可选择的聊天历史');
   const win1 = ctx.windows.activeWindow('c1')!;
   // 容量触发换窗 → 确认（带一条选集 item）→ 新窗首发
-  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(520)}`;
+  // 约 20k token，足以让旧窗越过软线，携带一条历史后仍能装入新窗。
+  const longInput = `触发换窗的长输入。${'内容填充。'.repeat(6_000)}`;
   const s2 = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: longInput, clientMessageId: 't9m2', occurredAt: T1 });
   ctx.supervisor.enqueue(s2.turnId);
   await ctx.supervisor.waitIdle();
   const awaiting = ctx.selections.awaitingFor('c1')!;
-  // 选一条真实历史消息进新窗
-  const hist = ctx.db.prepare('SELECT id, current_revision AS revision FROM messages WHERE conversation_id=? ORDER BY sequence LIMIT 1').get('c1') as { id: string; revision: number };
-  const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: [{ message_id: hist.id, revision: hist.revision }], explicitEmpty: false, idempotencyKey: 'wp7-t9' });
+  const confirm = await ctx.supervisor.selectionConfirm({ conversationId: 'c1', windowId: awaiting.source_window_id, items: [{ message_id: first.message.id, revision: first.message.current_revision }], explicitEmpty: false, idempotencyKey: 'wp7-t9' });
   assert.equal(confirm.ok, true, JSON.stringify(confirm));
   await ctx.supervisor.waitIdle();
   const win2 = ctx.windows.activeWindow('c1')!;
