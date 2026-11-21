@@ -32,7 +32,7 @@ export function renderToolContext(specs: readonly HostToolSpec[], groups: Record
   if (hasDeferred) {
     const reminder = residentToolNames.every(name => initial.has(name)) ? RESIDENT_REMINDER : '';
     const mapReminder = mode === 'direct'
-      ? '其他可用工具已随当前窗口提供。需要按意图找工具时，可用 tool_catalog 的 query 搜索。'
+      ? '其他工具用 tool_catalog 按意图找；知道工具名可用 tool_define。选定后直接按原名填写参数。'
       : MAP_REMINDER;
     lines.push(reminder + mapReminder);
   }

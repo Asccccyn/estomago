@@ -11,7 +11,7 @@ import type { ContentOperationCoordinator } from '../../apps/host/src/integratio
 import { lastCacheEvidence } from '../../apps/host/src/runtime/cache-observation.ts';
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
-import { readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const model = 'anthropic/claude-note-race-fixture';
 const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 500 }, cost: 0.001 };
@@ -169,6 +169,7 @@ for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'di
       background: { keepwarm: { sleep_window: { enabled: false } } },
     });
     host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: transport });
+    makeFixtureToolsResident(host.db, ['heartbeat_draw', 'background_complete', 'chat_send_text']);
     await host.start();
     const base = `http://127.0.0.1:${host.port}`;
     const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();

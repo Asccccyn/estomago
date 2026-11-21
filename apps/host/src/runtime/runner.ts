@@ -62,6 +62,7 @@ export type OrRunRequest = {
   driver: 'openrouter' | 'deepseek' | 'mock'; // R2（2026-11-07）：mock 测试替身同走信封；SDK runner 仍以自身早退守卫排除信封请求
   purpose: RunnerPurpose;
   envelope: OrRequestEnvelope;
+  allowToolAppend?: boolean;
   previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；轨迹正本由调用方提供）
   abortController: AbortController;
   onEvent: (ev: SdkNormalizedEvent) => void;

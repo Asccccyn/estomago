@@ -42,18 +42,23 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
           const tools = (await client.listTools()).tools;
           discovered = tools.map(tool => tool.name);
           assert.ok(!discovered.includes('tool_invoke'));
-          assert.ok(discovered.includes('background_complete'));
+          assert.equal(discovered.length, 16);
+          assert.ok(!discovered.includes('chat_send_text'));
           assert.ok(!discovered.includes('context_review_complete'));
           const humanText = tools.find(tool => tool.name === 'memory_hold')?.inputSchema.properties?.text as { type?: string; description?: string };
           assert.equal(humanText.type, 'string');
           assert.match(humanText.description ?? '', /中文直接填汉字/);
-          for (const [tool, field] of [
-            ['wake_manage', 'note'], ['identity_milestone_write', 'text'], ['deletion_review', 'rejection_reason'],
-            ['wishstar_offer_star', 'message'], ['chat_send_attachment', 'text'], ['conversation_archive', 'note'],
-          ]) {
-            const spec = tools.find(candidate => candidate.name === tool)?.inputSchema.properties?.[field!] as { description?: string } | undefined;
-            assert.match(spec?.description ?? '', /中文直接填汉字/, tool);
-          }
+          const lookup = { query: 'chat_send_text' };
+          const mapName = 'mcp__est__tool_catalog';
+          yield { type: 'assistant', session_id: session, message: { id: 'map-msg', content: [{ type: 'tool_use', id: 'map-id', name: mapName, input: lookup }] } };
+          await input.options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', tool_name: mapName, tool_input: lookup, tool_use_id: 'map-id' });
+          const found = await client.callTool({ name: 'tool_catalog', arguments: lookup });
+          assert.equal(found.isError, false, JSON.stringify(found.content));
+          await input.options.hooks.PostToolBatch[0].hooks[0]({ hook_event_name: 'PostToolBatch', tool_calls: [] });
+          const expanded = (await client.listTools()).tools;
+          assert.deepEqual(expanded.map(t => t.name), [...discovered, 'chat_send_text']);
+          const schema = expanded.at(-1)!.inputSchema.properties?.text as {description?: string};
+          assert.match(schema.description ?? '', /中文直接填汉字/);
           const args = { text, idempotency_key: 'synthetic-write' };
           const name = 'mcp__est__chat_send_text';
           const callId = 'native-call-1';
@@ -88,8 +93,10 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
   const window = host.windows.activeWindow('primary')!;
   const snapshot = storedToolset(host.db, window.id)!;
   assert.equal(snapshot.protocol, 'direct');
-  assert.deepEqual(discovered, snapshot.tools.map(spec => spec.function.name));
+  assert.deepEqual([...discovered, 'chat_send_text'], snapshot.tools.map(spec => spec.function.name));
+  const requests = host.db.prepare("SELECT payload_json FROM provider_requests WHERE turn_id=? AND purpose='chat' ORDER BY rowid").all(turnId);
+  assert.deepEqual(requests.map(r => JSON.parse(String(r.payload_json)).tools.length), [16, 17]);
   assert.deepEqual(discovered.filter(name => !['tool_catalog', 'tool_define'].includes(name)),
-    snapshot.catalog.filter(spec => snapshot.groups[spec.function.name] !== 'T').map(spec => spec.function.name));
+    snapshot.catalog.filter(spec => snapshot.groups[spec.function.name] === 'C').map(spec => spec.function.name));
   assert.equal(host.db.prepare("SELECT count(*) AS n FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.speaker='assistant' AND r.content=?").get(text)?.n, 1);
 });

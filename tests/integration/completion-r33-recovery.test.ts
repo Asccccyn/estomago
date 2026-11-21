@@ -17,7 +17,7 @@ import type { SdkQueryFactory } from '../../apps/host/src/runtime/sdk-host-query
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { lastCacheEvidence } from '../../apps/host/src/runtime/cache-observation.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
-import { readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { installHeartbeatFixtureSources } from '../helpers/heartbeat-sources.ts';
 import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 
@@ -127,6 +127,7 @@ async function crashFixture(root: string, mode: Mode) {
   writeApprovedIdentity(root);
   installHeartbeatFixtureSources();
   const host = await makeHost(root, mode, true);
+  if (mode !== 'api-deferred') makeFixtureToolsResident(host.db, ['heartbeat_draw', 'background_complete', 'chat_send_text']);
   const executor = (host.supervisor as any).d.tools;
   const original = executor.execute.bind(executor);
   // Crash immediately after the real accepted receipt reaches the bridge

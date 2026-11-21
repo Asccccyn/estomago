@@ -14,7 +14,7 @@ import { HeartbeatCards } from '../../apps/host/src/modules/heartbeat/service.ts
 import { heartbeatBusinessDate, type HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { readHeartbeatProjection, type HeartbeatSource } from '../../packages/contracts/src/heartbeat.ts';
-import { readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 test('real Host registration shares one deck/ledger with enabled seventh source, opted-in living room, and one fixed midnight Sol memory', { timeout: 30000 }, async t => {
   assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
@@ -94,6 +94,7 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
     openrouter: { model: 'anthropic/claude-fixture' }, content: { enabled: true, port: content.port }, background: { keepwarm: { sleep_window: { enabled: true, start:'23:59',end:'00:01',timezone:'Asia/Shanghai' } } } });
   host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner,
     heartbeatSources: [adapter], heartbeatDailyMemoryTransportForTest: fakeSol });
+  makeFixtureToolsResident(host.db, ['heartbeat_draw', 'background_complete']);
   await host.start();
   const base = `http://127.0.0.1:${host.port}`, token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
   async function req(route: string, method = 'GET', body?: object, op?: string, revision?: number, expected = 200) {

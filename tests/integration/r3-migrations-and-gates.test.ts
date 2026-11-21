@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate } from '../../apps/host/src/db/migrations.ts';
+import { migrate, SUPPORTED_SCHEMA_VERSION } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
@@ -65,7 +65,7 @@ test('D09：v79 的事务内时间失效，原成功回执和已领取任务保�
       VALUES ('job','memory','2026-11-20T16:00:00.000Z','no_match','2026-11-20T16:01:00.000Z','2026-11-20T16:01:00.000Z');`);
     const originalJob = db.prepare('SELECT * FROM source_bind_jobs WHERE id=?').get('job');
 
-    assert.deepEqual(migrate(db, sha256Hex).applied, [80, 81, 82, 83, 84]);
+    assert.deepEqual(migrate(db, sha256Hex).applied, Array.from({length: SUPPORTED_SCHEMA_VERSION - 79}, (_, i) => 80 + i));
     const oldEffect = db.prepare('SELECT state,verified,memory_id,operation_id,updated_at,hold_committed_at FROM tool_side_effects WHERE id=?').get('effect');
     assert.equal(oldEffect?.state, 'committed');
     assert.equal(oldEffect?.verified, 1);

@@ -28,6 +28,11 @@ test('new native tool snapshots publish ordinary definitions and attach only the
 
   const oldWire = freezeWindowTools(db, 'deferred-window', catalog, 'deferred', groups);
   const legacyWire = freezeWindowTools(db, 'legacy-window', catalog, 'legacy', groups);
+  createWindow.run('old-direct');
+  const historical = buildDirectTools(catalog, Object.fromEntries(names(catalog).map(name => [name,groups[name] === 'T' ? 'T' : 'C'])));
+  freezeWindowTools(db,'old-direct',catalog,'direct',groups);
+  db.prepare("UPDATE window_toolsets SET activated_tools_json=NULL,wire_tools_json=? WHERE window_id='old-direct'").run(JSON.stringify(historical));
+  assert.deepEqual(freezeWindowTools(db,'old-direct',[],'direct'),historical);
   const oldRow = readRow('deferred-window');
   const legacyRow = readRow('legacy-window');
   const mode = buildConfig().runtime.tool_schema_mode;
@@ -36,8 +41,8 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   const set = storedToolset(db, 'native-window')!;
   assert.equal(set.protocol, 'direct');
   assert.equal(readRow('native-window')?.protocol, 'deferred');
-  assert.deepEqual(wire, buildDirectTools(catalog, groups));
-  assert.deepEqual(names(wire), ['tool_catalog', 'tool_define', ...names(catalog).filter(name => groups[name] !== 'T')]);
+  assert.deepEqual(wire, buildDirectTools(catalog, set.groups));
+  assert.deepEqual(names(wire), ['tool_catalog', 'tool_define', ...names(catalog).filter(name => set.groups[name] === 'C')]);
   assert.ok(set.initialText?.includes('直接按下列工具名调用'));
   assert.ok(!set.initialText?.includes('tool_invoke'));
   assert.match(set.initialText ?? '', /tool_catalog/);
@@ -63,7 +68,7 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   assert.deepEqual({ ...rowAfterUpgrade, groups_json: null }, { ...rowBeforeUpgrade });
 
   const task = set.catalog.find(tool => tool.function.name === 'context_review_complete')!;
-  assert.ok(names(set.tools).includes('background_complete'));
+  assert.ok(!names(set.tools).includes('background_complete'));
   assert.ok(!names(set.tools).includes('context_review_complete'));
   assert.deepEqual(toolsetForTask(set, task.function.name), [...set.tools, task]);
   assert.deepEqual(toolsetForTask(set, 'memory_hold'), set.tools);
@@ -114,7 +119,7 @@ test('missing or ambiguous physical-deferred snapshots never turn into executabl
 
 test('SDK lists all direct tools with typed parameters and keeps the full host validation schema', async () => {
   const registry = buildFullTestRegistry();
-  const direct = buildDirectTools(registry.currentCatalog(), registry.currentGroups());
+  const direct = buildDirectTools(registry.currentCatalog(), {memory_hold:'C',chat_send_voice:'C'});
   const hold = direct.find(tool => tool.function.name === 'memory_hold')!;
   const voice = direct.find(tool => tool.function.name === 'chat_send_voice')!;
   assert.ok(hold.function.parameters.allOf);

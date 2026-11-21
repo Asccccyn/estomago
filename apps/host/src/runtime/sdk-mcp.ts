@@ -14,7 +14,7 @@ export function createEstSdkMcp(
   execute: (name: string, args: Record<string, unknown>, meta: Record<string, unknown> | undefined) => Promise<ToolExecResult & { recordDelivery?: (result: ToolExecResult) => void }>,
   readImage?: ReadModelImage,
 ): McpSdkServerConfigWithInstance {
-  const instance = new McpServer({ name: 'est', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const instance = new McpServer({ name: 'est', version: '1.0.0' }, { capabilities: { tools: { listChanged: true } } });
   const names = new Set(tools.map(({ function: spec }) => spec.name));
   const native = names.has('tool_catalog') && names.has('tool_define') && !names.has('tool_invoke');
   instance.server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -43,6 +43,11 @@ export function createEstSdkMcp(
         delivered = {ok:false,output:{error_code:(error as {code?:string}).code ?? 'SDK_MEDIA_TRANSPORT_UNVERIFIED',detail:'工具已执行，但图片未交付；不能据此声称看到了图片。'}};
         images.length = 0;
       }
+    }
+    const addition = delivered.ok && delivered.activatedTool;
+    if (addition && !tools.some(tool => tool.function.name === addition.function.name)) {
+      tools.push(addition);
+      await instance.server.sendToolListChanged();
     }
     result.recordDelivery?.(delivered);
     return { isError: !delivered.ok, content: [{ type: 'text' as const, text: JSON.stringify(delivered.output) }, ...images] };

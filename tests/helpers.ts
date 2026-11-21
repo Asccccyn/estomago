@@ -1,3 +1,4 @@
+import { residentToolNames } from '../apps/host/src/runtime/tool-resident-guides.ts';
 // 测试公共工具 v0.2.2：隔离临时根；writeReadyIdentity 现在同时播种 capability_probes
 //（证据绑定实装 SDK 版本——gate 逻辑测试用；生产探针只能由 scripts/probe-capabilities.mjs 写入）。
 import fs from 'node:fs';
@@ -350,3 +351,10 @@ export function validateToolArgs(name: string, args: Record<string, unknown>, fr
 // 经 Registry.currentCatalog() 提供 buildHostTools 删除后的目录（探针等测试模块不进默认集合）。
 
 /** buildHostTools 删除后的目录来源：按 baselineOrder 的 48 项正本。 */
+
+/** Set up lifecycle fixtures whose scripted first packet requires these tools
+ * to be available already. Map discovery itself uses the default opener. */
+export function makeFixtureToolsResident(db: import('../apps/host/src/db/connection.ts').Db, names: string[]): void {
+  db.prepare("INSERT OR REPLACE INTO runtime_settings(key,value,updated_at) VALUES ('tools_initial_visible',?,'now')")
+    .run(JSON.stringify([...new Set([...residentToolNames, ...names])]));
+}

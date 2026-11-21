@@ -159,7 +159,19 @@ export class ModelToolBridge {
         return spec ? [spec] : [];
       });
       const query = typeof args.query === 'string' ? args.query.trim() : '';
-      if (query) return { ok: true, output: searchToolCatalog(listing, query, set.groups) };
+      if (query) {
+        const result = searchToolCatalog(listing, query, set.groups);
+        if (set.onDemand && result.state === 'match') {
+          if (result.results.length === 1 && !result.more_matches?.length) {
+            const spec = listing.find(tool => tool.function.name === result.results[0]!.name)!;
+            return this.selectMapTool(ctx, set, spec);
+          }
+          return { ok: true, output: { state: 'candidates', candidates: result.results.map(({name}) =>
+            ({name, description: toolCatalogIntent(name) ?? name})), more_matches: result.more_matches,
+            hint: '用 tool_define 选择需要的工具名。' } };
+        }
+        return { ok: true, output: result };
+      }
       return { ok: true, output: { tools: listing.map(({ function: definition }) => ({
         name: definition.name,
         description: toolCatalogIntent(definition.name) ?? definition.description.split(/[。\n]/)[0],
@@ -182,6 +194,7 @@ export class ModelToolBridge {
     if (name === 'tool_define') {
       if (set.protocol === 'deferred' && !this.taskScopeAllows(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
       this.admitBackgroundTool(name, ctx);
+      if (set.onDemand && set.groups[spec.function.name] === 'D' && !set.tools.some(tool => tool.function.name === spec.function.name)) return this.selectMapTool(ctx, set, spec);
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
@@ -222,6 +235,18 @@ export class ModelToolBridge {
     }
   }
 
+  private selectMapTool(ctx: ToolExecContext, set: WindowToolset, spec: HostToolSpec): ToolExecResult {
+    const name = spec.function.name;
+    if (set.groups[name] === 'D') {
+      // One atomic append per name; duplicate lookups and restarted hosts reuse it.
+      this.db.prepare(`UPDATE window_toolsets SET activated_tools_json=json_insert(activated_tools_json,'$[#]',?)
+        WHERE window_id=? AND activated_tools_json IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM json_each(activated_tools_json) WHERE value=?)`).run(name, ctx.windowId, name);
+    }
+    return { ok: true, activatedTool: spec, output: { state: 'ready', name, definition_id: definitionId(spec),
+      hint: '下一步可按原名直接填写参数。' } };
+  }
+
   /** Standard tools use exactly the window's native wire definition. Task
    * definitions come from the frozen catalog and are only sent in task requests. */
   private directWindowDefinition(set: WindowToolset, name: string, ctx: ToolExecContext, mode: 'direct' | 'direct_execution' = 'direct'): HostToolSpec | null {
@@ -231,7 +256,7 @@ export class ModelToolBridge {
     if (name === TURN_COMPLETION_TOOL && task && ctx.purpose !== 'proactive_turn') return null;
     if ((task || name === TURN_COMPLETION_TOOL || name === HEARTBEAT_DRAW_TOOL || name === 'wishstar_reply_star') && !(name === TURN_COMPLETION_TOOL && mode === 'direct_execution')
         && !this.taskScopeAllows(name, ctx, mode)) return null;
-    const frozen = (task ? set.catalog : set.tools).find(spec => spec.function.name === name);
+    const frozen = (task || (set.onDemand && mode === 'direct') ? set.catalog : set.tools).find(spec => spec.function.name === name);
     return frozen ? this.visibleFrozenDefinition(frozen) : null;
   }
 

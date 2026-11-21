@@ -9,7 +9,7 @@ import type { SdkRunRequest } from '../../apps/host/src/runtime/runner.ts';
 import { runSdkHostQuery, type SdkQueryFactory, type SdkSessionAnchor } from '../../apps/host/src/runtime/sdk-host-query.ts';
 import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { readTurnCompletion } from '../../apps/host/src/runtime/turn-completion.ts';
-import { assembleTestTools, makeDb } from '../helpers.ts';
+import { makeFixtureToolsResident, assembleTestTools, makeDb } from '../helpers.ts';
 import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 
 for (const protocol of ['direct', 'deferred'] as const) {
@@ -29,6 +29,7 @@ for (const protocol of ['direct', 'deferred'] as const) {
     };
     const first = started('first');
     const { tools, registry } = assembleTestTools({ db, messages });
+    if (protocol === 'direct') makeFixtureToolsResident(db, ['background_complete','chat_send_text']);
     const wireTools = freezeWindowTools(db, windowId, registry.currentCatalog(), protocol, registry.currentGroups());
     const sessions = new Map<string, SdkSessionAnchor>();
     const session = 'synthetic-main-session';

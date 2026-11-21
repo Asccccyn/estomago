@@ -2033,4 +2033,11 @@ CREATE TABLE heartbeat_daily_memory_choices(
 `,
 });
 
+// NULL preserves historical native/deferred snapshots. New native windows
+// start with an empty ordered list of discoveries alongside their frozen opener.
+MIGRATIONS.push({
+  version: 88, name: 'window-on-demand-tools',
+  sql: 'ALTER TABLE window_toolsets ADD COLUMN activated_tools_json TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

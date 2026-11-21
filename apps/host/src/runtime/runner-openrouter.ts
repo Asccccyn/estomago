@@ -110,7 +110,7 @@ export class OpenRouterRunner implements AgentRunner {
     // 断言失败是确定错误（历史被改写/profile 变化）——收口为 error 终态，不向上抛、不静默发送。
     if (req.previousPayload) {
       try {
-        assertAppendOnly(req.previousPayload, payload);
+        assertAppendOnly(req.previousPayload, payload, req.allowToolAppend);
       } catch (err) {
         return this.errorResult(err, 0);
       }

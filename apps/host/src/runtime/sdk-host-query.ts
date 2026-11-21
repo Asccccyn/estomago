@@ -49,7 +49,8 @@ export async function runSdkHostQuery(
   const normalizer = new SdkEventNormalizer();
   const messages = structuredClone(host.envelope.messages);
   const tools = host.envelope.tools as unknown as HostToolSpec[];
-  const prefixHash = sha256Hex(JSON.stringify([req.options.options.systemPrompt, tools, host.envelope.model]));
+  const toolPrefixHash = () => sha256Hex(JSON.stringify([req.options.options.systemPrompt, tools, host.envelope.model]));
+  const prefixHash = toolPrefixHash();
   const previous = host.isolatedSession ? undefined : sessions.get(host.windowId);
   // Preserve the main anchor when a task explicitly uses a separate tool profile.
   // 纯日志信号（supervisor 落 launchd 日志），不新建会话状态机、不影响行为。
@@ -474,7 +475,7 @@ export async function runSdkHostQuery(
     } else if (outcome === 'completed' && normalizer.sessionId && !missingNativeReceipt) {
       // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
       // 记录属于该会话）。
-      sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash,
+      sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash: toolPrefixHash(),
         messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
       resumeDiagnosis.anchorOutcome = 'saved';
     } else if (outcome !== 'completed' && !sessionReceivedInput) {

@@ -121,7 +121,7 @@ export class DeepSeekRunner implements AgentRunner {
     // session_id/provider 键，assertAppendOnly 的键比较对缺席键按 null 通过，消息前缀逐条等值仍强制）。
     if (req.previousPayload) {
       try {
-        assertAppendOnly(req.previousPayload, payload);
+        assertAppendOnly(req.previousPayload, payload, req.allowToolAppend);
       } catch (err) {
         return this.errorResult(err, 0);
       }

@@ -3,7 +3,7 @@
 // 2026-10-22 改写：保温零工具封锁（CW-13）与 128 输出封锁退役——心跳=完整回合；
 // v1.2 心跳邀请及工具回执走同一会话串行链，维护时钟经活动投影 CAS。
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { makeFixtureToolsResident, assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -220,6 +220,9 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
       const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 500, cache_write_tokens: 1500 }, cost: 0.001 };
       body = toolCallBody([{ id: 'native-complete', name: 'background_complete', args: '{"outcome":"done"}' }], usage);
     }
+    if (latestUser.includes('Host self-wake') && !(payload.tools as Array<{function:{name:string}}>).some(t => t.function.name === 'background_complete')) {
+      body = toolCallBody([{ id:'select-completion', name:'tool_define', args:'{"name":"background_complete"}' }]);
+    }
     return { status: 200, headers: new Map(), body: Readable.from([enc.encode(body)]) };
   }, now, false, 0, 'direct');
   const scheduler = wireExecutor(ctx, now);
@@ -231,7 +234,7 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
   const names = (payload: Record<string, unknown>) => (payload.tools as Array<{ function: { name: string } }>).map(spec => spec.function.name);
   const baseline = names(payloads[0]!);
   assert.ok(baseline.includes('memory_hold'));
-  assert.ok(!baseline.includes('tool_invoke') && baseline.includes('background_complete') && baseline.includes('heartbeat_draw') && !baseline.includes('context_review_complete'));
+  assert.ok(!baseline.includes('tool_invoke') && !baseline.includes('background_complete') && !baseline.includes('heartbeat_draw') && !baseline.includes('context_review_complete'));
 
   setPrice(ctx.db);
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: {
@@ -247,7 +250,8 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
   now.nowMs += 1_001;
   await scheduler.tick();
   assert.deepEqual(names(payloads[1]!), baseline);
-  const wake = ctx.db.prepare('SELECT r.state, r.result_code, p.id FROM background_runs r JOIN provider_requests p ON p.background_run_id=r.id WHERE r.task_id=?')
+  assert.deepEqual(names(payloads[2]!), [...baseline,'background_complete']);
+  const wake = ctx.db.prepare('SELECT r.state, r.result_code, p.id FROM background_runs r JOIN provider_requests p ON p.background_run_id=r.id WHERE r.task_id=? ORDER BY p.rowid DESC LIMIT 1')
     .get(task.task.task_id) as { state: string; result_code: string; id: string };
   assert.deepEqual({ state: wake.state, result_code: wake.result_code }, { state: 'completed', result_code: 'complete:done' });
   assert.notEqual(wake.id, initialEvidence.requestId);
@@ -259,14 +263,14 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
   const activity = ctx.activity.get('c1')!;
   now.nowMs = Math.max(Date.parse(activity.last_real_activity_at!), Date.parse(lastCacheEvidence(ctx.db, windowId)!.startedAt)) + 3_000_001;
   await scheduler.tick();
-  assert.deepEqual(payloads[2]!.tools, payloads[0]!.tools);
-  const heartbeatTail = (payloads[2]!.messages as Array<{ role: string; content: unknown }>).findLast(message => message.role === 'user');
+  assert.deepEqual(payloads[3]!.tools, payloads[2]!.tools);
+  const heartbeatTail = (payloads[3]!.messages as Array<{ role: string; content: unknown }>).findLast(message => message.role === 'user');
   assert.match(JSON.stringify(heartbeatTail?.content), /\[心跳唤醒\]/);
   assert.doesNotMatch(JSON.stringify(heartbeatTail?.content), /tools\/task:/);
   await seedChatTurn(ctx, 'native-after-task');
-  assert.deepEqual(payloads[3]!.tools, payloads[0]!.tools);
-  assert.equal(payloads.length, 4);
-  assert.ok((payloads[3]!.messages as Array<{ role: string; content: unknown }>).some(message =>
+  assert.deepEqual(payloads[4]!.tools, payloads[2]!.tools);
+  assert.equal(payloads.length, 5);
+  assert.ok((payloads[4]!.messages as Array<{ role: string; content: unknown }>).some(message =>
     message.role === 'tool' && typeof message.content === 'string' && JSON.parse(message.content).completed === true));
 });
 
@@ -489,6 +493,7 @@ for (const mode of ['legacy', 'direct', 'deferred'] as const) {
         : chatBody('下一轮正常回复');
       return { status: 200, headers: new Map(), body: Readable.from([enc.encode(body)]) };
     }, { nowMs: Date.now() }, false, 0, mode);
+    if (mode === 'direct') makeFixtureToolsResident(ctx.db, ['background_complete','chat_send_text']);
     t.after(() => { ctx.db.close(); fs.rmSync(root, { recursive: true, force: true }); });
     const turnId = await seedChatTurn(ctx, 'turn-first');
     assert.equal(payloads.length, 1);

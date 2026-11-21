@@ -47,6 +47,7 @@ import { buildOrPayload, withoutCacheMarkers, type OrMessage } from './or-payloa
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
 import { contextFingerprintJson, contextFingerprintOf } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
+import type { HostToolSpec } from '../capabilities/contracts.ts';
 import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolName, toolsetForTask } from './tool-discovery.ts';
 import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
@@ -192,7 +193,6 @@ export class TurnSupervisor {
   // 同窗续请求 tools 恒定（§7.1）；词表刷新只影响新窗快照。进程内缓存；
   // 重启后同窗首发的快照重建（跨重启的前缀漂移只影响缓存命中，不影
   // 响正确性——新窗在换窗时取新快照）。
-  private frozenToolsByWindow = new Map<string, import('./or-payload.ts').OrTool[]>();
   // D2（她批准 2026-10-06）：本窗 Mariposa 开窗资料快照（缓存点 B）——
   // 首个信封前取一次并冻结（§5.2/§7.1：B 只冻结这一窗的输入快照，权限
   // 撤销/关键身份更正例外走既有安全换窗）。取不到=如实降级不带 B（事件
@@ -442,7 +442,7 @@ export class TurnSupervisor {
     let tailNote: string;
     if (opts.kind === 'keepwarm') {
       if (!d.heartbeat) return { outcome: 'failed', result_code: 'HEARTBEAT_RUNTIME_UNAVAILABLE' };
-      const offered = toolset.protocol === 'deferred' ? toolset.catalog : toolset.tools;
+      const offered = toolset.protocol === 'deferred' || toolset.onDemand ? toolset.catalog : toolset.tools;
       const supportsDraw = offered.some(tool => tool.function.name === HEARTBEAT_DRAW_TOOL)
         && offered.some(tool => tool.function.name === TURN_COMPLETION_TOOL);
       if (!supportsDraw && d.heartbeat.status(opts.conversationId).mode !== 'exhausted_keepwarm') {
@@ -659,7 +659,8 @@ export class TurnSupervisor {
     const transportKind = this.drv()?.kind === 'deepseek' ? 'deepseek' : 'openrouter';
     const orFallback = sdkDriver;
     if (orFallback && runner instanceof SubscriptionAccessRunner && !o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
-    const usesScopedToolProfiles = storedToolset(d.db, o.windowId)?.protocol === 'direct';
+    const requestToolset = storedToolset(d.db, o.windowId);
+    const usesScopedToolProfiles = requestToolset?.protocol === 'direct';
     const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
     let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
       reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
@@ -888,7 +889,7 @@ export class TurnSupervisor {
         }
       }
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind === 'mock' ? 'mock' : transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata,
+        runner.run({ driver: this.drv()?.kind === 'mock' ? 'mock' : transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, allowToolAppend: requestToolset?.onDemand, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata,
           // R2：mock 的会话连续性（AUD-03 断言）经信封请求的可选 SDK 形状字段传递；
           // route-edit 的 fresh_session 重跑不 resume 旧 session（同旧 prompt 车道语义）
           ...(this.drv()?.kind === 'mock' && o.attemptId ? { resumeSessionId: (d.db.prepare('SELECT CASE WHEN a.fresh_session = 1 THEN NULL ELSE w.sdk_session_id END AS s FROM attempts a JOIN windows w ON w.id = a.window_id WHERE a.id = ?').get(o.attemptId) as { s: string | null } | undefined)?.s ?? null } : {}) }),
@@ -1060,6 +1061,10 @@ export class TurnSupervisor {
         envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
         if (o.background?.kind === 'keepwarm' && t.tool_id) {
           appendCompletionToolReceipt(d.db, o.attemptId, t.tool_id, exec, pendingSeenByTool.get(t.tool_id) ?? []);
+        }
+        const addition = exec.activatedTool;
+        if (exec.ok && addition && !envelope.tools.some(tool => (tool as HostToolSpec).function.name === addition.function.name)) {
+          envelope = { ...envelope, tools: [...envelope.tools, addition] };
         }
         this.recordToolCoverage(lastPrqId, t.tool_id, exec);
 
@@ -1533,14 +1538,11 @@ export class TurnSupervisor {
   }
 
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
-    let t = this.frozenToolsByWindow.get(windowId);
-    if (!t) {
-      // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
-      // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
-      t = modelToolsAfterBindingRetirement(freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode, this.toolCatalogSource().currentGroups?.() ?? {}));
-      this.frozenToolsByWindow.set(windowId, t);
-    }
-    return t;
+    const existing = storedToolset(this.d.db, windowId);
+    if (existing) return modelToolsAfterBindingRetirement(existing.tools);
+    const source = this.toolCatalogSource();
+    return modelToolsAfterBindingRetirement(freezeWindowTools(this.d.db, windowId, source.currentCatalog(),
+      this.d.config.runtime.tool_schema_mode, source.currentGroups?.() ?? {}));
   }
 
   /** F-J-39：追赶投影——清单高水位之后、有真实发出证据（purpose=chat 且 sent_at 非空）的

@@ -17,7 +17,7 @@ import type { OrMessage, OrTool } from '../../apps/host/src/runtime/or-payload.t
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
-import { readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const MODEL = 'anthropic/claude-fixture-exact';
 const CARDS = Array.from({ length: 10 }, (_, index): HeartbeatSource => ({
@@ -79,6 +79,7 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     windows: { model_context_capacity: 150_000 },
   });
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner });
+  if (!startup?.reopen) makeFixtureToolsResident(host.db, ['heartbeat_draw', 'background_complete']);
   const scheduler = host.scheduler!;
   t.after(async () => { await host.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   // Observe the real capacity guard without changing its returned decision.

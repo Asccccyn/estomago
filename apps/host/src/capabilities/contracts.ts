@@ -60,7 +60,7 @@ export type ToolExecContext = {
 
 /** Owner-proven write identity and phase. Never part of model JSON output. */
 export type HeartbeatReceipt = Pick<import('../../../../packages/contracts/src/heartbeat.ts').HeartbeatAction, 'operationId' | 'status' | 'source'>;
-export type ToolExecResult = { ok: boolean; output: Record<string, unknown>; heartbeatReceipt?: HeartbeatReceipt; seenAdditions?: ReadonlyArray<SeenRef>; coverageAdditions?: readonly CoverageRange[]; coverageProjection?: ToolCoverageProjection; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };
+export type ToolExecResult = { activatedTool?: HostToolSpec; ok: boolean; output: Record<string, unknown>; heartbeatReceipt?: HeartbeatReceipt; seenAdditions?: ReadonlyArray<SeenRef>; coverageAdditions?: readonly CoverageRange[]; coverageProjection?: ToolCoverageProjection; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };
 
 // Host-only billing metadata. It is never added to tool schemas or model output.
 // （原 runtime/background-tool-cost.ts 的同名叶类型；报价/免费证据的判定逻辑仍在该文件。）

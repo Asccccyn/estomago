@@ -64,6 +64,31 @@ test('新窗直调走冻结业务 schema 和唯一写入入口，拒绝未发布
   assert.deepEqual(storedToolset(f.db, f.ctx.windowId), frozen);
 });
 
+test('浏览目录与多候选查询保持原工具列表，唯一命中只追加一次且仅属于本窗', async t => {
+  const f = fixture(t);
+  const current = () => storedToolset(f.db, f.ctx.windowId)!.tools.map(tool => tool.function.name);
+  const initial = current();
+  const snapshot = storedToolset(f.db, f.ctx.windowId)!;
+  assert.deepEqual(initial, ['tool_catalog','tool_define',
+    ...snapshot.catalog.filter(tool => snapshot.groups[tool.function.name] === 'C').map(tool => tool.function.name)]);
+  const lookup = (query: string) => f.tools.execute('tool_catalog', {query}, f.ctx);
+  assert.equal((await f.tools.execute('tool_catalog', {}, f.ctx)).ok, true);
+  assert.equal((await lookup('一把不在目录的合成工具')).output.state, 'no_match');
+  const ambiguous = await lookup('plans_read chat_send_text');
+  assert.equal(ambiguous.output.state, 'candidates');
+  assert.ok(!JSON.stringify(ambiguous.output).includes('"parameters"'));
+  assert.deepEqual(current(), initial);
+  assert.equal((await f.tools.execute('chat_send_text', {text:'未查找'}, f.ctx)).output.error_code, 'TOOL_NOT_IN_WINDOW');
+  assert.equal((await lookup('chat_send_text')).activatedTool?.function.name, 'chat_send_text');
+  assert.equal((await lookup('chat_send_text')).ok, true);
+  assert.deepEqual(current(), [...initial,'chat_send_text']);
+  const otherWindow = 'other-map-window';
+  f.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES (?,?,'ACTIVE','now','now')").run(otherWindow,f.ctx.roomId);
+  const registry = f.tools.getCapabilityRegistry()!;
+  const nextWindow = freezeWindowTools(f.db, otherWindow, registry.currentCatalog(), 'direct', registry.currentGroups());
+  assert.deepEqual(nextWindow.map(tool => tool.function.name), initial);
+});
+
 test('新窗评审工具只对可信、实际活跃的换窗评审可发现及执行', async t => {
   const f = fixture(t);
   assert.ok(!f.wire.some(tool => tool.function.name === 'context_review_complete'));
@@ -95,7 +120,7 @@ test('新窗评审工具只对可信、实际活跃的换窗评审可发现及�
 
 test('原生完成只接收当前真实回合，结束后按回合重传同一回执', async t => {
   const f = fixture(t);
-  assert.ok(f.wire.some(tool => tool.function.name === 'background_complete'));
+  assert.ok(!f.wire.some(tool => tool.function.name === 'background_complete'));
   const { db, ctx } = f;
   db.prepare("INSERT INTO turns(id,conversation_id,trigger,state,created_at) VALUES ('bg-turn',?,'proactive_turn','running','now')").run(ctx.roomId);
   db.prepare(
