@@ -129,10 +129,11 @@ test('F02（DBG-05 后合同）：A 段=身份正本+运行规则正本——I �
 test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不再发送', async () => {
   // 只要求首请求已派发，工具回执之后的下一请求被容量硬门阻断。
   const log: PayloadLog = [];
-  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(5_500) }));
+  const content = '很长的记忆内容'.repeat(1_000);
+  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: content }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 49_000 /* 可容纳原生目录及预留的首请求，大工具参数随续轮超过安全输入。 */, soft_limit_tokens: 800 } } });
-  const sub = await say(ctx, '触发工具', 't1', T0);  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 37_000 /* 首轮含原文；同一段原文作为工具参数进入续轮时超过输入预算。 */, soft_limit_tokens: 800 } } });
+  const sub = await say(ctx, '请把这段原文记下来：'+content, 't1', T0);  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };
   assert.equal(att.state, 'failed');
   assert.ok(att.blocked_reason!.includes('CAPACITY_BLOCKED_HARD'), att.blocked_reason ?? '');

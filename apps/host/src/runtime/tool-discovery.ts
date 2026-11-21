@@ -4,6 +4,7 @@ import { describeLiteralHanFields } from '../capabilities/model-arguments.ts';
 import { definitionId, renderDefinition } from '../capabilities/definition.ts';
 export { definitionId } from '../capabilities/definition.ts';
 import type { ToolGroup } from '../capabilities/registry.ts';
+import { toolAbility } from './tool-catalog-search.ts';
 import { includesInitialDefinition, recoverInitialGroups, resolveToolGroups, renderToolContext } from './tool-initial-visible.ts';
 // P01.4/P01.1：只依赖叶类型（capabilities/contracts），不再从 host-tools 导入。
 import type { HostToolSpec } from '../capabilities/contracts.ts';
@@ -74,13 +75,30 @@ function directCatalog(catalog: readonly HostToolSpec[]): HostToolSpec[] {
   return modelToolsAfterBindingRetirement(catalog).map(describeLiteralHanFields);
 }
 
-/** A new window advertises resident business tools and both map entry points. */
+/** Project only the argument shape. The complete frozen schema owns execution validation. */
+function argumentShape(schema: Record<string, unknown>): Record<string, unknown> {
+  const shape: Record<string, unknown> = {};
+  for (const key of ['type', 'enum', 'required']) if (key in schema) shape[key] = schema[key];
+  if (schema.properties && typeof schema.properties === 'object') {
+    const fields = schema.properties as Record<string, Record<string, unknown>>;
+    shape.properties = Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, argumentShape(field)]));
+  }
+  if (schema.items && typeof schema.items === 'object') shape.items = argumentShape(schema.items as Record<string, unknown>);
+  return shape;
+}
+
+export function compactNativeTool(spec: HostToolSpec): HostToolSpec {
+  // The window's capability list already contains the purpose of every named tool.
+  return { type: 'function', function: { name: spec.function.name, description: '', parameters: argumentShape(spec.function.parameters) } };
+}
+
 export function buildDirectTools(catalog: readonly HostToolSpec[], groups: Record<string, ToolGroup>): HostToolSpec[] {
   const [search, define] = buildDeferredTools();
   return [
-    { ...search!, function: { ...search!.function, description: '按意图或名称找工具。唯一命中即启用，有多个候选时选一个；省略 query 浏览简要目录。' } },
-    { ...define!, function: { ...define!.function, description: '按准确工具名启用并查看参数，然后按原名直接调用。' } },
-    ...directCatalog(catalog).filter(spec => groups[spec.function.name] === 'C'),
+    compactNativeTool(search!),
+    compactNativeTool(define!),
+    ...modelToolsAfterBindingRetirement(catalog).filter(spec => groups[spec.function.name] === 'C')
+      .map(compactNativeTool),
   ];
 }
 
@@ -92,6 +110,7 @@ export type WindowToolset = {
   initialText: string | null;
   legacyGroups: boolean;
   onDemand: boolean;
+  summaries: Record<string, string> | null;
 };
 
 function validateDirectSnapshotTools(value: unknown): void {
@@ -118,8 +137,8 @@ function snapshotProtocol(physical: 'legacy' | 'deferred', tools: HostToolSpec[]
 
 export function storedToolset(db: Db, windowId: string): WindowToolset | null {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='window_toolsets'").get()) return null;
-  const row = db.prepare('SELECT protocol,wire_tools_json,catalog_json,groups_json,initial_text,activated_tools_json FROM window_toolsets WHERE window_id=?').get(windowId) as {
-    protocol: 'legacy' | 'deferred'; wire_tools_json: string; catalog_json: string; groups_json: string | null; initial_text: string | null; activated_tools_json: string | null;
+  const row = db.prepare('SELECT protocol,wire_tools_json,catalog_json,groups_json,initial_text,activated_tools_json,tool_summaries_json FROM window_toolsets WHERE window_id=?').get(windowId) as {
+    protocol: 'legacy' | 'deferred'; wire_tools_json: string; catalog_json: string; groups_json: string | null; initial_text: string | null; activated_tools_json: string | null; tool_summaries_json: string | null;
   } | undefined;
   if (!row) return null;
   const tools = JSON.parse(row.wire_tools_json) as HostToolSpec[];
@@ -129,12 +148,14 @@ export function storedToolset(db: Db, windowId: string): WindowToolset | null {
   const groups: Record<string, ToolGroup> = row.groups_json
     ? JSON.parse(row.groups_json) : recoverInitialGroups(db, windowId, catalog);
   const onDemand = protocol === 'direct' && row.activated_tools_json !== null;
+  const summaries: Record<string,string> | null = onDemand && row.tool_summaries_json !== null ? JSON.parse(row.tool_summaries_json) : null;
   if (protocol === 'direct') {
     validateDirectSnapshotTools(tools);
     validateDirectSnapshotTools(catalog);
     if (!groups || catalog.some(spec => !['C', 'D', 'T'].includes(groups[spec.function.name]!))) {
       throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
     }
+    if (summaries && catalog.some(tool => typeof summaries[tool.function.name] !== 'string')) throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
     const expected = catalog.filter(spec => onDemand ? groups[spec.function.name] === 'C' : groups[spec.function.name] !== 'T');
     const published = tools.filter(spec => !['tool_catalog', 'tool_define'].includes(spec.function.name));
     if (published.length !== expected.length || published.some((spec, index) => spec.function.name !== expected[index]!.function.name)) {
@@ -147,10 +168,10 @@ export function storedToolset(db: Db, windowId: string): WindowToolset | null {
     for (const name of activated) {
       const spec = catalog.find(tool => tool.function.name === name);
       if (!spec || groups[name] !== 'D') throw Error('WINDOW_TOOL_SNAPSHOT_UNAVAILABLE');
-      tools.push(spec);
+      tools.push(summaries ? compactNativeTool(spec) : spec);
     }
   }
-  return { protocol, tools, catalog, groups, onDemand, initialText: row.initial_text, legacyGroups: protocol !== 'direct' && row.initial_text === null };
+  return { protocol, tools, catalog, groups, onDemand, summaries, initialText: row.initial_text, legacyGroups: protocol !== 'direct' && row.initial_text === null };
 }
 
 export function freezeWindowTools(db: Db, windowId: string, catalog: HostToolSpec[], mode: ToolSchemaMode, declared: Record<string, ToolGroup> = {}): HostToolSpec[] {
@@ -187,8 +208,9 @@ export function freezeWindowTools(db: Db, windowId: string, catalog: HostToolSpe
     if (mode !== 'legacy') initialText = renderToolContext(full, groups, mode);
   }
   const physical = mode === 'direct' ? 'deferred' : mode;
-  db.prepare('INSERT OR IGNORE INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at,groups_json,initial_text,activated_tools_json) VALUES(?,?,?,?,?,?,?,?)')
-    .run(windowId, physical, JSON.stringify(tools), JSON.stringify(full), new Date().toISOString(), groups ? JSON.stringify(groups) : null, initialText, mode === 'direct' ? '[]' : null);
+  db.prepare('INSERT OR IGNORE INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at,groups_json,initial_text,activated_tools_json,tool_summaries_json) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(windowId, physical, JSON.stringify(tools), JSON.stringify(full), new Date().toISOString(), groups ? JSON.stringify(groups) : null, initialText, mode === 'direct' ? '[]' : null,
+      mode === 'direct' ? JSON.stringify(Object.fromEntries(full.map(spec => [spec.function.name, toolAbility(spec)]))) : null);
   return storedToolset(db, windowId)!.tools;
 }
 

@@ -2,6 +2,7 @@ import type { Db } from '../db/connection.ts';
 import type { HostToolSpec } from '../capabilities/contracts.ts';
 import type { ToolGroup } from '../capabilities/registry.ts';
 import { definitionId, renderDefinition } from '../capabilities/definition.ts';
+import { toolAbility } from './tool-catalog-search.ts';
 import { residentToolGuide, residentToolNames } from './tool-resident-guides.ts';
 
 /** Apply the approved default only when producing a new window's snapshot. */
@@ -26,33 +27,31 @@ const RESIDENT_REMINDER = '你想记下一件事，可以自己存，发现记�
 const MAP_REMINDER = '想做别的事，比如读聊天记录、改计划或找旧存档，就到工具地图里找。用 tool_catalog 的 query 说你想做什么。搜不到时，可以省略 query 看当前目录，再用准确工具名查询。';
 
 export function renderToolContext(specs: readonly HostToolSpec[], groups: Record<string, ToolGroup>, mode: 'deferred' | 'direct' = 'deferred'): string | null {
+  if (mode === 'direct') {
+    const lines = (group: ToolGroup) => specs.filter(spec => groups[spec.function.name] === group)
+      .map(spec => `${toolAbility(spec)} → ${spec.function.name}`);
+    return [
+      '这些事我可以直接做，写给她的话直接填汉字。', ...lines('C'),
+      '这些事也可以做。用 tool_define 查到参数后，按原名直接调用。', ...lines('D'),
+      '我可以按意图搜索可用工具 → tool_catalog', '我可以查看一个工具的完整参数定义 → tool_define',
+    ].join('\n');
+  }
   const initial = new Map(specs.filter(spec => groups[spec.function.name] === 'C').map(spec => [spec.function.name, spec]));
   const hasDeferred = specs.some(spec => groups[spec.function.name] === 'D');
   const lines: string[] = [];
   if (hasDeferred) {
     const reminder = residentToolNames.every(name => initial.has(name)) ? RESIDENT_REMINDER : '';
-    const mapReminder = mode === 'direct'
-      ? '其他工具用 tool_catalog 按意图找；知道工具名可用 tool_define。选定后直接按原名填写参数。'
-      : MAP_REMINDER;
-    lines.push(reminder + mapReminder);
+    lines.push(reminder + MAP_REMINDER);
   }
   if (initial.size) {
-    lines.push(RESIDENT_TOOL_HEADING, mode === 'direct'
-      ? '参数齐备时，直接按下列工具名调用。'
-      : '这些工具的参数齐了就可以直接用 tool_invoke。');
+    lines.push(RESIDENT_TOOL_HEADING, '这些工具的参数齐了就可以直接用 tool_invoke。');
     for (const name of residentToolNames) {
       const spec = initial.get(name);
       if (!spec) continue;
       lines.push(`- ${name}\n${residentToolGuide(spec)}`);
       initial.delete(name);
     }
-    // Direct windows already advertise their full definitions on the wire.
-    for (const spec of initial.values()) {
-      const definition = spec.function;
-      lines.push(mode === 'direct'
-        ? `- ${definition.name}\n${definition.description.split(/[。\n]/, 1)[0]}`
-        : renderDefinition(spec));
-    }
+    for (const spec of initial.values()) lines.push(renderDefinition(spec));
   }
   return lines.length ? lines.join('\n') : null;
 }

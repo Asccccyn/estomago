@@ -29,7 +29,7 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   const oldWire = freezeWindowTools(db, 'deferred-window', catalog, 'deferred', groups);
   const legacyWire = freezeWindowTools(db, 'legacy-window', catalog, 'legacy', groups);
   createWindow.run('old-direct');
-  const historical = buildDirectTools(catalog, Object.fromEntries(names(catalog).map(name => [name,groups[name] === 'T' ? 'T' : 'C'])));
+  const historical = [...buildDeferredTools().slice(0,2), ...catalog.filter(tool => groups[tool.function.name] !== 'T')];
   freezeWindowTools(db,'old-direct',catalog,'direct',groups);
   db.prepare("UPDATE window_toolsets SET activated_tools_json=NULL,wire_tools_json=? WHERE window_id='old-direct'").run(JSON.stringify(historical));
   assert.deepEqual(freezeWindowTools(db,'old-direct',[],'direct'),historical);
@@ -43,7 +43,7 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   assert.equal(readRow('native-window')?.protocol, 'deferred');
   assert.deepEqual(wire, buildDirectTools(catalog, set.groups));
   assert.deepEqual(names(wire), ['tool_catalog', 'tool_define', ...names(catalog).filter(name => set.groups[name] === 'C')]);
-  assert.ok(set.initialText?.includes('直接按下列工具名调用'));
+  assert.ok(set.initialText?.includes('我可以把一件事记进记忆库 → memory_hold'));
   assert.ok(!set.initialText?.includes('tool_invoke'));
   assert.match(set.initialText ?? '', /tool_catalog/);
 
@@ -51,7 +51,10 @@ test('new native tool snapshots publish ordinary definitions and attach only the
   const deferredHold = storedToolset(db, 'deferred-window')!.catalog.find(tool => tool.function.name === 'memory_hold')!;
   assert.match(JSON.stringify(directHold.function.parameters), /中文直接填汉字/);
   assert.doesNotMatch(JSON.stringify(deferredHold.function.parameters), /中文直接填汉字/);
-  assert.deepEqual(wire.find(tool => tool.function.name === 'memory_hold'), directHold);
+  const compactHold = wire.find(tool => tool.function.name === 'memory_hold')!;
+  assert.deepEqual(compactHold.function.parameters.required, directHold.function.parameters.required);
+  assert.ok(directHold.function.parameters.allOf);
+  assert.doesNotMatch(JSON.stringify(compactHold.function.parameters), /description|maxLength|minLength|pattern|allOf/);
   assert.deepEqual(freezeWindowTools(db, 'native-window', [], 'legacy'), wire);
   assert.deepEqual(freezeWindowTools(db, 'deferred-window', [], 'direct'), oldWire);
   assert.deepEqual(freezeWindowTools(db, 'legacy-window', [], 'direct'), legacyWire);
@@ -89,8 +92,9 @@ test('new native tool snapshots publish ordinary definitions and attach only the
     .run(JSON.stringify(['plans_read']));
   freezeWindowTools(db, 'custom-native-window', catalog, 'direct', groups);
   const customText = storedToolset(db, 'custom-native-window')!.initialText ?? '';
-  assert.match(customText, /- plans_read\n读取计划/);
-  assert.doesNotMatch(customText, /- memory_hold\n|parameters:|tool_invoke/);
+  const residentPart = customText.split('这些事也可以做。')[0]!;
+  assert.ok(residentPart.includes('→ plans_read'));
+  assert.ok(!residentPart.includes('→ memory_hold'));
 });
 
 test('missing or ambiguous physical-deferred snapshots never turn into executable direct windows', t => {
@@ -122,8 +126,8 @@ test('SDK lists all direct tools with typed parameters and keeps the full host v
   const direct = buildDirectTools(registry.currentCatalog(), {memory_hold:'C',chat_send_voice:'C'});
   const hold = direct.find(tool => tool.function.name === 'memory_hold')!;
   const voice = direct.find(tool => tool.function.name === 'chat_send_voice')!;
-  assert.ok(hold.function.parameters.allOf);
-  assert.match(JSON.stringify(voice.function.parameters), /中文直接填汉字/);
+  assert.ok(!hold.function.parameters.allOf);
+  assert.doesNotMatch(JSON.stringify(voice.function.parameters), /description|maxLength/);
 
   const input = { original_title: '合成记录', categories: ['daily'], text: '合成正文', creation_mode: 'contemporaneous' };
   const executed: Array<{ name: string; args: Record<string, unknown> }> = [];
@@ -143,7 +147,7 @@ test('SDK lists all direct tools with typed parameters and keeps the full host v
     const sdkHold = tools.find(tool => tool.name === 'memory_hold')!;
     assert.deepEqual(sdkHold.inputSchema.properties, hold.function.parameters.properties);
     assert.deepEqual(sdkHold.inputSchema.required, hold.function.parameters.required);
-    assert.ok(hold.function.parameters.allOf, 'the transport projection does not mutate validation');
+    assert.ok(registry.currentCatalog().find(tool => tool.function.name === 'memory_hold')?.function.parameters.allOf, 'full validation stays in the registry');
     assert.equal((await client.callTool({ name: 'memory_hold', arguments: input })).isError, false);
     assert.deepEqual(executed, [{ name: 'memory_hold', args: input }]);
   } finally {

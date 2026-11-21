@@ -7,7 +7,7 @@ import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
 import { canDrawHeartbeat, HEARTBEAT_DRAW_TOOL } from '../modules/heartbeat/service.ts';
 import { modelFailure } from '../runtime/model-results.ts';
-import { storedToolset, definitionId, definitionWasSeen, modelDefinitionAfterBindingRetirement, type WindowToolset } from '../runtime/tool-discovery.ts';
+import { buildDeferredTools, compactNativeTool, storedToolset, definitionId, definitionWasSeen, modelDefinitionAfterBindingRetirement, type WindowToolset } from '../runtime/tool-discovery.ts';
 import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
 import { DISCOVERY_NAMES, effectiveToolName } from '../runtime/tool-discovery.ts';
 import { canDiscoverTurnCompletion, readTurnCompletion, TURN_COMPLETION_TOOL } from '../runtime/turn-completion.ts';
@@ -145,7 +145,8 @@ export class ModelToolBridge {
     const wire = set.tools.find(t => t.function.name === name);
     if (!wire) return deny('TOOL_PROTOCOL_NOT_ACTIVE');
     if (name === 'tool_catalog') {
-      const checked = validateArgsAgainstSchema(args, wire.function.parameters);
+      const searchSpec = set.summaries ? buildDeferredTools()[0]! : wire;
+      const checked = validateArgsAgainstSchema(args, searchSpec.function.parameters);
       if (!checked.ok) return { ok: false, output: { error_code: checked.code, error: checked.detail } };
       this.admitBackgroundTool(name, ctx);
       // 新目录服从当前能力与请求的活动任务范围，已发送的冻结快照及历史仍按原样保留。
@@ -159,6 +160,16 @@ export class ModelToolBridge {
         return spec ? [spec] : [];
       });
       const query = typeof args.query === 'string' ? args.query.trim() : '';
+      if (set.summaries) {
+        let names = listing.map(tool => tool.function.name);
+        if (query) {
+          const result = searchToolCatalog(listing, query, set.groups);
+          if (result.state === 'no_match') return { ok: true, output: result };
+          names = [...result.results.map(tool => tool.name), ...(result.more_matches ?? [])];
+        }
+        const summaries = set.summaries;
+        return { ok: true, output: { tools: names.map(name => ({ name, description: summaries[name] })) } };
+      }
       if (query) {
         const result = searchToolCatalog(listing, query, set.groups);
         if (set.onDemand && result.state === 'match') {
@@ -195,6 +206,7 @@ export class ModelToolBridge {
       if (set.protocol === 'deferred' && !this.taskScopeAllows(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
       this.admitBackgroundTool(name, ctx);
       if (set.onDemand && set.groups[spec.function.name] === 'D' && !set.tools.some(tool => tool.function.name === spec.function.name)) return this.selectMapTool(ctx, set, spec);
+      if (set.summaries) return { ok: true, output: { ...spec.function } };
       if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
       return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
     }
@@ -243,6 +255,7 @@ export class ModelToolBridge {
         WHERE window_id=? AND activated_tools_json IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM json_each(activated_tools_json) WHERE value=?)`).run(name, ctx.windowId, name);
     }
+    if (set.summaries) return { ok: true, activatedTool: compactNativeTool(spec), output: { ...spec.function } };
     return { ok: true, activatedTool: spec, output: { state: 'ready', name, definition_id: definitionId(spec),
       hint: '下一步可按原名直接填写参数。' } };
   }
@@ -256,7 +269,8 @@ export class ModelToolBridge {
     if (name === TURN_COMPLETION_TOOL && task && ctx.purpose !== 'proactive_turn') return null;
     if ((task || name === TURN_COMPLETION_TOOL || name === HEARTBEAT_DRAW_TOOL || name === 'wishstar_reply_star') && !(name === TURN_COMPLETION_TOOL && mode === 'direct_execution')
         && !this.taskScopeAllows(name, ctx, mode)) return null;
-    const frozen = (task || (set.onDemand && mode === 'direct') ? set.catalog : set.tools).find(spec => spec.function.name === name);
+    if (set.summaries && mode === 'direct_execution' && !task && !set.tools.some(tool => tool.function.name === name)) return null;
+    const frozen = (task || set.summaries || (set.onDemand && mode === 'direct') ? set.catalog : set.tools).find(spec => spec.function.name === name);
     return frozen ? this.visibleFrozenDefinition(frozen) : null;
   }
 

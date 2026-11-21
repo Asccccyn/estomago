@@ -49,8 +49,14 @@ test('新窗直调走冻结业务 schema 和唯一写入入口，拒绝未发布
   const frozen = storedToolset(f.db, f.ctx.windowId);
   assert.ok(frozen);
   assert.equal(frozen.protocol, 'direct');
-  assert.deepEqual(f.wire.find(tool => tool.function.name === 'memory_hold')?.function.parameters,
-    frozen.catalog.find(tool => tool.function.name === 'memory_hold')?.function.parameters);
+  const fullHold = frozen.catalog.find(tool => tool.function.name === 'memory_hold')!;
+  const wireHold = f.wire.find(tool => tool.function.name === 'memory_hold')!;
+  assert.deepEqual(wireHold.function.parameters.required, fullHold.function.parameters.required);
+  assert.equal(wireHold.function.parameters.allOf, undefined);
+  const details = await f.tools.execute('tool_define', {name:'memory_hold'}, f.ctx);
+  assert.deepEqual(details.output.parameters, fullHold.function.parameters);
+  const needsDate = await f.tools.execute('memory_hold', { ...holdArgs, creation_mode:'retrospective' }, f.ctx);
+  assert.equal(needsDate.ok, false);
   const wrapped = await f.tools.execute('tool_invoke', { name: 'memory_hold', arguments: holdArgs }, f.ctx);
   assert.equal(wrapped.output.error_code, 'TOOL_PROTOCOL_NOT_ACTIVE');
   const invalid = await f.tools.execute('memory_hold', { ...holdArgs, text: 3 }, f.ctx);
@@ -64,7 +70,7 @@ test('新窗直调走冻结业务 schema 和唯一写入入口，拒绝未发布
   assert.deepEqual(storedToolset(f.db, f.ctx.windowId), frozen);
 });
 
-test('浏览目录与多候选查询保持原工具列表，唯一命中只追加一次且仅属于本窗', async t => {
+test('浏览和搜索只给用途，按名称查完整参数才在本窗启用', async t => {
   const f = fixture(t);
   const current = () => storedToolset(f.db, f.ctx.windowId)!.tools.map(tool => tool.function.name);
   const initial = current();
@@ -75,18 +81,33 @@ test('浏览目录与多候选查询保持原工具列表，唯一命中只追�
   assert.equal((await f.tools.execute('tool_catalog', {}, f.ctx)).ok, true);
   assert.equal((await lookup('一把不在目录的合成工具')).output.state, 'no_match');
   const ambiguous = await lookup('plans_read chat_send_text');
-  assert.equal(ambiguous.output.state, 'candidates');
-  assert.ok(!JSON.stringify(ambiguous.output).includes('"parameters"'));
+  for (const item of ambiguous.output.tools as Array<Record<string,unknown>>) {
+    assert.deepEqual(Object.keys(item), ['name','description']);
+  }
+  const exact = await lookup('chat_send_text');
+  assert.deepEqual(exact.output.tools, [{name:'chat_send_text',description:snapshot.summaries!.chat_send_text}]);
   assert.deepEqual(current(), initial);
-  assert.equal((await f.tools.execute('chat_send_text', {text:'未查找'}, f.ctx)).output.error_code, 'TOOL_NOT_IN_WINDOW');
-  assert.equal((await lookup('chat_send_text')).activatedTool?.function.name, 'chat_send_text');
-  assert.equal((await lookup('chat_send_text')).ok, true);
+  assert.equal((await f.tools.execute('chat_send_text', {text:'尚未查参数'}, f.ctx)).output.error_code, 'TOOL_NOT_IN_WINDOW');
+  const defined = await f.tools.execute('tool_define', {name:'chat_send_text'}, f.ctx);
+  assert.equal(defined.activatedTool?.function.name, 'chat_send_text');
+  assert.deepEqual(defined.output.parameters, snapshot.catalog.find(t => t.function.name === 'chat_send_text')!.function.parameters);
+  const repeated = await f.tools.execute('tool_define', {name:'chat_send_text'}, f.ctx);
+  assert.equal(repeated.activatedTool, undefined);
   assert.deepEqual(current(), [...initial,'chat_send_text']);
   const otherWindow = 'other-map-window';
   f.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES (?,?,'ACTIVE','now','now')").run(otherWindow,f.ctx.roomId);
   const registry = f.tools.getCapabilityRegistry()!;
   const nextWindow = freezeWindowTools(f.db, otherWindow, registry.currentCatalog(), 'direct', registry.currentGroups());
   assert.deepEqual(nextWindow.map(tool => tool.function.name), initial);
+});
+
+test('旧按需窗口保留精确搜索直接启用的协议',async t => {
+  const f = fixture(t);
+  f.db.prepare('UPDATE window_toolsets SET tool_summaries_json=NULL WHERE window_id=?').run(f.ctx.windowId);
+  const found = await f.tools.execute('tool_catalog',{query:'chat_send_text'},f.ctx);
+  assert.equal(found.output.state,'ready');
+  assert.equal(found.activatedTool?.function.name,'chat_send_text');
+  assert.match(JSON.stringify(found.activatedTool?.function.parameters),/中文直接填汉字/);
 });
 
 test('新窗评审工具只对可信、实际活跃的换窗评审可发现及执行', async t => {

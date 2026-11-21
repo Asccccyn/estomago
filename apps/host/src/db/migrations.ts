@@ -2040,4 +2040,10 @@ MIGRATIONS.push({
   sql: 'ALTER TABLE window_toolsets ADD COLUMN activated_tools_json TEXT;',
 });
 
+// NULL keeps the discovery and parameter semantics of already-open windows.
+MIGRATIONS.push({
+  version: 89, name: 'frozen-tool-capability-summaries',
+  sql: 'ALTER TABLE window_toolsets ADD COLUMN tool_summaries_json TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;
