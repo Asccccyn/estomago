@@ -12,7 +12,8 @@ const path = 'http://est.test/api/v1/content/moment-references/photo-post/blocks
 test('reference write recovers the confirmed source result and retries only the display association', async t => {
   const { db, root } = makeDb();
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  const contentPath = '/api/v1/content/future-notes/my-note';
+  const contentPath = '/api/v1/content/posts/my-note';
+  const notePath = '/api/v1/content/future-notes/my-note';
   const displayPath = '/internal/heartbeat-posts/photo-post/blocks/card';
   const oldFetch = globalThis.fetch;
   const receipts = new Map<string, { fingerprint: string; body: unknown }>();
@@ -21,7 +22,7 @@ test('reference write recovers the confirmed source result and retries only the 
   let displayEdits: Record<string, unknown> = {};
   const projection = {
     mode: 'draw', conversationId: 'primary', businessDate: '2026-11-20', version: 1, state: 'drawn',
-    card: { number: 1, source: { kind: 'reserved_note', namespace: 'content', id: 'my-note', revision: 1, identity: 'note', permissionScope: 'primary' } },
+    card: { number: 1, source: { kind: 'moments', namespace: 'content', id: 'my-note', revision: 1, identity: 'note', permissionScope: 'primary' } },
     messages: [{ messageId: 'reply', revision: 1, sequence: 7 }],
   };
   const note = () => ({ id: 'my-note', revision: sourceRevision, author: owner, body: sourceRevision === 1 ? '原版' : '新版', asset_ids: [] });
@@ -33,7 +34,7 @@ test('reference write recovers the confirmed source result and retries only the 
     assert.equal(new Headers(init?.headers).get('x-actor'), 'qiaosheng');
     const payload = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
     if (url.pathname === '/api/v1/content/posts/photo-post') return result(mapping());
-    if (url.pathname === contentPath) {
+    if (url.pathname === contentPath || url.pathname === notePath) {
       if (url.search === '?revision=1') return result({ ...note(), revision: 1, body: '原版' });
       return result(note());
     }
@@ -125,6 +126,24 @@ test('reference write recovers the confirmed source result and retries only the 
   const original = await handleMomentReference({ method: 'GET' } as IncomingMessage, new URL(path + '?revision=1'), deps, {});
   assert.equal((original?.body as { text: string }).text, '原版');
 
+  // F05: the same source reader keeps reserved-note revisions visible but no
+  // general reference write can start a second authoritative note command.
+  projection.card.source.kind = 'reserved_note';
+  owner = 'qiaosheng';
+  const denied = await send('绕过心跳页');
+  assert.equal(denied?.status, 403);
+  assert.equal((denied?.body as { error: { code: string } }).error.code, 'reserved_note_managed_in_heartbeat');
+  assert.equal(sourceWrites, 1);
+  assert.equal(displayWrites, 2);
+  sourceRevision = 3; // equivalent to a confirmed revision on the source management page
+  const noteFeed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'), { items: [mapping()] }, deps) as
+    { items: Array<{ blocks: Array<{ text?: string; observed_revision?: number; display_revision?: number; editable: boolean; management_href?: string }> }> };
+  const noteBlock = noteFeed.items[0]?.blocks.find(block => block.management_href);
+  assert.equal(noteBlock?.management_href, '/home/heartbeat?note=my-note');
+  assert.equal(noteBlock?.observed_revision, 1);
+  assert.equal(noteBlock?.display_revision, 3);
+  assert.equal(noteBlock?.editable, false);
+  assert.equal((await handleMomentReference({ method: 'GET' } as IncomingMessage, new URL(path), deps, {}))?.status, 200);
   owner = 'jiaming';
   assert.equal((await send('新版'))?.status, 403, 'existing receipts still observe current author permission');
   const deletedNote = decorateFutureNoteResponse('/api/v1/content/future-notes/my-note', { ...note(), deleted: true }, deps) as

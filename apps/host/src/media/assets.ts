@@ -13,7 +13,7 @@ import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 import type { MariposaMediaStore } from '../integrations/mariposa/media-store.ts';
-import { renderStaticSvg } from './static-svg.ts';
+import { classifySvg, renderStaticSvg } from './static-svg.ts';
 
 export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
 const STATIC_SVG_VIEW_SERVICE = 'estomago_static_svg';
@@ -79,6 +79,11 @@ export type StoredAsset = {
   m_sync_state: 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
   m_sync_attempts: number;
 };
+type SaveAssetInput = {
+  bytes: Uint8Array; purpose: IngestPurpose; operationId: string; createdBy: string;
+  origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null;
+  declaredMime?: string | null;
+};
 
 export class MediaService {
   private db: Db;
@@ -107,12 +112,28 @@ export class MediaService {
     return 0;
   }
 
+  /** 旧静态上传曾把 chat_image 记作 creation_icon；仅有可信衍生关系才可确认为原图片用途。 */
+  private assertUploadPurpose(assetId: string, purpose: IngestPurpose): void {
+    const asset = this.getAsset(assetId);
+    const existingPurpose = asset.ingest_purpose === 'creation_icon' && asset.mime_type === 'image/svg+xml' && this.staticSvgView(assetId)
+      ? 'chat_image' : asset.ingest_purpose;
+    if (existingPurpose !== purpose) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同上传幂等键对应不同用途');
+  }
+
+  findSavedOperation(operationId: string, bytes: Uint8Array): StoredAsset | null {
+    const row = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id=?')
+      .get(operationId) as { id: string; content_sha256: string } | undefined;
+    if (!row) return null;
+    if (row.content_sha256 !== sha256Hex(bytes)) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+    return this.getAsset(row.id);
+  }
+
   /** 幂等保存：同 creation_operation_id 返回既有资产；成功操作不重复建图。 */
-  async saveBuffer(opts: {
-    bytes: Uint8Array; purpose: IngestPurpose; operationId: string; createdBy: string;
-    origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null;
-    declaredMime?: string | null;
-  }): Promise<StoredAsset> {
+  async saveBuffer(opts: SaveAssetInput): Promise<StoredAsset> {
+    return this.storeBuffer(opts);
+  }
+
+  private async storeBuffer(opts: SaveAssetInput, verifiedSvgImage = false): Promise<StoredAsset> {
     if (opts.bytes.byteLength === 0) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '空文件');
     const limit = this.purposeLimitBytes(opts.purpose);
     if (opts.bytes.byteLength > limit) throw new MediaError('ASSET_TOO_LARGE', 413, `超过用途上限 ${limit} 字节`);
@@ -121,13 +142,17 @@ export class MediaService {
     const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id = ?').get(opts.operationId) as { id: string; content_sha256: string } | undefined;
     if (existing) {
       if (existing.content_sha256 !== sha) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+      if (opts.origin === 'upload') this.assertUploadPurpose(existing.id, opts.purpose);
       // 上一次保存可能停在 M 待同步：顺手补一次（M 端按 hash 去重，重复上传无副作用）
       await this.attemptMSync(existing.id, opts.bytes);
       return this.getAsset(existing.id);
     }
     const sniffed = sniffMime(opts.bytes);
     if (sniffed === null) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '无法识别的文件类型（魔数校验失败）');
-    if (!PURPOSE_MIMES[opts.purpose].includes(sniffed)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `用途 ${opts.purpose} 不接受 ${sniffed}`);
+    if (!PURPOSE_MIMES[opts.purpose].includes(sniffed)
+      && !(opts.purpose === 'chat_image' && sniffed === 'image/svg+xml' && verifiedSvgImage)) {
+      throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `用途 ${opts.purpose} 不接受 ${sniffed}`);
+    }
     const id = genId('asset');
     const ext = sniffed.split('/')[1] === 'svg+xml' ? 'svg' : sniffed.split('/')[1] === 'plain' ? 'txt' : sniffed.split('/')[1];
     const storageKey = path.join(sha.slice(0, 2), `${sha}.${ext}`);
@@ -164,21 +189,53 @@ export class MediaService {
     if (existing && existing.content_sha256 !== sha256Hex(Buffer.from(opts.bytes))) {
       throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
     }
+    if (existing && opts.origin === 'upload') this.assertUploadPurpose(existing.id, 'chat_image');
     const view = existing ? this.staticSvgView(existing.id) : null;
     if (existing && view) {
       await this.attemptMSync(existing.id, opts.bytes);
       await this.attemptMSync(view.id);
       return this.getAsset(existing.id);
     }
+    const classification = classifySvg(opts.bytes);
+    if (classification === 'code') return null;
+    if (classification !== 'image') throw new MediaError('SVG_CLASSIFICATION_UNAVAILABLE', 422, '无法确认该 SVG 的真实图片/作品类型');
     let png: Buffer | null;
     try { png = await renderStaticSvg(opts.bytes); }
     catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
-    if (png === null) return null;
-    const original = await this.saveBuffer({ ...opts, purpose: 'creation_icon' });
+    if (png === null) throw new MediaError('SVG_STATIC_UNSUPPORTED', 422, '该静态 SVG 暂不能生成安全的发送视图，不将它误归代码作品');
+    const original = await this.storeBuffer({ ...opts, purpose: opts.origin === 'upload' ? 'chat_image' : 'creation_icon' }, true);
+    await this.saveSvgView(original, png);
+    return original;
+  }
+
+  private async saveSvgView(original: StoredAsset, png: Buffer): Promise<void> {
     await this.saveBuffer({
       bytes: png, purpose: 'derived_view', operationId: staticSvgViewOperation(original.id),
-      createdBy: opts.createdBy, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id,
+      createdBy: original.created_by, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id,
     });
+  }
+
+  /** For explicitly reviewed historical assets: attach a PNG view to the existing original identity. */
+  async ensureStaticSvgView(assetId: string): Promise<StoredAsset> {
+    const original = this.getAsset(assetId);
+    if (original.mime_type !== 'image/svg+xml' || original.state !== 'available'
+      || original.m_sync_state !== 'synced' || original.m_content_hash !== original.content_sha256) {
+      throw new MediaError('SVG_SOURCE_UNCONFIRMED', 409, 'SVG 原件及权威 hash 尚未确认');
+    }
+    const view = this.staticSvgView(assetId);
+    if (view) {
+      await this.attemptMSync(view.id);
+      return original;
+    }
+    const { bytes } = await this.readContentResolvingMaster(assetId);
+    if (sha256Hex(bytes) !== original.content_sha256 || classifySvg(bytes) !== 'image') {
+      throw new MediaError('SVG_SOURCE_UNCONFIRMED', 422, '原件 hash 或静态图片类型未确认');
+    }
+    let png: Buffer | null;
+    try { png = await renderStaticSvg(bytes); }
+    catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
+    if (!png) throw new MediaError('SVG_STATIC_UNSUPPORTED', 422, '该静态 SVG 暂不能生成安全的发送视图');
+    await this.saveSvgView(original, png);
     return original;
   }
 

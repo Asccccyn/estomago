@@ -21,10 +21,11 @@ import { restartDisposition, clockRegressionAction, budgetGate, backgroundContro
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { settleBackgroundRun } from './background-ledger.ts';
+import { DAILY_MEMORY_WINDOW_MS, HEARTBEAT_DAILY_MEMORY_TASK, nextDailyMemoryDue } from '../modules/heartbeat/daily-memory.ts';
 
 export type BackgroundExecutor = {
   /** 执行一次已领取的 run（在会话串行链内被调用——executor 负责取得执行位）。scheduler 负责状态/记账框架。 */
-  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown' | 'cancelled'; result_code?: string }>;
+  executeRun(input: { runId: string; taskId: string; kind: BackgroundKind; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown' | 'cancelled'; result_code?: string }>;
 };
 
 export type SchedulerDeps = {
@@ -38,13 +39,13 @@ export type SchedulerDeps = {
 };
 
 type TaskRow = {
-  id: string; conversation_id: string; actor_id: string; kind: 'autonomous' | 'keepwarm' | 'reminder';
+  id: string; conversation_id: string; actor_id: string; kind: BackgroundKind;
   enabled: number; revision: number; schedule_kind: 'once' | 'daily' | 'interval' | 'cache_idle';
   scheduled_at: string | null; next_due_at: string | null; timezone: string; local_time: string | null;
   interval_ms: number | null; payload_json: string; created_by_actor_id: string;
   origin: string; control_reason: string | null;
 };
-type RunRow = { id: string; task_id: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; state: RunState; occurrence_key: string; first_dispatch_started_at: string | null; conversation_id: string; actor_id: string };
+type RunRow = { id: string; task_id: string; kind: BackgroundKind; state: RunState; occurrence_key: string; first_dispatch_started_at: string | null; conversation_id: string; actor_id: string };
 
 export class BackgroundScheduler {
   private d: SchedulerDeps;
@@ -57,6 +58,7 @@ export class BackgroundScheduler {
   private yieldRequested = new Set<string>();
   private lastTickMs = 0;
   private ticking = false; // S-02：tick 单飞
+  private tickWork: Promise<void> | null = null;
   private stopped = true;
   private activity: ConversationActivityService;
   readonly primaryConversation = 'primary';
@@ -132,6 +134,11 @@ export class BackgroundScheduler {
         this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'ack_only' });
         continue;
       }
+      if (r.state === 'running' && r.kind === 'heartbeat_memory'
+        && this.d.db.prepare('SELECT 1 FROM heartbeat_daily_memory_choices WHERE run_id=?').get(r.id)) {
+        this.finishRecoveredCompletion(r.id,{outcome:'completed',result_code:'DAILY_MEMORY_SELECTED'});
+        continue;
+      }
       const dispatchCount = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id = ?').get(r.id) as { n: number }).n;
       const dispo = restartDisposition({ state: r.state, dispatchCount, kind: r.kind as BackgroundKind });
       if (dispo.resultCode === 'UNCHANGED') continue;
@@ -178,12 +185,19 @@ export class BackgroundScheduler {
     if (this.stopped) return;
     if (this.ticking) return; // S-02：单飞——上一 tick 的执行器还没收尾时不重领
     this.ticking = true;
+    const work = this.tickInner();
+    this.tickWork = work;
     try {
-      await this.tickInner();
+      await work;
     } finally {
       this.ticking = false;
+      this.tickWork = null;
     }
   }
+
+  /** Source prep is not a main-model conversation turn; Host shutdown waits
+   * its cancelled in-flight scheduler work before closing the DB. */
+  async waitIdle(): Promise<void> { await this.tickWork?.catch(() => undefined); }
 
   private async tickInner(): Promise<void> {
     const nowMs = this.now();
@@ -196,11 +210,13 @@ export class BackgroundScheduler {
     this.lastTickMs = Math.max(this.lastTickMs, nowMs);
     const settings = this.d.settings.effective();
     this.recalculateKeepwarmTargets(settings, nowMs);
-    // 按最早到期排序领取（09：非任意表序；同到期稳定排序）
-    const tasks = this.d.db.prepare("SELECT * FROM background_tasks WHERE enabled = 1 AND next_due_at IS NOT NULL ORDER BY next_due_at ASC, CASE WHEN kind = 'autonomous' THEN 0 WHEN kind = 'keepwarm' THEN 2 ELSE 1 END, id ASC").all() as TaskRow[];
-    for (const task of tasks) {
+    // The midnight source selection must be resolved before compiling the new
+    // day's deck, even if a normal heartbeat became due just before midnight.
+    // All other tasks keep the existing due-time/stable order.
+    const tasks = this.d.db.prepare("SELECT * FROM background_tasks WHERE enabled = 1 AND next_due_at IS NOT NULL ORDER BY CASE WHEN kind='heartbeat_memory' THEN 0 ELSE 1 END, next_due_at ASC, CASE WHEN kind = 'autonomous' THEN 0 WHEN kind = 'keepwarm' THEN 2 ELSE 1 END, id ASC").all() as TaskRow[];
+    for (let task of tasks) {
       if (this.stopped) return;
-      const due = task.next_due_at ? Date.parse(task.next_due_at) : null;
+      let due = task.next_due_at ? Date.parse(task.next_due_at) : null;
       if (due === null || Number.isNaN(due) || due > nowMs) continue;
       // 待核对任务不自动调度（E06/W-16：关闭期间错过/结果未知——等待显式恢复）
       if (task.control_reason !== null) continue;
@@ -212,6 +228,24 @@ export class BackgroundScheduler {
         continue;
       }
       if (task.kind === 'keepwarm' && !settings.keepwarm.enabled) continue;
+      if (task.kind === 'heartbeat_memory') {
+        if (!settings.keepwarm.enabled || task.id !== HEARTBEAT_DAILY_MEMORY_TASK || task.origin !== 'system_heartbeat_memory') continue;
+        const now = this.now();
+        if (now - due >= DAILY_MEMORY_WINDOW_MS) {
+          // Record the missed occurrence with zero traffic; never backfill
+          // paid selection at noon or pretend that it occurred at midnight.
+          const missed = this.claim(task, now);
+          if (missed) this.finishRun(missed,task,'skipped','DAILY_MEMORY_MIDNIGHT_MISSED');
+          const next = nextDailyMemoryDue(now);
+          this.d.db.prepare('UPDATE background_tasks SET next_due_at=?,updated_at=? WHERE id=? AND revision=?')
+            .run(next,new Date(now).toISOString(),task.id,task.revision);
+          // If this process returned during today's genuine midnight window,
+          // skip the old occurrence but still prepare today before any draw.
+          due = Date.parse(next);
+          if (due > now || now - due >= DAILY_MEMORY_WINDOW_MS) continue;
+          task = { ...task, next_due_at: next };
+        }
+      }
       // 前面的执行可能跨入睡眠时段；每次领取用当前时钟再查，不能复用 tick 快照。
       if (task.kind === 'keepwarm' && keepwarmSleepState(this.d.settings.effective().keepwarm.sleep_window, this.now()).blocked) continue;
       if (task.kind === 'reminder' && !settings.reminders.enabled) continue;
@@ -221,7 +255,7 @@ export class BackgroundScheduler {
         if (open.task_id === task.id && open.state === 'claimed' && (open.result_code === 'NO_ACTIVE_WINDOW' || open.result_code === 'CONTEXT_SELECTION_REQUIRED')) await this.executeClaimed(open.id, task);
         continue;
       }
-      const runId = this.claim(task, nowMs);
+      const runId = this.claim(task, task.kind === 'heartbeat_memory' ? this.now() : nowMs);
       if (runId === null) continue; // occurrence 唯一约束拦下并发领取（§9.1 CW-21）
       await this.executeClaimed(runId, task);
     }
@@ -235,6 +269,8 @@ export class BackgroundScheduler {
     let inputActivityRevision: number | null = null;
     if (task.kind === 'autonomous') {
       occurrenceKey = `wake:${task.id}:${task.revision}`;
+    } else if (task.kind === 'heartbeat_memory') {
+      occurrenceKey = `heartbeat-memory:${task.conversation_id}:${task.next_due_at}`;
     } else if (task.kind === 'keepwarm') {
       const act = this.activity.get(task.conversation_id);
       const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(task.conversation_id) as { id: string } | undefined;
@@ -430,12 +466,19 @@ export class BackgroundScheduler {
       if (!task.enabled || task.control_reason !== null) return reject('TASK_CANCELLED');
       if (!Number.isSafeInteger(input.reservedCostMicroUsd) || input.reservedCostMicroUsd < 0) return reject('BUDGET_ESTIMATE_UNAVAILABLE');
       const settings = this.d.settings.effective();
-      if (run.kind === 'autonomous' || run.kind === 'keepwarm') {
+      if (run.kind === 'autonomous' || run.kind === 'keepwarm' || run.kind === 'heartbeat_memory') {
         const control=backgroundControl(run.kind,task.origin);
         if (!settings[control].enabled) return reject(control==='keepwarm'?'KEEPWARM_DISABLED':control==='free_activity'?'FREE_ACTIVITY_DISABLED':'AUTONOMOUS_DISABLED');
         if (run.kind === 'keepwarm') {
           const sleep = keepwarmSleepState(settings.keepwarm.sleep_window, nowMs);
           if (sleep.blocked) return reject(sleep.code!);
+        }
+        if (run.kind === 'heartbeat_memory') {
+          const due = this.d.db.prepare('SELECT scheduled_for FROM background_runs WHERE id=?').get(run.id) as {scheduled_for:string|null};
+          const dueMs = Date.parse(due.scheduled_for ?? '');
+          if (run.task_id !== HEARTBEAT_DAILY_MEMORY_TASK || task.origin !== 'system_heartbeat_memory'
+            || input.capabilityName !== 'heartbeat_memory_select' || input.dispatchKind !== 'tool'
+            || !Number.isFinite(dueMs) || nowMs < dueMs || nowMs - dueMs >= DAILY_MEMORY_WINDOW_MS) return reject('DAILY_MEMORY_DISPATCH_NOT_ADMITTED');
         }
         const gate = budgetGate({
           kind: control, settings, dispatchKind: input.dispatchKind === 'tool' ? 'tool' : 'model', nowMs,
@@ -466,9 +509,10 @@ export class BackgroundScheduler {
     const row = this.d.db.prepare(
       `SELECT COALESCE(SUM(CASE WHEN bd.state = 'settled' THEN bd.actual_cost_micro_usd ELSE bd.reserved_cost_micro_usd END), 0) AS occ
        FROM background_dispatches bd JOIN background_runs r ON r.id=bd.run_id JOIN background_tasks t ON t.id=r.task_id
-       WHERE bd.budget_day=? AND r.kind=? AND (?='keepwarm' OR (t.origin='self_schedule')=?)
+       WHERE bd.budget_day=? AND ((?='keepwarm' AND r.kind IN ('keepwarm','heartbeat_memory'))
+         OR (?<>'keepwarm' AND r.kind='autonomous' AND (t.origin='self_schedule')=?))
        AND bd.state!='cancelled_before_send'`,
-    ).get(budgetDay,kind==='free_activity'?'autonomous':kind,kind,kind==='autonomous'?1:0) as { occ: number };
+    ).get(budgetDay,kind,kind,kind==='autonomous'?1:0) as { occ: number };
     return row?.occ ?? 0;
   }
 

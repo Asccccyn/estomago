@@ -238,6 +238,7 @@ export type Config = {
     };
     keepwarm: {
       enabled: boolean; // 心跳保温，与两类自主任务独立
+      include_living_room: boolean; // 独立显式准入，默认关闭；不含 family
       max_output_tokens_per_run: number; // deprecated：只兼容旧YAML；实际使用主回合输出上限。
       max_run_ms: number; // deprecated：只兼容旧YAML；有效时限由正常background.autonomous.max_run_ms决定。
       daily_cost_cap_usd: DailyCostCap; // 与自主日预算独立
@@ -520,7 +521,7 @@ export const CONFIG_DEFAULTS: Config = {
       paid_tools_enabled: false,
       daily_cost_cap_usd: null,
     },
-    keepwarm: { enabled: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null, sleep_window: { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' } },
+    keepwarm: { enabled: false, include_living_room: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null, sleep_window: { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' } },
     reminders: { enabled: true, delivery_grace_ms: 300000, default_local_time: '09:00' },
   },
   content: { enabled: false, port: 18788 },
@@ -673,7 +674,7 @@ const SHAPE: SectionSpec = { section: {
       daily_cost_cap_usd: 'budget?',
     } },
     keepwarm: { section: {
-      enabled: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
+      enabled: 'boolean', include_living_room: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
       daily_cost_cap_usd: 'budget?',
       sleep_window: { section: { enabled: 'boolean', start: 'string', end: 'string', timezone: 'string' } },
     } },

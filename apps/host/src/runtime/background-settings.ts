@@ -29,7 +29,7 @@ export class BackgroundSettingsService {
   effective(): EffectiveSettings {
     const rev = this.revision();
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(SETTINGS_KEY) as StoredRow | undefined;
-    const stored = row ? JSON.parse(row.value) as { free_activity_enabled?: boolean | null; autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; reminders_enabled?: boolean | null; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap } : null;
+    const stored = row ? JSON.parse(row.value) as { free_activity_enabled?: boolean | null; autonomous_enabled?: boolean | null; keepwarm_enabled?: boolean | null; keepwarm_include_living_room?: boolean | null; reminders_enabled?: boolean | null; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap } : null;
     const es = effectiveSettings(this.config, rev, stored);
     if ('free_activity_daily_cost_cap_usd' in (stored ?? {})) es.free_activity.daily_cost_cap_usd = stored?.free_activity_daily_cost_cap_usd ?? null;
     if ('autonomous_daily_cost_cap_usd' in (stored ?? {})) es.autonomous.daily_cost_cap_usd = stored?.autonomous_daily_cost_cap_usd ?? null;
@@ -44,7 +44,7 @@ export class BackgroundSettingsService {
   /** AUD-02 修复：关闭时终止运行中执行的回调（由 scheduler 装配时注入） */
   onDisable: ((kind: ModelBackgroundControl) => void) | null = null;
 
-  applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { free_activity_enabled?: boolean; autonomous_enabled?: boolean; keepwarm_enabled?: boolean; reminders_enabled?: boolean; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
+  applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { free_activity_enabled?: boolean; autonomous_enabled?: boolean; keepwarm_enabled?: boolean; keepwarm_include_living_room?: boolean; reminders_enabled?: boolean; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
     return tx(this.db, () => {
       const requestHash = JSON.stringify({ expectedRevision: opts.expectedRevision, patch: Object.fromEntries(Object.entries(opts.patch).sort(([a], [b]) => a.localeCompare(b))) });
       if (opts.operationId !== undefined) {
@@ -110,7 +110,7 @@ export class BackgroundSettingsService {
         }
       }
       if (opts.patch.keepwarm_enabled === false) {
-        this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind = 'keepwarm'").run(nowIso, nowIso);
+        this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind IN ('keepwarm','heartbeat_memory')").run(nowIso, nowIso);
         // AUD-02 P1 修复：终止运行中的保温执行
         this.onDisable?.('keepwarm');
       }

@@ -12,7 +12,7 @@ import net from 'node:net';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
-import { ContentServer } from '../../apps/content/src/service.ts';
+import { ContentServer, commandFingerprint, CONTENT_FINGERPRINT_VERSION } from '../../apps/content/src/service.ts';
 import { contentClientFor } from '../../apps/host/src/integrations/content/client.ts';
 import { ImageGenAdapter, type ImageGenTransport } from '../../apps/host/src/integrations/imagegen/adapter.ts';
 import { ImageGenService, imageGenOpKey } from '../../apps/host/src/modules/imagegen/service.ts';
@@ -383,12 +383,17 @@ test('v80 已提交作品但回执丢失：升级后沿旧回执确认，不重�
   const asset = await f.media.saveBuffer({ bytes: PNG_FULL, purpose: 'creation_work', operationId: opKey, createdBy: 'jiaming', origin: 'generated' });
   const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
   assert.ok(client);
-  const previous = await contentForward(client, {
-    method: 'POST', path: '/api/v1/content/creations', actor: 'jiaming',
-    body: { title: '旧画', work_asset_id: asset.id, work_kind: 'image' },
-    headers: { 'idempotency-key': `imagegen:${opKey}` },
-  });
-  assert.equal(previous.status, 201);
+  // 旧版本已提交的真实关系和回执是升级的输入事实；当前创建接口不再允许新建这类关系。
+  const creationId = 'crt_legacy-v80-image';
+  const oldBody = { title: '旧画', work_asset_id: asset.id, work_kind: 'image' };
+  const oldTime = new Date().toISOString();
+  server.db.prepare(`INSERT INTO creations(id,creator_actor,title,icon_asset_id,work_asset_id,work_kind,revision,created_at,updated_at)
+    VALUES (?, 'jiaming', ?, ?, ?, 'image', 1, ?, ?)`).run(creationId, oldBody.title, asset.id, asset.id, oldTime, oldTime);
+  server.db.prepare(`INSERT INTO content_receipts(actor,idem_key,request_hash,status,response_json,created_at,fingerprint_version,resource_type,action,target_json)
+    VALUES ('jiaming',?,?,201,?,?,?,'creation','create','null')`).run(`imagegen:${opKey}`,
+      commandFingerprint('jiaming', { resourceType: 'creation', action: 'create', target: null, expectedRevision: null, params: oldBody }),
+      JSON.stringify({ id: creationId, creator: 'jiaming', title: oldBody.title, bucket_ref: null, icon_asset_id: asset.id, work_asset_id: asset.id, work_kind: 'image', revision: 1, created_at: oldTime, updated_at: oldTime, deleted: false }),
+      oldTime, CONTENT_FINGERPRINT_VERSION);
   // v80 在写 content 前最后持久状态仍可能是 generated，响应丢失后不能假定旧关系未提交。
   const now = new Date().toISOString();
   db.prepare('INSERT INTO imagegen_operations(op_key, state, result_b64, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
@@ -396,7 +401,7 @@ test('v80 已提交作品但回执丢失：升级后沿旧回执确认，不重�
   const resumed = await f.svc.generateAndStore({ prompt: '旧请求', opKey, title: '旧画', deliver: 'save_only' });
   assert.equal(resumed.ok, true, JSON.stringify(resumed));
   if (!resumed.ok) return;
-  assert.equal(resumed.creation_id, (previous.body as { id: string }).id);
+  assert.equal(resumed.creation_id, creationId);
   assert.equal(resumed.album_entry_id, undefined);
   assert.equal(f.calls(), 0);
   const albums = await contentForward(client, {

@@ -107,7 +107,7 @@ test('RF02B/F2: 中文显式键在同回合和后续回合均核回原帖，异�
   const f = await fixture('openrouter');
   const wires: Array<Record<string, unknown>> = [];
   const postKeys: Array<string | null> = [];
-  const commands: Array<{ body: string; idempotency_key: string }> = [];
+  const commands: Array<{ text: string; idempotency_key: string }> = [];
   try {
     globalThis.fetch = async (input, init) => {
       const response = await realFetch(input, init);
@@ -128,7 +128,7 @@ test('RF02B/F2: 中文显式键在同回合和后续回合均核回原帖，异�
       const delta = call ? { tool_calls: [{ index: 0, id: `call-${n}`, type: 'function', function: { name: 'content_post_create', arguments: JSON.stringify(call) } }] } : { content: 'synthetic finished' };
       return { status: 200, headers: new Headers(), body: Readable.from([Buffer.from(`data: ${JSON.stringify({ id: `gen-${n}`, choices: [{ delta }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: call ? 'tool_calls' : 'stop' }] })}\n\ndata: [DONE]\n\n`)]) };
     });
-    const original = { body: 'same intended model post', idempotency_key: '测试续轮操作' };
+    const original = { text: 'same intended model post', idempotency_key: '测试续轮操作' };
     const send = async (id: string, ...tools: typeof commands) => {
       const before = wires.length;
       commands.push(...tools);
@@ -152,7 +152,7 @@ test('RF02B/F2: 中文显式键在同回合和后续回合均核回原帖，异�
     assert.equal(failure.idempotency_key, original.idempotency_key);
     assert.equal(failure.retryable, true);
     assert.equal(sameKey.id, sameTurn.id);
-    const [changed] = await send('changed-args', { ...original, body: 'different content' });
+    const [changed] = await send('changed-args', { ...original, text: 'different content' });
     assert.equal(changed.error_code, 'IDEMPOTENCY_CONFLICT');
     assert.equal(postKeys.length, 1, '同键异参在远端写之前被拒绝');
     const [separate] = await send('separate-operation', { ...original, idempotency_key: '第二个独立操作' });

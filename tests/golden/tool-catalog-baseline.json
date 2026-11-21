@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "22b48f98a4a4a3099bdfb310922d719cfa5b092d",
+  "baselineCommit": "2bc46048ea37ee65aa4dd1f1bda1ed2c2a2c894d",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -56,7 +56,8 @@
     "media_view",
     "content_creations_read",
     "archives_search",
-    "heartbeat_draw"
+    "heartbeat_draw",
+    "wishstar_reply_star"
   ],
   "deferredOrder": [
     "tool_catalog",
@@ -72,22 +73,22 @@
     "conversation_read": "td_4d331845495245739155ab45",
     "memory_i_read": "td_e03196020265b1f6be48af6d",
     "plans_read": "td_9158f2ea64e5ae39de023c22",
-    "memory_i_write": "td_1ddd3a690ca0bea454930706",
-    "plans_write": "td_cc397242a8d7a64c03423fcf",
+    "memory_i_write": "td_242b43d13ca426645b9d1d74",
+    "plans_write": "td_589e558bdadaadae2bfb718a",
     "memory_open": "td_6f65eb0c5f16a403a5007c39",
     "memory_correct": "td_8d6c957775e66318f1b27de4",
     "deletion_review": "td_1a184b61b7e8219ea84dc25d",
     "episode_read": "td_240a447e6c2fbdb8e8ff6eeb",
     "episode_apply": "td_fcaf0a0ae3eb215d6c1fe2e6",
-    "content_post_create": "td_b0e9999653440c5ae216284f",
-    "content_comment_create": "td_dd5a068637e4f3d5b4fa7c81",
+    "content_post_create": "td_a27af894b09daf6df7d8947f",
+    "content_comment_create": "td_faa9b14f2ad3453b6ed588d7",
     "content_posts_list": "td_9527ab5aae9ba4a1f0db41f4",
     "creation_save_artifact": "td_7c1b28e11ed14c01132f915b",
     "wake_manage": "td_b2764e2e84d37e720c9b5687",
     "background_complete": "td_1b8e66dc7581261882524764",
     "chat_send_text": "td_074393184cb1d6f44ce7c25e",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
-    "chat_send_attachment": "td_2d582dc311115a57e9cd3dae",
+    "chat_send_attachment": "td_432364a99c960b7059b72954",
     "call_control": "td_610eb42436fd9ae3782336c6",
     "oido_analyze": "td_4f78b807e9e3265e964724b1",
     "chat_send_voice": "td_b03dcf320d8b03d809d5d4d3",
@@ -99,7 +100,7 @@
     "oido_find": "td_4dac90ce5f50d5a00ba5b2db",
     "oido_compare": "td_531c45af21260ea69a6c0fcf",
     "identity_milestone_write": "td_577aa1ab143661c5df508978",
-    "wishstar_write_star": "td_09240106d16047bb5678885d",
+    "wishstar_write_star": "td_c2196a8721a1bb683de5725d",
     "wishstar_read": "td_8c101051bb0083cf6b9c2fb0",
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
     "wishstar_confirm_session": "td_6951feebfb5af5208310cfa5",
@@ -119,9 +120,10 @@
     "media_view": "td_f72b71bbef701e3714320c82",
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_249b4a683b8cc293ef4a3163",
-    "heartbeat_draw": "td_cdd2b5d2062733f663a80868"
+    "heartbeat_draw": "td_cdd2b5d2062733f663a80868",
+    "wishstar_reply_star": "td_1a71d3204ef88faf1ce8b01c"
   },
-  "toolsSha256": "f0357b7c971ffa32b66987625d3cf881614cd3c5f6c2d1fabdbfc79487680166",
+  "toolsSha256": "f090e73dec8004b1ee43c9640f19fc82b70f398d38a74f8cd850e0e938bbffb3",
   "tools": [
     {
       "type": "function",
@@ -728,7 +730,7 @@
               ],
               "description": "写动作"
             },
-            "content": {
+            "text": {
               "type": "string",
               "minLength": 1,
               "description": "create/revise 必填：条目正文"
@@ -819,7 +821,7 @@
               "maxLength": 200,
               "description": "create 必填 / update 可选：计划标题"
             },
-            "content": {
+            "text": {
               "type": "string",
               "description": "可选：计划正文"
             },
@@ -1305,7 +1307,7 @@
               "type": "string",
               "maxLength": 200
             },
-            "body": {
+            "text": {
               "type": "string",
               "maxLength": 40000
             },
@@ -1323,7 +1325,7 @@
             }
           },
           "required": [
-            "body",
+            "text",
             "idempotency_key"
           ],
           "additionalProperties": false
@@ -1343,7 +1345,7 @@
               "minLength": 1,
               "maxLength": 128
             },
-            "body": {
+            "text": {
               "type": "string",
               "minLength": 1,
               "maxLength": 10000
@@ -1356,7 +1358,7 @@
           },
           "required": [
             "post_id",
-            "body",
+            "text",
             "idempotency_key"
           ],
           "additionalProperties": false
@@ -1581,7 +1583,7 @@
                 "work"
               ]
             },
-            "content": {
+            "text": {
               "type": "string",
               "maxLength": 4000
             }
@@ -2003,7 +2005,7 @@
         "parameters": {
           "type": "object",
           "properties": {
-            "content": {
+            "text": {
               "type": "string",
               "minLength": 1,
               "maxLength": 2000,
@@ -2040,7 +2042,7 @@
             }
           },
           "required": [
-            "content",
+            "text",
             "visibility",
             "idempotency_key"
           ],
@@ -2825,6 +2827,41 @@
           },
           "required": [
             "card_number"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "type": "function",
+      "function": {
+        "name": "wishstar_reply_star",
+        "description": "回应本轮心跳已交付的共享星。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "reply_ref": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "description": "本轮星牌 heartbeat_card.reply_ref"
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1000
+            },
+            "idempotency_key": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "同键重试同一条回应"
+            }
+          },
+          "required": [
+            "reply_ref",
+            "text",
+            "idempotency_key"
           ],
           "additionalProperties": false
         }

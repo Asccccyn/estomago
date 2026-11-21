@@ -21,6 +21,7 @@ export type BackgroundExecutionDeps = {
   scheduler: Pick<BackgroundScheduler, 'recordDispatchStart'>;
   /** F03：发布前消费任务/run 取消事实（只读查询） */
   db: import('../db/connection.ts').Db;
+  dailyMemory?: import('../modules/heartbeat/daily-memory.ts').HeartbeatDailyMemory;
 };
 
 export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
@@ -29,6 +30,18 @@ export function createBackgroundExecution(deps: BackgroundExecutionDeps): {
   const { messages, events, bgSettings, supervisor, scheduler, db } = deps;
   return {
     async executeRun(input) {
+      if (input.kind === 'heartbeat_memory') {
+        if (!deps.dailyMemory) return { outcome:'failed',result_code:'DAILY_MEMORY_SOL_NOT_CONFIGURED' };
+        // Scheduler's single-flight owns this source prep. Do not occupy the
+        // main model conversation serial slot or wait for a lengthy chat.
+        const controller = new AbortController();
+        input.registerAbort(controller);
+        if (input.isCancelRequested() || controller.signal.aborted || !bgSettings.effective().keepwarm.enabled) {
+          return { outcome:'cancelled' as const,result_code:'KEEPWARM_DISABLED' };
+        }
+        return deps.dailyMemory.execute({runId:input.runId,conversationId:input.conversationId,signal:controller.signal,
+          recordDispatch:scheduler.recordDispatchStart.bind(scheduler)});
+      }
       if (input.kind === 'reminder') {
         // §04.13：预写提醒按时投递——零模型调用；system 消息走既有事实链+归档 outbox
         const text = typeof (input.payload as { text?: unknown }).text === 'string' ? String((input.payload as { text?: unknown }).text) : '[提醒]';

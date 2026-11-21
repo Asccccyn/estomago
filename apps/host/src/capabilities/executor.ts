@@ -11,6 +11,7 @@ import { modelFailure } from '../runtime/model-results.ts';
 import { checkTurnCompletion, TURN_COMPLETION_TOOL, type TurnCompletion } from '../runtime/turn-completion.ts';
 import type { CapabilityOutcome, ToolExecContext, ToolExecResult } from './contracts.ts';
 import type { CapabilityDescriptor } from './registry.ts';
+import { startHeartbeatAction } from '../modules/heartbeat/actions.ts';
 
 export type CapabilityExecutorHost = {
   db: Db;
@@ -48,6 +49,7 @@ export async function executeRegisteredCapability<I, O>(
   // 背景工具准入记账（照搬 admitBackgroundTool：背景 run 缺准入=合同错误；非背景不查价——D40）
   if (ctx.backgroundRunId && !ctx.beforeBackgroundTool) throw new ContractError('BACKGROUND_TOOL_ADMISSION_MISSING');
   if (ctx.beforeBackgroundTool) ctx.beforeBackgroundTool(descriptor.quote(host.db, checked.value));
+  const recordHeartbeatAction = startHeartbeatAction(host.db, ctx, descriptor.heartbeatAction, checked.value);
   let outcome: CapabilityOutcome<O>;
   try {
     outcome = await descriptor.run(checked.value, ctx);
@@ -55,6 +57,7 @@ export async function executeRegisteredCapability<I, O>(
     // handler 异常沿现行语义如实上抛（旧外层发 error 事件后 rethrow；不吞成结果）
     throw err;
   }
+  recordHeartbeatAction?.(outcome);
   if (outcome.ok) {
     return {
       ok: true,

@@ -37,7 +37,8 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   assert.deepEqual([...initial.matchAll(/^- ([a-z_]+)$/gm)].map(match => match[1]), expectedResident);
   assert.deepEqual(Object.keys(frozen.groups).filter(name => frozen.groups[name] === 'T'), expectedTask);
   assert.equal(frozen.groups.heartbeat_draw, 'D');
-  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 41);
+  assert.equal(frozen.groups.wishstar_reply_star, 'D');
+  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 42);
   assert.ok(initial.startsWith('你想记下一件事'));
   assert.equal([...initial.matchAll(/用 tool_catalog 的 query/g)].length, 1);
   assert.match(initial, /发现记错了也可以改/);
@@ -45,6 +46,8 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   assert.match(initial, /expected_version/);
   assert.match(initial, /asset_ref/);
   assert.match(initial, /^- chat_send_voice\n[^\n]*填 text/m);
+  assert.match(initial, /^- wishstar_write_star\n[^\n]*填 text/m);
+  assert.match(initial, /^- content_post_create\n[^\n]*填 text/m);
   assert.match(initial, /^- call_control\n[^\n]*action: invite/m);
   assert.doesNotMatch(initial, /发语音，就到工具地图/);
   assert.ok(!initial.includes('parameters: {'));
@@ -79,6 +82,7 @@ test('自然意图匹配真实工具并一次返回该窗口的完整定义', ()
     ['想主动给她打电话', 'call_control'],
     ['帮我改计划', 'plans_write'],
     ['我想在本轮心跳抽卡选号码', 'heartbeat_draw'],
+    ['回应抽到的星', 'wishstar_reply_star'],
     ['拒绝抽卡', 'background_complete'],
     ['memory_recall', 'memory_recall'],
   ]) {

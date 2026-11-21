@@ -16,11 +16,11 @@ export const CONTENTPOSTCREATE_DEFINITION: HostToolSpec = {
         properties: {
           presentation: { type: 'string', enum: ['post', 'letter'] },
           title: { type: 'string', maxLength: 200 },
-          body: { type: 'string', maxLength: 40000 },
+          text: { type: 'string', maxLength: 40000 },
           asset_ids: { type: 'array', items: { type: 'string' }, maxItems: 8 },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
         },
-        required: ['body', 'idempotency_key'], additionalProperties: false,
+        required: ['text', 'idempotency_key'], additionalProperties: false,
       },
     }
   };
@@ -35,10 +35,10 @@ export const CONTENTCOMMENTCREATE_DEFINITION: HostToolSpec = {
         type: 'object',
         properties: {
           post_id: { type: 'string', minLength: 1, maxLength: 128 },
-          body: { type: 'string', minLength: 1, maxLength: 10000 },
+          text: { type: 'string', minLength: 1, maxLength: 10000 },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128 },
         },
-        required: ['post_id', 'body', 'idempotency_key'], additionalProperties: false,
+        required: ['post_id', 'text', 'idempotency_key'], additionalProperties: false,
       },
     }
   };
@@ -141,13 +141,17 @@ export function registerContentCapabilities(registry: { register(d: CapabilityDe
   registry.register(toolCapability({
     owner: 'content',
     id: 'content_post_create', baselineOrder: 16, definition: () => CONTENTPOSTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '发作品',
-    run: (input: Record<string, unknown>, ctx) => service.contentPostCreate(input as never, ctx),
+    heartbeatAction: 'post',
+    // The registered parser has already checked the window's frozen schema.
+    // Old windows still supply body; new ones supply text. Content owns body.
+    run: (input: Record<string, unknown>, ctx) => service.contentPostCreate({ ...input, body: input.text ?? input.body } as never, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
     owner: 'content',
     id: 'content_comment_create', baselineOrder: 17, definition: () => CONTENTCOMMENTCREATE_DEFINITION, memoryOnlyAllowed: false, label: '评论作品',
-    run: (input: Record<string, unknown>, ctx) => service.contentCommentCreate(input as never, ctx),
+    heartbeatAction: 'comment',
+    run: (input: Record<string, unknown>, ctx) => service.contentCommentCreate({ ...input, body: input.text ?? input.body } as never, ctx),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
@@ -159,6 +163,7 @@ export function registerContentCapabilities(registry: { register(d: CapabilityDe
   registry.register(toolCapability({
     owner: 'content',
     id: 'creation_save_artifact', group: 'D', baselineOrder: 19, free: true, definition: () => CREATIONSAVEARTIFACT_DEFINITION, memoryOnlyAllowed: false, label: '保存小作品',
+    heartbeatAction: 'creation',
     run: (input: Record<string, unknown>, ctx) => service.creationSaveArtifact(input as never, ctx),
     toModel: (value) => value,
   }));
@@ -166,6 +171,7 @@ export function registerContentCapabilities(registry: { register(d: CapabilityDe
     run:(input:Record<string,unknown>,ctx)=>service.contentAlbumsRead(input,ctx),toModel:value=>value,
   }));
   registry.register(toolCapability({owner:'content',id:'content_album_entry_write',baselineOrder:52,definition:CONTENTALBUMENTRYWRITE_DEFINITION,memoryOnlyAllowed:false,free:true,label:'收藏入相册',
+    heartbeatAction:'album',
     run:(input:Record<string,unknown>,ctx)=>service.contentAlbumEntryWrite(input as never,ctx),toModel:value=>value,
   }));
   registry.register(toolCapability({owner:'content',id:'content_creations_read',baselineOrder:53,definition:CONTENTCREATIONSREAD_DEFINITION,memoryOnlyAllowed:false,free:true,label:'浏览作品集',

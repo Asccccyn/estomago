@@ -4,6 +4,7 @@
 // 不做：业务数据库查询、跨服务重试、动态刷新旧窗口、自动发现并授权新工具、
 // 万能 fetch、自动降级到旧 handler、通用 DAG 执行。不访问远端、不动态授予新能力。
 import type { Db } from '../db/connection.ts';
+import type { HeartbeatActionKind } from '../../../../packages/contracts/src/heartbeat.ts';
 import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecContext } from './contracts.ts';
 
 export type ToolGroup = 'C' | 'D' | 'T';
@@ -30,6 +31,7 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   readonly label: string;
   /** 内部协议工具不发事件（原 SILENT_TOOLS 语义）。 */
   readonly silent: boolean;
+  readonly heartbeatAction?: HeartbeatActionKind;
   /** 可信费用政策（照搬 quoteBackgroundTool 证据；不以名称推断免费——D40 非背景不强加报价）。 */
   readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   /** 参数校验：用请求窗口的冻结 schema（旧窗原 spec），不用当前新定义替代。 */
@@ -54,6 +56,7 @@ type ErasedDescriptor = {
   readonly memoryOnlyAllowed: boolean;
   readonly label: string;
   readonly silent: boolean;
+  readonly heartbeatAction?: HeartbeatActionKind;
   readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   readonly parse: (rawArgs: Record<string, unknown>, frozenSpec: HostToolSpec) => CapabilityParseResult<any>;
   readonly run: (input: any, ctx: ToolExecContext) => Promise<CapabilityOutcome<any>>;

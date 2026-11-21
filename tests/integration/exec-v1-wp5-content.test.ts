@@ -217,7 +217,7 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   const contentOps = new ContentOperationCoordinator({ db, client: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, media, logger: new Logger(null) });
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, contentOps });
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w1', turnId: 'turn-tool-test', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-test' };
-  const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1' }, ctx);
+  const r = await tools.execute('content_post_create', { text: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1' }, ctx);
   assert.equal(r.ok, true, JSON.stringify(r.output));
   const post = r.output as { id: string; author: string; presentation: string };
   assert.equal(post.author, 'jiaming', '模型工具派生 jiaming');
@@ -228,7 +228,7 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   const items = (list.output as { items: Array<{ id: string; author: string }> }).items;
   assert.ok(items.some((i) => i.id === post.id));
   // 评论
-  const comment = await tools.execute('content_comment_create', { post_id: post.id, body: '自己的评论', idempotency_key: 'mc-1' }, ctx);
+  const comment = await tools.execute('content_comment_create', { post_id: post.id, text: '自己的评论', idempotency_key: 'mc-1' }, ctx);
   assert.equal(comment.ok, true);
   db.close();
 });

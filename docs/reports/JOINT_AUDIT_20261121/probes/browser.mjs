@@ -63,6 +63,15 @@ try{
  await page.getByRole('button',{name:'结束此次操作'}).click();
  await page.getByRole('tab',{name:'作品'}).click();await page.getByText('还没有作品',{exact:false}).waitFor();
  facts.worksControls=await page.getByRole('dialog').getByRole('button').allTextContents();
+ await upload('导入 HTML / SVG 代码作品',{name:'synthetic.html',mimeType:'text/html',buffer:Buffer.from('<!doctype html><html><body>synthetic work</body></html>')});
+ await page.getByText('synthetic.html',{exact:false}).waitFor();
+ await page.reload();await page.getByRole('tab',{name:'作品'}).click();
+ const workPreview=page.getByRole('link',{name:'沙箱预览打开',exact:false});await workPreview.waitFor();
+ const workPopup=context.waitForEvent('page');await workPreview.click();const work=await workPopup;await work.waitForLoadState();
+ assert.ok(work.url().endsWith('/preview'));await work.close();
+ await page.getByRole('button',{name:'移除作品',exact:true}).click();
+ await page.getByText('还没有作品',{exact:false}).waitFor();
+ facts.status.push('code-work-import-refresh-preview-remove');
  for(const section of ['heartbeat','moments']){
    await page.goto(origin+'/');
    if(section==='heartbeat')await page.locator('#home-heartbeat').click();
@@ -73,6 +82,12 @@ try{
    await page.getByRole('button',{name:'编辑',exact:true}).click();await page.locator('textarea').fill('合成页面修订');
    await page.locator('button[type=submit]').click();await page.getByText('合成页面修订',{exact:true}).waitFor();
    await page.reload();await page.getByText('合成页面修订',{exact:true}).waitFor();
+   if(section==='heartbeat'){
+     const noteId=await page.evaluate(async()=>{const list=await (await fetch('/api/v1/content/future-notes')).json();return list.items.find(row=>row.body==='合成页面修订')?.id;});
+     assert.ok(noteId);await page.goto(origin+'/home/heartbeat?note='+encodeURIComponent(noteId));
+     await page.getByText('从朋友圈定位的原留言',{exact:true}).waitFor();await page.getByText('合成页面修订',{exact:true}).waitFor();
+     facts.status.push('heartbeat-source-id-navigation');
+   }
    await page.getByRole('button',{name:'删除',exact:true}).click();await page.getByText('合成页面修订',{exact:true}).waitFor({state:'detached'});
    facts.status.push(section+'-create-edit-refresh-delete');
  }
@@ -84,10 +99,12 @@ try{
    const data=await r.json();statuses.push({status:r.status,id:data.asset_id});
  }
  facts.reusedPurpose={statuses:statuses.map(x=>x.status),sameId:statuses[0].id===statuses[1].id};
+ assert.deepEqual(facts.reusedPurpose.statuses,[201,409]);
  const pngId=host.db.prepare("select id from media_assets where mime_type='image/png'").get().id;
  const response=await fetch(origin+'/api/v1/content/creations',{method:'POST',headers:{Authorization:'Bearer '+isolatedToken,Origin:origin,'Idempotency-Key':'fixture-raster-work','Content-Type':'application/json'},body:JSON.stringify({work_asset_id:pngId,icon_asset_id:pngId,work_kind:'image',title:'合成图片画作'})});
  const creation=await response.json();facts.oldCreation={status:response.status,error:creation.error?.code,kind:creation.work_kind};
  const visible=await fetch(origin+'/api/v1/content/creations?limit=50',{headers:{Authorization:'Bearer '+isolatedToken}});
  facts.oldCreation.listed=(await visible.json()).items?.some(x=>x.id===creation.id)??false;
+ assert.equal(facts.oldCreation.status,422);assert.equal(facts.oldCreation.listed,false);
  facts.media=host.db.prepare("select mime_type,m_sync_state,count(*) n from media_assets group by 1,2").all();
 } catch(e){facts.error=String(e.message);process.exitCode=1;}finally{await browser?.close();await host?.stop();await content.stop();console.log(JSON.stringify(facts));}

@@ -2,10 +2,11 @@
 // actor 从受控执行上下文派生为 jiaming；HTTP 与工具共用同一协调器实例（P1·F06/F07
 // 20261106）：同操作回查、意图+pin、提交、权威快照确认与恢复对浏览器/模型一致。
 // 创作小作品不执行代码（SVG 脚本拒绝）。
-import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { HeartbeatReceipt, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { ContentWriteResult } from '../../integrations/content/coordinator.ts';
 import { CONTENT_POST_PREVIEW_CHARS } from '../../../../../packages/contracts/src/content.ts';
 import { contentForward, resolveContentOperation } from '../../integrations/content/client.ts';
-import type { StoredAsset } from '../../media/assets.ts';
+import { sniffMime, type StoredAsset } from '../../media/assets.ts';
 import { sliceByByteBudget } from '../../media/model-input.ts';
 
 const POST_PAGE_BYTES = 32_768;
@@ -30,14 +31,15 @@ export class ContentToolsService {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED', detail: '内容服务未启用' } };
     const r = await this.contentOps.writeForModel({
       roomId: ctx.roomId, turnId: ctx.turnId, path: '/api/v1/content/posts', idempotencyKey: args.idempotency_key,
+      ...(ctx.backgroundRunId && ctx.toolCallId ? { heartbeat: { runId: ctx.backgroundRunId, callId: ctx.toolCallId } } : {}),
       body: { presentation: args.presentation ?? 'post', title: args.title, body: args.body, asset_ids: args.asset_ids ?? [] },
     });
     if (r.status === 201 || r.status === 200) {
       const { id, revision, author, presentation, asset_ids, published_at } = r.body as PostListItem;
-      return { ok: true, output: { state: 'committed', id, revision, author, presentation, asset_ids, published_at,
-        body_cursor: postBodyCursor(id, revision, 0), body_read_hint: POST_BODY_READ_HINT } };
+      return withContentReceipt({ ok: true, output: { state: 'committed', id, revision, author, presentation, asset_ids, published_at,
+        body_cursor: postBodyCursor(id, revision, 0), body_read_hint: POST_BODY_READ_HINT } }, r, 'content:post');
     }
-    return modelWriteFailure(r, args.idempotency_key, 'CONTENT_POST');
+    return withContentReceipt(modelWriteFailure(r, args.idempotency_key, 'CONTENT_POST'), r, 'content:post');
   }
 
 
@@ -45,13 +47,14 @@ export class ContentToolsService {
     if (!this.contentClient || !this.contentOps) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     const r = await this.contentOps.writeForModel({
       roomId: ctx.roomId, turnId: ctx.turnId, path: `/api/v1/content/posts/${encodeURIComponent(args.post_id)}/comments`,
+      ...(ctx.backgroundRunId && ctx.toolCallId ? { heartbeat: { runId: ctx.backgroundRunId, callId: ctx.toolCallId } } : {}),
       body: { body: args.body }, idempotencyKey: args.idempotency_key,
     });
     if (r.status === 201 || r.status === 200) {
       const { id, post_id, author, revision, created_at } = r.body as Record<string, unknown>;
-      return { ok: true, output: { state: 'committed', id, post_id, author, revision, created_at } };
+      return withContentReceipt({ ok: true, output: { state: 'committed', id, post_id, author, revision, created_at } }, r, 'content:comment');
     }
-    return modelWriteFailure(r, args.idempotency_key, 'CONTENT_COMMENT');
+    return withContentReceipt(modelWriteFailure(r, args.idempotency_key, 'CONTENT_COMMENT'), r, 'content:comment');
   }
 
 
@@ -179,11 +182,12 @@ export class ContentToolsService {
     try { sha256 = this.media?.getAsset(args.asset_id).content_sha256 ?? null; } catch { sha256 = null; }
     const r = await this.contentOps.writeForModel({
       roomId: ctx.roomId, turnId: ctx.turnId, path: `/api/v1/content/albums/${encodeURIComponent(args.kind)}/entries`,
+      ...(ctx.backgroundRunId && ctx.toolCallId ? { heartbeat: { runId: ctx.backgroundRunId, callId: ctx.toolCallId } } : {}),
       body: { asset_id: args.asset_id, caption: args.caption, meaning: args.meaning, ...(sha256 ? { content_sha256: sha256 } : {}), ...(args.carry_mode ? { carry_mode: args.carry_mode } : {}) },
       idempotencyKey: args.idempotency_key,
     });
-    if (r.status === 201 || r.status === 200) return { ok: true, output: { ...(r.body as Record<string, unknown>), state: 'committed' } };
-    return modelWriteFailure(r, args.idempotency_key, 'ALBUM_ENTRY', 'ALBUM_ENTRY_WRITE_FAILED');
+    if (r.status === 201 || r.status === 200) return withContentReceipt({ ok: true, output: { ...(r.body as Record<string, unknown>), state: 'committed' } }, r, 'content:album');
+    return withContentReceipt(modelWriteFailure(r, args.idempotency_key, 'ALBUM_ENTRY', 'ALBUM_ENTRY_WRITE_FAILED'), r, 'content:album');
   }
 
   async creationSaveArtifact(args: { format: 'svg' | 'html'; content: string; client_operation_id: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
@@ -197,23 +201,37 @@ export class ContentToolsService {
     // client_operation_id 本身。旧键含 turnId/requestId——工具续轮重试会换 requestId
     // 而重复建资产；R5 加入"条目失败→同键重试"路径后该缺陷会实际触发，随本批对齐。
     const opKey = `tool-creation:${args.client_operation_id}`;
-    let asset: { id: string; byte_size: number };
+    let asset: StoredAsset;
     try {
       const input = { bytes: Buffer.from(args.content, 'utf8'), operationId: opKey, createdBy: 'jiaming', origin: 'generated' as const };
-      const staticSvg = args.format === 'svg' ? await this.media.saveStaticSvg(input) : null;
+      if (sniffMime(input.bytes) !== mime) return { ok: false, output: { error_code: 'WORK_KIND_MISMATCH', detail: '作品格式与实际原件不符' } };
+      // Upgrade: a committed legacy SVG creation is still replayable even if its
+      // image classification/rendering differs after this release. Resolve it
+      // before deriving any new view or creating an album relationship.
+      const previousAsset = args.format === 'svg' ? this.media.findSavedOperation(opKey, input.bytes) : null;
+      let previousCreation = false;
+      if (previousAsset && this.contentClient) {
+        const previous = await resolveContentOperation(this.contentClient, {
+          method: 'POST', actor: 'jiaming', path: '/api/v1/content/creations',
+          body: { work_asset_id: previousAsset.id, work_kind: 'svg' }, idempotencyKey: `tool-creation-entry:${args.client_operation_id}`,
+        });
+        if (previous.outcome === 'replay' && (previous.status === 200 || previous.status === 201)) previousCreation = true;
+        else if (previous.outcome !== 'new') return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: '无法按原身份确认历史作品关系' } }, opKey, previousAsset, 'partial');
+      }
+      const staticSvg = args.format === 'svg' && !previousCreation ? await this.media.saveStaticSvg(input) : null;
       if (staticSvg) {
         const photo = await this.saveStaticSvgPhoto(staticSvg, args.client_operation_id, ctx);
         if (photo) return photo;
       }
       asset = staticSvg ?? await this.media.saveBuffer({ ...input, purpose: args.format === 'svg' ? 'creation_icon' : 'creation_work' });
     } catch (err) {
-      return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) } };
+      return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_TYPE_UNSUPPORTED', detail: String((err as Error).message).slice(0, 200) }, heartbeatReceipt: { operationId: opKey, status: 'failed' } };
     }
     // R5（复审 2026-11-08）：保存即入作品——作品面板/工作台读 creations 条目，
     // 只存资产不入条目的作品用户不可见。条目未成=如实可重试（同键只补条目），
     // 不冒充 saved；引用保护沿用 imagegen 协议（pin→建条目→按权威快照 commit）。
     if (!this.contentClient) {
-      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } };
+      return withCreationReceipt({ ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: null, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } }, opKey, asset, 'partial');
     }
     // RR4（复审 2026-11-09）：成功条件与 imagegen 同一根因口径——M 唯一正本未落正
     // 不得报 saved（落正由后台退避推进；同键重试只补落正与条目，不重复保存字节）。
@@ -221,7 +239,7 @@ export class ContentToolsService {
     if (this.media.masterStoreConfigured && !synced()) {
       await this.media.attemptMSync(asset.id);
       if (!synced()) {
-        return { ok: false, output: { error_code: 'CREATION_MASTER_PENDING', detail: 'SVG/HTML 已生成并保存为资产，但 M 唯一正本尚未落正——未建作品条目；用同一 client_operation_id 重试只补落正与条目，不会重复保存' } };
+        return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_MASTER_PENDING', detail: 'SVG/HTML 已生成并保存为资产，但 M 唯一正本尚未落正——未建作品条目；用同一 client_operation_id 重试只补落正与条目，不会重复保存' } }, opKey, asset, 'partial');
       }
     }
     this.media.pinAssetForOperation({ assetId: asset.id, operationKey: opKey });
@@ -233,14 +251,14 @@ export class ContentToolsService {
       });
       if (res.status !== 201 && res.status !== 200) {
         this.media.releaseOperationPins(opKey);
-        return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但作品条目被拒（${res.status}）——用同一 client_operation_id 重试只补条目，不会重复保存`, raw_status: res.status } };
+        return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但作品条目被拒（${res.status}）——用同一 client_operation_id 重试只补条目，不会重复保存`, raw_status: res.status } }, opKey, asset, 'partial');
       }
       if (res.bodyFailed) {
         // RR4-A：2xx 但正文截断——条目可能已建（幂等键在），不能当失败释放 pin 也不能
         // 冒充 saved：如实 PENDING（同键重试经 resolve replay 取回真实条目），pin 保留。
-        return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: '资产已保存，但作品条目响应不完整（正文传输失败）——用同一 client_operation_id 重试只补条目确认', raw_status: 503 } };
+        return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: '资产已保存，但作品条目响应不完整（正文传输失败）——用同一 client_operation_id 重试只补条目确认', raw_status: 503 } }, opKey, asset, 'partial');
       }
-      const creation = res.body as { id?: string };
+      const creation = res.body as { id?: string; revision?: number };
       const creationId = typeof creation.id === 'string' ? creation.id : null;
       if (creationId !== null) {
         let snapConfirmed = false;
@@ -253,23 +271,24 @@ export class ContentToolsService {
           }
         } catch { /* 快照读取失败按未确认处理（下方如实返回） */ }
         if (!snapConfirmed) {
-          return { ok: false, output: { error_code: 'CREATION_SNAPSHOT_PENDING', detail: '资产与作品条目已建，但引用快照未确认（content 暂不可达）——同键重试只补确认，不会重复保存或重复建条目', raw_status: 503 } };
+          return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_SNAPSHOT_PENDING', detail: '资产与作品条目已建，但引用快照未确认（content 暂不可达）——同键重试只补确认，不会重复保存或重复建条目', raw_status: 503 } }, opKey, asset, 'partial', { namespace: 'content:creation', id: creationId, revision: creation.revision });
         }
       } else {
         this.media.releaseOperationPins(opKey); // 回执无 id=无权威关系可确认
       }
-      return { ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: creationId, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } };
+      return withCreationReceipt({ ok: true, output: { asset_id: asset.id, mime_type: mime, byte_size: asset.byte_size, creation_id: creationId, saved: true, preview_ref: `/api/v1/assets/${asset.id}/preview`, deliver_hint: '发送到当前聊天用 chat_send_attachment（presentation=work，隔离预览交付）' } }, opKey, asset, creationId === null ? 'partial' : 'committed', creationId === null ? undefined : { namespace: 'content:creation', id: creationId, revision: creation.revision });
     } catch (err) {
       this.media.releaseOperationPins(opKey);
-      return { ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——用同一 client_operation_id 重试只补条目` } };
+      return withCreationReceipt({ ok: false, output: { error_code: 'CREATION_ENTRY_PENDING', detail: `资产已保存，但内容服务不可达（${String((err as Error).message).slice(0, 80)}）——用同一 client_operation_id 重试只补条目` } }, opKey, asset, 'partial');
     }
   }
 
   private async saveStaticSvgPhoto(asset: StoredAsset, operationId: string, ctx: ToolExecContext): Promise<ToolExecResult | null> {
     const output = { asset_id: asset.id, asset_ref: `est:${asset.id}`, mime_type: asset.mime_type, byte_size: asset.byte_size };
-    if (!this.contentClient) return { ok: true, output: { ...output, saved: true, note: '内容服务未配置，原 SVG 已作为资产保存，尚未入册。' } };
+    const opKey = asset.creation_operation_id!;
+    if (!this.contentClient) return withCreationReceipt({ ok: true, output: { ...output, saved: true, note: '内容服务未配置，原 SVG 已作为资产保存，尚未入册。' } }, opKey, asset, 'partial');
     if (this.media!.masterStoreConfigured && (asset.m_sync_state !== 'synced' || !this.media!.canProvideImage(asset))) {
-      return { ok: false, output: { ...output, error_code: 'CREATION_MASTER_PENDING', detail: 'SVG 原件或 PNG 视图仍待落正，尚未建立相册关系。请用原操作标识重试。' } };
+      return withCreationReceipt({ ok: false, output: { ...output, error_code: 'CREATION_MASTER_PENDING', detail: 'SVG 原件或 PNG 视图仍待落正，尚未建立相册关系。请用原操作标识重试。' } }, opKey, asset, 'partial');
     }
     try {
       // An already committed legacy work stays reachable by its original relationship.
@@ -278,21 +297,39 @@ export class ContentToolsService {
         body: { work_asset_id: asset.id, work_kind: 'svg' }, idempotencyKey: `tool-creation-entry:${operationId}`,
       });
       if (old.outcome === 'replay' && (old.status === 200 || old.status === 201)) return null;
-      if (old.outcome !== 'new') return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '未能按原标识确认旧作品关系。' } };
-      if (!this.contentOps) return { ok: false, output: { ...output, error_code: 'INTEGRATION_UNCONFIGURED', detail: '相册协调器未装配，原件已保存。' } };
+      if (old.outcome !== 'new') return withCreationReceipt({ ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '未能按原标识确认旧作品关系。' } }, opKey, asset, 'partial');
+      if (!this.contentOps) return withCreationReceipt({ ok: false, output: { ...output, error_code: 'INTEGRATION_UNCONFIGURED', detail: '相册协调器未装配，原件已保存。' } }, opKey, asset, 'partial');
       const result = await this.contentOps.writeForModel({
         roomId: ctx.roomId, turnId: ctx.turnId, path: '/api/v1/content/albums/important_photos/entries',
         body: { asset_id: asset.id, content_sha256: asset.content_sha256, refs: [{ service: 'est', kind: 'generated_image', source_id: asset.id }] },
         idempotencyKey: `static-svg:${operationId}`,
       });
-      if (result.status !== 200 && result.status !== 201) return modelWriteFailure(result, operationId, 'CREATION_ENTRY');
-      const id = (result.body as { id?: unknown } | null)?.id;
-      if (typeof id !== 'string' || !id) return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系回执待确认。请用原操作标识重试。' } };
-      return { ok: true, output: { ...output, saved: true, album_entry_id: id, deliver_hint: '查看用 media_view；发送用 chat_send_attachment，presentation=image。' } };
+      if (result.status !== 200 && result.status !== 201) return withCreationReceipt(modelWriteFailure(result, operationId, 'CREATION_ENTRY'), opKey, asset, 'partial');
+      const entry = result.body as { id?: unknown; revision?: number } | null;
+      const id = entry?.id;
+      if (typeof id !== 'string' || !id) return withCreationReceipt({ ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系回执待确认。请用原操作标识重试。' } }, opKey, asset, 'partial');
+      return withCreationReceipt({ ok: true, output: { ...output, saved: true, album_entry_id: id, deliver_hint: '查看用 media_view；发送用 chat_send_attachment，presentation=image。' } }, opKey, asset, 'committed', { namespace: 'content:album', id, revision: entry?.revision });
     } catch {
-      return { ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系待确认。请用原操作标识重试。' } };
+      return withCreationReceipt({ ok: false, output: { ...output, error_code: 'CREATION_ENTRY_PENDING', detail: '相册关系待确认。请用原操作标识重试。' } }, opKey, asset, 'partial');
     }
   }
+}
+
+function withContentReceipt(result: ToolExecResult, raw: ContentWriteResult, namespace: string): ToolExecResult {
+  if (!raw.operationKey) return result;
+  const receipt = raw.body as { id?: unknown; revision?: unknown; post_id?: unknown } | null;
+  const confirmed = result.ok && typeof receipt?.id === 'string' && !!receipt.id;
+  const status: HeartbeatReceipt['status'] = confirmed ? 'committed' : result.ok || result.output.commit_status === 'committed' ? 'partial'
+    : result.output.commit_status === 'unknown' ? 'unknown' : 'failed';
+  return { ...result, heartbeatReceipt: { operationId: raw.operationKey, status,
+    ...(confirmed ? { source: { namespace, id: receipt.id as string,
+      ...(typeof receipt.revision === 'number' ? { revision: receipt.revision } : {}),
+      ...(namespace === 'content:comment' && typeof receipt.post_id === 'string' ? { parentId: receipt.post_id } : {}) } } : {}) } };
+}
+
+function withCreationReceipt(result: ToolExecResult, operationId: string, asset: StoredAsset, status: HeartbeatReceipt['status'],
+  source?: HeartbeatReceipt['source']): ToolExecResult {
+  return { ...result, heartbeatReceipt: { operationId, status, source: source ?? { namespace: 'host:asset', id: asset.id, revision: asset.content_sha256 } } };
 }
 
 function postBodyCursor(id: string, revision: number, offset: number): string {

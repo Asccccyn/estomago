@@ -18,14 +18,14 @@ const GUIDES = new Map<string, string>([
   ['call_control', `想主动给宿主用户打电话，在当前私聊用 action: invite 发出来电邀请。等她选择接听或拒接。需要查看已有邀请的状态时用 action: status。拒接或未接后等新的邀约意图再打。`],
   ['wake_manage', `给未来的自己定一次唤醒。operation 用 schedule，填 operation_id 和到点交给自己的 note。时间二选一：at 是带时区的 RFC3339 时间，delay_seconds 是离现在多少秒，填正整数。可以同时有多个预约。
 operation 用 list 查看自己的预约，默认 20 条，可填 limit 1 到 100。续页把回执的 next_cursor 填到 cursor。update 或 cancel 填已有 task_id、当前版本 expected_revision 和 operation_id。update 至少改时间或留言。写操作重试沿用同一个键和同一组参数。`],
-  ['wishstar_write_star', `写一颗星。填 content、visibility 和 idempotency_key。正文最多 2000 字。visibility 用 visible 放进共同瓶，两人可见。用 hidden 放进自己的私人瓶。
+  ['wishstar_write_star', `写一颗星。填 text、visibility 和 idempotency_key。正文最多 2000 字。visibility 用 visible 放进共同瓶，两人可见。用 hidden 放进自己的私人瓶。
 可附 mood_type 和 mood_text，各最多 100 字。note 最多 500 字。同一颗星重试沿用同一个键。`],
   ['wishstar_request_star', `问宿主用户要一颗她藏起来的星。直接传空对象 {}。回执给请求状态，等她回应后再看能否读到那颗星。结果未知时，可以用 wishstar_read 的 what: requests 核对。`],
   ['content_album_entry_write', `把已有的图收进相册。填 kind、图片的 asset_id 和 idempotency_key。kind 用 important_photos 收藏重要照片，用 stickers 收进表情包。用图片 ID，不用相册条目的 ID。
 可填 caption 留原话、meaning 写你对图的说明，各最多 2000 字。改已有条目时，省略就保留原值，填空串就清掉。carry_mode 只给重要照片用。none 只收藏，next_once 下次换窗带一次，always 每次换窗都带。新建省略时只收藏，更新省略时保留原设置。同一次操作重试沿用原键。`],
   ['content_albums_read', `翻相册。传空对象 {} 先看有哪些相册。想翻具体相册就填 album。important_photos 是重要照片，chat_screenshots 是聊天截图，stickers 是表情包。
 每页默认 20 条，可填 limit 1 到 100。q 按标题或说明找。按来源筛选时一起填 source_service、source_kind 和 source_id。翻下一页要保持相册和筛选，取回执的 next_cursor 填到 cursor。想真正看图，把条目里的 asset_ref 给 media_view。`],
-  ['content_post_create', `以你的身份发一条私密朋友圈。填 body 和 idempotency_key。只发图时也给 body，填空字符串，同时用 asset_ids 给至少一张已有图片。附件最多 8 张，body 最多 40000 字，可填最多 200 字的 title。
+  ['content_post_create', `以你的身份发一条私密朋友圈。填 text 和 idempotency_key。只发图时也给 text，填空字符串，同时用 asset_ids 给至少一张已有图片。附件最多 8 张，text 最多 40000 字，可填最多 200 字的 title。
 presentation 默认为 post 普通动态。想用信的排版就填 letter。同一次发帖重试沿用原键，结果未知时先按回执核对。`],
 ]);
 
@@ -35,6 +35,11 @@ export function residentToolGuide(spec: HostToolSpec): string | undefined {
   const name = spec.function.name;
   const guide = GUIDES.get(name);
   if (!guide) return undefined;
+  const fields = spec.function.parameters.properties as Record<string, unknown> | undefined;
+  // The older frozen tools keep their original argument contract, including
+  // any recovered resident guide. Do not advertise text to those windows.
+  if (!fields?.text && name === 'wishstar_write_star' && fields?.content) return guide.replace('text、', 'content、');
+  if (!fields?.text && name === 'content_post_create' && fields?.body) return guide.replace(/\btext\b/g, 'body');
   if (name !== 'memory_hold') return guide;
   const properties = spec.function.parameters.properties as { mood_tags?: { items?: { enum?: string[] } } } | undefined;
   const moods = properties?.mood_tags?.items?.enum;

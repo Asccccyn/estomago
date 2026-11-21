@@ -1,5 +1,5 @@
 import type { IncomingMessage } from 'node:http';
-import { readHeartbeatProjection, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { readHeartbeatProjection, type HeartbeatAction, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
 import { contentForward, resolveContentOperation, type ContentClient } from '../../integrations/content/client.ts';
 import type { ContentWriteResult } from '../../integrations/content/coordinator.ts';
 import { associateMomentEdit } from '../../integrations/content/moment-edit-outbox.ts';
@@ -35,6 +35,7 @@ type ResolvedBlock = {
   display_revision?: number;
   current_revision?: number;
   editor?: string;
+  management_href?: string;
   editable: boolean;
 };
 
@@ -44,10 +45,26 @@ type Deps = Pick<RequestDeps, 'contentClient' | 'contentOps' | 'messages' | 'db'
   };
 };
 
-const sourceLabels: Record<HeartbeatSource['kind'], string> = {
+const sourceLabels: Partial<Record<HeartbeatSource['kind'], string>> = {
   wishstar: '许愿星', memory: '记忆', archive: '存档对话', album: '相册',
   moments: '日常', reserved_note: '预留留言',
 };
+
+const actionLabels: Record<HeartbeatAction['kind'], string> = {
+  selection: '选号', star_reply: '回应原星', star_write: '写星', memory_hold: '写记忆', post: '发日常',
+  comment: '发表评论', album: '收藏图片', creation: '保存作品', image: '生成图片', archive: '保存对话存档',
+  wake: '设置自主唤醒', chat: '发送聊天消息',
+};
+
+function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
+  const verb = action.kind === 'selection' && action.cardNumber ? `选择 ${action.cardNumber} 号牌` : actionLabels[action.kind];
+  const phrase = {
+    committed: action.kind === 'selection' ? '已选中' : '已完成',
+    partial: '部分完成，仍有步骤待确认', failed: '未成功', cancelled: '已取消或未派发', unknown: '结果待核，暂不能确认成功',
+  }[action.status];
+  return { id: `action:${index}`, source_label: actionLabels[action.kind], status: 'available', editable: false,
+    text: `${verb} · ${phrase}。` };
+}
 
 const fail = (status: number, code: string, message: string, details: Record<string, unknown> = {}): ContentWriteResult =>
   ({ status, body: { error: { code, message }, ...details } });
@@ -119,23 +136,27 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
   const projection = readHeartbeatProjection(raw);
   if (!projectionInScope(projection)) return null;
   const blocks: ResolvedBlock[] = [];
+  let cardBlock: ResolvedBlock | undefined;
   if (projection.card) {
     const source = projection.card.source;
     const edit = edits?.card;
     const observed = typeof source.revision === 'number' ? source.revision : undefined;
-    const display = Number.isSafeInteger(edit?.revision) ? edit!.revision : undefined;
-    const base: ResolvedBlock = {
-      id: 'card', source_label: `${projection.card.number} 号 · ${sourceLabels[source.kind]}`,
-      status: 'unavailable', editable: false, observed_revision: observed,
-      ...(display !== undefined ? { display_revision: display, editor: edit?.editor } : {}),
-    };
     const editPath = sourcePath(source);
-    const [payload, current] = await Promise.all([
-      deps.heartbeat?.sources.resolve(display === undefined ? source : { ...source, revision: display },
-        projection.conversationId, signal, ACTOR),
-      editPath && deps.contentClient ? readSource(deps.contentClient, editPath, signal) : undefined,
-    ]);
-    const editable = payload?.status === 'available' && current?.status === 'available' && canEditSource(current.row);
+    const reserved = source.kind === 'reserved_note';
+    const current = editPath && deps.contentClient ? await readSource(deps.contentClient, editPath, signal) : undefined;
+    // A note's author manages it only on the heartbeat page. Read back that
+    // source's current revision without changing the card's observed revision.
+    const managed = reserved && current?.status === 'available' && current.row.id === source.id && canEditSource(current.row);
+    const display = managed ? current.row.revision : Number.isSafeInteger(edit?.revision) ? edit!.revision : undefined;
+    const base: ResolvedBlock = {
+      id: 'card', source_label: `${projection.card.number} 号 · ${sourceLabels[source.kind] ?? '扩展来源'}`,
+      status: 'unavailable', editable: false, observed_revision: observed,
+      ...(display !== undefined ? { display_revision: display, editor: managed ? ACTOR : edit?.editor } : {}),
+      ...(managed ? { management_href: `/home/heartbeat?note=${encodeURIComponent(source.id)}` } : {}),
+    };
+    const payload = await deps.heartbeat?.sources.resolve(display === undefined ? source : { ...source, revision: display },
+      projection.conversationId, signal, ACTOR);
+    const editable = !reserved && payload?.status === 'available' && current?.status === 'available' && canEditSource(current.row);
     const block: ResolvedBlock = {
       ...base, status: payload?.status ?? 'unavailable', editable,
       ...(current?.status === 'available' ? { author: current.row.author, current_revision: current.row.revision } : {}),
@@ -144,10 +165,20 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       block.text = payload.text;
       block.asset_ids = payload.assetIds;
     }
-    blocks.push(block);
+    cardBlock = block;
+    if (!projection.actions) blocks.push(block);
   }
+  const actions = projection.actions?.map((action, index) => ({ action, index })) ?? [];
+  let nextAction = 0;
+  const flushActions = (before: number) => {
+    while (nextAction < actions.length && actions[nextAction]!.action.afterSequence < before) {
+      const { action, index } = actions[nextAction++]!;
+      blocks.push(actionBlock(action, index));
+    }
+  };
   let publishedDecline = false;
   for (const ref of projection.messages) {
+    flushActions(ref.sequence);
     const message = deps.messages.getMessageAtRevision(projection.conversationId, ref.messageId, ref.revision);
     if (message?.speaker === 'system' && message.revision.content === '[心跳唤醒] 本轮未抽卡') publishedDecline = true;
     blocks.push({
@@ -158,8 +189,25 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       } : { status: 'revision_unavailable' }),
       editable: false,
     });
+    if (projection.actions && cardBlock && message?.heartbeat_card) {
+      blocks.push(cardBlock);
+      cardBlock = undefined;
+    }
   }
-  if ((projection.state === 'declined' && !publishedDecline) || projection.state === 'drawn_no_comment') {
+  if (projection.actions && cardBlock) blocks.push(cardBlock);
+  flushActions(Infinity);
+  if (projection.terminal) {
+    const terminal = projection.terminal;
+    const end = terminal.status === 'declined' ? '本轮拒抽。' : terminal.status === 'unknown' ? '本轮结果有待核对。'
+      : terminal.reason === 'budget' ? '本轮已达预算上限，未继续。'
+      : terminal.reason === 'quote' ? '缺少可核实的工具报价，本轮未继续。'
+      : terminal.reason === 'sleep' ? '本轮因睡眠时段结束。'
+      : terminal.reason === 'yield' ? '本轮为新聊天让位。'
+      : terminal.status === 'cancelled' ? '本轮已取消，已经发生的动作保留。'
+      : terminal.status === 'failed' ? '本轮未能正常完成。'
+      : projection.state === 'drawn_no_comment' ? '本轮结束，没有另发聊天留言。' : '本轮结束。';
+    blocks.push({ id: 'outcome', source_label: '结束状态', status: 'available', editable: false, text: end });
+  } else if ((projection.state === 'declined' && !publishedDecline) || projection.state === 'drawn_no_comment') {
     blocks.push({
       id: 'outcome', source_label: '[心跳唤醒]', status: 'available', editable: false,
       text: projection.state === 'declined' ? '本轮未抽卡。' : '本轮没有留言。',
@@ -273,13 +321,15 @@ export async function handleMomentReference(
     if (source.status !== 'available') return sourceUnavailable(source.status);
     if (source.row.id !== card.id || observed !== null && String(source.row.revision) !== observed) return sourceUnavailable('revision_unavailable');
     const body: ResolvedBlock = {
-      id: 'card', source_label: sourceLabels[card.kind], status: 'available',
+      id: 'card', source_label: sourceLabels[card.kind] ?? '扩展来源', status: 'available',
       text: source.row.body, asset_ids: source.row.asset_ids ?? [], author: source.row.author,
-      current_revision: source.row.revision, editable: observed === null && canEditSource(source.row),
+      current_revision: source.row.revision, editable: card.kind !== 'reserved_note' && observed === null && canEditSource(source.row),
+      ...(card.kind === 'reserved_note' && canEditSource(source.row) ? { management_href: `/home/heartbeat?note=${encodeURIComponent(card.id)}` } : {}),
     };
     return { status: 200, body };
   }
   if (method !== 'PUT') return fail(405, 'reference_method_invalid', '该操作不可用。');
+  if (card.kind === 'reserved_note') return fail(403, 'reserved_note_managed_in_heartbeat', '预留留言只在心跳页面管理。', { management_href: `/home/heartbeat?note=${encodeURIComponent(card.id)}` });
   if (!deps.contentOps) return fail(503, 'content_unavailable', '内容写入暂不可用。');
   const raw = await readJson(req) as { body?: unknown; asset_ids?: unknown; expected_source_revision?: unknown } | null;
   if (!raw || typeof raw.body !== 'string' || !Number.isSafeInteger(raw.expected_source_revision)

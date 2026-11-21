@@ -24,7 +24,7 @@ import { ReasoningService } from './reasoning/service.ts';
 import { UsageCollector } from './usage/collector.ts';
 import { RoutingService } from './routing/service.ts';
 import { WindowManager } from './windows/manager.ts';
-import { TurnSupervisor } from './runtime/supervisor.ts';
+import { isEnvelopeDriverKind, TurnSupervisor } from './runtime/supervisor.ts';
 import { recoveryPass, recoverSchedule } from './runtime/recovery.ts';
 import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
@@ -59,6 +59,10 @@ export type HostOptions = {
   /** 测试接缝：仅 provider=mock 且 ESTOMAGO_TEST_MODE=1 时生效——注入闸控 runner
    *  获得确定性派发时机。生产装配不传。 */
   runnerOverride?: AgentRunner;
+  /** Explicit trusted, in-process candidate adapters, never registered by user/model input. */
+  heartbeatSources?: readonly import('./modules/heartbeat/sources.ts').HeartbeatSourceAdapter[];
+  /** Synthetic Sol transport for the scheduled midnight source task, only used in test mode. */
+  heartbeatDailyMemoryTransportForTest?: import('./memory-surfacing/sol-provider.ts').SolTransport;
 };
 
 export class Host {
@@ -401,7 +405,6 @@ export class Host {
     tools.setCapabilityRegistry(capabilityRegistry);
     tools.setMemoryRecovery(memoryService);
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
-    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
     (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media, contentOps });
     (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { taskService });
     (await import('./runtime/turn-completion.ts')).registerTurnCompletionCapability(capabilityRegistry, db);
@@ -429,11 +432,28 @@ export class Host {
     registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
     quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
     anchorRangeFn = (roomId, seenMessages, start, end) => archives.resolveAnchorRange(roomId, seenMessages, start, end);
+    const zashideleMoments = new (await import('./integrations/zashidele/moments.ts')).ZashideleMoments(opts.config.integrations.zashidele);
+    const { livingRoomHeartbeatSource } = await import('./modules/heartbeat/living-room-source.ts');
+    const livingRoom = livingRoomHeartbeatSource(zashideleMoments, () => bgSettings.effective().keepwarm.include_living_room);
+    const { HeartbeatDailyMemory } = await import('./modules/heartbeat/daily-memory.ts');
+    const { HeartbeatSolMemorySelector } = await import('./modules/heartbeat/sol-memory-selector.ts');
+    const dailyFixture = process.env.ESTOMAGO_TEST_MODE === '1' ? opts.heartbeatDailyMemoryTransportForTest : undefined;
+    const dailySol = new HeartbeatSolMemorySelector({ apiKeyEnv:surfaceCfg.sol.api_key_env,baseUrl:surfaceCfg.sol.base_url,
+      model:surfaceCfg.sol.model,reasoningEffort:surfaceCfg.sol.reasoning_effort,maxOutputTokens:surfaceCfg.sol.max_output_tokens,verbosity:surfaceCfg.sol.verbosity },dailyFixture);
+    const dailyMemory = new HeartbeatDailyMemory(db,modelMariposaClient,dailySol,
+      () => effectiveRunnerSelection.status === 'ok' && isEnvelopeDriverKind(effectiveRunnerSelection.runner.kind)
+        && identity.evaluateGate(db,{driver:effectiveRunnerSelection.runner.kind}).state === 'READY');
+    if (process.env.ESTOMAGO_TEST_MODE !== '1' || dailyFixture) dailyMemory.install();
     const heartbeat = new HeartbeatRuntime(db, contentClient, media, archives, messages, events, {
       wishstar, memory: modelMariposaClient,
+      extensions: [livingRoom, ...(opts.heartbeatSources ?? [])],
+      dailyMemorySelection: dailyMemory.read,
     });
     contentOps?.setSourceMutationGuard((path, operation) => heartbeat.guardSourceMutation(path, operation));
     registerHeartbeatDrawCapability(capabilityRegistry, heartbeat);
+    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, {
+      wishstar, replyTarget: (ref, ctx) => heartbeat.replyTarget(ref, ctx),
+    });
     const supervisor = new TurnSupervisor({
       mediaTools,
       wishstar,
@@ -491,7 +511,7 @@ export class Host {
     const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
       executor: (await import('./application/background-execution.ts')).createBackgroundExecution({
-        db, messages, events, bgSettings, supervisor,
+        db, messages, events, bgSettings, supervisor, dailyMemory,
         // 构造期 scheduler 尚未就绪——经 schedulerRef 惰性转发（调用发生在 tick 之后）
         scheduler: { recordDispatchStart: (...args: Parameters<BackgroundScheduler['recordDispatchStart']>) => schedulerRef!.recordDispatchStart(...args) },
       }),
@@ -505,7 +525,7 @@ export class Host {
       glm:new GlmChatAdapter({baseUrl:bindConfig.base_url,apiKeyEnv:bindConfig.api_key_env,model:bindConfig.model}),
       events, log:(level,event,fields)=>logger[level](event,(fields??{}) as Record<string,string|number|boolean|null>)});
     const deps: Omit<RequestDeps, 'config'> = {
-      zashideleMoments: new (await import('./integrations/zashidele/moments.ts')).ZashideleMoments(opts.config.integrations.zashidele),
+      zashideleMoments,
       paths,
       db,
       logger,
@@ -724,6 +744,7 @@ export class Host {
     await this.surfacing?.stop(); // 停止领取，取消并等待在途浮现
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
+    await this.scheduler?.waitIdle();
     await Promise.all([bindingStopped, serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();

@@ -1,4 +1,4 @@
-import { readHeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 import type { WishstarClient } from '../../integrations/wishstar/client.ts';
 import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
@@ -27,14 +27,33 @@ type ContentItem = {
   reference?: unknown;
 };
 type LocalSource = Extract<HeartbeatSource['kind'], 'album' | 'archive' | 'moments' | 'reserved_note'>;
-type MemoryCursor = { memory_date: string | null; memory_id: string };
 type MemorySource = { memory_id: string; version: number; text: string; original_title?: string };
 type SharedStar = { id: string; content: string; author_name?: string; note?: string; state: 'SHARED' };
 type ExternalSources = {
-  memory?: Pick<MariposaClient, 'memoryListForHeartbeat' | 'memoryGet'> | null;
+  memory?: Pick<MariposaClient, 'memoryGet'> | null;
   wishstar?: Pick<WishstarClient, 'forward'> | null;
   voice?: Pick<OidoSourceRepository, 'readyTranscript'>;
+  extensions?: readonly HeartbeatSourceAdapter[];
+  dailyMemorySelection?: HeartbeatDailyMemorySelection;
 };
+
+/** Internal, trusted Host composition port. Not an HTTP/model registration surface.
+ * Source identities are authoritative (including cross-source canonical aliases),
+ * and list/resolve must honor the supplied room, actor, deadline, and revision. */
+export type HeartbeatSourceAdapter = {
+  kind: HeartbeatExtensionKind;
+  namespace: string;
+  enabled(conversationId: string): boolean;
+  list(conversationId: string, signal: AbortSignal): Promise<readonly HeartbeatSource[] | null>;
+  resolve(source: HeartbeatSource, conversationId: string, signal: AbortSignal, actor: SourceActor): Promise<CardPayload>;
+};
+
+/** The daily owner (Sol) has frozen exactly one memory at Shanghai midnight.
+ * Host only reads its fixed reference and independently checks permissions,
+ * revision and actual-delivery cooldown. No model dispatch or reroll here. */
+export type HeartbeatDailyMemorySelection = (conversationId: string, businessDate: string, signal: AbortSignal) => Promise<{
+  businessDate: string; frozenAt: string; memoryId: string; revision: number;
+} | null>;
 
 const ROUTES = {
   archive: '/api/v1/content/archives',
@@ -50,6 +69,7 @@ export class HeartbeatSources {
   private readonly messages: Pick<MessageService, 'getMessageAtRevision'>;
   private readonly external: ExternalSources;
   private readonly random: () => number;
+  private readonly extensions = new Map<HeartbeatExtensionKind, HeartbeatSourceAdapter>();
 
   constructor(
     content: ContentClient | null,
@@ -65,26 +85,42 @@ export class HeartbeatSources {
     this.messages = messages;
     this.external = external;
     this.random = random;
+    for (const adapter of external.extensions ?? []) {
+      if (!isHeartbeatExtensionKind(adapter.kind) || !adapter.namespace || this.extensions.has(adapter.kind)) {
+        throw new Error('HEARTBEAT_SOURCE_REGISTRATION_INVALID');
+      }
+      this.extensions.set(adapter.kind, adapter);
+    }
   }
 
   async choose(conversationId: string, eligible: (source: HeartbeatSource) => boolean, signal: AbortSignal,
-    unavailable: HeartbeatSource['kind'][] = []): Promise<HeartbeatSource[]> {
-    const [archives, photos, screenshots, moments, notes, memories, stars] = await Promise.all([
+    unavailable: HeartbeatSource['kind'][] = [], businessDate?: string): Promise<HeartbeatSource[]> {
+    const [archives, photos, screenshots, moments, notes, memories, stars, extensions] = await Promise.all([
       this.list('archive', ROUTES.archive + '?conversation_id=' + encodeURIComponent(conversationId), conversationId, signal),
       this.list('album', '/api/v1/content/albums/important_photos/entries?', conversationId, signal),
       this.list('album', '/api/v1/content/albums/chat_screenshots/entries?', conversationId, signal),
       this.list('moments', ROUTES.moments + '?body_preview=1&include_references=1', conversationId, signal),
       this.list('reserved_note', ROUTES.reserved_note + '?', conversationId, signal),
-      this.memoryCandidates(conversationId, signal),
+      this.memoryCandidates(conversationId, businessDate, signal),
       this.sharedStars(signal).then(rows => rows?.map(star => ({
         kind: 'wishstar' as const, namespace: 'superposition', id: star.id, revision: this.starVersion(star),
         identity: 'superposition:star:' + star.id, permissionScope: conversationId,
       })) ?? null),
+      Promise.all([...this.extensions.values()].filter(adapter => adapter.enabled(conversationId)).map(async adapter => {
+        try {
+          const rows = await adapter.list(conversationId, signal);
+          const candidates = rows?.map(readHeartbeatSource);
+          if (!candidates || candidates.some(source => !source || source.kind !== adapter.kind
+            || source.namespace !== adapter.namespace || source.permissionScope !== conversationId)) return [adapter.kind, null] as const;
+          return [adapter.kind, candidates as HeartbeatSource[]] as const;
+        } catch { return [adapter.kind, null] as const; }
+      })),
     ]);
-    const catalogues = [
+    const catalogues: Array<readonly [HeartbeatSource['kind'], readonly HeartbeatSource[] | null]> = [
       ['archive', archives], ['album', photos && screenshots ? [...photos, ...screenshots] : null],
       ['moments', moments], ['reserved_note', notes], ['memory', memories], ['wishstar', stars],
     ] as const;
+    catalogues.push(...extensions);
     const buckets = new Map<HeartbeatSource['kind'], HeartbeatSource[]>();
     for (const [kind, candidates] of catalogues) {
       if (!candidates) {
@@ -119,9 +155,21 @@ export class HeartbeatSources {
     return chosen;
   }
 
+  enabled(source: HeartbeatSource): boolean {
+    if (!isHeartbeatExtensionKind(source.kind)) return true;
+    const adapter = this.extensions.get(source.kind);
+    return Boolean(adapter && adapter.namespace === source.namespace && adapter.enabled(source.permissionScope));
+  }
+
   async resolve(source: HeartbeatSource, conversationId: string, signal: AbortSignal, actor: SourceActor = 'jiaming',
     phase: 'bind' | 'resolve' = 'resolve'): Promise<CardPayload> {
     if (source.permissionScope !== conversationId) return { status: 'forbidden' };
+    if (isHeartbeatExtensionKind(source.kind)) {
+      const adapter = this.extensions.get(source.kind);
+      if (!adapter || adapter.namespace !== source.namespace || !adapter.enabled(conversationId)) return { status: 'forbidden' };
+      try { return await adapter.resolve(source, conversationId, signal, actor); }
+      catch { return { status: 'unavailable' }; }
+    }
     if (source.kind === 'memory' && source.namespace === 'mariposa') {
       if (!this.external.memory) return { status: 'unavailable' };
       try {
@@ -129,7 +177,7 @@ export class HeartbeatSources {
         if (!result.ok) return { status: result.httpStatus === 403 ? 'forbidden' : result.httpStatus === 404 ? 'deleted' : 'unavailable' };
         if (result.result.visibility !== 'active') return { status: 'forbidden' };
         const memory = this.activeMemory(result.result);
-        if (!memory || memory.version !== source.revision) return { status: 'revision_unavailable' };
+        if (!memory || memory.memory_id !== source.id || memory.version !== source.revision) return { status: 'revision_unavailable' };
         return this.payload([memory.original_title, memory.text].filter(Boolean).join('\n\n'), []);
       } catch { return { status: 'unavailable' }; }
     }
@@ -157,6 +205,9 @@ export class HeartbeatSources {
       if (response.status !== 200 || response.bodyFailed) return { status: 'unavailable' };
       const item = response.body as ContentItem;
       if (item.deleted) return { status: 'deleted' };
+      // A photo and a sticker can refer to the same asset but membership
+      // grants are distinct. Only the two admitted photo collections qualify.
+      if (source.kind === 'album' && item.kind !== 'important_photos' && item.kind !== 'chat_screenshots') return { status: 'forbidden' };
       if (source.kind === 'moments' && source.replay) {
         const projection = readHeartbeatProjection(item.reference);
         const original = projection?.card?.source;
@@ -205,31 +256,15 @@ export class HeartbeatSources {
     return memory as MemorySource;
   }
 
-  private async memoryCandidates(conversationId: string, signal: AbortSignal): Promise<HeartbeatSource[] | null> {
-    if (!this.external.memory) return null;
-    const sources: HeartbeatSource[] = [];
-    let cursor: MemoryCursor | null = null;
-    const seen = new Set<string>();
+  private async memoryCandidates(conversationId: string, businessDate: string | undefined, signal: AbortSignal): Promise<HeartbeatSource[] | null> {
+    if (!this.external.memory || !this.external.dailyMemorySelection || !businessDate || signal.aborted) return null;
     try {
-      do {
-        if (signal.aborted) return null;
-        const page = await this.external.memory.memoryListForHeartbeat(cursor, signal);
-        if (!page.ok || !Array.isArray(page.result.items)) return null;
-        for (const item of page.result.items) {
-          const memory = this.activeMemory(item);
-          if (memory) sources.push({
-            kind: 'memory', namespace: 'mariposa', id: memory.memory_id, revision: memory.version,
-            identity: 'mariposa:memory:' + memory.memory_id, permissionScope: conversationId,
-          });
-        }
-        cursor = page.result.next_cursor as MemoryCursor | null;
-        if (cursor) {
-          const key = JSON.stringify(cursor);
-          if (typeof cursor.memory_id !== 'string' || seen.has(key)) return null;
-          seen.add(key);
-        }
-      } while (cursor);
-      return signal.aborted ? null : sources;
+      const selection = await this.external.dailyMemorySelection(conversationId, businessDate, signal);
+      if (signal.aborted || !selection || selection.businessDate !== businessDate
+        || Date.parse(selection.frozenAt) !== Date.parse(businessDate + 'T00:00:00+08:00')) return null;
+      const source = readHeartbeatSource({ kind: 'memory', namespace: 'mariposa', id: selection.memoryId, revision: selection.revision,
+        identity: 'mariposa:memory:' + selection.memoryId, permissionScope: conversationId });
+      return source && typeof source.revision === 'number' ? [source] : null;
     } catch { return null; }
   }
 
@@ -257,6 +292,7 @@ export class HeartbeatSources {
     if (!result.ok) return null;
     return result.items.flatMap<HeartbeatSource>(item => {
       if (item.deleted || typeof item.id !== 'string' || !Number.isSafeInteger(item.revision)) return [];
+      if (kind === 'album' && item.kind !== 'important_photos' && item.kind !== 'chat_screenshots') return [];
       if (kind === 'moments' && item.kind === 'reference') {
         const projection = readHeartbeatProjection(item.reference);
         if (projection?.conversationId !== conversationId || projection.state !== 'drawn'

@@ -63,3 +63,27 @@ test('现有代码作品不可经收藏入口归类为表情', async () => {
   }
   await assert.rejects(uploadAlbumEntry({ key: 'album-one', album: 'stickers', assetId: 'asset-html' }, () => {}, request), /格式不支持加入表情包/)
 })
+
+test('作品导入归类失败时保留原文件身份及标题，重试不重复上传', async () => {
+  const file = new File(['<!doctype html><html><body>fixture</body></html>'], 'fixture.html', { type: 'text/html' })
+  let attempt: AlbumUpload = { key: 'work-one', album: 'creations', title: file.name, file }
+  let uploads = 0, entries = 0
+  const request: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url === '/api/v1/assets?purpose=creation_work') {
+      uploads++
+      return Response.json({ asset_id: 'asset-work', mime_type: 'text/html', state: 'available', m_sync_state: 'synced' }, { status: 201 })
+    }
+    if (url === '/api/v1/assets/asset-work') return Response.json({ id: 'asset-work', mime_type: 'text/html', state: 'available', m_sync_state: 'synced' })
+    assert.equal(url, '/api/v1/content/creations')
+    assert.equal(new Headers(init?.headers).get('Idempotency-Key'), 'work-one:entry')
+    assert.deepEqual(JSON.parse(String(init?.body)), { work_asset_id: 'asset-work', work_kind: 'html', title: 'fixture.html' })
+    entries++
+    return entries === 1 ? Response.json({ error: { code: 'content_write_unknown' } }, { status: 504 }) : Response.json({ id: 'creation-work' })
+  }
+  const record = (stored: AlbumUpload) => { attempt = stored }
+  await assert.rejects(uploadAlbumEntry(attempt, record, request), /content_write_unknown/)
+  await uploadAlbumEntry(attempt, record, request)
+  assert.equal(uploads, 1)
+  assert.equal(entries, 2)
+})

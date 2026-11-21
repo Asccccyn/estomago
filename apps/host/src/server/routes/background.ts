@@ -48,7 +48,7 @@ if (route === 'GET /api/v1/background/settings') {
     revision: es.revision,
     free_activity:{enabled:es.free_activity.enabled,daily_cost_cap_usd:es.free_activity.daily_cost_cap_usd},
     autonomous: { enabled: es.autonomous.enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
-    keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
+    keepwarm: { enabled: es.keepwarm.enabled, include_living_room: es.keepwarm.include_living_room, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
     reminders: { enabled: es.reminders.enabled },
     executor_ready:{...(d.bgExecutorReady ?? {autonomous:false,keepwarm:false}),free_activity:d.bgExecutorReady?.autonomous ?? false},
     current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
@@ -69,6 +69,10 @@ if (route === 'PUT /api/v1/background/settings') {
     const sv = body[section];
     if (!sv || typeof sv !== 'object' || Array.isArray(sv)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section} 必须是对象` } });
     const values = sv as Record<string, unknown>;
+    if (section === 'keepwarm' && 'include_living_room' in values) {
+      if (typeof values.include_living_room !== 'boolean') return json(res, 422, { error: { code: 'invalid_background_settings', message: 'keepwarm.include_living_room 必须为布尔值' } });
+      patch.keepwarm_include_living_room = values.include_living_room;
+    }
     if ('enabled' in values) {
       if (typeof values.enabled !== 'boolean') return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.enabled 必须为布尔值` } });
       patch[`${section}_enabled`] = values.enabled;
@@ -163,15 +167,9 @@ if (route === 'POST /api/v1/background/tasks') {
     ).run(id, String(body.conversation_id ?? 'primary'), scheduleKind, body.scheduled_at as string, body.scheduled_at as string, JSON.stringify(body.payload && typeof body.payload === 'object' ? body.payload : { text: String(body.text ?? '') }), opKey, nowIso, nowIso);
     return json(res, 201, { task_id: id, next_due_at: body.scheduled_at });
   }
-  // 自主预约（WAKE_KEEPWARM_V1）：统一经 taskService——服务端幂等/CAS/时间校验；
-  // creator=用户（qiaosheng），审计保留操作者（04：用户可代设，操作者可查）。
-  if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
-  const r = d.taskService.schedule({
-    actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: opKey,
-    note: String(body.note ?? ''), at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined, createdBy: 'qiaosheng',
-  });
-  if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}) } });
-  return json(res, r.duplicate ? 200 : 201, { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision, duplicate: r.duplicate });
+  // 自主预约只能由char通过 wake_manage 建立。用户的话在心跳页预留，
+  // 不转换成他自己的预约；保留上述普通提醒和独立自由活动入口。
+  return json(res, 403, { error: { code: 'self_wake_owner_only', message: '自主预约只能由char自己安排。要留话请前往心跳页面。' } });
 }
 const bgTaskPut = /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.exec(route);
 if (bgTaskPut) {
@@ -181,7 +179,7 @@ if (bgTaskPut) {
   if (!String(req.headers['idempotency-key'] ?? '')) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
   const body = (await readJson(req, d)) as Record<string, unknown>;
   const r = d.taskService.update({
-    actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: String(req.headers['idempotency-key']),
+    actorId: 'jiaming', updatedBy: 'qiaosheng', conversationId: String(body.conversation_id ?? 'primary'), operationId: String(req.headers['idempotency-key']),
     taskId: decodeURIComponent(bgTaskPut[1]!), expectedRevision: Number(ifMatch),
     note: body.note ?? undefined, at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined,
   });
@@ -215,8 +213,8 @@ if (route === 'GET /api/v1/background/runs') {
   // 08 瘦返回：来源（trigger_origin 从 task origin 派生）/状态/实际派发时间/动作与
   // 发布计数/成本/阻断原因——不含原 payload、工具 JSON、reasoning 或聊天正文。
   const rows = d.db.prepare(
-    `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason,
-            CASE WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' WHEN r.kind='autonomous' THEN 'free_activity' ELSE 'reminder' END AS trigger_origin,
+    `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason, t.created_by_actor_id AS created_by,
+            CASE WHEN r.kind='heartbeat_memory' THEN 'heartbeat_memory' WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' WHEN r.kind='autonomous' THEN 'free_activity' ELSE 'reminder' END AS trigger_origin,
             r.model_requests_started, r.tool_calls_started, r.tool_calls_observed, r.published_message_count,
             r.reserved_cost_micro_usd, r.known_cost_micro_usd, r.unknown_cost_count, r.retention,
             r.first_dispatch_started_at, r.claimed_at, r.finished_at, r.created_at

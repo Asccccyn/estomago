@@ -110,6 +110,7 @@ export class BackgroundTaskService {
     actorId: string; conversationId: string; operationId: string; note: string;
     at?: unknown; delaySeconds?: unknown; createdBy: 'jiaming' | 'qiaosheng';
   }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
+    if (opts.actorId !== 'jiaming' || opts.createdBy !== 'jiaming') return { ok: false, code: 'SELF_WAKE_OWNER_ONLY', httpStatus: 403, detail: '自主预约只能由char自己安排' };
     if (!opts.operationId || opts.operationId.length > OPERATION_ID_MAX) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'operation_id 必填（≤128 字符）' };
     if (typeof opts.note !== 'string' || opts.note.length === 0 || opts.note.length > NOTE_MAX_CHARS) return { ok: false, code: 'WAKE_NOTE_INVALID', httpStatus: 400, detail: `note 必填（1..${NOTE_MAX_CHARS} 字符，不截断）` };
     const hasAt = opts.at !== undefined && opts.at !== null;
@@ -170,13 +171,15 @@ export class BackgroundTaskService {
   /** 04 update：expected_revision CAS（changes=1 才算数）；旧 revision 零派发排队 run 失效。 */
   update(opts: {
     actorId: string; conversationId: string; operationId: string; taskId: string; expectedRevision: number;
-    note?: unknown; at?: unknown; delaySeconds?: unknown; selfScheduledOnly?: boolean;
+    note?: unknown; at?: unknown; delaySeconds?: unknown; selfScheduledOnly?: boolean; updatedBy?: 'jiaming' | 'qiaosheng';
   }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
     if (!opts.operationId || opts.operationId.length > OPERATION_ID_MAX) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400 };
     if (!Number.isSafeInteger(opts.expectedRevision) || opts.expectedRevision < 1) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'expected_revision 必须为正整数' };
     const row = this.db.prepare('SELECT * FROM background_tasks WHERE id = ? AND conversation_id = ? AND actor_id = ?').get(opts.taskId, opts.conversationId, opts.actorId) as TaskRow | undefined;
     if (!row) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404, detail: '任务不存在或不属于当前会话（跨 actor/会话隔离）' };
+    if (row.kind === 'heartbeat_memory') return { ok:false,code:'SYSTEM_TASK_MANAGED',httpStatus:403,detail:'每日记忆任务由心跳设置与北京时间日界管理' };
     if (opts.selfScheduledOnly && (row.kind !== 'autonomous' || row.origin !== 'self_schedule')) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404 };
+    if (row.origin === 'self_schedule' && (opts.updatedBy ?? opts.actorId) !== 'jiaming') return { ok: false, code: 'SELF_WAKE_OWNER_ONLY', httpStatus: 403, detail: '自主预约只能由char自己修改' };
     const hasNote = opts.note !== undefined && opts.note !== null;
     const hasAt = opts.at !== undefined && opts.at !== null;
     const hasDelay = opts.delaySeconds !== undefined && opts.delaySeconds !== null;
@@ -228,6 +231,7 @@ export class BackgroundTaskService {
     if (!Number.isSafeInteger(opts.expectedRevision) || opts.expectedRevision < 1) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'expected_revision 必须为正整数' };
     const row = this.db.prepare('SELECT * FROM background_tasks WHERE id = ? AND conversation_id = ? AND actor_id = ?').get(opts.taskId, opts.conversationId, opts.actorId) as TaskRow | undefined;
     if (!row) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404, detail: '任务不存在或不属于当前会话' };
+    if (row.kind === 'heartbeat_memory') return { ok:false,code:'SYSTEM_TASK_MANAGED',httpStatus:403,detail:'每日记忆任务由心跳设置管理' };
     if (opts.selfScheduledOnly && (row.kind !== 'autonomous' || row.origin !== 'self_schedule')) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404 };
     const params: Record<string, unknown> = { task_id: opts.taskId, expected_revision: opts.expectedRevision };
     const idem = this.once({ actorId: opts.actorId, conversationId: opts.conversationId, action: 'wake_cancel', operationId: opts.operationId }, params, () => {

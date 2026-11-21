@@ -68,7 +68,7 @@ if (process.env.I_RECOVERY_CHILD === '1') {
     fs.writeFileSync(process.env.I_RECOVERY_MARKER!, JSON.stringify(row));
     await new Promise(() => {});
   });
-  await w.tools.execute('memory_i_write', { action: 'create', content: 'synthetic crash commit' }, context(w, 'crash'));
+  await w.tools.execute('memory_i_write', { action: 'create', text: 'synthetic crash commit' }, context(w, 'crash'));
   throw new Error('parent must interrupt the actual committed response boundary');
 } else {
   const results: Array<{ name: string; passed: boolean; error?: string }> = [];
@@ -78,7 +78,7 @@ if (process.env.I_RECOVERY_CHILD === '1') {
       try {
         w = await world(root); const ctx = context(w, 'rebuild');
         loseResponse('i.item.create', async r => { assert.equal(r.status, 200); });
-        const first = await w.tools.execute('memory_i_write', { action: 'create', content: 'synthetic rebuild commit' }, ctx);
+        const first = await w.tools.execute('memory_i_write', { action: 'create', text: 'synthetic rebuild commit' }, ctx);
         assert.equal(first.output.error_code, 'I_WRITE_OUTCOME_UNKNOWN'); globalThis.fetch = nativeFetch;
         const pending = w.reviews.unknownEffectsForWindow(w.windowId); assert.equal(pending.length, 1);
         await w.host.stop(); w = await world(root, false);
@@ -112,13 +112,13 @@ if (process.env.I_RECOVERY_CHILD === '1') {
       try {
         w = await world(root);
         loseResponse('i.item.create', async r => { assert.equal(r.status, 200); });
-        const first = await w.tools.execute('memory_i_write', { action: 'create', content: 'synthetic auth commit' }, context(w, 'auth'));
+        const first = await w.tools.execute('memory_i_write', { action: 'create', text: 'synthetic auth commit' }, context(w, 'auth'));
         assert.equal(first.output.error_code, 'I_WRITE_OUTCOME_UNKNOWN'); globalThis.fetch = nativeFetch;
         const [pending] = w.reviews.unknownEffectsForWindow(w.windowId); assert.ok(pending);
         process.env.ESTOMAGO_TEST_MARIPOSA_TOKEN = 'synthetic-invalid';
         const denied = await w.client.iItemsList();
         assert.equal(denied.ok, false); assert.equal(denied.httpStatus, 401); assert.equal(denied.code, 'UNAUTHENTICATED');
-        const newWrite = await w.tools.execute('memory_i_write', { action: 'create', content: 'synthetic rejected write' }, context(w, 'new-denied'));
+        const newWrite = await w.tools.execute('memory_i_write', { action: 'create', text: 'synthetic rejected write' }, context(w, 'new-denied'));
         assert.equal(newWrite.output.error_code, 'I_UNAUTHENTICATED');
         assert.deepEqual(await w.memory.recoverUnknownEffects('primary', w.windowId), { resolved: 0, stillUnknown: 1 });
         assert.equal(effect(w, pending.id).state, 'unknown');
@@ -137,7 +137,7 @@ if (process.env.I_RECOVERY_CHILD === '1') {
         const itemId = String(created.result.item_id);
         const revised = await w.client.iItemRevise({ itemId, content: 'synthetic CAS v2', expectedRevision: 1, operationId: 'cas-seed-revise' }); assert.equal(revised.ok, true);
         loseResponse('i.item.revise', async r => { assert.equal(r.status, 409); assert.equal((await r.json()).error.code, 'VERSION_CONFLICT'); });
-        const first = await w.tools.execute('memory_i_write', { action: 'revise', item_id: itemId, content: 'synthetic rejected revision', expected_revision: 1 }, context(w, 'stale-cas'));
+        const first = await w.tools.execute('memory_i_write', { action: 'revise', item_id: itemId, text: 'synthetic rejected revision', expected_revision: 1 }, context(w, 'stale-cas'));
         assert.equal(first.output.error_code, 'I_WRITE_OUTCOME_UNKNOWN'); globalThis.fetch = nativeFetch;
         const [pending] = w.reviews.unknownEffectsForWindow(w.windowId); assert.ok(pending);
         assert.deepEqual(await w.memory.recoverUnknownEffects('primary', w.windowId), { resolved: 1, stillUnknown: 0 });

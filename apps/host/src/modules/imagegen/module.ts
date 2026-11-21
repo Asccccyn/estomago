@@ -2,7 +2,7 @@
 // 密钥不进参数示例/日志。回执给稳定资产引用与相册关系标识。
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
-import type { ToolExecContext } from '../../capabilities/contracts.ts';
+import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 import type { ImageGenService } from './service.ts';
 import { imageGenOpKey } from './service.ts';
 
@@ -37,19 +37,21 @@ export function registerImageGenCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'imagegen',
     id: 'image_generate', baselineOrder: 50, definition: () => IMAGEGENERATE_DEFINITION, memoryOnlyAllowed: false, label: '生成图片',
+    heartbeatAction: 'image',
     run: (input: { prompt: string; client_operation_id: string; title?: string }, ctx) => runImageGenerate(deps, input, ctx),
     toModel: (value) => value,
   }));
 }
 
-async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: string; client_operation_id: string; title?: string; format?: string; size?: string; frame_count?: number; frame_duration_ms?: number; deliver?: string }, ctx: ToolExecContext): Promise<{ ok: boolean; output: Record<string, unknown> }> {
+async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: string; client_operation_id: string; title?: string; format?: string; size?: string; frame_count?: number; frame_duration_ms?: number; deliver?: string }, ctx: ToolExecContext): Promise<ToolExecResult> {
   if (!deps.imagegen) return { ok: false, output: { error_code: 'IMAGEGEN_UNCONFIGURED', detail: '图片生成未配置（服务端 Key 缺席）——能力如实不可用，不切换其他供应商' } };
   if (typeof input.prompt !== 'string' || !input.prompt.trim()) return { ok: false, output: { error_code: 'IMAGEGEN_PROMPT_INVALID', detail: 'prompt 必填' } };
   if (typeof input.client_operation_id !== 'string' || !input.client_operation_id) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', detail: 'client_operation_id 必填（重试沿用同一值）' } };
   const deliver = input.deliver === 'save_only' ? 'save_only' as const : 'send' as const;
+  const opKey = imageGenOpKey(ctx, input.client_operation_id);
   const r = await deps.imagegen.generateAndStore({
     prompt: input.prompt,
-    opKey: imageGenOpKey(ctx, input.client_operation_id),
+    opKey,
     title: typeof input.title === 'string' && input.title.trim() ? input.title.slice(0, 200) : null,
     format: typeof input.format === 'string' ? input.format : undefined,
     size: typeof input.size === 'string' ? input.size : undefined,
@@ -63,12 +65,13 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
     backgroundRunId: ctx.backgroundRunId,
     signal: ctx.signal,
   });
-  if (!r.ok) return { ok: false, output: {
+  const heartbeatReceipt = ctx.backgroundRunId ? deps.imagegen.heartbeatReceipt(opKey, r) : undefined;
+  if (!r.ok) return { ok: false, heartbeatReceipt, output: {
     error_code: r.code, detail: r.detail, ...(r.retryable ? { retryable: true } : {}),
     ...(r.saved_asset_id ? { saved: true, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}),
     ...(r.saved_album_entry_id ? { album_entry_id: r.saved_album_entry_id } : {}),
   } };
-  return { ok: true, output: {
+  return { ok: true, heartbeatReceipt, output: {
     generated: true,
     sent: r.published_message_id ? true : false,
     ...(r.published_message_id

@@ -43,7 +43,7 @@ export class ZashideleMoments {
     } catch { /* unavailable integration */ }
   }
 
-  async read(id: string | null, query: URLSearchParams): Promise<{ status: number; body: unknown }> {
+  async read(id: string | null, query: URLSearchParams, signal?: AbortSignal): Promise<{ status: number; body: unknown }> {
     const token = this.credentialRef && process.env[this.credentialRef];
     const unavailable = { status: 503, body: { error: { code: 'zashidele_feed_unavailable', message: '扎西德勒客厅暂不可用。' } } };
     if (!this.base || !token) return unavailable;
@@ -61,7 +61,7 @@ export class ZashideleMoments {
     try {
       const response = await this.transport(url, {
         method: 'GET', headers: { Authorization: `Bearer ${token}` }, redirect: 'error',
-        signal: AbortSignal.timeout(2500), cache: 'no-store',
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2500)]) : AbortSignal.timeout(2500), cache: 'no-store',
       });
       if (response.status === 404 && id !== null) {
         return { status: 404, body: { error: { code: 'zashidele_post_unreadable', message: '原帖当前不可读。' } } };

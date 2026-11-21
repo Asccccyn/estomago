@@ -4,17 +4,20 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const MAX_SIDE = 1024;
 const STATIC_TAGS = new Set([
   'svg', 'g', 'defs', 'linearGradient', 'radialGradient', 'stop', 'clipPath',
-  'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'title', 'desc',
+  'path', 'rect', 'circle', 'ellipse', 'line', 'polyline', 'polygon', 'title', 'desc', 'text', 'tspan',
 ]);
 const PRESENTATION = new Set([
   'fill', 'fill-rule', 'fill-opacity', 'stroke', 'stroke-width', 'stroke-linecap', 'stroke-linejoin',
   'stroke-miterlimit', 'stroke-dasharray', 'stroke-dashoffset', 'stroke-opacity', 'opacity',
   'clip-path', 'clip-rule', 'display', 'visibility', 'stop-color', 'stop-opacity', 'color',
+  'font-family', 'font-size', 'font-weight', 'font-style', 'font-stretch', 'text-anchor',
+  'dominant-baseline', 'alignment-baseline', 'letter-spacing', 'word-spacing', 'text-decoration',
 ]);
 const STATIC_ATTRIBUTES = new Set([
   ...PRESENTATION, 'id', 'version', 'viewBox', 'width', 'height', 'x', 'y', 'x1', 'y1', 'x2', 'y2',
   'cx', 'cy', 'r', 'rx', 'ry', 'fx', 'fy', 'fr', 'd', 'points', 'pathLength', 'transform',
   'gradientUnits', 'gradientTransform', 'spreadMethod', 'offset', 'clipPathUnits', 'preserveAspectRatio', 'vector-effect',
+  'dx', 'dy', 'rotate', 'textLength', 'lengthAdjust', 'xml:space',
 ]);
 const parser = new XMLParser({
   preserveOrder: true, ignoreAttributes: false, attributeNamePrefix: '', parseTagValue: false,
@@ -49,7 +52,10 @@ function staticDocument(source) {
   let count = 0;
   function verify(node, depth, parentTag) {
     const tag = Object.keys(node).find(key => key !== ':@');
-    if (tag === '#text') return node[tag].trim() === '' || parentTag === 'title' || parentTag === 'desc';
+    if (tag === '#text') {
+      return typeof node[tag] === 'string' && node[tag].length <= 32768
+        && (node[tag].trim() === '' || ['title', 'desc', 'text', 'tspan'].includes(parentTag));
+    }
     if (!STATIC_TAGS.has(tag) || (depth > 0 && tag === 'svg') || depth > 24 || ++count > 1600) return false;
     for (const [name, value] of Object.entries(node[':@'] ?? {})) {
       if (depth === 0 && name === 'xmlns' && value === SVG_NS) continue;
@@ -83,7 +89,10 @@ try {
     process.exitCode = 65;
   } else {
     // Only vetted static SVG bytes go to the native renderer.
-    const { createCanvas, loadImage } = await import('@napi-rs/canvas');
+    const { createCanvas, loadImage, GlobalFonts } = await import('@napi-rs/canvas');
+    // Only a vetted text document needs font discovery. Load OS fonts, never a
+    // document-provided file or web font; the worker still runs under its input/time limits.
+    if (/<(?:text|tspan)\b/u.test(svg)) GlobalFonts.loadSystemFonts();
     const image = await loadImage(Buffer.from(svg));
     if (!image.width || !image.height || image.width > MAX_SIDE || image.height > MAX_SIDE) throw new Error('invalid SVG viewport');
     const canvas = createCanvas(image.width, image.height);

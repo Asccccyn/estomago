@@ -396,7 +396,13 @@ test('T24: ambiguous continuation never retries the same card or keeps its body 
     tailBoundaryOf((JSON.parse(confirmed.payload_json) as { messages: OrMessage[] }).messages));
   assert.equal(ctx.cards.getDeck('primary', ctx.date)?.exhausted, false);
   assert.deepEqual(ctx.cards.getDeck('primary', ctx.date)?.availableNumbers, []);
-  assert.equal(ctx.projections().n, 0);
+  assert.equal(ctx.projections().n, 1, 'the observed invitation and uncertain selection are one honest reference, not a revealed card');
+  const projection = JSON.parse(String(ctx.host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref));
+  assert.equal(projection.card, null);
+  assert.equal(projection.state, 'interrupted');
+  assert.equal(projection.terminal.status, 'unknown');
+  assert.equal(projection.actions[0].status, 'unknown');
+  assert.doesNotMatch(JSON.stringify(projection), new RegExp(REVEAL));
   await ctx.chat('继续对话');
   const next = ctx.wire[3]!;
   assert.doesNotMatch(JSON.stringify(next.messages), new RegExp(REVEAL));
@@ -405,6 +411,69 @@ test('T24: ambiguous continuation never retries the same card or keeps its body 
   await ctx.scheduler.tick();
   assert.equal(ctx.latestRun().mode, 'source_unavailable');
   assert.equal(ctx.wire.length, 4);
+});
+
+const ACTION_CRASH_TEST = 'heartbeat: a committed memory action is projected on restart without replaying the model';
+const ACTION_CRASH_CHILD = '--heartbeat-action-crash';
+test(ACTION_CRASH_TEST, async t => {
+  if (process.argv[2] === ACTION_CRASH_CHILD) {
+    const root = process.argv[3]!;
+    const ctx = await fixture(t, CARDS, 'available', 0, { root });
+    await ctx.chat('建立现有聊天窗');
+    const { db } = ctx.host;
+    const remote = (ctx.host.heartbeat!.sources as unknown as { external: { memory: { transport: unknown } } }).external.memory;
+    remote.transport = async (name: string, args: Record<string, unknown>) => {
+      assert.equal(name, 'memory.hold');
+      return { ok: true, result: { operation_id: args.operation_id, memory_id: 'fixture-crash-memory', version: 1,
+        binding_ids: [], committed_at: new Date().toISOString(), commit_observed_at: new Date().toISOString() } };
+    };
+    db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,?)")
+      .run(JSON.stringify({ memory_hold: { max_cost_micro_usd: 1 } }), new Date().toISOString());
+    ctx.elapsed();
+    const exec = db.exec.bind(db);
+    t.mock.method(db, 'exec', (sql: string) => {
+      exec(sql);
+      if (sql !== 'COMMIT') return;
+      const fact = db.prepare(`SELECT run_id, action_json FROM heartbeat_actions
+        WHERE json_extract(action_json,'$.kind')='memory_hold' AND json_extract(action_json,'$.status')='committed'`).get();
+      if (!fact) return;
+      assert.equal(ctx.projections().n, 0);
+      assert.equal(db.prepare("SELECT count(*) n FROM tool_side_effects WHERE memory_id='fixture-crash-memory' AND state='committed' AND verified=1").get()?.n, 1);
+      process.kill(process.pid, 'SIGKILL');
+    });
+    ctx.replies.push(draw(1), { tool: 'memory_hold', id: 'crash-hold', args: {
+      original_title: '合成写入', text: '合成记忆，仅供隔离复验。', categories: ['daily'], creation_mode: 'contemporaneous',
+    } });
+    await ctx.scheduler.tick();
+    assert.fail('fixture did not reach the committed action seam');
+    return;
+  }
+  const root = tempRoot('heartbeat-action-crash-');
+  let reopened = false;
+  try {
+    const child = spawnSync(process.execPath, [`--test-name-pattern=^${ACTION_CRASH_TEST}$`, import.meta.filename, ACTION_CRASH_CHILD, root], {
+      env: { ...process.env, ESTOMAGO_HOME: root }, encoding: 'utf8', timeout: 15000,
+    });
+    assert.equal(child.signal, 'SIGKILL', child.stdout + child.stderr);
+    const ctx = await fixture(t, CARDS, 'available', 0, { root, reopen: true });
+    reopened = true;
+    const server = (ctx.host as unknown as { server: { listen(port: number, bind: string, ready: () => void): void } }).server;
+    t.mock.method(server, 'listen', (_port, _bind, ready) => ready());
+    await ctx.host.start();
+    assert.equal(ctx.wire.length, 0);
+    const run = ctx.latestRun();
+    assert.equal(run.state, 'unknown');
+    assert.equal(ctx.cards.getDeliveredDraw(run.id)?.cardNumber, 1);
+    const projection = JSON.parse(String(ctx.host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref));
+    assert.equal(projection.terminal.status, 'unknown');
+    assert.equal(projection.actions.find((action: { kind: string }) => action.kind === 'memory_hold').source.id, 'fixture-crash-memory');
+    assert.deepEqual(ctx.runtimeMessages(run.id).map(message => message.speaker), ['system','system']);
+    ctx.host.heartbeat!.recoverClosedRuns();
+    assert.equal(ctx.projections().n, 1);
+    assert.equal(ctx.wire.length, 0);
+  } finally {
+    if (!reopened) fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('T26: an edited-away fixed revision invalidates the original number without prompting for 1', async t => {

@@ -49,7 +49,7 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
           assert.match(humanText.description ?? '', /中文直接填汉字/);
           for (const [tool, field] of [
             ['wake_manage', 'note'], ['identity_milestone_write', 'text'], ['deletion_review', 'rejection_reason'],
-            ['wishstar_offer_star', 'message'], ['chat_send_attachment', 'content'], ['conversation_archive', 'note'],
+            ['wishstar_offer_star', 'message'], ['chat_send_attachment', 'text'], ['conversation_archive', 'note'],
           ]) {
             const spec = tools.find(candidate => candidate.name === tool)?.inputSchema.properties?.[field!] as { description?: string } | undefined;
             assert.match(spec?.description ?? '', /中文直接填汉字/, tool);

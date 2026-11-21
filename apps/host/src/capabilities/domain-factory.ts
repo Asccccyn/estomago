@@ -7,6 +7,7 @@
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import { validateArgsAgainstSchema } from './validation.ts';
 import type { Db } from '../db/connection.ts';
+import type { HeartbeatActionKind } from '../../../../packages/contracts/src/heartbeat.ts';
 import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecContext, ToolExecResult } from './contracts.ts';
 import type { CapabilityDescriptor } from './registry.ts';
 
@@ -23,6 +24,7 @@ export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   memoryOnlyAllowed: boolean;
   label: string;
   silent?: boolean;
+  heartbeatAction?: HeartbeatActionKind;
   run: (input: I, ctx: ToolExecContext) => Promise<CapabilityOutcome<O> | ToolExecResult> | CapabilityOutcome<O> | ToolExecResult;
   /** 唯一模型投影（owner 拥有；输入=内部成功结果，与旧外层 modelResult(effectiveName,args,output) 同输入）。 */
   toModel: (value: O, input: I) => Record<string, unknown>;
@@ -51,6 +53,7 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
     memoryOnlyAllowed: o.memoryOnlyAllowed,
     label: o.label,
     silent: o.silent ?? false,
+    heartbeatAction: o.heartbeatAction,
     quote: o.free
       ? (() => ({ toolName: o.id, maxCostMicroUsd: 0, verifiedFree: true }))
       : (o.quote ?? ((db) => quoteBackgroundTool(db, o.id))),
@@ -59,10 +62,10 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
       const r = await o.run(input, ctx);
       if (isCapabilityOutcome<O>(r)) return r;
       // 旧 ToolExecResult 形状适配（逐字搬迁体；失败投影由执行外壳统一做）
-      if (r.ok) return { ok: true, value: r.output as O, ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.coverageAdditions ? { coverageAdditions: r.coverageAdditions } : {}),
+      if (r.ok) return { ok: true, value: r.output as O, ...(r.heartbeatReceipt ? { heartbeatReceipt: r.heartbeatReceipt } : {}), ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.coverageAdditions ? { coverageAdditions: r.coverageAdditions } : {}),
         ...(r.coverageProjection ? { coverageProjection: r.coverageProjection } : {}),
         ...(r.imageRefs !== undefined ? { imageRefs: r.imageRefs } : {}) };
-      return { ok: false, error: r.output };
+      return { ok: false, error: r.output, ...(r.heartbeatReceipt ? { heartbeatReceipt: r.heartbeatReceipt } : {}) };
     },
     toModel: o.toModel,
   };

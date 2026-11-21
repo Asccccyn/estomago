@@ -24,11 +24,11 @@ export class WakeToolsService {
     if (op === 'list') {
       const r = this.taskService.list({ actorId: 'jiaming', conversationId: convId, cursor: args.cursor, limit: args.limit, selfScheduledOnly: true });
       if (!r.ok) return err(r.code, r.detail ?? '');
-      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, ...(t.note_preview ? { note_preview: t.note_preview } : {}) })), ...(r.next_cursor ? { next_cursor: r.next_cursor } : {}) } };
+      return { ok: true, output: { tasks: r.tasks.map((t) => ({ task_id: t.task_id, revision: t.revision, scheduled_at: t.scheduled_at, status: t.status, created_by: t.created_by, ...(t.note_preview ? { note_preview: t.note_preview } : {}) })), ...(r.next_cursor ? { next_cursor: r.next_cursor } : {}) } };
     }
     if (op === 'update') {
       const r = this.taskService.update({
-        actorId: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''),
+        actorId: 'jiaming', updatedBy: 'jiaming', conversationId: convId, operationId: String(args.operation_id ?? ''), taskId: String(args.task_id ?? ''),
         expectedRevision: Number(args.expected_revision ?? 0), note: args.note ?? undefined, at: args.at ?? undefined, delaySeconds: args.delay_seconds ?? undefined, selfScheduledOnly: true,
       });
       if (!r.ok) return { ok: false, output: { error_code: r.code, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}), ...(r.detail ? { detail: r.detail } : {}) } };

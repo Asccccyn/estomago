@@ -216,8 +216,8 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const ctx = compose(root, transport);
   const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-tool', createdBy: 'jiaming', origin: 'upload' });
   const ctx1 = ctx.toolCtx();
-  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
-  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
+  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', text: '给你看' }, ctx1);
+  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', text: '给你看' }, ctx1);
   assert.equal(r1.ok, true);
   assert.equal(r2.ok, true);
   // RR4 回归（林石见 2026-11-10 口径）：发送回执=精简文字（message_id/published），

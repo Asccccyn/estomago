@@ -332,3 +332,36 @@ test('F15 旧回执兼容（手造 DTO 形状面）：旧算法+资源形状对�
   const kept = contentServer.db.prepare('SELECT status, response_json FROM content_receipts WHERE actor = ? AND idem_key = ?').get('qiaosheng', 'legacy-c1') as { status: number; response_json: string };
   assert.equal(JSON.parse(kept.response_json).id, 'crt_legacy_1', '原 13 类旧回执原样保留');
 });
+
+test('联合审计 F07：Host 实际 MIME、作品类别及用途幂等边界一致', async () => {
+  const key = 'joint-audit-f07-photo';
+  const assetId = await uploadAsset(key);
+  const changedPurpose = await fetch(`${base}/api/v1/assets?purpose=chat_sticker`, {
+    method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key }), body: new Uint8Array(PNG),
+  });
+  assert.equal(changedPurpose.status, 409);
+  assert.equal((await changedPurpose.json() as { error: { code: string } }).error.code, 'idempotency_conflict');
+  for (const kind of ['image', 'svg', 'html']) {
+    const rejected = await contentWrite('POST', '/api/v1/content/creations', { work_asset_id: assetId, work_kind: kind }, { 'Idempotency-Key': `joint-audit-f07-${kind}` });
+    assert.equal(rejected.status, 422, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, 'image_belongs_in_album');
+  }
+  const photo = await contentWrite('POST', '/api/v1/content/albums/important_photos/entries', { asset_id: assetId }, { 'Idempotency-Key': 'joint-audit-f07-photo-entry' });
+  assert.equal(photo.status, 201);
+  const sticker = await contentWrite('POST', '/api/v1/content/albums/stickers/entries', { asset_id: assetId }, { 'Idempotency-Key': 'joint-audit-f07-sticker-entry' });
+  assert.equal(sticker.status, 201);
+  assert.notEqual(photo.body.id, sticker.body.id);
+  const html = Buffer.from('<!doctype html><html><body>synthetic work only</body></html>');
+  const uploaded = await fetch(`${base}/api/v1/assets?purpose=creation_work`, {
+    method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'joint-audit-f07-code' }), body: new Uint8Array(html),
+  });
+  assert.equal(uploaded.status, 201);
+  const codeAsset = (await uploaded.json() as { asset_id: string }).asset_id;
+  const created = await contentWrite('POST', '/api/v1/content/creations', { work_asset_id: codeAsset, work_kind: 'html', title: 'fixture' }, { 'Idempotency-Key': 'joint-audit-f07-code-entry' });
+  assert.equal(created.status, 201);
+  const mismatch = await contentWrite('PUT', `/api/v1/content/creations/${created.body.id}`, { work_asset_id: assetId }, { 'Idempotency-Key': 'joint-audit-f07-bad-update', 'If-Match': '"1"' });
+  assert.equal(mismatch.status, 422);
+  const removed = await contentWrite('DELETE', `/api/v1/content/creations/${created.body.id}`, undefined, { 'Idempotency-Key': 'joint-audit-f07-delete-code', 'If-Match': '"1"' });
+  assert.equal(removed.status, 200);
+  assert.equal((await fetch(`${base}/api/v1/assets/${codeAsset}/preview`, { headers: auth() })).status, 200);
+});

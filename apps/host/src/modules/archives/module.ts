@@ -66,6 +66,7 @@ export function registerArchivesCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'archives',
     id: 'conversation_archive', baselineOrder: 49, definition: () => CONVERSATION_ARCHIVE_DEFINITION, memoryOnlyAllowed: false, label: '存档对话',
+    heartbeatAction: 'archive',
     run: (input: ConversationArchiveInput, ctx) => runConversationArchive(deps.archives, input, ctx),
     toModel: (value) => value,
   }));

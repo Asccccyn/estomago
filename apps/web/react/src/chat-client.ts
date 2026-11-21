@@ -143,8 +143,6 @@ export class EstomagoClient {
     this.request('/background/settings', this.json('PUT', patch, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundTasks = (cursor?: string | null): Promise<Json> => this.request('/background/tasks' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
   backgroundTaskDetail = (id: string): Promise<Json> => this.request('/background/tasks/' + encodeURIComponent(id))
-  backgroundCreateWake = (body: Json, opKey: string): Promise<Json> =>
-    this.request('/background/tasks', this.json('POST', body, {'Idempotency-Key':opKey}))
   backgroundUpdateTask = (id: string, ifMatch: number, body: Json, opKey: string): Promise<Json> =>
     this.request('/background/tasks/' + encodeURIComponent(id), this.json('PUT', body, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundCancelTask = (id: string, ifMatch: number, opKey: string): Promise<Json> =>

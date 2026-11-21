@@ -35,6 +35,14 @@ export type HeartbeatDelivery = { outcome: 'delivered'; providerRequestId: strin
   | { outcome: 'not_dispatched' | 'unknown' };
 export type ReservedNoteDeliveryStatus = 'undelivered' | 'dispatching' | 'delivered' | 'unknown';
 
+/** Deleting one membership revokes that fixed reference, not every card sharing
+ * its underlying media identity. Delivery and historical references survive. */
+export function invalidateHeartbeatContentSource(db: Db, kind: 'album' | 'reserved_note', id: string): void {
+  db.prepare(`UPDATE heartbeat_cards SET invalid_reason='source_deleted'
+    WHERE source_kind=? AND json_extract(source_ref_json,'$.namespace')='content'
+      AND json_extract(source_ref_json,'$.id')=?`).run(kind, id);
+}
+
 type RunRow = {
   run_id: string; deck_id: string | null; business_date: string; mode: HeartbeatMode;
   corrections: number; live: number;
@@ -54,10 +62,12 @@ type OperationRow = {
 export class HeartbeatCards {
   private readonly db: Db;
   private readonly now: () => number;
+  private readonly sourceEnabled: (source: HeartbeatSource) => boolean;
 
-  constructor(db: Db, now: () => number = Date.now) {
+  constructor(db: Db, now: () => number = Date.now, sourceEnabled: (source: HeartbeatSource) => boolean = () => true) {
     this.db = db;
     this.now = now;
+    this.sourceEnabled = sourceEnabled;
   }
 
   getDeck(conversationId: string, businessDate: string): HeartbeatDeck | null {
@@ -108,6 +118,14 @@ export class HeartbeatCards {
   }
 
   isSourceEligible(source: HeartbeatSource): boolean {
+    if (!this.sourceEnabled(source)) return false;
+    const ownerKind = source.kind === 'album' ? 'album_entry' : source.kind === 'reserved_note' ? 'future_note' : null;
+    if (source.namespace === 'content' && ownerKind) {
+      if (this.db.prepare(`SELECT 1 FROM content_owner_state WHERE owner_type=? AND owner_id=? AND deleted=1`).get(ownerKind,source.id)) return false;
+      const path='/api/v1/content/'+(source.kind==='album'?'album-entries/':'future-notes/')+encodeURIComponent(source.id);
+      if (this.db.prepare(`SELECT 1 FROM outbox WHERE target='content.operation' AND json_extract(payload_ref,'$.method')='DELETE'
+        AND json_extract(payload_ref,'$.path')=? AND json_extract(payload_ref,'$.commit_observed')=1`).get(path)) return false;
+    }
     return this.sourceEligible(source.kind, source.identity, source.replay === 'first_reserved_response');
   }
 
@@ -142,6 +160,7 @@ export class HeartbeatCards {
             attachmentIds: source.selection.attachmentIds,
             start: source.selection.start,
             end: source.selection.end,
+            voiceTranscriptRevision: source.selection.voiceTranscriptRevision,
           } : undefined;
           insert.run(deckId, index + 1, identity, kind,
             JSON.stringify({ kind, namespace, id, revision, identity, permissionScope, selection, replay }), Number(Boolean(replay)));
@@ -189,7 +208,7 @@ export class HeartbeatCards {
       `).get(input.runId, cardNumber)) return this.reject(run, input.operationId, selectionKey, 'source_unavailable');
       if (this.db.prepare("SELECT 1 FROM heartbeat_draw_operations WHERE deck_id=? AND card_number=? AND state='delivered'")
         .get(run.deck_id, cardNumber)) return this.reject(run, input.operationId, selectionKey, 'used_number');
-      if (!this.sourceEligible(card.source_kind, card.source_identity, card.first_response_replay === 1)) {
+      if (!this.isSourceEligible(JSON.parse(card.source_ref_json) as HeartbeatSource)) {
         return this.reject(run, input.operationId, selectionKey, 'source_unavailable');
       }
       this.db.prepare(`
@@ -230,8 +249,10 @@ export class HeartbeatCards {
   startDispatch(input: HeartbeatOperation & { providerRequestId: string }): boolean {
     return tx(this.db, () => {
       const operation = this.operation(input);
+      const card = operation?.deck_id && operation.card_number ? this.card(operation.deck_id, operation.card_number) : undefined;
       if (!this.run(input.runId)?.live || !operation
         || (operation.state !== 'prepared' && operation.state !== 'dispatching')
+        || operation.state === 'prepared' && (!card || card.invalid_reason || !this.sourceEnabled(JSON.parse(card.source_ref_json) as HeartbeatSource))
         || !this.requestCarriedCard(input, false)) return false;
       this.db.prepare(`
         UPDATE heartbeat_draw_operations SET state='dispatching',attempted_at=COALESCE(attempted_at,?)
@@ -260,6 +281,10 @@ export class HeartbeatCards {
         `).run(sentAt, input.providerRequestId, input.runId, input.operationId);
       } else {
         if (input.outcome === 'unknown' && operation.state !== 'dispatching') return false;
+        // No negative provider receipt exists on this path. Once attempted
+        // delivery is unknown, absence of a positive receipt is not proof of
+        // no send; only the genuine positive evidence path above can settle it.
+        if (operation.state === 'unknown') return false;
         // A late timeout or cancellation cannot displace a documented dispatch.
         if (operation.attempted_at && this.deliveredRequest(input)) return false;
         this.db.prepare('UPDATE heartbeat_draw_operations SET state=? WHERE run_id=? AND operation_id=?')
@@ -330,7 +355,7 @@ export class HeartbeatCards {
     const deliveredNumbers = delivered.map(row => row.card_number);
     const alreadyDelivered = new Set(deliveredNumbers);
     const availableNumbers = cards.filter(card => !card.invalid_reason && !alreadyDelivered.has(card.card_number)
-      && this.sourceEligible(card.source_kind, card.source_identity, card.first_response_replay === 1)).map(card => card.card_number);
+      && this.isSourceEligible(JSON.parse(card.source_ref_json) as HeartbeatSource)).map(card => card.card_number);
     return { id, availableNumbers, deliveredNumbers, exhausted: cards.length === CARD_COUNT
       && deliveredNumbers.length === CARD_COUNT && deliveredNumbers.every((number, index) => number === index + 1) };
   }
@@ -390,10 +415,10 @@ export class HeartbeatCards {
       WHERE o.source_identity=? AND (
         o.state IN ('claimed','prepared','dispatching')
         OR (o.state='delivered' AND (?=1 OR c.source_kind='reserved_note' OR (?=0 AND o.delivered_at>?)))
-        OR (o.state='unknown' AND (?=1 OR c.source_kind='reserved_note' OR o.attempted_at>?))
+        OR o.state='unknown'
       ) LIMIT 1
     `).get(identity, Number(kind === 'reserved_note'), Number(kind === 'moments' && firstResponseReplay),
-      cutoff, Number(kind === 'reserved_note'), cutoff);
+      cutoff);
   }
 
   private deliveredRequest(input: HeartbeatOperation): { requestId: string; sentAt: string } | null {

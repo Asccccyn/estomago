@@ -64,6 +64,13 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
     WHERE turn_id=? AND speaker='assistant' ORDER BY sequence
   `).all(input.turnId) as Array<{ id: string; sequence: number; current_revision: number }>;
   let heartbeatEvents: ReturnType<HeartbeatRuntime['commitInTx']>['eventRows'] = [];
+  const terminal = (): NonNullable<Parameters<HeartbeatRuntime['commitInTx']>[0]['terminal']> => ({
+    status: heartbeat?.runtime.hasUnknownDelivery(runId) || finishReason === 'TOOL_EXECUTION_OUTCOME_UNKNOWN' ? 'unknown'
+      : input.isCancelRequested() || /CANCELLED|STOPPED|YIELDED/.test(finishReason ?? '') || sleepPaused ? 'cancelled'
+      : completed ? 'completed' : 'failed',
+    ...(finishReason ? { reason: finishReason === 'BUDGET_ESTIMATE_UNAVAILABLE' ? 'quote' : /BUDGET/.test(finishReason) ? 'budget' : sleepPaused ? 'sleep'
+      : /YIELDED/.test(finishReason) ? 'yield' : /HEARTBEAT_CARD_DISPATCH_UNKNOWN/.test(finishReason) ? 'delivery' : 'other' } : {}),
+  });
   const finishTurn = (conn: Db): void => {
     const now = new Date().toISOString();
     conn.prepare('UPDATE turns SET state=?,completed_at=? WHERE id=?').run(finishedState, now, input.turnId);
@@ -102,6 +109,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
           hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode, completed, hadSent: Boolean(observed),
+          terminal: terminal(),
         });
         if (projection.manifest.length) {
           const known = new Set(manifest.map(entry => entry.id));
@@ -118,7 +126,20 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       finishTurn(conn);
     });
   } else {
-    tx(db, () => finishTurn(db));
+    tx(db, () => {
+      // A confirmed invitation may be visible even if the first response
+      // disconnects before an assistant/tool message forms a canonical tail.
+      // Record display/terminal facts now without manufacturing a trajectory.
+      if (heartbeat && observed) {
+        const projection = heartbeat.runtime.commitInTx({
+          runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
+          hostText: heartbeat.hostText, finalMessages: [], mode: heartbeat.mode, completed: false, hadSent: true,
+          terminal: terminal(),
+        });
+        heartbeatEvents = projection.eventRows;
+      }
+      finishTurn(db);
+    });
   }
   if (heartbeatEvents.length) heartbeat?.runtime.dispatchEvents(heartbeatEvents);
 

@@ -19,6 +19,7 @@ export function projectWishstarToolResult(name: string, v: Obj): Obj {
     case 'wishstar_list_offers': return {incoming:rows(v.incoming).map(offer),outgoing:rows(v.outgoing).map(offer)};
     case 'wishstar_notifications': return {...pick(v,['unread_count','consumed']),items:rows(v.items).map(n=>pick(n,['id','type','title','body','star_id','created_at','is_read']))};
     case 'wishstar_write_star': return pick(v,['id','star_id','visibility','state']);
+    case 'wishstar_reply_star': return pick(v,['id','star_id','type','created_at']);
     case 'wishstar_offer_star': return offer(v);
     case 'wishstar_request_star': return request(v);
     case 'wishstar_requests': return {incoming:rows(v.incoming).map(request),outgoing:rows(v.outgoing).map(request)};

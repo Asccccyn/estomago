@@ -762,12 +762,12 @@ export class ContentServer {
     if (method === 'POST' && pathname === '/api/v1/content/creations') {
       const c = cmd('creation', 'create', null);
       return { cmd: c, business: () => {
-        // 免桶仅当 bucket_id 缺席：显式给桶的图片作品（纪念作品换图）仍按原合同存桶。
-        // R5（复审 2026-11-08）：免桶范围扩到本地生成作品 svg/html（creation_save_artifact
-        // 自动入作品；无 Mariposa 桶），icon 同 v5 规则以自身 work 资产充当。
-        const bucketlessGeneratedWork = !(typeof body.bucket_id === 'string' && body.bucket_id) && typeof body.work_asset_id === 'string' && !!body.work_asset_id && ['image', 'svg', 'html'].includes(String(body.work_kind));
+        // v1.2：纯图新关系只能进相册；有纪念桶的作品与旧回执保留原合同。
+        const hasBucket = typeof body.bucket_id === 'string' && !!body.bucket_id;
+        if (!hasBucket && body.work_kind === 'image') throw new ContentError(422, 'IMAGE_BELONGS_IN_ALBUM', '纯图片请通过相册成员接口入库');
+        const bucketlessGeneratedWork = !hasBucket && typeof body.work_asset_id === 'string' && !!body.work_asset_id && ['svg', 'html'].includes(String(body.work_kind));
         if (!bucketlessGeneratedWork) {
-          if (typeof body.bucket_id !== 'string' || !body.bucket_id) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）；本地生成作品可免桶（work_asset_id+work_kind=image|svg|html）');
+          if (!hasBucket) throw new ContentError(422, 'BUCKET_REQUIRED', 'bucket_ref 必填（指向已有 Mariposa 桶；est 代理侧验证）；代码作品可免桶（work_asset_id+work_kind=svg|html）');
         }
         if (typeof body.icon_asset_id !== 'string' || !body.icon_asset_id) {
           // v5：免桶作品以自身 work 资产为 icon（同一对象，不复制字节）
@@ -796,6 +796,9 @@ export class ContentServer {
         const workAsset = typeof body.work_asset_id === 'string' && body.work_asset_id ? body.work_asset_id : (row.work_asset_id as string | null);
         const workKind = typeof body.work_kind === 'string' ? body.work_kind : (row.work_kind as string | null);
         if ((workAsset === null || workAsset === undefined) !== (workKind === null || workKind === undefined)) throw new ContentError(422, 'WORK_INCONSISTENT', 'work_asset_id 与 work_kind 必须同时为空或同时有效');
+        if (row.bucket_id == null && workKind === 'image' && (row.work_kind !== workKind || row.work_asset_id !== workAsset)) {
+          throw new ContentError(422, 'IMAGE_BELONGS_IN_ALBUM', '纯图片请通过相册成员接口入库');
+        }
         const prevWork = typeof body.work_asset_id === 'string' && body.work_asset_id && body.work_asset_id !== (row.work_asset_id as string | null)
           ? [row.work_asset_id as string] : undefined;
         this.db.prepare('UPDATE creations SET title = COALESCE(?, title), work_asset_id = ?, work_kind = ?, updated_at = ?, revision = revision + 1 WHERE id = ?')

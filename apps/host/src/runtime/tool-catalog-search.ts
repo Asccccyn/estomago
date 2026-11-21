@@ -29,6 +29,10 @@ const INTENTS: ReadonlyMap<string, ToolIntent> = new Map([
     label: "我想问宿主用户要一颗星",
     phrases: ["要一颗星", "请求星星", "要颗星", "想要一颗她的星", "想要她的一颗星", "向她要星"],
   }],
+  ['wishstar_reply_star', {
+    label: '回应本轮抽到的星',
+    phrases: ['回复星星', '回应星星', '回复原星', '回应抽到的星', '回复星'],
+  }],
   ['content_album_entry_write', {
     label: "我想把这张图收进相册",
     phrases: ["收藏进相册", "收进相册", "存进相册", "存到相册", "保存到相册", "放进相册", "相册收藏", "修改收藏留言", "收藏照片", "收进表情包", "加入表情包"],

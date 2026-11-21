@@ -1939,4 +1939,98 @@ MIGRATIONS.push({
   sql: 'ALTER TABLE attempts ADD COLUMN completion_recovery_json TEXT;',
 });
 
+MIGRATIONS.push({
+  version: 85, name: 'trusted-heartbeat-source-extensions',
+  // Rebuild both sides of the FK together, preserving every existing fixed
+  // reference, draw receipt and uniqueness constraint. Registration lives in Host.
+  sql: `
+CREATE TABLE heartbeat_cards_v85 (
+  deck_id TEXT NOT NULL REFERENCES heartbeat_decks(id),
+  card_number INTEGER NOT NULL CHECK(card_number BETWEEN 1 AND 10),
+  source_identity TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('wishstar','memory','archive','album','moments','reserved_note')
+    OR (source_kind GLOB 'ext:[a-z]*' AND length(source_kind) BETWEEN 5 AND 68
+       AND substr(source_kind,5) NOT GLOB '*[^a-z0-9_-]*' AND source_kind!='ext:family')),
+  source_ref_json TEXT NOT NULL,
+  first_response_replay INTEGER NOT NULL DEFAULT 0 CHECK(first_response_replay IN (0,1)),
+  invalid_reason TEXT,
+  PRIMARY KEY (deck_id, card_number),
+  UNIQUE (deck_id, source_identity)
+);
+INSERT INTO heartbeat_cards_v85 SELECT * FROM heartbeat_cards;
+CREATE TABLE heartbeat_draw_operations_v85 (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  operation_id TEXT NOT NULL,
+  selection_key TEXT NOT NULL,
+  deck_id TEXT,
+  card_number INTEGER,
+  source_identity TEXT,
+  state TEXT NOT NULL CHECK(state IN ('rejected','claimed','prepared','dispatching','delivered','not_dispatched','unknown')),
+  reason TEXT,
+  remaining_json TEXT,
+  retry_allowed INTEGER CHECK(retry_allowed IN (0,1)),
+  attempted_at TEXT,
+  delivered_at TEXT,
+  provider_request_id TEXT,
+  PRIMARY KEY (run_id, operation_id),
+  FOREIGN KEY (deck_id, card_number) REFERENCES heartbeat_cards_v85(deck_id, card_number),
+  CHECK(state != 'delivered' OR (provider_request_id IS NOT NULL AND delivered_at IS NOT NULL))
+);
+INSERT INTO heartbeat_draw_operations_v85 SELECT * FROM heartbeat_draw_operations;
+DROP TABLE heartbeat_draw_operations;
+DROP TABLE heartbeat_cards;
+ALTER TABLE heartbeat_cards_v85 RENAME TO heartbeat_cards;
+ALTER TABLE heartbeat_draw_operations_v85 RENAME TO heartbeat_draw_operations;
+CREATE INDEX idx_heartbeat_draw_source ON heartbeat_draw_operations(source_identity,state,delivered_at,attempted_at);
+CREATE INDEX idx_heartbeat_draw_card ON heartbeat_draw_operations(deck_id,card_number,state);
+CREATE UNIQUE INDEX idx_heartbeat_draw_one_per_run ON heartbeat_draw_operations(run_id)
+  WHERE state IN ('claimed','prepared','dispatching','delivered','unknown');
+CREATE UNIQUE INDEX idx_heartbeat_draw_source_in_flight ON heartbeat_draw_operations(source_identity)
+  WHERE state IN ('claimed','prepared','dispatching');
+CREATE UNIQUE INDEX idx_heartbeat_card_delivered ON heartbeat_draw_operations(deck_id,card_number)
+  WHERE state = 'delivered';
+`,
+});
+
+MIGRATIONS.push({
+  version: 86, name: 'heartbeat-business-action-references',
+  sql: `
+ALTER TABLE heartbeat_runs ADD COLUMN invite_text TEXT;
+CREATE TABLE heartbeat_actions (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  call_id TEXT NOT NULL,
+  action_json TEXT NOT NULL,
+  PRIMARY KEY (run_id, call_id)
+);
+`,
+});
+
+MIGRATIONS.push({
+  version: 87, name: 'heartbeat-midnight-memory-choice',
+  sql: `
+CREATE TABLE background_tasks_v87(
+  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('autonomous','keepwarm','reminder','heartbeat_memory')),
+  enabled INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('once','daily','interval','cache_idle')),
+  scheduled_at TEXT, next_due_at TEXT, timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai', local_time TEXT,
+  interval_ms INTEGER, payload_json TEXT NOT NULL DEFAULT '{}', created_by_actor_id TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK (origin IN ('self_schedule','system_keepwarm','legacy_unknown','free_activity','system_heartbeat_memory')),
+  control_reason TEXT, client_operation_key TEXT
+);
+INSERT INTO background_tasks_v87 SELECT * FROM background_tasks;
+DROP TABLE background_tasks;
+ALTER TABLE background_tasks_v87 RENAME TO background_tasks;
+CREATE INDEX idx_bg_tasks_due ON background_tasks(enabled,next_due_at);
+CREATE UNIQUE INDEX idx_bg_tasks_client_op ON background_tasks(conversation_id,client_operation_key) WHERE client_operation_key IS NOT NULL;
+CREATE TABLE heartbeat_daily_memory_choices(
+  conversation_id TEXT NOT NULL REFERENCES conversations(id), business_date TEXT NOT NULL,
+  memory_id TEXT NOT NULL, revision INTEGER NOT NULL, frozen_at TEXT NOT NULL, selected_at TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE REFERENCES background_runs(id), provider_response_id TEXT,
+  PRIMARY KEY(conversation_id,business_date)
+);
+`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

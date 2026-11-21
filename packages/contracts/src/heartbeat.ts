@@ -1,7 +1,13 @@
 export const HEARTBEAT_SOURCE_KINDS = ['wishstar', 'memory', 'archive', 'album', 'moments', 'reserved_note'] as const;
+export type HeartbeatExtensionKind = `ext:${string}`;
+export type HeartbeatSourceKind = (typeof HEARTBEAT_SOURCE_KINDS)[number] | HeartbeatExtensionKind;
+
+export function isHeartbeatExtensionKind(kind: unknown): kind is HeartbeatExtensionKind {
+  return typeof kind === 'string' && /^ext:[a-z][a-z0-9_-]{0,63}$/.test(kind) && kind !== 'ext:family';
+}
 
 export type HeartbeatSource = {
-  kind: (typeof HEARTBEAT_SOURCE_KINDS)[number];
+  kind: HeartbeatSourceKind;
   namespace: string;
   id: string;
   revision: string | number;
@@ -20,9 +26,24 @@ export type HeartbeatProjection = {
   conversationId: string;
   businessDate: string;
   version: number;
-  state: 'drawn' | 'drawn_no_comment' | 'declined';
+  state: 'drawn' | 'drawn_no_comment' | 'declined' | 'interrupted';
   card: { number: number; source: HeartbeatSource } | null;
   messages: Array<{ messageId: string; revision: number; sequence: number }>;
+  actions?: HeartbeatAction[];
+  terminal?: { status: 'completed' | 'declined' | 'cancelled' | 'failed' | 'unknown'; reason?: 'budget' | 'quote' | 'sleep' | 'yield' | 'delivery' | 'other' };
+};
+
+// Business receipts are references, not copies of private source prose. They
+// remain independent of the (possibly truncated) model result and chat.
+export const HEARTBEAT_ACTION_KINDS = ['selection', 'star_reply', 'star_write', 'memory_hold', 'post', 'comment', 'album', 'creation', 'image', 'archive', 'wake', 'chat'] as const;
+export type HeartbeatActionKind = (typeof HEARTBEAT_ACTION_KINDS)[number];
+export type HeartbeatAction = {
+  operationId: string;
+  kind: HeartbeatActionKind;
+  afterSequence: number;
+  status: 'committed' | 'partial' | 'failed' | 'cancelled' | 'unknown';
+  cardNumber?: number;
+  source?: { namespace: string; id: string; revision?: string | number; parentId?: string };
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -38,9 +59,9 @@ function integer(value: unknown, minimum = 1): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= minimum;
 }
 
-function readSource(value: unknown): HeartbeatSource | null {
+export function readHeartbeatSource(value: unknown): HeartbeatSource | null {
   const source = record(value);
-  if (!source || !HEARTBEAT_SOURCE_KINDS.some(kind => kind === source.kind)
+  if (!source || (!HEARTBEAT_SOURCE_KINDS.some(kind => kind === source.kind) && !isHeartbeatExtensionKind(source.kind))
     || !text(source.namespace) || !text(source.id) || !text(source.identity)
     || !text(source.permissionScope) || !(text(source.revision) || integer(source.revision))
     || source.replay !== undefined && (source.kind !== 'moments' || source.replay !== 'first_reserved_response')) return null;
@@ -74,10 +95,10 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
   if (!projection || projection.mode !== 'draw' || !text(projection.conversationId)
     || typeof projection.businessDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(projection.businessDate)
     || !integer(projection.version) || !Array.isArray(projection.messages)
-    || (projection.state !== 'drawn' && projection.state !== 'drawn_no_comment' && projection.state !== 'declined')) return null;
+    || (projection.state !== 'drawn' && projection.state !== 'drawn_no_comment' && projection.state !== 'declined' && projection.state !== 'interrupted')) return null;
   const card = record(projection.card);
-  const source = readSource(card?.source);
-  if (projection.state === 'declined' ? projection.card !== null
+  const source = readHeartbeatSource(card?.source);
+  if (projection.state === 'declined' || projection.state === 'interrupted' ? projection.card !== null
     : !card || !integer(card.number) || card.number > 10 || !source) return null;
   const messages: HeartbeatProjection['messages'] = [];
   for (const value of projection.messages) {
@@ -86,10 +107,36 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
       || (messages.at(-1)?.sequence ?? 0) >= message.sequence) return null;
     messages.push({ messageId: message.messageId, revision: message.revision, sequence: message.sequence });
   }
+  const actions: HeartbeatAction[] = [];
+  const terminal = record(projection.terminal);
+  if (projection.actions !== undefined) {
+    if (!Array.isArray(projection.actions) || projection.actions.length > 1000) return null;
+    for (const value of projection.actions) {
+      const action = record(value);
+      const source = record(action?.source);
+      if (!action || !text(action.operationId) || !HEARTBEAT_ACTION_KINDS.some(kind => kind === action.kind)
+        || !integer(action.afterSequence, 0) || !['committed', 'partial', 'failed', 'cancelled', 'unknown'].includes(String(action.status))
+        || action.cardNumber !== undefined && (!integer(action.cardNumber) || action.cardNumber > 10)
+        || action.source !== undefined && (!source || !text(source.namespace) || !text(source.id)
+          || source.revision !== undefined && !(text(source.revision) || integer(source.revision))
+          || source.parentId !== undefined && !text(source.parentId))) return null;
+      actions.push({ operationId: action.operationId, kind: action.kind as HeartbeatActionKind,
+        afterSequence: action.afterSequence, status: action.status as HeartbeatAction['status'],
+        ...(action.cardNumber !== undefined ? { cardNumber: action.cardNumber as number } : {}),
+        ...(source ? { source: { namespace: source.namespace as string, id: source.id as string,
+          ...(source.revision !== undefined ? { revision: source.revision as string | number } : {}),
+          ...(source.parentId !== undefined ? { parentId: source.parentId as string } : {}) } } : {}) });
+    }
+  }
+  if (projection.terminal !== undefined && (!terminal || !['completed','declined','cancelled','failed','unknown'].includes(String(terminal.status))
+    || terminal.reason !== undefined && !['budget','quote','sleep','yield','delivery','other'].includes(String(terminal.reason)))) return null;
   return {
     mode: 'draw', conversationId: projection.conversationId, businessDate: projection.businessDate,
     version: projection.version, state: projection.state,
     card: card && source ? { number: card.number as number, source } : null,
     messages,
+    ...(projection.actions !== undefined ? { actions } : {}),
+    ...(terminal ? { terminal: { status: terminal.status as NonNullable<HeartbeatProjection['terminal']>['status'],
+      ...(terminal.reason !== undefined ? { reason: terminal.reason as NonNullable<HeartbeatProjection['terminal']>['reason'] } : {}) } } : {}),
   };
 }

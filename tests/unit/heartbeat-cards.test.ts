@@ -13,11 +13,11 @@ const SOURCES = Array.from({ length: 10 }, (_, index): HeartbeatSource => ({
   identity: `archive:${index + 1}`, permissionScope: 'primary',
 }));
 
-function fixture(t: TestContext) {
+function fixture(t: TestContext, upTo?: number) {
   const db = new DatabaseSync(':memory:');
   t.after(() => db.close());
   db.exec('PRAGMA foreign_keys=ON');
-  migrate(db, sha256Hex);
+  migrate(db, sha256Hex, upTo);
   db.prepare('INSERT INTO conversations(id,created_at) VALUES(?,?)').run('primary', AT);
   db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('window','primary','ACTIVE',?,?)")
     .run(AT, AT);
@@ -94,7 +94,7 @@ test('freezes a complete daily deck and changes to exhausted mode only on a late
 });
 
 test('withheld and unknown results do not consume; an unknown slot cannot turn zero available cards into exhaustion', t => {
-  const { db, cards, run, end, request, prepare, deliver } = fixture(t);
+  const { db, cards, run, end, request, prepare, deliver, advanceDays } = fixture(t);
   run('undispatched');
   cards.begin({ runId: 'undispatched', businessDate: DAY, candidates: SOURCES });
   const undispatched = prepare('undispatched', 1);
@@ -131,6 +131,34 @@ test('withheld and unknown results do not consume; an unknown slot cannot turn z
   assert.equal(result?.deck?.deliveredNumbers.length, 9);
   assert.equal(result?.deck?.exhausted, false);
   assert.equal(cards.startDispatch({ ...unknown, providerRequestId: 'unknown-request' }), false);
+  advanceDays(31);
+  assert.equal(cards.isSourceEligible(SOURCES[9]!), false);
+  assert.equal(new HeartbeatCards(db, () => Date.parse(AT) + 31 * 86_400_000).isSourceEligible(SOURCES[9]!), false);
+  assert.equal(cards.isSourceEligible({ ...SOURCES[9]!, kind: 'ext:fixture', id: 'alias' }), false);
+  // No negative provider receipt is available through this API. A bare
+  // not-dispatched assertion cannot undo a previously unknown transport.
+  assert.equal(cards.recordDelivery({ ...unknown, outcome: 'not_dispatched' }), false);
+  assert.equal(cards.isSourceEligible(SOURCES[9]!), false);
+  // A late, real positive receipt still settles the original operation.
+  db.prepare('UPDATE provider_requests SET sent_at=? WHERE id=?').run(AT,'unknown-request');
+  assert.equal(cards.recordDelivery({...unknown,outcome:'delivered',providerRequestId:'unknown-request'}),true);
+  assert.equal(cards.isSourceEligible(SOURCES[9]!),true); // settled at AT, outside normal 30-day cooldown
+});
+
+test('v85 extension migration retains old frozen rows, consumed operations, foreign keys and uniqueness', t => {
+  const { db, cards, run, end, deliver } = fixture(t, 84);
+  run('old'); cards.begin({ runId: 'old', businessDate: DAY, candidates: SOURCES });
+  deliver('old', 1); end('old');
+  const before = db.prepare('SELECT * FROM heartbeat_draw_operations').all();
+  migrate(db, sha256Hex);
+  assert.deepEqual(db.prepare('SELECT * FROM heartbeat_draw_operations').all(), before);
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
+  assert.equal(cards.getDeliveredDraw('old')?.source.id, SOURCES[0]!.id);
+  run('extension');
+  const candidates = SOURCES.map((source, i): HeartbeatSource => ({...source, kind: 'ext:fixture', namespace: 'fixture', identity: `fixture:${i}`}));
+  assert.equal(cards.begin({ runId: 'extension', businessDate: NEXT_DAY, candidates })?.mode, 'draw');
+  assert.equal(cards.claim({ runId:'extension', operationId:'fixture', cardNumber:1 }).status, 'claimed');
+  assert.equal(cards.claim({ runId:'extension', operationId:'other', cardNumber:2 }).status, 'already_started');
 });
 
 test('image cards require the materialized images in the actual provider envelope', t => {

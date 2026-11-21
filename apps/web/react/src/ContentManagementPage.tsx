@@ -107,7 +107,7 @@ const background = new EstomagoClient()
 
 function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
   const [status, setStatus] = useState<HeartbeatState | null>(null)
-  const [settings, setSettings] = useState<{ revision: number; enabled: boolean } | null>(null)
+  const [settings, setSettings] = useState<{ revision: number; enabled: boolean; livingRoom: boolean } | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -127,7 +127,7 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     try {
       const next = await background.backgroundSettings()
       if (signal?.aborted) return
-      setSettings({ revision: next.revision, enabled: next.keepwarm?.enabled === true })
+      setSettings({ revision: next.revision, enabled: next.keepwarm?.enabled === true, livingRoom: next.keepwarm?.include_living_room === true })
       setSettingsError(null)
     } catch (error) {
       if (signal?.aborted) return
@@ -146,12 +146,12 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     return () => controller.abort()
   }, [loadSettings])
 
-  async function toggle() {
+  async function toggle(source: 'enabled' | 'include_living_room' = 'enabled') {
     if (!settings || busy) return
     setBusy(true)
     setSettingsError(null)
     try {
-      await background.backgroundPutSettings(settings.revision, { keepwarm: { enabled: !settings.enabled } }, operationKey('keepwarm'))
+      await background.backgroundPutSettings(settings.revision, { keepwarm: { [source]: source === 'enabled' ? !settings.enabled : !settings.livingRoom } }, operationKey('keepwarm'))
       await loadSettings()
       await loadStatus()
     } catch (error) {
@@ -169,10 +169,17 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
       </div>
       <button type="button" className={actionClass} onClick={() => { void loadStatus(); void loadSettings() }} disabled={busy}><RefreshCw size={14} />刷新</button>
     </div>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className={mutedClass}>朋友圈来源：「我们」默认；「客厅」</span>
+      <button type="button" className={actionClass} aria-label="心跳客厅来源" aria-pressed={settings?.livingRoom ?? false}
+        onClick={() => void toggle('include_living_room')} disabled={!settings || busy}>{settings?.livingRoom ? '已加入' : '未加入'}</button>
+      <span className={mutedClass}>今日已固定的牌不会换号补牌。</span>
+    </div>
     {settingsError && <p role="alert" className={errorClass}>{settingsError}</p>}
     {statusError && <p role="status" className={mutedClass}>今日牌组暂不可读取。{statusError}</p>}
     {status && <>
       <h2 className="font-medium">今日牌组 <span className={mutedClass}>{status.date} · 上海时间</span></h2>
+      <p className={mutedClass}>午夜记忆来源：{status.daily_memory?.state === 'selected' ? '已确定一条' : '尚未确定或本日不可用'}{status.daily_memory?.reason ? `（${status.daily_memory.reason}）` : ''}</p>
       <p className={mutedClass}>{status.mode === 'exhausted_keepwarm' ? '今日十张已全部抽完，后续心跳回复 1 保温。'
         : status.mode === 'unprepared' ? '牌组尚未准备好。' : status.mode === 'source_unavailable' ? '有来源暂不可用或待核。' : '等待char自行选择。'}</p>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
@@ -186,6 +193,7 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
 
 export default function ContentManagementPage({ mode }: { mode: Mode }) {
   const notes = mode === 'heartbeat'
+  const targetNote = notes ? new URLSearchParams(location.search).get('note') : null
   const noun = notes ? '留言' : '帖子'
   const path = notes ? '/api/v1/content/future-notes' : '/api/v1/content/posts'
   const [layer, setLayer] = useState<Layer>('daily')
@@ -210,6 +218,17 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
     if (pageCursor) params.set('cursor', pageCursor)
     try {
       const data = await readContent<ContentPage>(`${path}?${params}`)
+      // A moments link addresses the source ID, not a possibly stale list
+      // position. Fetch the specific note if it is outside the initial page.
+      if (!pageCursor && targetNote) {
+        try {
+          const target = data.items.find(item => item.id === targetNote)
+            ?? await readContent<ContentEntry>(`${path}/${encodeURIComponent(targetNote)}`)
+          if (!target.deleted && target.id === targetNote) data.items = [target, ...data.items.filter(item => item.id !== targetNote)]
+        } catch (targetError) {
+          if (generation === readGeneration.current) setError(`无法定位原留言：${errorMessage(targetError)}`)
+        }
+      }
       if (generation !== readGeneration.current) return
       setItems(previous => pageCursor ? [...previous, ...data.items.filter(item => !previous.some(old => old.id === item.id))] : data.items)
       setCursor(data.has_more ? data.next_cursor ?? null : null)
@@ -218,7 +237,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
     } finally {
       if (generation === readGeneration.current) setLoading(false)
     }
-  }, [notes, path])
+  }, [notes, path, targetNote])
 
   useEffect(() => {
     void load()
@@ -410,7 +429,8 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
         </form>}
         {loading && <p role="status" className={mutedClass}>读取中…</p>}
         {!loading && !listError && !items.length && <p className={mutedClass}>{notes ? '还没有预留留言。' : '这里还没有日常。'}</p>}
-        {items.map(entry => <article key={entry.id} className={`${cardClass} space-y-3`}>
+        {items.map(entry => <article key={entry.id} className={`${cardClass} space-y-3 ${targetNote === entry.id ? 'ring-2 ring-[#85462f]' : ''}`}>
+          {targetNote === entry.id && <p className={mutedClass}>从朋友圈定位的原留言</p>}
           <header className="flex flex-wrap items-center justify-between gap-2">
             <span className={mutedClass}>{entry.kind === 'reference' ? '心跳' : authorLabel(entry.author)} · {dateLabel(entry.published_at ?? entry.created_at)}</span>
             {entry.kind !== 'reference' && entry.revision > 1 && <span className={mutedClass}>已编辑</span>}
@@ -429,7 +449,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
                 </> : <p className={mutedClass}>{unreadable[block.status]}</p>}
                 {block.id === 'card' && block.observed_revision !== undefined && block.display_revision !== undefined
                   && block.observed_revision !== block.display_revision && <ReferenceHistory postId={entry.id} block={block} />}
-                {block.editable ? <button type="button" className={actionClass} disabled={busy || Boolean(editor)} onClick={() => void openEdit(entry, block)}><Pencil size={14} />编辑来源</button> : block.status === 'available' && <p className={mutedClass}>此来源只读。</p>}
+                {block.management_href ? <a className={actionClass} href={block.management_href}>前往心跳页面管理原留言</a> : block.editable ? <button type="button" className={actionClass} disabled={busy || Boolean(editor)} onClick={() => void openEdit(entry, block)}><Pencil size={14} />编辑来源</button> : block.status === 'available' && <p className={mutedClass}>此来源只读。</p>}
               </section>)}</div> : <p className={mutedClass}>暂时读不到原文。</p>
           ) : <>
             {entry.body && <p className="whitespace-pre-wrap break-words">{entry.body}</p>}

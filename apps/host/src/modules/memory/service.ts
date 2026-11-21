@@ -16,6 +16,8 @@ import { windowCoverage, type CoverageRange } from '../../memory-surfacing/windo
 import { memoryCoverageProjection } from './coverage-projection.ts';
 import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
+import { settleHeartbeatMemoryReceipt } from '../heartbeat/actions.ts';
+import { memoryHoldOperationId } from './hold-operation-id.ts';
 
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
 
@@ -300,7 +302,7 @@ export class MemoryToolsService {
     // 宿主直调无 id 时与旧全局为 null 的行为一致（空串派生）。
     const toolCallId = String(ctx.toolCallId ?? ''); // S17b 批次4：身份只走可信 ctx
 
-    const operationId = `es-hold-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${toolCallId}`).slice(0, 40)}`;
+    const operationId = memoryHoldOperationId(ctx.turnId ?? ctx.requestId, toolCallId);
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'hold', operationId, toolCallId, seenSequence: ctx.seenSequence });
     const holdPayload: Record<string, unknown> = { original_title: args.original_title, categories: args.categories, text: args.text };
     for (const k of ['plan_ids', 'creation_mode', 'memory_date', 'date_confidence']) {
@@ -364,7 +366,10 @@ export class MemoryToolsService {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
       return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH' } };
     }
-    this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id, receipt.commit_observed_at);
+    this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id, receipt.commit_observed_at,
+      ctx.backgroundRunId && ctx.purpose === 'cache_keepalive'
+        ? () => settleHeartbeatMemoryReceipt(this.db, operationId, { memoryId: receipt.memory_id, version: receipt.version })
+        : undefined);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
     try {
       this.checkpoint.advance(ctx.windowId, {
@@ -929,19 +934,20 @@ export class MemoryToolsService {
     const m = this.mariposa.withSignal(ctx.signal);
     const action = args.action === 'revise' || args.action === 'restore' ? args.action : (args.action === 'create' ? 'create' : '');
     if (!action) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'action 必须是 create/revise/restore' } };
-    const content = typeof args.content === 'string' ? args.content : '';
+    const text = args.text ?? args.content;
+    const content = typeof text === 'string' ? text : '';
     const itemId = typeof args.item_id === 'string' ? args.item_id : '';
     const expected = typeof args.expected_revision === 'number' ? args.expected_revision : 0;
     const changeReason = typeof args.change_reason === 'string' && args.change_reason.length > 0 ? args.change_reason : undefined;
     const relations = Array.isArray(args.relations) ? args.relations : undefined;
     if (action === 'create' && !content) {
-      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'create 必须带 content' } };
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'create 必须带正文（当前窗口 schema 中的 text / content）' } };
     }
     if ((action === 'revise' || action === 'restore') && (!itemId || !expected)) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 必须带 item_id 与 expected_revision（乐观锁——读取结果里有当前修订号）` } };
     }
     if (action === 'revise' && !content) {
-      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'revise 必须带 content（新正文）' } };
+      return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'revise 必须带新正文（当前窗口 schema 中的 text / content）' } };
     }
     const informedByRevision = typeof args.informed_by_revision === 'number' ? args.informed_by_revision : undefined;
     if (action === 'revise' && informedByRevision !== undefined && informedByRevision >= expected) {
@@ -998,6 +1004,8 @@ export class MemoryToolsService {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: `${action} 必须带 plan_id 与 expected_version（乐观锁——读取结果里有当前版本号）` } };
     }
     const title = typeof args.title === 'string' && args.title.length > 0 ? args.title : undefined;
+    const text = args.text ?? args.content;
+    const content = typeof text === 'string' ? text : undefined;
     if (action === 'create' && !title) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'create 必须带 title' } };
     }
@@ -1007,7 +1015,7 @@ export class MemoryToolsService {
       if (action === 'create') {
         r = await m.planCreate({
           title: title!, operationId: opId,
-          ...(typeof args.content === 'string' ? { content: args.content } : {}),
+          ...(content !== undefined ? { content } : {}),
           ...(typeof args.state === 'string' ? { state: args.state } : {}),
           ...(typeof args.starts_at === 'string' ? { startsAt: args.starts_at } : {}),
           ...(typeof args.due_at === 'string' ? { dueAt: args.due_at } : {}),
@@ -1016,7 +1024,7 @@ export class MemoryToolsService {
         r = await m.planUpdate({
           planId, expectedVersion: expected, operationId: opId,
           ...(title ? { title } : {}),
-          ...(typeof args.content === 'string' ? { content: args.content } : {}),
+          ...(content !== undefined ? { content } : {}),
           ...(typeof args.state === 'string' ? { state: args.state } : {}),
           ...(typeof args.starts_at === 'string' ? { startsAt: args.starts_at } : {}),
           ...(typeof args.due_at === 'string' ? { dueAt: args.due_at } : {}),
@@ -1247,7 +1255,8 @@ export class MemoryToolsService {
         // ok 无回执（含损坏的 200 响应被客户端判为无 receipt）≠ 未提交——§5 无记录只是"尚无提交证据"。
         // 只有服务端结构化 completed=false 才是可判定的未提交；此处保守保持 unknown。
         if (r.ok && (r.result as { completed?: unknown }).completed === false) {
-          this.reviews.settleEffect(e.id, 'failed_resolved', false, null);
+          this.reviews.settleEffect(e.id, 'failed_resolved', false, null, null,
+            () => settleHeartbeatMemoryReceipt(this.db, e.operationId, null));
           resolved++;
         } else {
           stillUnknown++;
@@ -1258,7 +1267,9 @@ export class MemoryToolsService {
         stillUnknown++; // 回执错配：不可判定
         continue;
       }
-      this.reviews.settleEffect(e.id, 'committed', true, r.receipt.memory_id, r.receipt.commit_observed_at);
+      const receipt = r.receipt;
+      this.reviews.settleEffect(e.id, 'committed', true, receipt.memory_id, receipt.commit_observed_at,
+        () => settleHeartbeatMemoryReceipt(this.db, e.operationId, { memoryId: receipt.memory_id, version: receipt.version }));
       if (e.seenSequence !== null) {
         try {
           this.checkpoint.advance(windowId, {

@@ -15,11 +15,14 @@ import type { Db } from '../../db/connection.ts';
 import { tx } from '../../db/connection.ts';
 import type { MediaService } from '../../media/assets.ts';
 import { MediaError } from '../../media/assets.ts';
+import { classifySvg } from '../../media/static-svg.ts';
 import type { Logger } from '../../observability/logging.ts';
 import { stableErrorCode } from '../../observability/errors.ts';
 import { sha256Hex } from '../../util/id.ts';
 import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient, type ContentReferenceSnapshot } from './client.ts';
 import { isUserArchiveCreate, registerArchiveCreatedNotice } from './archive-notice.ts';
+import { invalidateHeartbeatContentSource } from '../../modules/heartbeat/service.ts';
+import { bindHeartbeatContentOperation, settleHeartbeatContentReceipt, type HeartbeatContentBinding } from '../../modules/heartbeat/actions.ts';
 
 export const CONTENT_OPERATION_TARGET = 'content.operation';
 /** F3（复审 2026-11-09 二轮）：存档 M 投影意图 outbox target——content 权威快照确认的
@@ -40,7 +43,7 @@ type IntentPayload = {
 
 type OutboxRow = { id: string; operation_key: string; payload_ref: string; state: string; attempt: number };
 
-export type ContentWriteResult = { status: number; body: unknown };
+export type ContentWriteResult = { status: number; body: unknown; /** Host-only original durable key of a model operation. */ operationKey?: string };
 type ContentWriteRequest = {
   method: 'POST' | 'PUT' | 'DELETE';
   path: string;
@@ -94,6 +97,7 @@ export class ContentOperationCoordinator {
   /** 模型显式键按授权房间和写操作类型稳定。历史意图仍用旧 HTTP 键和现有 pin。 */
   async writeForModel(req: {
     roomId: string; turnId: string | null; path: string; body: Record<string, unknown>; idempotencyKey: string;
+    heartbeat?: HeartbeatContentBinding;
   }): Promise<ContentWriteResult> {
     const kind = ownerTypeOf(req.path);
     let key = `tool-content-v2:${sha256Hex(JSON.stringify([req.roomId, kind, req.idempotencyKey]))}`;
@@ -108,18 +112,18 @@ export class ContentOperationCoordinator {
     }
     const result = await this.write({ method: 'POST', path: req.path, actor: 'jiaming', body: req.body,
       headers: { 'idempotency-key': key },
-    }, true);
+    }, true, req.heartbeat);
     if (result.status < 500 || (result.body as { error?: { code?: string } } | null)?.error?.code === 'content_write_confirmation_pending') {
-      return result;
+      return { ...result, operationKey: MODEL_OPERATION_PREFIX + key };
     }
     const retained = this.db.prepare(`SELECT state, payload_ref FROM outbox
       WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome','acked')`)
       .get(CONTENT_OPERATION_TARGET, MODEL_OPERATION_PREFIX + key) as { state: string; payload_ref: string } | undefined;
-    if (!retained) return result;
+    if (!retained) return { ...result, operationKey: MODEL_OPERATION_PREFIX + key };
     if (retained.state === 'acked' || (JSON.parse(retained.payload_ref) as IntentPayload).commit_observed === 1) {
-      return committedReceiptPending();
+      return { ...committedReceiptPending(), operationKey: MODEL_OPERATION_PREFIX + key };
     }
-    return { status: 504, body: { error: { code: 'content_write_unknown', message: '操作已受理，结果待核。请使用原键及原参数。' } } };
+    return { status: 504, body: { error: { code: 'content_write_unknown', message: '操作已受理，结果待核。请使用原键及原参数。' } }, operationKey: MODEL_OPERATION_PREFIX + key };
   }
 
   /** 返回原 HTTP 键；false 表示有多笔历史操作，不能自动选择。 */
@@ -145,11 +149,15 @@ export class ContentOperationCoordinator {
   }
 
   /** 浏览器代理与模型写工具共用入口。GET 不经此处（无写协调）。 */
-  async write(req: ContentWriteRequest, preserveModelIdentity = false): Promise<ContentWriteResult> {
+  async write(req: ContentWriteRequest, preserveModelIdentity = false, heartbeat?: HeartbeatContentBinding): Promise<ContentWriteResult> {
     const key = req.headers['idempotency-key'];
     if (!key) return { status: 400, body: { error: { code: 'missing_idempotency', message: '写请求必须带 Idempotency-Key' } } };
     const opKey = `content:${req.actor}:${key}`;
     const currentIntent: IntentPayload = { actor: req.actor, method: req.method, path: req.path.split('?')[0]!, body: req.body, if_match: req.headers['if-match'] };
+    const ownerType = ownerTypeOf(currentIntent.path);
+    const bind = () => {
+      if (preserveModelIdentity && req.actor === 'jiaming') bindHeartbeatContentOperation(this.db, heartbeat, opKey, ownerType);
+    };
 
     // ⓪ 本地已接受身份边界（RF02，复审 20261106）：pending/unknown 意图=操作已被本宿主
     // 接受（意图+pin 已持久、结果未收口）。此时同键异参不得借“远端尚无回执”改写已
@@ -162,6 +170,7 @@ export class ContentOperationCoordinator {
     if (accepted) {
       const persisted = JSON.parse(accepted.payload_ref) as IntentPayload;
       if (intentFingerprint(persisted, preserveModelIdentity) !== intentFingerprint(currentIntent, preserveModelIdentity)) return OPERATION_CONFLICT;
+      bind(); // the exact command already owns a durable intent
       const advanced = await this.advanceAccepted(opKey);
       return advanced ?? { status: 504, body: { error: { code: 'content_write_unknown', message: '内容服务响应未知；操作已持久，将按原身份恢复收口（同键重试安全）' } } };
     }
@@ -175,12 +184,19 @@ export class ContentOperationCoordinator {
       return { status: 503, body: { error: { code: 'content_unreachable', message: '内容服务不可达，稍后重试（原操作未提交）', detail: String((err as Error).message ?? err).slice(0, 140) } } };
     }
     if (resolved.outcome !== 'new') {
+      if (preserveModelIdentity && resolved.outcome === 'replay' && resolved.status >= 200 && resolved.status < 300) {
+        tx(this.db, () => {
+          bind();
+          settleHeartbeatContentReceipt(this.db, opKey, ownerType, hasObjectId(resolved.body) ? 'committed' : 'partial', resolved.body);
+        });
+      }
       if (preserveModelIdentity && resolved.outcome === 'replay' && resolved.status >= 200 && resolved.status < 300 && !hasObjectId(resolved.body)) {
         return committedReceiptPending(resolved.status);
       }
       // RR4-W3：同操作成功重放（本宿主此前已收口，或崩溃前 content 已提交）——用户
       // 发起的存档创建经同一登记入口幂等补齐（多数路径已登记，UNIQUE 吞并）。
       this.registerArchiveNoticeIfUserCreate(currentIntent, key, resolved.status, resolved.body);
+      if (resolved.outcome === 'replay') this.recordHeartbeatDeletion(currentIntent, resolved.status, resolved.body,opKey);
       return { status: resolved.status, body: resolved.body };
     }
 
@@ -196,13 +212,19 @@ export class ContentOperationCoordinator {
         throw err;
       }
     }
+    const invalidCreation = await this.validateCreationWork(currentIntent);
+    if (invalidCreation) return invalidCreation;
 
     // ③ HTTP 前持久意图 + pin（同一本地事务；失败=操作未被接受，不提交 content）。
     //    R3-C01：同键异参在事务内权威判定——并发下第二个异参请求在此处得到 409，
     //    不再回放第一个命令的回执。
     let accept: 'new' | 'kept' | 'conflict';
     try {
-      accept = tx(this.db, () => this.upsertIntent(opKey, currentIntent, candidates, preserveModelIdentity));
+      accept = tx(this.db, () => {
+        const decision = this.upsertIntent(opKey, currentIntent, candidates, preserveModelIdentity);
+        if (decision !== 'conflict') bind();
+        return decision;
+      });
     } catch (err) {
       this.logger.warn('content_intent_persist_failed', { code: stableErrorCode(err), detail: String((err as Error).message ?? err).slice(0, 140) });
       return { status: 503, body: { error: { code: 'content_intent_persist_failed', message: '本地意图登记失败，操作未提交（可原键重试）' } } };
@@ -214,6 +236,46 @@ export class ContentOperationCoordinator {
 
     // ④ 提交——只执行已持久且匹配的原意图（upsert 对 failed/acked 重开时即当前请求）
     return this.dispatchPinned(opKey, this.intentOf(opKey) ?? currentIntent);
+  }
+
+  /** Host is the authority for actual asset MIME/content; Content owns the collection rule.
+   * Check only a new write, after receipt resolution, so old work references still replay unchanged. */
+  private async validateCreationWork(intent: IntentPayload): Promise<ContentWriteResult | null> {
+    if (intent.method === 'DELETE' || !/^\/api\/v1\/content\/creations(?:\/[^/]+)?$/.test(intent.path)) return null;
+    const body = intent.body ?? {};
+    if (typeof body.work_asset_id !== 'string' && typeof body.work_kind !== 'string') return null;
+    let workAsset = body.work_asset_id;
+    let workKind = body.work_kind;
+    let hasBucket = typeof body.bucket_id === 'string' && !!body.bucket_id && intent.method === 'POST';
+    try {
+      if (intent.method === 'PUT') {
+        const current = await contentForward(this.client, { method: 'GET', path: intent.path, actor: intent.actor });
+        if (current.bodyFailed) return { status: 503, body: { error: { code: 'creation_unconfirmed', message: '暂不能确认原作品关系' } } };
+        if (current.status !== 200) return { status: current.status, body: current.body };
+        const original = current.body as { work_asset_id?: unknown; work_kind?: unknown; bucket_ref?: unknown };
+        if (typeof workAsset !== 'string' || !workAsset) workAsset = original.work_asset_id;
+        if (typeof workKind !== 'string') workKind = original.work_kind;
+        hasBucket = original.bucket_ref != null;
+        if (workAsset === original.work_asset_id && workKind === original.work_kind) return null;
+      }
+      // Explicit memorial buckets retain the pre-existing work contract.
+      if (hasBucket || typeof workAsset !== 'string' || typeof workKind !== 'string') return null;
+      const asset = this.media.getAsset(workAsset);
+      const reject = (code: string, message: string): ContentWriteResult => ({ status: 422, body: { error: { code, message } } });
+      if (['image/png','image/jpeg','image/webp','image/gif'].includes(asset.mime_type)) return reject('image_belongs_in_album', '纯图片请通过相册成员接口入库');
+      if (asset.mime_type === 'text/html' && workKind === 'html') return null;
+      if (asset.mime_type === 'image/svg+xml' && workKind === 'svg') {
+        const { bytes } = await this.media.readContentResolvingMaster(workAsset);
+        const classification = classifySvg(bytes);
+        if (classification === 'code') return null;
+        return reject(classification === 'image' ? 'image_belongs_in_album' : 'svg_classification_unavailable',
+          classification === 'image' ? '静态 SVG 请归入相册，不重复创建作品关系' : '无法确认 SVG 是可运行代码作品');
+      }
+      return reject('work_kind_mismatch', '作品类型与实际资产格式不一致');
+    } catch (err) {
+      if (err instanceof MediaError) return { status: err.httpStatus, body: { error: { code: err.code.toLowerCase(), message: err.message } } };
+      return { status: 503, body: { error: { code: 'creation_unconfirmed', message: '暂不能确认作品实际类型' } } };
+    }
   }
 
   /** RF2-01（复审 20261106 第二轮）：推进一个已接受操作——HTTP 同参重试与恢复 tick
@@ -239,6 +301,7 @@ export class ContentOperationCoordinator {
         // 漏掉的那份用户通知。登记在快照确认**之前**（快照/M 投影不拖延已确定的
         // 成功通知）；登记失败抛出→本 catch 标 unknown，恢复链沿原键再来。
         this.registerArchiveNoticeIfUserCreate(p, idem, resolved.status, resolved.body);
+        this.recordHeartbeatDeletion(p, resolved.status, resolved.body,opKey);
         // 原操作已提交：确认映射收口（快照不可达=保留，下轮再试）
         await this.confirmOperation(opKey, { status: resolved.status, body: resolved.body });
         return { status: resolved.status, body: resolved.body };
@@ -266,10 +329,14 @@ export class ContentOperationCoordinator {
     const idemKey = opKey.slice(`content:${intent.actor}:`.length);
     let result: Awaited<ReturnType<typeof contentForward>>;
     try {
-      const write = () => contentForward(this.client, {
-        method: intent.method, path: intent.path, actor: intent.actor, body: intent.body,
-        headers: { ...(intent.if_match !== undefined ? { 'If-Match': intent.if_match } : {}), 'Idempotency-Key': idemKey },
-      });
+      const write = async () => {
+        const response = await contentForward(this.client, {
+          method: intent.method, path: intent.path, actor: intent.actor, body: intent.body,
+          headers: { ...(intent.if_match !== undefined ? { 'If-Match': intent.if_match } : {}), 'Idempotency-Key': idemKey },
+        });
+        if (!response.bodyFailed) this.recordHeartbeatDeletion(intent, response.status, response.body,opKey);
+        return response;
+      };
       result = this.guardSourceMutation && intent.method !== 'POST'
         ? await this.guardSourceMutation(intent.path, write)
         : await write();
@@ -344,11 +411,17 @@ export class ContentOperationCoordinator {
   private async confirmOperation(opKey: string, contentResult: ContentWriteResult): Promise<boolean> {
     const intent = this.intentOf(opKey);
     if (!intent) return false;
+    this.recordHeartbeatDeletion(intent, contentResult.status, contentResult.body,opKey);
     const ownerId = (contentResult.body as { id?: string } | null)?.id;
     if (typeof ownerId !== 'string' || !ownerId) { this.markUnknown(opKey, new Error('no_object_id'), true); return false; }
     const ownerType = ownerTypeOf(intent.path);
-    this.db.prepare(`UPDATE outbox SET payload_ref=json_set(payload_ref,'$.commit_observed',1)
-      WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome')`).run(CONTENT_OPERATION_TARGET, opKey);
+    tx(this.db, () => {
+      this.db.prepare(`UPDATE outbox SET payload_ref=json_set(payload_ref,'$.commit_observed',1)
+        WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome')`).run(CONTENT_OPERATION_TARGET, opKey);
+      if (intent.actor === 'jiaming' && contentResult.status >= 200 && contentResult.status < 300) {
+        settleHeartbeatContentReceipt(this.db, opKey, ownerType, 'committed', contentResult.body);
+      }
+    });
     const snapshot = await fetchReferenceSnapshot(this.client, ownerType, ownerId);
     if (!snapshot) { this.markUnknown(opKey, new Error('snapshot_unavailable'), true); return false; } // 404/不可达≠可释放
     const archive = ownerType === 'conversation_archive' && snapshot.archive
@@ -373,6 +446,9 @@ export class ContentOperationCoordinator {
         this.db.prepare(`INSERT INTO content_owner_state(owner_type, owner_id, applied_revision, deleted, asset_ids_json, updated_at) VALUES (?,?,?,?,?,?)
           ON CONFLICT(owner_type, owner_id) DO UPDATE SET applied_revision = excluded.applied_revision, deleted = excluded.deleted, asset_ids_json = excluded.asset_ids_json, updated_at = excluded.updated_at`)
           .run(ownerType, ownerId, snapshot.ownerRevision, snapshot.deleted ? 1 : 0, JSON.stringify(snapshot.assetIds), nowIso);
+        if (snapshot.deleted && (ownerType === 'album_entry' || ownerType === 'future_note')) {
+          invalidateHeartbeatContentSource(this.db, ownerType === 'album_entry' ? 'album' : 'reserved_note', ownerId);
+        }
       } else {
         // 迟到旧确认：不动正式关系与版本锚，只收口本次操作 pin
         this.media.releaseOperationPins(opKey);
@@ -390,6 +466,26 @@ export class ContentOperationCoordinator {
         ).run(`cap_${ownerId.length}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`, `archive-projection:${ownerId}:${opType}`, ARCHIVE_PROJECTION_TARGET, payload, 'pending', nowIso, nowIso);
       }
       this.ackIntent(opKey, stale ? applied!.applied_revision : snapshot.ownerRevision, ownerId);
+    });
+  }
+
+  /** When a source DELETE already returned an authoritative business receipt,
+   * invalidate the exact frozen reference before releasing its dispatch gate.
+   * Snapshot reconciliation remains independently recoverable. */
+  private recordHeartbeatDeletion(intent: IntentPayload, status: number, body: unknown, opKey: string): void {
+    if (intent.method !== 'DELETE' || status < 200 || status >= 300) return;
+    const match = /^\/api\/v1\/content\/(album-entries|future-notes)\/([^/?]+)$/.exec(intent.path);
+    const receipt = body as { id?: unknown; removed?: unknown; deleted?: unknown } | null;
+    if (!match || typeof receipt?.id !== 'string' || encodeURIComponent(receipt.id) !== match[2]
+      || !(receipt.removed === true || receipt.deleted === true)) return;
+    const sourceId = receipt.id;
+    tx(this.db,()=>{
+      // The source receipt is already authoritative even when the media
+      // snapshot remains pending. Preserve that existing commit fact across
+      // the gap so a just-finishing candidate enumeration cannot re-freeze it.
+      this.db.prepare(`UPDATE outbox SET payload_ref=json_set(payload_ref,'$.commit_observed',1)
+        WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome')`).run(CONTENT_OPERATION_TARGET,opKey);
+      invalidateHeartbeatContentSource(this.db, match[1] === 'album-entries' ? 'album' : 'reserved_note', sourceId);
     });
   }
 
@@ -451,18 +547,28 @@ export class ContentOperationCoordinator {
   }
 
   private markUnknown(opKey: string, err: Error, commitObserved = false): void {
-    this.db.prepare(`UPDATE outbox SET state='unknown_outcome', attempt=attempt + 1, last_error=?, updated_at=?,
-      payload_ref=CASE WHEN ? THEN json_set(payload_ref,'$.commit_observed',1) ELSE payload_ref END
-      WHERE target=? AND operation_key=? AND state NOT IN ('acked','failed')`)
-      .run(String(err.message ?? err).slice(0, 120), new Date().toISOString(), Number(commitObserved), CONTENT_OPERATION_TARGET, opKey);
+    tx(this.db, () => {
+      const changed = this.db.prepare(`UPDATE outbox SET state='unknown_outcome', attempt=attempt + 1, last_error=?, updated_at=?,
+        payload_ref=CASE WHEN ? THEN json_set(payload_ref,'$.commit_observed',1) ELSE payload_ref END
+        WHERE target=? AND operation_key=? AND state NOT IN ('acked','failed')`)
+        .run(String(err.message ?? err).slice(0, 120), new Date().toISOString(), Number(commitObserved), CONTENT_OPERATION_TARGET, opKey);
+      if (commitObserved && Number(changed.changes) > 0) {
+        const intent = this.intentOf(opKey);
+        if (intent?.actor === 'jiaming') settleHeartbeatContentReceipt(this.db, opKey, ownerTypeOf(intent.path), 'partial');
+      }
+    });
   }
 
   private finishFailed(opKey: string, reason: string): void {
     const nowIso = new Date().toISOString();
     tx(this.db, () => {
       this.media.releaseOperationPins(opKey);
-      this.db.prepare("UPDATE outbox SET state = 'failed', attempt = attempt + 1, last_error = ?, updated_at = ? WHERE target = ? AND operation_key = ? AND state NOT IN ('acked')")
+      const changed = this.db.prepare("UPDATE outbox SET state = 'failed', attempt = attempt + 1, last_error = ?, updated_at = ? WHERE target = ? AND operation_key = ? AND state NOT IN ('acked')")
         .run(reason.slice(0, 120), nowIso, CONTENT_OPERATION_TARGET, opKey);
+      if (Number(changed.changes) > 0) {
+        const intent = this.intentOf(opKey);
+        if (intent?.actor === 'jiaming') settleHeartbeatContentReceipt(this.db, opKey, ownerTypeOf(intent.path), 'failed');
+      }
     });
   }
 

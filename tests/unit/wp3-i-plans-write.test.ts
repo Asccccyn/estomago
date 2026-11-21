@@ -37,7 +37,7 @@ test('I写①：create → i.item.create（change_reason 透传）', async () =>
   const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
   const mariposa: MariposaTransport = async (cap, payload) => { calls.push({ cap, payload: payload as Record<string, unknown> }); return { ok: true, result: { item_id: 'it9', revision: 1 } }; };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_i_write', { action: 'create', content: '新的一条', change_reason: '补充自我认知' }, CTX);
+  const out = await tools.execute('memory_i_write', { action: 'create', text: '新的一条', change_reason: '补充自我认知' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'i.item.create');
   assert.equal(calls[0]!.payload.content, '新的一条');
@@ -49,7 +49,7 @@ test('I写①：create → i.item.create（change_reason 透传）', async () =>
 test('I写②：revise 缺 item_id/expected_revision/content 明确拒', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: true, result: {} });
   const { tools, db } = makeTools(mariposa);
-  const a = await tools.execute('memory_i_write', { action: 'revise', content: 'x' }, CTX);
+  const a = await tools.execute('memory_i_write', { action: 'revise', text: 'x' }, CTX);
   assert.equal(a.ok, false);
   assert.equal(a.output.error_code, 'TOOL_ARG_REQUIRED');
   assert.ok(String(a.output.error).includes('item_id'));
@@ -64,7 +64,7 @@ test('I写③：revise 全参 → i.item.revise（CAS+informed_by 透传）；re
   const mariposa: MariposaTransport = async (cap, payload) => { calls.push({ cap, payload: payload as Record<string, unknown> }); return { ok: true, result: { item_id: 'it1', revision: 3 } }; };
   const { tools, db } = makeTools(mariposa);
   const relations = [{ memory_id: 'm1', relation_type: 'clarified_by' }];
-  const revise = { action: 'revise', item_id: 'it1', content: '改后', expected_revision: 2, relations };
+  const revise = { action: 'revise', item_id: 'it1', text: '改后', expected_revision: 2, relations };
   const invalid = await tools.execute('memory_i_write', { ...revise, informed_by_revision: 2 }, CTX);
   assert.equal(invalid.ok, false);
   assert.equal(invalid.output.error_code, 'I_INVALID_ARGUMENT');
@@ -95,7 +95,7 @@ test('计划写①：create → plan.create（宿主幂等 op）；缺 title 拒
   const bad = await tools.execute('plans_write', { action: 'create' }, CTX);
   assert.equal(bad.ok, false);
   assert.ok(String(bad.output.error).includes('title'));
-  const out = await tools.execute('plans_write', { action: 'create', title: '十月看海', content: '秋天去', due_at: '2026-10-30' }, CTX);
+  const out = await tools.execute('plans_write', { action: 'create', title: '十月看海', text: '秋天去', due_at: '2026-10-30' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'plan.create');
   assert.equal(calls[0]!.payload.title, '十月看海');

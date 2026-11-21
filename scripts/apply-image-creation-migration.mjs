@@ -29,8 +29,16 @@ async function apply(hostSource, contentSource, reviewedPlan, destination) {
     sourceHost = openSnapshot(hostSource);
     sourceContent = openSnapshot(contentSource);
     const current = buildImageCreationPlan(sourceHost, sourceContent);
-    if (!isDeepStrictEqual(current, JSON.parse(readFileSync(reviewedPlan, 'utf8')))) {
+    const { approved_existing_links = [], ...reviewed } = JSON.parse(readFileSync(reviewedPlan, 'utf8'));
+    if (!isDeepStrictEqual(current, reviewed)) {
       throw new Error('RASTER_MIGRATION_REVIEWED_PLAN_CHANGED');
+    }
+    // Explicitly reviewed existing memberships only: the original plan still binds the
+    // asset/hash/author/timestamp and exact relation revision; no inferred associations.
+    if (!Array.isArray(approved_existing_links) || new Set(approved_existing_links).size !== approved_existing_links.length
+      || approved_existing_links.some(id => typeof id !== 'string' || !current.items.some(item =>
+        item.creation_id === id && item.action === 'review_existing_album_entry'))) {
+      throw new Error('RASTER_MIGRATION_LINK_APPROVAL_INVALID');
     }
 
     staging = mkdtempSync(join(parent, '.raster-migration-'));
@@ -46,7 +54,11 @@ async function apply(hostSource, contentSource, reviewedPlan, destination) {
       throw new Error('RASTER_MIGRATION_COPY_CHANGED');
     }
 
-    const candidates = current.items.filter(item => item.action === 'propose_album_entry' || item.action === 'already_linked');
+    const candidates = current.items.flatMap(item => {
+      if (item.action === 'propose_album_entry' || item.action === 'already_linked') return [item];
+      if (item.action === 'review_existing_album_entry' && approved_existing_links.includes(item.creation_id)) return [{ ...item, action: 'link_reviewed_existing_entry' }];
+      return [];
+    });
     const now = new Date().toISOString();
     const snapshots = tx(content, () => candidates.map(item => migrateRasterCreationInTx(content, item, now)));
     const coordinator = new ContentOperationCoordinator({
@@ -76,6 +88,7 @@ async function apply(hostSource, contentSource, reviewedPlan, destination) {
     renameSync(staging, output);
     staging = undefined;
     return { mode: 'offline-copy', applied: snapshots.length, created_album_entries: candidates.filter(item => item.action === 'propose_album_entry').length,
+      attached_existing_entries: candidates.filter(item => item.action === 'link_reviewed_existing_entry').length,
       counts_before: current.counts, items: snapshots.map((snapshot, index) => ({
         creation_id: candidates[index].creation_id, album_entry_id: snapshot.owner_id, asset_id: snapshot.asset_ids[0],
       })) };

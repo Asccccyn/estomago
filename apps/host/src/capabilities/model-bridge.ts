@@ -215,6 +215,7 @@ export class ModelToolBridge {
       case TURN_COMPLETION_TOOL:
         return canDiscoverTurnCompletion(this.db, ctx);
       case HEARTBEAT_DRAW_TOOL:
+      case 'wishstar_reply_star':
         return canDrawHeartbeat(this.db, ctx);
       default:
         return this.capabilityRegistry?.get(name)?.group !== 'T';
@@ -228,7 +229,7 @@ export class ModelToolBridge {
     // A historical native window carries completion on autonomous requests
     // only. New snapshots advertise it in their ordinary frozen tool list.
     if (name === TURN_COMPLETION_TOOL && task && ctx.purpose !== 'proactive_turn') return null;
-    if ((task || name === TURN_COMPLETION_TOOL || name === HEARTBEAT_DRAW_TOOL) && !(name === TURN_COMPLETION_TOOL && mode === 'direct_execution')
+    if ((task || name === TURN_COMPLETION_TOOL || name === HEARTBEAT_DRAW_TOOL || name === 'wishstar_reply_star') && !(name === TURN_COMPLETION_TOOL && mode === 'direct_execution')
         && !this.taskScopeAllows(name, ctx, mode)) return null;
     const frozen = (task ? set.catalog : set.tools).find(spec => spec.function.name === name);
     return frozen ? this.visibleFrozenDefinition(frozen) : null;

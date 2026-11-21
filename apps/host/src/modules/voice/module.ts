@@ -95,6 +95,7 @@ export function registerVoiceCapabilities(registry: { register(d: CapabilityDesc
     });
     registry.register({
       id: 'chat_send_voice',
+      heartbeatAction: 'chat',
       owner: 'voice',
       baselineOrder: 26,
       definition: () => CHAT_SEND_VOICE_DEFINITION,

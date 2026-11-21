@@ -28,7 +28,7 @@ let serial = 0;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const content = (p: J): string => (p.messages ?? []).map((m: J) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content))).join('\n');
 
-type Script = { mode: 'wake' | 'draw' | 'decline'; cardNumber?: number; keepRound?: number };
+type Script = { mode: 'wake' | 'draw' | 'decline'; cardNumber?: number; keepRound?: number; scheduleWake?: boolean };
 const invoke = (name: string, args: J) => ({ name: 'tool_invoke', arguments: JSON.stringify({ name, arguments: args }) });
 
 function installFakeDs(script: Script): void {
@@ -52,6 +52,9 @@ function installFakeDs(script: Script): void {
         calls = [invoke('background_complete', { outcome: 'noop' })];
       } else if (isWake) {
         text = '内部结束';
+      } else if (script.scheduleWake) {
+        script.scheduleWake = false;
+        calls = [invoke('wake_manage', { operation: 'schedule', operation_id: 'wake-first', note: '合成：半小时后问候', delay_seconds: 1800 })];
       }
       const requestId = `fake-ds-${++serial}`;
       bodies.push({ kind: isWake ? 'wake' : isKeepalive ? 'keepalive' : 'chat', payload: p });
@@ -197,16 +200,24 @@ test('C09：无文字拒抽保留维护回执，下一自然机会仍可调度',
 });
 
 test('C07：自醒包装携带设置时间/原due/实际递交；重放不重算', async () => {
-  const f = await boot({ mode: 'wake' });
+  const script: Script = { mode: 'wake', scheduleWake: true };
+  const f = await boot(script);
   try {
     await f.request('/background/settings', 'PUT', { autonomous: { enabled: true, daily_cost_cap_usd: 10 } }, 'enable-auto');
     await f.seed('s1');
-    const created = await f.request('/background/tasks', 'POST', { note: '合成：半小时后问候', delay_seconds: 1800 }, 'wake-first');
-    const original = f.host.db.prepare('SELECT * FROM background_tasks WHERE id=?').get(created.task_id) as J;
+    const original = f.host.db.prepare("SELECT * FROM background_tasks WHERE origin='self_schedule'").get() as J;
+    assert.ok(original, '真正模型调用 wake_manage 时才创建自主预约');
+    assert.equal(original.created_by_actor_id, 'jiaming');
+    const listed = await f.request('/background/tasks/' + original.id);
+    assert.equal(listed.task.created_by, 'jiaming');
+    await assert.rejects(f.request('/background/tasks', 'POST', { note: '合成代设', delay_seconds: 1800 }, 'delegate'), /self_wake_owner_only/);
     const countBefore = bodies.length;
     auditNow += 1_800_001;
-    const replay = await f.request('/background/tasks', 'POST', { note: '合成：半小时后问候', delay_seconds: 1800 }, 'wake-first');
-    assert.equal(replay.scheduled_at, created.scheduled_at, '相对时间重放不重算（原due冻结）');
+    script.scheduleWake = true;
+    await f.seed('s2');
+    const replay = f.host.db.prepare("SELECT * FROM background_tasks WHERE origin='self_schedule'").all() as J[];
+    assert.equal(replay.length, 1, '模型重放不重复建任务');
+    assert.equal(replay[0]!.scheduled_at, original.scheduled_at, '相对时间重放不重算（原due冻结）');
     await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
     const wake = bodies.slice(countBefore).find((r: J) => r.kind === 'wake');
     assert.ok(wake, '自醒请求已发出');
@@ -218,5 +229,6 @@ test('C07：自醒包装携带设置时间/原due/实际递交；重放不重算
     assert.ok(text.includes('Your note: 合成：半小时后问候'), 'note 原文保留');
     assert.equal((text.match(/结束前，把要告诉乔乔的话发到聊天；有后续就自行安排。/g) ?? []).length, 1);
     assert.doesNotMatch(text, /想给宿主用户发一句|idempotency_key/);
+    assert.equal(f.host.db.prepare('SELECT COUNT(*) n FROM background_runs WHERE task_id=?').get(original.id)?.n, 1);
   } finally { await f.shutdown(); }
 });

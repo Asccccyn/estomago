@@ -16,14 +16,14 @@ export const WISHSTARWRITESTAR_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          content: { type: 'string', minLength: 1, maxLength: contract.limits.content, description: '星星内容（想许的愿/想记的话）' },
+          text: { type: 'string', minLength: 1, maxLength: contract.limits.content, description: '星星内容（想许的愿/想记的话）' },
           visibility: { type: 'string', enum: ['visible', 'hidden'], description: 'visible=我们的瓶子；hidden=自己的私人瓶' },
           mood_type: { type: 'string', maxLength: contract.limits.mood, description: '可选：星星的心情境况' },
           mood_text: { type: 'string', maxLength: contract.limits.mood, description: '可选：写星时的一句话心情' },
           note: { type: 'string', maxLength: contract.limits.note, description: '可选：附注' },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一颗' },
         },
-        required: ['content', 'visibility', 'idempotency_key'], additionalProperties: false,
+        required: ['text', 'visibility', 'idempotency_key'], additionalProperties: false,
       },
     }
   };
@@ -191,13 +191,31 @@ export const WISHSTARREAD_DEFINITION: HostToolSpec = {
 
 export type WishstarModuleDeps = {
   wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
+  replyTarget?: ConstructorParameters<typeof WishstarService>[0]['replyTarget'];
 };
 
 export function registerWishstarCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: WishstarModuleDeps): void {
   const service = new WishstarService(deps);
   registry.register(toolCapability({
+    owner: 'wishstar', id: 'wishstar_reply_star', group: 'D', baselineOrder: 62,
+    heartbeatAction: 'star_reply',
+    memoryOnlyAllowed: false, label: '回应抽到的许愿星',
+    definition: { type: 'function', function: {
+      name: 'wishstar_reply_star',
+      description: '回应本轮心跳已交付的共享星。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。',
+      parameters: { type: 'object', properties: {
+        reply_ref: { type: 'string', minLength: 1, maxLength: 256, description: '本轮星牌 heartbeat_card.reply_ref' },
+        text: { type: 'string', minLength: 1, maxLength: 1000 },
+        idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '同键重试同一条回应' },
+      }, required: ['reply_ref', 'text', 'idempotency_key'], additionalProperties: false },
+    } },
+    run: (input: Record<string, unknown>, ctx) => service.replyStar(input, ctx),
+    toModel: value => projectWishstarToolResult('wishstar_reply_star', value as Record<string, unknown>),
+  }));
+  registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_write_star', baselineOrder: 35, definition: () => WISHSTARWRITESTAR_DEFINITION, memoryOnlyAllowed: false, label: '往许愿星写了一颗星',
+    heartbeatAction: 'star_write',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_write_star', input, ctx),
     toModel: (value) => projectWishstarToolResult('wishstar_write_star',value as Record<string,unknown>),
   }));

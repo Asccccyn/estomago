@@ -7,7 +7,8 @@ import { ContentServer } from '../../apps/content/src/service.ts';
 import { ContentOperationCoordinator } from '../../apps/host/src/integrations/content/coordinator.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import { materializeBlocks } from '../../apps/host/src/media/model-input.ts';
-import { renderStaticSvg } from '../../apps/host/src/media/static-svg.ts';
+import { classifySvg, renderStaticSvg } from '../../apps/host/src/media/static-svg.ts';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { ContentToolsService } from '../../apps/host/src/modules/content/service.ts';
 import { MediaToolsService } from '../../apps/host/src/modules/media/service.ts';
 import { handleAssetsRoutes } from '../../apps/host/src/server/routes/assets.ts';
@@ -29,6 +30,23 @@ test('SVG 静态门拦住外部引用、脚本、事件、动画与可执行嵌�
     Buffer.concat([Buffer.from('<?xml-stylesheet href="file:///fixture.css"?>'), safe]),
     Buffer.concat([Buffer.from('<!DOCTYPE svg [<!ENTITY text "sample">]>'), safe]),
   ]) assert.equal(await renderStaticSvg(source), null);
+});
+
+test('静态 SVG 文本不是代码作品；PNG 视图包含实际可见字形而不只是空画布', async () => {
+  const written = frame('<text x="100" y="250" font-family="Arial" font-size="160" fill="#000">Sample <tspan font-weight="bold">123</tspan></text>');
+  assert.equal(classifySvg(written), 'image');
+  const png = await renderStaticSvg(written);
+  assert.ok(png);
+  const image = await loadImage(png);
+  const canvas = createCanvas(image.width, image.height);
+  const context = canvas.getContext('2d');
+  context.drawImage(image, 0, 0);
+  const pixels = context.getImageData(0, 0, image.width, image.height).data;
+  assert.ok(pixels.some((alpha, index) => index % 4 === 3 && alpha > 0), '文本 PNG 不为空');
+  const unsupported = frame('<image href="https://invalid.example/fixture.png"/>');
+  assert.equal(classifySvg(unsupported), 'image');
+  assert.equal(await renderStaticSvg(unsupported), null, '已分类静态图可暂不支持安全发送视图');
+  assert.equal(classifySvg(frame('<circle r="5"><animate attributeName="r" dur="2s"/></circle>')), 'code');
 });
 
 test('资产 HTTP 保存原 SVG 与绑定 PNG，发送和预览复用 PNG，重传不新增资产', async t => {
@@ -84,6 +102,8 @@ test('资产 HTTP 保存原 SVG 与绑定 PNG，发送和预览复用 PNG，重�
 
   const conflicting = await invoke('POST', '/api/v1/assets?purpose=chat_image', frame('<rect width="10" height="10"/>'));
   assert.equal(conflicting.status, 409);
+  assert.equal((await invoke('POST', '/api/v1/assets?purpose=creation_icon', safe)).status, 409);
+  assert.equal((await invoke('POST', '/api/v1/assets?purpose=creation_work', safe)).status, 409);
   const originalCode = await media.saveBuffer({ bytes: frame('<circle r="5"><animate attributeName="r" dur="1s"/></circle>'), purpose: 'creation_icon', operationId: 'animated-work', createdBy: 'jiaming', origin: 'generated' });
   assert.doesNotThrow(() => media.validateForSend([{ asset_id: originalCode.id, presentation: 'work' }]));
   assert.throws(() => media.validateForSend([{ asset_id: originalCode.id, presentation: 'image' }]), /不接受 image\/svg\+xml/);
@@ -143,4 +163,10 @@ test('模型作品工具把静态 SVG 原件归相册，动画保留作品；med
   assert.ok(animated.output.creation_id);
   assert.equal(content.db.prepare('SELECT count(*) AS n FROM creations').get()?.n, 1);
   assert.equal(content.db.prepare('SELECT count(*) AS n FROM album_entries').get()?.n, 1);
+  const unsupported = await tools.creationSaveArtifact({
+    ...args, content: frame('<image href="https://invalid.example/sample.png"/>').toString(), client_operation_id: 'static-unrenderable',
+  }, context);
+  assert.equal(unsupported.ok, false);
+  assert.equal(unsupported.output.error_code, 'SVG_STATIC_UNSUPPORTED');
+  assert.equal(content.db.prepare('SELECT count(*) AS n FROM creations').get()?.n, 1);
 });

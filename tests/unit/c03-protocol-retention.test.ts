@@ -71,7 +71,7 @@ test('C03：工具轮后失败——下一普通输入接续已发协议与真�
     req++;
     if (req === 1) {
       // 轮1：模型发起 plans_write（真实写工具，经 mariposa mock 落账）
-      return { status: 200, headers: new Map(), body: Readable.from([toolReply('call-c03', 'memory_i_write', { action: 'create', content: '审计回归 I 条目' })]) };
+      return { status: 200, headers: new Map(), body: Readable.from([toolReply('call-c03', 'memory_i_write', { action: 'create', text: '审计回归 I 条目' })]) };
     }
     if (req === 2) {
       // 轮2（工具结果续轮）：503 —— 回合失败

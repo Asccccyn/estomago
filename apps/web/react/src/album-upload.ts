@@ -1,7 +1,7 @@
 export type PhotoAlbum = 'important_photos' | 'chat_screenshots'
-export type UploadAlbum = PhotoAlbum | 'stickers'
+export type UploadAlbum = PhotoAlbum | 'stickers' | 'creations'
 
-type UploadRequest = { key: string; album: UploadAlbum }
+type UploadRequest = { key: string; album: UploadAlbum; title?: string }
 export type AlbumUpload = UploadRequest & ({ file: File; assetId?: never } | { assetId: string; file?: never })
 
 type AssetReceipt = {
@@ -32,7 +32,7 @@ export async function uploadAlbumEntry(
     asset = (await response.json().catch(() => ({}))) as AssetReceipt
     if (!response.ok) throw failure(`读取资产 ${assetId}`, response, asset.error)
   } else {
-    const purpose = attempt.album === 'stickers' ? 'chat_sticker' : 'chat_image'
+    const purpose = attempt.album === 'creations' ? 'creation_work' : attempt.album === 'stickers' ? 'chat_sticker' : 'chat_image'
     const response = await request(`/api/v1/assets?purpose=${purpose}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': attempt.key },
@@ -42,7 +42,7 @@ export async function uploadAlbumEntry(
     if (!response.ok) throw failure('上传', response, asset.error)
     assetId = asset.asset_id
     if (!assetId) throw new Error('上传回执不完整。使用本次操作重试可核对原资产。')
-    onAssetStored({ key: attempt.key, album: attempt.album, assetId })
+    onAssetStored({ key: attempt.key, album: attempt.album, assetId, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
   }
 
   if (asset.state !== 'available' || asset.m_sync_state !== 'synced') {
@@ -54,13 +54,17 @@ export async function uploadAlbumEntry(
   if (attempt.album === 'stickers' && !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(asset.mime_type ?? '')) {
     throw new Error(`资产 ${assetId} 的格式不支持加入表情包。`)
   }
-  if (asset.mime_type === 'image/svg+xml' && asset.model_image_ready !== true) {
+  if (attempt.album !== 'creations' && asset.mime_type === 'image/svg+xml' && asset.model_image_ready !== true) {
     throw new Error(`SVG 原件已保存，PNG 视图仍待确认（${assetId}）。可稍后继续入库。`)
   }
-  const response = await request(`/api/v1/content/albums/${attempt.album}/entries`, {
+  const workKind = asset.mime_type === 'image/svg+xml' ? 'svg' : asset.mime_type === 'text/html' ? 'html' : undefined
+  if (attempt.album === 'creations' && !workKind) throw new Error(`资产 ${assetId} 不是支持导入的 HTML/SVG 代码作品。图片请使用相册。`)
+  const response = await request(attempt.album === 'creations' ? '/api/v1/content/creations' : `/api/v1/content/albums/${attempt.album}/entries`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${attempt.key}:entry` },
-    body: JSON.stringify({ asset_id: assetId }),
+    body: JSON.stringify(attempt.album === 'creations' ? {
+      work_asset_id: assetId, work_kind: workKind, ...(attempt.title === undefined ? {} : { title: attempt.title }),
+    } : { asset_id: assetId }),
   })
   const entry = (await response.json().catch(() => ({}))) as EntryReceipt
   if (!response.ok) throw failure(`归类（资产 ${assetId}）`, response, entry.error)

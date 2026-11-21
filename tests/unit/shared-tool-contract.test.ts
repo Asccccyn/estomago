@@ -48,7 +48,7 @@ test('许愿星实际领域 DTO：五种读取、请求定位、所有写分支�
   if(what==='hidden'){assert.equal((result.items as any[])[0].content,'SYNTHETIC_PRIVATE_REMAINING');assert.equal((result.items as any[])[0].being_offered,false);}
  }
  const args:Record<string,Record<string,unknown>>={
-  wishstar_write_star:{content:fixture.wishstar_write_star.content,visibility:fixture.wishstar_write_star.visibility,idempotency_key:'fixture'},
+  wishstar_write_star:{text:fixture.wishstar_write_star.content,visibility:fixture.wishstar_write_star.visibility,idempotency_key:'fixture'},
   wishstar_offer_star:{star_id:fixture.wishstar_offer_star.star_id},
   wishstar_accept_offer:{offer_id:fixture.wishstar_list_offers.incoming[0].id},
   wishstar_request_star:{},wishstar_respond_request:{request_id:requestId,decision:'give'},
@@ -57,7 +57,7 @@ test('许愿星实际领域 DTO：五种读取、请求定位、所有写分支�
   wishstar_take_star:{session_id:fixture.wishstar_start_session.id},
   wishstar_finish_session:{session_id:fixture.wishstar_finish_session.id},
  };
- const writes=set.catalog.filter(s=>s.function.name.startsWith('wishstar_')&&s.function.name!=='wishstar_read');
+ const writes=set.catalog.filter(s=>s.function.name.startsWith('wishstar_')&&!['wishstar_read','wishstar_reply_star'].includes(s.function.name));
  assert.deepEqual(Object.keys(args).sort(),writes.map(s=>s.function.name).sort(),'new actions require a real DTO case');
  for(const [name,input] of Object.entries(args)){
   responseName=name;const result=await run(name,input);

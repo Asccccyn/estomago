@@ -28,6 +28,7 @@ export type SourceBlock = {
   display_revision?: number
   current_revision?: number
   editor?: string
+  management_href?: string
   editable: boolean
 }
 
@@ -37,6 +38,7 @@ export type HeartbeatState = {
   available_numbers: number[]
   delivered_numbers: number[]
   source_unavailable_numbers: number[]
+  daily_memory?: { state: string; selected_at?: string; reason?: string | null }
 }
 
 export type ContentPage = {

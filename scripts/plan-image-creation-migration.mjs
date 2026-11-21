@@ -35,8 +35,12 @@ function append(map, key, row) {
 
 function planMigration(host, content) {
   const assets = new Map(host.prepare(`
-    SELECT id, state, mime_type, content_sha256, m_sync_state, m_content_hash FROM media_assets
+    SELECT id, state, mime_type, content_sha256, m_sync_state, m_content_hash, origin_service, origin_ref, ingest_purpose, creation_operation_id FROM media_assets
   `).all().map(asset => [asset.id, asset]));
+  const staticViews = new Map([...assets.values()].filter(asset =>
+    asset.origin_service === 'estomago_static_svg' && asset.ingest_purpose === 'derived_view' &&
+    asset.creation_operation_id === `static-svg-view-v1:${asset.origin_ref}` &&
+    asset.mime_type === 'image/png' && confirmedHash(asset)).map(asset => [asset.origin_ref, asset]));
   const creations = content.prepare(`
     SELECT id, creator_actor, bucket_id, icon_asset_id, work_asset_id, work_kind, created_at, revision
     FROM creations WHERE deleted_at IS NULL ORDER BY created_at, id
@@ -45,7 +49,7 @@ function planMigration(host, content) {
   const albumsByHash = new Map();
   const hasAlbumHash = content.prepare('PRAGMA table_info(album_entries)').all().some(column => column.name === 'content_sha256');
   for (const entry of content.prepare(`
-    SELECT id, asset_id, revision, deleted_at, ${hasAlbumHash ? 'content_sha256' : 'NULL AS content_sha256'} FROM album_entries WHERE kind=?
+    SELECT id, asset_id, revision, deleted_at, added_by_actor, created_at, ${hasAlbumHash ? 'content_sha256' : 'NULL AS content_sha256'} FROM album_entries WHERE kind=?
   `).iterate(PHOTO_ALBUM)) {
     append(albumsByAsset, entry.asset_id, entry);
     const hash = confirmedHash(assets.get(entry.asset_id));
@@ -63,7 +67,7 @@ function planMigration(host, content) {
   }
   const sharedImageAssets = new Map();
   for (const creation of creations) {
-    if (creation.work_kind === 'image' && creation.work_asset_id) {
+    if ((creation.work_kind === 'image' || (creation.work_kind === 'svg' && staticViews.has(creation.work_asset_id))) && creation.work_asset_id) {
       const hash = confirmedHash(assets.get(creation.work_asset_id));
       append(sharedImageAssets, hash ?? creation.work_asset_id, creation.id);
     }
@@ -76,14 +80,16 @@ function planMigration(host, content) {
       created_at: creation.created_at, work_kind: creation.work_kind, asset_id: creation.work_asset_id,
     };
     const asset = assets.get(creation.work_asset_id);
-    if (creation.work_kind === 'svg' || creation.work_kind === 'video') return { ...source, action: 'review_original_format' };
-    if (creation.work_kind !== 'image') return { ...source, action: 'keep_creation' };
+    const view = asset?.mime_type === 'image/svg+xml' ? staticViews.get(asset.id) : undefined;
+    if (creation.work_kind === 'video' || (creation.work_kind === 'svg' && !view)) return { ...source, action: 'review_original_format' };
+    if (creation.work_kind !== 'image' && creation.work_kind !== 'svg') return { ...source, action: 'keep_creation' };
     if (!asset || asset.state !== 'available') return { ...source, action: 'asset_unavailable' };
-    if (!RASTER_MIME_TYPES.has(asset.mime_type)) return { ...source, mime_type: asset.mime_type, action: 'review_original_format' };
+    if (!RASTER_MIME_TYPES.has(asset.mime_type) && !view) return { ...source, mime_type: asset.mime_type, action: 'review_original_format' };
     const hash = confirmedHash(asset);
     if (!hash) return { ...source, action: 'master_unconfirmed' };
 
-    const evidence = { ...source, mime_type: asset.mime_type, master_hash: hash, message_attachments: attachmentCount.get(asset.id).n };
+    const evidence = { ...source, mime_type: asset.mime_type, master_hash: hash, message_attachments: attachmentCount.get(asset.id).n,
+      ...(view ? { visual_asset_id: view.id, visual_master_hash: confirmedHash(view) } : {}) };
     const previous = migrated.get(creation.id);
     if (previous) return { ...evidence, action: 'already_migrated', album_entry_id: previous.album_entry_id,
       album_entry_revision: previous.revision, album_entry_removed: previous.deleted_at !== null };
@@ -96,7 +102,8 @@ function planMigration(host, content) {
     if (active) {
       const linked = (active.content_sha256 === null || active.content_sha256 === hash)
         && sourceLinks.has(JSON.stringify([active.id, creation.id]));
-      return { ...evidence, action: linked ? 'already_linked' : 'review_existing_album_entry', album_entry_id: active.id, album_entry_revision: active.revision };
+      return { ...evidence, action: linked ? 'already_linked' : 'review_existing_album_entry', album_entry_id: active.id, album_entry_revision: active.revision,
+        album_entry_added_by: active.added_by_actor, album_entry_created_at: active.created_at };
     }
     if (entries.length > 0) return { ...evidence, action: 'preserve_album_removal' };
     const aliases = (albumsByHash.get(hash) ?? []).filter(entry => entry.asset_id !== asset.id);

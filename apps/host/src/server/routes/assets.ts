@@ -105,7 +105,7 @@ if (route === 'POST /api/v1/assets') {
     const asset = purpose === 'chat_image' && sniffMime(bytes) === 'image/svg+xml'
       ? await d.media.saveStaticSvg(upload)
       : await d.media.saveBuffer({ ...upload, purpose: purpose as IngestPurpose });
-    if (!asset) return json(res, 422, { error: { code: 'unsupported_static_svg', message: '该 SVG 超出相册支持的静态形状范围，可保留为沙箱预览的作品' } });
+    if (!asset) return json(res, 422, { error: { code: 'unsupported_static_svg', message: '该 SVG 含交互或动画代码，请使用作品导入与沙箱预览' } });
     return json(res, 201, {
       asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state,
       m_sync_state: asset.m_sync_state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate,

@@ -126,11 +126,12 @@ export class RotationReviewService {
     return id;
   }
 
-  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null, commitObservedAt: string | null = null): void {
+  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null, commitObservedAt: string | null = null, afterSettlement?: () => void): void {
     const committedAtUtc = commitObservedAt === null ? null : new Date(commitObservedAt).toISOString();
     tx(this.db, () => {
       this.db.prepare('UPDATE tool_side_effects SET state = ?, verified = ?, memory_id = ?, hold_committed_at = ?, updated_at = ? WHERE id = ?')
         .run(state, verified ? 1 : 0, memoryId, committedAtUtc, new Date().toISOString(), id);
+      afterSettlement?.();
     });
   }
 

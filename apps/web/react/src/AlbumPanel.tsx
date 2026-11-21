@@ -11,7 +11,7 @@ import { uploadAlbumEntry, type AlbumUpload, type PhotoAlbum } from './album-upl
 // 存档卡片展开选中原文（/archives/:id/messages 只读端点）。
 
 type AlbumEntry = { id: string; asset_id: string; caption: string | null; meaning: string | null; added_by: string; carry_mode: 'none' | 'next_once' | 'always'; revision: number; created_at: string }
-type Creation = { id: string; title: string | null; work_asset_id: string | null; work_kind: string | null; created_at: string }
+type Creation = { id: string; creator: string; title: string | null; work_asset_id: string | null; work_kind: string | null; created_at: string; revision: number }
 type ArchiveItem = { id: string; kind: 'quarrel' | 'sweet'; note: string | null; created_by: string; messages: Array<{ message_id: string }>; created_at: string; revision: number }
 /** RR4-W2f：各 tab 分页游标（next_cursor=null=到末页；"加载更多"续读） */
 type PageState = { cursor: string | null; hasMore: boolean }
@@ -30,7 +30,7 @@ function pendingAlbumUpload(): AlbumUpload | null {
   try {
     const saved = JSON.parse(sessionStorage.getItem(UPLOAD_RECEIPT_KEY) ?? 'null') as AlbumUpload | null
     return saved && typeof saved.assetId === 'string' && typeof saved.key === 'string'
-      && ['important_photos', 'chat_screenshots', 'stickers'].includes(saved.album) ? saved : null
+      && ['important_photos', 'chat_screenshots', 'stickers', 'creations'].includes(saved.album) ? saved : null
   } catch { return null }
 }
 
@@ -125,6 +125,19 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
   }
 
+  const removeCreation = async (creation: Creation) => {
+    if (!confirm('从作品库移除此作品关系？保留原件与已有聊天引用。')) return
+    setBusy(true); setErr(null)
+    try {
+      const { status, body } = await jfetch<{ error?: { message?: string } }>(`/api/v1/content/creations/${encodeURIComponent(creation.id)}`, {
+        method: 'DELETE',
+        headers: { 'If-Match': `"${creation.revision}"`, 'Idempotency-Key': `ui-creation-del:${creation.id}:${creation.revision}` },
+      })
+      if (status !== 200) throw new Error(body?.error?.message ?? ('移除作品失败 ' + status))
+      await load()
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setBusy(false) }
+  }
+
   const removeArchive = async (a: ArchiveItem) => {
     if (!confirm(`撤销这条${KIND_LABELS[a.kind]}存档？（只取消存档关系，原文与记忆不受影响）`)) return
     setBusy(true); setErr(null)
@@ -155,10 +168,10 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
     try {
       await uploadAlbumEntry(attempt, updateUpload)
       updateUpload(null)
-      const target = attempt.album === 'stickers' ? 'stickers' : 'photos'
-      if (tab === target && (target === 'stickers' || photoAlbum === attempt.album)) await load()
+      const target = attempt.album === 'creations' ? 'creations' : attempt.album === 'stickers' ? 'stickers' : 'photos'
+      if (tab === target && (target !== 'photos' || photoAlbum === attempt.album)) await load()
       else {
-        if (attempt.album !== 'stickers') setPhotoAlbum(attempt.album)
+        if (attempt.album !== 'stickers' && attempt.album !== 'creations') setPhotoAlbum(attempt.album)
         setTab(target)
       }
     } catch (e) { setUploadError(e instanceof Error ? e.message : String(e)) } finally { setUploading(false); setBusy(false) }
@@ -204,6 +217,13 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
             </button>
           </div>}
           {busy && <p role="status" className="py-3 text-center text-[13px] text-[#a3a099]">{uploading ? (upload?.assetId ? '确认并入库…' : '上传中…') : '读取中…'}</p>}
+          {!busy && tab === 'creations' && <>
+            <button disabled={upload !== null} onClick={() => uploadInputRef.current?.click()}
+              className="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-black/15 px-3 py-2.5 text-[13px] text-[#5e5d59] hover:bg-black/5 disabled:opacity-50">
+              <Upload size={14} />导入 HTML / SVG 代码作品
+            </button>
+            <p className="px-1 py-2 text-[11.5px] text-[#8a8780]">图片画作（含静态 SVG）请上传到相册。仅导入原文件；外部依赖未补齐的作品不保证完整运行。</p>
+          </>}
           {!busy && tab === 'creations' && (creations.length === 0
             ? <Empty text="还没有作品——char画完会自动进来" />
             : <div className="grid grid-cols-2 gap-3 pt-1 sm:grid-cols-3">
@@ -214,10 +234,14 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
                       <span className="truncate text-[12px] text-[#5e5d59]">{c.title ?? '未命名作品'}</span>
                       <button disabled={upload !== null} onClick={() => addToStickers(c.work_asset_id!)} title="加入表情包"
                         className="shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-[#5e5d59] hover:bg-black/5">入表情</button>
+                      {c.creator === 'qiaosheng' && <button aria-label="移除作品" onClick={() => void removeCreation(c)} className="rounded-lg p-1 text-[#a3a099] hover:text-[#b3554d]"><X size={15} /></button>}
                     </div>
                   </div>
                 : <div key={c.id} className="rounded-2xl border border-black/10 bg-white px-3 py-3 text-[13px] text-[#5e5d59]">
-                    <p>{c.title ?? '作品'}（{c.work_kind ?? 'svg'}）</p>
+                    <div className="flex items-start justify-between gap-2">
+                      <p>{c.title ?? '作品'}（{c.work_kind ?? 'svg'}）</p>
+                      {c.creator === 'qiaosheng' && <button aria-label="移除作品" onClick={() => void removeCreation(c)} className="rounded-lg p-1 text-[#a3a099] hover:text-[#b3554d]"><X size={15} /></button>}
+                    </div>
                     {c.work_asset_id && (c.work_kind === 'svg' || c.work_kind === 'html') && (
                       <a href={`/api/v1/assets/${encodeURIComponent(c.work_asset_id)}/preview`} target="_blank" rel="noreferrer"
                         className="mt-1 inline-block rounded-lg bg-black/5 px-2 py-0.5 text-[12px] text-[#3d3929] hover:bg-black/10">沙箱预览打开 ↗</a>
@@ -309,11 +333,13 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
             </div>)}
         </div>
       </div>
-      <input ref={uploadInputRef} type="file" accept={tab === 'photos' ? 'image/png,image/jpeg,image/webp,image/gif,image/svg+xml' : 'image/png,image/jpeg,image/webp,image/gif'} hidden onChange={(e) => {
+      <input ref={uploadInputRef} type="file" accept={tab === 'creations' ? '.html,.htm,.svg,text/html,image/svg+xml' : tab === 'photos' ? 'image/png,image/jpeg,image/webp,image/gif,image/svg+xml' : 'image/png,image/jpeg,image/webp,image/gif'} hidden onChange={(e) => {
         const file = e.target.files?.[0]
         e.target.value = ''
         if (file && (tab === 'photos' || tab === 'stickers')) {
           void finishUpload({ file, album: tab === 'photos' ? photoAlbum : 'stickers', key: opId('ui-album-upload') })
+        } else if (file && tab === 'creations') {
+          void finishUpload({ file, album: 'creations', title: file.name, key: opId('ui-creation-upload') })
         }
       }} />
     </div>

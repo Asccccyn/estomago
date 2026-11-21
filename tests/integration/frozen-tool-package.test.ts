@@ -19,14 +19,14 @@ const examples: Record<string, Record<string, unknown>> = {
   memory_hold:{original_title:'合成事件',text:'合成经历与感受',categories:['daily','sweet'],creation_mode:'contemporaneous'},
   memory_recall:{query:'合成旧事'}, memory_recall_next:{result_set_id:'synthetic-result'},
   memory_read_full:{memory_ref:'synthetic-unseen'},memory_update:{memory_id:'synthetic',expected_version:1,text:'修订后的正文'},conversation_read:{latest:true},memory_i_read:{what:'emotion'},plans_read:{},
-  memory_i_write:{action:'create',content:'合成 I'},plans_write:{action:'create',title:'合成计划'},memory_open:{action:'keeps',memory_id:'synthetic'},
+  memory_i_write:{action:'create',text:'合成 I'},plans_write:{action:'create',title:'合成计划'},memory_open:{action:'keeps',memory_id:'synthetic'},
   episode_read:{},episode_apply:{action:'start',reason_code:'tracking_requested',label:'合成事件',source_selections:[{}]},
-  content_post_create:{body:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',body:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},content_album_entry_write:{kind:'important_photos',asset_id:'synthetic',idempotency_key:'synthetic'},
+  content_post_create:{text:'合成动态',idempotency_key:'synthetic'},content_comment_create:{post_id:'synthetic',text:'合成评论',idempotency_key:'synthetic'},content_posts_list:{},content_album_entry_write:{kind:'important_photos',asset_id:'synthetic',idempotency_key:'synthetic'},
   conversation_archive:{kind:'sweet',anchor_start:{speaker:'宿主用户',quote:'合成引语起点'},anchor_end:{speaker:'char',quote:'合成引语终点'}},image_generate:{prompt:'合成画',client_operation_id:'synthetic'},archives_search:{query:'合成'},
   wake_manage:{operation:'list'},chat_send_text:{text:'合成正式消息',idempotency_key:'synthetic'},media_import:{source_url:'https://127.0.0.1/image.png'},
   chat_send_attachment:{asset_id:'synthetic',presentation:'image'},call_control:{action:'invite'},oido_analyze:{audio_ref:'est:synthetic'},
   chat_send_voice:{text:'合成语音'},media_search:{query:'合成图'},oido_get:{analysis_id:'synthetic'},transcript_read:{audio_ref:'est:synthetic'},
-  identity_milestone_write:{operation:'read'},wishstar_write_star:{content:'合成星',visibility:'hidden',idempotency_key:'synthetic'},wishstar_read:{what:'dates'},
+  identity_milestone_write:{operation:'read'},wishstar_write_star:{text:'合成星',visibility:'hidden',idempotency_key:'synthetic'},wishstar_read:{what:'dates'},
   wishstar_start_session:{special_date_id:'synthetic'},wishstar_confirm_session:{session_id:'synthetic'},wishstar_take_star:{session_id:'synthetic'},
   wishstar_finish_session:{session_id:'synthetic'},wishstar_request_star:{},wishstar_respond_request:{request_id:'synthetic',decision:'not_now'},
   wishstar_offer_star:{star_id:'synthetic'},wishstar_accept_offer:{offer_id:'synthetic'},
@@ -125,11 +125,12 @@ test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现�
   try{
     await start();const id=await send();
     const frozen=storedToolset(host!.db,id)!;
-    assert.equal(frozen.catalog.length,56);
+    assert.equal(frozen.catalog.length,57);
     assert.equal(frozen.groups.heartbeat_draw,'D');
     assert.equal(frozen.groups.background_complete,'D');
     assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,14);
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,41);
+    assert.equal(frozen.groups.wishstar_reply_star,'D');
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,42);
     assert.deepEqual(Object.keys(frozen.groups).filter(name=>frozen.groups[name]==='T'),['context_review_complete']);
     assert.ok(frozen.initialText!.includes('memory_hold'));
     assert.ok(frozen.initialText!.includes('用 tool_catalog 的 query'));

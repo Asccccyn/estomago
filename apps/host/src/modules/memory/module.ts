@@ -200,7 +200,7 @@ export const MEMORYIWRITE_DEFINITION: HostToolSpec = {
         type: 'object',
         properties: {
           action: { type: 'string', enum: ['create', 'revise', 'restore'], description: '写动作' },
-          content: { type: 'string', minLength: 1, description: 'create/revise 必填：条目正文' },
+          text: { type: 'string', minLength: 1, description: 'create/revise 必填：条目正文' },
           item_id: { type: 'string', minLength: 1, maxLength: 128, description: 'revise/restore 必填：memory_i_read(what=items) 或成功回执中的 item_id' },
           expected_revision: { type: 'integer', minimum: 1, description: 'revise/restore 必填：memory_i_read(what=item,item_id=…) 或成功写回执中的 revision；冲突后读回，不能猜测或替换 CAS' },
           restore_revision: { type: 'integer', minimum: 1, description: 'restore 必填：要恢复到哪条历史修订' },
@@ -224,7 +224,7 @@ export const PLANSWRITE_DEFINITION: HostToolSpec = {
         properties: {
           action: { type: 'string', enum: ['create', 'update', 'complete', 'cancel'], description: '写动作' },
           title: { type: 'string', minLength: 1, maxLength: 200, description: 'create 必填 / update 可选：计划标题' },
-          content: { type: 'string', description: '可选：计划正文' },
+          text: { type: 'string', description: '可选：计划正文' },
           state: { type: 'string', enum: ['planned', 'active', 'waiting', 'blocked', 'done', 'cancelled'], description: 'update 可选：直接设状态（complete/cancel 动作更常用）' },
           starts_at: { type: 'string', description: '可选：开始时间（ISO 日期/时间）' },
           due_at: { type: 'string', description: '可选：截止时间' },
@@ -420,6 +420,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_hold', baselineOrder: 1, definition: memoryHoldDefinition, memoryOnlyAllowed: true, label: '写记忆',
+    heartbeatAction: 'memory_hold',
     run: (input: Record<string, unknown>, ctx) => svc.memoryHold(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_hold', input as Record<string, unknown>, value as Record<string, unknown>),
   }));

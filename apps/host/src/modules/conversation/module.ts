@@ -91,7 +91,7 @@ export const CHATSENDATTACHMENT_DEFINITION: HostToolSpec = {
         properties: {
           asset_id: { type: 'string', minLength: 1, maxLength: 128 },
           presentation: { type: 'string', enum: ['image', 'sticker', 'voice', 'work'] },
-          content: { type: 'string', maxLength: 4000 },
+          text: { type: 'string', maxLength: 4000 },
         },
         required: ['asset_id', 'presentation'], additionalProperties: false,
       },
@@ -123,13 +123,15 @@ export function registerConversationCapabilities(registry: { register(d: Capabil
   registry.register(toolCapability({
     owner: 'conversation',
     id: 'chat_send_text', baselineOrder: 22, free: true, definition: () => CHATSENDTEXT_DEFINITION, memoryOnlyAllowed: false, label: '发消息',
+    heartbeatAction: 'chat',
     run: (input: { text: string; idempotency_key: string }, ctx) => Promise.resolve(service.chatSendText(input, ctx)),
     toModel: (value) => value,
   }));
   registry.register(toolCapability({
     owner: 'conversation',
     id: 'chat_send_attachment', baselineOrder: 24, free: true, definition: () => CHATSENDATTACHMENT_DEFINITION, memoryOnlyAllowed: false, label: '发附件',
-    run: (input: { asset_id: string; presentation: 'image' | 'sticker' | 'voice' | 'work'; content?: string }, ctx) => service.chatSendAttachment(input, ctx),
+    heartbeatAction: 'chat',
+    run: (input: { asset_id: string; presentation: 'image' | 'sticker' | 'voice' | 'work'; text?: string; content?: string }, ctx) => service.chatSendAttachment({ ...input, content: input.text ?? input.content }, ctx),
     toModel: (value) => value,
   }));
 }

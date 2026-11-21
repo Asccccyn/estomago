@@ -42,18 +42,27 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
       const alias = await save('alias', 4);
       const existingOtherAlias = await save('existing-alias', 4);
       const unconfirmed = await save('pending', 5, pending);
+      const reviewed = await save('reviewed', 6);
       const svg = await media.saveBuffer({
         bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'),
         operationId: 'svg', createdBy: 'jiaming', origin: 'generated', purpose: 'creation_icon',
       });
+      const svgReady = await media.saveBuffer({
+        bytes: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="250" height="150"><text x="10" y="80" font-size="32">Static fixture</text></svg>'),
+        operationId: 'svg-static', createdBy: 'jiaming', origin: 'generated', purpose: 'creation_icon',
+      });
+      assert.equal((await media.ensureStaticSvgView(svgReady.id)).id, svgReady.id);
+      await media.ensureStaticSvgView(svgReady.id);
+      assert.equal(media.canProvideImage(svgReady), true);
       const insertCreation = content.db.prepare(`
         INSERT INTO creations(id, creator_actor, title, icon_asset_id, work_asset_id, work_kind, created_at, updated_at, revision)
         VALUES (?, 'jiaming', 'sensitive fixture title', ?, ?, ?, ?, ?, 1)
       `);
-      for (const [id, asset] of [['planned', planned], ['linked', linked], ['removed', removed], ['alias', alias], ['pending', unconfirmed]] as const) {
+      for (const [id, asset] of [['planned', planned], ['linked', linked], ['removed', removed], ['alias', alias], ['pending', unconfirmed], ['reviewed', reviewed]] as const) {
         insertCreation.run(id, asset.id, asset.id, 'image', now, now);
       }
       insertCreation.run('svg', svg.id, svg.id, 'svg', now, now);
+      insertCreation.run('svg-ready', svgReady.id, svgReady.id, 'svg', now, now);
       const addAlbum = content.db.prepare(`
         INSERT INTO album_entries(id, kind, asset_id, added_by_actor, created_at, updated_at, revision, deleted_at)
         VALUES (?, 'important_photos', ?, 'jiaming', ?, ?, 1, ?)
@@ -61,6 +70,8 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
       addAlbum.run('existing', linked.id, now, now, null);
       addAlbum.run('tombstone', removed.id, now, now, now);
       addAlbum.run('other-alias', existingOtherAlias.id, now, now, null);
+      addAlbum.run('reviewed-entry', reviewed.id, now, now, null);
+      content.db.prepare("UPDATE album_entries SET caption='fixture note',carry_mode='always' WHERE id='reviewed-entry'").run();
       content.db.prepare(`INSERT INTO album_entry_refs(id, entry_id, service, kind, source_id, created_at)
         VALUES ('source-link', 'existing', 'est', 'creation', 'linked', ?)`).run(now);
     } finally {
@@ -80,6 +91,7 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
     assert.deepEqual(Object.fromEntries(plan.items.map(item => [item.creation_id, item.action])), {
       alias: 'review_album_alias', linked: 'already_linked', pending: 'master_unconfirmed',
       planned: 'propose_album_entry', removed: 'preserve_album_removal', svg: 'review_original_format',
+      reviewed: 'review_existing_album_entry', 'svg-ready': 'propose_album_entry',
     });
     assert.match(byId.planned!.master_hash!, /^[0-9a-f]{64}$/);
     assert.deepEqual(byId.planned!.source_ref, { service: 'est', kind: 'creation', source_id: 'planned' });
@@ -100,15 +112,22 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
     assert.equal(stale.status, 1);
     assert.match(stale.stderr, /RASTER_MIGRATION_REVIEWED_PLAN_CHANGED/);
     assert.equal(fs.existsSync(destination), false);
-    fs.writeFileSync(planPath, result.stdout);
+    fs.writeFileSync(planPath, JSON.stringify({ ...plan, approved_existing_links: ['alias'] }));
+    const invalidApproval = apply(hostPath, contentPath, destination);
+    assert.equal(invalidApproval.status, 1);
+    assert.match(invalidApproval.stderr, /RASTER_MIGRATION_LINK_APPROVAL_INVALID/);
+    assert.equal(fs.existsSync(destination), false);
+    fs.writeFileSync(planPath, JSON.stringify({ ...plan, approved_existing_links: ['reviewed'] }));
     const applied = apply(hostPath, contentPath, destination);
     assert.equal(applied.status, 0, applied.stderr);
-    const report = JSON.parse(applied.stdout) as { applied: number; created_album_entries: number;
+    const report = JSON.parse(applied.stdout) as { applied: number; created_album_entries: number; attached_existing_entries: number;
       items: Array<{ creation_id: string; album_entry_id: string; asset_id: string }> };
-    assert.equal(report.applied, 2);
-    assert.equal(report.created_album_entries, 1);
+    assert.equal(report.applied, 4);
+    assert.equal(report.created_album_entries, 2);
+    assert.equal(report.attached_existing_entries, 1);
     const converted = report.items.find(item => item.creation_id === 'planned')!;
     assert.equal(report.items.find(item => item.creation_id === 'linked')?.album_entry_id, 'existing');
+    assert.equal(report.items.find(item => item.creation_id === 'reviewed')?.album_entry_id, 'reviewed-entry');
     assert.deepEqual(databaseHash(), before, '两份输入备份均未变更');
 
     const derivedHost = path.join(destination, 'data', 'chat.sqlite3');
@@ -127,7 +146,7 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
       return { status, body };
     }
     try {
-      assert.equal((hostCopy.prepare("SELECT COUNT(*) n FROM media_assets").get() as { n: number }).n, 7);
+      assert.equal((hostCopy.prepare("SELECT COUNT(*) n FROM media_assets").get() as { n: number }).n, 10);
       assert.ok(hostCopy.prepare(`
         SELECT 1 FROM asset_external_refs WHERE owner_type='album_entry' AND owner_id=? AND asset_id=? AND state='committed'
       `).get(converted.album_entry_id, converted.asset_id));
@@ -140,8 +159,19 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
       assert.equal(entry.asset_id, converted.asset_id);
       assert.equal(entry.added_by, 'jiaming');
       assert.equal(entry.created_at, now);
+      const linkedEntry = copiedContent.db.prepare("SELECT * FROM album_entries WHERE id='reviewed-entry'").get()!;
+      assert.equal(linkedEntry.caption, 'fixture note');
+      assert.equal(linkedEntry.carry_mode, 'always');
+      assert.equal(linkedEntry.created_at, now);
+      assert.equal(linkedEntry.updated_at, now);
+      assert.equal(linkedEntry.revision, 2);
+      assert.ok(copiedContent.db.prepare("SELECT 1 FROM album_entry_refs WHERE entry_id='reviewed-entry' AND service='est' AND kind='creation' AND source_id='reviewed'").get());
       const visibleWorks = async () => (await request('GET', '/api/v1/content/creations')).body.items as Array<{ id: string }>;
       assert.ok((await visibleWorks()).some(item => item.id === 'svg'));
+      assert.ok(!(await visibleWorks()).some(item => item.id === 'svg-ready'));
+      const originalSvg = await request('GET', '/api/v1/content/creations/svg-ready');
+      assert.equal(originalSvg.body.work_kind, 'svg');
+      assert.equal(originalSvg.body.work_asset_id, report.items.find(item => item.creation_id === 'svg-ready')?.asset_id);
       assert.ok(!(await visibleWorks()).some(item => item.id === 'planned' || item.id === 'linked'));
       assert.equal((await request('GET', '/api/v1/content/creations/planned')).body.work_asset_id, converted.asset_id);
 
@@ -157,7 +187,7 @@ test('图片作品离线迁移保留老引用、不复活墓碑，并可重复�
 
     const rerunPlan = spawnSync(process.execPath, [script, derivedHost, derivedContent], { encoding: 'utf8' });
     assert.equal(rerunPlan.status, 0, rerunPlan.stderr);
-    assert.equal(JSON.parse(rerunPlan.stdout).counts.already_migrated, 2);
+    assert.equal(JSON.parse(rerunPlan.stdout).counts.already_migrated, 4);
     fs.writeFileSync(planPath, rerunPlan.stdout);
     const rerun = apply(derivedHost, derivedContent, path.join(dir, 'rerun'));
     assert.equal(rerun.status, 0, rerun.stderr);

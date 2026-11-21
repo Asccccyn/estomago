@@ -4,6 +4,10 @@
 import { test } from 'node:test';
 import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { MessageService } from '../../apps/host/src/messages/service.ts';
+import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
+import type { HostToolSpec } from '../../apps/host/src/capabilities/contracts.ts';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
@@ -39,7 +43,7 @@ test('wishstar_write_star：转发形状+幂等键派生+写回执瘦身', async
   const calls: ForwardCall[] = [];
   const { tools, db } = makeTools(calls, () => ({ status: 200, body: { id: 'star_1', content: '许个愿', visibility: 'visible', state: 'written', extra: 'x' } }));
   try {
-    const checked = validateToolArgs('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-1' });
+    const checked = validateToolArgs('wishstar_write_star', { text: '许个愿', visibility: 'visible', idempotency_key: 'op-1' });
     assert.equal(checked.ok, true);
     const out = await tools.execute('wishstar_write_star', checked.value as Record<string, unknown>, CTX as never);
     assert.equal(out.ok, true);
@@ -66,7 +70,7 @@ test('写星：合法长键可发 HTTP，响应未知后同回合跨请求重试
     return { status: 200, body: receipt };
   });
   try {
-    const args = { content: '合成星', visibility: 'hidden', idempotency_key: '星🌟'.repeat(64) };
+    const args = { text: '合成星', visibility: 'hidden', idempotency_key: '星🌟'.repeat(64) };
     const unknown = await tools.execute('wishstar_write_star', args, CTX);
     assert.equal(unknown.ok, false);
     assert.equal(unknown.output.error_code, 'WISHSTAR_OUTCOME_UNKNOWN');
@@ -84,9 +88,33 @@ test('写星：合法长键可发 HTTP，响应未知后同回合跨请求重试
     const later = await tools.execute('wishstar_write_star', args, { ...CTX, turnId: 't2', requestId: 'req-3' });
     assert.equal(later.ok, true);
     assert.equal(later.output.id, 'star_1', '显式业务键也可在新回合找回原星');
-    const conflict = await tools.execute('wishstar_write_star', { ...args, content: '不同参数' }, CTX);
+    const conflict = await tools.execute('wishstar_write_star', { ...args, text: '不同参数' }, CTX);
     assert.equal(conflict.output.error_code, 'WISHSTAR_IDEMPOTENCY_CONFLICT');
     assert.equal(receipts.size, 2);
+  } finally { db.close(); }
+});
+
+test('F08 写星新窗只认 text；已冻结旧窗仍按 content 原样写同一来源', async () => {
+  const calls: ForwardCall[] = [];
+  const text = '中："原话"\n第二行\\u4e2d';
+  const { tools, db } = makeTools(calls, call => ({ status: 200, body: { ...call.body, id: 'star-f08' } }));
+  try {
+    const base = { visibility: 'visible', idempotency_key: 'old-star-f08' };
+    assert.equal(validateToolArgs('wishstar_write_star', { ...base, text }).ok, true);
+    assert.equal(validateToolArgs('wishstar_write_star', { ...base, content: text }).ok, false);
+    const old = JSON.parse(fs.readFileSync(new URL('../fixtures/window-tools-before-autonomy.json', import.meta.url), 'utf8')) as { catalog: HostToolSpec[] };
+    const messages = new MessageService(db);
+    messages.ensureConversation(CTX.roomId);
+    db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w1','c1','ACTIVE','now','now')").run();
+    freezeWindowTools(db, CTX.windowId, old.catalog, 'legacy');
+    const frozen = db.prepare('SELECT wire_tools_json,catalog_json FROM window_toolsets WHERE window_id=?').get(CTX.windowId);
+    const wrong = await tools.execute('wishstar_write_star', { ...base, text }, CTX);
+    assert.equal(wrong.ok, false);
+    assert.equal(calls.length, 0);
+    const saved = await tools.execute('wishstar_write_star', { ...base, content: text }, CTX);
+    assert.equal(saved.ok, true, JSON.stringify(saved));
+    assert.equal(calls[0]?.body?.content, text);
+    assert.deepEqual(db.prepare('SELECT wire_tools_json,catalog_json FROM window_toolsets WHERE window_id=?').get(CTX.windowId), frozen);
   } finally { db.close(); }
 });
 
@@ -127,7 +155,7 @@ test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED
   migrate(db2, sha256Hex);
   try {
     const { tools: bare } = assembleTestTools({ db: db2, mariposa: null, reviews: new RotationReviewService(db2), checkpoint: new HoldCheckpointService(db2) });
-    const out2 = await bare.execute('wishstar_write_star', { content: 'x', visibility: 'visible', idempotency_key: 'k' }, CTX as never);
+    const out2 = await bare.execute('wishstar_write_star', { text: 'x', visibility: 'visible', idempotency_key: 'k' }, CTX as never);
     assert.equal((out2.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
   } finally { db2.close(); }
 });
@@ -216,7 +244,7 @@ test('RT02：服务层把 body 取消未知映射为 WISHSTAR_OUTCOME_UNKNOWN（
   const calls: ForwardCall[] = [];
   const { tools, db } = makeTools(calls, () => ({ status: 0, body: { error_code: 'WISHSTAR_CANCELLED_UNKNOWN', detail: '响应体未读完' } }));
   try {
-    const out = await tools.execute('wishstar_write_star', { content: '许个愿', visibility: 'visible', idempotency_key: 'op-rt02b' }, CTX as never);
+    const out = await tools.execute('wishstar_write_star', { text: '许个愿', visibility: 'visible', idempotency_key: 'op-rt02b' }, CTX as never);
     assert.equal(out.ok, false, '不成功');
     assert.equal(out.output.error_code, 'WISHSTAR_OUTCOME_UNKNOWN', '复审反例：曾 ok:true/output:{}——现为未知，沿幂等键核对');
   } finally { db.close(); }

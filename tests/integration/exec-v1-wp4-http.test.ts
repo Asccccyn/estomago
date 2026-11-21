@@ -7,6 +7,8 @@ import path from 'node:path';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
+import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 
 const root = tempRoot('exec-v1-wp4-http-');
 writeApprovedIdentity(root);
@@ -65,46 +67,45 @@ test('BACKGROUND-01/02：默认三关状态如实；开自主无预算=422；有
   await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"1"', 'Idempotency-Key': 'k5' }), body: JSON.stringify({ autonomous: { enabled: false } }) });
 });
 
-test('WAKE/A-02/A-03/A-06：自主预约 HTTP 创建走 service——服务端幂等+CAS+瘦返回；取消递增 revision', async () => {
-  // 自主开关关 → SELF_WAKE_DISABLED（422）
+test('WAKE/A-02/A-03/A-06：用户不能代设或改自约；管理面仍可读、取消并保留既有 CAS', async () => {
+  // 自主开关无论开关，owner 不可以代创建。
   const disabled = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-d1' }), body: JSON.stringify({ note: 'x', delay_seconds: 600 }) });
-  assert.equal(disabled.status, 422);
-  assert.equal(((await disabled.json()) as { error: { code: string } }).error.code, 'self_wake_disabled');
+  assert.equal(disabled.status, 403);
+  assert.equal(((await disabled.json()) as { error: { code: string } }).error.code, 'self_wake_owner_only');
   // 开自主（有预算）
   const cur = await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as { revision: number };
   await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': `"${cur.revision}"`, 'Idempotency-Key': 'w-e1' }), body: JSON.stringify({ autonomous: { enabled: true, daily_cost_cap_usd: 5 } }) });
-  // 创建（服务端幂等：同 Idempotency-Key 重放返回同一任务）
+  // 自主打开后仍不授予用户代设权。用拥有者 service 建立真实任务，
+  // C07 另从模型工具创建/重放/调度。
   const c1 = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op1' }), body: JSON.stringify({ note: '提醒宿主用户读书', delay_seconds: 600 }) });
-  assert.equal(c1.status, 201);
-  const t1 = (await c1.json()) as { task_id: string; scheduled_at: string; revision: number };
-  const c2 = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op1' }), body: JSON.stringify({ note: '提醒宿主用户读书', delay_seconds: 600 }) });
-  assert.equal(c2.status, 200);
-  const t2 = (await c2.json()) as { task_id: string; duplicate: boolean };
-  assert.equal(t2.task_id, t1.task_id, 'W-08 面：同键重放同一任务');
-  assert.equal(t2.duplicate, true);
-  // 时间校验：过去时间 422 + server_now
-  const past = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op2' }), body: JSON.stringify({ note: 'x', at: '2020-01-01T00:00:00Z' }) });
-  assert.equal(past.status, 422);
-  // A-02：PUT CAS——旧 revision 409
+  assert.equal(c1.status, 403);
+  const service = new BackgroundTaskService(host.db, new BackgroundSettingsService(host.db, host.config));
+  const created = service.schedule({ actorId: 'jiaming', createdBy: 'jiaming', conversationId: 'primary', operationId: 'self-op-1', note: '提醒宿主用户读书', delaySeconds: 600 });
+  assert.ok(created.ok);
+  if (!created.ok) return;
+  const t1 = created.task;
+  // 用户 PUT 即便 revision 匹配也不获得改期/改正文权限。
   const p409 = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"9"', 'Idempotency-Key': 'w-u1' }), body: JSON.stringify({ note: '改' }) });
-  assert.equal(p409.status, 409);
+  assert.equal(p409.status, 403);
   const p200 = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': `"${t1.revision}"`, 'Idempotency-Key': 'w-u2' }), body: JSON.stringify({ note: '改后的note' }) });
-  assert.equal(p200.status, 200);
+  assert.equal(p200.status, 403);
   // A-06：列表瘦返回（无 payload/全文 note；有 note_preview/next_cursor）
   const list = await (await fetch(`${base}/api/v1/background/tasks`, { headers: auth() })).json() as { tasks: Array<{ task_id: string; revision: number; status: string; note_preview: string | null; payload_json?: unknown; note?: unknown }>; next_cursor: string | null };
   const row = list.tasks.find((t) => t.task_id === t1.task_id)!;
-  assert.equal(row.revision, t1.revision + 1, '修改递增 revision');
+  assert.equal(row.revision, t1.revision, '代改不产生新修订');
   assert.ok(typeof row.note_preview === 'string' && row.note_preview.length <= 81, '短预览');
   assert.equal('payload_json' in row, false, '不回 payload');
   assert.equal('note' in row, false, '列表不回全文——详情按需读');
   // 详情含全文
-  const detail = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { note: string } };
-  assert.equal(detail.task.note, '改后的note');
+  const detail = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { note: string; created_by: string; scheduled_at: string } };
+  assert.equal(detail.task.note, '提醒宿主用户读书');
+  assert.equal(detail.task.created_by, 'jiaming');
+  assert.equal(detail.task.scheduled_at, t1.scheduled_at);
   // A-03：DELETE 递增 revision（不只 enabled=0）
-  const del = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'DELETE', headers: auth({ Origin: base, 'If-Match': `"${t1.revision + 1}"`, 'Idempotency-Key': 'w-d2' }) });
+  const del = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'DELETE', headers: auth({ Origin: base, 'If-Match': `"${t1.revision}"`, 'Idempotency-Key': 'w-d2' }) });
   assert.equal(del.status, 200);
   const after = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { revision: number; status: string } };
-  assert.equal(after.task.revision, t1.revision + 2, '取消也递增 revision');
+  assert.equal(after.task.revision, t1.revision + 1, '取消也递增 revision');
   assert.equal(after.task.status, 'cancelled');
 });
 

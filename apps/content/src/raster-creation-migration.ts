@@ -9,11 +9,13 @@ type MigrationEvidence = {
   created_at: string;
   asset_id: string;
   master_hash: string;
+  work_kind: 'image' | 'svg';
 };
 
 export type RasterMigrationEntry = MigrationEvidence & (
   | { action: 'propose_album_entry' }
   | { action: 'already_linked'; album_entry_id: string; album_entry_revision: number }
+  | { action: 'link_reviewed_existing_entry'; album_entry_id: string; album_entry_revision: number; album_entry_added_by: Actor; album_entry_created_at: string }
 );
 
 const PHOTO_ALBUM = 'important_photos';
@@ -28,9 +30,9 @@ export function migrateRasterCreationInTx(db: DatabaseSync, entry: RasterMigrati
   if (!/^[a-f0-9]{64}$/.test(entry.master_hash)) throw new Error('RASTER_MIGRATION_MASTER_UNCONFIRMED');
   const creation = db.prepare(`
     SELECT 1 FROM creations WHERE id=? AND revision=? AND creator_actor=? AND created_at=?
-    AND deleted_at IS NULL AND work_kind='image' AND work_asset_id=?
+    AND deleted_at IS NULL AND work_kind=? AND work_asset_id=?
     AND bucket_id IS NULL AND icon_asset_id=work_asset_id
-  `).get(entry.creation_id, entry.revision, entry.creator_actor, entry.created_at, entry.asset_id);
+  `).get(entry.creation_id, entry.revision, entry.creator_actor, entry.created_at, entry.work_kind, entry.asset_id);
   if (!creation) throw new Error('RASTER_MIGRATION_CREATION_CHANGED');
 
   const recorded = db.prepare(`
@@ -51,6 +53,21 @@ export function migrateRasterCreationInTx(db: DatabaseSync, entry: RasterMigrati
     `).get(entry.album_entry_id, entry.album_entry_revision, PHOTO_ALBUM, entry.asset_id, entry.master_hash, entry.creation_id);
     if (!linked) throw new Error('RASTER_MIGRATION_ALBUM_CHANGED');
     albumEntryId = entry.album_entry_id;
+  } else if (entry.action === 'link_reviewed_existing_entry') {
+    const active = db.prepare(`
+      SELECT 1 FROM album_entries WHERE id=? AND revision=? AND kind=? AND asset_id=? AND deleted_at IS NULL
+        AND added_by_actor=? AND created_at=? AND (content_sha256 IS NULL OR content_sha256=?)
+    `).get(entry.album_entry_id, entry.album_entry_revision, PHOTO_ALBUM, entry.asset_id,
+      entry.album_entry_added_by, entry.album_entry_created_at, entry.master_hash);
+    const conflicting = db.prepare("SELECT 1 FROM album_entry_refs WHERE service='est' AND kind='creation' AND source_id=?").get(entry.creation_id);
+    if (!active || conflicting) throw new Error('RASTER_MIGRATION_ALBUM_CHANGED');
+    albumEntryId = entry.album_entry_id;
+    db.prepare(`
+      INSERT INTO album_entry_refs(id,entry_id,service,kind,source_id,created_at) VALUES(?,?,'est','creation',?,?)
+    `).run(stableId('aer', entry.creation_id, entry.asset_id), albumEntryId, entry.creation_id, migratedAt);
+    // Association-only repair: keep original membership time, user note, carry mode and last-edit time.
+    db.prepare('UPDATE album_entries SET revision=revision+1, content_sha256=COALESCE(content_sha256,?) WHERE id=?')
+      .run(entry.master_hash, albumEntryId);
   } else {
     const other = db.prepare('SELECT 1 FROM album_entries WHERE kind=? AND (asset_id=? OR content_sha256=?)')
       .get(PHOTO_ALBUM, entry.asset_id, entry.master_hash);

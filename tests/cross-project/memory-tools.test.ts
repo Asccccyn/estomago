@@ -231,7 +231,7 @@ try {
     const bad = await invoke('memory_hold',{original_title:'合成非法边界',categories:['daily'],text:'合成',...args});
     assert.equal(bad.ok,false);assert.equal(wire.length,before,'invalid host parameters never reach M');
   }
-  const revisedI=await invoke('memory_i_write',{action:'revise',item_id:expected.item.item_id,expected_revision:expected.item.revision,content:'合成 I 新修订'});
+  const revisedI=await invoke('memory_i_write',{action:'revise',item_id:expected.item.item_id,expected_revision:expected.item.revision,text:'合成 I 新修订'});
   assert.equal(revisedI.ok,true,JSON.stringify(revisedI));
   const restoredI=await invoke('memory_i_write',{action:'restore',item_id:expected.item.item_id,expected_revision:revisedI.output.revision,restore_revision:expected.item.revision,relations:[{memory_id:expected.memories[1],relation_type:'related_to'}]});
   assert.equal(restoredI.ok,true,JSON.stringify(restoredI));

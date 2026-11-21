@@ -10,23 +10,23 @@ import type { KeepwarmSleepWindow } from './keepwarm-sleep.ts';
 
 export type ModelBackgroundControl = 'autonomous' | 'free_activity' | 'keepwarm';
 export const MODEL_BACKGROUND_CONTROLS = ['autonomous','free_activity','keepwarm'] as const;
-export function backgroundControl(kind: 'autonomous'|'keepwarm', origin: string): ModelBackgroundControl {
-  return kind === 'autonomous' && origin !== 'self_schedule' ? 'free_activity' : kind;
+export function backgroundControl(kind: 'autonomous'|'keepwarm'|'heartbeat_memory', origin: string): ModelBackgroundControl {
+  return kind === 'heartbeat_memory' ? 'keepwarm' : kind === 'autonomous' && origin !== 'self_schedule' ? 'free_activity' : kind;
 }
 
-export type BackgroundKind = 'autonomous' | 'keepwarm' | 'reminder';
+export type BackgroundKind = 'autonomous' | 'keepwarm' | 'reminder' | 'heartbeat_memory';
 export type RunState = 'claimed' | 'running' | 'cancelling' | 'completed' | 'noop' | 'skipped' | 'cancelled' | 'failed' | 'unknown';
 
 export type EffectiveSettings = {
   revision: number;
   free_activity: { enabled: boolean; max_run_ms: number; daily_cost_cap_usd: DailyCostCap };
   autonomous: { enabled: boolean; max_model_requests_per_run: number; max_output_tokens_per_run: number; max_tool_calls_per_run: number; max_run_ms: number; daily_cost_cap_usd: DailyCostCap };
-  keepwarm: { enabled: boolean; max_run_ms: number; daily_cost_cap_usd: DailyCostCap; sleep_window: KeepwarmSleepWindow };
+  keepwarm: { enabled: boolean; include_living_room: boolean; max_run_ms: number; daily_cost_cap_usd: DailyCostCap; sleep_window: KeepwarmSleepWindow };
   reminders: { enabled: boolean; delivery_grace_ms: number; default_local_time: string };
 };
 
 /** §4.2/§4.1：生效视图——页面/调度器/派发前检查读同一份（不得用启动时缓存的旧 enabled）。 */
-export function effectiveSettings(config: Config, storedRevision: number, stored: Partial<{ free_activity_enabled: boolean | null; autonomous_enabled: boolean | null; keepwarm_enabled: boolean | null; reminders_enabled: boolean | null }> | null): EffectiveSettings {
+export function effectiveSettings(config: Config, storedRevision: number, stored: Partial<{ free_activity_enabled: boolean | null; autonomous_enabled: boolean | null; keepwarm_enabled: boolean | null; keepwarm_include_living_room: boolean | null; reminders_enabled: boolean | null }> | null): EffectiveSettings {
   return {
     revision: storedRevision,
     free_activity: {enabled:stored?.free_activity_enabled ?? config.background.free_activity.enabled,
@@ -41,6 +41,7 @@ export function effectiveSettings(config: Config, storedRevision: number, stored
     },
     keepwarm: {
       enabled: stored?.keepwarm_enabled ?? config.background.keepwarm.enabled,
+      include_living_room: stored?.keepwarm_include_living_room ?? config.background.keepwarm.include_living_room,
       // The former pure-cache 30s limit must not truncate a full tool turn.
       // Keep its YAML key readable for old configurations; use the normal
       // background turn limit, just as keepwarm uses the normal output limit.

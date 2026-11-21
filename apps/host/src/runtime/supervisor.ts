@@ -466,13 +466,15 @@ export class TurnSupervisor {
       // C07（四仓审计 20261106）：包装时间从**冻结 task/run** 一次取得并原样携带——
       // 设置时间（task 创建）、原 due（task.scheduled_at，相对时间首受理解析的冻结值）、
       // 实际递交；续轮/恢复复用同一冻结文本，迟到只标注不重算 due、不改 system。
-      const taskFrozen = d.db.prepare('SELECT created_at, scheduled_at FROM background_tasks WHERE id = ?').get(runRow.task_id) as { created_at: string; scheduled_at: string } | undefined;
+      const taskFrozen = d.db.prepare('SELECT created_at, scheduled_at, created_by_actor_id FROM background_tasks WHERE id = ?').get(runRow.task_id) as { created_at: string; scheduled_at: string; created_by_actor_id: string } | undefined;
       const scheduledFor = taskFrozen?.scheduled_at ?? (typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null);
       if (note.length > 8000) return { outcome: 'failed', result_code: 'WAKE_NOTE_INVALID', detail: '预约正文超长——报错不静默截断' };
-      const lines = ['[Host self-wake; not a message from Qiaosheng]'];
+      const historicalDelegate = taskRow.origin === 'self_schedule' && taskFrozen && taskFrozen.created_by_actor_id !== 'jiaming';
+      const lines = [historicalDelegate ? '[Host historical delegated wake; not a new message or a self-created appointment]' : '[Host self-wake; not a message from Qiaosheng]'];
+      if (historicalDelegate) lines.push(`Set by: ${taskFrozen.created_by_actor_id}`);
       if (taskFrozen) lines.push(`Set at: ${taskFrozen.created_at}`);
       if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
-      lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
+      lines.push(`${historicalDelegate ? 'Original recorded note' : 'Your note'}: ${note.length > 0 ? note : '(none)'}`);
       lines.push(`Actual delivery: ${nowIso0}${scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs() ? ' (late)' : ''}`);
       tailNote = lines.join('\n');
     }
@@ -782,15 +784,15 @@ export class TurnSupervisor {
         }
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
-          if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
+          if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
           if (o.background.kind === 'keepwarm') {
             const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
             if (sleep.blocked) throw new ContractError(sleep.code!);
           }
           // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
-          if (o.background.yieldRequested?.()) throw new Error('DISPATCH_ADMISSION_REJECTED:KEEPWARM_YIELDED');
+          if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
           const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
-          if (started >= o.background.maxModelRequests) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
+          if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
         }
         const nowIso = new Date().toISOString();
         if (o.attemptId) d.surfacing?.markDispatched?.(o.attemptId);
@@ -843,7 +845,7 @@ export class TurnSupervisor {
         const nowIso = new Date().toISOString();
         d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
           .run(nowIso, info.attemptIndex, info.generationId ?? null, lastPrqId);
-        if (o.background?.kind === 'keepwarm') d.heartbeat?.observeDelivery(o.background.runId, lastPrqId, envelope.messages);
+        if (o.background?.kind === 'keepwarm') d.heartbeat?.observeDelivery(o.background.runId, lastPrqId, envelope.messages, o.heartbeatHostText);
         if (!roundSeenPromoted) {
           roundSeenPromoted = true;
           // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
@@ -1195,7 +1197,7 @@ export class TurnSupervisor {
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
           if (o.background?.kind === 'keepwarm' && requestId && lastSentMessages) {
-            d.heartbeat?.observeDelivery(o.background.runId, requestId, lastSentMessages);
+            d.heartbeat?.observeDelivery(o.background.runId, requestId, lastSentMessages, o.heartbeatHostText);
           }
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
           pendingSeenByTool.clear();
