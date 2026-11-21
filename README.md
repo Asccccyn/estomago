@@ -373,6 +373,7 @@ LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 e
 
 - 2026-11-21（上海，联合审计）· `ac5cc65` 核验 API/SDK 心跳续接、朋友圈映射、候选池扩展与相册遗留，结论有阻断。[审计与复验清单](docs/reports/JOINT_AUDIT_20261121/AUDIT.md)
 - 2026-11-21（本机实施，未部署）· `76c81175c0c3` 修复联合审计 F01—F10 代码链，补独立午夜 Sol 日选与可扩展候选源；Host schema v87，45 个相关文件 228 项、25 个联合探针及隔离迁移/浏览器复验通过。[实施交付与未决边界](docs/reports/JOINT_AUDIT_20261121/IMPLEMENTATION.md)
+- 2026-11-21（上海，独立复审）· `4042b1f` 确认回复原星与第七来源已接通，复现中途重启丢协议等四项剩余问题。[复审结论与复验](docs/reports/JOINT_AUDIT_20261121/REVIEW_76c8117.md)
 - **d4884d7（2026-10-21，交接根因修复）**：前端请求取消/迟到响应与终态栏杆、启动测试合同纠偏、同轮记忆 source=target 与接受起绝对 deadline；保留 P2 与新历史/编辑交互，重建 React dist。全量 136/136 文件、918/918 断言通过，前后端 typecheck 通过；[修复与验证说明](docs/reports/CODEX_HANDOFF_FIX_20261021.md)。
 
 - **2026-10-19 联合审计架构清理（独立审计分支，未部署）**：默认会话常量归消息领域以消除 Host/HTTP 运行时循环；删除无调用方的 MCP 客户端/静态集成表、退役事件信封及草案 ReasoningEnvelope，真实事件正本与历史迁移保留。通用 MCP/SDK 宿主工具桥继续 **BLOCKED**；[当前入口与历史能力勘误](docs/current-architecture-20261019.md)。
