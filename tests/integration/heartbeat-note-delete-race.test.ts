@@ -17,6 +17,12 @@ const model = 'anthropic/claude-note-race-fixture';
 const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 500 }, cost: 0.001 };
 const drawId = 'fixture-note-draw';
 const secret = '只可在实际派发门之后出现的合成预留话';
+const beforeReveal = '合成：我现在去抽牌';
+const afterReveal = '合成：这句是对已揭预留话的回应';
+function toolBatch(items: Array<{ id: string; name: string; args: Record<string, unknown> }>) {
+  return { tool_calls: items.map((item, index) => ({ index, id: item.id, type: 'function',
+    function: { name: item.name, arguments: JSON.stringify(item.args) } })) };
+}
 
 function barrier() {
   let release!: () => void;
@@ -25,7 +31,8 @@ function barrier() {
 }
 
 for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'dispatch-before-delete-unknown',
-  'edit-before-gate', 'edit-after-delivery', 'edit-after-unknown', 'content-action-replay', 'content-action-late-receipt'] as const) {
+  'edit-before-gate', 'edit-after-delivery', 'edit-after-unknown', 'content-action-replay', 'content-action-late-receipt',
+  'reserved-pre-only', 'reserved-pre-and-post', 'wake-action-receipts'] as const) {
   test(`T44/F05: real reserved-note mutation and delivery follow the authoritative gate order (${order})`, { timeout: 15000 }, async t => {
     const editing = order.startsWith('edit-');
     assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
@@ -82,13 +89,19 @@ for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'di
           number = card.card_number;
           delta = { tool_calls: [{ index: 0, id: drawId, type: 'function',
             function: { name: 'heartbeat_draw', arguments: JSON.stringify({ card_number: number }) } }] };
+          if (order.startsWith('reserved-')) delta = toolBatch([
+            { id: 'before-reveal', name: 'chat_send_text', args: { text: beforeReveal, idempotency_key: 'pre-card' } },
+            { id: drawId, name: 'heartbeat_draw', args: { card_number: number } },
+          ]);
         }
         if (heartbeat && reveal) {
           assert.notEqual(order, 'delete-before-gate', 'a prior source tombstone must stop transport');
           assert.match(JSON.stringify(messages), new RegExp(secret));
-          assert.equal(host!.db.prepare('SELECT state FROM heartbeat_draw_operations WHERE operation_id=?').get(drawId)?.state, 'dispatching');
-          entered.release();
-          await proceed.reached;
+          const firstDelivery = host!.db.prepare('SELECT state FROM heartbeat_draw_operations WHERE operation_id=?').get(drawId)?.state === 'dispatching';
+          if (firstDelivery) {
+            entered.release();
+            await proceed.reached;
+          } else assert.equal(order, 'wake-action-receipts', 'only the wake integration scenario needs additional continuations');
           if (order.endsWith('unknown')) throw Object.assign(new Error('synthetic connection lost after dispatch'), { code: 'ECONNRESET' });
           delta = { content: '确实收到留下的话' };
           if (order === 'content-action-replay') delta = { tool_calls: [
@@ -104,6 +117,44 @@ for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'di
               } })),
             { index: 2, id: 'content-late-done', type: 'function', function: { name: 'background_complete', arguments: JSON.stringify({ outcome: 'done' }) } },
           ] };
+          if (order === 'reserved-pre-only') delta = toolBatch([{ id: 'reserved-done', name: 'background_complete', args: { outcome: 'noop' } }]);
+          if (order === 'reserved-pre-and-post') delta = toolBatch([
+            { id: 'after-reveal', name: 'chat_send_text', args: { text: afterReveal, idempotency_key: 'post-card' } },
+            { id: 'reserved-done', name: 'background_complete', args: { outcome: 'done' } },
+          ]);
+          if (order === 'wake-action-receipts') {
+            const receipt = (id: string) => {
+              const message = messages.find(item => item.role === 'tool' && item.tool_call_id === id);
+              return message ? JSON.parse(String(message.content)) as { task_id: string; revision: number } : null;
+            };
+            const schedule = receipt('wake-schedule');
+            const updated = receipt('wake-update');
+            const scheduleArgs = { operation: 'schedule', operation_id: 'wake-original', note: '合成自约正文', delay_seconds: 3600 };
+            if (!schedule) delta = toolBatch([
+              { id: 'wake-schedule', name: 'wake_manage', args: scheduleArgs },
+              { id: 'wake-schedule-retry', name: 'wake_manage', args: scheduleArgs },
+              { id: 'wake-list', name: 'wake_manage', args: { operation: 'list' } },
+              // Both values pass JSON schema; the true owner rejects supplying
+              // both absolute and relative time, so this is a business failure.
+              { id: 'wake-bad-schedule', name: 'wake_manage', args: { ...scheduleArgs, operation_id: 'wake-bad', at: '2020-01-01T00:00:00Z' } },
+            ]);
+            else if (!updated) {
+              const args = { operation: 'update', operation_id: 'wake-change', task_id: schedule.task_id, expected_revision: schedule.revision, delay_seconds: 7200 };
+              delta = toolBatch([
+                { id: 'wake-update', name: 'wake_manage', args },
+                { id: 'wake-update-retry', name: 'wake_manage', args },
+                { id: 'wake-bad-update', name: 'wake_manage', args: { ...args, operation_id: 'wake-stale', expected_revision: 999 } },
+              ]);
+            } else {
+              const args = { operation: 'cancel', operation_id: 'wake-cancelled', task_id: updated.task_id, expected_revision: updated.revision };
+              delta = toolBatch([
+                { id: 'wake-cancel', name: 'wake_manage', args },
+                { id: 'wake-cancel-retry', name: 'wake_manage', args },
+                { id: 'wake-list-after', name: 'wake_manage', args: { operation: 'list' } },
+                { id: 'wake-done', name: 'background_complete', args: { outcome: 'noop' } },
+              ]);
+            }
+          }
         }
         return { status: 200, headers: new Headers(), body: Readable.from([
           `data: ${JSON.stringify({ id: `request-${wire.length}`, choices: [{ delta }] })}\n\n`,
@@ -135,7 +186,8 @@ for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'di
       if (!index) targetId = body.id;
     }
     const notePath = '/content/future-notes/' + targetId;
-    const settings = await request('/background/settings', 'PUT', { keepwarm: { enabled: true, daily_cost_cap_usd: 5 } }, 'set-keepwarm', 0);
+    const settings = await request('/background/settings', 'PUT', { keepwarm: { enabled: true, daily_cost_cap_usd: 5 },
+      ...(order === 'wake-action-receipts' ? { autonomous: { enabled: true, daily_cost_cap_usd: 5 } } : {}) }, 'set-keepwarm', 0);
     assert.equal(settings.status, 200, JSON.stringify(settings.body));
     host.db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('or_model_price',?,?)")
       .run(JSON.stringify({ input_micro_per_token: 0.000003, output_micro_per_token: 0.000015 }), new Date().toISOString());
@@ -171,6 +223,60 @@ for (const order of ['delete-before-gate', 'dispatch-before-delete-success', 'di
     }
     const run = host.scheduler!.tick();
     await Promise.race([entered.reached, run.then(() => { throw new Error('heartbeat ended before the intended synchronization point'); })]);
+    if (order.startsWith('reserved-') || order === 'wake-action-receipts') {
+      proceed.release(); await run; await host.supervisor.waitIdle();
+      const runtime = (host as unknown as { heartbeat: HeartbeatRuntime }).heartbeat;
+      await runtime.recoverProjections(20);
+      const projection = JSON.parse(String(host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref));
+      assert.equal(projection.card.source.kind, 'reserved_note');
+      assert.equal(host.db.prepare('SELECT state FROM heartbeat_draw_operations WHERE operation_id=?').get(drawId)?.state, 'delivered');
+      if (order === 'wake-action-receipts') {
+        const tasks = host.db.prepare("SELECT id,revision,enabled,created_by_actor_id FROM background_tasks WHERE origin='self_schedule'").all();
+        assert.equal(tasks.length, 1);
+        assert.equal(tasks[0]?.revision, 3);
+        assert.equal(tasks[0]?.enabled, 0);
+        assert.equal(tasks[0]?.created_by_actor_id, 'jiaming');
+        const wake = projection.actions.filter((a: any) => a.kind === 'wake');
+        assert.deepEqual(wake.map((a: any) => [a.wakeOperation, a.status]), [
+          ['schedule','committed'], ['schedule','failed'], ['update','committed'], ['update','failed'], ['cancel','committed'],
+        ]);
+        assert.deepEqual(wake.filter((a: any) => a.status === 'committed').map((a: any) => a.source), [1,2,3].map(revision => ({ namespace: 'host:task', id: tasks[0]!.id, revision })));
+        const feed = await request('/content/posts?include_references=1');
+        const blocks = feed.body.items.find((row: any) => row.kind === 'reference').blocks;
+        for (const label of ['设置自主预约','修改自主预约','取消自主预约']) assert.ok(blocks.some((b: any) => b.source_label === label && b.text.includes('已完成')));
+        await chat('下一条自然输入', 'chat-after');
+        const receipts = wire.at(-1)!.filter(m => m.role === 'tool');
+        for (const pair of [['wake-schedule','wake-schedule-retry'],['wake-update','wake-update-retry'],['wake-cancel','wake-cancel-retry']]) {
+          const outputs = pair.map(id => JSON.parse(String(receipts.find(m => m.tool_call_id === id)?.content)));
+          assert.deepEqual(outputs[0], outputs[1]);
+          assert.equal(outputs[0].task_id, tasks[0]!.id);
+        }
+      } else {
+        const said = (projection.messages as Array<{ messageId: string; revision: number; sequence: number }>).map(ref => host!.messages.getMessageAtRevision('primary', ref.messageId, ref.revision));
+        assert.equal(said.find(m => m?.revision.content === beforeReveal)?.speaker, 'assistant');
+        const expectsReply = order === 'reserved-pre-and-post';
+        // The whole-turn reading still truthfully contains the pre-reveal
+        // chat. Only the explicit response subset confers replay eligibility.
+        assert.equal(projection.state, 'drawn');
+        assert.deepEqual(projection.reservedReplyMessages, expectsReply ? projection.messages.filter((m: any) => m.messageId === said.find(row => row?.revision.content === afterReveal)?.id) : []);
+        const pool = await runtime.sources.choose('primary', source => runtime.cards.isSourceEligible(source), AbortSignal.timeout(3000));
+        const replay = pool.find(source => source.replay === 'first_reserved_response');
+        assert.equal(!!replay, expectsReply);
+        if (replay) {
+          const updated = await request(notePath, 'PUT', { body: '源已修改，但仍用实际旧修订' }, 'edit-after-draw', 1);
+          assert.equal(updated.status, 200);
+          const payload = await runtime.sources.resolve(replay, 'primary', AbortSignal.timeout(3000));
+          assert.equal(payload.status, 'available');
+          if (payload.status === 'available') {
+            assert.ok(payload.text.includes(afterReveal));
+            assert.ok(payload.text.includes(secret));
+            assert.ok(!payload.text.includes(beforeReveal));
+            assert.ok(!payload.text.includes('源已修改'));
+          }
+        }
+      }
+      return;
+    }
     if (order === 'content-action-late-receipt') {
       proceed.release(); await run; await host.supervisor.waitIdle();
       const runtime = (host as unknown as { heartbeat: HeartbeatRuntime }).heartbeat;

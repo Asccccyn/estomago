@@ -1,4 +1,4 @@
-import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 import type { WishstarClient } from '../../integrations/wishstar/client.ts';
 import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
@@ -39,7 +39,9 @@ type ExternalSources = {
 
 /** Internal, trusted Host composition port. Not an HTTP/model registration surface.
  * Source identities are authoritative (including cross-source canonical aliases),
- * and list/resolve must honor the supplied room, actor, deadline, and revision. */
+ * and list/resolve must honor the supplied room, actor, deadline, and revision.
+ * enabled controls participation in draws only. It is not a source permission;
+ * resolve must independently enforce the actor's current read access. */
 export type HeartbeatSourceAdapter = {
   kind: HeartbeatExtensionKind;
   namespace: string;
@@ -155,18 +157,22 @@ export class HeartbeatSources {
     return chosen;
   }
 
-  enabled(source: HeartbeatSource): boolean {
+  candidateEnabled(source: HeartbeatSource): boolean {
     if (!isHeartbeatExtensionKind(source.kind)) return true;
     const adapter = this.extensions.get(source.kind);
     return Boolean(adapter && adapter.namespace === source.namespace && adapter.enabled(source.permissionScope));
   }
 
   async resolve(source: HeartbeatSource, conversationId: string, signal: AbortSignal, actor: SourceActor = 'jiaming',
-    phase: 'bind' | 'resolve' = 'resolve'): Promise<CardPayload> {
+    phase: 'bind' | 'resolve' | 'history' = 'resolve'): Promise<CardPayload> {
     if (source.permissionScope !== conversationId) return { status: 'forbidden' };
     if (isHeartbeatExtensionKind(source.kind)) {
       const adapter = this.extensions.get(source.kind);
-      if (!adapter || adapter.namespace !== source.namespace || !adapter.enabled(conversationId)) return { status: 'forbidden' };
+      if (!adapter || adapter.namespace !== source.namespace) return { status: 'forbidden' };
+      // A preference change is neither deletion nor permission revocation.
+      // Only the authorized historical display route skips candidate admission;
+      // it still must read this exact revision under the actor's current grant.
+      if (phase !== 'history' && !adapter.enabled(conversationId)) return { status: 'unavailable' };
       try { return await adapter.resolve(source, conversationId, signal, actor); }
       catch { return { status: 'unavailable' }; }
     }
@@ -210,18 +216,15 @@ export class HeartbeatSources {
       if (source.kind === 'album' && item.kind !== 'important_photos' && item.kind !== 'chat_screenshots') return { status: 'forbidden' };
       if (source.kind === 'moments' && source.replay) {
         const projection = readHeartbeatProjection(item.reference);
-        const original = projection?.card?.source;
-        if (item.id !== source.id || projection?.conversationId !== conversationId
-          || projection.version !== source.revision || projection.state !== 'drawn' || original?.kind !== 'reserved_note') {
+        const replay = projection?.conversationId === conversationId ? this.firstReservedReplay(projection) : null;
+        if (item.id !== source.id || !replay || !projection
+          || (typeof source.revision === 'number' ? projection.version !== source.revision || !replay.legacyExact : replay.revision !== source.revision)) {
           return { status: 'revision_unavailable' };
         }
-        const letter = await this.resolve(original, conversationId, signal, actor);
+        const letter = await this.resolve(replay.original, conversationId, signal, actor);
         if (letter.status !== 'available') return letter;
-        const replies = projection.messages.map(ref => this.messages.getMessageAtRevision(conversationId, ref.messageId, ref.revision))
-          .filter(row => row?.speaker === 'assistant');
-        if (!replies.length) return { status: 'revision_unavailable' };
-        return this.payload(['先前留下的话', letter.text, ...replies.map(message => 'char：' + message!.revision.content)].join('\n\n'),
-          [...letter.assetIds, ...replies.flatMap(message => message!.revision.attachments.map(attachment => attachment.asset_id))]);
+        return this.payload(['先前留下的话', letter.text, ...replay.replies.map(message => 'char：' + message.revision.content)].join('\n\n'),
+          [...letter.assetIds, ...replay.replies.flatMap(message => message.revision.attachments.map(attachment => attachment.asset_id))]);
       }
       if (item.id !== source.id || item.revision !== source.revision) return { status: 'revision_unavailable' };
       if (source.kind === 'archive') {
@@ -242,7 +245,7 @@ export class HeartbeatSources {
       // Content's own read authorizes the fixed attachment relationship.
       // Only the model path also needs a frozen, verified voice projection.
       const voice = actor === 'jiaming' && (source.kind === 'moments' || source.kind === 'reserved_note')
-        ? { conversationId, expectedRevision: source.selection?.voiceTranscriptRevision, phase } : undefined;
+        ? { conversationId, expectedRevision: source.selection?.voiceTranscriptRevision, phase: phase === 'bind' ? 'bind' as const : 'resolve' as const } : undefined;
       return this.payload(text, item.asset_id ? [item.asset_id] : item.asset_ids ?? [], voice);
     } catch {
       return { status: 'unavailable' };
@@ -283,6 +286,43 @@ export class HeartbeatSources {
     return sha256Hex(JSON.stringify([star.content, star.author_name, star.note]));
   }
 
+  private firstReservedReplay(projection: HeartbeatProjection): { original: HeartbeatSource; revision: string; legacyExact: boolean;
+    replies: NonNullable<ReturnType<MessageService['getMessageAtRevision']>>[] } | null {
+    const original = projection.card?.source;
+    if (projection.state !== 'drawn' || original?.kind !== 'reserved_note') return null;
+    // Older projections had no explicit response references. Only retain old
+    // replies provably after the real card publication, never all assistants
+    // in the surrounding turn. An unreadable historical boundary fails closed.
+    const rows = projection.messages.map(ref => ({ ref,
+      message: this.messages.getMessageAtRevision(projection.conversationId, ref.messageId, ref.revision) }));
+    const reveals = rows.filter(row => row.message?.heartbeat_card && row.message.sequence === row.ref.sequence);
+    const reveal = reveals.length === 1 ? reveals[0]!.message : null;
+    if (!reveal?.turn_id) return null;
+    // No fixed old response list exists. If a post-reveal reference is no
+    // longer readable, we cannot tell whether a missing assistant belonged to
+    // the original response; do not silently shorten a frozen old payload.
+    if (!projection.reservedReplyMessages && rows.some(row => row.ref.sequence > reveal.sequence
+      && (!row.message || row.message.sequence !== row.ref.sequence || row.message.turn_id !== reveal.turn_id))) return null;
+    const fixed = projection.reservedReplyMessages ?? rows.filter(row => row.message?.speaker === 'assistant'
+      && row.message.turn_id === reveal.turn_id && row.ref.sequence > reveal.sequence).map(row => row.ref);
+    if (!fixed.length) return null;
+    const replies: NonNullable<ReturnType<MessageService['getMessageAtRevision']>>[] = [];
+    for (const ref of fixed) {
+      const message = rows.find(row => row.ref.messageId === ref.messageId && row.ref.revision === ref.revision)?.message;
+      if (!message || message.speaker !== 'assistant' || message.turn_id !== reveal.turn_id
+        || message.sequence !== ref.sequence || ref.sequence <= reveal.sequence) return null;
+      replies.push(message);
+    }
+    // The reading revision belongs to the frozen source and original response
+    // references, not the mutable article version (which can advance only for
+    // late business receipts). Keep the old numeric revisions readable above.
+    // The old numeric source revision encoded every assistant ref. Only keep
+    // that fixed source readable if this produces the exact same reply set.
+    const legacyExact = projection.reservedReplyMessages === undefined && rows.every(row => row.message)
+      && rows.filter(row => row.message?.speaker === 'assistant').every(row => fixed.some(ref => ref.messageId === row.ref.messageId));
+    return { original, revision: `reply:${sha256Hex(JSON.stringify([original, fixed]))}`, replies, legacyExact };
+  }
+
   private async list(kind: LocalSource, route: string, conversationId: string, signal: AbortSignal): Promise<HeartbeatSource[] | null> {
     if (!this.content) return null;
     const result = await readAllContentPages<ContentItem>(this.content, {
@@ -295,9 +335,9 @@ export class HeartbeatSources {
       if (kind === 'album' && item.kind !== 'important_photos' && item.kind !== 'chat_screenshots') return [];
       if (kind === 'moments' && item.kind === 'reference') {
         const projection = readHeartbeatProjection(item.reference);
-        if (projection?.conversationId !== conversationId || projection.state !== 'drawn'
-          || projection.card?.source.kind !== 'reserved_note') return [];
-        return [{ kind, namespace: 'content', id: item.id, revision: projection.version,
+        const replay = projection?.conversationId === conversationId ? this.firstReservedReplay(projection) : null;
+        if (!replay) return [];
+        return [{ kind, namespace: 'content', id: item.id, revision: replay.revision,
           identity: `content:moments:first-reserved:${item.id}`, permissionScope: conversationId, replay: 'first_reserved_response' }];
       }
       let identity = `content:${kind}:${item.id}`;

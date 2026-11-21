@@ -182,15 +182,15 @@ export async function runSdkHostQuery(
       return { ok: false, output: pending, recordDelivery: result => { messages.push({role:'tool',tool_call_id:id,content:toolResultContent(result)}); } };
     }
     const terminal = host.captureCompletionBatch && effectiveToolName(name, args) === TURN_COMPLETION_TOOL;
-    if (terminal && !await observedAssistantBatch(id)) {
+    if ((terminal || host.captureHeartbeatBatch) && !await observedAssistantBatch(id)) {
       return {
-        ok: false, output: { error_code: 'TURN_COMPLETION_BATCH_UNOBSERVED' },
+        ok: false, output: { error_code: terminal ? 'TURN_COMPLETION_BATCH_UNOBSERVED' : 'HEARTBEAT_BATCH_UNOBSERVED' },
         recordDelivery: receipt => { messages.push({ role: 'tool', tool_call_id: id, content: toolResultContent(receipt) }); },
       };
     }
     executing.add(id);
     try {
-      const result = await host.executeTool(name, args, id, round, messages, argumentSource, terminal ? () => ({
+      const result = await host.executeTool(name, args, id, round, messages, argumentSource, terminal || host.captureHeartbeatBatch ? () => ({
         tail: messages.slice(lastSentMessages.length), inFlight: [...executing], sentMessages: lastSentMessages,
       }) : undefined);
       return { ...result, recordDelivery: delivered => {

@@ -84,7 +84,7 @@ export class HeartbeatRuntime {
     this.messages = messages;
     this.events = events;
     this.sources = new HeartbeatSources(content, media, archives, messages, { ...external, voice: new OidoSourceRepository(db) });
-    this.cards = new HeartbeatCards(db, Date.now, source => this.sources.enabled(source));
+    this.cards = new HeartbeatCards(db, Date.now, source => this.sources.candidateEnabled(source));
   }
 
   async begin(input: { runId: string; conversationId: string; windowId: string; signal: AbortSignal; retainedMessages: OrMessage[] }): Promise<{
@@ -303,7 +303,7 @@ export class HeartbeatRuntime {
   async cardForDisplay(runId: string, conversationId: string) {
     const draw = this.cards.getDeliveredDraw(runId);
     if (!draw || draw.source.permissionScope !== conversationId) return null;
-    const resolved = await this.sources.resolve(draw.source, conversationId, AbortSignal.timeout(1800), 'qiaosheng');
+    const resolved = await this.sources.resolve(draw.source, conversationId, AbortSignal.timeout(1800), 'qiaosheng', 'history');
     return resolved.status === 'available'
       ? { status: resolved.status, text: resolved.text, asset_ids: resolved.assetIds }
       : { status: resolved.status };
@@ -341,13 +341,17 @@ export class HeartbeatRuntime {
     const actions = heartbeatActions(this.db, input.runId);
     if (delivered && text.trim()) publish('reply', text);
     const refs = this.db.prepare(`
-      SELECT id, current_revision, sequence, speaker FROM messages WHERE turn_id=? AND published_at IS NOT NULL ORDER BY sequence
-    `).all(input.turnId) as Array<{ id: string; current_revision: number; sequence: number; speaker: string }>;
+      SELECT id, current_revision, sequence, speaker, client_message_id FROM messages WHERE turn_id=? AND published_at IS NOT NULL ORDER BY sequence
+    `).all(input.turnId) as Array<{ id: string; current_revision: number; sequence: number; speaker: string; client_message_id: string | null }>;
+    const revealSequence = refs.find(message => message.client_message_id === `heartbeat:${input.runId}:card`)?.sequence;
+    const afterReveal = revealSequence === undefined ? [] : refs.filter(message => message.speaker === 'assistant' && message.sequence > revealSequence);
+    const projectionRef = (message: typeof refs[number]) => ({ messageId: message.id, revision: message.current_revision, sequence: message.sequence });
     const projection: HeartbeatProjection = {
       mode: 'draw', conversationId: input.conversationId, businessDate: run.businessDate, version: 2,
       state: delivered ? refs.some(message => message.speaker === 'assistant') ? 'drawn' : 'drawn_no_comment' : decline ? 'declined' : 'interrupted',
       card: delivered ? { number: delivered.cardNumber, source: delivered.source } : null,
-      messages: refs.map(message => ({ messageId: message.id, revision: message.current_revision, sequence: message.sequence })),
+      messages: refs.map(projectionRef),
+      ...(delivered?.source.kind === 'reserved_note' ? { reservedReplyMessages: afterReveal.map(projectionRef) } : {}),
       actions,
       terminal: decline ? { status: 'declined' } : input.terminal ?? { status: input.completed ? 'completed' : 'failed' },
     };

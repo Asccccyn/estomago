@@ -12,6 +12,7 @@ export type CompletionBatch = {
 };
 
 type CompletionProof = {
+  phase?: 'heartbeat_batch';
   requestId: string;
   priorTrajectory: string;
   tail: OrMessage[];
@@ -83,6 +84,43 @@ export function stageTurnCompletion(db: Db, args: {
     .run(JSON.stringify(proof), args.attemptId, args.turnId);
 }
 
+/** The same recovery slot also protects an ordinary heartbeat tool batch
+ * before the completion CAS. The confirmed request is the sole prefix;
+ * only its observed assistant tool packet and unsent receipts live here. */
+export function stageHeartbeatBatch(db: Db, args: {
+  requestId: string; windowId: string; turnId: string; attemptId: string;
+  batch: CompletionBatch; confirmedSeen: ManifestEntry[]; heartbeatHostText?: string;
+}): void {
+  const existing = db.prepare('SELECT completion_outcome,completion_recovery_json FROM attempts WHERE id=? AND turn_id=?')
+    .get(args.attemptId, args.turnId) as { completion_outcome: string | null; completion_recovery_json: string | null } | undefined;
+  if (existing?.completion_outcome) return;
+  const prior = existing?.completion_recovery_json ? readCompletionProof(existing.completion_recovery_json) : null;
+  if (prior?.phase === 'heartbeat_batch' && prior.requestId === args.requestId) return;
+  const input = observedCompletionInput(db, args);
+  const trajectoryHash = currentTrajectoryHash(db, args.windowId);
+  if (!input || !trajectoryHash || toolCalls(args.batch.tail).length === 0
+    || JSON.stringify(completionInputMessages(input)) !== JSON.stringify(args.batch.sentMessages)) {
+    throw new Error('HEARTBEAT_BATCH_RECOVERY_EVIDENCE_MISSING');
+  }
+  const proof: CompletionProof = {
+    phase: 'heartbeat_batch', requestId: args.requestId, priorTrajectory: trajectoryHash, tail: structuredClone(args.batch.tail),
+    inFlight: [], manifestAdditions: [], confirmedSeen: [...args.confirmedSeen], pendingSeen: [],
+    heartbeatHostText: args.heartbeatHostText,
+  };
+  db.prepare('UPDATE attempts SET completion_recovery_json=? WHERE id=? AND turn_id=? AND completion_outcome IS NULL')
+    .run(JSON.stringify(proof), args.attemptId, args.turnId);
+}
+
+export function markHeartbeatToolStarted(db: Db, attemptId: string, requestId: string, callId: string): void {
+  const row = db.prepare('SELECT completion_recovery_json FROM attempts WHERE id=? AND completion_outcome IS NULL').get(attemptId) as
+    { completion_recovery_json: string | null } | undefined;
+  if (!row?.completion_recovery_json) return;
+  const proof = readCompletionProof(row.completion_recovery_json);
+  if (proof.phase !== 'heartbeat_batch' || proof.requestId !== requestId || !toolCalls(proof.tail).includes(callId)) return;
+  if (!proof.inFlight.includes(callId)) proof.inFlight.push(callId);
+  db.prepare('UPDATE attempts SET completion_recovery_json=? WHERE id=?').run(JSON.stringify(proof), attemptId);
+}
+
 export function appendCompletionToolReceipt(db: Db, attemptId: string, callId: string, receipt: ToolExecResult, pendingSeen: ManifestEntry[]): void {
   const row = db.prepare('SELECT completion_recovery_json FROM attempts WHERE id=? AND completion_recovery_json IS NOT NULL')
     .get(attemptId) as { completion_recovery_json: string } | undefined;
@@ -99,7 +137,8 @@ export function readCompletionProof(raw: string): CompletionProof {
   return JSON.parse(raw) as CompletionProof;
 }
 
-export function completeRecoveredToolTail(proof: CompletionProof): { tail: OrMessage[]; unknown: boolean } {
+export function completeRecoveredToolTail(proof: CompletionProof,
+  resolveMissing?: (callId: string) => ToolExecResult | undefined): { tail: OrMessage[]; unknown: boolean } {
   const answered = new Map(proof.tail.filter(message => message.role === 'tool').map(message => [message.tool_call_id, message]));
   let unknown = false;
   const tail = proof.tail.filter(message => message.role !== 'tool').flatMap(message => [
@@ -107,11 +146,13 @@ export function completeRecoveredToolTail(proof: CompletionProof): { tail: OrMes
     ...toolCalls([message]).map(id => {
       const observed = answered.get(id);
       if (observed) return observed;
+      const receipt = resolveMissing?.(id);
+      if (receipt) return completionResult(id, receipt);
       const inFlight = proof.inFlight.includes(id);
       unknown ||= inFlight;
       return completionResult(id, { ok: false, output: inFlight
         ? { error_code: 'TOOL_EXECUTION_OUTCOME_UNKNOWN', outcome: 'unknown' }
-        : { error_code: 'TURN_COMPLETED', executed: false } });
+        : { error_code: proof.phase === 'heartbeat_batch' ? 'EXECUTION_NOT_STARTED' : 'TURN_COMPLETED', executed: false } });
     }),
   ]);
   return { tail, unknown };

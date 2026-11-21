@@ -366,9 +366,18 @@ export class MemoryToolsService {
       this.reviews.settleEffect(effectId, 'unknown', false, null);
       return { ok: false, output: { error_code: 'HOLD_RECEIPT_OPERATION_MISMATCH' } };
     }
+    const result: ToolExecResult = { ok: true, output: {
+      saved: true, memory_id: receipt.memory_id, version: receipt.version, source_status: 'unbound',
+      ...((args.source_ranges !== undefined || args.quotes !== undefined) ? {
+        note: '记忆已保存；旧参数中的原文绑定和摘录未执行。原文关联由后台任务自动处理，不要重写这条记忆。',
+      } : {}),
+    } };
     this.reviews.settleEffect(effectId, 'committed', true, receipt.memory_id, receipt.commit_observed_at,
       ctx.backgroundRunId && ctx.purpose === 'cache_keepalive'
-        ? () => settleHeartbeatMemoryReceipt(this.db, operationId, { memoryId: receipt.memory_id, version: receipt.version })
+        ? () => {
+          settleHeartbeatMemoryReceipt(this.db, operationId, { memoryId: receipt.memory_id, version: receipt.version });
+          ctx.recordCommittedToolReceipt?.(result);
+        }
         : undefined);
     // 成功书签：主模型发起 + 已核实收据 → 以"发起请求实际看见的高水位"推进（不倒退/幂等）
     try {
@@ -386,12 +395,7 @@ export class MemoryToolsService {
     }
     // 已冻结的旧窗口仍可能传附件参数；保存照常完成，并明确告知附件没有执行。
     // 包4（2026-11-18）：手工绑定已退出模型面——回执不再推荐绑定动作。
-    return { ok: true, output: {
-      saved: true, memory_id: receipt.memory_id, version: receipt.version, source_status: 'unbound',
-      ...((args.source_ranges !== undefined || args.quotes !== undefined) ? {
-        note: '记忆已保存；旧参数中的原文绑定和摘录未执行。原文关联由后台任务自动处理，不要重写这条记忆。',
-      } : {}),
-    } };
+    return result;
   }
 
 

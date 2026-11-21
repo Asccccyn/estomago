@@ -52,7 +52,9 @@ export async function executeRegisteredCapability<I, O>(
   const recordHeartbeatAction = startHeartbeatAction(host.db, ctx, descriptor.heartbeatAction, checked.value);
   let outcome: CapabilityOutcome<O>;
   try {
-    outcome = await descriptor.run(checked.value, ctx);
+    outcome = await descriptor.run(checked.value, recordHeartbeatAction ? {
+      ...ctx, recordHeartbeatReceipt: receipt => recordHeartbeatAction({ ok: true, value: {}, heartbeatReceipt: receipt }),
+    } : ctx);
   } catch (err) {
     // handler 异常沿现行语义如实上抛（旧外层发 error 事件后 rethrow；不吞成结果）
     throw err;

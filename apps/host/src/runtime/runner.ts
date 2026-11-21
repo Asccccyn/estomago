@@ -32,6 +32,8 @@ export type SdkRunRequest = {
     envelope: OrRequestEnvelope;
     executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[], argumentSource?: string, completionBatch?: () => import('./turn-completion-checkpoint.ts').CompletionBatch) => Promise<ToolExecResult>;
     captureCompletionBatch?: boolean;
+    /** Preserve observed heartbeat tool packets before any business admission. */
+    captureHeartbeatBatch?: boolean;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     completionRequested?: () => boolean;
     recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;

@@ -57,12 +57,15 @@ const actionLabels: Record<HeartbeatAction['kind'], string> = {
 };
 
 function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
-  const verb = action.kind === 'selection' && action.cardNumber ? `选择 ${action.cardNumber} 号牌` : actionLabels[action.kind];
+  const label = action.kind === 'wake' && action.wakeOperation ? {
+    schedule: '设置自主预约', update: '修改自主预约', cancel: '取消自主预约',
+  }[action.wakeOperation] : actionLabels[action.kind];
+  const verb = action.kind === 'selection' && action.cardNumber ? `选择 ${action.cardNumber} 号牌` : label;
   const phrase = {
     committed: action.kind === 'selection' ? '已选中' : '已完成',
     partial: '部分完成，仍有步骤待确认', failed: '未成功', cancelled: '已取消或未派发', unknown: '结果待核，暂不能确认成功',
   }[action.status];
-  return { id: `action:${index}`, source_label: actionLabels[action.kind], status: 'available', editable: false,
+  return { id: `action:${index}`, source_label: label, status: 'available', editable: false,
     text: `${verb} · ${phrase}。` };
 }
 
@@ -155,7 +158,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       ...(managed ? { management_href: `/home/heartbeat?note=${encodeURIComponent(source.id)}` } : {}),
     };
     const payload = await deps.heartbeat?.sources.resolve(display === undefined ? source : { ...source, revision: display },
-      projection.conversationId, signal, ACTOR);
+      projection.conversationId, signal, ACTOR, 'history');
     const editable = !reserved && payload?.status === 'available' && current?.status === 'available' && canEditSource(current.row);
     const block: ResolvedBlock = {
       ...base, status: payload?.status ?? 'unavailable', editable,

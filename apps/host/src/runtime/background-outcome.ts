@@ -40,8 +40,9 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
   const observed = heartbeat ? db.prepare(`
     SELECT payload_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL
-    ORDER BY sent_at DESC,rowid DESC LIMIT 1
-  `).get(runId) as { payload_json: string | null } | undefined : null;
+      AND (? IS NULL OR id=?)
+    ORDER BY rowid DESC LIMIT 1
+  `).get(runId,input.recoveredRequestId ?? null,input.recoveredRequestId ?? null) as { payload_json: string | null } | undefined : null;
   const last = loop.finalMessages?.at(-1);
   const lastText = last?.role === 'assistant' && !(Array.isArray(last.tool_calls) && last.tool_calls.length)
     ? typeof last.content === 'string' ? last.content
@@ -65,7 +66,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   `).all(input.turnId) as Array<{ id: string; sequence: number; current_revision: number }>;
   let heartbeatEvents: ReturnType<HeartbeatRuntime['commitInTx']>['eventRows'] = [];
   const terminal = (): NonNullable<Parameters<HeartbeatRuntime['commitInTx']>[0]['terminal']> => ({
-    status: heartbeat?.runtime.hasUnknownDelivery(runId) || finishReason === 'TOOL_EXECUTION_OUTCOME_UNKNOWN' ? 'unknown'
+    status: heartbeat?.runtime.hasUnknownDelivery(runId) || finishReason === 'TOOL_EXECUTION_OUTCOME_UNKNOWN' || finishReason === 'HOST_RESTART_MID_RUN' ? 'unknown'
       : input.isCancelRequested() || /CANCELLED|STOPPED|YIELDED/.test(finishReason ?? '') || sleepPaused ? 'cancelled'
       : completed ? 'completed' : 'failed',
     ...(finishReason ? { reason: finishReason === 'BUDGET_ESTIMATE_UNAVAILABLE' ? 'quote' : /BUDGET/.test(finishReason) ? 'budget' : sleepPaused ? 'sleep'
@@ -146,6 +147,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   if (loop.result.outcome !== 'completed') {
     if (input.heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'unknown', result_code: 'HEARTBEAT_CARD_DISPATCH_UNKNOWN' };
     if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
+    if (loop.result.errorCode === 'HOST_RESTART_MID_RUN') return { outcome: 'unknown', result_code: loop.result.errorCode };
     if (input.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
     if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
     return { outcome: 'failed', result_code: loop.result.errorCode ?? (kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };

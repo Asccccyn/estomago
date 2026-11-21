@@ -31,7 +31,7 @@ const usage = {
 };
 type WireMessage = { role: string; content: unknown; tool_call_id?: string };
 type Wire = { messages: WireMessage[]; tools: unknown[] };
-type Reply = { text: string } | { tool: string; id: string; args: Record<string, unknown> } | { disconnect: true };
+type Reply = { text: string } | { tool: string; id: string; args: Record<string, unknown> } | { disconnect: true } | { crash: true };
 const asMessage = (text: string): Reply => ({ text });
 const draw = (number: number): Reply => ({ tool: 'heartbeat_draw', id: `draw-${number}`, args: { card_number: number } });
 const noop = (): Reply => ({ tool: 'background_complete', id: 'decline-no-text', args: { outcome: 'noop' } });
@@ -56,6 +56,8 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     wire.push(payload as Wire);
     const response = replies.shift();
     assert.ok(response, 'unexpected model dispatch');
+    if ('crash' in response) process.kill(process.pid, 'SIGKILL');
+    if ('crash' in response) throw Error('fixture crash did not interrupt the process');
     if ('disconnect' in response) throw Object.assign(new Error('ECONNRESET after fixture receives request'), { code: 'ECONNRESET' });
     const delta = 'text' in response ? { content: response.text } : {
       tool_calls: [{ index: 0, id: response.id, type: 'function', function: { name: response.tool, arguments: JSON.stringify(response.args) } }],
@@ -468,12 +470,98 @@ test(ACTION_CRASH_TEST, async t => {
     assert.equal(projection.terminal.status, 'unknown');
     assert.equal(projection.actions.find((action: { kind: string }) => action.kind === 'memory_hold').source.id, 'fixture-crash-memory');
     assert.deepEqual(ctx.runtimeMessages(run.id).map(message => message.speaker), ['system','system']);
+    const retained = ctx.trajectory.forWindow(ctx.windowId())!;
+    const confirmed = ctx.host.db.prepare("SELECT payload_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL ORDER BY sent_at DESC,rowid DESC LIMIT 1").get(run.id);
+    const confirmedMessages = JSON.parse(String(confirmed?.payload_json)).messages;
+    assert.deepEqual(retained.messages.slice(0,confirmedMessages.length),confirmedMessages);
+    assert.deepEqual(retained.lastBoundary,tailBoundaryOf(confirmedMessages));
+    const assertProtocol = (messages: Array<{role:string;content?:unknown;tool_call_id?:string;tool_calls?:Array<{id:string}>}>) => {
+      assert.equal(messages.flatMap(m=>m.tool_calls??[]).filter(c=>c.id==='draw-1').length,1);
+      const cards = messages.filter(m=>m.role==='tool'&&m.tool_call_id==='draw-1');
+      assert.equal(cards.length,1); assert.match(JSON.stringify(cards[0]?.content),new RegExp(REVEAL));
+      assert.equal(messages.flatMap(m=>m.tool_calls??[]).filter(c=>c.id==='crash-hold').length,1);
+      const receipts = messages.filter(m=>m.role==='tool'&&m.tool_call_id==='crash-hold');
+      assert.equal(receipts.length,1);
+      assert.deepEqual(JSON.parse(String(receipts[0]?.content)),{saved:true,memory_id:'fixture-crash-memory',version:1,source_status:'unbound'});
+    };
+    assertProtocol(retained.messages as never);
+    assert.ok(!confirmedMessages.some((m:{tool_call_id?:string})=>m.tool_call_id==='crash-hold'),'hold receipt is retained but was never sent before the interruption');
+    ctx.host.supervisor.recoverAcceptedCompletions(ctx.scheduler.finishRecoveredCompletion.bind(ctx.scheduler));
+    assert.deepEqual(ctx.trajectory.forWindow(ctx.windowId()),retained);
     ctx.host.heartbeat!.recoverClosedRuns();
     assert.equal(ctx.projections().n, 1);
     assert.equal(ctx.wire.length, 0);
+    const wireBeforeNext = ctx.wire.length;
+    await ctx.chat('恢复后自然聊天');
+    assert.equal(ctx.wire.length,wireBeforeNext+1);
+    assertProtocol(ctx.wire.at(-1)!.messages as never);
+    assert.equal(ctx.host.db.prepare("SELECT count(*) n FROM tool_side_effects WHERE memory_id='fixture-crash-memory' AND state='committed' AND verified=1").get()?.n,1);
+    assert.equal(ctx.cards.getDeliveredDraw(run.id)?.cardNumber,1);
   } finally {
     if (!reopened) fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+const DELIVERY_CRASH_TEST = 'heartbeat: recovery distinguishes the confirmed card prefix from an uncertain continuation';
+const DELIVERY_CRASH_CHILD = '--heartbeat-delivery-crash';
+test(DELIVERY_CRASH_TEST, async t => {
+  if (process.argv[2] === DELIVERY_CRASH_CHILD) {
+    const root = process.argv[3]!, seam = process.argv[4];
+    const ctx = await fixture(t,CARDS,'available',0,{root});
+    await ctx.chat('建立现有聊天窗');
+    ctx.elapsed();
+    if (seam === 'confirmed') {
+      const runtime = ctx.host.heartbeat!;
+      const observe = runtime.observeDelivery.bind(runtime);
+      t.mock.method(runtime,'observeDelivery',(runId:string,requestId:string,messages:OrMessage[],hostText?:string)=>{
+        if (messages.some(m=>m.role==='tool'&&m.tool_call_id==='draw-1'&&JSON.stringify(m.content).includes(REVEAL))) {
+          assert.ok(ctx.host.db.prepare('SELECT sent_at FROM provider_requests WHERE id=?').get(requestId)?.sent_at);
+          assert.equal(ctx.cards.getDraw({runId,operationId:'draw-1'})?.status,'dispatching');
+          process.kill(process.pid,'SIGKILL');
+        }
+        observe(runId,requestId,messages,hostText);
+      });
+    }
+    ctx.replies.push(draw(1), seam==='confirmed'?asMessage('合成未完成回复'):{crash:true});
+    await ctx.scheduler.tick();
+    assert.fail('fixture did not reach the selected transport seam');
+    return;
+  }
+  for (const seam of ['confirmed','unknown']) await t.test(seam,async st=>{
+    const root = tempRoot('heartbeat-delivery-crash-');
+    let reopened = false;
+    try {
+      const child = spawnSync(process.execPath,[`--test-name-pattern=^${DELIVERY_CRASH_TEST}$`,import.meta.filename,DELIVERY_CRASH_CHILD,root,seam],
+        {env:{...process.env,ESTOMAGO_HOME:root},encoding:'utf8',timeout:15000});
+      assert.equal(child.signal,'SIGKILL',child.stdout+child.stderr);
+      const ctx = await fixture(st,CARDS,'available',0,{root,reopen:true}); reopened=true;
+      const server = (ctx.host as unknown as { server: { listen(port:number,bind:string,ready:()=>void):void } }).server;
+      st.mock.method(server,'listen',(_port,_bind,ready)=>ready());
+      await ctx.host.start();
+      assert.equal(ctx.wire.length,0);
+      const run=ctx.latestRun();
+      const delivered = seam==='confirmed';
+      assert.equal(ctx.cards.getDraw({runId:run.id,operationId:'draw-1'})?.status,delivered?'delivered':'unknown');
+      const assertHistory=(messages:Array<{role:string;tool_call_id?:string;content?:unknown;tool_calls?:Array<{id:string}>}>)=>{
+        assert.equal(messages.flatMap(m=>m.tool_calls??[]).filter(c=>c.id==='draw-1').length,1);
+        const receipt=messages.filter(m=>m.role==='tool'&&m.tool_call_id==='draw-1');
+        assert.equal(receipt.length,1);
+        assert.equal(JSON.stringify(receipt[0]?.content).includes(REVEAL),delivered);
+        if(!delivered)assert.equal(JSON.parse(String(receipt[0]?.content)).delivery,'unknown');
+      };
+      const retained=ctx.trajectory.forWindow(ctx.windowId())!;
+      assertHistory(retained.messages as never);
+      const latest=ctx.host.db.prepare("SELECT payload_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL ORDER BY sent_at DESC,rowid DESC LIMIT 1").get(run.id);
+      const sent=JSON.parse(String(latest?.payload_json)).messages;
+      assert.deepEqual(retained.messages.slice(0,sent.length),sent);
+      assert.equal(ctx.projections().n,1);
+      const p=JSON.parse(String(ctx.host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref));
+      assert.equal(p.card?.number??null,delivered?1:null);
+      await ctx.chat('恢复后自然输入');
+      assert.equal(ctx.wire.length,1);
+      assertHistory(ctx.wire[0]!.messages as never);
+    } finally{if(!reopened)fs.rmSync(root,{recursive:true,force:true});}
+  });
 });
 
 test('T26: an edited-away fixed revision invalidates the original number without prompting for 1', async t => {

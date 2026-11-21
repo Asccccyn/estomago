@@ -51,6 +51,11 @@ export type ToolExecContext = {
   beforeBackgroundTool?: (quote: BackgroundToolQuote) => void;
   /** Writes the observed protocol only inside the completion handler's transaction. */
   recordCompletionCheckpoint?: (receipt: ToolExecResult) => void;
+  /** Host-only writer callback for business receipts committed in the owner's transaction. */
+  recordHeartbeatReceipt?: (receipt: HeartbeatReceipt) => void;
+  /** Persist an exact already-committed owner receipt in an interrupted
+   * heartbeat's pending protocol batch, in the owner's existing transaction. */
+  recordCommittedToolReceipt?: (receipt: ToolExecResult) => void;
 };
 
 /** Owner-proven write identity and phase. Never part of model JSON output. */

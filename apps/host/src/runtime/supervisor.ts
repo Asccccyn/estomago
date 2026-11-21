@@ -51,8 +51,8 @@ import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolN
 import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import { readTurnCompletion, TURN_COMPLETION_TOOL } from './turn-completion.ts';
-import { appendCompletionToolReceipt, stageTurnCompletion } from './turn-completion-checkpoint.ts';
-import { recoverAcceptedCompletions } from './completion-recovery.ts';
+import { appendCompletionToolReceipt, stageTurnCompletion, stageHeartbeatBatch, markHeartbeatToolStarted } from './turn-completion-checkpoint.ts';
+import { recoverAcceptedCompletions, recoverInterruptedHeartbeats } from './completion-recovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
@@ -201,6 +201,8 @@ export class TurnSupervisor {
 
   recoverAcceptedCompletions(finishBackground?: Parameters<typeof recoverAcceptedCompletions>[1]): void {
     recoverAcceptedCompletions(this.d, finishBackground);
+    recoverInterruptedHeartbeats(this.d, finishBackground, (messages,sentCount,tools,maxTokens) =>
+      this.compactBlockedResults(messages,sentCount,tools,maxTokens));
   }
 
   constructor(d: SupervisorDeps) {
@@ -939,6 +941,13 @@ export class TurnSupervisor {
       pendingAssistantIndex = envelope.messages.length;
       pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
+      if (o.background?.kind === 'keepwarm' && o.turnId && lastSentMessages && d.trajectory) {
+        stageHeartbeatBatch(d.db, {
+          requestId: lastPrqId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId,
+          batch: { tail: envelope.messages.slice(pendingAssistantIndex), inFlight: [], sentMessages: lastSentMessages },
+          confirmedSeen: toolSeenActive, heartbeatHostText: o.heartbeatHostText,
+        });
+      }
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
       const ordered = [
@@ -1001,10 +1010,14 @@ export class TurnSupervisor {
               heartbeatHostText: o.heartbeatHostText,
             }),
           } : {}),
+          ...(o.background?.kind === 'keepwarm' && t.tool_id ? {
+            recordCommittedToolReceipt: receipt => appendCompletionToolReceipt(d.db, o.attemptId, t.tool_id!, receipt, []),
+          } : {}),
           ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
             const rec = o.background!.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
             if (!rec.allowed) throw new ContractError(rec.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
             toolDispatch.current = { id: rec.dispatchId, quote };
+            if (o.background?.kind === 'keepwarm' && t.tool_id) markHeartbeatToolStarted(d.db, o.attemptId, lastPrqId, t.tool_id);
           } } : {}),
         });
         } catch (error) {
@@ -1045,6 +1058,9 @@ export class TurnSupervisor {
           roundPendingSeen.push(...additions);
         }
         envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
+        if (o.background?.kind === 'keepwarm' && t.tool_id) {
+          appendCompletionToolReceipt(d.db, o.attemptId, t.tool_id, exec, pendingSeenByTool.get(t.tool_id) ?? []);
+        }
         this.recordToolCoverage(lastPrqId, t.tool_id, exec);
 
       }
@@ -1145,6 +1161,7 @@ export class TurnSupervisor {
         isolatedSession: o.scopedTaskTools,
         completionRequested: () => readTurnCompletion(d.db, o.attemptId, o.turnId) !== null,
         captureCompletionBatch: Boolean(o.turnId && d.trajectory),
+        captureHeartbeatBatch: o.background?.kind === 'keepwarm' && Boolean(o.turnId && d.trajectory),
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
         ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId)
@@ -1205,7 +1222,7 @@ export class TurnSupervisor {
         },
         recordToolDelivery: (toolCallId, result) => {
           this.recordToolCoverage(requestId, toolCallId, result);
-          if (readTurnCompletion(d.db, o.attemptId, o.turnId)) {
+          if (o.background?.kind === 'keepwarm' || readTurnCompletion(d.db, o.attemptId, o.turnId)) {
             appendCompletionToolReceipt(d.db, o.attemptId, toolCallId, result, pendingSeenByTool.get(toolCallId) ?? []);
           }
         },
@@ -1214,6 +1231,12 @@ export class TurnSupervisor {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
           if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
           if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
+          if (o.background?.kind === 'keepwarm' && o.turnId && completionBatch && requestId) {
+            stageHeartbeatBatch(d.db, {
+              requestId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId, batch: completionBatch(),
+              confirmedSeen: toolSeen, heartbeatHostText: o.heartbeatHostText,
+            });
+          }
           o.background?.observeToolCall?.();
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
           let executed = await d.tools.execute(name, args, {
@@ -1236,11 +1259,15 @@ export class TurnSupervisor {
                 });
               },
             } : {}),
+            ...(o.background?.kind === 'keepwarm' ? {
+              recordCommittedToolReceipt: receipt => appendCompletionToolReceipt(d.db, o.attemptId, toolCallId, receipt, []),
+            } : {}),
             ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
             ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
               const admission = o.background!.recordDispatch({ logicalActionKey: `tool:${toolCallId}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
               if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
               toolDispatch = { id: admission.dispatchId, quote };
+              if (o.background?.kind === 'keepwarm' && requestId) markHeartbeatToolStarted(d.db, o.attemptId, requestId, toolCallId);
             } } : {}),
           });
           const settled = toolDispatch as { id: string; quote: BackgroundToolQuote } | null;

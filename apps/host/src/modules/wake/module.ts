@@ -37,6 +37,7 @@ export function registerWakeCapabilities(registry: { register(d: CapabilityDescr
   registry.register(toolCapability({
     owner: 'wake',
     id: 'wake_manage', baselineOrder: 20, free: true, definition: () => WAKEMANAGE_DEFINITION, memoryOnlyAllowed: false, label: '给自己定唤醒', silent: false,
+    heartbeatAction: 'wake',
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.wakeManage(input as never, ctx)),
     toModel: (value) => value,
   }));

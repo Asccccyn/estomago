@@ -25,8 +25,8 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   t.after(async () => { await host?.stop(); await content.stop(); fs.rmSync(root, { recursive: true, force: true }); });
   await content.start(); writeApprovedIdentity(root);
 
-  let enabled = false, listReads = 0, detailReads = 0, livingReads = 0, memoryLists = 0, solCalls = 0;
-  const items = new Map(Array.from({ length: 7 }, (_, i) => [`seventh-${i}`, 1]));
+  let enabled = false, readable = true, listReads = 0, detailReads = 0, livingReads = 0, memoryLists = 0, solCalls = 0;
+  const items = new Map(Array.from({ length: 6 }, (_, i) => [`seventh-${i}`, 1]));
   const adapter: HeartbeatSourceAdapter = {
     kind: 'ext:fixture', namespace: 'fixture', enabled: () => enabled,
     async list(room) {
@@ -35,7 +35,7 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
     },
     async resolve(source, room) {
       detailReads++;
-      if (room !== 'primary') return { status: 'forbidden' };
+      if (room !== 'primary' || !readable) return { status: 'forbidden' };
       const revision = items.get(source.id);
       if (!revision) return { status: 'deleted' };
       if (source.revision !== revision) return { status: 'revision_unavailable' };
@@ -48,10 +48,12 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
     return { ok: true, result: { items: ['memory-a', 'memory-b'].map(memory), next_cursor: null } };
   });
   t.mock.method(MariposaClient.prototype, 'memoryGet', async (id: string) => ({ ok: true, result: memory(id) }));
-  const livingItem = { id: 'living-post', revision: 'a'.repeat(64), author_id: 'fixture-author', author_name: '合成作者', author_kind: 'human', scope: 'everyone', source_kind: 'manual_post', created_at: new Date().toISOString(), text: '合成客厅原帖' };
+  const livingItems = new Map(['living-post-a','living-post-b'].map(id => [id,{ id, revision: 'a'.repeat(64), author_id: 'fixture-author', author_name: '合成作者', author_kind: 'human', scope: 'everyone', source_kind: 'manual_post', created_at: new Date().toISOString(), text: `合成客厅原帖 ${id}` }]));
   t.mock.method(ZashideleMoments.prototype, 'read', async (id: string | null) => {
     livingReads++;
-    return { status: 200, body: id ? livingItem : { items: [livingItem], next_cursor: null } };
+    if (!id) return { status: 200, body: { items: [...livingItems.values()], next_cursor: null } };
+    const item = livingItems.get(id);
+    return item ? { status: 200, body: item } : { status: 404, body: { error: { code: 'not_found' } } };
   });
   const fakeSol = async (url: string, headers: Record<string,string>, payload: any) => {
     solCalls++;
@@ -64,7 +66,7 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
     return {status:200,json:{id:'fixture-sol-response-'+solCalls,status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({id:solCalls===1?'memory-b':'memory-a'})}]}]}};
   };
   const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 500 }, cost: 0.001 };
-  let heart = false, operation = 'draw-1', target: number | null = null, wireNumber = 0, reveals = 0, memoryReveals = 0;
+  let heart = false, operation = 'draw-1', target: number | null = null, wireNumber = 0, reveals = 0, memoryReveals = 0, livingReveals = 0;
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
     const messages = payload.messages as Array<{ role: string; tool_call_id?: string; content: unknown }>;
     let delta: Record<string, unknown> = { content: '合成正常聊天' }, finish = 'stop';
@@ -77,6 +79,7 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
       } else {
         if (JSON.stringify(result.content).includes('合成第七源')) reveals++;
         if (JSON.stringify(result.content).includes('合成记忆 memory-b')) memoryReveals++;
+        if (JSON.stringify(result.content).includes('合成客厅原帖')) livingReveals++;
         delta = { tool_calls: [{ index: 0, id: operation + '-finish', type: 'function', function: { name: 'background_complete', arguments: '{"outcome":"noop"}' } }] };
       }
       finish = 'tool_calls';
@@ -167,8 +170,8 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   await chatAndHeartbeat();
   const rows = host.db.prepare('SELECT card_number AS number, source_ref_json FROM heartbeat_cards ORDER BY card_number').all() as Array<{number:number;source_ref_json:string}>;
   const refs = rows.map(row => ({ number: row.number, source: JSON.parse(row.source_ref_json) as HeartbeatSource }));
-  assert.equal(refs.length, 10); assert.equal(refs.filter(ref => ref.source.kind === 'ext:fixture').length, 7);
-  assert.equal(refs.filter(ref => ref.source.kind === 'ext:living-room').length, 1);
+  assert.equal(refs.length, 10); assert.equal(refs.filter(ref => ref.source.kind === 'ext:fixture').length, 6);
+  assert.equal(refs.filter(ref => ref.source.kind === 'ext:living-room').length, 2);
   assert.deepEqual(refs.filter(ref => ref.source.kind === 'memory').map(ref => ref.source.id), ['memory-b']);
   assert.deepEqual(refs.filter(ref => ref.source.kind === 'album').map(ref=>ref.source.id),[photo.id]);
   assert.equal(excludedReads,0); assert.equal(memoryLists,1); assert.equal(solCalls,1);
@@ -193,8 +196,16 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   const beforeOffReads = detailReads;
   enabled = false;
   assert.ok(!(await req('/background/heartbeat')).available_numbers.some((number: number) => refs.find(ref=>ref.number===number)?.source.kind === 'ext:fixture'));
-  assert.equal((await runtime.cardForDisplay(delivered.run_id, 'primary'))?.status,'forbidden');
   assert.equal(detailReads,beforeOffReads);
+  // Generic adapter participation and current source read permission are
+  // separate: the history read still reaches the owner while disabled.
+  const fixtureHistory = () => req('/background/heartbeat/cards/'+delivered.run_id);
+  assert.equal((await fixtureHistory()).status,'available');
+  assert.equal(detailReads,beforeOffReads+1);
+  readable = false;
+  assert.equal((await fixtureHistory()).status,'forbidden');
+  assert.equal(detailReads,beforeOffReads+2);
+  readable = true;
   enabled = true;
   const changed = refs.find(ref => ref.source.kind === 'ext:fixture' && ref.number !== delivered.card_number)!;
   items.set(changed.source.id, 2); target = changed.number; operation = 'draw-changed';
@@ -203,6 +214,70 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   assert.equal(reveals,1); assert.ok(!(await req('/background/heartbeat')).available_numbers.includes(target));
   assert.equal(host.db.prepare('SELECT source_ref_json FROM heartbeat_cards WHERE card_number=?').get(target)?.source_ref_json, rows.find(row=>row.number===target)?.source_ref_json);
   assert.equal(cards.getDeck('primary',heartbeatBusinessDate())?.deliveredNumbers.length,2);
+
+  // Real living-room candidate adapter + authenticated settings, card, feed
+  // and original-resource HTTP routes. Closing participation never changes
+  // the actual owner-side grant or the delivered frozen revision.
+  const [firstLiving,nextLiving] = refs.filter(ref=>ref.source.kind==='ext:living-room');
+  target=firstLiving!.number; operation='draw-living-history';
+  await chatAndHeartbeat();
+  assert.equal(livingReveals,1);
+  const livingDelivery = host.db.prepare("SELECT run_id FROM heartbeat_draw_operations WHERE operation_id=? AND state='delivered'").get(operation)!;
+  const livingHistory = () => req('/background/heartbeat/cards/'+livingDelivery.run_id);
+  const livingOriginal = livingItems.get(firstLiving!.source.id)!;
+  const historyBefore = await livingHistory();
+  assert.equal(historyBefore.status,'available'); assert.ok(historyBefore.text.includes(livingOriginal.text));
+  await runtime.recoverProjections(10);
+  const feed = await req('/content/posts?include_references=1');
+  const livingPost = feed.items.find((item:any)=>item.blocks?.some((block:any)=>block.id==='card' && block.text?.includes(livingOriginal.text)));
+  assert.ok(livingPost);
+  const livingBlock = async () => (await req('/content/posts/'+livingPost.id)).blocks.find((block:any)=>block.id==='card');
+  const setLiving = async (enabled:boolean,key:string) => req('/background/settings','PUT',{keepwarm:{include_living_room:enabled}},key,(await req('/background/settings')).revision);
+  await setLiving(false,'living-off');
+  const beforeDisabledCandidate = livingReads;
+  assert.ok(!(await req('/background/heartbeat')).available_numbers.includes(nextLiving!.number));
+  assert.equal(livingReads,beforeDisabledCandidate);
+  assert.deepEqual(await livingHistory(),historyBefore);
+  const blockAfterOff = await livingBlock();
+  assert.equal(blockAfterOff.status,'available'); assert.ok(blockAfterOff.text.includes(livingOriginal.text));
+  assert.equal((await req('/content/moments-external/'+livingOriginal.id)).revision,livingOriginal.revision);
+
+  // The remaining number cannot be claimed while participation is off, nor
+  // can it slip through if the preference changes after claim and preparation.
+  const beforeClaim = livingReads;
+  target=nextLiving!.number; operation='draw-living-disabled';
+  await chatAndHeartbeat();
+  assert.equal(host.db.prepare("SELECT state FROM heartbeat_draw_operations WHERE operation_id=?").get(operation)?.state,'rejected');
+  assert.equal(livingReads,beforeClaim);
+  await setLiving(true,'living-on-for-gate');
+  operation='draw-living-gate';
+  const originalGate = runtime.beforeDispatch.bind(runtime);
+  let gateDisabled=false;
+  t.mock.method(runtime,'beforeDispatch',async (runId:string,requestId:string,messages:Parameters<HeartbeatRuntime['beforeDispatch']>[2],signal:AbortSignal)=>{
+    if (!gateDisabled && messages.some(message=>message.role==='tool' && message.tool_call_id===operation)) {
+      assert.equal(host!.db.prepare('SELECT state FROM heartbeat_draw_operations WHERE operation_id=?').get(operation)?.state,'prepared');
+      gateDisabled=true;
+      await setLiving(false,'living-off-at-gate');
+    }
+    await originalGate(runId,requestId,messages,signal);
+  });
+  await chatAndHeartbeat();
+  assert.equal(gateDisabled,true); assert.equal(livingReveals,1);
+  assert.equal(host.db.prepare("SELECT state FROM heartbeat_draw_operations WHERE operation_id=?").get(operation)?.state,'not_dispatched');
+  assert.deepEqual(await livingHistory(),historyBefore);
+
+  // Revision change and source-side deletion/withdrawal are still real
+  // read failures. Neither chat history nor the feed resurrect cached text.
+  livingItems.set(livingOriginal.id,{...livingOriginal,revision:'b'.repeat(64),text:'合成的新修订'});
+  const changedHistory = await livingHistory(), changedBlock = await livingBlock();
+  assert.equal(changedHistory.status,'revision_unavailable'); assert.equal(changedHistory.text,undefined);
+  assert.equal(changedBlock.status,'revision_unavailable'); assert.equal(changedBlock.text,undefined);
+  livingItems.delete(livingOriginal.id);
+  await req('/content/moments-external/'+livingOriginal.id,'GET',undefined,undefined,undefined,404);
+  const revokedHistory = await livingHistory(), revokedBlock = await livingBlock();
+  assert.equal(revokedHistory.status,'forbidden'); assert.equal(revokedHistory.text,undefined);
+  assert.equal(revokedBlock.status,'forbidden'); assert.equal(revokedBlock.text,undefined);
+  assert.equal(cards.getDeck('primary',heartbeatBusinessDate())?.deliveredNumbers.length,3);
   assert.equal(excludedReads,0);
   // An offline/missed midnight is not backfilled during the day; another
   // source failure still leaves all the existing nonmemory sources intact.

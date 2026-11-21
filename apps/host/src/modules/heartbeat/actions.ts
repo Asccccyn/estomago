@@ -4,6 +4,7 @@ import type { Db } from '../../db/connection.ts';
 import { canDrawHeartbeat, HeartbeatCards } from './service.ts';
 import { starReplyOperationId, starWriteOperationId } from '../wishstar/operation-ids.ts';
 import { memoryHoldOperationId } from '../memory/hold-operation-id.ts';
+import { wakeOperationIdentity, type WakeMutation } from '../wake/operation-id.ts';
 import { readHeartbeatProjection } from '../../../../../packages/contracts/src/heartbeat.ts';
 
 // Invoked only after schema, cancellation, terminal and budget admission. The
@@ -14,6 +15,7 @@ export function startHeartbeatAction(db: Db, ctx: ToolExecContext, kind: Heartbe
   if (!kind || !ctx.backgroundRunId || !ctx.toolCallId || !canDrawHeartbeat(db, ctx)) return;
   const run = ctx.backgroundRunId, call = ctx.toolCallId;
   const args = input as Record<string, unknown>;
+  if (kind === 'wake' && !['schedule','update','cancel'].includes(String(args.operation))) return;
   const after = db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages WHERE turn_id=?')
     .get(ctx.turnId) as { n: number };
   const action: HeartbeatAction = { operationId: call, kind, afterSequence: after.n, status: 'unknown',
@@ -27,6 +29,10 @@ export function startHeartbeatAction(db: Db, ctx: ToolExecContext, kind: Heartbe
     }
   }
   if (kind === 'memory_hold') action.operationId = memoryHoldOperationId(ctx.turnId ?? ctx.requestId, call);
+  if (kind === 'wake') {
+    action.wakeOperation = args.operation as WakeMutation;
+    action.operationId = wakeOperationIdentity(ctx.roomId, action.wakeOperation, String(args.operation_id ?? ''));
+  }
   db.prepare('INSERT OR IGNORE INTO heartbeat_actions(run_id,call_id,action_json) VALUES(?,?,?)')
     .run(run, call, JSON.stringify(action));
   return outcome => {

@@ -29,6 +29,8 @@ export type HeartbeatProjection = {
   state: 'drawn' | 'drawn_no_comment' | 'declined' | 'interrupted';
   card: { number: number; source: HeartbeatSource } | null;
   messages: Array<{ messageId: string; revision: number; sequence: number }>;
+  /** Only the original assistant messages published after this reserved note was actually revealed. */
+  reservedReplyMessages?: HeartbeatProjection['messages'];
   actions?: HeartbeatAction[];
   terminal?: { status: 'completed' | 'declined' | 'cancelled' | 'failed' | 'unknown'; reason?: 'budget' | 'quote' | 'sleep' | 'yield' | 'delivery' | 'other' };
 };
@@ -43,6 +45,7 @@ export type HeartbeatAction = {
   afterSequence: number;
   status: 'committed' | 'partial' | 'failed' | 'cancelled' | 'unknown';
   cardNumber?: number;
+  wakeOperation?: 'schedule' | 'update' | 'cancel';
   source?: { namespace: string; id: string; revision?: string | number; parentId?: string };
 };
 
@@ -107,6 +110,18 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
       || (messages.at(-1)?.sequence ?? 0) >= message.sequence) return null;
     messages.push({ messageId: message.messageId, revision: message.revision, sequence: message.sequence });
   }
+  const reservedReplyMessages: HeartbeatProjection['messages'] = [];
+  if (projection.reservedReplyMessages !== undefined) {
+    if (!Array.isArray(projection.reservedReplyMessages) || source?.kind !== 'reserved_note') return null;
+    for (const value of projection.reservedReplyMessages) {
+      const message = record(value);
+      const original = message && messages.find(ref => ref.messageId === message.messageId
+        && ref.revision === message.revision && ref.sequence === message.sequence);
+      if (!original || (reservedReplyMessages.at(-1)?.sequence ?? 0) >= original.sequence) return null;
+      reservedReplyMessages.push(original);
+    }
+    if (reservedReplyMessages.length > 0 && projection.state !== 'drawn') return null;
+  }
   const actions: HeartbeatAction[] = [];
   const terminal = record(projection.terminal);
   if (projection.actions !== undefined) {
@@ -117,12 +132,14 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
       if (!action || !text(action.operationId) || !HEARTBEAT_ACTION_KINDS.some(kind => kind === action.kind)
         || !integer(action.afterSequence, 0) || !['committed', 'partial', 'failed', 'cancelled', 'unknown'].includes(String(action.status))
         || action.cardNumber !== undefined && (!integer(action.cardNumber) || action.cardNumber > 10)
+        || action.wakeOperation !== undefined && (action.kind !== 'wake' || !['schedule','update','cancel'].includes(String(action.wakeOperation)))
         || action.source !== undefined && (!source || !text(source.namespace) || !text(source.id)
           || source.revision !== undefined && !(text(source.revision) || integer(source.revision))
           || source.parentId !== undefined && !text(source.parentId))) return null;
       actions.push({ operationId: action.operationId, kind: action.kind as HeartbeatActionKind,
         afterSequence: action.afterSequence, status: action.status as HeartbeatAction['status'],
         ...(action.cardNumber !== undefined ? { cardNumber: action.cardNumber as number } : {}),
+        ...(action.wakeOperation !== undefined ? { wakeOperation: action.wakeOperation as HeartbeatAction['wakeOperation'] } : {}),
         ...(source ? { source: { namespace: source.namespace as string, id: source.id as string,
           ...(source.revision !== undefined ? { revision: source.revision as string | number } : {}),
           ...(source.parentId !== undefined ? { parentId: source.parentId as string } : {}) } } : {}) });
@@ -135,6 +152,7 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
     version: projection.version, state: projection.state,
     card: card && source ? { number: card.number as number, source } : null,
     messages,
+    ...(projection.reservedReplyMessages !== undefined ? { reservedReplyMessages } : {}),
     ...(projection.actions !== undefined ? { actions } : {}),
     ...(terminal ? { terminal: { status: terminal.status as NonNullable<HeartbeatProjection['terminal']>['status'],
       ...(terminal.reason !== undefined ? { reason: terminal.reason as NonNullable<HeartbeatProjection['terminal']>['reason'] } : {}) } } : {}),
