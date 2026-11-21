@@ -33,7 +33,7 @@ const examples: Record<string, Record<string, unknown>> = {
   memory_words_write:{action:'add',memory_id:'synthetic',refs:[{quote:'合成引语'}]},memory_relations:{action:'list',memory_id:'synthetic'},content_albums_read:{},media_view:{asset_ref:'est:synthetic'},content_creations_read:{},
 };
 
-test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现及冻结重启', async () => {
+test('生产装配：独立 Profile 和锚点、十五项常驻、按需发现及冻结重启', async () => {
   const root=tempRoot('frozen-package-');
   const {manifest}=writeApprovedIdentity(root);
   const paths=makePaths(root);
@@ -61,7 +61,7 @@ test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现�
       if(n===1){
         const system=Array.isArray(input.options.systemPrompt)?input.options.systemPrompt.join('\n'):input.options.systemPrompt;
         assert.equal((system.match(/用 tool_catalog 的 query/g)??[]).length,1);
-        assert.equal((system.match(/^- [a-z_]+$/gm)??[]).length,14);
+        assert.equal((system.match(/^- [a-z_]+$/gm)??[]).length,15);
         assert.match(system,/^- chat_send_voice\n[^\n]*填 text/m);
         assert.match(system,/^- call_control\n[^\n]*action: invite/m);
         assert.doesNotMatch(system,/definition_id: td_|parameters: \{/);
@@ -128,9 +128,9 @@ test('生产装配：独立 Profile 和锚点、十四项常驻、按需发现�
     assert.equal(frozen.catalog.length,57);
     assert.equal(frozen.groups.heartbeat_draw,'D');
     assert.equal(frozen.groups.background_complete,'D');
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,14);
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='C').length,15);
     assert.equal(frozen.groups.wishstar_reply_star,'D');
-    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,42);
+    assert.equal(Object.values(frozen.groups).filter(g=>g==='D').length,41);
     assert.deepEqual(Object.keys(frozen.groups).filter(name=>frozen.groups[name]==='T'),['context_review_complete']);
     assert.ok(frozen.initialText!.includes('memory_hold'));
     assert.ok(frozen.initialText!.includes('用 tool_catalog 的 query'));

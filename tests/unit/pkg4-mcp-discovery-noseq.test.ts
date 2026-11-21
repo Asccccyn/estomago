@@ -34,14 +34,14 @@ function noSeqAnywhere(value: unknown): boolean {
   return !JSON.stringify(value).includes('"seq"');
 }
 
-test('D01：新窗按用户确认的十四项给简明常驻用法和唯一索引提示', () => {
+test('D01：新窗按用户确认的十五项给简明常驻用法和唯一索引提示', () => {
   const { registry } = assembleTestTools({ db: {} as never, media: {} as never, messages: {} as never });
   const catalog = registry.currentCatalog();
   const declared = registry.currentGroups();
   const noConfig = { prepare: () => ({ get: () => undefined }) } as never;
   const groups = resolveToolGroups(noConfig, catalog, declared);
   const cTools = catalog.filter((spec) => groups[spec.function.name] === 'C').map((spec) => spec.function.name);
-  assert.equal(cTools.length, 14);
+  assert.equal(cTools.length, 15);
   assert.ok(cTools.includes('memory_hold') && !cTools.includes('conversation_read'));
   const text = renderToolContext(catalog, groups)!;
   for (const name of cTools) assert.ok(text.includes(`- ${name}\n`));

@@ -27,6 +27,7 @@ operation 用 list 查看自己的预约，默认 20 条，可填 limit 1 到 10
 每页默认 20 条，可填 limit 1 到 100。q 按标题或说明找。按来源筛选时一起填 source_service、source_kind 和 source_id。翻下一页要保持相册和筛选，取回执的 next_cursor 填到 cursor。想真正看图，把条目里的 asset_ref 给 media_view。`],
   ['content_post_create', `以你的身份发一条私密朋友圈。填 text 和 idempotency_key。只发图时也给 text，填空字符串，同时用 asset_ids 给至少一张已有图片。附件最多 8 张，text 最多 40000 字，可填最多 200 字的 title。
 presentation 默认为 post 普通动态。想用信的排版就填 letter。同一次发帖重试沿用原键，结果未知时先按回执核对。`],
+  ['conversation_archive', '把想留住的聊天存为争吵或甜蜜存档。填 kind，再选用 message_ids、latest_completed_turn 或一对逐字引语 anchor_start 和 anchor_end 指定范围。'],
 ]);
 
 export const residentToolNames: readonly string[] = [...GUIDES.keys()];

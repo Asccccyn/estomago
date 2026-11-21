@@ -8,11 +8,11 @@ import { definitionId, freezeWindowTools, storedToolset } from '../../apps/host/
 const expectedResident = [
   'memory_hold', 'memory_update', 'memory_recall', 'memory_read_full',
   'image_generate', 'media_view', 'chat_send_voice', 'call_control', 'wake_manage', 'wishstar_write_star', 'wishstar_request_star',
-  'content_album_entry_write', 'content_albums_read', 'content_post_create',
+  'content_album_entry_write', 'content_albums_read', 'content_post_create', 'conversation_archive',
 ];
 const expectedTask = ['context_review_complete'];
 
-test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
+test('新窗冻结十五份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
   const { db, root } = makeDb(tempRoot('resident-catalog-policy-'), { seed: false });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const { registry } = assembleTestTools({ db, media: {} as never, messages: {} as never });
@@ -24,11 +24,12 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   }
 
   const storeSelection = db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('tools_initial_visible',?,'now')");
-  storeSelection.run(JSON.stringify(expectedResident.filter(name => name !== 'chat_send_voice' && name !== 'call_control')));
+  storeSelection.run(JSON.stringify(expectedResident.filter(name => name !== 'chat_send_voice' && name !== 'call_control' && name !== 'conversation_archive')));
   freezeWindowTools(db, 'w-legacy', catalog, 'deferred', declared);
   const legacy = storedToolset(db, 'w-legacy')!;
   assert.equal(legacy.groups.chat_send_voice, 'D');
   assert.equal(legacy.groups.call_control, 'D');
+  assert.equal(legacy.groups.conversation_archive, 'D');
   db.prepare("DELETE FROM runtime_settings WHERE key='tools_initial_visible'").run();
 
   freezeWindowTools(db, 'w-new', catalog, 'deferred', declared);
@@ -38,7 +39,7 @@ test('新窗冻结十四份简明用法与一条工具地图提醒，旧窗和�
   assert.deepEqual(Object.keys(frozen.groups).filter(name => frozen.groups[name] === 'T'), expectedTask);
   assert.equal(frozen.groups.heartbeat_draw, 'D');
   assert.equal(frozen.groups.wishstar_reply_star, 'D');
-  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 42);
+  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 41);
   assert.ok(initial.startsWith('你想记下一件事'));
   assert.equal([...initial.matchAll(/用 tool_catalog 的 query/g)].length, 1);
   assert.match(initial, /发现记错了也可以改/);
