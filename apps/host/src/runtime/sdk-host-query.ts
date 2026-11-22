@@ -16,7 +16,12 @@ import { materializeImage, toolResultContent, type ModelImageBlock } from '../me
 import { SdkHistoryReplay } from './sdk-history.ts';
 
 export type SdkQueryFactory = (request: { prompt: string | AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
-export type SdkSessionAnchor = { sessionId: string; prefixHash: string; messageCount: number; messagesHash: string };
+type SessionPrefix = { sessionId: string; prefixHash: string; messageCount: number; messagesHash: string };
+type NativeCheckpoint = SessionPrefix & { uuid: string };
+export type SdkSessionAnchor = SessionPrefix & { checkpoint?: NativeCheckpoint; forkOnResume?: boolean };
+type ForkPrefix = typeof import('@anthropic-ai/claude-agent-sdk').forkSession;
+const forkNativePrefix: ForkPrefix = async (sessionId, options) =>
+  (await import('@anthropic-ai/claude-agent-sdk')).forkSession(sessionId, options);
 
 // Bound retained raw chunks across the current model message.
 const MAX_ARGUMENT_SOURCE_BYTES = 1024 * 1024;
@@ -44,6 +49,7 @@ export async function runSdkHostQuery(
   sessions: Map<string, SdkSessionAnchor>,
   verifySubscription: (run: Query) => Promise<string | null> = verifySdkSubscription,
   spawnProcess?: Options['spawnClaudeCodeProcess'],
+  forkPrefix: ForkPrefix = forkNativePrefix,
 ): Promise<RunnerRunResult> {
   const host = req.host;
   const normalizer = new SdkEventNormalizer();
@@ -56,7 +62,7 @@ export async function runSdkHostQuery(
   // 纯日志信号（supervisor 落 launchd 日志），不新建会话状态机、不影响行为。
   let resumeDecision: NonNullable<RunnerRunResult['resumeDiagnosis']>['decision'] =
     host.isolatedSession ? 'isolated' : 'anchor_missing';
-  const resume = (() => {
+  let resume = (() => {
     if (!previous) return null;
     if (previous.prefixHash !== prefixHash) { resumeDecision = 'prefix_changed'; return null; }
     const currentPrefixHash = sha256Hex(JSON.stringify(messages.slice(0, previous.messageCount)));
@@ -64,6 +70,23 @@ export async function runSdkHostQuery(
     resumeDecision = 'resume_hit';
     return previous;
   })();
+  if (resume?.forkOnResume && resume.checkpoint && !req.abortController.signal.aborted) {
+    const point = resume.checkpoint;
+    try {
+      // An immutable fork keeps native thinking/signatures and completed tool
+      // history. The failed branch is never truncated or used as the next tip.
+      const fork = await forkPrefix(point.sessionId, { dir: req.options.options.cwd, upToMessageId: point.uuid });
+      resume = { ...point, sessionId: fork.sessionId, checkpoint: point };
+      sessions.set(host.windowId, resume);
+      resumeDecision = 'resume_checkpoint';
+    } catch {
+      // The SDK may have pruned the transcript. No model request was made by
+      // the local fork; the ordinary ledger replay below remains authoritative.
+      sessions.delete(host.windowId);
+      resume = null;
+      resumeDecision = 'checkpoint_unavailable';
+    }
+  }
   const resumeDiagnosis: NonNullable<import('./runner.ts').RunnerRunResult['resumeDiagnosis']> = {
     decision: resumeDecision,
     anchorSessionId: previous?.sessionId ?? null,
@@ -112,6 +135,7 @@ export async function runSdkHostQuery(
   // 已送入输入未出块的打断错保留（会话已前进，旧锚 resume 会重复送入），又会把
   // 0 帧 0 派发的准入拒绝错删锚（会话明明未触碰）。
   let sessionReceivedInput = false;
+  let nativeAssistant: { uuid: string; message: OrMessage } | undefined;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
   let sdkDetailError: string | null = null; // P1-10（Codex 审计）：归一化结果携带的具体错误原因（result.errors/error），最终回执不再只剩稳定码
@@ -299,13 +323,13 @@ export async function runSdkHostQuery(
   };
   const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
     if (!(await admitted)) return;
-    for await (const frame of replay.input()) { yield frame; sessionReceivedInput = true; }
+    for await (const frame of replay.input()) { sessionReceivedInput = true; yield frame; }
     if (!replay.completed || req.abortController.signal.aborted) return;
     try { await beforeModel(); }
     catch (error) { failure = String((error as Error).message); run?.close(); return; }
+    sessionReceivedInput = true;
     yield { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null,
       session_id: '', client_composed: true };
-    sessionReceivedInput = true;
     // Replay completions already satisfy the SDK's first-result wait. Keep
     // stdin open until the real turn finishes, including tool/control replies.
     await inputDone;
@@ -324,7 +348,7 @@ export async function runSdkHostQuery(
         const estimate: SdkCostEstimate = {
           kind: 'sdk_cost_estimate', scope: 'sdk_session_cumulative',
           session_id: event.session_id ?? null, resumed_from_session_id: resume?.sessionId ?? null,
-          fork_session: options.forkSession === true,
+          fork_session: resumeDecision === 'resume_checkpoint' || options.forkSession === true,
           total_cost_usd: event.total_cost_usd ?? null, model_usage: event.modelUsage ?? {}, result_subtype: event.subtype,
         };
         req.onEvent({ kind: 'usage', scope: 'cumulative', source: 'sdk_result',
@@ -395,6 +419,9 @@ export async function runSdkHostQuery(
       if (event.type === 'assistant' && normalized.some(e => e.kind === 'complete_message')) {
         activityStarted = true;
         const assistant = assistantMessage(event.message.id);
+        if (!event.parent_tool_use_id && normalized.some(e => e.kind === 'complete_message' && e.channel === 'main')) {
+          nativeAssistant = event.uuid ? { uuid: event.uuid, message: assistant } : undefined;
+        }
         for (const block of event.message.content) {
           if (block.type === 'tool_use') {
             const calls = (assistant.tool_calls ??= []) as unknown[];
@@ -475,18 +502,22 @@ export async function runSdkHostQuery(
     } else if (outcome === 'completed' && normalizer.sessionId && !missingNativeReceipt) {
       // RB03（复审 20261106）：锚随真实最终会话前进（含维护轮——协议保留后维护
       // 记录属于该会话）。
-      sessions.set(host.windowId, { sessionId: normalizer.sessionId, prefixHash: toolPrefixHash(),
-        messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) });
+      const prefix = { sessionId: normalizer.sessionId, prefixHash: toolPrefixHash(),
+        messageCount: messages.length, messagesHash: sha256Hex(JSON.stringify(messages)) };
+      // A terminal tool batch can have a native receipt after the last assistant.
+      // Never mark its assistant UUID as covering that receipt. Keep the earlier
+      // checkpoint: any subsequent canonical tool receipts are replayed as history.
+      const checkpoint = nativeAssistant && nativeAssistant.message === messages.at(-1) && !nativeAssistant.message.tool_calls
+        ? { ...prefix, uuid: nativeAssistant.uuid } : resume?.checkpoint;
+      sessions.set(host.windowId, { ...prefix, checkpoint });
       resumeDiagnosis.anchorOutcome = 'saved';
     } else if (outcome !== 'completed' && !sessionReceivedInput) {
-      // P2-a（审计 2026-11-15，修正她 11-15 裁定的实现）：会话未接收到任何输入帧
-      // （历史重放与当前输入都没送入）——准入拒绝、派发前打断都未触碰会话，保留
-      // 旧锚（不前进），下一次请求照常按旧锚 resume 命中。已送入输入（无论有无
-      // 输出块）的打断/失败走 else 删锚：会话已前进，旧锚 resume 会重复送入。
       resumeDiagnosis.anchorOutcome = 'kept';
+    } else if (resume?.checkpoint) {
+      const checkpoint = resume.checkpoint;
+      sessions.set(host.windowId, { ...checkpoint, checkpoint, forkOnResume: true });
+      resumeDiagnosis.anchorOutcome = 'checkpoint_kept';
     } else {
-      // 已开始产出后的中断/失败：会话内可能残留本轮半截内容，保守删锚，下一次
-      // 请求全量重放重建（掉一次缓存换轨迹正本与会话一致）。
       sessions.delete(host.windowId);
       resumeDiagnosis.anchorOutcome = 'deleted';
     }

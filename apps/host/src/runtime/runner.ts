@@ -99,11 +99,11 @@ export type RunnerRunResult = {
   lastSentMessages?: OrMessage[];
   /** B3（2026-11-04）：SDK 会话衔接诊断——resume 决策原因 + 锚生命周期（日志专用，不进协议） */
   resumeDiagnosis?: {
-    decision: 'resume_hit' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' | 'isolated';
+    decision: 'resume_hit' | 'resume_checkpoint' | 'checkpoint_unavailable' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' | 'isolated';
     anchorSessionId: string | null;
     anchorMessageCount: number | null;
     sentMessageCount: number;
-    anchorOutcome?: 'saved' | 'kept' | 'deleted' | null;
+    anchorOutcome?: 'saved' | 'kept' | 'checkpoint_kept' | 'deleted' | null;
   };
   /** B3：错误事件的脱敏安全字段（HTTP status/供应商请求 ID/SDK 错误类型；不含正文） */
   errorEvidence?: Record<string, unknown> | null;

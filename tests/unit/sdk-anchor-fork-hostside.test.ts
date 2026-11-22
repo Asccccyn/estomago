@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { runSdkHostQuery, type SdkQueryFactory, type SdkSessionAnchor } from '../../apps/host/src/runtime/sdk-host-query.ts';
+import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 import { ContractError } from '../../apps/host/src/runtime/or-contract.ts';
 
 const sys = (t: string) => ({ role: 'system', content: [{ type: 'text', text: t }] });
@@ -208,4 +209,49 @@ test('MCP uses only verified source from its own main stream tool block', async 
     ['escaped', escaped], ['literal', literal], ['mismatched', undefined],
     ['oversized', undefined], ['no-stream', undefined],
   ]);
+});
+
+
+test('失败后从已确认的原生回复续接；恢复点缺失或前缀已变时仅重放账本', async () => {
+  for (const mode of ['recover','missing','edited'] as const) {
+    const sessions = new Map<string,SdkSessionAnchor>();
+    const captures: Array<{resume?:string; replayed:number}> = [];
+    let forks = 0;
+    const fork = async (id:string, options?:{upToMessageId?:string}) => {
+      forks++;
+      assert.equal(id,'initial');
+      assert.equal(options?.upToMessageId,'confirmed-packet');
+      if (mode === 'missing') throw Error('checkpoint not found');
+      return {sessionId:'native-branch'};
+    };
+    const run = (messages:ReturnType<typeof user>[],fail=false) => {
+      const query: SdkQueryFactory = ((input:any) => {
+        const session = input.options.resume ?? 'initial';
+        const results = (async function* () {
+          if (!(yield* scriptedSdkInput(input, session, (_message,history) =>
+            captures.push({resume:input.options.resume,replayed:history.length})))) return;
+          yield {type:'assistant',uuid:fail?'error-packet':'confirmed-packet',session_id:session,parent_tool_use_id:null,
+            ...(fail?{error:'server_error'}:{}),message:{id:'message',role:'assistant',content:[{type:'text',text:fail?'synthetic error':'ok'}]}};
+          yield {type:'result',subtype:'success',is_error:fail,session_id:session};
+        })();
+        return Object.assign(results,{close(){}});
+      }) as SdkQueryFactory;
+      return runSdkHostQuery(query,req({host:{purpose:'chat',windowId:'w',envelope:{model:'test',tools:[],maxTokens:64,messages},
+        beforeModel:async()=>{},executeTool:async()=>({ok:true,output:{}})}}),sessions,async()=>null,(()=>({pid:1})) as never,fork);
+    };
+    const first = await run([sys('S'),user('first')]);
+    assert.equal(first.outcome,'completed');
+    const prefix = first.finalMessages as ReturnType<typeof user>[];
+    const failure = await run([...prefix,user('failed')],true);
+    assert.equal(failure.outcome,'error');
+    assert.equal(failure.resumeDiagnosis?.anchorOutcome,'checkpoint_kept');
+    const next = [...prefix,user('next')];
+    if (mode === 'edited') next[1] = user('edited');
+    const recovered = await run(next);
+    assert.equal(recovered.outcome,'completed');
+    assert.equal(recovered.resumeDiagnosis?.decision,mode==='recover'?'resume_checkpoint':mode==='edited'?'history_mismatch':'checkpoint_unavailable');
+    assert.equal(forks,mode==='edited'?0:1);
+    assert.equal(captures.at(-1)?.resume,mode==='recover'?'native-branch':undefined);
+    assert.equal(captures.at(-1)?.replayed,mode==='recover'?0:2);
+  }
 });
