@@ -400,13 +400,16 @@ export class EstomagoClient {
     const steps=this.toolSteps.get(turnId)??[]
     const index=steps.findIndex(step=>step.id===id)
     if(index>=0&&(steps[index].sequence??0)>(data.sequence??0))return
-    const label=String(data.label??data.effective_tool??data.tool??'工具')
     const tool=String(data.effective_tool??data.tool??'')
+    // Historical lifecycle events can still carry the former Chinese label.
+    const anchor=tool==='identity_milestone_write'
+    const label=anchor ? (data.tool==='tool_define'?'读取工具定义 · ':'')+'我们的锚点'
+      : String(data.label??data.effective_tool??data.tool??'工具')
     const state=data.phase==='error'||data.ok===false?'failed':data.phase==='result'&&data.ok===true?'completed':'running'
     const errors:Record<string,string>={TOOL_ARG_TYPE:'参数格式错误',TOOL_ARG_INVALID:'参数无效',TOOL_ARG_MISSING:'缺少参数',TOOL_ARG_UNKNOWN:'包含未知参数',TOOL_DEFINITION_NOT_SEEN:'尚未读取工具定义',TOOL_NOT_IN_ALLOWLIST:'本窗口未开放此工具',TOOL_UNAVAILABLE_IN_CALL:'通话期间不可用',I_FORBIDDEN:'无权访问该项',CANCELLED:'已取消'}
     const reason=data.error_code?(errors[data.error_code]?`${errors[data.error_code]}（${data.error_code}）`:String(data.error_code)):''
     const status=state==='failed'?'失败'+(reason?'：'+reason:''):state==='completed'?'完成':'进行中'
-    const step:Step={id,sequence:data.sequence??0,at:steps[index]?.at??data.occurred_at,kind:'tool',state,label,text:label+(tool&&tool!==label?' · '+tool:'')+' · '+status}
+    const step:Step={id,sequence:data.sequence??0,at:steps[index]?.at??data.occurred_at,kind:'tool',state,label,text:label+(!anchor&&tool&&tool!==label?' · '+tool:'')+' · '+status}
     if(index<0)steps.push(step);else steps[index]=step
     this.toolSteps.set(turnId,steps)
   }

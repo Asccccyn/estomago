@@ -117,6 +117,19 @@ test('非OR模型不借用OR配置；容量未知不产生虚假百分比',async
   try{assert.deepEqual(h.client.snapshot.models,['deepseek-chat']);assert.equal(h.client.snapshot.canConfigure,false);await h.client.loadContext();assert.equal(h.client.snapshot.context.limit,null)}finally{h.client.stop()}
 })
 
+test('锚点在实时和历史工具行都显示为我们的锚点',async()=>{
+  const event={kind:'turn.tool',turn_id:'turn-fixture',attempt_id:'a1',request_id:'r1',tool_call_id:'anchor-call',tool:'identity_milestone_write',effective_tool:'identity_milestone_write'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[dto('m-anchor','合成输入')]}):url.endsWith('/reasoning')?Response.json({blocks:[],tools:[{...event,tool:'tool_invoke',label:'更新长期记忆里程碑',sequence:2,phase:'result',ok:true}]}):undefined)
+  try{
+    const steps=()=>h.client.snapshot.messages.find(m=>m.id==='m-anchor')!.steps!
+    h.client.handleEvent({...event,label:'我们的锚点',sequence:1,phase:'start'})
+    assert.equal(steps()[0].text,'我们的锚点 · 进行中')
+    await h.client.loadTurnDetails('turn-fixture')
+    assert.equal(steps()[0].text,'我们的锚点 · 完成')
+  }finally{h.client.stop()}
+})
+
+
 test('图片能力预检失败明确消息已保存、模型未发送，不自动重发',async()=>{
   const h=await setup()
   try{

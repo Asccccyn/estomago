@@ -38,7 +38,7 @@ export function registerIdentityCapabilities(registry: { register(d: CapabilityD
   const service = new IdentityMilestoneService(deps);
   registry.register(toolCapability({
     owner: 'identity',
-    id: 'identity_milestone_write', baselineOrder: 34, free: true, definition: () => IDENTITYMILESTONEWRITE_DEFINITION, memoryOnlyAllowed: false, label: '更新长期记忆里程碑',
+    id: 'identity_milestone_write', baselineOrder: 34, free: true, definition: () => IDENTITYMILESTONEWRITE_DEFINITION, memoryOnlyAllowed: false, label: '我们的锚点',
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.identityMilestoneWrite(input as never, ctx)),
     toModel: (value) => value,
   }));
