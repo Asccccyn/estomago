@@ -18,6 +18,11 @@ export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: s
 
 export class BlankMessageError extends Error {}
 
+const MESSAGE_COLUMNS = `m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind,
+  m.current_revision, m.published_at, m.created_at, m.client_message_id, t.trigger AS turn_trigger,
+  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at,
+  r.supersedes_revision, r.token_estimate_json`;
+
 // P05.2：通用生命周期合同在 ./lifecycle.ts（事实+inTx/afterCommit）。本类型保留为
 // 浮现域既有结构面（application/message-lifecycle 与兼容适配消费）；P09 复核命名。
 
@@ -361,9 +366,9 @@ export class MessageService {
   getMessage(messageId: string, includePublicationBreaks = false): MessageDto | null {
     const row = this.db
       .prepare(
-        `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+        `SELECT ${MESSAGE_COLUMNS}
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         LEFT JOIN turns t ON t.id = m.turn_id
          WHERE m.id = ?`,
       )
       .get(messageId) as MessageRow | undefined;
@@ -372,9 +377,9 @@ export class MessageService {
 
   getMessageAtRevision(conversationId: string, messageId: string, revision: number): MessageDto | null {
     const row = this.db.prepare(`
-      SELECT m.id,m.conversation_id,m.sequence,m.speaker,m.turn_id,m.kind,m.current_revision,m.published_at,m.created_at,
-        r.revision,r.content,r.content_hash,r.kind AS rkind,r.occurred_at,r.received_at,r.supersedes_revision,r.token_estimate_json
+      SELECT ${MESSAGE_COLUMNS}
       FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=?
+      LEFT JOIN turns t ON t.id = m.turn_id
       WHERE m.id=? AND m.conversation_id=? AND m.published_at IS NOT NULL
     `).get(revision, messageId, conversationId) as MessageRow | undefined;
     return row ? rowToDto(this.db, row) : null;
@@ -431,9 +436,9 @@ export class MessageService {
     if (opts.latest) {
       const rows = this.db
         .prepare(
-          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+          `SELECT ${MESSAGE_COLUMNS}
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           LEFT JOIN turns t ON t.id = m.turn_id
            WHERE m.conversation_id = ?
            ORDER BY m.sequence DESC LIMIT ?`,
         )
@@ -445,9 +450,9 @@ export class MessageService {
     if (opts.beforeSequence !== undefined) {
       const older = this.db
         .prepare(
-          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+          `SELECT ${MESSAGE_COLUMNS}
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           LEFT JOIN turns t ON t.id = m.turn_id
            WHERE m.conversation_id = ? AND m.sequence < ?
            ORDER BY m.sequence DESC LIMIT ?`,
         )
@@ -456,9 +461,9 @@ export class MessageService {
     }
     const rows = this.db
       .prepare(
-        `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+        `SELECT ${MESSAGE_COLUMNS}
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         LEFT JOIN turns t ON t.id = m.turn_id
          WHERE m.conversation_id = ? AND m.sequence > ?
          ORDER BY m.sequence LIMIT ?`,
       )
@@ -498,9 +503,9 @@ export class MessageService {
       conditions.push('m.sequence > ?'); parameters.push(opts.afterSequence ?? 0);
     }
     const rows = this.db.prepare(`
-      SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-        r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+      SELECT ${MESSAGE_COLUMNS}
       FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      LEFT JOIN turns t ON t.id = m.turn_id
       WHERE ${conditions.join(' AND ')} ORDER BY m.sequence ${descending ? 'DESC' : 'ASC'} LIMIT ?
     `).all(...parameters, limit) as MessageRow[];
     if (!rows.length) return empty;
@@ -531,6 +536,8 @@ type MessageRow = {
   sequence: number;
   speaker: 'owner' | 'assistant' | 'system';
   turn_id: string | null;
+  turn_trigger: string | null;
+  client_message_id: string | null;
   kind: string;
   current_revision: number;
   published_at: string | null;
@@ -560,13 +567,15 @@ function rowToDto(db: Db, r: MessageRow, includePublicationBreaks = false): Mess
         ORDER BY first.rowid`).all(r.id, r.id, r.id, r.revision, r.turn_id) as NonNullable<MessageDto['publication_breaks']>
     : [];
   const attachments = attachmentsFor(db, r.id, r.revision);
-  const keyedNotice = r.speaker === 'system' && r.turn_id
-    ? db.prepare('SELECT client_message_id FROM messages WHERE id=?').get(r.id) as { client_message_id: string | null } | undefined
-    : undefined;
-  const heartbeatCard = /^heartbeat:([\w-]+):card$/.exec(keyedNotice?.client_message_id ?? '');
+  const heartbeatNotice = r.speaker === 'system' && r.turn_id
+    ? /^heartbeat:([\w-]+):(invite|card|decline)$/.exec(r.client_message_id ?? '') : null;
+  const heartbeat: MessageDto['heartbeat'] = heartbeatNotice
+    ? heartbeatNotice[2] === 'invite' ? 'invite' : 'progress'
+    : r.speaker === 'assistant' && r.turn_trigger === 'cache_keepalive' ? 'assistant' : undefined;
   return {
     ...(breaks.length ? { publication_breaks: breaks } : {}),
-    ...(heartbeatCard ? { heartbeat_card: { run_id: heartbeatCard[1]! } } : {}),
+    ...(heartbeat ? { heartbeat } : {}),
+    ...(heartbeatNotice?.[2] === 'card' ? { heartbeat_card: { run_id: heartbeatNotice[1]! } } : {}),
     id: r.id,
     conversation_id: r.conversation_id,
     sequence: r.sequence,

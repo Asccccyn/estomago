@@ -20,14 +20,18 @@ import { installHeartbeatFixtureSources } from '../helpers/heartbeat-sources.ts'
 import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 
 type Lane = 'api' | 'sdk';
-type Seam = 'before_confirm' | 'after_confirm' | 'after_publish';
+type Seam = 'before_confirm' | 'after_confirm' | 'after_publish' | 'after_talk_commit';
+const TALK_REPLY = '合成心跳问候，有句话想告诉你。';
 const isInvite = (message: { role: string; content: unknown }) =>
   message.role === 'user' && JSON.stringify(message.content).includes('[心跳唤醒]');
+const isTalkReply = (message: { role: string; content: unknown }) =>
+  message.role === 'assistant' && JSON.stringify(message.content).includes(TALK_REPLY);
 const model = 'anthropic/claude-heartbeat-invite-fixture';
 
 async function fixture(root: string, lane: Lane, seam?: Seam) {
   let requests = 0;
   let sdkReplayedInvites = 0;
+  let sdkReplayedTalks = 0;
   const config = buildConfig({
     ...readyRuntimePatch(),
     runtime: { ...readyRuntimePatch().runtime as object, provider: 'mock', tool_schema_mode: 'direct',
@@ -42,13 +46,14 @@ async function fixture(root: string, lane: Lane, seam?: Seam) {
         requests++;
         invite = isInvite(frame.message);
         sdkReplayedInvites = history.filter(({ message }) => isInvite(message)).length;
+        sdkReplayedTalks = history.filter(({ message }) => isTalkReply(message)).length;
       }))) return;
       if (invite && seam === 'before_confirm') process.kill(process.pid, 'SIGKILL');
       const id = `sdk-invite-${requests}`;
       yield { type: 'stream_event', session_id: session, event: { type: 'message_start', message: {
         id, model: input.options?.model, usage: { input_tokens: 600, output_tokens: 4, cache_read_input_tokens: 1500 },
       } } };
-      yield { type: 'assistant', session_id: session, message: { id, content: [{ type: 'text', text: '合成回复' }] } };
+      yield { type: 'assistant', session_id: session, message: { id, content: [{ type: 'text', text: invite ? TALK_REPLY : '合成回复' }] } };
       yield { type: 'stream_event', session_id: session, event: { type: 'message_stop' } };
       yield { type: 'result', subtype: 'success', session_id: session };
     })();
@@ -64,9 +69,10 @@ async function fixture(root: string, lane: Lane, seam?: Seam) {
   }, async payload => {
     requests++;
     const last = (payload.messages as OrMessage[]).at(-1);
-    if (last && isInvite(last) && seam === 'before_confirm') process.kill(process.pid, 'SIGKILL');
+    const invite = Boolean(last && isInvite(last));
+    if (invite && seam === 'before_confirm') process.kill(process.pid, 'SIGKILL');
     return { status: 200, headers: new Headers(), body: Readable.from([
-      'data: {"choices":[{"delta":{"content":"合成回复"}}]}\n\n',
+      `data: ${JSON.stringify({ choices: [{ delta: { content: invite ? TALK_REPLY : '合成回复' } }] })}\n\n`,
       'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2100,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":1500,"cache_write_tokens":600},"cost":0.001}}\n\n',
       'data: [DONE]\n\n',
     ]) };
@@ -80,7 +86,8 @@ async function fixture(root: string, lane: Lane, seam?: Seam) {
     assert.equal(host.db.prepare('SELECT state FROM turns WHERE id=?').get(turnId)?.state, 'completed');
     return turnId;
   }
-  return { host, config, chat, requests: () => requests, sdkReplayedInvites: () => sdkReplayedInvites };
+  return { host, config, chat, requests: () => requests, sdkReplayedInvites: () => sdkReplayedInvites,
+    sdkReplayedTalks: () => sdkReplayedTalks };
 }
 
 async function crash(root: string, lane: Lane, seam: Seam) {
@@ -106,6 +113,16 @@ async function crash(root: string, lane: Lane, seam: Seam) {
     observe(...args);
     if (seam === 'after_publish') process.kill(process.pid, 'SIGKILL');
   };
+  if (seam === 'after_talk_commit') {
+    const exec = host.db.exec.bind(host.db);
+    host.db.exec = sql => {
+      exec(sql);
+      if (sql === 'COMMIT' && host.db.prepare(`SELECT 1 FROM outbox
+        WHERE target='content_heartbeat_projection' AND json_extract(payload_ref,'$.state')='talked'`).get()) {
+        process.kill(process.pid, 'SIGKILL');
+      }
+    };
+  }
   host.scheduler!.start();
   await host.scheduler!.tick();
   assert.fail('fixture did not reach the heartbeat invite crash seam');
@@ -114,8 +131,8 @@ async function crash(root: string, lane: Lane, seam: Seam) {
 const CHILD = '--heartbeat-invite-crash';
 if (process.argv[2] === CHILD) {
   await crash(process.argv[3]!, process.argv[4] as Lane, process.argv[5] as Seam);
-} else for (const lane of ['api', 'sdk'] as const) for (const seam of ['before_confirm', 'after_confirm', 'after_publish'] as const) {
-  test(`heartbeat: retain only the confirmed invitation after restart (${lane}, ${seam})`, async t => {
+} else for (const lane of ['api', 'sdk'] as const) for (const seam of ['before_confirm', 'after_confirm', 'after_publish', 'after_talk_commit'] as const) {
+  test(`heartbeat: restore the confirmed invitation and a committed pure reply after restart (${lane}, ${seam})`, async t => {
     const root = tempRoot('heartbeat-invite-crash-');
     let running: Host | undefined;
     t.after(async () => { await running?.stop(); fs.rmSync(root, { recursive: true, force: true }); });
@@ -128,12 +145,19 @@ if (process.argv[2] === CHILD) {
       WHERE purpose='cache_keepalive'`).get() as { id: string; window_id: string; background_run_id: string; turn_id: string; payload_json: string; sent_at: string | null };
     const sent = (JSON.parse(request.payload_json) as { messages: OrMessage[] }).messages;
     const confirmed = seam !== 'before_confirm';
+    const talked = seam === 'after_talk_commit';
     const inviteId = `heartbeat:${request.background_run_id}:invite`;
     assert.equal(Boolean(request.sent_at), confirmed);
     assert.equal(sent.filter(isInvite).length, 1);
-    assert.equal(before.prepare('SELECT count(*) n FROM messages WHERE client_message_id=?').get(inviteId)?.n, seam === 'after_publish' ? 1 : 0);
+    assert.equal(before.prepare('SELECT count(*) n FROM messages WHERE client_message_id=?').get(inviteId)?.n,
+      seam === 'after_publish' || talked ? 1 : 0);
     const original = new WindowTrajectoryService(before).forWindow(request.window_id)!;
-    assert.equal(original.messages.filter(isInvite).length, 0);
+    assert.equal(original.messages.filter(isInvite).length, Number(talked));
+    if (talked) {
+      assert.deepEqual(original.messages.slice(0, -1), sent);
+      assert.ok(isTalkReply(original.messages.at(-1)!));
+      assert.equal(before.prepare('SELECT state FROM background_runs WHERE id=?').get(request.background_run_id)?.state, 'running');
+    }
     before.close();
 
     for (let restart = 0; restart < 2; restart++) {
@@ -144,24 +168,43 @@ if (process.argv[2] === CHILD) {
       await host.start();
       assert.equal(current.requests(), 0);
       const retained = new WindowTrajectoryService(host.db).forWindow(request.window_id)!;
-      assert.deepEqual(retained.messages, confirmed ? sent : original.messages);
+      assert.deepEqual(retained.messages, confirmed && !talked ? sent : original.messages);
       assert.deepEqual(retained.lastBoundary, confirmed ? tailBoundaryOf(sent) : original.lastBoundary);
       assert.equal(host.db.prepare('SELECT count(*) n FROM provider_requests WHERE background_run_id=?').get(request.background_run_id)?.n, 1);
-      assert.equal(host.db.prepare('SELECT count(*) n FROM messages WHERE turn_id=?').get(request.turn_id)?.n, Number(confirmed));
+      const expectedPublished = Number(confirmed) + Number(talked);
+      assert.equal(host.db.prepare('SELECT count(*) n FROM messages WHERE turn_id=?').get(request.turn_id)?.n, expectedPublished);
       const events = host.events.replayPage(0, 'primary').filter(event => event.kind === 'message.published' && event.turn_id === request.turn_id);
-      assert.equal(events.length, Number(confirmed));
+      assert.equal(events.length, expectedPublished);
       assert.equal(host.db.prepare('SELECT count(*) n FROM heartbeat_draw_operations WHERE run_id=?').get(request.background_run_id)?.n, 0);
       const result = host.db.prepare('SELECT state,result_code FROM background_runs WHERE id=?').get(request.background_run_id);
-      assert.deepEqual({ ...result }, { state: 'unknown', result_code: 'HOST_RESTART_MID_RUN' });
+      assert.deepEqual({ ...result }, talked ? { state: 'completed', result_code: 'complete:done' }
+        : { state: 'unknown', result_code: 'HOST_RESTART_MID_RUN' });
       assert.equal(host.db.prepare("SELECT maintenance_request_id FROM conversation_activity WHERE conversation_id='primary'").get()?.maintenance_request_id, null);
+      if (talked) {
+        const reply = host.db.prepare("SELECT id FROM messages WHERE turn_id=? AND speaker='assistant'").get(request.turn_id);
+        assert.ok(reply);
+        assert.equal(retained.manifest?.filter(entry => entry.id === reply.id && entry.visible).length, 1);
+        assert.equal(host.db.prepare("SELECT last_real_message_id FROM conversation_activity WHERE conversation_id='primary'").get()?.last_real_message_id, reply.id);
+        const projection = host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get();
+        assert.ok(projection);
+        const view = JSON.parse(String(projection.payload_ref));
+        assert.equal(view.state, 'talked');
+        assert.equal(view.card, null);
+        assert.equal(view.messages.at(-1)?.messageId, reply.id);
+      }
       if (restart === 1) {
         const turnId = await current.chat('重启后的自然输入');
         const next = host.db.prepare('SELECT window_id,payload_json FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL')
           .get(turnId) as { window_id: string; payload_json: string };
         assert.equal(current.requests(), 1);
         assert.equal(next.window_id, request.window_id);
-        assert.equal((JSON.parse(next.payload_json) as { messages: OrMessage[] }).messages.filter(isInvite).length, Number(confirmed));
-        if (lane === 'sdk') assert.equal(current.sdkReplayedInvites(), Number(confirmed));
+        const nextMessages = (JSON.parse(next.payload_json) as { messages: OrMessage[] }).messages;
+        assert.equal(nextMessages.filter(isInvite).length, Number(confirmed));
+        assert.equal(nextMessages.filter(isTalkReply).length, Number(talked));
+        if (lane === 'sdk') {
+          assert.equal(current.sdkReplayedInvites(), Number(confirmed));
+          assert.equal(current.sdkReplayedTalks(), Number(talked));
+        }
       }
       await host.stop();
       running = undefined;

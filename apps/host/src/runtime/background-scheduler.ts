@@ -134,6 +134,10 @@ export class BackgroundScheduler {
         this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'ack_only' });
         continue;
       }
+      if (r.state === 'running' && r.kind === 'keepwarm' && this.hasCommittedTalkReply(r.id)) {
+        this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'complete:done' });
+        continue;
+      }
       if (r.state === 'running' && r.kind === 'heartbeat_memory'
         && this.d.db.prepare('SELECT 1 FROM heartbeat_daily_memory_choices WHERE run_id=?').get(r.id)) {
         this.finishRecoveredCompletion(r.id,{outcome:'completed',result_code:'DAILY_MEMORY_SELECTED'});
@@ -177,6 +181,17 @@ export class BackgroundScheduler {
       WHERE run.id=? AND run.trajectory_committed_at IS NOT NULL
         AND EXISTS (SELECT 1 FROM provider_requests request
                     WHERE request.background_run_id=run.id AND request.sent_at IS NOT NULL)
+    `).get(runId));
+  }
+
+  private hasCommittedTalkReply(runId: string): boolean {
+    // The reply, projection, trajectory and commit stamp were written atomically.
+    return Boolean(this.d.db.prepare(`
+      SELECT 1 FROM background_runs run
+      JOIN outbox projection ON projection.target='content_heartbeat_projection'
+        AND projection.operation_key='heartbeat-moment:'||run.id
+      WHERE run.id=? AND run.trajectory_committed_at IS NOT NULL
+        AND json_extract(projection.payload_ref, '$.state')='talked'
     `).get(runId));
   }
 

@@ -2,11 +2,12 @@ import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
 export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; at?: string; label?: string; state?: 'running' | 'completed' | 'failed' }
 export type Media = { kind: 'voice' | 'image' | 'work'; src: string; text?: string; assetId?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; publicationBreaks?: { before_message_id: string; end_char: number }[]; thinkSecs?: number; thinking?: boolean; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; heartbeatCardRunId?: string; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; publicationBreaks?: { before_message_id: string; end_char: number }[]; thinkSecs?: number; thinking?: boolean; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; heartbeat?: boolean; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
 type Json = Record<string, any>
+const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat || message.heartbeat_card?.run_id)
 class LifecycleEnded extends Error {}
 const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
 type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => EventSource; redirect?: () => void }
@@ -173,7 +174,7 @@ export class EstomagoClient {
   private replacePage(data:Json,mode:'latest'|'date',date:string|null) {
     this.raw.clear();this.blocks.clear();this.toolSteps.clear();this.detailsLoaded.clear();this.running.clear()
     for(const message of data.messages??[])this.absorb(message,false)
-    for(const turn of data.active_turns??[]){if(['pending','running'].includes(turn.state))this.running.add(turn.turn_id)}
+    for(const turn of data.active_turns??[]){if(turn.trigger!=='cache_keepalive'&&['pending','running'].includes(turn.state))this.running.add(turn.turn_id)}
     const floor=number(data.event_cursor)
     if(floor!==null&&Number.isSafeInteger(floor)&&floor>=0){
       this.viewSnapshotFloor=floor
@@ -296,9 +297,13 @@ export class EstomagoClient {
   private render() {
     const messages: ChatMessage[]=[]
     const latestOwner=this.latestOwner()?.id
-    const latestSequence=Math.max(0,...[...this.raw.values()].map(m=>m.sequence))
-    for(const m of [...this.raw.values()].sort((a,b)=>a.sequence-b.sequence)){
+    const rows=[...this.raw.values()]
+    const latestSequence=Math.max(0,...rows.map(m=>m.sequence))
+    const heartbeatTurns=new Set(rows.filter(isHeartbeatMessage).map(m=>m.turn_id))
+    for(const m of rows.sort((a,b)=>a.sequence-b.sequence)){
       if(!['owner','assistant','system'].includes(m.speaker))continue
+      if(m.speaker==='system'&&(m.heartbeat==='progress'||m.heartbeat_card?.run_id))continue
+      const heartbeat=heartbeatTurns.has(m.turn_id)
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
         // M02（包1 2026-11-15）：work=SVG/HTML 代码作品——用已有沙箱 /preview 隔离展示，
         // 不走 /content（Content-Disposition 附件下载头，旧映射把作品当图片渲染成坏图）。
@@ -308,8 +313,7 @@ export class EstomagoClient {
       }))
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
         time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
-        publicationBreaks:m.publication_breaks,...this.turnDetails(m.turn_id),turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
-        heartbeatCardRunId: typeof m.heartbeat_card?.run_id === 'string' ? m.heartbeat_card.run_id : undefined,
+        publicationBreaks:m.publication_breaks,...(heartbeat?{heartbeat}:this.turnDetails(m.turn_id)),turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
         replyState:m.reply_status?.state,
         canEdit:m.speaker==='owner'&&m.mutation_status?.can_edit===true,
         canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
@@ -317,6 +321,7 @@ export class EstomagoClient {
       })
     }
     for(const id of this.running){
+      if(heartbeatTurns.has(id))continue
       if(this.snapshot.historyMode==='date'&&!messages.some(m=>m.turnId===id))continue
       const last=messages.filter(m=>m.turnId===id&&m.role==='ai'&&!m.system).at(-1)
       if(last){last.streaming=true;continue}
@@ -394,7 +399,10 @@ export class EstomagoClient {
     if(data.kind==='context.warning')void this.loadContext()
     if(data.kind==='window.rotated'){void this.loadRuntime();void this.loadContext()}
   }
-  private visibleTurn(id:string) {return [...this.raw.values()].some(message=>message.turn_id===id)}
+  private visibleTurn(id:string) {
+    const messages=[...this.raw.values()].filter(message=>message.turn_id===id)
+    return messages.length>0&&!messages.some(isHeartbeatMessage)
+  }
   private updateToolStep(turnId:string,data:Json) {
     const id=[data.attempt_id??'',data.request_id??'',data.tool_call_id??data.event_id??data.sequence].join(':')
     const steps=this.toolSteps.get(turnId)??[]

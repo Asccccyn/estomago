@@ -23,6 +23,7 @@ export type BackgroundOutcomeInput = {
   capturedActivityRevision: number | null;
   toolCallsObserved: number;
   isCancelRequested: () => boolean;
+  isYieldRequested?: () => boolean;
   recoveredRequestId?: string;
   heartbeat?: { runtime: HeartbeatRuntime; mode: HeartbeatMode; hostText: string };
   loop: {
@@ -39,10 +40,12 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const completed = loop.result.outcome === 'completed' && !loop.result.errorCode;
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
   const observed = heartbeat ? db.prepare(`
-    SELECT payload_json FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL
+    SELECT payload_json, json_extract(context_fingerprint_json, '$.round_no') AS round_no
+    FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL
       AND (? IS NULL OR id=?)
     ORDER BY rowid DESC LIMIT 1
-  `).get(runId,input.recoveredRequestId ?? null,input.recoveredRequestId ?? null) as { payload_json: string | null } | undefined : null;
+  `).get(runId,input.recoveredRequestId ?? null,input.recoveredRequestId ?? null) as
+    { payload_json: string | null; round_no: number | null } | undefined : null;
   const last = loop.finalMessages?.at(-1);
   const lastText = last?.role === 'assistant' && !(Array.isArray(last.tool_calls) && last.tool_calls.length)
     ? typeof last.content === 'string' ? last.content
@@ -53,6 +56,12 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const missingExhaustedReply = exhausted && completed && !exhaustedReply;
   const finishedState = (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
   const finishReason = missingExhaustedReply ? 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' : loop.result.errorCode;
+  // A normal text-only response to the invitation ends the first model round.
+  // Tool-loop text, including a reply after an unconfirmed draw, is not this choice.
+  const talkOnly = heartbeat?.mode === 'draw' && completed && observed?.round_no === 0
+    && input.toolCallsObserved === 0 && Boolean(lastText?.trim()) && loop.lastSentMessages !== null
+    && loop.finalMessages?.length === loop.lastSentMessages.length + 1
+    && !input.isCancelRequested() && !input.isYieldRequested?.();
 
   // Only the current heartbeat's unobserved card payload can be withheld. Its
   // actual tool call and a protocol-valid same-ID receipt remain in the history.
@@ -110,7 +119,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
           hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode, completed, hadSent: Boolean(observed),
-          terminal: terminal(),
+          talkOnly, terminal: terminal(),
         });
         if (projection.manifest.length) {
           const known = new Set(manifest.map(entry => entry.id));

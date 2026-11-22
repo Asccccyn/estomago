@@ -269,6 +269,35 @@ test('后来发布的系统或助手消息立即隐藏旧失败消息的直接�
     assert.equal(h.client.snapshot.messages.find(m=>m.id==='m1')!.canRetry,false)
   }finally{h.client.stop()}
 })
+
+test('聊天保留心跳邀请与真实发言，牌面和工具进度不会成为聊天行',async()=>{
+  const turnId='heartbeat-turn'
+  const invite={...dto('invite','合成心跳邀请'),sequence:2,speaker:'system',turn_id:turnId,heartbeat:'invite'}
+  const card={...dto('card','合成揭牌'),sequence:3,speaker:'system',turn_id:turnId,heartbeat:'progress',heartbeat_card:{run_id:'heartbeat-run'}}
+  const ordinary={...dto('ordinary','普通对话回复'),sequence:4,speaker:'assistant'}
+  const sent={...dto('sent','心跳真实发言'),sequence:5,speaker:'assistant',turn_id:turnId,heartbeat:'assistant'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[invite,card,ordinary],event_cursor:10,
+    active_turns:[{turn_id:turnId,state:'running',trigger:'cache_keepalive'}]}):undefined)
+  try{
+    assert.deepEqual(h.client.snapshot.messages.map(m=>m.id),['invite','ordinary'])
+    assert.equal(h.client.snapshot.messages[0]?.system,true)
+    const tool=(id:string,sequence:number)=>({kind:'turn.tool',turn_id:id,tool:'heartbeat_draw',tool_call_id:'fixture-call',phase:'start',sequence})
+    h.client.handleEvent(tool(turnId,11))
+    h.client.handleEvent({kind:'message.published',sequence:12,message:sent})
+    h.client.handleEvent({kind:'message.published',sequence:13,message:invite})
+    h.client.handleEvent({kind:'message.published',sequence:14,message:{...card,id:'later-card',sequence:6}})
+    h.client.handleEvent(tool('turn-fixture',15))
+    assert.deepEqual(h.client.snapshot.messages.map(m=>m.id),['invite','ordinary','sent'])
+    const visible=h.client.snapshot.messages.find(m=>m.id==='sent')!
+    assert.equal(visible.heartbeat,true)
+    assert.equal(visible.text,sent.revision.content)
+    assert.equal(visible.steps,undefined)
+    assert.equal(h.client.snapshot.messages.find(m=>m.id==='ordinary')?.steps?.length,1)
+    await h.client.loadTurnDetails(turnId)
+    assert.equal(h.calls.some(call=>String(call.url).includes('/turns/'+turnId+'/reasoning')),false)
+  }finally{h.client.stop()}
+})
+
 test('失败状态经SSE回放保留原因，打开活动日志不丢失也不重复',async()=>{
   const h=await setup(url=>url.includes('/context-records/events?')?Response.json({events:[]}):undefined)
   try{

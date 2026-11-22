@@ -22,6 +22,7 @@ import { heartbeatActions } from './actions.ts';
 
 export { HEARTBEAT_DRAW_TOOL } from './service.ts';
 const PROJECTION_TARGET = 'content_heartbeat_projection';
+const DRAW_RULES = '当天固定同一副十张牌，已用的号码不可再抽，每个逻辑回合最多抽一张。';
 
 export function heartbeatBusinessDate(now = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -55,6 +56,7 @@ type HeartbeatFinish = {
   mode: HeartbeatMode;
   completed: boolean;
   hadSent: boolean;
+  talkOnly?: boolean;
   terminal?: NonNullable<HeartbeatProjection['terminal']>;
 };
 
@@ -112,14 +114,17 @@ export class HeartbeatRuntime {
         AND message.client_message_id='heartbeat:'||run.id||':invite'
       JOIN message_revisions revision ON revision.message_id=message.id AND revision.revision=1
       WHERE frozen.business_date=? AND frozen.mode='draw' AND run.window_id=? AND run.id<>?
-        AND revision.source='heartbeat_host' AND revision.content LIKE '[心跳唤醒] 可选号：%'
+        AND revision.source='heartbeat_host' AND instr(revision.content,?) > 0
         AND EXISTS (SELECT 1 FROM provider_requests req WHERE req.background_run_id=run.id AND req.sent_at IS NOT NULL)
-    `).all(run.businessDate, input.windowId, input.runId) as Array<{ content: string }>;
+    `).all(run.businessDate, input.windowId, input.runId, DRAW_RULES) as Array<{ content: string }>;
     const retained = input.retainedMessages.filter(message => message.role === 'user').map(plainText);
     const hasChoiceContext = previous.some(({ content }) =>
       retained.some(text => text === content || text.startsWith(content + '\n')));
-    const options = hasChoiceContext ? '' : `可选号：${run.deck!.availableNumbers.join('、')}。当天固定同一副十张牌，已用的号码不可再抽，每个逻辑回合最多抽一张。\n`;
-    const hostText = `[心跳唤醒] ${options}用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。`;
+    const hostText = [
+      '[心跳唤醒] 想和乔乔说话，还是抽一张盲盒？',
+      '想说话：直接写一条给她的聊天消息并结束，这轮不抽卡。',
+      `想抽盲盒：用 heartbeat_draw 选一个可用号码，需要时先查看工具定义。可选号：${run.deck!.availableNumbers.join('、')}。${hasChoiceContext ? '' : DRAW_RULES}抽到后可以回应卡面，也可以安静结束。`,
+    ].join('\n');
     this.db.prepare('UPDATE heartbeat_runs SET invite_text=COALESCE(invite_text,?) WHERE run_id=?').run(hostText, input.runId);
     return { mode: run.mode, hostText };
   }
@@ -339,7 +344,7 @@ export class HeartbeatRuntime {
     if (delivered) publish('card', `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
     if (decline) publish('decline', '[心跳唤醒] 本轮未抽卡');
     const actions = heartbeatActions(this.db, input.runId);
-    if (delivered && text.trim()) publish('reply', text);
+    if ((delivered || input.talkOnly) && text.trim()) publish('reply', text);
     const refs = this.db.prepare(`
       SELECT id, current_revision, sequence, speaker, client_message_id FROM messages WHERE turn_id=? AND published_at IS NOT NULL ORDER BY sequence
     `).all(input.turnId) as Array<{ id: string; current_revision: number; sequence: number; speaker: string; client_message_id: string | null }>;
@@ -348,7 +353,8 @@ export class HeartbeatRuntime {
     const projectionRef = (message: typeof refs[number]) => ({ messageId: message.id, revision: message.current_revision, sequence: message.sequence });
     const projection: HeartbeatProjection = {
       mode: 'draw', conversationId: input.conversationId, businessDate: run.businessDate, version: 2,
-      state: delivered ? refs.some(message => message.speaker === 'assistant') ? 'drawn' : 'drawn_no_comment' : decline ? 'declined' : 'interrupted',
+      state: delivered ? refs.some(message => message.speaker === 'assistant') ? 'drawn' : 'drawn_no_comment'
+        : input.talkOnly ? 'talked' : decline ? 'declined' : 'interrupted',
       card: delivered ? { number: delivered.cardNumber, source: delivered.source } : null,
       messages: refs.map(projectionRef),
       ...(delivered?.source.kind === 'reserved_note' ? { reservedReplyMessages: afterReveal.map(projectionRef) } : {}),

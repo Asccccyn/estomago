@@ -482,12 +482,8 @@ test('heartbeat feed preserves a memory creation and reports its edits by outcom
   const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
     { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
     { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
-  assert.deepEqual(feed.items[0]?.blocks.filter(block => ['写记忆', '修订记忆'].includes(block.source_label)).map(block => block.text), [
-    '写记忆 · 已完成。',
-    '修订记忆 · 已完成（v2）。',
-    '修订记忆 · 未成功。',
-    '修订记忆 · 结果待核，暂不能确认成功。',
-  ]);
+  assert.deepEqual(feed.items[0]?.blocks.filter(block => ['写记忆', '修订记忆'].includes(block.source_label)).map(block => block.text),
+    ['修订记忆 · 已完成。']);
 });
 
 const ACTION_CRASH_TEST = 'heartbeat: a committed memory action is projected on restart without replaying the model';
@@ -692,8 +688,16 @@ test('T18: a concise invitation requires the same-day full invitation in the ret
     assert.equal(ctx.latestRun().result_code, 'complete:noop');
     return text(ctx.wire.at(-1)?.messages.findLast(message => message.role === 'user'));
   };
-  assert.match(await invite(), /可选号：1、2、3/);
-  assert.doesNotMatch(await invite(), /可选号：/);
+  const first = await invite();
+  ctx.seedNineCards();
+  const second = await invite();
+  for (const prompt of [first, second]) {
+    assert.match(prompt, /想和乔乔说话.*想抽盲盒/s);
+  }
+  assert.match(first, /可选号：1、2、3/);
+  assert.match(second, /可选号：1。/);
+  assert.match(first, /当天固定同一副十张牌/);
+  assert.doesNotMatch(second, /当天固定同一副十张牌/);
 
   // Check prompt assembly using a valid retained snapshot without the tail.
   // Sending against a shortened prefix would correctly be rejected by the
@@ -711,7 +715,8 @@ test('T18: a concise invitation requires the same-day full invitation in the ret
     runId: resumeRun, conversationId: 'primary', windowId: ctx.windowId(),
     signal: new AbortController().signal, retainedMessages: original.messages,
   });
-  assert.match(prepared.hostText, /可选号：1、2、3/);
+  assert.match(prepared.hostText, /可选号：1。/);
+  assert.match(prepared.hostText, /当天固定同一副十张牌/);
 });
 
 test('T18: invalid number types receive two real corrections through the frozen integer tool', async t => {

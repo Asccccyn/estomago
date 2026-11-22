@@ -39,6 +39,7 @@ export type MessageDto = {
   revision: MessageRevisionDto; // 当前有效修订
   publication_breaks?: Array<{ before_message_id: string; end_char: number }>;
   heartbeat_card?: { run_id: string };
+  heartbeat?: 'invite' | 'progress' | 'assistant';
   reply_status?: MessageReplyStatusDto;
   mutation_status?: { can_edit: boolean; can_withdraw: boolean; reason: string | null };
 };
@@ -62,7 +63,7 @@ export type MessagePageDto = {
   date?: string;
   empty_date?: boolean;
   event_cursor?: number; // Only snapshot=1; never advance an existing SSE cursor from a history page.
-  active_turns?: Array<{ turn_id: string; attempt_id: string | null; state: string }>;
+  active_turns?: Array<{ turn_id: string; attempt_id: string | null; state: string; trigger?: string }>;
   pending_route?: {
     decision_id: string;
     turn_id: string;

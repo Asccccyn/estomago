@@ -71,7 +71,7 @@ if (convMsgs) {
     result.messages = new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate(result.messages);
     if (snapshot) {
       result.active_turns = d.db.prepare(`
-        SELECT t.id AS turn_id, t.state,
+        SELECT t.id AS turn_id, t.state, t.trigger,
           (SELECT a.id FROM attempts a WHERE a.turn_id=t.id ORDER BY a.attempt_no DESC LIMIT 1) AS attempt_id
         FROM turns t WHERE t.conversation_id=? AND t.state IN ('pending','running','route_owner_pending') ORDER BY t.created_at,t.id
       `).all(conversationId) as NonNullable<MessagePageDto['active_turns']>;

@@ -26,7 +26,7 @@ export type HeartbeatProjection = {
   conversationId: string;
   businessDate: string;
   version: number;
-  state: 'drawn' | 'drawn_no_comment' | 'declined' | 'interrupted';
+  state: 'drawn' | 'drawn_no_comment' | 'talked' | 'declined' | 'interrupted';
   card: { number: number; source: HeartbeatSource } | null;
   messages: Array<{ messageId: string; revision: number; sequence: number }>;
   /** Only the original assistant messages published after this reserved note was actually revealed. */
@@ -95,14 +95,15 @@ export function readHeartbeatSource(value: unknown): HeartbeatSource | null {
 /** Retain only sourced identities and ordered references. A transport payload is never a projection. */
 export function readHeartbeatProjection(value: unknown): HeartbeatProjection | null {
   const projection = record(value);
+  const state = projection?.state;
   if (!projection || projection.mode !== 'draw' || !text(projection.conversationId)
     || typeof projection.businessDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(projection.businessDate)
     || !integer(projection.version) || !Array.isArray(projection.messages)
-    || (projection.state !== 'drawn' && projection.state !== 'drawn_no_comment' && projection.state !== 'declined' && projection.state !== 'interrupted')) return null;
+    || (state !== 'drawn' && state !== 'drawn_no_comment' && state !== 'talked' && state !== 'declined' && state !== 'interrupted')) return null;
   const card = record(projection.card);
   const source = readHeartbeatSource(card?.source);
-  if (projection.state === 'declined' || projection.state === 'interrupted' ? projection.card !== null
-    : !card || !integer(card.number) || card.number > 10 || !source) return null;
+  const drewCard = state === 'drawn' || state === 'drawn_no_comment';
+  if (drewCard ? !card || !integer(card.number) || card.number > 10 || !source : projection.card !== null) return null;
   const messages: HeartbeatProjection['messages'] = [];
   for (const value of projection.messages) {
     const message = record(value);
@@ -120,7 +121,7 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
       if (!original || (reservedReplyMessages.at(-1)?.sequence ?? 0) >= original.sequence) return null;
       reservedReplyMessages.push(original);
     }
-    if (reservedReplyMessages.length > 0 && projection.state !== 'drawn') return null;
+    if (reservedReplyMessages.length > 0 && state !== 'drawn') return null;
   }
   const actions: HeartbeatAction[] = [];
   const terminal = record(projection.terminal);
@@ -149,7 +150,7 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
     || terminal.reason !== undefined && !['budget','quote','sleep','yield','delivery','other'].includes(String(terminal.reason)))) return null;
   return {
     mode: 'draw', conversationId: projection.conversationId, businessDate: projection.businessDate,
-    version: projection.version, state: projection.state,
+    version: projection.version, state,
     card: card && source ? { number: card.number as number, source } : null,
     messages,
     ...(projection.reservedReplyMessages !== undefined ? { reservedReplyMessages } : {}),

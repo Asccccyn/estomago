@@ -56,6 +56,25 @@ const actionLabels: Record<HeartbeatAction['kind'], string> = {
   wake: '设置自主唤醒', chat: '发送聊天消息',
 };
 
+function displayActions(actions: readonly HeartbeatAction[]) {
+  const indexed = actions.map((action, index) => ({ action, index,
+    memoryId: (action.kind === 'memory_hold' || action.kind === 'memory_update') && action.source?.namespace === 'mariposa:memory'
+      ? action.source.id : undefined,
+  }));
+  const latest = new Map<string, { index: number; revision: number }>();
+  for (const { action, index, memoryId } of indexed) {
+    if (!memoryId || action.status !== 'committed') continue;
+    const value = Number(action.source?.revision);
+    const revision = Number.isSafeInteger(value) && value > 0 ? value : 0;
+    if (revision >= (latest.get(memoryId)?.revision ?? 0)) latest.set(memoryId, { index, revision });
+  }
+  // Older receipts and pending attempts never replace a confirmed result.
+  return indexed.filter(({ index, memoryId }) => {
+    const selected = memoryId === undefined ? undefined : latest.get(memoryId);
+    return !selected || selected.index === index;
+  });
+}
+
 function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
   const label = action.kind === 'wake' && action.wakeOperation ? {
     schedule: '设置自主预约', update: '修改自主预约', cancel: '取消自主预约',
@@ -65,9 +84,8 @@ function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
     committed: action.kind === 'selection' ? '已选中' : '已完成',
     partial: '部分完成，仍有步骤待确认', failed: '未成功', cancelled: '已取消或未派发', unknown: '结果待核，暂不能确认成功',
   }[action.status];
-  const revision = action.kind === 'memory_update' && action.status === 'committed' ? action.source?.revision : undefined;
   return { id: `action:${index}`, source_label: label, status: 'available', editable: false,
-    text: `${verb} · ${phrase}${revision === undefined ? '' : `（v${revision}）`}。` };
+    text: `${verb} · ${phrase}。` };
 }
 
 const fail = (status: number, code: string, message: string, details: Record<string, unknown> = {}): ContentWriteResult =>
@@ -172,7 +190,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
     cardBlock = block;
     if (!projection.actions) blocks.push(block);
   }
-  const actions = projection.actions?.map((action, index) => ({ action, index })) ?? [];
+  const actions = displayActions(projection.actions ?? []);
   let nextAction = 0;
   const flushActions = (before: number) => {
     while (nextAction < actions.length && actions[nextAction]!.action.afterSequence < before) {
@@ -209,6 +227,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       : terminal.reason === 'yield' ? '本轮为新聊天让位。'
       : terminal.status === 'cancelled' ? '本轮已取消，已经发生的动作保留。'
       : terminal.status === 'failed' ? '本轮未能正常完成。'
+      : projection.state === 'talked' ? '本轮只说了话。'
       : projection.state === 'drawn_no_comment' ? '本轮结束，没有另发聊天留言。' : '本轮结束。';
     blocks.push({ id: 'outcome', source_label: '结束状态', status: 'available', editable: false, text: end });
   } else if ((projection.state === 'declined' && !publishedDecline) || projection.state === 'drawn_no_comment') {

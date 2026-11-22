@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {makeDb } from '../helpers.ts';
-import { openDatabase, readSnapshot, type Db } from '../../apps/host/src/db/connection.ts';
+import { openDatabase, readSnapshot, tx, type Db } from '../../apps/host/src/db/connection.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { shanghaiDayRange } from '../../apps/host/src/server/calendar-routes.ts';
@@ -122,4 +122,22 @@ test('history and live publication locate text added after media without creatin
   assert.deepEqual(page.messages.find(m => m.id === first.id)?.publication_breaks, appended.publication_breaks);
   assert.equal(messages.getMessage(first.id)?.publication_breaks, undefined);
   assert.equal(voice.publication_breaks, undefined);
+});
+
+test('heartbeat publications retain their presentation role across live and paginated reads', t => {
+  const { db, messages } = fixture(t);
+  const conversationId = 'c1', turnId = 'heartbeat-turn', runId = 'heartbeat-run';
+  db.prepare("INSERT INTO turns(id,conversation_id,trigger,state,created_at) VALUES (?,?,'cache_keepalive','running',?)")
+    .run(turnId, conversationId, new Date().toISOString());
+  const [invite, reveal] = tx(db, () => [
+    messages.publishHeartbeatInTx({ conversationId, turnId, runId, part: 'invite', content: '合成邀请' }),
+    messages.publishHeartbeatInTx({ conversationId, turnId, runId, part: 'card', content: '合成揭牌' }),
+  ]);
+  const reply = messages.publishAssistantMessage({ conversationId, turnId, content: '合成消息' });
+  assert.equal(invite!.heartbeat, 'invite');
+  assert.equal(reveal!.heartbeat, 'progress');
+  assert.equal(reply.heartbeat, 'assistant');
+  assert.deepEqual(messages.getMessageAtRevision(conversationId, reveal!.id, 1)?.heartbeat_card, { run_id: runId });
+  const latest = messages.listMessagePage({ conversationId, latest: true, limit: 1 });
+  assert.deepEqual(latest.messages.map(message => [message.id, message.heartbeat]), [[reply.id, 'assistant']]);
 });

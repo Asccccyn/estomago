@@ -9,6 +9,33 @@ import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReferen
 
 const path = 'http://est.test/api/v1/content/moment-references/photo-post/blocks/card';
 
+test('朋友圈按同一记忆只展示最新确认的修订', async t => {
+  const { db, root } = makeDb();
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const memorySource = (id: string, revision?: number) => ({ namespace: 'mariposa:memory', id, revision });
+  const actions = [
+    { operationId: 'hold-a', kind: 'memory_hold', status: 'committed', source: memorySource('a', 1) },
+    { operationId: 'edit-a-2', kind: 'memory_update', status: 'committed', source: memorySource('a', 2) },
+    { operationId: 'hold-b', kind: 'memory_hold', status: 'committed', source: memorySource('b', 1) },
+    { operationId: 'edit-a-3', kind: 'memory_update', status: 'committed', source: memorySource('a', 3) },
+    { operationId: 'edit-a-conflict', kind: 'memory_update', status: 'failed', source: memorySource('a') },
+    { operationId: 'edit-a-timeout', kind: 'memory_update', status: 'unknown', source: memorySource('a') },
+  ].map(action => ({ ...action, afterSequence: 1 }));
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'), {
+    items: [{ kind: 'reference', id: 'memory-display', revision: 1, reference: {
+      mode: 'draw', conversationId: 'primary', businessDate: '2026-11-20', version: 2,
+      state: 'declined', card: null, actions, messages: [{ messageId: 'invite', revision: 1, sequence: 1 }],
+    } }],
+  }, {
+    db, messages: { getMessageAtRevision: () => ({ speaker: 'system', revision: { content: '[心跳唤醒]', attachments: [] } }) } as never,
+  }) as { items: Array<{ blocks: Array<{ id: string; text: string }> }> };
+  const displayed = feed.items[0]!.blocks.filter(block => block.id.startsWith('action:'));
+  assert.deepEqual(displayed.map(({ id, text }) => [id, text]), [
+    ['action:2', '写记忆 · 已完成。'],
+    ['action:3', '修订记忆 · 已完成。'],
+  ]);
+});
+
 test('reference write recovers the confirmed source result and retries only the display association', async t => {
   const { db, root } = makeDb();
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });

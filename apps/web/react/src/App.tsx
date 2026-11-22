@@ -9,7 +9,6 @@ import { AccessControls } from './AccessControls'
 import { AccountSettings } from './AccountSettings'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
 import AlbumPanel from './AlbumPanel'
-import HeartbeatChatCard from './HeartbeatChatCard'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
 import { CallInvites } from './CallInvites'
@@ -386,7 +385,7 @@ function AssistantReply({ parts, client, copy, selectionMode, selected }: {
   const tokens = parts.reduce((total, part) => total + (part.tokens ?? 0), 0)
   return (
     <div className="mb-8 w-[75%] pl-[2em]" data-reply-turn={first.turnId}>
-      {(!selectionMode || first.pending) && (first.turnId || running || first.steps?.length) ? <Thinking m={last}
+      {!first.heartbeat && (!selectionMode || first.pending) && (first.turnId || running || first.steps?.length) ? <Thinking m={last}
         onExpand={first.turnId ? () => client.loadTurnDetails(first.turnId!) : undefined}
         onStop={running && first.turnId ? () => void client.stopTurn(first.turnId!) : undefined} /> : null}
       {!first.pending && <>
@@ -407,7 +406,7 @@ function AssistantReply({ parts, client, copy, selectionMode, selected }: {
           })}
         </div>
         {!selectionMode && <>
-          {first.turnId && <SurfacedMemories turnId={first.turnId} client={client} />}
+          {first.turnId && !first.heartbeat && <SurfacedMemories turnId={first.turnId} client={client} />}
           <div className="mt-2 -ml-1.5 flex items-center">
             <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{last.time}</span>
             {tokens > 0 && <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">约 {tokens.toLocaleString()}</span>}
@@ -637,8 +636,8 @@ export default function App() {
           return <Fragment key={row.key}>
           {m.dateKey && (index === 0 || rows[index - 1]?.parts[0]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
           <div data-message-id={m.system || m.role === 'user' ? m.id : undefined} className="flow-root">
-          {m.heartbeatCardRunId ? <HeartbeatChatCard runId={m.heartbeatCardRunId} label={m.text} /> : m.system
-            ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
+          {m.system
+            ? <p role="status" aria-label="系统消息" className="mx-5 mb-4 whitespace-pre-wrap break-words text-center text-[12px] leading-relaxed text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
