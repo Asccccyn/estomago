@@ -40,5 +40,26 @@ export function readToolActivity(db: Db, registry: CapabilityRegistry | null, tu
       : toolPresentation(registry, event.tool, recovered.get(event.tool_call_id ?? '') ?? {});
     calls.set(key, { ...event, ...presentation, occurred_at: calls.get(key)?.occurred_at ?? event.occurred_at });
   }
-  return [...calls.values()];
+  const activity = [...calls.values()];
+  if (!activity.some(event => event.phase === 'start' && event.tool_call_id && event.attempt_id && event.request_id)) return activity;
+
+  // Older in-call rejections reached the model without a terminal activity
+  // event. Only recover a refusal confirmed by the sent continuation.
+  const findCallRejection = db.prepare(`
+    SELECT 1
+    FROM provider_requests AS request, json_each(request.payload_json, '$.messages') AS message
+    WHERE request.turn_id=? AND request.attempt_id=? AND request.id<>? AND request.sent_at>=?
+      AND message.value ->> 'role' = 'tool' AND message.value ->> 'tool_call_id' = ?
+      AND CASE WHEN json_valid(message.value ->> 'content')
+        THEN json_extract(message.value ->> 'content', '$.error_code')
+      END = 'TOOL_UNAVAILABLE_IN_CALL'
+    LIMIT 1
+  `);
+  return activity.map(event => {
+    if (event.phase === 'start' && event.tool_call_id && event.attempt_id && event.request_id
+        && findCallRejection.get(turnId, event.attempt_id, event.request_id, event.occurred_at, event.tool_call_id)) {
+      return { ...event, phase: 'result', ok: false, error_code: 'TOOL_UNAVAILABLE_IN_CALL' };
+    }
+    return event;
+  });
 }

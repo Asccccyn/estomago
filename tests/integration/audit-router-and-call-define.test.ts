@@ -12,7 +12,7 @@ import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 
-async function fixture(defineDuringCall = false) {
+async function fixture(toolDuringCall?: { name: string; args: Record<string, unknown> }) {
   const root = tempRoot('audit-router-policy-');
   writeApprovedIdentity(root);
   process.env.AUDIT_DS_TOKEN = 'synthetic-only';
@@ -28,9 +28,12 @@ async function fixture(defineDuringCall = false) {
       const tool = payload.messages.findLast((m: any) => m.role === 'tool');
       if (tool) defined = JSON.parse(tool.content);
     }
-    const invoke = defineDuringCall && modelRequests === 1;
+    const invoke = modelRequests === 1 ? toolDuringCall : undefined;
+    if (invoke) {
+      assert.ok(payload.tools?.some((tool: any) => tool.function?.name === invoke.name), 'the model actually received the tool definition');
+    }
     const delta = invoke
-      ? { tool_calls: [{ index: 0, id: 'audit-define', type: 'function', function: { name: 'tool_define', arguments: JSON.stringify({ name: 'wishstar_offer_star' }) } }] }
+      ? { tool_calls: [{ index: 0, id: 'audit-tool-call', type: 'function', function: { name: invoke.name, arguments: JSON.stringify(invoke.args) } }] }
       : { content: '合成审计回复。' };
     const body = 'data: ' + JSON.stringify({ id: 'audit', choices: [{ delta }] }) + '\n\n' +
       'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: invoke ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + '\n\ndata: [DONE]\n\n';
@@ -38,7 +41,7 @@ async function fixture(defineDuringCall = false) {
   }) as typeof fetch;
   const patch = readyRuntimePatch();
   const config = buildConfig({ ...patch,
-    runtime: { ...patch.runtime as object, provider: 'deepseek', tool_schema_mode: 'deferred' },
+    runtime: { ...patch.runtime as object, provider: 'deepseek', tool_schema_mode: toolDuringCall?.name === 'chat_send_voice' ? 'direct' : 'deferred' },
     deepseek: { model: 'deepseek-flash', api_key_env: 'AUDIT_DS_TOKEN', retry_max_attempts_after_initial: 0 },
   });
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
@@ -100,7 +103,7 @@ test('unknown route groups retain a completed response, including a memory ref w
 });
 
 test('normal active phone call rejects defining a non-memory business tool', { timeout: 10000 }, async () => {
-  const f = await fixture(true);
+  const f = await fixture({ name: 'tool_define', args: { name: 'wishstar_offer_star' } });
   try {
     const call = await f.call('POST', '/v1/calls', { call_id: 'audit-phone', conversation_id: 'primary' }, true);
     assert.equal(call.status, 200);
@@ -110,5 +113,45 @@ test('normal active phone call rejects defining a non-memory business tool', { t
     console.log('AUDIT_CALL_DEFINE', JSON.stringify({ modelRequests: f.modelRequests, result: f.defined }));
     assert.equal(f.modelRequests, 2, 'definition result really entered the next model request');
     assert.equal(f.defined?.error_code, 'TOOL_UNAVAILABLE_IN_CALL');
+  } finally { await f.close(); }
+});
+
+test('in-call voice message rejection ends tool activity and remains readable in old turns', { timeout: 10000 }, async () => {
+  const f = await fixture({ name: 'chat_send_voice', args: { text: '合成语音。' } });
+  try {
+    assert.equal((await f.call('POST', '/v1/calls', { call_id: 'audit-phone', conversation_id: 'primary' }, true)).status, 200);
+    const sent = await f.call('POST', '/api/v1/conversations/primary/messages', {
+      content: '通话中请发语音。', client_message_id: 'audit-call-voice',
+    });
+    assert.equal(sent.status, 201);
+    const turnId = sent.body.turn_id as string;
+    await f.host.supervisor.waitIdle();
+    assert.equal(f.modelRequests, 2);
+    assert.equal(f.defined?.error_code, 'TOOL_UNAVAILABLE_IN_CALL');
+
+    const rows = f.host.db.prepare(`
+      SELECT payload_ref FROM runtime_stream_events WHERE turn_id=? AND kind='turn.tool' ORDER BY sequence
+    `).all(turnId) as Array<{ payload_ref: string }>;
+    const events = rows.map(row => JSON.parse(row.payload_ref)).filter(event => event.tool === 'chat_send_voice');
+    assert.deepEqual(events.map(event => event.phase), ['start', 'result']);
+    for (const field of ['tool_call_id', 'request_id', 'attempt_id']) {
+      assert.ok(events[0][field]);
+      assert.equal(events[0][field], events[1][field]);
+    }
+    assert.equal(events[1].ok, false);
+    assert.equal(events[1].error_code, 'TOOL_UNAVAILABLE_IN_CALL');
+    assert.equal(f.host.db.prepare("SELECT 1 FROM messages WHERE turn_id=? AND speaker='assistant' AND kind='voice'").get(turnId), undefined);
+
+    // Recreate the old on-disk shape while keeping the actual sent receipt.
+    f.host.db.prepare(`
+      DELETE FROM runtime_stream_events WHERE turn_id=? AND kind='turn.tool'
+        AND json_extract(payload_ref, '$.tool_call_id')=? AND json_extract(payload_ref, '$.phase')='result'
+    `).run(turnId, events[0].tool_call_id);
+    const activity = await f.call('GET', '/api/v1/turns/' + turnId + '/reasoning');
+    assert.equal(activity.status, 200);
+    const [tool] = activity.body.tools.filter((item: any) => item.tool_call_id === events[0].tool_call_id);
+    assert.equal(tool.phase, 'result');
+    assert.equal(tool.ok, false);
+    assert.equal(tool.error_code, 'TOOL_UNAVAILABLE_IN_CALL');
   } finally { await f.close(); }
 });

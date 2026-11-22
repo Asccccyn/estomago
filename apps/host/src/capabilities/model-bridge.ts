@@ -108,16 +108,14 @@ export class ModelToolBridge {
         payload: { ...identity(), phase: 'start' },
       });
     }
-    // A04（2026-10-24）：通话 memory_only——catalog/define/invoke/直接执行/执行前最后边界
-    // 同一策略（effective name 判定）；仅约束模型发起的调用（ctx.turnId 非空），UI/宿主内部调用不受限
-    if (ctx.turnId && effectiveName !== TURN_COMPLETION_TOOL) {
-      if (this.voiceCallActive(ctx.roomId) && !this.isMemoryOnlyAllowed(effectiveName)) {
-        return { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) };
-      }
-    }
     let result: ToolExecResult;
     try {
-      result = await this.executeInner(name, rawArgs, ctx);
+      // A04：通话门禁沿用同一工具结果出口，已发 start 的拒绝也要结束其生命周期。
+      const blockedInCall = ctx.turnId && effectiveName !== TURN_COMPLETION_TOOL
+        && this.voiceCallActive(ctx.roomId) && !this.isMemoryOnlyAllowed(effectiveName);
+      result = blockedInCall
+        ? { ok: false, output: modelFailure({ error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话期间非记忆业务工具已关闭（memory_only）；挂断后恢复' }) }
+        : await this.executeInner(name, rawArgs, ctx);
     } catch (err) {
       if (visible) {
         this.events?.publish('turn.tool', {
