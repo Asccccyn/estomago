@@ -3,9 +3,9 @@ import type { Options, Query, SDKUserMessage, SDKMessage, SDKRateLimitInfo } fro
 import { createEstSdkMcp, sdkToolName } from './sdk-mcp.ts';
 import { subscriptionAdmission, subscriptionRejected, sdkUsesExtraUsage } from './sdk-subscription.ts';
 import { SdkEventNormalizer } from './sdk-event-normalizer.ts';
-import { ContractError } from './or-contract.ts';
+import { ContractError, ToolNotDispatched } from './or-contract.ts';
 import type { RawStreamEvent, RawUsage, SdkCostEstimate } from '../../../../packages/contracts/src/sdk-events.ts';
-import type { HostToolSpec } from '../capabilities/contracts.ts';
+import type { HostToolSpec, ToolExecResult } from '../capabilities/contracts.ts';
 import type { SdkRunRequest, RunnerRunResult } from './runner.ts';
 import type { OrMessage } from './or-payload.ts';
 import { sha256Hex } from '../util/id.ts';
@@ -136,8 +136,10 @@ export async function runSdkHostQuery(
   // 0 帧 0 派发的准入拒绝错删锚（会话明明未触碰）。
   let sessionReceivedInput = false;
   let nativeAssistant: { uuid: string; message: OrMessage } | undefined;
+  let heartbeatRetainedLength = 0;
   let limit: SDKRateLimitInfo | undefined;
   let failure: string | null = null;
+  let toolAdmissionFailure: string | null = null;
   let sdkDetailError: string | null = null; // P1-10（Codex 审计）：归一化结果携带的具体错误原因（result.errors/error），最终回执不再只剩稳定码
   let businessCompleted = false;
   // Resolved SDK receipts prove native retention, separately from provider input.
@@ -157,6 +159,24 @@ export async function runSdkHostQuery(
   const executing = new Set<string>();
   const observedCalls = new Set<string>();
   const pendingBatch = new Map<string, () => void>();
+  const streamedHeartbeatCalls = new Set<string>();
+  const completeHeartbeatCalls = new Set<string>();
+  let heartbeatBatchStopped = false;
+  let heartbeatBatchSealed = false;
+  const releaseObservedCall = (id: string): void => {
+    observedCalls.add(id);
+    pendingBatch.get(id)?.();
+  };
+  const sealHeartbeatBatch = (): void => {
+    if (!host.observeHeartbeatBatch || !heartbeatBatchStopped || heartbeatBatchSealed || !completeHeartbeatCalls.size
+        || req.abortController.signal.aborted || [...streamedHeartbeatCalls].some(id => !completeHeartbeatCalls.has(id))) return;
+    // Native SDK assistant frames can carry single blocks of the same message.
+    // Wait for the provider message to close before admitting any paired tool.
+    host.observeHeartbeatBatch(messages.slice(lastSentMessages.length), lastSentMessages);
+    heartbeatRetainedLength = messages.length;
+    heartbeatBatchSealed = true;
+    for (const id of completeHeartbeatCalls) releaseObservedCall(id);
+  };
   async function observedAssistantBatch(callId: string): Promise<boolean> {
     if (observedCalls.has(callId)) return true;
     // MCP and stream events are independent SDK surfaces. Do not accept a
@@ -214,25 +234,32 @@ export async function runSdkHostQuery(
       };
     }
     executing.add(id);
+    let result: ToolExecResult;
     try {
-      const result = await host.executeTool(name, args, id, round, messages, argumentSource, terminal || host.captureHeartbeatBatch ? () => ({
+      if (toolAdmissionFailure) throw new ToolNotDispatched(toolAdmissionFailure);
+      result = await host.executeTool(name, args, id, round, messages, argumentSource, terminal || host.captureHeartbeatBatch ? () => ({
         tail: messages.slice(lastSentMessages.length), inFlight: [...executing], sentMessages: lastSentMessages,
       }) : undefined);
-      return { ...result, recordDelivery: delivered => {
-        executing.delete(id);
-        messages.push({role:'tool',tool_call_id:id,content:toolResultContent(delivered)});
-        host.recordToolDelivery?.(id, delivered);
-        if (host.purpose === 'chat' && delivered.ok && delivered.output.saved === true
-            && effectiveToolName(name, args) === 'memory_hold') {
-          savedHoldCalls.add(id);
-        }
-      } };
     } catch (error) {
-      failure = 'TOOL_EXECUTION_OUTCOME_UNKNOWN';
-      messages.push({ role: 'tool', tool_call_id: id, content: '{"error_code":"TOOL_EXECUTION_OUTCOME_UNKNOWN"}' });
-      run?.close();
-      throw error;
+      if (!(error instanceof ToolNotDispatched)) {
+        failure = 'TOOL_EXECUTION_OUTCOME_UNKNOWN';
+        messages.push({ role: 'tool', tool_call_id: id, content: '{"error_code":"TOOL_EXECUTION_OUTCOME_UNKNOWN"}' });
+        run?.close();
+        throw error;
+      }
+      toolAdmissionFailure ??= error.code;
+      failure ??= error.code;
+      result = { ok: false, output: { error_code: error.code, executed: false } };
     }
+    return { ...result, recordDelivery: delivered => {
+      executing.delete(id);
+      messages.push({ role: 'tool', tool_call_id: id, content: toolResultContent(delivered) });
+      host.recordToolDelivery?.(id, delivered);
+      if (host.purpose === 'chat' && delivered.ok && delivered.output.saved === true
+          && effectiveToolName(name, args) === 'memory_hold') {
+        savedHoldCalls.add(id);
+      }
+    } };
   }, host.readImage);
   let releaseInput!: (allowed: boolean) => void;
   const admitted = new Promise<boolean>(resolve => { releaseInput = resolve; });
@@ -246,6 +273,10 @@ export async function runSdkHostQuery(
     await host.beforeModel(messages, round);
     attempts++;
     lastSentMessages = structuredClone(messages);
+    streamedHeartbeatCalls.clear();
+    completeHeartbeatCalls.clear();
+    heartbeatBatchStopped = false;
+    heartbeatBatchSealed = false;
   };
   const options: Options = {
     ...req.options.options, model: host.envelope.model,
@@ -274,6 +305,7 @@ export async function runSdkHostQuery(
       }] }],
       PostToolBatch: [{ hooks: [async input => {
         try {
+          if (toolAdmissionFailure) return { continue: false, stopReason: toolAdmissionFailure };
           const results = [];
           let completed = false;
           for (const call of deferredReview.splice(0)) {
@@ -385,6 +417,7 @@ export async function runSdkHostQuery(
             && stream.content_block.name.startsWith('mcp__est__')) {
             toolIdsByBlock.set(stream.index, stream.content_block.id);
             argumentSources.set(stream.content_block.id, '');
+            if (host.observeHeartbeatBatch) streamedHeartbeatCalls.add(stream.content_block.id);
           } else if (stream.type === 'content_block_delta' && stream.delta.type === 'input_json_delta'
             && typeof stream.delta.partial_json === 'string') {
             const toolId = toolIdsByBlock.get(stream.index);
@@ -462,10 +495,16 @@ export async function runSdkHostQuery(
       if (event.type === 'assistant' && normalized.some(output => output.kind === 'complete_message' && output.channel === 'main')) {
         for (const block of event.message.content) {
           if (block.type === 'tool_use') {
-            observedCalls.add(block.id);
-            pendingBatch.get(block.id)?.();
+            if (host.observeHeartbeatBatch) completeHeartbeatCalls.add(block.id);
+            else releaseObservedCall(block.id);
           }
         }
+        sealHeartbeatBatch();
+      }
+      if (host.observeHeartbeatBatch && event.type === 'stream_event' && !event.parent_tool_use_id
+          && event.event.type === 'message_stop') {
+        heartbeatBatchStopped = true;
+        sealHeartbeatBatch();
       }
       if (event.type === 'result') finishInput();
     }
@@ -484,6 +523,17 @@ export async function runSdkHostQuery(
   }
 
   function finish(outcome: RunnerRunResult['outcome']): RunnerRunResult {
+    if (host.captureHeartbeatBatch && outcome !== 'completed') {
+      // Failed or stopped output does not become dialogue. Keep already published
+      // complete batches and the real tool protocol, even on the rollback branch.
+      const retainedLength = Math.max(lastSentMessages.length, heartbeatRetainedLength);
+      for (let index = messages.length - 1; index >= retainedLength; index--) {
+        const packet = messages[index]!;
+        if (packet.role !== 'assistant') continue;
+        if (Array.isArray(packet.tool_calls) && packet.tool_calls.length) packet.content = '';
+        else messages.splice(index, 1);
+      }
+    }
     const answered = new Set(messages.filter(m => m.role === 'tool').map(m => m.tool_call_id));
     if (outcome !== 'completed' || businessCompleted) {
       for (const m of messages) for (const call of (m.tool_calls ?? []) as Array<{ id: string }>) {

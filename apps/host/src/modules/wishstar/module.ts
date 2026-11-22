@@ -258,6 +258,7 @@ export function registerWishstarCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_request_star', baselineOrder: 42, definition: () => WISHSTARREQUESTSTAR_DEFINITION, memoryOnlyAllowed: false, label: '请求开对方的星',
+    heartbeatAction: 'star_request',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_request_star', input, ctx),
     toModel: (value) => projectWishstarToolResult('wishstar_request_star',value as Record<string,unknown>),
   }));

@@ -38,14 +38,17 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const { db, loop, kind, runId, heartbeat } = input;
   const completed = loop.result.outcome === 'completed' && !loop.result.errorCode;
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
+  const yielded = loop.result.errorCode?.startsWith('KEEPWARM_YIELDED') === true;
   const observed = heartbeat ? db.prepare(`
-    SELECT payload_json, json_extract(context_fingerprint_json, '$.round_no') AS round_no
+    SELECT payload_json
     FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL
       AND (? IS NULL OR id=?)
     ORDER BY rowid DESC LIMIT 1
   `).get(runId,input.recoveredRequestId ?? null,input.recoveredRequestId ?? null) as
-    { payload_json: string | null; round_no: number | null } | undefined : null;
-  const last = loop.finalMessages?.at(-1);
+    { payload_json: string | null } | undefined : null;
+  const sent = observed?.payload_json ? (JSON.parse(observed.payload_json) as { messages?: OrMessage[] }).messages : undefined;
+  const finalMessages = heartbeat ? sent ? loop.finalMessages ?? sent : null : loop.finalMessages;
+  const last = finalMessages?.at(-1);
   const lastText = last?.role === 'assistant' && !(Array.isArray(last.tool_calls) && last.tool_calls.length)
     ? typeof last.content === 'string' ? last.content
       : last.content.filter(block => block.type === 'text').map(block => block.text).join('')
@@ -53,19 +56,12 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const exhausted = heartbeat?.mode === 'exhausted_keepwarm';
   const exhaustedReply = exhausted && completed && Boolean(observed) && lastText?.trim() === '1';
   const missingExhaustedReply = exhausted && completed && !exhaustedReply;
-  const finishedState = (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
+  const finishedState = yielded ? 'interrupted' : (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
   const finishReason = missingExhaustedReply ? 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' : loop.result.errorCode;
-  // A completed first text-only response is the heartbeat's formal reply.
-  // New chat queues behind this commit and only prevents further background dispatches.
-  const talkOnly = heartbeat?.mode === 'draw' && completed && observed?.round_no === 0
-    && input.toolCallsObserved === 0 && Boolean(lastText?.trim()) && loop.lastSentMessages !== null
-    && loop.finalMessages?.length === loop.lastSentMessages.length + 1
-    && !input.isCancelRequested();
-
   // Only the current heartbeat's unobserved card payload can be withheld. Its
   // actual tool call and a protocol-valid same-ID receipt remain in the history.
-  if (heartbeat && loop.finalMessages) {
-    heartbeat.runtime.closeProtocol(runId, loop.finalMessages, loop.lastSentMessages);
+  if (heartbeat) {
+    heartbeat.runtime.closeProtocol(runId, finalMessages ?? [], sent ?? null);
   }
 
   const published = (conn: Db) => conn.prepare(`
@@ -100,25 +96,22 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       });
     }
   };
-  if (input.trajectory && loop.finalMessages !== null) {
+  if (input.trajectory && finalMessages !== null) {
     const publishedEntries = published(db).map((message): ManifestEntry => ({
       id: message.id, revision: message.current_revision, seq: message.sequence, origin: 'dialogue', visible: true,
     }));
     const manifest = [...input.baseManifest, ...publishedEntries, ...loop.toolSeen,
       ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))];
-    const finalMessages = loop.finalMessages;
     let boundary = input.trajectory.forWindow(input.windowId)?.lastBoundary ?? null;
     if (!heartbeat) boundary = tailBoundaryOf(loop.lastSentMessages ?? finalMessages);
-    else if (observed?.payload_json) {
-      const payload = JSON.parse(observed.payload_json) as { messages?: OrMessage[] };
-      if (Array.isArray(payload.messages)) boundary = tailBoundaryOf(payload.messages);
-    }
+    else if (sent) boundary = tailBoundaryOf(sent);
     input.trajectory.replace(input.windowId, finalMessages, boundary, manifest, (conn) => {
       if (heartbeat) {
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
-          hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode, completed, hadSent: Boolean(observed),
-          talkOnly, terminal: terminal(),
+          hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode,
+          completed, hadSent: Boolean(observed),
+          responseOffset: sent?.length, terminal: terminal(),
         });
         if (projection.manifest.length) {
           const known = new Set(manifest.map(entry => entry.id));
@@ -152,6 +145,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   }
   if (heartbeatEvents.length) heartbeat?.runtime.dispatchEvents(heartbeatEvents);
 
+  if (yielded && !heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'noop', result_code: loop.result.errorCode! };
   if (loop.result.outcome !== 'completed') {
     if (input.heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'unknown', result_code: 'HEARTBEAT_CARD_DISPATCH_UNKNOWN' };
     if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };

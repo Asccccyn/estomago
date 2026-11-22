@@ -124,7 +124,11 @@ test('计划写②：update → plan.update（CAS+字段透传）；冲突码如
 
 test('计划写③：complete/cancel → 薄实现入口（plan_id+expected_version）', async () => {
   const calls: string[] = [];
-  const mariposa: MariposaTransport = async (cap) => { calls.push(cap); return { ok: true, result: { plan_id: 'p1', state: 'done' } }; };
+  const mariposa: MariposaTransport = async (cap, payload) => {
+    calls.push(cap);
+    return { ok: true, result: { plan_id: payload.plan_id, version: Number(payload.expected_version) + 1,
+      state: cap === 'plan.complete' ? 'done' : 'cancelled' } };
+  };
   const { tools, db } = makeTools(mariposa);
   const a = await tools.execute('plans_write', { action: 'complete', plan_id: 'p1', expected_version: 3 }, CTX);
   assert.equal(a.ok, true);

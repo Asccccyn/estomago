@@ -2046,4 +2046,9 @@ MIGRATIONS.push({
   sql: 'ALTER TABLE window_toolsets ADD COLUMN tool_summaries_json TEXT;',
 });
 
+MIGRATIONS.push({
+  version: 90, name: 'milestone-write-receipts',
+  sql: 'ALTER TABLE audit_events ADD COLUMN receipt_json TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

@@ -73,7 +73,7 @@ import { keepwarmDispatchGate } from './background-keepwarm-gate.ts';
 import { classifyBackgroundOutcome } from './background-outcome.ts';
 import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
-import { ContractError } from './or-contract.ts';
+import { ContractError, ToolNotDispatched } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
 import { planCarryImages, buildCarryFragment, countCarryImageBlocks } from '../context/carry-images.ts';
 import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
@@ -612,7 +612,7 @@ export class TurnSupervisor {
     const markSent = () => db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
       .run(new Date().toISOString(), attemptIndex, generationId ?? null, requestId);
     const { turnId } = o;
-    if (round === 0 && o.heartbeatMode === 'draw' && turnId && trajectory) {
+    if (round === 0 && (o.heartbeatMode === 'draw' || o.heartbeatMode === 'exhausted_keepwarm') && turnId && trajectory) {
       // Confirm the first invitation and its recoverable prefix together, before publication.
       tx(db, () => {
         markSent();
@@ -627,6 +627,22 @@ export class TurnSupervisor {
     if (o.background?.kind === 'keepwarm') {
       heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
     }
+  }
+
+  private observeHeartbeatBatch(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
+    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>,
+    requestId: string, tail: OrMessage[], sentMessages: OrMessage[], confirmedSeen: ManifestEntry[]): void {
+    const { db, heartbeat, trajectory } = this.d;
+    const { turnId, attemptId, conversationId, windowId, background } = o;
+    if (background?.kind !== 'keepwarm' || !turnId || !trajectory || !heartbeat) return;
+    const eventRows = tx(db, () => {
+      stageHeartbeatCheckpoint(db, { requestId, windowId, turnId, attemptId,
+        batch: { tail, sentMessages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText });
+      return o.heartbeatMode === 'draw'
+        ? heartbeat.publishRepliesInTx({ runId: background.runId, turnId, attemptId, conversationId }, tail, sentMessages.length).eventRows
+        : [];
+    });
+    heartbeat.dispatchEvents(eventRows);
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
@@ -934,6 +950,9 @@ export class TurnSupervisor {
         d.db.prepare("UPDATE provider_requests SET outcome = 'SUPERSEDED_BY_RETRY' WHERE id = ? AND outcome IS NULL").run(prqId);
       }
       if (result.outcome !== 'completed') return failedLoop(result);
+      if (o.heartbeatMode && o.background?.isCancelRequested()) {
+        return failedLoop({ ...result, outcome: 'interrupted', errorCode: 'STOPPED_DURING_RESPONSE' });
+      }
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
         // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
@@ -967,12 +986,8 @@ export class TurnSupervisor {
       pendingAssistantIndex = envelope.messages.length;
       pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
-      if (o.background?.kind === 'keepwarm' && o.turnId && lastSentMessages && d.trajectory) {
-        stageHeartbeatCheckpoint(d.db, {
-          requestId: lastPrqId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId,
-          batch: { tail: envelope.messages.slice(pendingAssistantIndex), sentMessages: lastSentMessages },
-          confirmedSeen: toolSeenActive, heartbeatHostText: o.heartbeatHostText,
-        });
+      if (lastSentMessages) {
+        this.observeHeartbeatBatch(o, lastPrqId, envelope.messages.slice(pendingAssistantIndex), lastSentMessages, toolSeenActive);
       }
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
@@ -1000,7 +1015,7 @@ export class TurnSupervisor {
         // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：
         // 协议链在 provider_requests 留证，后续发布经 catchup 进入下一轮）。
         if (o.background?.yieldRequested?.()) {
-          return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_YIELDED_DURING_TOOLS', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, 'KEEPWARM_YIELDED');
+          return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'KEEPWARM_YIELDED', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, 'KEEPWARM_YIELDED');
         }
         // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为（06 §2，按调用计数）
         if (o.background?.observeToolCall) o.background.observeToolCall();
@@ -1064,8 +1079,9 @@ export class TurnSupervisor {
         // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
         // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
         // 图未随正文携带，模型不得声称已看图）
-        const modelSupportsImages = visionSupportCached(envelope.model) === true;
-        if (exec.ok && exec.imageRefs?.length && !modelSupportsImages) exec = {ok:false,output:{error_code:'MODEL_VISION_UNAVAILABLE',detail:'工具已执行，但当前型号未核实支持图片，图片未交付。'}};
+        if (exec.ok && exec.imageRefs?.length && !await this.modelSupportsImages(envelope.model, transportKind)) {
+          exec = { ok: false, output: { error_code: 'MODEL_VISION_UNAVAILABLE', detail: '工具已执行，但当前型号未核实支持图片，图片未交付。' } };
+        }
         if (exec.ok && batchRanges.length && exec.coverageProjection) {
           exec = { ...exec, ...exec.coverageProjection(batchRanges) };
         }
@@ -1192,6 +1208,9 @@ export class TurnSupervisor {
         completionRequested: () => readTurnCompletion(d.db, o.attemptId, o.turnId) !== null,
         captureCompletionBatch: Boolean(o.turnId && d.trajectory),
         captureHeartbeatBatch: o.background?.kind === 'keepwarm' && Boolean(o.turnId && d.trajectory),
+        ...(o.background?.kind === 'keepwarm' ? { observeHeartbeatBatch: (tail: OrMessage[], sent: OrMessage[]) => {
+          if (requestId) this.observeHeartbeatBatch(o, requestId, tail, sent, toolSeen);
+        } } : {}),
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
         ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId)
@@ -1257,18 +1276,14 @@ export class TurnSupervisor {
         },
         executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource, completionBatch) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
-          if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_TOOL');
-          if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
-          if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
-          if (o.background?.kind === 'keepwarm' && o.turnId && completionBatch && requestId) {
-            stageHeartbeatCheckpoint(d.db, {
-              requestId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId, batch: completionBatch(),
-              confirmedSeen: toolSeen, heartbeatHostText: o.heartbeatHostText,
-            });
-          }
+          if (o.controller.signal.aborted || o.background?.isCancelRequested()) throw new ToolNotDispatched('EXECUTION_CANCELLED');
+          if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ToolNotDispatched('KEEPWARM_SLEEP_WINDOW');
+          if (o.background?.yieldRequested?.()) throw new ToolNotDispatched('KEEPWARM_YIELDED');
           o.background?.observeToolCall?.();
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
-          let executed = await d.tools.execute(name, args, {
+          let executed: ToolExecResult;
+          try {
+          executed = await d.tools.execute(name, args, {
             signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
             argumentSource,
             remainingResultBytes: () => this.remainingToolResultBytes(messages, o.envelope.tools, o.envelope.maxTokens),
@@ -1299,6 +1314,15 @@ export class TurnSupervisor {
               if (o.background?.kind === 'keepwarm' && requestId) markHeartbeatToolStarted(d.db, o.attemptId, requestId, toolCallId);
             } } : {}),
           });
+          } catch (error) {
+            if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
+              executed = { ok: false, output: { error_code: 'IDEMPOTENCY_CONFLICT' } };
+            } else if (o.background && toolDispatch === null) {
+              throw new ToolNotDispatched(error instanceof ContractError ? error.code : 'BACKGROUND_TOOL_ADMISSION_REJECTED');
+            } else {
+              throw error;
+            }
+          }
           const settled = toolDispatch as { id: string; quote: BackgroundToolQuote } | null;
           if (executed.ok && settled?.quote.verifiedFree) settleBackgroundDispatch(d.db, settled.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
           if (executed.ok && batchRanges.length && executed.coverageProjection) {
@@ -1389,6 +1413,16 @@ export class TurnSupervisor {
     const model = this.d.settings?.effectiveOrModel(or.model) ?? or.model;
     const reasoning = this.d.settings?.effectiveReasoning(or.reasoning) ?? or.reasoning;
     return { kind: 'openrouter', model: model!, maxTokens: or.max_output_tokens, reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, model!, null) };
+  }
+
+  private async modelSupportsImages(model: string, kind: string | undefined): Promise<boolean> {
+    const { config, runnerSelection } = this.d;
+    const { base_url: baseUrl, vision_supported_models: declared } = config.openrouter;
+    if (declared.includes(model) || (kind === 'claude-agent-sdk' && ['claude-fable-5-1', 'claude-fable-5-2'].includes(model))) return true;
+    const cached = visionSupportCached(model, baseUrl);
+    if (cached !== null) return cached;
+    return runnerSelection.status === 'ok' && runnerSelection.runner.kind === 'openrouter'
+      && await refreshVisionSupport(baseUrl, model) === true;
   }
 
   private buildPayloadFrom(envelope: OrRequestEnvelope, kind = this.drv()?.kind): Record<string, unknown> {
@@ -3153,20 +3187,7 @@ export class TurnSupervisor {
       let mediaBlockedCode: string | null = null;
       if (d.media) {
         if (tailVoiceBlocked) mediaBlockedCode = 'MEDIA_TRANSCRIPTION_FAILED';
-        else if (orHasImage) {
-          // 2026-10-18：config 人工声明优先于目录发现——图片能力是公开静态事实，
-          // 运行时目录查询在发消息关键路径上失败曾致连续阻断（证据只存进程内存、重启清零）
-          // Fable SDK 订阅型号的视觉输入已由 Anthropic 官方规格确认；不能用 OR
-          // 目录核实 SDK 模型 ID（订阅通道不查询该目录），但 OR/未知型号仍须核实。
-          const declaredVision = d.config.openrouter.vision_supported_models.includes(orEnvelope.model)
-            || (dv?.kind === 'claude-agent-sdk'
-              && (orEnvelope.model === 'claude-fable-5-1' || orEnvelope.model === 'claude-fable-5-2'));
-          let vision: boolean | null = declaredVision ? true : visionSupportCached(orEnvelope.model, d.config.openrouter.base_url);
-          if (vision === null && !declaredVision && d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter') {
-            vision = await refreshVisionSupport(d.config.openrouter.base_url, orEnvelope.model);
-          }
-          if (vision !== true) mediaBlockedCode = 'MODEL_VISION_UNAVAILABLE';
-        }
+        else if (orHasImage && !await this.modelSupportsImages(orEnvelope.model, dv?.kind)) mediaBlockedCode = 'MODEL_VISION_UNAVAILABLE';
       }
       if (mediaBlockedCode !== null) {
         d.logger.warn('media_gate_blocked', { turn_id: turnId, code: mediaBlockedCode, model: orEnvelope.model, has_image: orHasImage });

@@ -42,6 +42,10 @@ export function startHeartbeatAction(db: Db, ctx: ToolExecContext, kind: Heartbe
     const result = (outcome.ok ? outcome.value : outcome.error) as Record<string, unknown>;
     if (outcome.heartbeatReceipt) {
       const receipt = outcome.heartbeatReceipt;
+      if (receipt.replayed) {
+        if (fact.status !== 'committed') db.prepare('DELETE FROM heartbeat_actions WHERE run_id=? AND call_id=?').run(run, call);
+        return;
+      }
       if (fact.status === 'committed' && receipt.status !== 'committed') return;
       db.prepare('UPDATE heartbeat_actions SET action_json=? WHERE run_id=? AND call_id=?')
         .run(JSON.stringify({ ...fact, ...receipt }), run, call);
@@ -124,6 +128,19 @@ function refreshExistingProjection(db: Db, runId: string): void {
     .run(JSON.stringify({ ...projection, version: projection.version + 1, actions }), new Date().toISOString(), prior.id, prior.payload_ref);
 }
 
+/** The manifest committed a local anchor mutation while its Host transaction
+ * was interrupted. Repair only the original action's unresolved receipt. */
+export function recoverHeartbeatAnchorReceipt(db: Db, runId: string, callId: string, receipt: Pick<HeartbeatAction, 'operationId' | 'source'>): void {
+  const row = db.prepare("SELECT action_json FROM heartbeat_actions WHERE run_id=? AND call_id=? AND json_extract(action_json,'$.kind')='anchor_write'")
+    .get(runId, callId);
+  if (typeof row?.action_json !== 'string') return;
+  const action = JSON.parse(row.action_json) as HeartbeatAction;
+  if (action.status !== 'unknown') return;
+  db.prepare('UPDATE heartbeat_actions SET action_json=? WHERE run_id=? AND call_id=?')
+    .run(JSON.stringify({ ...action, ...receipt, status: 'committed' }), runId, callId);
+  refreshExistingProjection(db, runId);
+}
+
 export type HeartbeatContentBinding = { runId: string; callId: string };
 function contentActionKind(ownerType: string): 'post' | 'comment' | 'album' | null {
   return ownerType === 'post' || ownerType === 'comment' ? ownerType : ownerType === 'album_entry' ? 'album' : null;
@@ -175,14 +192,20 @@ export function settleHeartbeatContentReceipt(db: Db, operationId: string, owner
  * only that run's projection and never dispatches another model or write. */
 export function settleHeartbeatMemoryReceipt(db: Db, operationId: string,
   receipt: { memoryId: string; version: number } | null): void {
+  settleHeartbeatMemoryEffect(db, 'memory_hold', operationId,
+    receipt ? { namespace: 'mariposa:memory', id: receipt.memoryId, revision: receipt.version } : null);
+}
+
+export function settleHeartbeatMemoryEffect(db: Db, kind: 'memory_hold' | 'i_write', operationId: string,
+  source: HeartbeatAction['source'] | null): void {
   const rows = db.prepare(`SELECT run_id,call_id,action_json FROM heartbeat_actions
-    WHERE json_extract(action_json,'$.kind')='memory_hold' AND json_extract(action_json,'$.operationId')=?`)
-    .all(operationId) as Array<{ run_id: string; call_id: string; action_json: string }>;
+    WHERE json_extract(action_json,'$.kind')=? AND json_extract(action_json,'$.operationId')=?`)
+    .all(kind, operationId) as Array<{ run_id: string; call_id: string; action_json: string }>;
   for (const row of rows) {
     const action = JSON.parse(row.action_json) as HeartbeatAction;
     if (action.status === 'committed') continue;
-    action.status = receipt ? 'committed' : 'failed';
-    if (receipt) action.source = { namespace: 'mariposa:memory', id: receipt.memoryId, revision: receipt.version };
+    action.status = source ? 'committed' : 'failed';
+    if (source) action.source = source;
     db.prepare('UPDATE heartbeat_actions SET action_json=? WHERE run_id=? AND call_id=?')
       .run(JSON.stringify(action), row.run_id, row.call_id);
     refreshExistingProjection(db, row.run_id);

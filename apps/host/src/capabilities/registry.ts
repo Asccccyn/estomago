@@ -10,6 +10,7 @@ import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecCont
 export type ToolGroup = 'C' | 'D' | 'T';
 
 export type CapabilityParseResult<I> = { ok: true; value: I } | { ok: false; code: string; detail: string };
+export type HeartbeatActionPolicy<I> = HeartbeatActionKind | ((input: I) => HeartbeatActionKind | undefined);
 
 /** 一个已登记能力 = 定义 + 校验 + handler + 唯一模型投影 + 费用声明 + 模式资格（04 §A）。 */
 export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
@@ -31,7 +32,7 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   readonly label: string;
   /** 内部协议工具不发事件（原 SILENT_TOOLS 语义）。 */
   readonly silent: boolean;
-  readonly heartbeatAction?: HeartbeatActionKind;
+  readonly heartbeatAction?: HeartbeatActionPolicy<I>;
   /** 可信费用政策（照搬 quoteBackgroundTool 证据；不以名称推断免费——D40 非背景不强加报价）。 */
   readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   /** 参数校验：用请求窗口的冻结 schema（旧窗原 spec），不用当前新定义替代。 */
@@ -56,7 +57,7 @@ type ErasedDescriptor = {
   readonly memoryOnlyAllowed: boolean;
   readonly label: string;
   readonly silent: boolean;
-  readonly heartbeatAction?: HeartbeatActionKind;
+  readonly heartbeatAction?: HeartbeatActionPolicy<any>;
   readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   readonly parse: (rawArgs: Record<string, unknown>, frozenSpec: HostToolSpec) => CapabilityParseResult<any>;
   readonly run: (input: any, ctx: ToolExecContext) => Promise<CapabilityOutcome<any>>;

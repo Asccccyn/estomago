@@ -10,6 +10,9 @@ export class ContractError extends Error {
   }
 }
 
+/** The host refused admission before the tool's business execution began. */
+export class ToolNotDispatched extends ContractError {}
+
 export function requireThat(ok: boolean, code: string): void {
   if (!ok) throw new ContractError(code);
 }

@@ -470,12 +470,14 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_i_write', baselineOrder: 8, definition: () => MEMORYIWRITE_DEFINITION, memoryOnlyAllowed: true, label: '写 I',
+    heartbeatAction: 'i_write',
     run: (input: Record<string, unknown>, ctx) => svc.memoryIWrite(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_i_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));
   registry.register(toolCapability({
     owner: 'memory',
     id: 'plans_write', baselineOrder: 9, definition: () => PLANSWRITE_DEFINITION, memoryOnlyAllowed: false, label: '写计划',
+    heartbeatAction: 'plan_write',
     run: (input: Record<string, unknown>, ctx) => svc.plansWrite(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('plans_write', input as Record<string, unknown>, value as Record<string, unknown>),
   }));

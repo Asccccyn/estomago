@@ -39,6 +39,7 @@ export function registerIdentityCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'identity',
     id: 'identity_milestone_write', baselineOrder: 34, free: true, definition: () => IDENTITYMILESTONEWRITE_DEFINITION, memoryOnlyAllowed: false, label: '我们的锚点',
+    heartbeatAction: input => input.operation === 'read' ? undefined : 'anchor_write',
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.identityMilestoneWrite(input as never, ctx)),
     toModel: (value) => value,
   }));

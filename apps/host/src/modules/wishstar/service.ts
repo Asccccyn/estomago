@@ -1,6 +1,6 @@
 // modules/wishstar/service.ts（P04.6）：许愿星现行工具组（HTTP 转发面，13 项）。
 // 以 jiaming 身份调用许愿星。写星使用显式业务键，仪式等动作按原请求身份派生。
-import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { HeartbeatReceipt, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 import { starReplyOperationId, starWriteOperationId } from './operation-ids.ts';
 import type { HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
 
@@ -97,6 +97,20 @@ export class WishstarService {
     }
     if (r.status === 0 || r.status === 503) return { ok: false, output: { error_code: 'WISHSTAR_UNAVAILABLE', detail: String((r.body as { detail?: string }).detail ?? '许愿星服务不可用') } };
     if (r.status >= 400) return { ok: false, output: { error_code: `WISHSTAR_${r.status}`, detail: JSON.stringify(r.body).slice(0, 300) } };
+    if (name === 'wishstar_request_star' && ctx.recordHeartbeatReceipt && ctx.toolCallId) {
+      const { id, requester_id, owner_id, status, requested_at } = r.body;
+      if (r.status < 200 || r.status >= 300 || typeof id !== 'string' || !id || id.length > 128
+        || requester_id !== 'jiaming' || owner_id !== 'qiaosheng' || typeof status !== 'string' || status.toLowerCase() !== 'pending') {
+        return { ok: true, output: r.body, heartbeatReceipt: { operationId: ctx.toolCallId, status: 'unknown' } };
+      }
+      // The Superposition endpoint has no caller-key replay contract. Its
+      // returned request ID is the authority for a confirmed creation.
+      const heartbeatReceipt: HeartbeatReceipt = { operationId: `superposition:request:${id}`, status: 'committed', source: {
+        namespace: 'superposition:request', id,
+        ...(typeof requested_at === 'string' && requested_at.length > 0 && requested_at.length <= 256 ? { revision: requested_at } : {}),
+      } };
+      return { ok: true, output: r.body, heartbeatReceipt };
+    }
     return { ok: true, output: r.body };
   }
 

@@ -12,6 +12,8 @@ export type HeartbeatSource = {
   id: string;
   revision: string | number;
   identity: string;
+  /** Authoritative single-media alias of a Moments post. Its object identity survives edits. */
+  mediaIdentity?: string;
   permissionScope: string;
   replay?: 'first_reserved_response';
   selection?: {
@@ -37,7 +39,10 @@ export type HeartbeatProjection = {
 
 // Business receipts are references, not copies of private source prose. They
 // remain independent of the (possibly truncated) model result and chat.
-export const HEARTBEAT_ACTION_KINDS = ['selection', 'star_reply', 'star_write', 'memory_hold', 'memory_update', 'post', 'comment', 'album', 'creation', 'image', 'archive', 'wake', 'chat'] as const;
+export const HEARTBEAT_ACTION_KINDS = [
+  'selection', 'star_reply', 'star_write', 'star_request', 'memory_hold', 'memory_update',
+  'anchor_write', 'plan_write', 'i_write', 'post', 'comment', 'album', 'creation', 'image', 'archive', 'wake', 'chat',
+] as const;
 export type HeartbeatActionKind = (typeof HEARTBEAT_ACTION_KINDS)[number];
 export type HeartbeatAction = {
   operationId: string;
@@ -67,6 +72,8 @@ export function readHeartbeatSource(value: unknown): HeartbeatSource | null {
   if (!source || (!HEARTBEAT_SOURCE_KINDS.some(kind => kind === source.kind) && !isHeartbeatExtensionKind(source.kind))
     || !text(source.namespace) || !text(source.id) || !text(source.identity)
     || !text(source.permissionScope) || !(text(source.revision) || integer(source.revision))
+    || source.mediaIdentity !== undefined && (source.kind !== 'moments' || source.namespace !== 'content'
+      || typeof source.mediaIdentity !== 'string' || !/^mariposa:media:[a-f0-9]{64}$/.test(source.mediaIdentity))
     || source.replay !== undefined && (source.kind !== 'moments' || source.replay !== 'first_reserved_response')) return null;
   const selection = record(source.selection);
   const ids = selection?.attachmentIds;
@@ -84,6 +91,7 @@ export function readHeartbeatSource(value: unknown): HeartbeatSource | null {
   return {
     kind: source.kind as HeartbeatSource['kind'], namespace: source.namespace, id: source.id,
     identity: source.identity, revision: source.revision, permissionScope: source.permissionScope,
+    ...(typeof source.mediaIdentity === 'string' ? { mediaIdentity: source.mediaIdentity } : {}),
     ...(source.replay === 'first_reserved_response' ? { replay: source.replay } : {}),
     ...(selection ? { selection: {
       attachmentIds: ids as string[] | undefined, start: start as number | undefined, end: end as number | undefined,

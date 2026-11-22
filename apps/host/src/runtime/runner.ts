@@ -34,6 +34,8 @@ export type SdkRunRequest = {
     captureCompletionBatch?: boolean;
     /** Preserve observed heartbeat tool packets before any business admission. */
     captureHeartbeatBatch?: boolean;
+    /** Record complete heartbeat text and recovery evidence before native MCP execution. */
+    observeHeartbeatBatch?: (tail: OrMessage[], sent: OrMessage[]) => void;
     beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
     completionRequested?: () => boolean;
     recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;

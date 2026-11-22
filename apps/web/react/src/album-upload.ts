@@ -1,8 +1,54 @@
+import { Hash } from 'fast-sha256'
+
 export type PhotoAlbum = 'important_photos' | 'chat_screenshots'
 export type UploadAlbum = PhotoAlbum | 'stickers' | 'creations'
 
 type UploadRequest = { key: string; album: UploadAlbum; title?: string }
-export type AlbumUpload = UploadRequest & ({ file: File; assetId?: never } | { assetId: string; file?: never })
+export type AlbumUpload = UploadRequest & (
+  { fileDigest: string; file?: File; assetId?: never } | { assetId: string; file?: never; fileDigest?: never }
+)
+
+const albums: ReadonlySet<unknown> = new Set<UploadAlbum>(['important_photos', 'chat_screenshots', 'stickers', 'creations'])
+
+// Store the original request and SHA-256 only, so a reload does not keep a second copy of the file.
+export function albumUploadReceipt(attempt: AlbumUpload): string {
+  const { file, ...receipt } = attempt
+  return JSON.stringify(receipt)
+}
+
+export function readAlbumUploadReceipt(raw: string | null): AlbumUpload | null {
+  try {
+    const saved = JSON.parse(raw ?? 'null') as Record<string, unknown> | null
+    if (!saved || !albums.has(saved.album) || typeof saved.key !== 'string' || !saved.key || saved.key.length > 256) return null
+    const request = { key: saved.key, album: saved.album as UploadAlbum,
+      ...(typeof saved.title === 'string' ? { title: saved.title } : {}) }
+    if (typeof saved.assetId === 'string' && saved.assetId) return { ...request, assetId: saved.assetId }
+    if (typeof saved.fileDigest === 'string' && /^[0-9a-f]{64}$/.test(saved.fileDigest)) return { ...request, fileDigest: saved.fileDigest }
+    return null
+  } catch { return null }
+}
+
+async function digestFile(file: File): Promise<string> {
+  const hash = new Hash()
+  const reader = file.stream().getReader()
+  try {
+    for (;;) {
+      const chunk = await reader.read()
+      if (chunk.done) break
+      hash.update(chunk.value)
+    }
+    return Array.from(hash.digest(), byte => byte.toString(16).padStart(2, '0')).join('')
+  } finally { reader.releaseLock() }
+}
+
+export async function startAlbumUpload(request: UploadRequest, file: File): Promise<AlbumUpload> {
+  return { ...request, file, fileDigest: await digestFile(file) }
+}
+
+export async function reselectAlbumUpload(attempt: AlbumUpload, file: File): Promise<AlbumUpload> {
+  if (attempt.fileDigest !== await digestFile(file)) throw new Error('选中的文件内容与原文件不同。请重选原文件，或结束本次操作。')
+  return { ...attempt, file, fileDigest: attempt.fileDigest }
+}
 
 type AssetReceipt = {
   asset_id?: string
@@ -32,6 +78,7 @@ export async function uploadAlbumEntry(
     asset = (await response.json().catch(() => ({}))) as AssetReceipt
     if (!response.ok) throw failure(`读取资产 ${assetId}`, response, asset.error)
   } else {
+    if (!attempt.file) throw new Error('请重选原文件以核对本次上传。')
     const purpose = attempt.album === 'creations' ? 'creation_work' : attempt.album === 'stickers' ? 'chat_sticker' : 'chat_image'
     const response = await request(`/api/v1/assets?purpose=${purpose}`, {
       method: 'POST',

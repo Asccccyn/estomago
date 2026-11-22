@@ -386,12 +386,12 @@ export class MessageService {
   }
 
   /** Heartbeat display and trajectory association commit in the caller's existing writer transaction. */
-  publishHeartbeatInTx(opts: { conversationId: string; turnId: string; runId: string; part: 'invite' | 'card' | 'decline' | 'ack' | 'reply'; content: string }): MessageDto {
+  publishHeartbeatInTx(opts: { conversationId: string; turnId: string; runId: string; part: 'invite' | 'card' | 'decline' | 'ack' | `reply:${number}`; content: string }): MessageDto {
     const clientId = `heartbeat:${opts.runId}:${opts.part}`;
     const duplicate = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
       .get(opts.conversationId, clientId) as { id: string } | undefined;
     if (duplicate) return this.getMessage(duplicate.id)!;
-    const isReply = opts.part === 'reply';
+    const isReply = opts.part.startsWith('reply:');
     const assistant = isReply || opts.part === 'ack';
     const now = new Date().toISOString();
     const message = this.insertPublicationInTx({

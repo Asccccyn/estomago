@@ -32,13 +32,14 @@ function fixture(t: TestContext, upTo?: number) {
     cards.closeRun(runId);
   };
   const request = (runId: string, operationId: string, id: string) => {
+    const at = new Date(now).toISOString();
     const content = JSON.stringify({ heartbeat_card: { operation_id: operationId } });
     const payload = JSON.stringify({ messages: [{ role: 'tool', tool_call_id: operationId, content }] });
     db.prepare(`
       INSERT INTO provider_requests(id,window_id,purpose,seen_manifest_json,payload_json,background_run_id,dispatch_started_at,created_at)
       VALUES(?,'window','cache_keepalive','[]',?,?,?,?)
-    `).run(id, payload, runId, AT, AT);
-    return () => db.prepare('UPDATE provider_requests SET sent_at=? WHERE id=?').run(AT, id);
+    `).run(id, payload, runId, at, at);
+    return () => db.prepare('UPDATE provider_requests SET sent_at=? WHERE id=?').run(at, id);
   };
   const prepare = (runId: string, cardNumber: number, operationId = 'draw') => {
     const operation = { runId, operationId };
@@ -159,6 +160,40 @@ test('v85 extension migration retains old frozen rows, consumed operations, fore
   assert.equal(cards.begin({ runId: 'extension', businessDate: NEXT_DAY, candidates })?.mode, 'draw');
   assert.equal(cards.claim({ runId:'extension', operationId:'fixture', cardNumber:1 }).status, 'claimed');
   assert.equal(cards.claim({ runId:'extension', operationId:'other', cardNumber:2 }).status, 'already_started');
+});
+
+test('Moments cooldown preserves the post identity and its authoritative media alias across revisions', t => {
+  const { cards, run, end, deliver, advanceDays } = fixture(t);
+  const mediaIdentity = `mariposa:media:${'a'.repeat(64)}`;
+  const legacy: HeartbeatSource = { kind: 'moments', namespace: 'content', id: 'post', revision: 1,
+    identity: mediaIdentity, permissionScope: 'primary' };
+  const edited: HeartbeatSource = { ...legacy, revision: 2, identity: 'content:moments:post', mediaIdentity };
+  const album: HeartbeatSource = { ...legacy, kind: 'album', id: 'entry' };
+  const replacement = { ...edited, revision: 3, mediaIdentity: `mariposa:media:${'b'.repeat(64)}` };
+  const independent = { ...replacement, id: 'independent', identity: 'content:moments:independent' };
+
+  run('day-one');
+  assert.equal(cards.begin({ runId: 'day-one', businessDate: DAY, candidates: [legacy, ...SOURCES.slice(1)] })?.mode, 'draw');
+  deliver('day-one', 1);
+  end('day-one');
+  advanceDays(29);
+  assert.equal(cards.isSourceEligible(edited), false);
+  assert.equal(cards.isSourceEligible(replacement), false);
+  assert.equal(cards.isSourceEligible(album), false);
+  assert.equal(cards.isSourceEligible(independent), true);
+  advanceDays(2);
+  assert.ok(cards.isSourceEligible(edited) && cards.isSourceEligible(album));
+
+  const nextEligibleDate = '2026-12-21';
+  run('aliased-deck');
+  assert.equal(cards.begin({ runId: 'aliased-deck', businessDate: nextEligibleDate, candidates: [edited, album, ...SOURCES.slice(2)] })?.mode, 'unprepared');
+  end('aliased-deck');
+  run('day-two');
+  assert.equal(cards.begin({ runId: 'day-two', businessDate: nextEligibleDate, candidates: [edited, ...SOURCES.slice(1)] })?.mode, 'draw');
+  deliver('day-two', 1);
+  end('day-two');
+  assert.deepEqual(cards.getDeliveredDraw('day-two')?.source, edited);
+  assert.equal(cards.isSourceEligible(album), false);
 });
 
 test('image cards require the materialized images in the actual provider envelope', t => {

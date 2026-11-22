@@ -66,5 +66,9 @@ test('许愿星实际领域 DTO：五种读取、请求定位、所有写分支�
    assert.deepEqual(result.new_response_ids,[]);assert.ok(Array.isArray(result.responses));
   }
   if(name==='wishstar_respond_request')assert.equal((result.request as any).id,requestId);
+  if(name==='wishstar_request_star'){
+   assert.equal(result.id,fixture[name].id);
+   assert.equal(result.status,fixture[name].status);
+  }
  }
 });

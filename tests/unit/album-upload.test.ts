@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { uploadAlbumEntry, type AlbumUpload } from '../../apps/web/react/src/album-upload.ts'
+import { albumUploadReceipt, readAlbumUploadReceipt, reselectAlbumUpload, startAlbumUpload, uploadAlbumEntry,
+  type AlbumUpload } from '../../apps/web/react/src/album-upload.ts'
 
 test('相册直传先确认落正，归类失败后重试沿同一资产和原操作键', async () => {
   const file = new File(['photo fixture'], 'photo.png', { type: 'image/png' })
-  const original: AlbumUpload = { key: 'upload-one', album: 'chat_screenshots', file }
+  const original = await startAlbumUpload({ key: 'upload-one', album: 'chat_screenshots' }, file)
   let attempt: AlbumUpload = original
   const recordAsset = (stored: AlbumUpload) => { attempt = stored }
   const calls: Array<{ url: string; init?: RequestInit }> = []
@@ -51,7 +52,7 @@ test('动图表情直传与相册使用各自用途和集合', async () => {
     assert.deepEqual(JSON.parse(String(init?.body)), { asset_id: 'asset-gif' })
     return Response.json({ id: 'entry-sticker' }, { status: 201 })
   }
-  await uploadAlbumEntry({ key: 'gif-one', album: 'stickers', file }, () => {}, request)
+  await uploadAlbumEntry(await startAlbumUpload({ key: 'gif-one', album: 'stickers' }, file), () => {}, request)
   assert.deepEqual(urls, ['/api/v1/assets?purpose=chat_sticker', '/api/v1/content/albums/stickers/entries'])
 })
 
@@ -66,7 +67,7 @@ test('现有代码作品不可经收藏入口归类为表情', async () => {
 
 test('作品导入归类失败时保留原文件身份及标题，重试不重复上传', async () => {
   const file = new File(['<!doctype html><html><body>fixture</body></html>'], 'fixture.html', { type: 'text/html' })
-  let attempt: AlbumUpload = { key: 'work-one', album: 'creations', title: file.name, file }
+  let attempt = await startAlbumUpload({ key: 'work-one', album: 'creations', title: file.name }, file)
   let uploads = 0, entries = 0
   const request: typeof fetch = async (input, init) => {
     const url = String(input)
@@ -86,4 +87,29 @@ test('作品导入归类失败时保留原文件身份及标题，重试不重�
   await uploadAlbumEntry(attempt, record, request)
   assert.equal(uploads, 1)
   assert.equal(entries, 2)
+})
+
+test('尚未确认资产的恢复记录绑定原文件内容、用途与键，刷新不用保存文件字节', async () => {
+  const file = new File(['abc'], 'fixture.html', { type: 'text/html' })
+  const original = await startAlbumUpload({ key: 'original-key', album: 'creations', title: file.name }, file)
+  const saved = readAlbumUploadReceipt(albumUploadReceipt(original))!
+  assert.deepEqual(saved, { key: 'original-key', album: 'creations', title: file.name,
+    fileDigest: 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad' })
+  await assert.rejects(reselectAlbumUpload(saved, new File(['xyz'], file.name, { type: file.type })), /与原文件不同/)
+  await assert.rejects(uploadAlbumEntry(saved, () => {}, async () => assert.fail('must reselect before sending any request')), /重选原文件/)
+  const renamed = new File(['abc'], 'renamed.html', { type: 'text/html' })
+  const reselected = await reselectAlbumUpload(saved, renamed)
+  const urls: string[] = []
+  await uploadAlbumEntry(reselected, () => {}, async (url, init) => {
+    urls.push(String(url))
+    if (urls.length === 1) {
+      assert.equal(new Headers(init?.headers).get('Idempotency-Key'), saved.key)
+      assert.equal(init?.body, renamed)
+      return Response.json({ asset_id: 'original-asset', mime_type: 'text/html', state: 'available', m_sync_state: 'synced' })
+    }
+    assert.equal(new Headers(init?.headers).get('Idempotency-Key'), `${saved.key}:entry`)
+    assert.deepEqual(JSON.parse(String(init?.body)), { work_asset_id: 'original-asset', work_kind: 'html', title: file.name })
+    return Response.json({ id: 'one-entry' })
+  })
+  assert.deepEqual(urls, ['/api/v1/assets?purpose=creation_work', '/api/v1/content/creations'])
 })

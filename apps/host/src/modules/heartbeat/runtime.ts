@@ -16,7 +16,7 @@ import { readTurnCompletion } from '../../runtime/turn-completion.ts';
 import { genId } from '../../util/id.ts';
 import type { ArchiveService } from '../archives/service.ts';
 import { OidoSourceRepository } from '../oido/source-repository.ts';
-import { canDrawHeartbeat, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode } from './service.ts';
+import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode } from './service.ts';
 import { HeartbeatSources } from './sources.ts';
 import { heartbeatActions } from './actions.ts';
 
@@ -53,10 +53,10 @@ type HeartbeatFinish = {
   attemptId: string;
   hostText: string;
   finalMessages: OrMessage[];
+  responseOffset?: number;
   mode: HeartbeatMode;
   completed: boolean;
   hadSent: boolean;
-  talkOnly?: boolean;
   terminal?: NonNullable<HeartbeatProjection['terminal']>;
 };
 
@@ -190,8 +190,8 @@ export class HeartbeatRuntime {
         }
         if (!this.cards.startDispatch({ ...operation, providerRequestId })) throw new ContractError('HEARTBEAT_DISPATCH_NOT_ADMITTED');
       };
-      if (deck.source.namespace === 'content' && (deck.source.kind === 'reserved_note' || deck.source.kind === 'album')) {
-        const path = '/api/v1/content/' + (deck.source.kind === 'reserved_note' ? 'future-notes/' : 'album-entries/') + encodeURIComponent(deck.source.id);
+      const path = heartbeatContentSourcePath(deck.source);
+      if (path) {
         await this.guardSourceMutation(path, async () => {
           // A timed-out source deletion can still be completing. Wait for its
           // authoritative result instead of dispatching from a racing read.
@@ -212,7 +212,7 @@ export class HeartbeatRuntime {
   }
 
   async guardSourceMutation<T>(path: string, operation: () => Promise<T>): Promise<T> {
-    if (!/^\/api\/v1\/content\/(future-notes|album-entries)\/[^/?]+$/.test(path)) return operation();
+    if (!heartbeatContentKindAtPath(path)) return operation();
     const prior = this.sourceGates.get(path) ?? Promise.resolve();
     let release!: () => void;
     const next = new Promise<void>(resolve => { release = resolve; });
@@ -241,7 +241,7 @@ export class HeartbeatRuntime {
       FROM background_runs b JOIN attempts a ON a.turn_id=b.turn_id WHERE b.id=?`).get(runId) as
       { conversation_id: string; turn_id: string; attempt_id: string } | undefined;
     const mode = this.cards.getRun(runId)?.mode;
-    if (run && mode === 'draw' && hostText) {
+    if (run && (mode === 'draw' || mode === 'exhausted_keepwarm') && hostText) {
       this.publishObserved(runId, run, 'invite', hostText);
     }
     for (const operationId of cardOperations(messages)) {
@@ -255,29 +255,51 @@ export class HeartbeatRuntime {
 
   private publishObserved(runId: string, run: { conversation_id: string; turn_id: string; attempt_id: string },
     part: 'invite' | 'card', content: string): void {
-    const row = tx(this.db, () => {
-      const existing = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
-        .get(run.conversation_id, `heartbeat:${runId}:${part}`);
-      if (existing) return null;
-      const message = this.messages.publishHeartbeatInTx({ runId, conversationId: run.conversation_id, turnId: run.turn_id, part, content });
-      return this.events.persistInTx('message.published', { conversationId: run.conversation_id,
-        turnId: run.turn_id, attemptId: run.attempt_id, entityRef: message.id, entityRevision: 1, payload: { message } });
-    });
-    if (row) this.events.dispatchRow(row);
+    const scope = { runId, conversationId: run.conversation_id, turnId: run.turn_id, attemptId: run.attempt_id };
+    const { event } = tx(this.db, () => this.publishInTx(scope, part, content));
+    if (event) this.events.dispatchRow(event);
+  }
+
+  private publishInTx(scope: Pick<HeartbeatFinish, 'runId' | 'conversationId' | 'turnId' | 'attemptId'>,
+    part: Parameters<MessageService['publishHeartbeatInTx']>[0]['part'], content: string) {
+    const { runId, conversationId, turnId, attemptId } = scope;
+    const existing = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
+      .get(conversationId, `heartbeat:${runId}:${part}`);
+    const message = this.messages.publishHeartbeatInTx({ runId, conversationId, turnId, part, content });
+    const event = existing ? null : this.events.persistInTx('message.published', { conversationId,
+      turnId, attemptId, entityRef: message.id, entityRevision: 1, payload: { message } });
+    return { message, event };
+  }
+
+  /** Publish only complete main-channel text from the current response, in wire order. */
+  publishRepliesInTx(scope: Pick<HeartbeatFinish, 'runId' | 'conversationId' | 'turnId' | 'attemptId'>,
+    tail: OrMessage[], start: number): { manifest: ManifestEntry[]; eventRows: StreamEventRow[] } {
+    const manifest: ManifestEntry[] = [];
+    const eventRows: StreamEventRow[] = [];
+    for (const [offset, packet] of tail.entries()) {
+      if (packet.role !== 'assistant') continue;
+      const text = plainText(packet);
+      if (!text.trim()) continue;
+      const { message, event } = this.publishInTx(scope, `reply:${start + offset}`, text);
+      manifest.push({ id: message.id, revision: 1, seq: message.sequence, origin: 'dialogue', visible: true });
+      if (event) eventRows.push(event);
+    }
+    return { manifest, eventRows };
   }
 
   closeProtocol(runId: string, messages: OrMessage[], _sentMessages: OrMessage[] | null): void {
     this.liveImages.delete(runId);
+    // Media projection can replace the original card result with an error.
+    // The draw ledger, not the presence of card text in the final packet, owns settlement.
+    this.cards.closeRun(runId);
     for (const operationId of cardOperations(messages)) {
       const operation = { runId, operationId };
       const draw = this.cards.getDraw(operation);
       if (!draw || draw.status === 'delivered') continue;
-      if (draw.status === 'dispatching') this.cards.recordDelivery({ ...operation, outcome: 'unknown' });
-      if (draw.status === 'prepared' || draw.status === 'claimed') this.cards.recordDelivery({ ...operation, outcome: 'not_dispatched' });
       const index = messages.findIndex(message => message.role === 'tool' && message.tool_call_id === operationId);
       if (index >= 0) messages[index] = {
         ...messages[index]!,
-        content: JSON.stringify({ error_code: 'HEARTBEAT_CARD_NOT_CONFIRMED', delivery: draw.status === 'dispatching' || draw.status === 'unknown' ? 'unknown' : 'not_dispatched' }),
+        content: JSON.stringify({ error_code: 'HEARTBEAT_CARD_NOT_CONFIRMED', delivery: draw.status === 'unknown' ? 'unknown' : 'not_dispatched' }),
       };
     }
   }
@@ -324,14 +346,11 @@ export class HeartbeatRuntime {
     const last = input.finalMessages.at(-1);
     const text = input.completed && last?.role === 'assistant' ? plainText(last) : '';
     const publish = (part: Parameters<MessageService['publishHeartbeatInTx']>[0]['part'], content: string): void => {
-      const existing = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
-        .get(input.conversationId, `heartbeat:${input.runId}:${part}`);
-      const message = this.messages.publishHeartbeatInTx({ ...input, part, content });
-      if (part === 'ack' || part === 'reply') {
+      const { message, event } = this.publishInTx(input, part, content);
+      if (part === 'ack') {
         manifest.push({ id: message.id, revision: 1, seq: message.sequence, origin: 'dialogue', visible: true });
       }
-      if (!existing) eventRows.push(this.events.persistInTx('message.published', { conversationId: input.conversationId,
-        turnId: input.turnId, attemptId: input.attemptId, entityRef: message.id, entityRevision: 1, payload: { message } }));
+      if (event) eventRows.push(event);
     };
     publish('invite', input.hostText);
     if (run.mode === 'exhausted_keepwarm') {
@@ -340,11 +359,19 @@ export class HeartbeatRuntime {
     }
     if (run.mode !== 'draw') return result;
     const delivered = this.cards.getDeliveredDraw(input.runId);
-    const decline = input.completed && !delivered && readTurnCompletion(this.db, input.attemptId, input.turnId) === 'noop';
     if (delivered) publish('card', `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
+    if (input.completed && input.responseOffset !== undefined && last?.role === 'assistant'
+        && !(Array.isArray(last.tool_calls) && last.tool_calls.length)) {
+      const speech = this.publishRepliesInTx(input, input.finalMessages.slice(input.responseOffset), input.responseOffset);
+      manifest.push(...speech.manifest);
+      eventRows.push(...speech.eventRows);
+    }
+    const talked = input.completed && !delivered && Boolean(this.db.prepare(`SELECT 1 FROM messages
+      WHERE turn_id=? AND speaker='assistant' AND client_message_id LIKE ?`).get(input.turnId, `heartbeat:${input.runId}:reply:%`));
+    const decline = input.completed && !delivered && !talked && !this.cards.hasClaimedDraw(input.runId)
+      && readTurnCompletion(this.db, input.attemptId, input.turnId) === 'noop';
     if (decline) publish('decline', '[心跳唤醒] 本轮未抽卡');
     const actions = heartbeatActions(this.db, input.runId);
-    if ((delivered || input.talkOnly) && text.trim()) publish('reply', text);
     const refs = this.db.prepare(`
       SELECT id, current_revision, sequence, speaker, client_message_id FROM messages WHERE turn_id=? AND published_at IS NOT NULL ORDER BY sequence
     `).all(input.turnId) as Array<{ id: string; current_revision: number; sequence: number; speaker: string; client_message_id: string | null }>;
@@ -354,7 +381,7 @@ export class HeartbeatRuntime {
     const projection: HeartbeatProjection = {
       mode: 'draw', conversationId: input.conversationId, businessDate: run.businessDate, version: 2,
       state: delivered ? refs.some(message => message.speaker === 'assistant') ? 'drawn' : 'drawn_no_comment'
-        : input.talkOnly ? 'talked' : decline ? 'declined' : 'interrupted',
+        : talked ? 'talked' : decline ? 'declined' : 'interrupted',
       card: delivered ? { number: delivered.cardNumber, source: delivered.source } : null,
       messages: refs.map(projectionRef),
       ...(delivered?.source.kind === 'reserved_note' ? { reservedReplyMessages: afterReveal.map(projectionRef) } : {}),

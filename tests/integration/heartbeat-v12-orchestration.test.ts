@@ -8,6 +8,7 @@ import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import type { MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
+import { WishstarClient } from '../../apps/host/src/integrations/wishstar/client.ts';
 import { HeartbeatCards, type HeartbeatSource } from '../../apps/host/src/modules/heartbeat/service.ts';
 import { heartbeatBusinessDate, type HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { HeartbeatSources, type CardPayload } from '../../apps/host/src/modules/heartbeat/sources.ts';
@@ -19,6 +20,7 @@ import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { decorateMomentResponse } from '../../apps/host/src/server/routes/content-moments.ts';
+import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { readHeartbeatProjection } from '../../packages/contracts/src/heartbeat.ts';
 import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
@@ -34,7 +36,7 @@ const usage = {
 };
 type WireMessage = { role: string; content: unknown; tool_call_id?: string };
 type Wire = { messages: WireMessage[]; tools: unknown[] };
-type Reply = { text: string } | { tool: string; id: string; args: Record<string, unknown> } | { disconnect: true } | { crash: true };
+type Reply = { text: string } | { tool: string; id: string; args: Record<string, unknown>; speech?: string } | { disconnect: true } | { crash: true };
 const asMessage = (text: string): Reply => ({ text });
 const draw = (number: number): Reply => ({ tool: 'heartbeat_draw', id: `draw-${number}`, args: { card_number: number } });
 const noop = (): Reply => ({ tool: 'background_complete', id: 'decline-no-text', args: { outcome: 'noop' } });
@@ -47,7 +49,7 @@ function text(message: WireMessage | undefined): string {
 }
 
 async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, sourceStatus: CardPayload['status'] = 'available', retryMax = 0,
-  startup?: { root?: string; reopen?: boolean; maxModelRequests?: number }) {
+  startup?: { root?: string; reopen?: boolean; maxModelRequests?: number; wishstar?: boolean }) {
   t.mock.method(HeartbeatSources.prototype, 'choose', async () => candidates);
   t.mock.method(HeartbeatSources.prototype, 'resolve', async (source: HeartbeatSource): Promise<CardPayload> =>
     sourceStatus === 'available'
@@ -63,6 +65,7 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     if ('crash' in response) throw Error('fixture crash did not interrupt the process');
     if ('disconnect' in response) throw Object.assign(new Error('ECONNRESET after fixture receives request'), { code: 'ECONNRESET' });
     const delta = 'text' in response ? { content: response.text } : {
+      ...(response.speech ? { content: response.speech } : {}),
       tool_calls: [{ index: 0, id: response.id, type: 'function', function: { name: response.tool, arguments: JSON.stringify(response.args) } }],
     };
     const body = Readable.from([
@@ -80,6 +83,7 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     openrouter: { model: MODEL },
     background: { keepwarm: { sleep_window: { enabled: false } },
       ...(startup?.maxModelRequests === undefined ? {} : { autonomous: { max_model_requests_per_run: startup.maxModelRequests } }) },
+    ...(startup?.wishstar ? { wishstar: { enabled: true } } : {}),
     windows: { model_context_capacity: 150_000 },
   });
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner });
@@ -295,6 +299,7 @@ test(ACK_CRASH_TEST, async t => {
         assert.equal(target.dueAtMs, Date.parse(String(recorded?.dispatch_started_at)) + 50 * 60_000);
       }
       assert.equal(ctx.runtimeMessages(checkpoint.runId).filter(message => message.speaker === 'assistant' && message.content === '1').length, count);
+      assert.equal(ctx.runtimeMessages(checkpoint.runId).filter(message => message.speaker === 'system' && message.content.includes('请回复 1 保温')).length, 1);
       assert.equal(ctx.host.events.replayPage(0, 'primary').filter(event => event.kind === 'message.published' && event.entity_ref === checkpoint.messageId).length, count);
       assert.equal(ctx.host.db.prepare('SELECT count(*) AS n FROM provider_requests WHERE background_run_id=? AND sent_at IS NOT NULL').get(checkpoint.runId)?.n, 1);
       assert.equal(ctx.projections().n, 1, 'only the earlier draw has a Moments projection');
@@ -305,7 +310,7 @@ test(ACK_CRASH_TEST, async t => {
       const request = ctx.host.db.prepare("SELECT seen_manifest_json FROM provider_requests WHERE purpose='chat' ORDER BY rowid DESC LIMIT 1")
         .get() as { seen_manifest_json: string };
       assert.equal((JSON.parse(request.seen_manifest_json) as Array<{ id: string }>).filter(entry => entry.id === checkpoint.messageId).length, count);
-      assert.equal(ctx.wire[0]!.messages.filter(message => message.role === 'user' && text(message).includes('请回复 1 保温')).length, count);
+      assert.equal(ctx.wire[0]!.messages.filter(message => message.role === 'user' && text(message).includes('请回复 1 保温')).length, 1);
       assert.equal(ctx.wire[0]!.messages.filter(message => message.role === 'assistant' && text(message) === '1').length, count);
       if (committed) {
         const invite = ctx.wire[0]!.messages.findIndex(message => message.role === 'user' && text(message).includes('请回复 1 保温'));
@@ -320,6 +325,31 @@ test(ACK_CRASH_TEST, async t => {
       if (!reopened) fs.rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+test('heartbeat publishes mixed-packet text and a final reply around a real tool send in order', async t => {
+  const ctx = await fixture(t);
+  await ctx.chat('建立当前会话');
+  ctx.elapsed();
+  const speech = ['先去查工具。', '查好后再说一句。', '这句经工具发送。', '最后再说一句。'];
+  ctx.replies.push(
+    { tool: 'tool_define', id: 'define-chat', args: { name: 'chat_send_text' }, speech: speech[0] },
+    { tool: 'chat_send_text', id: 'send-text', args: { text: speech[2], idempotency_key: 'send-once' }, speech: speech[1] },
+    asMessage(speech[3]!),
+  );
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(run.result_code, 'complete:done');
+  assert.equal(ctx.cards.getDeliveredDraw(run.id), null);
+  const { db, messages } = ctx.host;
+  const ids = db.prepare("SELECT id FROM messages WHERE turn_id=? AND speaker='assistant' ORDER BY sequence").all(run.turn_id);
+  assert.deepEqual(ids.map(row => messages.getMessage(String(row.id))?.revision.content), speech);
+  const projection = readHeartbeatProjection(JSON.parse(String(db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref)));
+  assert.equal(projection?.state, 'talked');
+  assert.deepEqual(projection?.messages.filter(ref => ids.some(row => row.id === ref.messageId)).map(ref => ref.messageId), ids.map(row => row.id));
+  await ctx.chat('接着说');
+  const replayed = ctx.wire.at(-1)!.messages.filter(message => message.role === 'assistant').map(text);
+  for (const ordinary of [speech[0], speech[1], speech[3]]) assert.equal(replayed.filter(line => line === ordinary).length, 1);
 });
 
 test('T40: an incomplete candidate set ends without a request or a fake reply', async t => {
@@ -484,6 +514,69 @@ test('heartbeat feed preserves a memory creation and reports its edits by outcom
     { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
   assert.deepEqual(feed.items[0]?.blocks.filter(block => ['写记忆', '修订记忆'].includes(block.source_label)).map(block => block.text),
     ['修订记忆 · 已完成。']);
+});
+
+test('silent heartbeat projects four committed domain actions and omits anchor read and replay', async t => {
+  const root = tempRoot('heartbeat-domain-actions-');
+  const privateText = '合成私有正文';
+  const requestedAt = '2026-11-22T02:00:00Z';
+  const starCalls = t.mock.method(WishstarClient.prototype, 'forward', async (method: string, path: string) => {
+    assert.equal(method, 'POST');
+    assert.equal(path, '/api/requests');
+    return { status: 200, body: { id: 'req-fixture', requester_id: 'jiaming', owner_id: 'qiaosheng', status: 'pending', requested_at: requestedAt } };
+  });
+  const ctx = await fixture(t, CARDS, 'available', 0, { root, maxModelRequests: 8, wishstar: true });
+  const { db, identity, messages, heartbeat } = ctx.host;
+  const manifestPath = identity.manifestPath();
+  const { manifest } = identity.loadManifest();
+  const anchorFile = 'memory-anchors-v1.md';
+  fs.writeFileSync(path.join(root, 'identity', anchorFile), '既有合成锚点');
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, memory_anchors_ref: anchorFile, memory_anchors_hash: sha256Hex('既有合成锚点') }));
+  makeFixtureToolsResident(db, ['heartbeat_draw', 'background_complete', 'identity_milestone_write', 'plans_write', 'memory_i_write']);
+  await ctx.chat('建立现有聊天窗');
+
+  const remote = (heartbeat!.sources as unknown as { external: { memory: { transport: MariposaTransport } } }).external.memory;
+  remote.transport = async (name, args) => {
+    assert.equal(args.content, privateText);
+    assert.ok(args.operation_id);
+    if (name === 'plan.create') return { ok: true, result: { plan_id: 'plan-fixture', version: 1, state: 'planned' } };
+    assert.equal(name, 'i.item.create');
+    return { ok: true, result: { item_id: 'i-fixture', revision: 1 } };
+  };
+  const prices = Object.fromEntries(['plans_write', 'memory_i_write', 'wishstar_request_star'].map(name => [name, { max_cost_micro_usd: 1 }]));
+  db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,?)")
+    .run(JSON.stringify(prices), new Date().toISOString());
+  const anchor = { operation: 'add', text: privateText, change_reason: '合成记录', idempotency_key: 'fixture-anchor' };
+  ctx.elapsed();
+  ctx.replies.push(draw(1),
+    { tool: 'identity_milestone_write', id: 'anchor-read', args: { operation: 'read' } },
+    { tool: 'identity_milestone_write', id: 'anchor-write', args: anchor },
+    { tool: 'identity_milestone_write', id: 'anchor-replay', args: anchor },
+    { tool: 'plans_write', id: 'plan-write', args: { action: 'create', title: '合成计划', text: privateText } },
+    { tool: 'memory_i_write', id: 'i-write', args: { action: 'create', text: privateText } },
+    { tool: 'wishstar_request_star', id: 'star-request', args: {} }, noop());
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(run.state, 'noop', run.result_code);
+  assert.equal(starCalls.mock.callCount(), 1);
+  assert.equal(identity.readMilestone().version, 'memory-anchors-v2');
+  const outbox = db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get();
+  const payload = String(outbox?.payload_ref);
+  assert.equal(payload.includes(privateText), false);
+  const projection = readHeartbeatProjection(JSON.parse(payload));
+  assert.ok(projection);
+  assert.deepEqual(projection.actions?.map(action => [action.kind, action.status, action.source?.namespace, action.source?.id, action.source?.revision]), [
+    ['selection', 'committed', undefined, undefined, undefined],
+    ['anchor_write', 'committed', 'host:identity', 'memory-anchors', 'memory-anchors-v2'],
+    ['plan_write', 'committed', 'mariposa:plan', 'plan-fixture', 1],
+    ['i_write', 'committed', 'mariposa:i_item', 'i-fixture', 1],
+    ['star_request', 'committed', 'superposition:request', 'req-fixture', requestedAt],
+  ]);
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
+    { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
+    { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
+  assert.deepEqual(feed.items[0]?.blocks.filter(block => block.text.endsWith(' · 已完成。')).map(block => block.source_label),
+    ['更新我们的锚点', '写计划', '更新 I', '请求对方开星']);
 });
 
 const ACTION_CRASH_TEST = 'heartbeat: a committed memory action is projected on restart without replaying the model';

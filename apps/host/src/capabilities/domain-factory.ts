@@ -7,9 +7,8 @@
 import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import { validateArgsAgainstSchema } from './validation.ts';
 import type { Db } from '../db/connection.ts';
-import type { HeartbeatActionKind } from '../../../../packages/contracts/src/heartbeat.ts';
 import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecContext, ToolExecResult } from './contracts.ts';
-import type { CapabilityDescriptor } from './registry.ts';
+import type { CapabilityDescriptor, HeartbeatActionPolicy } from './registry.ts';
 
 export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   id: string;
@@ -24,7 +23,7 @@ export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   memoryOnlyAllowed: boolean;
   label: string;
   silent?: boolean;
-  heartbeatAction?: HeartbeatActionKind;
+  heartbeatAction?: HeartbeatActionPolicy<I>;
   run: (input: I, ctx: ToolExecContext) => Promise<CapabilityOutcome<O> | ToolExecResult> | CapabilityOutcome<O> | ToolExecResult;
   /** 唯一模型投影（owner 拥有；输入=内部成功结果，与旧外层 modelResult(effectiveName,args,output) 同输入）。 */
   toModel: (value: O, input: I) => Record<string, unknown>;

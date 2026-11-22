@@ -48,6 +48,17 @@ export function defaultObservedSdkVersion(): string | null {
   }
 }
 
+export type MilestoneRevision = { file: string; version: string; hash: string; byteSize: number; entries?: number };
+export type MilestoneWriteReceipt = {
+  operationId: string;
+  fingerprint: string;
+  operation: 'write' | 'add' | 'revise' | 'remove';
+  reason: string;
+  written: MilestoneRevision;
+  heartbeat?: { runId: string; callId: string };
+};
+type MilestoneCommit = (written: MilestoneRevision) => MilestoneWriteReceipt;
+
 export type IdentityManifestFile = {
   display_name: string;
   spec_version: string;
@@ -57,6 +68,8 @@ export type IdentityManifestFile = {
   approved_source_hash: string | null;
   memory_anchors_ref?: string | null;
   memory_anchors_hash?: string | null;
+  /** Last committed model mutation. Updated atomically with the anchor slot. */
+  milestone_write_receipt?: MilestoneWriteReceipt;
   i_version: string | null;
   i_hash: string | null;
   i_snapshot_ref: string | null; // F04：I 快照文件引用（与 i_hash 成对，缺一即阻断）
@@ -325,7 +338,7 @@ export class IdentityService {
    *  新版写新文件（v(n+1) 追加，旧版留档不删=可回滚），manifest 正文槽原子更新；
    *  正文槽不参与 contextFingerprint——当前窗继续旧冻结副本，下一新窗自动带新版（她裁定，
    *  同 §7.1 桶/I 中途修改口径）。只允许 longterm-milestones-v<N>.md 文件名；失败即抛错不落半状态。 */
-  updateMilestone(newText: string): { file: string; version: string; hash: string; byteSize: number } {
+  updateMilestone(newText: string, commit?: MilestoneCommit): MilestoneRevision {
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING: 里程碑更新需要已批准的 manifest');
     const current = this.milestoneRef(manifest);
@@ -336,9 +349,11 @@ export class IdentityService {
     }
     const file = `${version}.md`;
     fs.writeFileSync(path.join(this.paths.identityDir, file), newText, { flag: 'wx', mode: 0o600 });
-    const hash = sha256Hex(newText);
-    this.saveMilestoneRef(manifest, current.split, file, hash, version);
-    return { file, version, hash, byteSize: Buffer.byteLength(newText, 'utf8') };
+    const written = { file, version, hash: sha256Hex(newText), byteSize: Buffer.byteLength(newText, 'utf8') };
+    const receipt = commit?.(written);
+    this.saveMilestoneRef(receipt ? { ...manifest, milestone_write_receipt: receipt } : manifest,
+      current.split, file, written.hash, version);
+    return written;
   }
 
   /** 线上已有组合文件的版本链仍可按原槽回滚。拆出的锚点只允许回滚锚点版本。 */
@@ -398,7 +413,8 @@ export class IdentityService {
 
   /** 行级操作（极简）：add=末尾加一条（一行）；revise=改第 item 条；remove=删第 item 条。
    *  其他行原样（行数组最小编辑）；沿用 updateMilestone 版本链/留档/manifest 原子更新。 */
-  applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null): { file: string; version: string; hash: string; byteSize: number; entries: number } {
+  applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null,
+    commit?: MilestoneCommit): MilestoneRevision & { entries: number } {
     const current = this.readMilestone();
     const lines = current.text.replace(/\r\n/g, '\n').split('\n');
     const entries = IdentityService.entryLines(current.text);
@@ -419,8 +435,9 @@ export class IdentityService {
       }
     }
     const next = lines.join('\n');
-    const written = this.updateMilestone(next);
-    return { file: written.file, version: written.version, hash: written.hash, byteSize: written.byteSize, entries: IdentityService.entryLines(next).length };
+    const count = IdentityService.entryLines(next).length;
+    const written = this.updateMilestone(next, commit ? result => commit({ ...result, entries: count }) : undefined);
+    return { ...written, entries: count };
   }
 
 

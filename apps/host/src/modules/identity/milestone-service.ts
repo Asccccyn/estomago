@@ -1,11 +1,22 @@
 // modules/identity/milestone-service.ts（P04.8）：identity_milestone_write 用例（与 Mariposa I 分开）。
-// 原 HostToolExecutor 方法逐字迁移：原版本与条目化语义保持；幂等键查 audit_events；
-// I 槽不参与指纹——当前窗继续旧冻结副本，下一新窗自动带新版。
 import type { Db } from '../../db/connection.ts';
-import type { IdentityService } from '../../identity/service.ts';
+import { tx } from '../../db/connection.ts';
+import type { IdentityService, MilestoneWriteReceipt } from '../../identity/service.ts';
 import { IdentityService as IdentityServiceStatic } from '../../identity/service.ts';
 import { sha256Hex } from '../../util/id.ts';
-import type { ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { HeartbeatReceipt, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import { recoverHeartbeatAnchorReceipt } from '../heartbeat/actions.ts';
+
+function auditId(operationId: string): string {
+  return `aud_${sha256Hex(operationId).slice(0, 24)}`;
+}
+
+function anchorHeartbeatReceipt(receipt: MilestoneWriteReceipt): HeartbeatReceipt {
+  const { operationId, written } = receipt;
+  return { operationId, status: 'committed', source: {
+    namespace: 'host:identity', id: written.version.slice(0, written.version.lastIndexOf('-v')), revision: written.version,
+  } };
+}
 
 export class IdentityMilestoneService {
   private readonly db: Db;
@@ -42,38 +53,94 @@ export class IdentityMilestoneService {
     if (needText && (typeof args.text !== 'string' || args.text.length === 0)) {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', detail: `${op} 必须带 text` } };
     }
-    const idemKey = `milestone:${ctx.turnId ?? 'noturn'}:${ctx.requestId}:${args.idempotency_key}`;
-    const prior = this.db.prepare("SELECT scope, result FROM audit_events WHERE who = 'jiaming' AND what = 'identity_milestone_write' AND detail_ref = ? ORDER BY created_at DESC LIMIT 1").get(idemKey) as { scope: string | null; result: string } | undefined;
-    if (prior) return { ok: true, output: { saved: true, version: prior.scope ?? null, duplicate: true } };
-    let written: { file: string; version: string; hash: string; byteSize: number; entries?: number };
+    const { idempotency_key: key, change_reason: reason } = args;
+    const identity = this.identity;
+    const operationId = `milestone:v2:${sha256Hex(JSON.stringify(['jiaming', 'identity_milestone_write', key]))}`;
+    const item = op === 'revise' || op === 'remove' ? args.item ?? null : null;
+    const entryText = op === 'add' || op === 'revise' ? args.text!.replace(/[\r\n]+/g, ' ').trim() : null;
+    const text = op === 'write' ? args.text! : entryText;
+    const overwrite = op === 'write' && args.confirm_overwrite === true;
+    const fingerprint = sha256Hex(JSON.stringify([op, item, text, overwrite, reason]));
     try {
-      if (op === 'write') {
-        // Compare a multiset: renumbering is harmless; losing one of two equal
-        // entries is still a deletion. Only comparison strips the ordinal.
-        const content = (line: string) => line.replace(/^\s*\d+[.、）)]\s*/, '');
-        const remaining = IdentityServiceStatic.entryLines(args.text!).map(e => content(e.line));
-        const missing = IdentityServiceStatic.entryLines(this.identity.readMilestone().text).filter(e => {
-          const at = remaining.indexOf(content(e.line));
-          if (at < 0) return true;
-          remaining.splice(at, 1);
-          return false;
-        });
-        if (missing.length && args.confirm_overwrite !== true) {
-          return { ok: false, output: { error_code: 'MILESTONE_OVERWRITE_CONFIRMATION_REQUIRED',
+      const write = (): ToolExecResult | null => tx(this.db, () => {
+        // The manifest rename proves the file commit even if the audit
+        // transaction was interrupted. Commit that recovery before replacing the marker.
+        const last = identity.loadManifest().manifest?.milestone_write_receipt;
+        if (last && this.auditReceipt(last)) {
+          if (last.heartbeat) recoverHeartbeatAnchorReceipt(this.db, last.heartbeat.runId, last.heartbeat.callId, anchorHeartbeatReceipt(last));
+          return null;
+        }
+        const previous = this.db.prepare('SELECT receipt_json FROM audit_events WHERE id=?').get(auditId(operationId));
+        if (typeof previous?.receipt_json === 'string') {
+          const receipt = JSON.parse(previous.receipt_json) as MilestoneWriteReceipt;
+          if (receipt.fingerprint !== fingerprint) return { ok: false, output: { error_code: 'MILESTONE_IDEMPOTENCY_CONFLICT',
+            detail: '这个操作键已用于另一项锚点改动。请先核对原操作，要执行新改动时再使用新键。' } };
+          return this.success(receipt, ctx, true);
+        }
+        const legacy = this.previousLegacyWrite(ctx, key);
+        if (legacy) return { ok: false, output: { error_code: 'MILESTONE_LEGACY_RECEIPT_UNVERIFIABLE',
+          detail: `旧版已有此键的提交记录${legacy.scope ? `（${legacy.scope}）` : ''}，无法从旧回执核验本次参数。请先用 read 核对，确认是新操作才换键。` } };
+        if (op === 'write' && !overwrite) {
+          // Compare a multiset: renumbering is harmless, losing a duplicate is still a deletion.
+          const content = (line: string) => line.replace(/^\s*\d+[.、）)]\s*/, '');
+          const remaining = IdentityServiceStatic.entryLines(args.text!).map(e => content(e.line));
+          const missing = IdentityServiceStatic.entryLines(identity.readMilestone().text).filter(e => {
+            const at = remaining.indexOf(content(e.line));
+            if (at < 0) return true;
+            remaining.splice(at, 1);
+            return false;
+          });
+          if (missing.length) return { ok: false, output: { error_code: 'MILESTONE_OVERWRITE_CONFIRMATION_REQUIRED',
             detail: `新版遗漏以下条目：${missing.map(e => e.line).join('\n')}\n保留这些内容，或显式 confirm_overwrite=true。旧窗无此参数时使用已支持的 add/revise/remove；否则保留待写正文并按现有流程换窗。` } };
         }
-        written = this.identity.updateMilestone(args.text!);
-      } else {
-        const r = this.identity.applyMilestoneEntryOp(op, op === 'add' ? null : (typeof args.item === 'number' ? args.item : 0), op === 'remove' ? null : args.text ?? null);
-        written = { file: r.file, version: r.version, hash: r.hash, byteSize: r.byteSize, entries: r.entries };
-      }
+        const heartbeat = ctx.recordHeartbeatReceipt && ctx.backgroundRunId && ctx.toolCallId
+          ? { runId: ctx.backgroundRunId, callId: ctx.toolCallId } : undefined;
+        const commit = (written: MilestoneWriteReceipt['written']): MilestoneWriteReceipt =>
+          ({ operationId, fingerprint, operation: op, reason: reason.slice(0, 200), written, ...(heartbeat ? { heartbeat } : {}) });
+        const written = op === 'write' ? identity.updateMilestone(args.text!, commit) : identity.applyMilestoneEntryOp(op, item, text, commit);
+        const receipt = commit(written);
+        this.auditReceipt(receipt);
+        return this.success(receipt, ctx, false);
+      });
+      let result: ToolExecResult | null;
+      do { result = write(); } while (result === null);
+      return result;
     } catch (err) {
+      if (identity.loadManifest().manifest?.milestone_write_receipt?.operationId === operationId) {
+        return { ok: false, output: { error_code: 'MILESTONE_WRITE_OUTCOME_UNKNOWN',
+          detail: '锚点可能已提交。请使用相同参数和原操作键重试以读取原回执。' } };
+      }
       return { ok: false, output: { error_code: 'MILESTONE_WRITE_FAILED', detail: String((err as Error).message).slice(0, 200) } };
     }
-    this.db.prepare('INSERT INTO audit_events(id, who, what, scope, result, detail_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
-      `aud_${sha256Hex(idemKey + written.version).slice(0, 24)}`, 'jiaming', 'identity_milestone_write', written.version, `ok:${op}:${written.byteSize}B:${args.change_reason.slice(0, 200)}`, idemKey, new Date().toISOString(),
-    );
-    return { ok: true, output: { saved: true, operation: op, version: written.version, file: written.file, byte_size: written.byteSize, ...(written.entries !== undefined ? { entries: written.entries } : {}), effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版' } };
   }
 
+  private previousLegacyWrite(ctx: ToolExecContext, key: string): {scope: string | null} | undefined {
+    const prefix = ctx.turnId ? `milestone:${ctx.turnId}:` : `milestone:noturn:${ctx.requestId}:`;
+    const rows = this.db.prepare(`SELECT scope, substr(detail_ref, ?) AS prior_key FROM audit_events
+      WHERE who='jiaming' AND what='identity_milestone_write' AND receipt_json IS NULL AND substr(detail_ref,1,?)=?
+      ORDER BY rowid DESC`).all(prefix.length + 1, prefix.length, prefix) as Array<{scope: string | null; prior_key: string}>;
+    return rows.find(({ prior_key }) => (ctx.turnId ? prior_key.slice(prior_key.indexOf(':') + 1) : prior_key) === key);
+  }
+
+  private auditReceipt(receipt: MilestoneWriteReceipt): boolean {
+    const { operationId, written, reason, operation } = receipt;
+    const inserted = this.db.prepare(`INSERT INTO audit_events(id, who, what, scope, result, detail_ref, created_at, receipt_json)
+      VALUES (?, 'jiaming', 'identity_milestone_write', ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING`).run(
+      auditId(operationId), written.version, `ok:${operation}:${written.byteSize}B:${reason}`,
+      operationId, new Date().toISOString(), JSON.stringify(receipt),
+    );
+    return Number(inserted.changes) === 1;
+  }
+
+  private success(receipt: MilestoneWriteReceipt, ctx: ToolExecContext, duplicate: boolean): ToolExecResult {
+    const { written, operation } = receipt;
+    const heartbeatReceipt: HeartbeatReceipt = { ...anchorHeartbeatReceipt(receipt), ...(duplicate ? { replayed: true } : {}) };
+    const result: ToolExecResult = { ok: true, output: { saved: true, operation, version: written.version, file: written.file,
+      byte_size: written.byteSize, ...(written.entries !== undefined ? { entries: written.entries } : {}),
+      effective: 'next_window', note: '当前窗继续旧版；下一扇新窗自动带新版', ...(duplicate ? { duplicate: true } : {}) },
+      ...(ctx.recordHeartbeatReceipt ? { heartbeatReceipt } : {}) };
+    if (!duplicate) ctx.recordHeartbeatReceipt?.(heartbeatReceipt);
+    ctx.recordCommittedToolReceipt?.(result);
+    return result;
+  }
 }

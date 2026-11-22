@@ -49,7 +49,8 @@ export async function executeRegisteredCapability<I, O>(
   // 背景工具准入记账（照搬 admitBackgroundTool：背景 run 缺准入=合同错误；非背景不查价——D40）
   if (ctx.backgroundRunId && !ctx.beforeBackgroundTool) throw new ContractError('BACKGROUND_TOOL_ADMISSION_MISSING');
   if (ctx.beforeBackgroundTool) ctx.beforeBackgroundTool(descriptor.quote(host.db, checked.value));
-  const recordHeartbeatAction = startHeartbeatAction(host.db, ctx, descriptor.heartbeatAction, checked.value);
+  const action = typeof descriptor.heartbeatAction === 'function' ? descriptor.heartbeatAction(checked.value) : descriptor.heartbeatAction;
+  const recordHeartbeatAction = startHeartbeatAction(host.db, ctx, action, checked.value);
   let outcome: CapabilityOutcome<O>;
   try {
     outcome = await descriptor.run(checked.value, recordHeartbeatAction ? {

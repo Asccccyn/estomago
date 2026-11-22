@@ -182,7 +182,11 @@ test('FA-F03 known same-key content conflict becomes a paired tool error and doe
   if(isHeartbeat(p)&&++n===1)return response(toolCallBody([{id:'one',name:'chat_send_text',args:JSON.stringify({text:'original publication',idempotency_key:'same'})},{id:'conflict',name:'chat_send_text',args:JSON.stringify({text:'different publication',idempotency_key:'same'})}]));return response(chatBody(n?'1':'seed'));
  },now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{run}=readySleepBoundaryRun(ctx,now);const result=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(result.outcome,'completed');
- const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;assert.equal(bg.published_message_count,1);assert.ok(bg.trajectory_committed_at);
+ const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;assert.equal(bg.published_message_count,2);assert.ok(bg.trajectory_committed_at);
+ const speech = ctx.db.prepare(`SELECT r.content FROM messages m JOIN message_revisions r
+   ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.turn_id=? AND m.speaker='assistant' ORDER BY m.sequence`)
+   .all(bg.turn_id).map(row => row.content);
+ assert.deepEqual(speech, ['original publication', '1']);
  assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE turn_id=?').get(bg.turn_id)as any).state,'completed');
  const tr=ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!;completeProtocol(tr.messages);
  const conflict=tr.messages.find((m:any)=>m.role==='tool'&&m.tool_call_id==='conflict')as any;assert.equal(JSON.parse(conflict.content).error_code,'IDEMPOTENCY_CONFLICT');

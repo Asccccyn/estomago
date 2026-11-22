@@ -59,7 +59,10 @@ export type ToolExecContext = {
 };
 
 /** Owner-proven write identity and phase. Never part of model JSON output. */
-export type HeartbeatReceipt = Pick<import('../../../../packages/contracts/src/heartbeat.ts').HeartbeatAction, 'operationId' | 'status' | 'source'>;
+export type HeartbeatReceipt = Pick<import('../../../../packages/contracts/src/heartbeat.ts').HeartbeatAction, 'operationId' | 'status' | 'source'> & {
+  /** A receipt of an earlier write returned to this call by its owner. */
+  replayed?: true;
+};
 export type ToolExecResult = { activatedTool?: HostToolSpec; ok: boolean; output: Record<string, unknown>; heartbeatReceipt?: HeartbeatReceipt; seenAdditions?: ReadonlyArray<SeenRef>; coverageAdditions?: readonly CoverageRange[]; coverageProjection?: ToolCoverageProjection; /** RE-05：随工具结果可携带的内部图引用（est asset_id）——宿主在发送边界按型号图像能力决定是否物化为原生图块；不进模型 JSON 正文 */ imageRefs?: string[] };
 
 // Host-only billing metadata. It is never added to tool schemas or model output.

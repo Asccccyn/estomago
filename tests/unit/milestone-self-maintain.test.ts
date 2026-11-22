@@ -88,7 +88,7 @@ test('updateMilestone：正文槽不是里程碑文件 → 拒绝（不动 manif
   assert.throws(() => svc.updateMilestone('x'), /IDENTITY_SLOT_NOT_MILESTONE/);
 });
 
-test('identity_milestone_write 工具：写入+审计+幂等（同键重试只写一版）', async () => {
+test('identity_milestone_write 工具：跨请求并发同键共享原回执，异参拒绝', async () => {
   const root = tempRoot('ms-tool-');
   writeApprovedIdentity(root, { seedProbes: false });
   seedMilestone(root);
@@ -98,7 +98,10 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
   const args = { operation: 'write' as const, confirm_overwrite: true, text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' }; // DBG-08：operation 必填显式
-  const r1 = await tools.execute('identity_milestone_write', { ...args }, ctx);
+  const [r1, r2] = await Promise.all([
+    tools.execute('identity_milestone_write', { ...args }, ctx),
+    tools.execute('identity_milestone_write', { ...args }, { ...ctx, requestId: 'req-2' }),
+  ]);
   assert.equal(r1.ok, true);
   assert.equal((r1.output as { version: string }).version, 'longterm-milestones-v2');
   assert.equal((r1.output as { effective: string }).effective, 'next_window');
@@ -108,14 +111,56 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   assert.equal(aud[0]!.scope, 'longterm-milestones-v2');
   assert.ok(aud[0]!.result.includes('补充 2026-10-17'));
   // 同幂等键重试：不写 v3，返回 duplicate
-  const r2 = await tools.execute('identity_milestone_write', { ...args }, ctx);
-  assert.equal(r2.ok, true);
-  assert.equal((r2.output as { duplicate: boolean }).duplicate, true);
+  assert.deepEqual(r2, { ...r1, output: { ...r1.output, duplicate: true } });
+  const changed = await tools.execute('identity_milestone_write', { ...args, text: '合成异参' }, { ...ctx, requestId: 'req-2' });
+  assert.equal(changed.ok, false);
+  assert.equal(changed.output.error_code, 'MILESTONE_IDEMPOTENCY_CONFLICT');
+  assert.equal(svc.readMilestone().text, args.text);
   assert.equal(fs.existsSync(path.join(paths.identityDir, 'longterm-milestones-v3.md')), false, '幂等重试不产生新版本');
   // 不同幂等键：写 v3
   const r3 = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'op-2' }, ctx);
   assert.equal((r3.output as { version: string }).version, 'longterm-milestones-v3');
   db.close();
+});
+
+test('manifest 已提交但审计事务丢失时补记原回执，旧键不再写入', async t => {
+  const root = tempRoot('ms-lost-receipt-');
+  writeApprovedIdentity(root, { seedProbes: false });
+  seedMilestone(root);
+  const { db } = makeDb(root);
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const svc = new IdentityService(buildConfig({}), makePaths(root));
+  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
+  const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
+  const args = { operation: 'add', text: '合成条目', change_reason: '合成原因', idempotency_key: 'recover-anchor' };
+  const exec = db.exec.bind(db);
+  const seam = t.mock.method(db, 'exec', (sql: string) => {
+    if (sql === 'COMMIT') throw Error('fixture: audit commit was interrupted');
+    exec(sql);
+  });
+  const lost = await tools.execute('identity_milestone_write', args, ctx);
+  seam.mock.restore();
+  assert.equal(lost.output.error_code, 'MILESTONE_WRITE_OUTCOME_UNKNOWN');
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v2');
+  const audit = () => db.prepare("SELECT scope, detail_ref FROM audit_events WHERE what='identity_milestone_write' ORDER BY rowid").all();
+  assert.equal(audit().length, 0);
+
+  // Advance the manifest before reusing the old operation, so recovery must
+  // preserve the earlier receipt across the next version.
+  await tools.execute('identity_milestone_write', { ...args, text: '另一项合成条目', idempotency_key: 'next-anchor' }, { ...ctx, requestId: 'req-2' });
+  const recovered = await tools.execute('identity_milestone_write', args, { ...ctx, requestId: 'req-3' });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.output.duplicate, true);
+  assert.equal(recovered.output.entries, 2);
+  assert.equal(recovered.output.version, 'longterm-milestones-v2');
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v3');
+  assert.deepEqual(audit().map(r => r.scope), ['longterm-milestones-v2', 'longterm-milestones-v3']);
+
+  db.prepare("INSERT INTO audit_events(id,who,what,scope,result,detail_ref,created_at) VALUES('legacy','jiaming','identity_milestone_write','longterm-milestones-v1','ok:add:1B:旧回执','milestone:t1:req-old:legacy:key','2026-11-21T00:00:00Z')").run();
+  const legacy = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'legacy:key' }, { ...ctx, requestId: 'req-4' });
+  assert.equal(legacy.output.error_code, 'MILESTONE_LEGACY_RECEIPT_UNVERIFIABLE');
+  assert.match(String(legacy.output.detail), /longterm-milestones-v1/);
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v3');
 });
 
 test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async () => {

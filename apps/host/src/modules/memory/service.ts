@@ -16,7 +16,7 @@ import { windowCoverage, type CoverageRange } from '../../memory-surfacing/windo
 import { memoryCoverageProjection } from './coverage-projection.ts';
 import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
-import { settleHeartbeatMemoryReceipt } from '../heartbeat/actions.ts';
+import { settleHeartbeatMemoryEffect, settleHeartbeatMemoryReceipt } from '../heartbeat/actions.ts';
 import { memoryHoldOperationId } from './hold-operation-id.ts';
 
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
@@ -29,6 +29,12 @@ function iWriteFailureIsUnknown(result: Extract<MariposaCallResult, { ok: false 
   return phase === 'recover' && (
     httpStatus === 401 || httpStatus === 403 || httpStatus === 423 || code === 'IDEMPOTENCY_CONFLICT'
   );
+}
+
+function revisionSource(namespace: string, id: unknown, revision: unknown): HeartbeatReceipt['source'] {
+  if (typeof id !== 'string' || !id || id.length > 256
+    || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return;
+  return { namespace, id, revision };
 }
 
 /** WP4：conversation_read 的可见消息行（owner 真实消息/已发布 assistant） */
@@ -987,7 +993,11 @@ export class MemoryToolsService {
     const iArgs = { action, content, itemId, expectedRevision: expected, restoreRevision, changeReason, relations,
       ...(informedByRevision !== undefined ? { informedByRevision } : {}) };
     const effectId = this.reviews.openEffect({ reviewId: ctx.activeReviewId, turnId: ctx.turnId, windowId: ctx.windowId, kind: 'i_write', operationId, toolCallId: String(ctx.toolCallId ?? ''), seenSequence: ctx.seenSequence, argsJson: JSON.stringify(iArgs) });
-    const settle = (state: 'committed' | 'failed_resolved' | 'unknown'): void => this.reviews.settleEffect(effectId, state, state === 'committed', null);
+    ctx.recordHeartbeatReceipt?.({ operationId, status: 'unknown' });
+    const unknownOutcome = (): ToolExecResult => {
+      this.reviews.settleEffect(effectId, 'unknown', false, null);
+      return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN', operation_id: operationId, note: '结果未知：操作已持久（跨重启按原身份恢复收口）；不要用新身份重做同一写入。' } };
+    };
     try {
       if (action === 'create') {
         r = await m.iItemCreate({ content, ...(changeReason ? { changeReason } : {}), ...(relations ? { relations } : {}), operationId });
@@ -997,16 +1007,20 @@ export class MemoryToolsService {
         r = await m.iItemRestore({ itemId, restoreRevision, ...(Array.isArray(args.relations) ? { relations: args.relations } : {}), expectedRevision: expected, ...(changeReason ? { changeReason } : {}), operationId });
       }
     } catch {
-      settle('unknown');
-      return { ok: false, output: { error_code: 'I_WRITE_OUTCOME_UNKNOWN', operation_id: operationId, note: '结果未知：操作已持久（跨重启按原身份恢复收口）；不要用新身份重做同一写入。' } };
+      return unknownOutcome();
     }
     if (!r.ok) {
-      const unknown = iWriteFailureIsUnknown(r, 'submit');
-      settle(unknown ? 'unknown' : 'failed_resolved');
-      return { ok: false, output: { error_code: unknown ? 'I_WRITE_OUTCOME_UNKNOWN' : `I_${r.code}`, ...(unknown ? { operation_id: operationId } : {}) } };
+      if (iWriteFailureIsUnknown(r, 'submit')) return unknownOutcome();
+      this.reviews.settleEffect(effectId, 'failed_resolved', false, null);
+      return { ok: false, output: { error_code: `I_${r.code}` } };
     }
-    settle('committed');
-    return { ok: true, output: { note: 'I 已更新（数据写入，修订链留痕）。', action, ...r.result as Record<string, unknown> } };
+    const source = revisionSource('mariposa:i_item', r.result.item_id, r.result.revision);
+    if (!source || (action !== 'create' && source.id !== itemId)) return unknownOutcome();
+    const heartbeatReceipt: HeartbeatReceipt = { operationId, status: 'committed', source };
+    this.reviews.settleEffect(effectId, 'committed', true, null, null,
+      () => ctx.recordHeartbeatReceipt?.(heartbeatReceipt));
+    return { ok: true, output: { note: 'I 已更新（数据写入，修订链留痕）。', action, ...r.result },
+      ...(ctx.recordHeartbeatReceipt ? { heartbeatReceipt } : {}) };
   }
 
 
@@ -1028,6 +1042,7 @@ export class MemoryToolsService {
       return { ok: false, output: { error_code: 'TOOL_ARG_REQUIRED', error: 'create 必须带 title' } };
     }
     const opId = `es-pw-${sha256Hex(`${ctx.turnId ?? ctx.requestId}:${ctx.toolCallId ?? ''}:${action}`).slice(0, 40)}`;
+    ctx.recordHeartbeatReceipt?.({ operationId: opId, status: 'unknown' });
     let r: Awaited<ReturnType<MariposaClient['planCreate'] | MariposaClient['planUpdate'] | MariposaClient['planSetState']>>;
     try {
       if (action === 'create') {
@@ -1057,7 +1072,13 @@ export class MemoryToolsService {
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
       return { ok: false, output: { error_code: unknown ? 'PLANS_WRITE_OUTCOME_UNKNOWN' : `PLANS_${r.code}` } };
     }
-    return { ok: true, output: { note: '计划已更新（数据写入）。', action, ...r.result as Record<string, unknown> } };
+    const source = revisionSource('mariposa:plan', r.result.plan_id, r.result.version);
+    if (!source || (action !== 'create' && source.id !== planId)) {
+      return { ok: false, output: { error_code: 'PLANS_WRITE_OUTCOME_UNKNOWN' } };
+    }
+    const heartbeatReceipt: HeartbeatReceipt = { operationId: opId, status: 'committed', source };
+    return { ok: true, output: { note: '计划已更新（数据写入）。', action, ...r.result },
+      ...(ctx.recordHeartbeatReceipt ? { heartbeatReceipt } : {}) };
   }
 
 
@@ -1256,8 +1277,12 @@ export class MemoryToolsService {
       // R2-M04：I 写按原身份原样重放（M 领域原子幂等从回执恢复原成功/结构化拒绝）
       if (e.kind === 'i_write') {
         const out = await this.replayUnknownIWrite(e.operationId, e.argsJson);
-        if (out === 'committed') { this.reviews.settleEffect(e.id, 'committed', true, null); resolved++; continue; }
-        if (out === 'failed') { this.reviews.settleEffect(e.id, 'failed_resolved', false, null); resolved++; continue; }
+        if (out !== 'unknown') {
+          this.reviews.settleEffect(e.id, out ? 'committed' : 'failed_resolved', Boolean(out), null, null,
+            () => settleHeartbeatMemoryEffect(this.db, 'i_write', e.operationId, out));
+          resolved++;
+          continue;
+        }
         stillUnknown++; continue; // 仍未知：保持 unknown 并阻断，不自动消解
       }
       // 审计 F08：只认两类确定结论——真实回执（committed）或服务端显式 completed=false。
@@ -1307,7 +1332,7 @@ export class MemoryToolsService {
   /** R2-M04：用 effect 的参数快照按**原 operationId** 原样重放未知 I 写——
    *  M 领域原子幂等（f1f6908）从回执恢复原成功（同 item_id、不重复建）或结构化
    *  拒绝（failed）；传输失败/仍未知返回 'unknown' 保持 effect 未决。 */
-  private async replayUnknownIWrite(operationId: string, argsJson: string | null): Promise<'committed' | 'failed' | 'unknown'> {
+  private async replayUnknownIWrite(operationId: string, argsJson: string | null): Promise<NonNullable<HeartbeatReceipt['source']> | null | 'unknown'> {
     if (!this.mariposa || argsJson === null) return 'unknown';
     let a: { action?: string; content?: string; itemId?: string; expectedRevision?: number; restoreRevision?: number; changeReason?: string; relations?: unknown; informedByRevision?: number };
     try { a = JSON.parse(argsJson) as typeof a; } catch { return 'unknown'; }
@@ -1325,8 +1350,11 @@ export class MemoryToolsService {
       } else {
         return 'unknown';
       }
-      if (r.ok) return 'committed';
-      return iWriteFailureIsUnknown(r, 'recover') ? 'unknown' : 'failed';
+      if (r.ok) {
+        const source = revisionSource('mariposa:i_item', r.result.item_id, r.result.revision);
+        return source && (a.action === 'create' || source.id === a.itemId) ? source : 'unknown';
+      }
+      return iWriteFailureIsUnknown(r, 'recover') ? 'unknown' : null;
     } catch {
       return 'unknown';
     }

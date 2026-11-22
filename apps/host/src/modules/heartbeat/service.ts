@@ -35,9 +35,39 @@ export type HeartbeatDelivery = { outcome: 'delivered'; providerRequestId: strin
   | { outcome: 'not_dispatched' | 'unknown' };
 export type ReservedNoteDeliveryStatus = 'undelivered' | 'dispatching' | 'delivered' | 'unknown';
 
+const CONTENT_SOURCES = {
+  album: { collection: 'album-entries', owner: 'album_entry' },
+  reserved_note: { collection: 'future-notes', owner: 'future_note' },
+  moments: { collection: 'posts', owner: 'post' },
+  archive: { collection: 'archives', owner: 'conversation_archive' },
+} as const;
+type ContentSourceKind = keyof typeof CONTENT_SOURCES;
+
+function isContentSourceKind(kind: HeartbeatSource['kind']): kind is ContentSourceKind {
+  return Object.hasOwn(CONTENT_SOURCES, kind);
+}
+
+export function heartbeatContentSourcePath(source: Pick<HeartbeatSource, 'kind' | 'namespace' | 'id'>): string | null {
+  if (source.namespace !== 'content' || !isContentSourceKind(source.kind)) return null;
+  return `/api/v1/content/${CONTENT_SOURCES[source.kind].collection}/${encodeURIComponent(source.id)}`;
+}
+
+export function heartbeatContentKindAtPath(path: string): ContentSourceKind | undefined {
+  const collection = /^\/api\/v1\/content\/([^/]+)\/[^/?]+$/.exec(path)?.[1];
+  return (Object.keys(CONTENT_SOURCES) as ContentSourceKind[]).find(kind => CONTENT_SOURCES[kind].collection === collection);
+}
+
+export function heartbeatContentKindForOwner(owner: string): ContentSourceKind | undefined {
+  return (Object.keys(CONTENT_SOURCES) as ContentSourceKind[]).find(kind => CONTENT_SOURCES[kind].owner === owner);
+}
+
+export function heartbeatSourceKeys(source: HeartbeatSource): string[] {
+  return source.mediaIdentity ? [source.identity, source.mediaIdentity] : [source.identity];
+}
+
 /** Deleting one membership revokes that fixed reference, not every card sharing
  * its underlying media identity. Delivery and historical references survive. */
-export function invalidateHeartbeatContentSource(db: Db, kind: 'album' | 'reserved_note', id: string): void {
+export function invalidateHeartbeatContentSource(db: Db, kind: ContentSourceKind, id: string): void {
   db.prepare(`UPDATE heartbeat_cards SET invalid_reason='source_deleted'
     WHERE source_kind=? AND json_extract(source_ref_json,'$.namespace')='content'
       AND json_extract(source_ref_json,'$.id')=?`).run(kind, id);
@@ -119,14 +149,14 @@ export class HeartbeatCards {
 
   isSourceEligible(source: HeartbeatSource): boolean {
     if (!this.sourceEnabled(source)) return false;
-    const ownerKind = source.kind === 'album' ? 'album_entry' : source.kind === 'reserved_note' ? 'future_note' : null;
-    if (source.namespace === 'content' && ownerKind) {
-      if (this.db.prepare(`SELECT 1 FROM content_owner_state WHERE owner_type=? AND owner_id=? AND deleted=1`).get(ownerKind,source.id)) return false;
-      const path='/api/v1/content/'+(source.kind==='album'?'album-entries/':'future-notes/')+encodeURIComponent(source.id);
+    if (source.namespace === 'content' && isContentSourceKind(source.kind)) {
+      if (this.db.prepare(`SELECT 1 FROM content_owner_state WHERE owner_type=? AND owner_id=? AND deleted=1`)
+        .get(CONTENT_SOURCES[source.kind].owner, source.id)) return false;
+      const path = heartbeatContentSourcePath(source);
       if (this.db.prepare(`SELECT 1 FROM outbox WHERE target='content.operation' AND json_extract(payload_ref,'$.method')='DELETE'
         AND json_extract(payload_ref,'$.path')=? AND json_extract(payload_ref,'$.commit_observed')=1`).get(path)) return false;
     }
-    return this.sourceEligible(source.kind, source.identity, source.replay === 'first_reserved_response');
+    return this.sourceEligible(source);
   }
 
   /** Call inside the conversation serial slot after collecting a complete ordered candidate set. */
@@ -143,8 +173,9 @@ export class HeartbeatCards {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)) throw new Error('HEARTBEAT_BUSINESS_DATE_INVALID');
       let deckId = this.deckId(run.conversation_id, input.businessDate);
       const candidates = input.candidates;
+      const keys = candidates?.flatMap(heartbeatSourceKeys);
       if (deckId === null && candidates?.length === CARD_COUNT
-        && new Set(candidates.map(source => source.identity)).size === CARD_COUNT
+        && new Set(keys).size === keys?.length
         && candidates.every(source => this.isSourceEligible(source))) {
         deckId = genId('deck');
         this.db.prepare('INSERT INTO heartbeat_decks(id,conversation_id,business_date) VALUES(?,?,?)')
@@ -154,7 +185,7 @@ export class HeartbeatCards {
           VALUES(?,?,?,?,?,?)
         `);
         candidates.forEach((source, index) => {
-          const { kind, namespace, id, revision, identity, permissionScope } = source;
+          const { kind, namespace, id, revision, identity, mediaIdentity, permissionScope } = source;
           const replay = kind === 'moments' && source.replay === 'first_reserved_response' ? source.replay : undefined;
           const selection = source.selection ? {
             attachmentIds: source.selection.attachmentIds,
@@ -163,7 +194,7 @@ export class HeartbeatCards {
             voiceTranscriptRevision: source.selection.voiceTranscriptRevision,
           } : undefined;
           insert.run(deckId, index + 1, identity, kind,
-            JSON.stringify({ kind, namespace, id, revision, identity, permissionScope, selection, replay }), Number(Boolean(replay)));
+            JSON.stringify({ kind, namespace, id, revision, identity, mediaIdentity, permissionScope, selection, replay }), Number(Boolean(replay)));
         });
       }
 
@@ -294,11 +325,9 @@ export class HeartbeatCards {
     });
   }
 
-  /** After the existing run is terminal, settle unresolved local state without redispatching the card. */
+  /** The normal terminal path and startup recovery both settle the open selection by run identity. */
   closeRun(runId: string): void {
     tx(this.db, () => {
-      const run = this.run(runId);
-      if (!run || run.live) return;
       const operation = this.db.prepare(`
         SELECT * FROM heartbeat_draw_operations WHERE run_id=? AND state IN ('claimed','prepared','dispatching')
       `).get(runId) as OperationRow | undefined;
@@ -318,6 +347,10 @@ export class HeartbeatCards {
         WHERE run_id=? AND operation_id=?
       `).run(operation.state === 'dispatching' ? 'unknown' : 'not_dispatched', runId, operation.operation_id);
     });
+  }
+
+  hasClaimedDraw(runId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM heartbeat_draw_operations WHERE run_id=? AND card_number IS NOT NULL').get(runId));
   }
 
   /** Call after normal background-run recovery has classified the interrupted runs. */
@@ -407,17 +440,31 @@ export class HeartbeatCards {
     return { status: 'rejected', reason: recordedReason, remainingNumbers, retryAllowed };
   }
 
-  private sourceEligible(kind: HeartbeatSource['kind'], identity: string, firstResponseReplay: boolean): boolean {
+  private sourceEligible(source: HeartbeatSource): boolean {
+    const { kind, identity, mediaIdentity } = source;
     const cutoff = new Date(this.now() - COOLDOWN_MS).toISOString();
+    const identityMatch = ['o.source_identity=?'];
+    const values = [identity];
+    const mediaKey = mediaIdentity ?? (identity.startsWith('mariposa:media:') ? identity : undefined);
+    if (mediaKey) {
+      identityMatch.push(`o.source_identity=?`, `json_extract(c.source_ref_json,'$.mediaIdentity')=?`);
+      values.push(mediaKey, mediaKey);
+    }
+    if (kind === 'moments' && source.namespace === 'content') {
+      // Older image-only posts used their media hash as the primary key.
+      identityMatch.push(`(c.source_kind='moments' AND json_extract(c.source_ref_json,'$.namespace')='content'
+        AND json_extract(c.source_ref_json,'$.id')=?)`);
+      values.push(source.id);
+    }
     return !this.db.prepare(`
       SELECT 1 FROM heartbeat_draw_operations o
       JOIN heartbeat_cards c ON c.deck_id=o.deck_id AND c.card_number=o.card_number
-      WHERE o.source_identity=? AND (
+      WHERE (${identityMatch.join(' OR ')}) AND (
         o.state IN ('claimed','prepared','dispatching')
         OR (o.state='delivered' AND (?=1 OR c.source_kind='reserved_note' OR (?=0 AND o.delivered_at>?)))
         OR o.state='unknown'
       ) LIMIT 1
-    `).get(identity, Number(kind === 'reserved_note'), Number(kind === 'moments' && firstResponseReplay),
+    `).get(...values, Number(kind === 'reserved_note'), Number(kind === 'moments' && source.replay === 'first_reserved_response'),
       cutoff);
   }
 

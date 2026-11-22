@@ -21,7 +21,7 @@ import { stableErrorCode } from '../../observability/errors.ts';
 import { sha256Hex } from '../../util/id.ts';
 import { contentForward, fetchReferenceSnapshot, ownerTypeOf, resolveContentOperation, type ContentClient, type ContentReferenceSnapshot } from './client.ts';
 import { isUserArchiveCreate, registerArchiveCreatedNotice } from './archive-notice.ts';
-import { invalidateHeartbeatContentSource } from '../../modules/heartbeat/service.ts';
+import { heartbeatContentKindAtPath, heartbeatContentKindForOwner, heartbeatContentSourcePath, invalidateHeartbeatContentSource } from '../../modules/heartbeat/service.ts';
 import { bindHeartbeatContentOperation, settleHeartbeatContentReceipt, type HeartbeatContentBinding } from '../../modules/heartbeat/actions.ts';
 
 export const CONTENT_OPERATION_TARGET = 'content.operation';
@@ -446,9 +446,8 @@ export class ContentOperationCoordinator {
         this.db.prepare(`INSERT INTO content_owner_state(owner_type, owner_id, applied_revision, deleted, asset_ids_json, updated_at) VALUES (?,?,?,?,?,?)
           ON CONFLICT(owner_type, owner_id) DO UPDATE SET applied_revision = excluded.applied_revision, deleted = excluded.deleted, asset_ids_json = excluded.asset_ids_json, updated_at = excluded.updated_at`)
           .run(ownerType, ownerId, snapshot.ownerRevision, snapshot.deleted ? 1 : 0, JSON.stringify(snapshot.assetIds), nowIso);
-        if (snapshot.deleted && (ownerType === 'album_entry' || ownerType === 'future_note')) {
-          invalidateHeartbeatContentSource(this.db, ownerType === 'album_entry' ? 'album' : 'reserved_note', ownerId);
-        }
+        const heartbeatKind = snapshot.deleted ? heartbeatContentKindForOwner(ownerType) : undefined;
+        if (heartbeatKind) invalidateHeartbeatContentSource(this.db, heartbeatKind, ownerId);
       } else {
         // 迟到旧确认：不动正式关系与版本锚，只收口本次操作 pin
         this.media.releaseOperationPins(opKey);
@@ -474,9 +473,9 @@ export class ContentOperationCoordinator {
    * Snapshot reconciliation remains independently recoverable. */
   private recordHeartbeatDeletion(intent: IntentPayload, status: number, body: unknown, opKey: string): void {
     if (intent.method !== 'DELETE' || status < 200 || status >= 300) return;
-    const match = /^\/api\/v1\/content\/(album-entries|future-notes)\/([^/?]+)$/.exec(intent.path);
+    const kind = heartbeatContentKindAtPath(intent.path);
     const receipt = body as { id?: unknown; removed?: unknown; deleted?: unknown } | null;
-    if (!match || typeof receipt?.id !== 'string' || encodeURIComponent(receipt.id) !== match[2]
+    if (!kind || typeof receipt?.id !== 'string' || heartbeatContentSourcePath({ kind, namespace: 'content', id: receipt.id }) !== intent.path
       || !(receipt.removed === true || receipt.deleted === true)) return;
     const sourceId = receipt.id;
     tx(this.db,()=>{
@@ -485,7 +484,7 @@ export class ContentOperationCoordinator {
       // the gap so a just-finishing candidate enumeration cannot re-freeze it.
       this.db.prepare(`UPDATE outbox SET payload_ref=json_set(payload_ref,'$.commit_observed',1)
         WHERE target=? AND operation_key=? AND state IN ('pending','unknown_outcome')`).run(CONTENT_OPERATION_TARGET,opKey);
-      invalidateHeartbeatContentSource(this.db, match[1] === 'album-entries' ? 'album' : 'reserved_note', sourceId);
+      invalidateHeartbeatContentSource(this.db, kind, sourceId);
     });
   }
 

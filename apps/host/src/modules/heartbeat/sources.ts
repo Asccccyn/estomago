@@ -1,4 +1,5 @@
 import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { heartbeatSourceKeys } from './service.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 import type { WishstarClient } from '../../integrations/wishstar/client.ts';
 import { contentForward, readAllContentPages, type ContentClient } from '../../integrations/content/client.ts';
@@ -132,7 +133,8 @@ export class HeartbeatSources {
       for (const source of candidates) {
         if (!eligible(source)) continue;
         const bucket = buckets.get(source.kind) ?? [];
-        if (!bucket.some(candidate => candidate.identity === source.identity)) bucket.push(source);
+        const keys = new Set(heartbeatSourceKeys(source));
+        if (!bucket.some(candidate => heartbeatSourceKeys(candidate).some(key => keys.has(key)))) bucket.push(source);
         buckets.set(source.kind, bucket);
       }
     }
@@ -141,8 +143,9 @@ export class HeartbeatSources {
       const entries = [...buckets.entries()];
       const [, bucket] = entries[Math.floor(this.random() * entries.length)]!;
       const source = bucket[Math.floor(this.random() * bucket.length)]!;
+      const keys = new Set(heartbeatSourceKeys(source));
       for (const [group, sources] of buckets) {
-        const remaining = sources.filter(candidate => candidate.identity !== source.identity);
+        const remaining = sources.filter(candidate => heartbeatSourceKeys(candidate).every(key => !keys.has(key)));
         if (remaining.length) buckets.set(group, remaining);
         else buckets.delete(group);
       }
@@ -341,19 +344,14 @@ export class HeartbeatSources {
           identity: `content:moments:first-reserved:${item.id}`, permissionScope: conversationId, replay: 'first_reserved_response' }];
       }
       let identity = `content:${kind}:${item.id}`;
+      let mediaIdentity: string | undefined;
       let selection: HeartbeatSource['selection'];
-      if (kind === 'album' || (kind === 'moments' && item.asset_ids?.length === 1 && !item.body?.trim())) {
+      if (kind === 'album' || (kind === 'moments' && item.asset_ids?.length === 1)) {
         const id = item.asset_id ?? item.asset_ids?.[0];
-        if (!id) return [];
-        try {
-          const asset = this.media.getAsset(id);
-          const eligibleMime = asset.mime_type.startsWith('image/') || kind === 'moments' && asset.mime_type.startsWith('audio/');
-          if (asset.state !== 'available' || asset.m_sync_state !== 'synced' || !asset.m_content_hash || !eligibleMime) return [];
-          if (asset.mime_type === 'image/svg+xml' && !this.media.canProvideImage(asset)) return [];
-          const original = asset.ingest_purpose === 'derived_view' ? this.media.originalImageAsset(asset) : asset;
-          if (original.state !== 'available' || original.m_sync_state !== 'synced' || !original.m_content_hash) return [];
-          identity = `mariposa:media:${original.m_content_hash}`;
-        } catch { return []; }
+        const key = id ? this.singleMediaIdentity(id, kind === 'moments') : undefined;
+        if (!key && (kind === 'album' || !item.body?.trim())) return [];
+        if (kind === 'album') identity = key!;
+        else mediaIdentity = key;
       } else if (kind === 'archive') {
         if (!item.messages?.length) return [];
         selection = { start: 0, end: Math.min(item.messages.length, 6) };
@@ -361,8 +359,21 @@ export class HeartbeatSources {
           conversationId, item.messages.slice(0, selection.end).map(message => message.message_id),
         ]));
       }
-      return [{ kind, namespace: 'content', id: item.id, revision: item.revision, identity, permissionScope: conversationId, selection }];
+      return [{ kind, namespace: 'content', id: item.id, revision: item.revision, identity,
+        ...(mediaIdentity ? { mediaIdentity } : {}), permissionScope: conversationId, selection }];
     });
+  }
+
+  private singleMediaIdentity(id: string, allowAudio: boolean): string | undefined {
+    try {
+      const asset = this.media.getAsset(id);
+      const eligibleMime = asset.mime_type.startsWith('image/') || allowAudio && asset.mime_type.startsWith('audio/');
+      if (asset.state !== 'available' || asset.m_sync_state !== 'synced' || !asset.m_content_hash || !eligibleMime) return;
+      if (asset.mime_type === 'image/svg+xml' && !this.media.canProvideImage(asset)) return;
+      const original = asset.ingest_purpose === 'derived_view' ? this.media.originalImageAsset(asset) : asset;
+      if (original.state !== 'available' || original.m_sync_state !== 'synced' || !original.m_content_hash) return;
+      return `mariposa:media:${original.m_content_hash}`;
+    } catch { return; }
   }
 
   private payload(text: string, ids: string[], voice?: {
