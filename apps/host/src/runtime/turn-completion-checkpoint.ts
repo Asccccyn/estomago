@@ -84,21 +84,21 @@ export function stageTurnCompletion(db: Db, args: {
     .run(JSON.stringify(proof), args.attemptId, args.turnId);
 }
 
-/** The same recovery slot also protects an ordinary heartbeat tool batch
- * before the completion CAS. The confirmed request is the sole prefix;
- * only its observed assistant tool packet and unsent receipts live here. */
-export function stageHeartbeatBatch(db: Db, args: {
+/** Protect a confirmed heartbeat request before the completion CAS.
+ * Its response tail starts empty and can advance to the observed tool batch. */
+export function stageHeartbeatCheckpoint(db: Db, args: {
   requestId: string; windowId: string; turnId: string; attemptId: string;
-  batch: CompletionBatch; confirmedSeen: ManifestEntry[]; heartbeatHostText?: string;
+  batch: Pick<CompletionBatch, 'tail' | 'sentMessages'>; confirmedSeen: ManifestEntry[]; heartbeatHostText?: string;
 }): void {
   const existing = db.prepare('SELECT completion_outcome,completion_recovery_json FROM attempts WHERE id=? AND turn_id=?')
     .get(args.attemptId, args.turnId) as { completion_outcome: string | null; completion_recovery_json: string | null } | undefined;
   if (existing?.completion_outcome) return;
   const prior = existing?.completion_recovery_json ? readCompletionProof(existing.completion_recovery_json) : null;
-  if (prior?.phase === 'heartbeat_batch' && prior.requestId === args.requestId) return;
+  if (prior?.phase === 'heartbeat_batch' && prior.requestId === args.requestId
+      && (prior.tail.length > 0 || args.batch.tail.length === 0)) return;
   const input = observedCompletionInput(db, args);
   const trajectoryHash = currentTrajectoryHash(db, args.windowId);
-  if (!input || !trajectoryHash || toolCalls(args.batch.tail).length === 0
+  if (!input || !trajectoryHash || (args.batch.tail.length > 0 && toolCalls(args.batch.tail).length === 0)
     || JSON.stringify(completionInputMessages(input)) !== JSON.stringify(args.batch.sentMessages)) {
     throw new Error('HEARTBEAT_BATCH_RECOVERY_EVIDENCE_MISSING');
   }

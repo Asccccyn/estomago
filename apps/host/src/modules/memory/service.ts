@@ -6,7 +6,7 @@ import type { Db } from '../../db/connection.ts';
 import type { MariposaClient, MariposaCallResult } from '../../integrations/mariposa/client.ts';
 import type { RotationReviewService } from '../../context/rotation-review.ts';
 import type { HoldCheckpointService } from '../../memory/hold-checkpoint.ts';
-import type { SeenRef, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
+import type { HeartbeatReceipt, SeenRef, ToolExecContext, ToolExecResult } from '../../capabilities/contracts.ts';
 import { sha256Hex } from '../../util/id.ts';
 import { refreshMoodCategories } from './mood-vocab.ts';
 import { executeMemoryReadFull } from '../../memory-surfacing/detail-tool.ts';
@@ -405,33 +405,47 @@ export class MemoryToolsService {
   async memoryUpdate(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
     const m = this.mariposa.withSignal(ctx.signal);
-    if (typeof args.memory_id !== 'string' || !args.memory_id) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'memory_id 必填' } };
+    const memoryId = args.memory_id;
+    if (typeof memoryId !== 'string' || !memoryId) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'memory_id 必填' } };
     if (typeof args.expected_version !== 'number' || !Number.isInteger(args.expected_version) || args.expected_version < 1) return { ok: false, output: { error_code: 'TOOL_ARG_INVALID', error: 'expected_version 必填（当前版本号，读取/回执中有）' } };
-    const payload: Record<string, unknown> = { memory_id: args.memory_id, expected_version: args.expected_version };
+    const payload: Record<string, unknown> = { memory_id: memoryId, expected_version: args.expected_version };
     for (const k of ['text', 'original_title', 'categories', 'memory_date', 'date_confidence']) {
       if (args[k] !== undefined) payload[k] = args[k];
     }
+    const heartbeatReceipt = (status: HeartbeatReceipt['status'], revision?: number): HeartbeatReceipt | undefined => {
+      // Unconfirmed model arguments must fit the heartbeat projection's reference contract.
+      if (!ctx.recordHeartbeatReceipt || !ctx.toolCallId || memoryId.length > 256) return undefined;
+      return { operationId: ctx.toolCallId, status, source: { namespace: 'mariposa:memory', id: memoryId,
+        ...(revision !== undefined && Number.isSafeInteger(revision) && revision > 0 ? { revision } : {}) } };
+    };
+    const unknownOutcome = (detail: string): ToolExecResult => ({
+      ok: false, output: { error_code: 'UPDATE_OUTCOME_UNKNOWN', detail }, heartbeatReceipt: heartbeatReceipt('unknown'),
+    });
     let r: Awaited<ReturnType<MariposaClient['memoryUpdate']>>;
     try {
       r = await m.memoryUpdate(payload);
     } catch {
-      return { ok: false, output: { error_code: 'UPDATE_OUTCOME_UNKNOWN', detail: '提交结果未知（网络/服务中断）——勿盲目重发同一修订；稍后用 memory_read_full 核对当前版本后再决定' } };
+      return unknownOutcome('提交结果未知（网络/服务中断）——勿盲目重发同一修订；稍后用 memory_read_full 核对当前版本后再决定');
     }
     if (!r.ok) {
       if (r.code === 'VERSION_CONFLICT') {
-        return { ok: false, output: { error_code: 'UPDATE_VERSION_CONFLICT', detail: '该记忆已被修改（版本已移动）——先用 memory_read_full 读当前内容与新版本号，再带新 expected_version 重试，不要覆盖别人的修订', memory_id: args.memory_id } };
+        return { ok: false, output: { error_code: 'UPDATE_VERSION_CONFLICT', detail: '该记忆已被修改（版本已移动）——先用 memory_read_full 读当前内容与新版本号，再带新 expected_version 重试，不要覆盖别人的修订', memory_id: memoryId },
+          heartbeatReceipt: heartbeatReceipt('failed') };
       }
       const unknown = r.code.startsWith('HTTP_5') || r.code === 'HTTP_429' || r.code.startsWith('TRANSPORT');
-      return { ok: false, output: { error_code: unknown ? 'UPDATE_OUTCOME_UNKNOWN' : `UPDATE_${r.code}`, ...(unknown ? { detail: '结果未知；用 memory_read_full 核对后再决定是否重试' } : {}) } };
+      if (unknown) return unknownOutcome('结果未知；用 memory_read_full 核对后再决定是否重试');
+      return { ok: false, output: { error_code: `UPDATE_${r.code}` } };
     }
     const data = (r.result ?? {}) as Record<string, unknown>;
+    const revision = typeof data.version === 'number' ? data.version
+      : typeof data.version_no === 'number' ? data.version_no : undefined;
     return { ok: true, output: {
       updated: true,
-      memory_id: args.memory_id,
+      memory_id: memoryId,
       ...(typeof data.version === 'number' ? { version: data.version } : {}),
       ...(typeof data.version_no === 'number' ? { version: data.version_no } : {}),
       note: '已就地修订当前版本；检索索引随既有版本机制更新',
-    } };
+    }, heartbeatReceipt: heartbeatReceipt('committed', revision) };
   }
 
   async memoryRecall(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {

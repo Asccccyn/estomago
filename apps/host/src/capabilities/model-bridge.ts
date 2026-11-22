@@ -163,7 +163,7 @@ export class ModelToolBridge {
       if (set.summaries) {
         let names = listing.map(tool => tool.function.name);
         if (query) {
-          const result = searchToolCatalog(listing, query, set.groups);
+          const result = searchToolCatalog(listing, query, set.groups, set.summaries);
           if (result.state === 'no_match') return { ok: true, output: result };
           names = [...result.results.map(tool => tool.name), ...(result.more_matches ?? [])];
         }

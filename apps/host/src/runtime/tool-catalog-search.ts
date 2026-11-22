@@ -315,7 +315,12 @@ function normalizeIntent(text: string): string {
   return text.normalize('NFKC').toLowerCase().replace(/[\s\p{P}]/gu, '');
 }
 
-export function searchToolCatalog(catalog: readonly HostToolSpec[], rawQuery: string, groups?: Record<string, string>): CatalogSearchResult {
+export function searchToolCatalog(
+  catalog: readonly HostToolSpec[],
+  rawQuery: string,
+  groups?: Record<string, string>,
+  summaries?: Readonly<Record<string, string>>,
+): CatalogSearchResult {
   const query = rawQuery.normalize('NFKC').trim().toLowerCase();
   const full = (spec: HostToolSpec) => ({
     name: spec.function.name,
@@ -331,6 +336,13 @@ export function searchToolCatalog(catalog: readonly HostToolSpec[], rawQuery: st
   if (exact) return { state: 'match', results: [full(exact)] };
 
   const intent = normalizeIntent(query);
+  if (summaries && intent) {
+    const exactSummaries = catalog.filter(spec => {
+      const name = spec.function.name;
+      return !Object.hasOwn(EXITED_TOOLS, name) && normalizeIntent(summaries[name] ?? '') === intent;
+    });
+    if (exactSummaries.length) return { state: 'match', results: exactSummaries.map(full) };
+  }
   const scored: Array<{ spec: HostToolSpec; exactPhrase: boolean; longestPhrase: number; score: number }> = [];
   for (const spec of catalog) {
     const name = spec.function.name;

@@ -446,6 +446,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
     ...toolCapability({
       owner: 'memory',
       id: 'memory_update', baselineOrder: 5, definition: () => MEMORYUPDATE_DEFINITION, memoryOnlyAllowed: true, label: '修订记忆',
+      heartbeatAction: 'memory_update',
       run: (input: Record<string, unknown>, ctx) => svc.memoryUpdate(input, ctx),
       toModel: (value) => value,
     }),

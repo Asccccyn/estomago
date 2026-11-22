@@ -30,6 +30,8 @@ export type SurfaceItem = {
   coverage_text_offset?: number;
   unread_parts?: Array<{ start_char: number; end_char: number; text: string }>;
   source_context_parts?: Array<{ speaker: string; date: string; text: string; coverage_ranges: CoverageRange[] }>;
+  /** Validate-local query IDs whose raw evidence this item can deliver. */
+  raw_context_needs?: string[];
   event_id: string | null;
   memory_id: string | null;
   memory_version: string | null;

@@ -32,15 +32,22 @@ function fixture(t: TestContext) {
       } };
     },
   });
+  const wishstarCalls: Array<{ method: string; path: string }> = [];
+  const wishstar = {
+    forward: async (method: string, path: string) => {
+      wishstarCalls.push({ method, path });
+      return { status: 200, body: { id: 'synthetic-session', status: 'confirmed' } };
+    },
+  };
   const { tools, registry } = assembleTestTools({
-    db, messages, mariposa, reviews: review, checkpoint: new HoldCheckpointService(db),
+    db, messages, mariposa, wishstar, reviews: review, checkpoint: new HoldCheckpointService(db),
   });
   const wire = freezeWindowTools(db, windowId, registry.currentCatalog(), 'direct', registry.currentGroups());
   const ctx: ToolExecContext = {
     roomId, windowId, turnId, purpose: 'chat', activeReviewId: null,
     seenSequence: message.sequence, seenMessages: [], requestId: 'native-request',
   };
-  return { db, review, calls, tools, wire, ctx };
+  return { db, review, calls, wishstarCalls, tools, wire, ctx };
 }
 
 test('新窗直调走冻结业务 schema 和唯一写入入口，拒绝未发布的通用入口', async t => {
@@ -108,6 +115,39 @@ test('旧按需窗口保留精确搜索直接启用的协议',async t => {
   assert.equal(found.output.state,'ready');
   assert.equal(found.activatedTool?.function.name,'chat_send_text');
   assert.match(JSON.stringify(found.activatedTool?.function.parameters),/中文直接填汉字/);
+});
+
+test('新窗可按当前目录展示的原用途回查，并由 define 单独启用', async t => {
+  const f = fixture(t);
+  const { tools, ctx, db } = f;
+  const snapshot = storedToolset(db, ctx.windowId)!;
+  const name = 'wishstar_confirm_session';
+  // The opened window can carry wording from an earlier release.
+  const summaries = { ...snapshot.summaries, plans_read: '我可以打开这扇窗保存的计划目录' };
+  db.prepare('UPDATE window_toolsets SET tool_summaries_json = ? WHERE window_id = ?')
+    .run(JSON.stringify(summaries), ctx.windowId);
+  const frozen = storedToolset(db, ctx.windowId)!;
+  const listing = await tools.execute('tool_catalog', {}, ctx);
+  assert.equal(listing.ok, true);
+  const entries = listing.output.tools as Array<{ name: string; description: string }>;
+  for (const toolName of ['memory_hold', 'conversation_read', name, 'plans_read']) {
+    const item = entries.find(entry => entry.name === toolName)!;
+    assert.ok(item, toolName);
+    const match = await tools.execute('tool_catalog', { query: item.description }, ctx);
+    assert.deepEqual(match.output.tools, [item], item.description);
+    assert.equal(match.activatedTool, undefined);
+  }
+  const hidden = await tools.execute('tool_catalog', { query: frozen.summaries!.context_review_complete }, ctx);
+  assert.equal(hidden.output.state, 'no_match');
+  assert.deepEqual(storedToolset(db, ctx.windowId), frozen);
+  assert.deepEqual(f.wishstarCalls, []);
+
+  const args = { session_id: 'synthetic-session' };
+  assert.equal((await tools.execute(name, args, ctx)).output.error_code, 'TOOL_NOT_IN_WINDOW');
+  const defined = await tools.execute('tool_define', { name }, ctx);
+  assert.equal(defined.activatedTool?.function.name, name);
+  assert.equal((await tools.execute(name, args, ctx)).ok, true);
+  assert.deepEqual(f.wishstarCalls, [{ method: 'POST', path: '/api/sessions/synthetic-session/confirm' }]);
 });
 
 test('新窗评审工具只对可信、实际活跃的换窗评审可发现及执行', async t => {

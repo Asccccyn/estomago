@@ -51,7 +51,7 @@ const sourceLabels: Partial<Record<HeartbeatSource['kind'], string>> = {
 };
 
 const actionLabels: Record<HeartbeatAction['kind'], string> = {
-  selection: '选号', star_reply: '回应原星', star_write: '写星', memory_hold: '写记忆', post: '发日常',
+  selection: '选号', star_reply: '回应原星', star_write: '写星', memory_hold: '写记忆', memory_update: '修订记忆', post: '发日常',
   comment: '发表评论', album: '收藏图片', creation: '保存作品', image: '生成图片', archive: '保存对话存档',
   wake: '设置自主唤醒', chat: '发送聊天消息',
 };
@@ -65,8 +65,9 @@ function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
     committed: action.kind === 'selection' ? '已选中' : '已完成',
     partial: '部分完成，仍有步骤待确认', failed: '未成功', cancelled: '已取消或未派发', unknown: '结果待核，暂不能确认成功',
   }[action.status];
+  const revision = action.kind === 'memory_update' && action.status === 'committed' ? action.source?.revision : undefined;
   return { id: `action:${index}`, source_label: label, status: 'available', editable: false,
-    text: `${verb} · ${phrase}。` };
+    text: `${verb} · ${phrase}${revision === undefined ? '' : `（v${revision}）`}。` };
 }
 
 const fail = (status: number, code: string, message: string, details: Record<string, unknown> = {}): ContentWriteResult =>

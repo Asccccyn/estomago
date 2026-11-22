@@ -7,6 +7,7 @@ import { Readable } from 'node:stream';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
+import type { MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { HeartbeatCards, type HeartbeatSource } from '../../apps/host/src/modules/heartbeat/service.ts';
 import { heartbeatBusinessDate, type HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { HeartbeatSources, type CardPayload } from '../../apps/host/src/modules/heartbeat/sources.ts';
@@ -17,6 +18,8 @@ import type { OrMessage, OrTool } from '../../apps/host/src/runtime/or-payload.t
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
+import { decorateMomentResponse } from '../../apps/host/src/server/routes/content-moments.ts';
+import { readHeartbeatProjection } from '../../packages/contracts/src/heartbeat.ts';
 import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 
 const MODEL = 'anthropic/claude-fixture-exact';
@@ -44,7 +47,7 @@ function text(message: WireMessage | undefined): string {
 }
 
 async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, sourceStatus: CardPayload['status'] = 'available', retryMax = 0,
-  startup?: { root: string; reopen?: boolean }) {
+  startup?: { root?: string; reopen?: boolean; maxModelRequests?: number }) {
   t.mock.method(HeartbeatSources.prototype, 'choose', async () => candidates);
   t.mock.method(HeartbeatSources.prototype, 'resolve', async (source: HeartbeatSource): Promise<CardPayload> =>
     sourceStatus === 'available'
@@ -75,7 +78,8 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     ...readyRuntimePatch(),
     runtime: { ...readyRuntimePatch().runtime as object, provider: 'mock', tool_schema_mode: 'direct' },
     openrouter: { model: MODEL },
-    background: { keepwarm: { sleep_window: { enabled: false } } },
+    background: { keepwarm: { sleep_window: { enabled: false } },
+      ...(startup?.maxModelRequests === undefined ? {} : { autonomous: { max_model_requests_per_run: startup.maxModelRequests } }) },
     windows: { model_context_capacity: 150_000 },
   });
   const host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner });
@@ -414,6 +418,76 @@ test('T24: ambiguous continuation never retries the same card or keeps its body 
   await ctx.scheduler.tick();
   assert.equal(ctx.latestRun().mode, 'source_unavailable');
   assert.equal(ctx.wire.length, 4);
+});
+
+test('heartbeat feed preserves a memory creation and reports its edits by outcome', async t => {
+  const ctx = await fixture(t, CARDS, 'available', 0, { maxModelRequests: 7 });
+  await ctx.chat('建立现有聊天窗');
+  const { db, messages, heartbeat } = ctx.host;
+  const memoryId = 'fixture-memory-to-edit';
+  const privateText = '合成记忆正文，仅供隔离复验。';
+  let version = 0;
+  const attemptedVersions: unknown[] = [];
+  const remote = (heartbeat!.sources as unknown as { external: { memory: { transport: MariposaTransport } } }).external.memory;
+  remote.transport = async (name, args) => {
+    if (name === 'memory.hold') {
+      version = 1;
+      return { ok: true, result: { operation_id: args.operation_id, memory_id: memoryId, version,
+        binding_ids: [], committed_at: new Date().toISOString(), commit_observed_at: new Date().toISOString() } };
+    }
+    assert.equal(name, 'memory.update');
+    assert.equal(args.memory_id, memoryId);
+    attemptedVersions.push(args.expected_version);
+    if (args.expected_version !== version) return { ok: false, code: 'VERSION_CONFLICT', httpStatus: 409 };
+    if (version === 2) return { ok: false, code: 'HTTP_503', httpStatus: 503 };
+    return { ok: true, result: { memory_id: memoryId, version: ++version } };
+  };
+  db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,?)")
+    .run(JSON.stringify({ memory_hold: { max_cost_micro_usd: 1 }, memory_update: { max_cost_micro_usd: 1 } }), new Date().toISOString());
+  const edit = (id: string, expected_version: number): Reply => ({ tool: 'memory_update', id,
+    args: { memory_id: memoryId, expected_version, text: privateText } });
+  ctx.elapsed();
+  ctx.replies.push(draw(1),
+    { tool: 'memory_hold', id: 'new-memory', args: {
+      original_title: '合成写入', text: privateText, categories: ['daily'], creation_mode: 'contemporaneous',
+    } },
+    { tool: 'tool_define', id: 'define-edit', args: { name: 'memory_update' } },
+    edit('edit-memory', 1), edit('stale-edit', 1), edit('uncertain-edit', 2), noop());
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(run.state, 'noop', run.result_code);
+  assert.deepEqual(attemptedVersions, [1, 1, 2]);
+
+  const receipts = new Map(ctx.wire.at(-1)!.messages.filter(message => message.role === 'tool')
+    .map(message => [message.tool_call_id, JSON.parse(text(message))]));
+  assert.equal(receipts.get('new-memory')?.memory_id, memoryId);
+  assert.equal(receipts.get('new-memory')?.version, 1);
+  assert.equal(receipts.get('edit-memory')?.memory_id, memoryId);
+  assert.equal(receipts.get('edit-memory')?.version, 2);
+  assert.equal(receipts.get('stale-edit')?.error_code, 'UPDATE_VERSION_CONFLICT');
+  assert.equal(receipts.get('uncertain-edit')?.error_code, 'UPDATE_OUTCOME_UNKNOWN');
+
+  const outbox = db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get();
+  assert.ok(outbox);
+  assert.equal(String(outbox.payload_ref).includes(privateText), false);
+  const projection = readHeartbeatProjection(JSON.parse(String(outbox.payload_ref)));
+  assert.ok(projection);
+  assert.deepEqual(projection.actions?.filter(action => action.kind === 'memory_hold' || action.kind === 'memory_update')
+    .map(action => [action.kind, action.status, action.source?.id, action.source?.revision]), [
+    ['memory_hold', 'committed', memoryId, 1],
+    ['memory_update', 'committed', memoryId, 2],
+    ['memory_update', 'failed', memoryId, undefined],
+    ['memory_update', 'unknown', memoryId, undefined],
+  ]);
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
+    { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
+    { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
+  assert.deepEqual(feed.items[0]?.blocks.filter(block => ['写记忆', '修订记忆'].includes(block.source_label)).map(block => block.text), [
+    '写记忆 · 已完成。',
+    '修订记忆 · 已完成（v2）。',
+    '修订记忆 · 未成功。',
+    '修订记忆 · 结果待核，暂不能确认成功。',
+  ]);
 });
 
 const ACTION_CRASH_TEST = 'heartbeat: a committed memory action is projected on restart without replaying the model';

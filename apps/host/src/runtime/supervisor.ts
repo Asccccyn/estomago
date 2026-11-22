@@ -52,7 +52,7 @@ import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolN
 import { compactUnsentToolResults } from './tool-result-retention.ts';
 import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
 import { readTurnCompletion, TURN_COMPLETION_TOOL } from './turn-completion.ts';
-import { appendCompletionToolReceipt, stageTurnCompletion, stageHeartbeatBatch, markHeartbeatToolStarted } from './turn-completion-checkpoint.ts';
+import { appendCompletionToolReceipt, stageTurnCompletion, stageHeartbeatCheckpoint, markHeartbeatToolStarted } from './turn-completion-checkpoint.ts';
 import { recoverAcceptedCompletions, recoverInterruptedHeartbeats } from './completion-recovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
@@ -540,6 +540,7 @@ export class TurnSupervisor {
       seenMessages: (traj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })),
       previousEnvelope,
       scopedTaskTools,
+      heartbeatMode: heartbeatMode ?? undefined,
       heartbeatHostText: heartbeatHostText ?? undefined,
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
@@ -601,6 +602,33 @@ export class TurnSupervisor {
     return { blocks: [{ type: 'text', text: fallbackText }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
   }
 
+  private confirmModelRequest(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
+    'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>, input: {
+    requestId: string; round: number; attemptIndex: number; generationId: string | null;
+    messages: OrMessage[]; confirmedSeen: ManifestEntry[];
+  }): void {
+    const { db, trajectory, heartbeat } = this.d;
+    const { requestId, round, attemptIndex, generationId, messages, confirmedSeen } = input;
+    const markSent = () => db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
+      .run(new Date().toISOString(), attemptIndex, generationId ?? null, requestId);
+    const { turnId } = o;
+    if (round === 0 && o.heartbeatMode === 'draw' && turnId && trajectory) {
+      // Confirm the first invitation and its recoverable prefix together, before publication.
+      tx(db, () => {
+        markSent();
+        stageHeartbeatCheckpoint(db, {
+          requestId, windowId: o.windowId, turnId, attemptId: o.attemptId,
+          batch: { tail: [], sentMessages: messages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText,
+        });
+      });
+    } else {
+      markSent();
+    }
+    if (o.background?.kind === 'keepwarm') {
+      heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
+    }
+  }
+
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
   // 同样经 P2（previousPayload append-only 断言）。发布/记账语义由调用方 onEvent 决定。
   // 返回 finalMessages：成功回合的完整轨迹消息（含最终 assistant 文本），供轨迹持久化（§2.2）。
@@ -627,6 +655,7 @@ export class TurnSupervisor {
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
     scopedTaskTools?: boolean; // 任务专属工具与主会话使用不同工具前缀。
     completionManifest?: readonly ManifestEntry[];
+    heartbeatMode?: HeartbeatMode;
     heartbeatHostText?: string;
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
@@ -844,11 +873,6 @@ export class TurnSupervisor {
       let roundGenerationId: string | null = null; // R07：本轮工具事件的 provider 生成标识
       const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
         roundGenerationId = info.generationId ?? roundGenerationId;
-        // F17 语义保留：2xx=真实发送确认。行已在准入时建好——这里只确认 sent_at 与 generation。
-        const nowIso = new Date().toISOString();
-        d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
-          .run(nowIso, info.attemptIndex, info.generationId ?? null, lastPrqId);
-        if (o.background?.kind === 'keepwarm') d.heartbeat?.observeDelivery(o.background.runId, lastPrqId, envelope.messages, o.heartbeatHostText);
         if (!roundSeenPromoted) {
           roundSeenPromoted = true;
           // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
@@ -859,6 +883,7 @@ export class TurnSupervisor {
             pendingSeenByTool.clear();
           }
         }
+        this.confirmModelRequest(o, { requestId: lastPrqId, round, ...info, messages: envelope.messages, confirmedSeen: toolSeenActive });
       };
       let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(await matEnv(prevEnvelope), transportKind) : null;
       // Compare against the last real wire request with the same native tool
@@ -943,9 +968,9 @@ export class TurnSupervisor {
       pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
       if (o.background?.kind === 'keepwarm' && o.turnId && lastSentMessages && d.trajectory) {
-        stageHeartbeatBatch(d.db, {
+        stageHeartbeatCheckpoint(d.db, {
           requestId: lastPrqId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId,
-          batch: { tail: envelope.messages.slice(pendingAssistantIndex), inFlight: [], sentMessages: lastSentMessages },
+          batch: { tail: envelope.messages.slice(pendingAssistantIndex), sentMessages: lastSentMessages },
           confirmedSeen: toolSeenActive, heartbeatHostText: o.heartbeatHostText,
         });
       }
@@ -1213,17 +1238,16 @@ export class TurnSupervisor {
           if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
           d.surfacing?.markDispatched?.(o.attemptId);
         },
-        modelStarted: (id, _round, model) => {
+        modelStarted: (id, round, model) => {
           generationId = id;
           requestContext.responseModel = model ?? null;
           recordRequestExecution(d.db, requestContext, o.background?.runId);
-          d.db.prepare('UPDATE provider_requests SET sent_at=?,generation_id=? WHERE id=?').run(new Date().toISOString(), id, requestId);
-          if (o.background?.kind === 'keepwarm' && requestId && lastSentMessages) {
-            d.heartbeat?.observeDelivery(o.background.runId, requestId, lastSentMessages, o.heartbeatHostText);
-          }
           toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
           pendingSeenByTool.clear();
           batchRanges.length = 0;
+          if (requestId && lastSentMessages) {
+            this.confirmModelRequest(o, { requestId, round, attemptIndex: 0, generationId: id, messages: lastSentMessages, confirmedSeen: toolSeen });
+          }
         },
         recordToolDelivery: (toolCallId, result) => {
           this.recordToolCoverage(requestId, toolCallId, result);
@@ -1237,7 +1261,7 @@ export class TurnSupervisor {
           if (o.background?.isCancelRequested() || o.background?.yieldRequested?.()) throw new ContractError('BACKGROUND_TOOL_CANCELLED');
           if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
           if (o.background?.kind === 'keepwarm' && o.turnId && completionBatch && requestId) {
-            stageHeartbeatBatch(d.db, {
+            stageHeartbeatCheckpoint(d.db, {
               requestId, windowId: o.windowId, turnId: o.turnId, attemptId: o.attemptId, batch: completionBatch(),
               confirmedSeen: toolSeen, heartbeatHostText: o.heartbeatHostText,
             });

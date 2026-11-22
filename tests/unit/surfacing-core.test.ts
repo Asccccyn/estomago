@@ -227,6 +227,51 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
   db.close();
 });
 
+test('原文前后文按最终窗口与预算交付，只给实际未满足的需要记缺项', async () => {
+  for (const outcome of ['delivered', 'already covered', 'under budget pressure', 'after partial check'] as const) {
+    const db = makeDb(tempRoot('sf-raw-context-'));
+    const quote = '我们周末见。';
+    const correction = '是说周六，不是周日。';
+    const context = outcome === 'under budget pressure' ? correction.repeat(500) : correction;
+    const sourceRange = { resource_ref: 'source_msg:source', content_version: '1', start_char: 0, end_char: quote.length };
+    const contextRange = { resource_ref: 'source_msg:correction', content_version: '1', start_char: 0, end_char: context.length };
+    const raw: SurfaceItem = { ...ITEM, kind: 'source', event_id: null, memory_id: null, memory_version: null,
+      event_text: quote, quote_text: quote, detail_ref: 'sdr_raw', raw_context_needs: ['ev_2'],
+      coverage_ranges: [sourceRange], source_context_ranges: [contextRange], source_context_text: context,
+      source_context_parts: [{ speaker: '用户', date: '2026-07-09', text: context, coverage_ranges: [contextRange] }],
+    };
+    const { client } = fakeMariposa({
+      validate: () => ({ status: 'ready', validation_receipt: 'svr_context', items: [ITEM, raw] }),
+      check: () => ({ valid: true, accepted_detail_refs: outcome === 'after partial check'
+        ? [ITEM.detail_ref] : [ITEM.detail_ref, raw.detail_ref] }),
+    });
+    const judge = fakeSolJudge([{ decision: 'recall', plan: { purpose: '查事件和聊天前后文', route: 'mixed', breadth: 'related', queries: [
+      { need_kind: 'event', need: '找到记忆库建设经历', semantic: '记忆库', keywords: ['记忆库'] },
+      { need_kind: 'words', need: '查当时的聊天前后文', semantic: '周末见', keywords: ['周末'], source_mode: 'raw_context' },
+    ] } }]).judge;
+    const svc = new SurfacingService(db, client, judge, { enabled: true, policy_revision: 1,
+      prompt_prepare_revision: 'surface_prepare_v1', delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
+      max_packet_bytes: 24576, worker_concurrency: 1, recent_window_bytes: 24576, recent_user_messages: 3 }, null);
+    const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
+    messages.ensureConversation('c1');
+    try {
+      const content = '请查记忆库和约周末的聊天前后文。';
+      const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: 'source', occurredAt: T0 });
+      const aug = await svc.augmentFor({ conversationId: 'c1', windowId: 'w1', turnId: u1.turnId, attemptId: 'a1',
+        pendingCoverage: outcome === 'already covered' ? [sourceRange, contextRange] : [],
+        message: { id: u1.message.id, revision: 1, sequence: u1.message.sequence, content, hash: 'h' },
+      });
+      assert.ok(aug, outcome);
+      assert.ok(aug.text.includes(ITEM.event_text), outcome);
+      assert.equal(aug.text.includes(correction), outcome === 'delivered', outcome);
+      assert.equal(aug.text.includes('当时的对话原文：这次没能核实完整。'),
+        outcome === 'under budget pressure' || outcome === 'after partial check', outcome);
+      assert.deepEqual(aug.items.map(item => item.detail_ref), outcome === 'delivered'
+        ? [ITEM.detail_ref, raw.detail_ref] : [ITEM.detail_ref], outcome);
+    } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
+  }
+});
+
 // ===== 她 2026-10-21 执行稿：编辑生命周期修订失效一致性（验收矩阵）=====
 
 

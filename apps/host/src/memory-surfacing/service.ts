@@ -734,10 +734,28 @@ export class SurfacingService {
       refs.set(key, ref);
       refList.push({ ref, detail_ref: it.detail_ref, event_id: it.event_id });
     }
-    const text = renderAugmentation(items, refs, missing, this.speakerNames);
-    const missingOnly = items.length === 0 && missing.length > 0 && droppedCovered === itemsAll.length;
-    if (missingOnly && !fitsPacket(text)) droppedBudget++;
-    if (items.length === 0 && (!missingOnly || droppedBudget > 0)) {
+    // An accepted raw hit satisfies its needs when the original evidence is
+    // all present in the window or in the items selected for this packet.
+    const satisfiedRawNeeds = new Set(itemsAll.flatMap(item =>
+      item.raw_context_needs && accepted.has(item.detail_ref) && !unreadSurfaceItem(item, covered)
+        ? item.raw_context_needs : []));
+    const rawIncomplete = itemsAll.some(item =>
+      item.raw_context_needs?.some(need => !satisfiedRawNeeds.has(need)));
+    if (rawIncomplete && !missing.some(gap => gap.kind === 'raw_context' && gap.status === 'incomplete')) {
+      missing.push({ kind: 'raw_context', status: 'incomplete' });
+    }
+    let text = renderAugmentation(items, refs, missing, this.speakerNames);
+    while (rawIncomplete && items.length && !fitsPacket(text)) {
+      // Keep the earlier whole items, making room for the explicit gap.
+      refs.delete(surfaceItemKey(items.pop()!));
+      refList.pop();
+      droppedBudget++;
+      text = renderAugmentation(items, refs, missing, this.speakerNames);
+    }
+    const missingOnly = items.length === 0 && missing.length > 0 && (rawIncomplete || droppedCovered === itemsAll.length);
+    const packetFits = fitsPacket(text);
+    if (missingOnly && !packetFits) droppedBudget++;
+    if (items.length === 0 && (!missingOnly || !packetFits)) {
       // F6：空结果原因分列——"全部已被覆盖"与"容量放不下"不是同一状态，
       // 也不能与"没找到"混同；原因码如实区分
       const reason = droppedBudget > 0
