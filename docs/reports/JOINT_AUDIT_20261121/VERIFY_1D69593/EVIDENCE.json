@@ -1,0 +1,6802 @@
+{
+  "baseline": {
+    "estomago": "54efebfa4920e599bdb46748734a50ed9a26a7c6",
+    "mariposa": "6ae5fa9a0e63149132583284e675f172a071b95e",
+    "superposition": "3079cb6",
+    "live_cwd": [
+      "joint-20261122-35b009354a43",
+      "joint-20261122-6c1b10de081b"
+    ]
+  },
+  "observations": {
+    "full_deck_edit": [
+      {
+        "size": 10,
+        "containsOriginal": false,
+        "containsNew": true,
+        "differentConfirmed": true,
+        "samePost": false,
+        "editedRevision": 2,
+        "deliveries": [
+          {
+            "business_date": "2026-11-21",
+            "source_identity": "content:moments:post_mwppaxs06c20d97f",
+            "sourceId": "post_mwppaxs06c20d97f",
+            "revision": 1,
+            "confirmed": 1
+          },
+          {
+            "business_date": "2026-11-22",
+            "source_identity": "content:moments:post_mwppaxs082e42105",
+            "sourceId": "post_mwppaxs082e42105",
+            "revision": 1,
+            "confirmed": 1
+          }
+        ],
+        "editChangedOnlyBody": true
+      }
+    ],
+    "spoken_tools": [
+      {
+        "lane": "api",
+        "chat": [
+          true,
+          true,
+          true
+        ],
+        "protocol": [
+          true,
+          true,
+          true
+        ],
+        "feed": [
+          true,
+          true,
+          true
+        ],
+        "card": "delivered",
+        "end": "complete:done"
+      },
+      {
+        "lane": "sdk",
+        "chat": [
+          true,
+          true,
+          true
+        ],
+        "protocol": [
+          true,
+          true,
+          true
+        ],
+        "feed": [
+          true,
+          true,
+          true
+        ],
+        "card": "delivered",
+        "end": "complete:done"
+      }
+    ],
+    "exhausted_recovery": [
+      {
+        "before": 1,
+        "canonical": 1,
+        "next": 1,
+        "publishedInvite": 1,
+        "publishedAck": 0,
+        "mode": "exhausted_keepwarm",
+        "run": "unknown",
+        "extraRecoveryCalls": 0
+      }
+    ],
+    "sdk_exhaust_before_ack": [
+      {
+        "sent": 1,
+        "canonical": 1,
+        "next": 1,
+        "sdkReplay": true,
+        "ack": 0,
+        "recoveryQueries": 0,
+        "naturalQueries": 1
+      }
+    ],
+    "cooldown": [
+      {
+        "samePost": false,
+        "editedRevision": 2,
+        "deliveries": [
+          {
+            "business_date": "2026-11-21",
+            "source_identity": "content:moments:post_mwppaxs050b50774",
+            "sourceId": "post_mwppaxs050b50774",
+            "revision": 1,
+            "confirmed": 1
+          }
+        ],
+        "editChangedOnlyBody": true
+      },
+      {
+        "run": {
+          "state": "noop",
+          "result_code": "complete:noop",
+          "model_requests_started": 3,
+          "tool_calls_started": 4,
+          "turn_id": "turn_mwpr38lcad93dc3f3a39c470"
+        },
+        "operations": [
+          {
+            "state": "delivered",
+            "card_number": 8
+          }
+        ],
+        "wireErrors": [],
+        "delivered": [
+          8
+        ],
+        "available": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          9,
+          10
+        ],
+        "projections": [
+          {
+            "state": "drawn_no_comment",
+            "actions": [
+              [
+                "selection",
+                "committed"
+              ]
+            ]
+          }
+        ]
+      }
+    ],
+    "writes": [
+      {
+        "sourcePlan": true,
+        "sourceStarRequestCount": 1,
+        "anchorSuccesses": 1,
+        "distinctIdentityKeys": 1,
+        "anchorCopies": 1,
+        "changedTextInSource": false,
+        "reportedDuplicate": true,
+        "toolResults": [
+          {
+            "keys": [
+              "saved",
+              "operation",
+              "version",
+              "file",
+              "byte_size",
+              "entries",
+              "effective",
+              "note"
+            ],
+            "version": "memory-anchors-v2"
+          },
+          {
+            "keys": [
+              "plan_id",
+              "version",
+              "state"
+            ],
+            "version": 1,
+            "plan": "plan-audit"
+          },
+          {
+            "keys": [
+              "id",
+              "requester_id",
+              "owner_id",
+              "status"
+            ],
+            "request": "req-audit"
+          },
+          {
+            "keys": [
+              "saved",
+              "operation",
+              "version",
+              "file",
+              "byte_size",
+              "entries",
+              "effective",
+              "note",
+              "duplicate"
+            ],
+            "version": "memory-anchors-v2"
+          },
+          {
+            "keys": [
+              "error_code",
+              "detail"
+            ],
+            "code": "MILESTONE_IDEMPOTENCY_CONFLICT"
+          },
+          {
+            "keys": [
+              "completed",
+              "outcome"
+            ]
+          }
+        ],
+        "visibleKinds": [
+          "selection",
+          "anchor_write",
+          "plan_write",
+          "star_request",
+          "anchor_write"
+        ],
+        "rendered": [
+          "心跳状态",
+          "选号",
+          "更新我们的锚点",
+          "心跳状态",
+          "1 号 · 许愿星",
+          "写计划",
+          "请求对方开星",
+          "更新我们的锚点",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      },
+      {
+        "sourcePlan": true,
+        "sourceStarRequestCount": 1,
+        "anchorSuccesses": 1,
+        "distinctIdentityKeys": 1,
+        "anchorCopies": 1,
+        "changedTextInSource": false,
+        "reportedDuplicate": true,
+        "toolResults": [
+          {
+            "keys": [
+              "saved",
+              "operation",
+              "version",
+              "file",
+              "byte_size",
+              "entries",
+              "effective",
+              "note"
+            ],
+            "version": "memory-anchors-v2"
+          },
+          {
+            "keys": [
+              "plan_id",
+              "version",
+              "state"
+            ],
+            "version": 1,
+            "plan": "plan-audit"
+          },
+          {
+            "keys": [
+              "id",
+              "requester_id",
+              "owner_id",
+              "status"
+            ],
+            "request": "req-audit"
+          },
+          {
+            "keys": [
+              "saved",
+              "operation",
+              "version",
+              "file",
+              "byte_size",
+              "entries",
+              "effective",
+              "note",
+              "duplicate"
+            ],
+            "version": "memory-anchors-v2"
+          },
+          {
+            "keys": [
+              "error_code",
+              "detail"
+            ],
+            "code": "MILESTONE_IDEMPOTENCY_CONFLICT"
+          },
+          {
+            "keys": [
+              "completed",
+              "outcome"
+            ]
+          }
+        ],
+        "visibleKinds": [
+          "selection",
+          "anchor_write",
+          "plan_write",
+          "star_request",
+          "anchor_write"
+        ],
+        "rendered": [
+          "心跳状态",
+          "选号",
+          "更新我们的锚点",
+          "心跳状态",
+          "1 号 · 许愿星",
+          "写计划",
+          "请求对方开星",
+          "更新我们的锚点",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      }
+    ],
+    "text_all": [
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "star": true,
+        "plan": true,
+        "identity": true,
+        "post": true,
+        "comment": true,
+        "attachmentCaption": true,
+        "actions": [
+          "star_write",
+          "i_write",
+          "plan_write",
+          "post",
+          "comment"
+        ],
+        "sourceTextHash": "6bd693459d210962a7637ec6c5727d40d11cfb52fc180db7b16da46d0f67adad",
+        "result": "complete:noop"
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "star": true,
+        "plan": true,
+        "identity": true,
+        "post": true,
+        "comment": true,
+        "attachmentCaption": true,
+        "actions": [
+          "star_write",
+          "i_write",
+          "plan_write",
+          "post",
+          "comment"
+        ],
+        "sourceTextHash": "6bd693459d210962a7637ec6c5727d40d11cfb52fc180db7b16da46d0f67adad",
+        "result": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "star": true,
+        "plan": true,
+        "identity": true,
+        "post": true,
+        "comment": true,
+        "attachmentCaption": true,
+        "actions": [
+          "star_write",
+          "i_write",
+          "plan_write",
+          "post",
+          "comment"
+        ],
+        "sourceTextHash": "6bd693459d210962a7637ec6c5727d40d11cfb52fc180db7b16da46d0f67adad",
+        "result": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "star": true,
+        "plan": true,
+        "identity": true,
+        "post": true,
+        "comment": true,
+        "attachmentCaption": true,
+        "actions": [
+          "star_write",
+          "i_write",
+          "plan_write",
+          "post",
+          "comment"
+        ],
+        "sourceTextHash": "6bd693459d210962a7637ec6c5727d40d11cfb52fc180db7b16da46d0f67adad",
+        "result": "complete:noop"
+      }
+    ],
+    "media_restore": [
+      {
+        "lane": "api",
+        "ending": "photo-online",
+        "run": {
+          "state": "noop",
+          "result_code": "complete:noop",
+          "trajectory_committed_at": "2026-11-22T15:55:30.143Z"
+        },
+        "turn": "completed",
+        "draw": [
+          {
+            "card_number": 9,
+            "state": "delivered"
+          }
+        ],
+        "sourceReads": 1,
+        "sentCard": true,
+        "status": {
+          "date": "2026-11-22",
+          "mode": "draw",
+          "daily_memory": {
+            "state": "unprepared",
+            "reason": null
+          },
+          "available_numbers": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            10
+          ],
+          "delivered_numbers": [
+            9
+          ],
+          "source_unavailable_numbers": []
+        },
+        "seenErrors": [],
+        "published": [
+          [
+            "drawn_no_comment",
+            [
+              "committed"
+            ]
+          ]
+        ]
+      },
+      {
+        "lane": "api",
+        "ending": "photo-offline",
+        "run": {
+          "state": "failed",
+          "result_code": "INTERNAL_ERROR",
+          "trajectory_committed_at": "2026-11-22T15:55:30.555Z"
+        },
+        "turn": "failed",
+        "draw": [
+          {
+            "card_number": 9,
+            "state": "not_dispatched"
+          }
+        ],
+        "sourceReads": 1,
+        "sentCard": false,
+        "status": {
+          "date": "2026-11-22",
+          "mode": "draw",
+          "daily_memory": {
+            "state": "unprepared",
+            "reason": null
+          },
+          "available_numbers": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "delivered_numbers": [],
+          "source_unavailable_numbers": []
+        },
+        "seenErrors": [
+          "HEARTBEAT_CARD_NOT_CONFIRMED"
+        ],
+        "published": [
+          [
+            "interrupted",
+            [
+              "cancelled"
+            ]
+          ]
+        ]
+      },
+      {
+        "lane": "sdk",
+        "ending": "photo-online",
+        "run": {
+          "state": "noop",
+          "result_code": "complete:noop",
+          "trajectory_committed_at": "2026-11-22T15:55:30.975Z"
+        },
+        "turn": "completed",
+        "draw": [
+          {
+            "card_number": 6,
+            "state": "delivered"
+          }
+        ],
+        "sourceReads": 1,
+        "sentCard": true,
+        "status": {
+          "date": "2026-11-22",
+          "mode": "draw",
+          "daily_memory": {
+            "state": "unprepared",
+            "reason": null
+          },
+          "available_numbers": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            7,
+            8,
+            9,
+            10
+          ],
+          "delivered_numbers": [
+            6
+          ],
+          "source_unavailable_numbers": []
+        },
+        "seenErrors": [],
+        "published": [
+          [
+            "drawn_no_comment",
+            [
+              "committed"
+            ]
+          ]
+        ]
+      },
+      {
+        "lane": "sdk",
+        "ending": "photo-offline",
+        "run": {
+          "state": "noop",
+          "result_code": "complete:noop",
+          "trajectory_committed_at": "2026-11-22T15:55:31.400Z"
+        },
+        "turn": "completed",
+        "draw": [
+          {
+            "card_number": 4,
+            "state": "not_dispatched"
+          }
+        ],
+        "sourceReads": 1,
+        "sentCard": false,
+        "status": {
+          "date": "2026-11-22",
+          "mode": "draw",
+          "daily_memory": {
+            "state": "unprepared",
+            "reason": null
+          },
+          "available_numbers": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ],
+          "delivered_numbers": [],
+          "source_unavailable_numbers": []
+        },
+        "seenErrors": [
+          "SDK_MEDIA_TRANSPORT_UNVERIFIED"
+        ],
+        "published": [
+          [
+            "interrupted",
+            [
+              "cancelled"
+            ]
+          ]
+        ]
+      }
+    ],
+    "unsupported": [
+      {
+        "run": {
+          "state": "noop",
+          "result_code": "complete:noop",
+          "model_requests_started": 3,
+          "tool_calls_started": 4,
+          "turn_id": "turn_mwpr38lc1f88efdb9982d19e"
+        },
+        "operations": [
+          {
+            "state": "not_dispatched",
+            "card_number": 2
+          }
+        ],
+        "wireErrors": [
+          "MODEL_VISION_UNAVAILABLE"
+        ],
+        "delivered": [],
+        "available": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "projections": [
+          {
+            "state": "interrupted",
+            "actions": [
+              [
+                "selection",
+                "cancelled"
+              ]
+            ]
+          }
+        ]
+      }
+    ],
+    "pretool": [
+      {
+        "lane": "api",
+        "run": "KEEPWARM_YIELDED",
+        "sourceWrites": 0,
+        "admitted": 0,
+        "errors": [
+          {
+            "code": "KEEPWARM_YIELDED",
+            "executed": false
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "yield"
+        },
+        "card": [
+          "delivered"
+        ]
+      },
+      {
+        "lane": "sdk",
+        "run": "KEEPWARM_YIELDED",
+        "sourceWrites": 0,
+        "admitted": 0,
+        "errors": [
+          {
+            "code": "KEEPWARM_YIELDED",
+            "executed": false
+          }
+        ],
+        "terminal": {
+          "status": "cancelled",
+          "reason": "yield"
+        },
+        "card": [
+          "delivered"
+        ]
+      }
+    ],
+    "price_gate": [
+      {
+        "lane": "api",
+        "run": "BUDGET_ESTIMATE_UNAVAILABLE",
+        "sourceWrites": 0,
+        "admitted": 0,
+        "errors": [
+          "BUDGET_ESTIMATE_UNAVAILABLE"
+        ],
+        "terminal": {
+          "status": "failed",
+          "reason": "quote"
+        },
+        "draw": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ]
+      },
+      {
+        "lane": "sdk",
+        "run": "BUDGET_ESTIMATE_UNAVAILABLE",
+        "sourceWrites": 0,
+        "admitted": 0,
+        "errors": [
+          "BUDGET_ESTIMATE_UNAVAILABLE"
+        ],
+        "terminal": {
+          "status": "failed",
+          "reason": "quote"
+        },
+        "draw": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ]
+      }
+    ],
+    "archive_delete": [
+      {
+        "listedInSource": false,
+        "slotStillAvailable": false,
+        "slot": 1
+      }
+    ],
+    "post_delete": [
+      {
+        "removedId": "post_mws0qhjccdb910a0",
+        "listedInPosts": false,
+        "availableAfterDelete": false,
+        "number": 1,
+        "delivered": []
+      }
+    ],
+    "ten": [
+      {
+        "lane": "api",
+        "runs": [
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:done"
+          ],
+          [
+            "exhausted_keepwarm",
+            1,
+            "ack_only"
+          ]
+        ],
+        "confirmedNumbers": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "uniqueSources": 10,
+        "feed": 10,
+        "totalProjections": 10,
+        "lastAck": 1,
+        "previousTextOne": true,
+        "onesInNext": 2,
+        "exhaustInvitesInNext": 1,
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "runs": [
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:noop"
+          ],
+          [
+            "draw",
+            3,
+            "complete:done"
+          ],
+          [
+            "exhausted_keepwarm",
+            1,
+            "ack_only"
+          ]
+        ],
+        "confirmedNumbers": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "uniqueSources": 10,
+        "feed": 10,
+        "totalProjections": 10,
+        "lastAck": 1,
+        "previousTextOne": true,
+        "onesInNext": 2,
+        "exhaustInvitesInNext": 1,
+        "paired": true
+      }
+    ],
+    "outbox": [
+      {
+        "before": 0,
+        "exhausted": {
+          "state": "failed",
+          "attempt": 5
+        },
+        "deletedStatus": null,
+        "after": 0,
+        "matchingEvents": {
+          "state": "failed",
+          "attempt": 5
+        },
+        "subsequentAttempts": 0,
+        "knownCard": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ],
+        "sourceStarWrites": 1,
+        "sourceMemoryWrites": 1,
+        "providerRequests": 4
+      },
+      {
+        "before": 1,
+        "exhausted": {
+          "state": "unknown_outcome",
+          "attempt": 1
+        },
+        "deletedStatus": null,
+        "after": 1,
+        "matchingEvents": {
+          "state": "acked",
+          "attempt": 2
+        },
+        "subsequentAttempts": 1,
+        "knownCard": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ],
+        "sourceStarWrites": 1,
+        "sourceMemoryWrites": 1,
+        "providerRequests": 4
+      },
+      {
+        "before": 1,
+        "exhausted": {
+          "state": "unknown_outcome",
+          "attempt": 1
+        },
+        "deletedStatus": 200,
+        "after": 0,
+        "matchingEvents": {
+          "state": "acked",
+          "attempt": 2
+        },
+        "subsequentAttempts": 1,
+        "knownCard": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ],
+        "sourceStarWrites": 1,
+        "sourceMemoryWrites": 1,
+        "providerRequests": 4
+      }
+    ],
+    "cas": [
+      {
+        "bucket": "posts",
+        "parallel": [
+          200,
+          409
+        ],
+        "revision": 2,
+        "retry": 200,
+        "conflict": 409,
+        "deleted": 200,
+        "deleteReplay": 200,
+        "inList": false
+      }
+    ],
+    "repair_harness": [
+      {
+        "run": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+        "state": [
+          {
+            "card_number": 1,
+            "state": "unknown"
+          }
+        ],
+        "eligibility": [
+          false,
+          false
+        ]
+      },
+      {
+        "run": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+        "state": [
+          {
+            "card_number": 1,
+            "state": "unknown"
+          }
+        ],
+        "eligibility": [
+          false,
+          false
+        ]
+      },
+      {
+        "beforeDue": 0,
+        "off": 0,
+        "once": 1,
+        "early": 1,
+        "due": 2,
+        "afterChat": 2
+      }
+    ],
+    "ui": [
+      {
+        "invitations": 1,
+        "align": "center",
+        "chatHasActualReply": true,
+        "chatHasCard": false,
+        "chatShowsReveal": false,
+        "feedHasCard": true,
+        "feedHasStar": true,
+        "feedHasMemory": true
+      }
+    ],
+    "raw_visible": [
+      {
+        "visibleRaw": true,
+        "visibleCenter": true,
+        "visibleNeighbor": true,
+        "checks": 2,
+        "mainCalls": 1,
+        "retained": 1,
+        "selected": [
+          "sdr_seam1",
+          "sdr_4e388d58c046b942dfec5fea5f86a9ce"
+        ],
+        "wireHasEvent": true,
+        "wireHasNeighbor": true,
+        "wireHasGap": false,
+        "needOutcome": "delivered"
+      }
+    ],
+    "partial_need": [
+      {
+        "checks": 2,
+        "mainCalls": 1,
+        "retained": 1,
+        "selected": [
+          "sdr_seam1"
+        ],
+        "wireHasEvent": true,
+        "wireHasNeighbor": false,
+        "wireHasGap": true,
+        "needOutcome": "incomplete"
+      }
+    ],
+    "followup_need": [
+      {
+        "solRequests": 2,
+        "secondReason": null,
+        "secondState": "retained",
+        "secondNeed": "delivered",
+        "firstQuestionInSol": false,
+        "followupInSol": true,
+        "secondRetained": [
+          "sdr_raw"
+        ],
+        "nextHasNeighbor": true,
+        "checks": 4,
+        "mainCalls": 2,
+        "retained": 1,
+        "selected": [
+          "sdr_seam1"
+        ],
+        "wireHasEvent": true,
+        "wireHasNeighbor": false,
+        "wireHasGap": true,
+        "needOutcome": "incomplete"
+      }
+    ],
+    "external_gate": [
+      {
+        "lane": "api",
+        "case": "remote-withdrawn",
+        "checkedAtGate": true,
+        "card": "rejected",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "failed"
+          ]
+        ],
+        "invalid": "source_invalid"
+      },
+      {
+        "lane": "api",
+        "case": "remote-revised",
+        "checkedAtGate": true,
+        "card": "rejected",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "failed"
+          ]
+        ],
+        "invalid": "source_invalid"
+      },
+      {
+        "lane": "api",
+        "case": "remote-offline",
+        "checkedAtGate": true,
+        "card": "not_dispatched",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "cancelled"
+          ]
+        ],
+        "invalid": null
+      },
+      {
+        "lane": "sdk",
+        "case": "remote-withdrawn",
+        "checkedAtGate": true,
+        "card": "rejected",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "failed"
+          ]
+        ],
+        "invalid": "source_invalid"
+      },
+      {
+        "lane": "sdk",
+        "case": "remote-revised",
+        "checkedAtGate": true,
+        "card": "rejected",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "failed"
+          ]
+        ],
+        "invalid": "source_invalid"
+      },
+      {
+        "lane": "sdk",
+        "case": "remote-offline",
+        "checkedAtGate": true,
+        "card": "not_dispatched",
+        "cardSent": false,
+        "result": "HEARTBEAT_SOURCE_INVALID_BEFORE_DISPATCH",
+        "selection": [
+          [
+            "selection",
+            "cancelled"
+          ]
+        ],
+        "invalid": null
+      }
+    ],
+    "midnight_devices": [
+      {
+        "priorProjection": [
+          "unknown_outcome",
+          "pending"
+        ],
+        "repairedStates": [
+          "acked",
+          "acked"
+        ],
+        "projectedSources": [
+          "superposition:star:audit-source-19",
+          "superposition:star:audit-source-6"
+        ],
+        "matchingFrozen": true,
+        "articleCount": 2,
+        "lane": "api",
+        "firstEnd": "complete:noop",
+        "rotateStatuses": [
+          409,
+          409
+        ],
+        "sameAwait": true,
+        "confirm": [
+          {
+            "status": 200,
+            "rotated": true
+          },
+          {
+            "status": 422,
+            "reason": "CONTEXT_SELECTION_ALREADY_CONFIRMED"
+          }
+        ],
+        "windowChanged": true,
+        "days": [
+          [
+            "2026-11-21",
+            1,
+            "delivered",
+            true
+          ],
+          [
+            "2026-11-22",
+            1,
+            "delivered",
+            false
+          ]
+        ],
+        "identityChanged": true,
+        "preRows": 10,
+        "untouchedDeck": true,
+        "runs": [
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          },
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          }
+        ],
+        "deckCount": 2
+      },
+      {
+        "priorProjection": [
+          "unknown_outcome",
+          "pending"
+        ],
+        "repairedStates": [
+          "acked",
+          "acked"
+        ],
+        "projectedSources": [
+          "superposition:star:audit-source-7",
+          "superposition:star:audit-source-12"
+        ],
+        "matchingFrozen": true,
+        "articleCount": 2,
+        "lane": "api",
+        "firstEnd": "complete:noop",
+        "rotateStatuses": [
+          409,
+          409
+        ],
+        "sameAwait": true,
+        "confirm": [
+          {
+            "status": 200,
+            "rotated": true
+          },
+          {
+            "status": 422,
+            "reason": "CONTEXT_SELECTION_ALREADY_CONFIRMED"
+          }
+        ],
+        "windowChanged": true,
+        "days": [
+          [
+            "2026-11-21",
+            1,
+            "delivered",
+            true
+          ],
+          [
+            "2026-11-21",
+            2,
+            "delivered",
+            false
+          ]
+        ],
+        "identityChanged": true,
+        "preRows": 10,
+        "untouchedDeck": true,
+        "runs": [
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          },
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          }
+        ],
+        "deckCount": 1
+      },
+      {
+        "priorProjection": [
+          "unknown_outcome",
+          "pending"
+        ],
+        "repairedStates": [
+          "acked",
+          "acked"
+        ],
+        "projectedSources": [
+          "superposition:star:audit-source-3",
+          "superposition:star:audit-source-2"
+        ],
+        "matchingFrozen": true,
+        "articleCount": 2,
+        "lane": "sdk",
+        "firstEnd": "complete:noop",
+        "rotateStatuses": [
+          409,
+          409
+        ],
+        "sameAwait": true,
+        "confirm": [
+          {
+            "status": 200,
+            "rotated": true
+          },
+          {
+            "status": 422,
+            "reason": "CONTEXT_SELECTION_ALREADY_CONFIRMED"
+          }
+        ],
+        "windowChanged": true,
+        "days": [
+          [
+            "2026-11-21",
+            1,
+            "delivered",
+            true
+          ],
+          [
+            "2026-11-22",
+            1,
+            "delivered",
+            false
+          ]
+        ],
+        "identityChanged": true,
+        "preRows": 10,
+        "untouchedDeck": true,
+        "runs": [
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          },
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          }
+        ],
+        "deckCount": 2
+      },
+      {
+        "priorProjection": [
+          "unknown_outcome",
+          "pending"
+        ],
+        "repairedStates": [
+          "acked",
+          "acked"
+        ],
+        "projectedSources": [
+          "superposition:star:audit-source-8",
+          "superposition:star:audit-source-3"
+        ],
+        "matchingFrozen": true,
+        "articleCount": 2,
+        "lane": "sdk",
+        "firstEnd": "complete:noop",
+        "rotateStatuses": [
+          409,
+          409
+        ],
+        "sameAwait": true,
+        "confirm": [
+          {
+            "status": 200,
+            "rotated": true
+          },
+          {
+            "status": 422,
+            "reason": "CONTEXT_SELECTION_ALREADY_CONFIRMED"
+          }
+        ],
+        "windowChanged": true,
+        "days": [
+          [
+            "2026-11-21",
+            1,
+            "delivered",
+            true
+          ],
+          [
+            "2026-11-21",
+            2,
+            "delivered",
+            false
+          ]
+        ],
+        "identityChanged": true,
+        "preRows": 10,
+        "untouchedDeck": true,
+        "runs": [
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          },
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          }
+        ],
+        "deckCount": 1
+      }
+    ],
+    "star_extended": [
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "requestStatus": "rejected",
+        "offerStatus": "completed",
+        "openedFromOffer": true,
+        "openedResult": true,
+        "http": [
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "POST",
+            200,
+            "rejected"
+          ],
+          [
+            "POST",
+            200,
+            "SHARED"
+          ]
+        ],
+        "actionStatuses": [],
+        "feedLabels": [
+          "心跳状态",
+          "心跳状态",
+          "结束状态"
+        ],
+        "normalEnd": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "requestStatus": "rejected",
+        "offerStatus": "completed",
+        "openedFromOffer": true,
+        "openedResult": true,
+        "http": [
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "POST",
+            200,
+            "rejected"
+          ],
+          [
+            "POST",
+            200,
+            "SHARED"
+          ]
+        ],
+        "actionStatuses": [],
+        "feedLabels": [
+          "心跳状态",
+          "心跳状态",
+          "结束状态"
+        ],
+        "normalEnd": "complete:noop"
+      }
+    ],
+    "memory_extended": [
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "source": [
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "plan.create",
+            true,
+            null,
+            [
+              "plan_id",
+              "version",
+              "state"
+            ]
+          ],
+          [
+            "i.item.create",
+            true,
+            null,
+            [
+              "item_id",
+              "revision",
+              "doc_version",
+              "has_history"
+            ]
+          ],
+          [
+            "memory.relations.link",
+            true,
+            null,
+            [
+              "relation_id",
+              "from",
+              "to",
+              "relation_type"
+            ]
+          ]
+        ],
+        "holdCount": 2,
+        "readbackLinked": true,
+        "modelErrors": [],
+        "actions": [
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "plan_write",
+            "committed",
+            true
+          ],
+          [
+            "i_write",
+            "committed",
+            true
+          ]
+        ],
+        "labels": [
+          "心跳状态",
+          "写记忆",
+          "写记忆",
+          "写计划",
+          "更新 I",
+          "心跳状态",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "source": [
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "plan.create",
+            true,
+            null,
+            [
+              "plan_id",
+              "version",
+              "state"
+            ]
+          ],
+          [
+            "i.item.create",
+            true,
+            null,
+            [
+              "item_id",
+              "revision",
+              "doc_version",
+              "has_history"
+            ]
+          ],
+          [
+            "memory.relations.link",
+            true,
+            null,
+            [
+              "relation_id",
+              "from",
+              "to",
+              "relation_type"
+            ]
+          ]
+        ],
+        "holdCount": 2,
+        "readbackLinked": true,
+        "modelErrors": [],
+        "actions": [
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "plan_write",
+            "committed",
+            true
+          ],
+          [
+            "i_write",
+            "committed",
+            true
+          ]
+        ],
+        "labels": [
+          "心跳状态",
+          "写记忆",
+          "写记忆",
+          "写计划",
+          "更新 I",
+          "心跳状态",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      }
+    ],
+    "more_receipts": [
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "offeredBack": true,
+        "requestStatus": "rejected",
+        "offerStatus": "completed",
+        "openedFromOffer": true,
+        "openedResult": true,
+        "http": [
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "POST",
+            200,
+            "rejected"
+          ],
+          [
+            "POST",
+            200,
+            "SHARED"
+          ],
+          [
+            "POST",
+            200,
+            null
+          ]
+        ],
+        "actionStatuses": [],
+        "feedLabels": [
+          "心跳状态",
+          "心跳状态",
+          "结束状态"
+        ],
+        "normalEnd": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "offeredBack": true,
+        "requestStatus": "rejected",
+        "offerStatus": "completed",
+        "openedFromOffer": true,
+        "openedResult": true,
+        "http": [
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "GET",
+            200,
+            null
+          ],
+          [
+            "POST",
+            200,
+            "rejected"
+          ],
+          [
+            "POST",
+            200,
+            "SHARED"
+          ],
+          [
+            "POST",
+            200,
+            null
+          ]
+        ],
+        "actionStatuses": [],
+        "feedLabels": [
+          "心跳状态",
+          "心跳状态",
+          "结束状态"
+        ],
+        "normalEnd": "complete:noop"
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "source": [
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "plan.create",
+            true,
+            null,
+            [
+              "plan_id",
+              "version",
+              "state"
+            ]
+          ],
+          [
+            "i.item.create",
+            true,
+            null,
+            [
+              "item_id",
+              "revision",
+              "doc_version",
+              "has_history"
+            ]
+          ],
+          [
+            "memory.relations.link",
+            true,
+            null,
+            [
+              "relation_id",
+              "from",
+              "to",
+              "relation_type"
+            ]
+          ],
+          [
+            "memory.relations.correct",
+            true,
+            null,
+            [
+              "correction_id",
+              "removed_relation_id",
+              "replacement_relation_id",
+              "action"
+            ]
+          ]
+        ],
+        "holdCount": 2,
+        "readbackLinked": false,
+        "corrected": true,
+        "modelErrors": [],
+        "actions": [
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "plan_write",
+            "committed",
+            true
+          ],
+          [
+            "i_write",
+            "committed",
+            true
+          ]
+        ],
+        "labels": [
+          "心跳状态",
+          "写记忆",
+          "写记忆",
+          "写计划",
+          "更新 I",
+          "心跳状态",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "source": [
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "memory.hold",
+            true,
+            null,
+            [
+              "operation_id",
+              "memory_id",
+              "version",
+              "binding_ids",
+              "committed_at",
+              "commit_observed_at"
+            ]
+          ],
+          [
+            "plan.create",
+            true,
+            null,
+            [
+              "plan_id",
+              "version",
+              "state"
+            ]
+          ],
+          [
+            "i.item.create",
+            true,
+            null,
+            [
+              "item_id",
+              "revision",
+              "doc_version",
+              "has_history"
+            ]
+          ],
+          [
+            "memory.relations.link",
+            true,
+            null,
+            [
+              "relation_id",
+              "from",
+              "to",
+              "relation_type"
+            ]
+          ],
+          [
+            "memory.relations.correct",
+            true,
+            null,
+            [
+              "correction_id",
+              "removed_relation_id",
+              "replacement_relation_id",
+              "action"
+            ]
+          ]
+        ],
+        "holdCount": 2,
+        "readbackLinked": false,
+        "corrected": true,
+        "modelErrors": [],
+        "actions": [
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "memory_hold",
+            "committed",
+            true
+          ],
+          [
+            "plan_write",
+            "committed",
+            true
+          ],
+          [
+            "i_write",
+            "committed",
+            true
+          ]
+        ],
+        "labels": [
+          "心跳状态",
+          "写记忆",
+          "写记忆",
+          "写计划",
+          "更新 I",
+          "心跳状态",
+          "结束状态"
+        ],
+        "end": "complete:noop"
+      }
+    ],
+    "commit_gap": [
+      {
+        "lane": "api",
+        "runState": "completed",
+        "runCode": "complete:done",
+        "turnState": "completed",
+        "committed": true,
+        "published": 1,
+        "projection": "interrupted",
+        "terminal": {
+          "status": "completed"
+        },
+        "newProvider": 0
+      },
+      {
+        "lane": "sdk",
+        "runState": "completed",
+        "runCode": "complete:done",
+        "turnState": "completed",
+        "committed": true,
+        "published": 1,
+        "projection": "interrupted",
+        "terminal": {
+          "status": "completed"
+        },
+        "newProvider": 0
+      }
+    ],
+    "speech_counts": [
+      {
+        "lane": "api",
+        "publicCount": 3,
+        "distinctIds": 3,
+        "canonCount": 3,
+        "nextInputCount": 3,
+        "feedCount": 3,
+        "manifestOccurrences": [
+          1,
+          1,
+          1
+        ],
+        "state": "complete:done"
+      },
+      {
+        "lane": "sdk",
+        "publicCount": 3,
+        "distinctIds": 3,
+        "canonCount": 3,
+        "nextInputCount": 3,
+        "feedCount": 3,
+        "manifestOccurrences": [
+          1,
+          1,
+          1
+        ],
+        "state": "complete:done"
+      }
+    ],
+    "note_ui": [
+      {
+        "scenario": "edit-after-delivery",
+        "editedRevision": 2,
+        "editReceipt": "delivered",
+        "removeHttp": 200,
+        "deleteReceipt": "delivered",
+        "ledger": "delivered",
+        "absentFromAvailable": true,
+        "sameProviderCount": true,
+        "samePastPayload": true
+      },
+      {
+        "scenario": "edit-after-unknown",
+        "editedRevision": 2,
+        "editReceipt": "unknown",
+        "removeHttp": 200,
+        "deleteReceipt": "unknown",
+        "ledger": "unknown",
+        "absentFromAvailable": true,
+        "sameProviderCount": true,
+        "samePastPayload": true
+      }
+    ],
+    "no_card_speech": [
+      {
+        "lane": "api",
+        "case": "tool-done",
+        "terminal": {
+          "status": "completed"
+        },
+        "state": "interrupted",
+        "publicCount": 1,
+        "chatInFeed": true,
+        "outcome": [
+          "本轮结束。"
+        ],
+        "run": "complete:done",
+        "cards": 0
+      },
+      {
+        "lane": "api",
+        "case": "tool-noop",
+        "terminal": {
+          "status": "declined"
+        },
+        "state": "declined",
+        "publicCount": 1,
+        "chatInFeed": true,
+        "outcome": [
+          "本轮拒抽。"
+        ],
+        "run": "complete:noop",
+        "cards": 0
+      },
+      {
+        "lane": "sdk",
+        "case": "tool-done",
+        "terminal": {
+          "status": "completed"
+        },
+        "state": "interrupted",
+        "publicCount": 1,
+        "chatInFeed": true,
+        "outcome": [
+          "本轮结束。"
+        ],
+        "run": "complete:done",
+        "cards": 0
+      },
+      {
+        "lane": "sdk",
+        "case": "tool-noop",
+        "terminal": {
+          "status": "declined"
+        },
+        "state": "declined",
+        "publicCount": 1,
+        "chatInFeed": true,
+        "outcome": [
+          "本轮拒抽。"
+        ],
+        "run": "complete:noop",
+        "cards": 0
+      }
+    ],
+    "short_rearm": [
+      {
+        "afterRefill": [
+          {
+            "state": "failed",
+            "result_code": "HEARTBEAT_DECK_UNPREPARED"
+          }
+        ],
+        "newChatDue": [
+          {
+            "state": "failed",
+            "result_code": "HEARTBEAT_DECK_UNPREPARED"
+          },
+          {
+            "state": "noop",
+            "result_code": "complete:noop"
+          }
+        ]
+      }
+    ],
+    "reaudit_edges": [
+      {
+        "before": {
+          "cardResults": 1,
+          "drawCalls": 1
+        },
+        "canonical": {
+          "cardResults": 1,
+          "drawCalls": 1
+        },
+        "next": {
+          "cardResults": 1,
+          "drawCalls": 1
+        },
+        "projectionActions": [
+          [
+            "selection",
+            "committed"
+          ],
+          [
+            "memory_hold",
+            "committed"
+          ]
+        ],
+        "sameWindow": true,
+        "newCalls": 1
+      },
+      {
+        "before": "available",
+        "after": "available",
+        "sourceId": "living-post-b",
+        "originalId": "living-post-b",
+        "objectKeys": [
+          "id",
+          "revision",
+          "author_id",
+          "author_name",
+          "author_kind",
+          "scope",
+          "source_kind",
+          "created_at",
+          "text"
+        ]
+      },
+      {
+        "catalog": true,
+        "tasks": 1,
+        "actor": "jiaming",
+        "receipts": 1,
+        "actions": [
+          "selection",
+          "wake"
+        ],
+        "feed": [
+          "心跳状态",
+          "选号",
+          "心跳状态",
+          "1 号 · 许愿星",
+          "设置自主预约",
+          "结束状态"
+        ]
+      },
+      {
+        "order": [
+          "invite",
+          "assistant",
+          "card"
+        ],
+        "delivered": [
+          {
+            "card_number": 1,
+            "state": "delivered"
+          }
+        ],
+        "state": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "kind": "reserved_note",
+        "sourceQualified": false,
+        "usesPreDrawMessage": false
+      },
+      {
+        "before": true,
+        "canonical": true,
+        "next": true,
+        "replayedInSdkHistory": true,
+        "sameWindow": true,
+        "sessionResumed": false,
+        "newQueries": 1
+      }
+    ],
+    "sdk_cold_recovery": [
+      {
+        "stage": "recover",
+        "drawCalls": 1,
+        "drawResults": 1,
+        "holdCalls": 1,
+        "holdResults": 1,
+        "requestCount": 4,
+        "newQueries": 0,
+        "canonicalHash": "c2542019cd5f55966fe28a6584cd728aa27e92e4321b89d34e895398db8cbd7c"
+      },
+      {
+        "stage": "cold",
+        "drawCalls": 1,
+        "drawResults": 1,
+        "holdCalls": 1,
+        "holdResults": 1,
+        "nativeCalls": 1,
+        "nativeResults": 1,
+        "nativeHoldResults": 1,
+        "requestCount": 5,
+        "newQueries": 1,
+        "resume": false,
+        "canonicalHash": "c2542019cd5f55966fe28a6584cd728aa27e92e4321b89d34e895398db8cbd7c"
+      }
+    ],
+    "sdk_deferred_cold": [
+      {
+        "stage": "recover",
+        "drawCalls": 1,
+        "drawResults": 1,
+        "holdCalls": 1,
+        "holdResults": 1,
+        "requestCount": 4,
+        "newQueries": 0,
+        "canonicalHash": "7c70df07ae0777978ec30b7f3523e45b226ca4bade88c6354973701d49a5a753"
+      },
+      {
+        "stage": "cold",
+        "drawCalls": 1,
+        "drawResults": 1,
+        "holdCalls": 1,
+        "holdResults": 1,
+        "nativeCalls": 1,
+        "nativeResults": 1,
+        "nativeHoldResults": 1,
+        "requestCount": 5,
+        "newQueries": 1,
+        "resume": false,
+        "canonicalHash": "7c70df07ae0777978ec30b7f3523e45b226ca4bade88c6354973701d49a5a753"
+      }
+    ],
+    "browser": [
+      {
+        "status": [
+          "home-click-to-album",
+          "photo-saved-refreshed-preview",
+          "same-photo-two-collections-and-independent-gif",
+          "removed-photo-preserved-sticker",
+          "code-work-import-refresh-preview-remove",
+          "heartbeat-source-id-navigation",
+          "heartbeat-create-edit-refresh-delete",
+          "moments-create-edit-refresh-delete"
+        ],
+        "uploads": 4,
+        "retry": {
+          "uploads": 1,
+          "requests": 2,
+          "sameKey": true
+        },
+        "errorDisplayed": "上传失败（asset_type_unsupported） 无法识别的文件类型（魔数校验失败）",
+        "worksControls": [
+          "",
+          "导入 HTML / SVG 代码作品"
+        ],
+        "providerRequests": 0,
+        "turns": 0,
+        "reusedPurpose": {
+          "statuses": [
+            201,
+            409
+          ],
+          "sameId": false
+        },
+        "oldCreation": {
+          "status": 422,
+          "error": "image_belongs_in_album",
+          "listed": false
+        },
+        "media": [
+          {
+            "mime_type": "image/gif",
+            "m_sync_state": "synced",
+            "n": 2
+          },
+          {
+            "mime_type": "image/png",
+            "m_sync_state": "synced",
+            "n": 1
+          },
+          {
+            "mime_type": "text/html",
+            "m_sync_state": "synced",
+            "n": 1
+          }
+        ]
+      }
+    ],
+    "gif": [
+      {
+        "evidence": "A14 fake MCP / API / SDK replay",
+        "mcp": [
+          {
+            "type": "text"
+          },
+          {
+            "type": "image",
+            "mimeType": "image/gif",
+            "bytes": 67
+          }
+        ],
+        "api": [
+          "text",
+          "image"
+        ],
+        "sdk_replay": [
+          "text",
+          "image"
+        ],
+        "persistent_history_has_base64": false
+      }
+    ],
+    "db_upgrade": [
+      {
+        "first": [
+          90
+        ],
+        "second": [],
+        "legacySame": true,
+        "legacyReceiptAbsent": true,
+        "integrity": {
+          "integrity_check": "ok"
+        },
+        "fk": 0
+      }
+    ],
+    "catalog_live": [
+      {
+        "state": "completed",
+        "visible": 54,
+        "asked": [
+          {
+            "name": "memory_hold",
+            "description": "我可以把一件事记进记忆库"
+          },
+          {
+            "name": "wishstar_confirm_session",
+            "description": "我可以确认参与拆星仪式"
+          },
+          {
+            "name": "conversation_read",
+            "description": "我可以读以前的聊天原文"
+          }
+        ],
+        "results": [
+          [
+            "memory_hold"
+          ],
+          [
+            "memory_hold"
+          ],
+          [
+            "wishstar_confirm_session"
+          ],
+          [
+            "wishstar_confirm_session"
+          ],
+          [
+            "conversation_read"
+          ],
+          [
+            "conversation_read"
+          ]
+        ],
+        "providerCalls": 3
+      }
+    ],
+    "invite_sdk": [
+      {
+        "before": true,
+        "canonical": true,
+        "next": true,
+        "replayedInSdkHistory": true,
+        "sameWindow": true,
+        "sessionResumed": false,
+        "newQueries": 1
+      }
+    ],
+    "memory_edit": [
+      {
+        "sourceVersion": 2,
+        "protocolVersion": 2,
+        "pairedID": true,
+        "actions": [
+          [
+            "selection",
+            null
+          ],
+          [
+            "star_reply",
+            "2026-11-21T00:00:00Z"
+          ],
+          [
+            "star_write",
+            "2026-11-21T00:00:00Z"
+          ],
+          [
+            "memory_hold",
+            1
+          ],
+          [
+            "memory_update",
+            2
+          ]
+        ],
+        "blocks": [
+          "心跳状态",
+          "选号",
+          "心跳状态",
+          "1 号 · 许愿星",
+          "回应原星",
+          "写星",
+          "修订记忆",
+          "结束状态"
+        ],
+        "status": "complete:noop"
+      }
+    ],
+    "invite_crash": [
+      {
+        "run": "unknown",
+        "previous": 1,
+        "stored": 1,
+        "visible": 1,
+        "recoveryCalls": 0,
+        "next": 1,
+        "nextCalls": 1,
+        "sameWindow": true
+      }
+    ],
+    "boundaries": [
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "lookup",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "toolchat",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      }
+    ],
+    "boundaries_deferred": [
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "lookup",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 2,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "regular",
+        "status": null,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": true,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "toolchat",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": true,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      }
+    ],
+    "after_output": [
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "direct",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      }
+    ],
+    "after_output_deferred": [
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "api",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "talked",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "talk",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 0,
+        "modelCount": 1,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "interrupted",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "user",
+        "status": 201,
+        "responsePublished": true,
+        "separateToolMsg": false,
+        "inNext": true,
+        "inInterjection": true,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "completed",
+        "reason": "complete:done",
+        "project": "drawn",
+        "terminal": {
+          "status": "completed"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "stop",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      },
+      {
+        "lane": "sdk",
+        "protocol": "deferred",
+        "branch": "draw",
+        "interruption": "off",
+        "status": 200,
+        "responsePublished": false,
+        "separateToolMsg": false,
+        "inNext": false,
+        "inInterjection": null,
+        "cardCount": 1,
+        "modelCount": 3,
+        "run": "cancelled",
+        "reason": "CANCELLED_MID_RUN",
+        "project": "drawn_no_comment",
+        "terminal": {
+          "status": "cancelled"
+        },
+        "paired": true
+      }
+    ],
+    "ui_tabs": {
+      "status": [
+        "home-click-to-album"
+      ],
+      "uploads": 2,
+      "mismatch": false,
+      "tab": "表情包",
+      "confirmedLabel": "从表情包移除，保留原件和已发聊天？",
+      "deleteStatus": 200,
+      "remaining": [
+        {
+          "kind": "important_photos",
+          "n": 1
+        }
+      ]
+    },
+    "ui_upload": [
+      {
+        "status": [
+          "home-click-to-album"
+        ],
+        "uploads": 1,
+        "afterLoss": {
+          "assets": 1,
+          "masters": 1
+        },
+        "final": {
+          "assets": 1,
+          "relations": 1,
+          "masters": 1,
+          "assetRequests": 2,
+          "sameKey": true
+        }
+      },
+      {
+        "status": [
+          "home-click-to-album"
+        ],
+        "uploads": 1,
+        "afterLoss": {
+          "assets": 1,
+          "masters": 1
+        },
+        "resumeButtons": 0,
+        "final": {
+          "assets": 1,
+          "relations": 1,
+          "masters": 1,
+          "assetRequests": 2,
+          "sameKey": true
+        }
+      }
+    ],
+    "ui_pagination": {
+      "status": [
+        "home-click-to-album"
+      ],
+      "uploads": 53,
+      "first": 50,
+      "last": 53,
+      "unique": 53,
+      "allIds": true
+    },
+    "historical_album": {
+      "baseline": "est-mariposa-joint-20261122-011907",
+      "planner": {
+        "keep_creation": 6,
+        "propose_album_entry": 7,
+        "review_existing_album_entry": 4,
+        "review_original_format": 1
+      },
+      "creations": [
+        [
+          "crt_mvcf58986aaa7f6a",
+          "keep_creation"
+        ],
+        [
+          "crt_mvcf589v43fdc50a",
+          "keep_creation"
+        ],
+        [
+          "crt_mvcg1bziaf94bb11",
+          "keep_creation"
+        ],
+        [
+          "crt_mvcg1c015e1dc514",
+          "keep_creation"
+        ],
+        [
+          "crt_mw8kllxlf6b75859",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mw8p6puk4297a7ed",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mw8pbka44b6336e5",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mwaczcfpaf40c64b",
+          "review_existing_album_entry"
+        ],
+        [
+          "crt_mwan0wv80a3cb553",
+          "review_existing_album_entry"
+        ],
+        [
+          "crt_mwd4ccjr573c9bd1",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mwd4eocj63062193",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mwdbk2zb33f81cff",
+          "review_original_format"
+        ],
+        [
+          "crt_mwdcrokgd4ce7818",
+          "review_existing_album_entry"
+        ],
+        [
+          "crt_mwg921y540f47020",
+          "review_existing_album_entry"
+        ],
+        [
+          "crt_mwj6tna9c43065ef",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mwkotya5d4f8fdac",
+          "propose_album_entry"
+        ],
+        [
+          "crt_mwpvngi1aa7a0892",
+          "keep_creation"
+        ],
+        [
+          "crt_mwpvngie99c6bb22",
+          "keep_creation"
+        ]
+      ],
+      "relations": [
+        [
+          "important_photos",
+          8,
+          0
+        ]
+      ],
+      "missing_original": 0,
+      "removed_creations": 4
+    },
+    "offline_usage": {
+      "backup": "est-mariposa-joint-20261122-011907",
+      "sent_usage": [
+        [
+          "sdk_projection_v1",
+          "chat",
+          2278,
+          2278,
+          2244
+        ],
+        [
+          "sdk_projection_v1",
+          "proactive_turn",
+          17,
+          17,
+          13
+        ],
+        [
+          "wire_v1",
+          "chat",
+          392,
+          391,
+          371
+        ]
+      ],
+      "active_frozen": [
+        [
+          "deferred",
+          56,
+          57,
+          0,
+          1
+        ]
+      ],
+      "price_setting_rows": 0,
+      "sent_heartbeat": 0
+    }
+  },
+  "suite": {
+    "estFiles": 72,
+    "estPassed": 504,
+    "failures": 0,
+    "files": [
+      "tests/integration/album-image-delivery.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/integration/audit-router-and-call-define.test.ts 0 group_empty # pass 3 # fail 0",
+      "tests/integration/background-management-contract.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/integration/background-product-chain.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/integration/cache-maintenance-c07-c09.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/completion-r33-recovery.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/content-f0607-lifecycle.test.ts 0 group_empty # pass 15 # fail 0",
+      "tests/integration/content-rf-recovery.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/content-source-revisions.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/integration/exec-v1-wp4-http.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/exec-v1-wp5-content.test.ts 0 group_empty # pass 18 # fail 0",
+      "tests/integration/frozen-tool-package.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/integration/heartbeat-invite-recovery.test.ts 0 group_empty # pass 10 # fail 0",
+      "tests/integration/heartbeat-note-delete-race.test.ts 0 group_empty # pass 11 # fail 0",
+      "tests/integration/heartbeat-source-adapters.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/integration/heartbeat-v12-orchestration.test.ts 0 group_empty # pass 18 # fail 0",
+      "tests/integration/home-chat-navigation.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/native-mcp-direct.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/integration/r3-migrations-and-gates.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/integration/sdk-host-continuity.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/integration/surface-detail-http.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/album-upload.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/batch-d-cross.test.ts 0 group_empty # pass 3 # fail 0",
+      "tests/unit/c03-protocol-retention.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/carry-alias-identity.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/carry-hash-authority.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/carry-images.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/content-carry.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/content-moments-http.test.ts 0 group_empty # pass 3 # fail 0",
+      "tests/unit/context-rotation-root.test.ts 0 group_empty # pass 14 # fail 0",
+      "tests/unit/direct-task-sdk-anchor.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/exec-v1-wp3-model.test.ts 0 group_empty # pass 10 # fail 0",
+      "tests/unit/exec-v1-wp4-executor.test.ts 0 group_empty # pass 11 # fail 0",
+      "tests/unit/full-audit-background-failures.test.ts 0 group_empty # pass 8 # fail 0",
+      "tests/unit/full-audit-supervisor.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/full-audit-tool-budget.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/full-audit-wake-wire.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/unit/heartbeat-audio-sources.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/heartbeat-cards.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/image-creation-migration-plan.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/imagegen.test.ts 0 group_empty # pass 21 # fail 0",
+      "tests/unit/joint-audit-surfacing.test.ts 0 group_empty # pass 18 # fail 0",
+      "tests/unit/keepwarm-sleep.test.ts 0 group_empty # pass 3 # fail 0",
+      "tests/unit/message-history.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/milestone-self-maintain.test.ts 0 group_empty # pass 9 # fail 0",
+      "tests/unit/native-tool-snapshot.test.ts 0 group_empty # pass 3 # fail 0",
+      "tests/unit/or-rotation.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/pkg4-mcp-discovery-noseq.test.ts 0 group_empty # pass 18 # fail 0",
+      "tests/unit/pkg4-speaker-name-projection.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/react-chat-client.test.ts 0 group_empty # pass 27 # fail 0",
+      "tests/unit/remediation-batch2.test.ts 0 group_empty # pass 6 # fail 0",
+      "tests/unit/sdk-anchor-fork-hostside.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/sdk-subscription-access.test.ts 0 group_empty # pass 41 # fail 0",
+      "tests/unit/shared-tool-contract.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/unit/static-svg-media.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/unit/surface-call-gating.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/surfacing-core.test.ts 0 group_empty # pass 21 # fail 0",
+      "tests/unit/surfacing-events.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/surfacing-openrouter.test.ts 0 group_empty # pass 5 # fail 0",
+      "tests/unit/surfacing-r31-window-coverage.test.ts 0 group_empty # pass 4 # fail 0",
+      "tests/unit/surfacing-sdk-first-projection.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/unit/surfacing-seam.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/surfacing-sol-decision.test.ts 0 group_empty # pass 22 # fail 0",
+      "tests/unit/tool-native-scope.test.ts 0 group_empty # pass 6 # fail 0",
+      "tests/unit/tool-resident-catalog-policy.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/unit/tool-task-discovery.test.ts 0 group_empty # pass 1 # fail 0",
+      "tests/unit/turn-completion-sdk.test.ts 0 group_empty # pass 2 # fail 0",
+      "tests/unit/wake-keepwarm.test.ts 0 group_empty # pass 15 # fail 0",
+      "tests/unit/wishstar-integration.test.ts 0 group_empty # pass 9 # fail 0",
+      "tests/unit/wp3-i-plans-write.test.ts 0 group_empty # pass 7 # fail 0",
+      "tests/unit/wp7-selection-state-machine.test.ts 0 group_empty # pass 10 # fail 0",
+      "tests/unit/zashidele-moments.test.ts 0 group_empty # pass 1 # fail 0"
+    ],
+    "mariposa": [
+      "test_surface_source_lifecycle 0 31 passed in 1.40s",
+      "test_surface_v5_purpose 0 15 passed in 0.65s",
+      "test_source_page_navigation 0 19 passed, 1 warning in 0.54s",
+      "test_surface_r5_delivery_view_20261103 0 5 passed in 0.04s",
+      "test_surface_r31_need_and_lock 0 9 passed in 0.28s",
+      "test_surface_replay_history 0 3 skipped in 0.03s",
+      "test_surface_deep_read_audit 0 3 passed in 0.56s",
+      "test_surface_tiered_coverage 0 2 skipped in 0.08s",
+      "test_surface_same_turn_audit 0 11 passed in 0.36s",
+      "test_surface_dispatch_budget_audit 0 7 passed in 0.26s",
+      "test_estomago_heartbeat_binding 0 2 passed, 1 warning in 0.28s",
+      "test_memory_delivery_20261104 0 7 passed in 0.43s"
+    ],
+    "relocated_history_raw": [
+      "test_surface_replay_history: 2 passed, 1 failed",
+      "test_surface_tiered_coverage: 2 passed"
+    ],
+    "diagnostic_failed_assertions": [
+      209,
+      222
+    ],
+    "current_selection": "test_surface_selection_judge 0 22 passed in 0.48s",
+    "typechecks": [
+      "typecheck 0",
+      "typecheck:web 0"
+    ],
+    "sdk_source_gate": "SDK client replaced at factory; native source process and supplier cache unmeasured"
+  },
+  "catalog": [
+    {
+      "name": "memory_hold",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "quoted",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "original_title",
+        "categories",
+        "text",
+        "creation_mode"
+      ],
+      "staticAction": "memory_hold"
+    },
+    {
+      "name": "memory_recall",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "query"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "memory_recall_next",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "result_set_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "memory_read_full",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "memory_ref"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "memory_update",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "memory_id",
+        "expected_version"
+      ],
+      "staticAction": "memory_update"
+    },
+    {
+      "name": "conversation_read",
+      "owner": "conversation",
+      "call": true,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "memory_i_read",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "plans_read",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "memory_i_write",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": "i_write"
+    },
+    {
+      "name": "plans_write",
+      "owner": "memory",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": "plan_write"
+    },
+    {
+      "name": "memory_open",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "memory_correct",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "deletion_review",
+      "owner": "memory",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "episode_list",
+      "owner": "memory",
+      "call": true,
+      "legacy": true,
+      "replacedBy": "episode_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "episode_read",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "episode_apply",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action",
+        "reason_code"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "episode_get",
+      "owner": "memory",
+      "call": true,
+      "legacy": true,
+      "replacedBy": "episode_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "content_post_create",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "text",
+        "idempotency_key"
+      ],
+      "staticAction": "post"
+    },
+    {
+      "name": "content_comment_create",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "post_id",
+        "text",
+        "idempotency_key"
+      ],
+      "staticAction": "comment"
+    },
+    {
+      "name": "content_posts_list",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "creation_save_artifact",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "format",
+        "content",
+        "client_operation_id"
+      ],
+      "staticAction": "creation"
+    },
+    {
+      "name": "wake_manage",
+      "owner": "wake",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "operation"
+      ],
+      "staticAction": "wake"
+    },
+    {
+      "name": "background_complete",
+      "owner": "turn",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "outcome"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "chat_send_text",
+      "owner": "conversation",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "text",
+        "idempotency_key"
+      ],
+      "staticAction": "chat"
+    },
+    {
+      "name": "media_import",
+      "owner": "media",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "source_url"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "chat_send_attachment",
+      "owner": "conversation",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "asset_id",
+        "presentation"
+      ],
+      "staticAction": "chat"
+    },
+    {
+      "name": "call_control",
+      "owner": "voice",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "action"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "oido_analyze",
+      "owner": "oido",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "chat_send_voice",
+      "owner": "voice",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "text"
+      ],
+      "staticAction": "chat"
+    },
+    {
+      "name": "media_search",
+      "owner": "media",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "query"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "oido_get",
+      "owner": "oido",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "analysis_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "transcript_read",
+      "owner": "voice",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "oido_capabilities",
+      "owner": "oido",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "oido_view",
+      "owner": "oido",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "analysis_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "oido_find",
+      "owner": "oido",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "audio_ref",
+        "query"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "oido_compare",
+      "owner": "oido",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "left",
+        "right"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "identity_milestone_write",
+      "owner": "identity",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "operation"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_write_star",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "quoted",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "text",
+        "visibility",
+        "idempotency_key"
+      ],
+      "staticAction": "star_write"
+    },
+    {
+      "name": "wishstar_hidden_stars",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": true,
+      "replacedBy": "wishstar_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_read",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "what"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_special_dates",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": true,
+      "replacedBy": "wishstar_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_start_session",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "special_date_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_confirm_session",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "session_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_take_star",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "session_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_finish_session",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "session_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_request_star",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [],
+      "staticAction": "star_request"
+    },
+    {
+      "name": "wishstar_respond_request",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "request_id",
+        "decision"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_offer_star",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "star_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_list_offers",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": true,
+      "replacedBy": "wishstar_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_accept_offer",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "offer_id"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "wishstar_notifications",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": true,
+      "replacedBy": "wishstar_read",
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "context_review_complete",
+      "owner": "context-review",
+      "call": true,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": false,
+      "directInitial": false,
+      "required": [
+        "review_id",
+        "decision"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "memory_words_write",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action",
+        "memory_id",
+        "refs"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "conversation_archive",
+      "owner": "archives",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "kind"
+      ],
+      "staticAction": "archive"
+    },
+    {
+      "name": "memory_relations",
+      "owner": "memory",
+      "call": true,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "action"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "image_generate",
+      "owner": "imagegen",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "prompt",
+        "client_operation_id"
+      ],
+      "staticAction": "image"
+    },
+    {
+      "name": "content_albums_read",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "content_album_entry_write",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "kind",
+        "asset_id",
+        "idempotency_key"
+      ],
+      "staticAction": "album"
+    },
+    {
+      "name": "media_view",
+      "owner": "media",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": true,
+      "required": [
+        "asset_ref"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "content_creations_read",
+      "owner": "content",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [],
+      "staticAction": null
+    },
+    {
+      "name": "archives_search",
+      "owner": "archives",
+      "call": false,
+      "legacy": false,
+      "price": "needs-quote/arguments",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "query"
+      ],
+      "staticAction": null
+    },
+    {
+      "name": "heartbeat_draw",
+      "owner": "heartbeat",
+      "call": false,
+      "legacy": false,
+      "price": "free",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "card_number"
+      ],
+      "staticAction": "selection"
+    },
+    {
+      "name": "wishstar_reply_star",
+      "owner": "wishstar",
+      "call": false,
+      "legacy": false,
+      "price": "quoted",
+      "discoveredInOrdinaryHeartbeat": true,
+      "directInitial": false,
+      "required": [
+        "reply_ref",
+        "text",
+        "idempotency_key"
+      ],
+      "staticAction": "star_reply"
+    }
+  ],
+  "normal": [
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws0q1lu3e0e0dd3633bd142"
+      },
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60872
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card",
+        "assistant",
+        "assistant"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn",
+          "messages": 4,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws0q1a7efff293350c6e5ef"
+      },
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60872
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws0q28yd6c9eda58b2de42b"
+      },
+      "prefixBytes": {
+        "wireTools": 6673,
+        "catalog": 64343
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card",
+        "assistant",
+        "assistant"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn",
+          "messages": 4,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws0q1xfb00bda19dd6a49cb"
+      },
+      "prefixBytes": {
+        "wireTools": 6673,
+        "catalog": 64343
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws0q2vxb61708bb00211efa"
+      },
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60872
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card",
+        "assistant",
+        "assistant"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn",
+          "messages": 4,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws0q2kk8322f9073f2ac017"
+      },
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60872
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws0q3ig7b357cc67a56d48e"
+      },
+      "prefixBytes": {
+        "wireTools": 6673,
+        "catalog": 64343
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card",
+        "assistant",
+        "assistant"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn",
+          "messages": 4,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws0q376cf096ec41156cbd3"
+      },
+      "prefixBytes": {
+        "wireTools": 6673,
+        "catalog": 64343
+      },
+      "paired": true,
+      "samePrefix": true,
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "nextChat": "completed",
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages",
+            "actions",
+            "terminal"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar",
+          "actions": [
+            {
+              "kind": "selection",
+              "status": "committed"
+            },
+            {
+              "kind": "star_reply",
+              "status": "committed"
+            },
+            {
+              "kind": "star_write",
+              "status": "committed"
+            },
+            {
+              "kind": "memory_hold",
+              "status": "committed"
+            }
+          ],
+          "terminal": {
+            "status": "completed"
+          }
+        }
+      ]
+    }
+  ],
+  "extra_chains": [
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "album",
+      "run": {
+        "state": "failed",
+        "result_code": "BACKGROUND_BUDGET_EXHAUSTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 0,
+        "turn_id": "turn_mwpr38lc59bd5747934fcee6"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "budget",
+      "run": {
+        "state": "failed",
+        "result_code": "BACKGROUND_BUDGET_EXHAUSTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws183to5732a27440b6d0aa"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "cancel-after-actions",
+      "run": {
+        "state": "cancelled",
+        "result_code": "CANCELLED_MID_RUN",
+        "model_requests_started": 3,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mws1852t9094262804957100"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "no-target",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 2,
+        "tool_calls_started": 9,
+        "turn_id": "turn_mws184gbf2e33cdabf0a52cd"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "recover",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws184ra8c8fd8dd6bec6b68"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws1836o70200bd482f31678"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws183i90bfff64a6ba7dc93"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "unknown",
+      "run": {
+        "state": "unknown",
+        "result_code": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+        "model_requests_started": 3,
+        "tool_calls_started": 8,
+        "turn_id": "turn_mws1845864d7896844a232eb"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "unknown"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "budget",
+      "run": {
+        "state": "failed",
+        "result_code": "BACKGROUND_BUDGET_EXHAUSTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws181me9bb6f7eafa794b41"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "cancel-after-actions",
+      "run": {
+        "state": "cancelled",
+        "result_code": "CANCELLED_MID_RUN",
+        "model_requests_started": 3,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mws182vdddebbc7f7710f93c"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "no-target",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 2,
+        "tool_calls_started": 9,
+        "turn_id": "turn_mws1828zac6878bf578c00d2"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "recover",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws182k0f4755ff1b953ba4b"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws180yu61d28cb21095956b"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws181ama0c4478e37227b83"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "unknown",
+      "run": {
+        "state": "unknown",
+        "result_code": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+        "model_requests_started": 3,
+        "tool_calls_started": 8,
+        "turn_id": "turn_mws181xz505ee399a02982f2"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "unknown"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "first-body-loss",
+      "run": {
+        "state": "failed",
+        "result_code": "OR_ERROR",
+        "model_requests_started": 1,
+        "tool_calls_started": 0,
+        "turn_id": "turn_mws18bd006df28428a70c87c"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "midnight",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mwqlgbo804898d129834676f"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "budget",
+      "run": {
+        "state": "failed",
+        "result_code": "BACKGROUND_BUDGET_EXHAUSTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws18889385798d9ff37aa71"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "cancel-after-actions",
+      "run": {
+        "state": "cancelled",
+        "result_code": "CANCELLED_MID_RUN",
+        "model_requests_started": 3,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mws189hp9877880a3cf16868"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "no-target",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 2,
+        "tool_calls_started": 9,
+        "turn_id": "turn_mws188v81e9d7e82c6678a45"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "recover",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws1896ad61b478b824b3a28"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws187lcfc64c333acd048a4"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws187wtd9b81d307c41b7aa"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "budget",
+      "run": {
+        "state": "failed",
+        "result_code": "BACKGROUND_BUDGET_EXHAUSTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws1861d55e86bdef8b86f5d"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "cancel-after-actions",
+      "run": {
+        "state": "cancelled",
+        "result_code": "CANCELLED_MID_RUN",
+        "model_requests_started": 3,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mws187a2b55f6367682ec73e"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "no-target",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 2,
+        "tool_calls_started": 9,
+        "turn_id": "turn_mws186np51a4e98cdfc9ca11"
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "recover",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 12,
+        "turn_id": "turn_mws186yp2893ac3e6b9c26bf"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "send",
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 15,
+        "turn_id": "turn_mws185edfe1e055c303539d2"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "silent",
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 13,
+        "turn_id": "turn_mws185q387c76c19998ef8a4"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "short",
+      "run": {
+        "state": "failed",
+        "result_code": "HEARTBEAT_DECK_UNPREPARED",
+        "model_requests_started": 0,
+        "tool_calls_started": 0,
+        "turn_id": null
+      },
+      "draw": [],
+      "paired": true,
+      "nextChat": "completed"
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "unpriced",
+      "run": {
+        "state": "failed",
+        "result_code": "BUDGET_ESTIMATE_UNAVAILABLE",
+        "model_requests_started": 3,
+        "tool_calls_started": 8,
+        "turn_id": "turn_mws18b1ubc5480bae79d3cbc"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "paired": true,
+      "nextChat": "completed"
+    }
+  ],
+  "catalog_lanes": [
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "listed": 56,
+      "definitions": 56,
+      "registered": 63,
+      "schemas": {
+        "memory_hold": "schema",
+        "memory_recall": "schema",
+        "memory_recall_next": "schema",
+        "memory_read_full": "schema",
+        "memory_update": "schema",
+        "conversation_read": "schema",
+        "memory_i_read": "schema",
+        "plans_read": "schema",
+        "memory_i_write": "schema",
+        "plans_write": "schema",
+        "memory_open": "schema",
+        "memory_correct": "schema",
+        "deletion_review": "schema",
+        "episode_read": "schema",
+        "episode_apply": "schema",
+        "content_post_create": "schema",
+        "content_comment_create": "schema",
+        "content_posts_list": "schema",
+        "creation_save_artifact": "schema",
+        "wake_manage": "schema",
+        "background_complete": "schema",
+        "chat_send_text": "schema",
+        "media_import": "schema",
+        "chat_send_attachment": "schema",
+        "call_control": "schema",
+        "oido_analyze": "schema",
+        "chat_send_voice": "schema",
+        "media_search": "schema",
+        "oido_get": "schema",
+        "transcript_read": "schema",
+        "oido_capabilities": "schema",
+        "oido_view": "schema",
+        "oido_find": "schema",
+        "oido_compare": "schema",
+        "identity_milestone_write": "schema",
+        "wishstar_write_star": "schema",
+        "wishstar_read": "schema",
+        "wishstar_start_session": "schema",
+        "wishstar_confirm_session": "schema",
+        "wishstar_take_star": "schema",
+        "wishstar_finish_session": "schema",
+        "wishstar_request_star": "schema",
+        "wishstar_respond_request": "schema",
+        "wishstar_offer_star": "schema",
+        "wishstar_accept_offer": "schema",
+        "context_review_complete": null,
+        "memory_words_write": "schema",
+        "conversation_archive": "schema",
+        "memory_relations": "schema",
+        "image_generate": "schema",
+        "content_albums_read": "schema",
+        "content_album_entry_write": "schema",
+        "media_view": "schema",
+        "content_creations_read": "schema",
+        "archives_search": "schema",
+        "heartbeat_draw": "schema",
+        "wishstar_reply_star": "schema"
+      }
+    },
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "listed": 56,
+      "definitions": 56,
+      "registered": 63,
+      "schemas": {
+        "memory_hold": "schema",
+        "memory_recall": "schema",
+        "memory_recall_next": "schema",
+        "memory_read_full": "schema",
+        "memory_update": "schema",
+        "conversation_read": "schema",
+        "memory_i_read": "schema",
+        "plans_read": "schema",
+        "memory_i_write": "schema",
+        "plans_write": "schema",
+        "memory_open": "schema",
+        "memory_correct": "schema",
+        "deletion_review": "schema",
+        "episode_read": "schema",
+        "episode_apply": "schema",
+        "content_post_create": "schema",
+        "content_comment_create": "schema",
+        "content_posts_list": "schema",
+        "creation_save_artifact": "schema",
+        "wake_manage": "schema",
+        "background_complete": "schema",
+        "chat_send_text": "schema",
+        "media_import": "schema",
+        "chat_send_attachment": "schema",
+        "call_control": "schema",
+        "oido_analyze": "schema",
+        "chat_send_voice": "schema",
+        "media_search": "schema",
+        "oido_get": "schema",
+        "transcript_read": "schema",
+        "oido_capabilities": "schema",
+        "oido_view": "schema",
+        "oido_find": "schema",
+        "oido_compare": "schema",
+        "identity_milestone_write": "schema",
+        "wishstar_write_star": "schema",
+        "wishstar_read": "schema",
+        "wishstar_start_session": "schema",
+        "wishstar_confirm_session": "schema",
+        "wishstar_take_star": "schema",
+        "wishstar_finish_session": "schema",
+        "wishstar_request_star": "schema",
+        "wishstar_respond_request": "schema",
+        "wishstar_offer_star": "schema",
+        "wishstar_accept_offer": "schema",
+        "context_review_complete": null,
+        "memory_words_write": "schema",
+        "conversation_archive": "schema",
+        "memory_relations": "schema",
+        "image_generate": "schema",
+        "content_albums_read": "schema",
+        "content_album_entry_write": "schema",
+        "media_view": "schema",
+        "content_creations_read": "schema",
+        "archives_search": "schema",
+        "heartbeat_draw": "schema",
+        "wishstar_reply_star": "schema"
+      }
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "listed": 56,
+      "definitions": 56,
+      "registered": 63,
+      "schemas": {
+        "memory_hold": "schema",
+        "memory_recall": "schema",
+        "memory_recall_next": "schema",
+        "memory_read_full": "schema",
+        "memory_update": "schema",
+        "conversation_read": "schema",
+        "memory_i_read": "schema",
+        "plans_read": "schema",
+        "memory_i_write": "schema",
+        "plans_write": "schema",
+        "memory_open": "schema",
+        "memory_correct": "schema",
+        "deletion_review": "schema",
+        "episode_read": "schema",
+        "episode_apply": "schema",
+        "content_post_create": "schema",
+        "content_comment_create": "schema",
+        "content_posts_list": "schema",
+        "creation_save_artifact": "schema",
+        "wake_manage": "schema",
+        "background_complete": "schema",
+        "chat_send_text": "schema",
+        "media_import": "schema",
+        "chat_send_attachment": "schema",
+        "call_control": "schema",
+        "oido_analyze": "schema",
+        "chat_send_voice": "schema",
+        "media_search": "schema",
+        "oido_get": "schema",
+        "transcript_read": "schema",
+        "oido_capabilities": "schema",
+        "oido_view": "schema",
+        "oido_find": "schema",
+        "oido_compare": "schema",
+        "identity_milestone_write": "schema",
+        "wishstar_write_star": "schema",
+        "wishstar_read": "schema",
+        "wishstar_start_session": "schema",
+        "wishstar_confirm_session": "schema",
+        "wishstar_take_star": "schema",
+        "wishstar_finish_session": "schema",
+        "wishstar_request_star": "schema",
+        "wishstar_respond_request": "schema",
+        "wishstar_offer_star": "schema",
+        "wishstar_accept_offer": "schema",
+        "context_review_complete": null,
+        "memory_words_write": "schema",
+        "conversation_archive": "schema",
+        "memory_relations": "schema",
+        "image_generate": "schema",
+        "content_albums_read": "schema",
+        "content_album_entry_write": "schema",
+        "media_view": "schema",
+        "content_creations_read": "schema",
+        "archives_search": "schema",
+        "heartbeat_draw": "schema",
+        "wishstar_reply_star": "schema"
+      }
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "listed": 56,
+      "definitions": 56,
+      "registered": 63,
+      "schemas": {
+        "memory_hold": "schema",
+        "memory_recall": "schema",
+        "memory_recall_next": "schema",
+        "memory_read_full": "schema",
+        "memory_update": "schema",
+        "conversation_read": "schema",
+        "memory_i_read": "schema",
+        "plans_read": "schema",
+        "memory_i_write": "schema",
+        "plans_write": "schema",
+        "memory_open": "schema",
+        "memory_correct": "schema",
+        "deletion_review": "schema",
+        "episode_read": "schema",
+        "episode_apply": "schema",
+        "content_post_create": "schema",
+        "content_comment_create": "schema",
+        "content_posts_list": "schema",
+        "creation_save_artifact": "schema",
+        "wake_manage": "schema",
+        "background_complete": "schema",
+        "chat_send_text": "schema",
+        "media_import": "schema",
+        "chat_send_attachment": "schema",
+        "call_control": "schema",
+        "oido_analyze": "schema",
+        "chat_send_voice": "schema",
+        "media_search": "schema",
+        "oido_get": "schema",
+        "transcript_read": "schema",
+        "oido_capabilities": "schema",
+        "oido_view": "schema",
+        "oido_find": "schema",
+        "oido_compare": "schema",
+        "identity_milestone_write": "schema",
+        "wishstar_write_star": "schema",
+        "wishstar_read": "schema",
+        "wishstar_start_session": "schema",
+        "wishstar_confirm_session": "schema",
+        "wishstar_take_star": "schema",
+        "wishstar_finish_session": "schema",
+        "wishstar_request_star": "schema",
+        "wishstar_respond_request": "schema",
+        "wishstar_offer_star": "schema",
+        "wishstar_accept_offer": "schema",
+        "context_review_complete": null,
+        "memory_words_write": "schema",
+        "conversation_archive": "schema",
+        "memory_relations": "schema",
+        "image_generate": "schema",
+        "content_albums_read": "schema",
+        "content_album_entry_write": "schema",
+        "media_view": "schema",
+        "content_creations_read": "schema",
+        "archives_search": "schema",
+        "heartbeat_draw": "schema",
+        "wishstar_reply_star": "schema"
+      }
+    }
+  ]
+}
