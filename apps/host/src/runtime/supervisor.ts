@@ -526,9 +526,6 @@ export class TurnSupervisor {
     d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
     let toolCallsObserved = 0;
-    // RB2-03：让位资格由调用方按控制类型传入（keepwarm/free_activity）。
-    const isYieldRequested = (opts.yieldEligible ?? opts.kind === 'keepwarm') && d.keepwarmYieldCheck
-      ? () => d.keepwarmYieldCheck!(opts.runId) : null;
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
       conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
@@ -548,13 +545,14 @@ export class TurnSupervisor {
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
-        yieldRequested: isYieldRequested,
+        // RB2-03：让位资格由调用方按控制类型传入（keepwarm/free_activity）。
+        yieldRequested: (opts.yieldEligible ?? opts.kind === 'keepwarm') && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
       },
     });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
     settleBackgroundRun(d.db, opts.runId);
     // 结果分类与收尾（R4a 迁 runtime/background-outcome.ts）
-    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, isYieldRequested: isYieldRequested ?? undefined, loop,
+    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop,
       ...(d.heartbeat && heartbeatMode && heartbeatHostText !== null
         ? { heartbeat: { runtime: d.heartbeat, mode: heartbeatMode, hostText: heartbeatHostText } } : {}),
     });

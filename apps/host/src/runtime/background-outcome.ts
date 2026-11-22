@@ -23,7 +23,6 @@ export type BackgroundOutcomeInput = {
   capturedActivityRevision: number | null;
   toolCallsObserved: number;
   isCancelRequested: () => boolean;
-  isYieldRequested?: () => boolean;
   recoveredRequestId?: string;
   heartbeat?: { runtime: HeartbeatRuntime; mode: HeartbeatMode; hostText: string };
   loop: {
@@ -56,12 +55,12 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const missingExhaustedReply = exhausted && completed && !exhaustedReply;
   const finishedState = (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
   const finishReason = missingExhaustedReply ? 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' : loop.result.errorCode;
-  // A normal text-only response to the invitation ends the first model round.
-  // Tool-loop text, including a reply after an unconfirmed draw, is not this choice.
+  // A completed first text-only response is the heartbeat's formal reply.
+  // New chat queues behind this commit and only prevents further background dispatches.
   const talkOnly = heartbeat?.mode === 'draw' && completed && observed?.round_no === 0
     && input.toolCallsObserved === 0 && Boolean(lastText?.trim()) && loop.lastSentMessages !== null
     && loop.finalMessages?.length === loop.lastSentMessages.length + 1
-    && !input.isCancelRequested() && !input.isYieldRequested?.();
+    && !input.isCancelRequested();
 
   // Only the current heartbeat's unobserved card payload can be withheld. Its
   // actual tool call and a protocol-valid same-ID receipt remain in the history.

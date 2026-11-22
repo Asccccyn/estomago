@@ -20,7 +20,7 @@ import { buildRecentDialogue, type RecentMessage } from './trigger.ts';
 import { speakerLabelFor } from '../identity/speaker-labels.ts';
 import { projectIdentityFacts } from '../identity/surfacing-projection.ts';
 import {
-  estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, surfaceItemKey,
+  estimateTokens, memoryRefFor, renderAugmentation, projectSurfacedMemory, readValidatedItems, surfaceItemKey,
   type FrozenAugmentation, type SurfaceItem, type MissingQuote,
 } from './contracts.ts';
 import {
@@ -53,15 +53,6 @@ export type AugmentInput = {
 
 /** supervisor 薄接点拿到的冻结结果。 */
 export type AugmentResult = FrozenAugmentation & { jobId: string };
-
-function readValidatedItems(json: string): { items: SurfaceItem[]; missing: MissingQuote[] } {
-  const saved: SurfaceItem[] | { items: SurfaceItem[]; missing?: MissingQuote[] } = JSON.parse(json);
-  if (Array.isArray(saved)) return { items: saved, missing: [] };
-  const missing = Array.isArray(saved.missing) ? saved.missing.filter(part =>
-    part && ['words_only', 'raw_context', 'words'].includes(part.kind)
-      && ['access_blocked', 'no_match', 'incomplete'].includes(part.status)) : [];
-  return { items: saved.items, missing };
-}
 
 export class SurfacingService {
   readonly repo: SurfacingRepository;
@@ -770,7 +761,7 @@ export class SurfacingService {
     }
     const deliveryId = this.repo.freezeDelivery({
       jobId: job.id, attemptId: input.attemptId, windowId: input.windowId,
-      text, items, memoryRefs: refList,
+      text, items, memoryRefs: refList, missing,
     });
     if (!deliveryId) return null;
     return { deliveryId, text, items, memoryRefs: refList, payloadHash: this.repo.frozenForAttempt(input.attemptId)?.payload_hash ?? '', jobId: job.id };
@@ -861,11 +852,6 @@ export class SurfacingService {
   /** 成功轨迹 retain：写入真实 manifest 后调（不假标 coverage）。 */
   markRetained(result: AugmentResult): void {
     this.repo.markRetained(result.jobId, result.deliveryId);
-    // 检索目的完成状态：delivered（供下一轮 Sol 判断"同一需要已处理"）
-    const job = result.jobId ? this.repo.jobById(result.jobId) : null;
-    if (job && !readValidatedItems(job.items_json ?? '[]').missing.length) {
-      this.repo.recordSolRetrievalOutcome(job.id, 'delivered');
-    }
   }
 
   // —— 设置面（同一功能的唯一设置区域；生效值与实际请求同源）——
@@ -952,9 +938,9 @@ export class SurfacingService {
 
   visibleMemoriesForTurn(conversationId: string, turnId: string) {
     return this.repo.visibleForTurn(conversationId, turnId, this.speakerNames)
-      .map(({ memory_ref, kind, date, text, speaker, title, mood_tags, our_words }) => ({
+      .map(({ memory_ref, kind, date, text, speaker, title, mood_tags, our_words, context }) => ({
         memory_ref, kind, date, text, ...(speaker ? { speaker } : {}), ...(title ? { title } : {}),
-        ...(mood_tags ? { mood_tags } : {}), ...(our_words ? { our_words } : {}),
+        ...(mood_tags ? { mood_tags } : {}), ...(our_words ? { our_words } : {}), ...(context ? { context } : {}),
       }));
   }
 

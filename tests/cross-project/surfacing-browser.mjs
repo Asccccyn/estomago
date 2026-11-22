@@ -36,7 +36,11 @@ try {
   // 浮现数据注入（真实链路已由 surfacing-core/seam/detail-http 验收；本 smoke 职责=DOM 渲染
   // 与交互闭环）。visibleMemoriesForTurn=AC015 形状（memory_ref/date/text，无内部字段）。
   const SURFACE = { memory_ref: 'sf_dom_1', kind: 'words', title: '记忆库建成', mood_tags:['开心','期待'], date: '2026-07-09', text: '记忆库在那天建成。', our_words: [{speaker:'char',text:'我们做到了'},{speaker:'宿主用户',text:'这一句也存着'}] };
-  host.surfacing.visibleMemoriesForTurn = (_room, turn) => turn ? [SURFACE] : [];
+  const RAW = { memory_ref: 'sf_dom_raw', kind: 'words', date: '2026-07-09', speaker: 'char', text: '我们周末见。',
+    context: '宿主用户(2026-07-09 21:30)：是说周六，不是周日。\nchar(2026-07-09 21:31)：好，我周六等你。' };
+  let captureRawTurn = false;
+  let rawTurn = '';
+  host.surfacing.visibleMemoriesForTurn = (_room, turn) => turn ? [turn === rawTurn ? RAW : SURFACE] : [];
   const reads = [];
   host.surfacing.readMemoryForTurn = async (_room, _turn, ref, cursor, section) => {
     reads.push({ ref, cursor: cursor ?? null, section });
@@ -58,7 +62,7 @@ try {
   // 哨兵：记录全部 turn 派发（不阻断）——展开浮现不得触发任何新检索/新回合
   const realEnqueue = host.supervisor.enqueue.bind(host.supervisor);
   const enqueued = [];
-  host.supervisor.enqueue = (id) => { enqueued.push(id); return realEnqueue(id); };
+  host.supervisor.enqueue = (id) => { enqueued.push(id); if (captureRawTurn) rawTurn = id; return realEnqueue(id); };
 
   await host.start();
   const base = `http://127.0.0.1:${host.port}`;
@@ -88,6 +92,7 @@ try {
   const panel = page.getByText('char：我们做到了', {exact:true});
   await panel.waitFor();
   await page.getByRole('heading', { name: '记忆库建成', exact:true }).waitFor();
+  assert.equal(await page.getByRole('heading', { name: '当时的聊天前后文' }).count(), 0);
   await page.getByText('当时的心情：开心、期待', {exact:true}).waitFor();
   assert.ok(enqueued.length > enqueuedBefore, '消息真实进入宿主 turn 链');
   await page.getByText('命中我们的话 · 2026-07-09', {exact:true}).waitFor();
@@ -121,8 +126,20 @@ try {
   assert.equal(enqueued.length, enqueuedBeforeDetail, '展开/翻页不触发新回合');
   assert.ok(reads.every(r => r.ref === SURFACE.memory_ref), '全部详情读取沿本次 memory_ref');
   assert.ok(reads.some(r => r.cursor === 'p1'), '翻页游标真实传递');
+
+  const readsBeforeRaw = reads.length;
+  captureRawTurn = true;
+  await composer.fill('请查看周末见那句话和前后文');
+  await page.getByRole('button', { name: '发送' }).click();
+  await page.getByText('char：我们周末见。', { exact: true }).waitFor();
+  const rawSection = page.getByRole('heading', { name: '当时的聊天前后文', exact: true }).locator('..');
+  const neighbor = rawSection.locator('p');
+  assert.equal(await neighbor.textContent(), RAW.context);
+  assert.equal(await neighbor.evaluate(element => getComputedStyle(element).whiteSpace), 'pre-wrap');
+  assert.equal(enqueued.length, enqueuedBeforeDetail + 1);
+  assert.equal(reads.length, readsBeforeRaw, '已投递的邻句从本轮列表直接展示');
   assert.equal(errors.length, 0, `页面零 JS 错误（${errors.join('; ')}）`);
-  console.log('[surfacing-browser] PASS：列表默认展开、详情三区、翻页游标、零重检索；reads=' + JSON.stringify(reads.map(r => r.section + (r.cursor ? '+cursor' : ''))));
+  console.log('[surfacing-browser] PASS：列表默认展开、原文邻句与署名、详情三区、翻页游标、零重检索；reads=' + JSON.stringify(reads.map(r => r.section + (r.cursor ? '+cursor' : ''))));
 } finally {
   delete process.env.ESTOMAGO_MOCK_SCENARIO;
   if (browser) await browser.close().catch(() => {});

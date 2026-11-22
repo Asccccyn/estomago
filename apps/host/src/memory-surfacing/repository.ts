@@ -2,11 +2,11 @@ import type { SolUsage } from './sol-provider.ts';
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
-import { projectSurfacedMemory } from './contracts.ts';
+import { projectSurfacedMemory, readValidatedItems } from './contracts.ts';
 import type { SpeakerLabels } from '../identity/speaker-labels.ts';
 import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
-import type { SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
+import type { MissingQuote, SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
 
 export type JobRow = {
   id: string;
@@ -253,7 +253,7 @@ export class SurfacingRepository {
     }), jobId);
   }
 
-  recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'no_match'): void {
+  recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'incomplete' | 'no_match'): void {
     this.db.prepare("UPDATE surfacing_jobs SET sol_plan_json=json_set(sol_plan_json, '$.need_outcome', ?) WHERE id=?")
       .run(outcome, jobId);
   }
@@ -284,6 +284,7 @@ export class SurfacingRepository {
   freezeDelivery(o: {
     jobId: string; attemptId: string; windowId: string; text: string;
     items: SurfaceItem[]; memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string | null }>;
+    missing: MissingQuote[];
   }): string | null {
     return tx(this.db, () => {
     const id = genId('sfd');
@@ -295,7 +296,8 @@ export class SurfacingRepository {
       `INSERT INTO surfacing_deliveries(id, job_id, attempt_id, window_id, state, payload_text,
          payload_hash, selected_refs_json, retained, created_at)
        VALUES (?,?,?,?, 'frozen', ?, ?, ?, 0, ?)`,
-    ).run(id, o.jobId, o.attemptId, o.windowId, o.text, payloadHash, JSON.stringify({ items: o.items, refs: o.memoryRefs }), now);
+    ).run(id, o.jobId, o.attemptId, o.windowId, o.text, payloadHash,
+      JSON.stringify({ items: o.items, refs: o.memoryRefs, missing: o.missing }), now);
     return id;
     });
   }
@@ -329,11 +331,22 @@ export class SurfacingRepository {
   }
 
   markRetained(jobId: string, deliveryId: string): void {
-    const now = new Date().toISOString();
-    const job = this.jobById(jobId);
-    if (!job || !['dispatch_started', 'retained'].includes(job.state)) return;
-    this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=? WHERE id=?`).run(now, deliveryId);
-    this.transition(jobId, ['dispatch_started'], 'retained', {}, { delivery_id: deliveryId });
+    tx(this.db, () => {
+      const job = this.jobById(jobId);
+      if (job?.state !== 'dispatch_started') return;
+      const delivery = this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=?
+        WHERE id=? AND job_id=? AND state='dispatch_started' RETURNING selected_refs_json`)
+        .get(new Date().toISOString(), deliveryId, jobId) as { selected_refs_json: string } | undefined;
+      if (!delivery) return;
+      const { missing } = JSON.parse(delivery.selected_refs_json) as { missing?: MissingQuote[] };
+      // Older packets lack this field and retain their original completion rule.
+      if (missing !== undefined) {
+        this.recordSolRetrievalOutcome(jobId, missing.length ? 'incomplete' : 'delivered');
+      } else if (!readValidatedItems(job.items_json ?? '[]').missing.length) {
+        this.recordSolRetrievalOutcome(jobId, 'delivered');
+      }
+      this.transition(jobId, ['dispatch_started'], 'retained', {}, { delivery_id: deliveryId });
+    });
   }
 
   /** Owner UI projection. Handles stay outside model text and resolve only

@@ -90,7 +90,7 @@ test('仓库：v29 迁移落表 + 逻辑作业唯一键 + CAS + missed_target + 
   // 冻结/复用/retain/覆盖
   repo.transition(j1!, ['target_bound'], 'validating');
   repo.transition(j1!, ['validating'], 'ready', { items_json: JSON.stringify([ITEM]), receipt_id: 'svr_1' });
-  const deliveryId = repo.freezeDelivery({ jobId: j1!, attemptId: 'att1', windowId: 'w1', text: 'BLOCK', items: [ITEM], memoryRefs: [{ ref: 'sf_x', detail_ref: ITEM.detail_ref, event_id: 'ev_1' }] });
+  const deliveryId = repo.freezeDelivery({ jobId: j1!, attemptId: 'att1', windowId: 'w1', text: 'BLOCK', items: [ITEM], memoryRefs: [{ ref: 'sf_x', detail_ref: ITEM.detail_ref, event_id: 'ev_1' }], missing: [] });
   const frozen = repo.frozenForAttempt('att1')!;
   assert.equal(frozen.payload_hash, sha256Hex('BLOCK'));
   repo.markDispatchStarted(j1!, deliveryId);
@@ -229,7 +229,8 @@ test('R33：预算不足整条跳过（不截断/不摘要）——超大事件�
 
 test('原文前后文按最终窗口与预算交付，只给实际未满足的需要记缺项', async () => {
   for (const outcome of ['delivered', 'already covered', 'under budget pressure', 'after partial check'] as const) {
-    const db = makeDb(tempRoot('sf-raw-context-'));
+    const root = tempRoot('sf-raw-context-');
+    const db = makeDb(root);
     const quote = '我们周末见。';
     const correction = '是说周六，不是周日。';
     const context = outcome === 'under budget pressure' ? correction.repeat(500) : correction;
@@ -254,6 +255,9 @@ test('原文前后文按最终窗口与预算交付，只给实际未满足的�
       max_packet_bytes: 24576, worker_concurrency: 1, recent_window_bytes: 24576, recent_user_messages: 3 }, null);
     const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
     messages.ensureConversation('c1');
+    let jobId: string;
+    let deliveryId: string;
+    const incomplete = outcome === 'under budget pressure' || outcome === 'after partial check';
     try {
       const content = '请查记忆库和约周末的聊天前后文。';
       const u1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: 'source', occurredAt: T0 });
@@ -262,13 +266,33 @@ test('原文前后文按最终窗口与预算交付，只给实际未满足的�
         message: { id: u1.message.id, revision: 1, sequence: u1.message.sequence, content, hash: 'h' },
       });
       assert.ok(aug, outcome);
+      jobId = aug.jobId;
+      deliveryId = aug.deliveryId;
       assert.ok(aug.text.includes(ITEM.event_text), outcome);
       assert.equal(aug.text.includes(correction), outcome === 'delivered', outcome);
-      assert.equal(aug.text.includes('当时的对话原文：这次没能核实完整。'),
-        outcome === 'under budget pressure' || outcome === 'after partial check', outcome);
+      assert.equal(aug.text.includes('当时的对话原文：这次没能核实完整。'), incomplete, outcome);
       assert.deepEqual(aug.items.map(item => item.detail_ref), outcome === 'delivered'
         ? [ITEM.detail_ref, raw.detail_ref] : [ITEM.detail_ref], outcome);
+      const reuse = svc.reuseFrozen('a1');
+      assert.ok(reuse);
+      assert.equal(reuse.text, aug.text);
+      svc.markDispatched('a1');
+      svc.markRetained(reuse);
     } finally { await svc.stop(); await new Promise(r => setImmediate(r)); db.close(); }
+
+    const reopened = openDatabase(path.join(root, 'data'));
+    try {
+      const repo = new SurfacingRepository(reopened);
+      const job = repo.jobById(jobId)!;
+      const plan = JSON.parse(job.sol_plan_json!);
+      const row = reopened.prepare('SELECT retained, selected_refs_json FROM surfacing_deliveries WHERE id=?')
+        .get(deliveryId) as { retained: number; selected_refs_json: string };
+      const receipt = JSON.parse(row.selected_refs_json);
+      assert.equal(row.retained, 1, outcome);
+      assert.deepEqual(receipt.missing, incomplete ? [{ kind: 'raw_context', status: 'incomplete' }] : [], outcome);
+      assert.equal(plan.need_outcome, incomplete ? 'incomplete' : 'delivered', outcome);
+      assert.equal(repo.completedNeed('c1', plan.need)?.outcome ?? null, incomplete ? null : 'delivered', outcome);
+    } finally { reopened.close(); }
   }
 });
 

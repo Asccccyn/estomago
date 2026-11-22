@@ -68,7 +68,7 @@ test('R05：prepare 链路逐状态发事件，身份齐全且零正文', async 
   } finally { await f.close(); }
 });
 
-test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派发不重复发声', async () => {
+test('R05：绑定、冻结、派发与保留事件携带交付身份；重试不重复发布', async () => {
   const f = fixture();
   try {
     const a = f.say('a');
@@ -81,6 +81,8 @@ test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派�
 
     f.svc.markDispatched('a2');
     f.svc.markDispatched('a2'); // 重复派发：第二次 CAS 落空=零事件
+    f.svc.markRetained(result);
+    f.svc.markRetained(result);
     await f.flush();
     const evs = f.surfaceEvents();
     const frozen = evs.find(e => e.to === 'reserved');
@@ -91,6 +93,9 @@ test('R05：绑定+冻结+派发带 delivery/attempt/window 身份；重复派�
     const dispatched = evs.filter(e => e.to === 'dispatch_started');
     assert.equal(dispatched.length, 1, '重复派发不重复发声');
     assert.equal(dispatched[0]!.delivery_id, result!.deliveryId);
+    const retained = evs.filter(e => e.to === 'retained');
+    assert.equal(retained.length, 1);
+    assert.equal(retained[0]!.delivery_id, result.deliveryId);
   } finally { await f.close(); }
 });
 

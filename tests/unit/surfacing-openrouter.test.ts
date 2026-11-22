@@ -1,6 +1,6 @@
 import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
 import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
-import {memoryRefFor} from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { memoryRefFor, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -54,14 +54,15 @@ const ITEM = {
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_seam1',
 };
 
-function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, log: Array<Record<string, unknown>>) {
+function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, log: Array<Record<string, unknown>>,
+  judge = fakeSolJudge([{ decision: "recall" }]).judge) {
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: 'anthropic/claude-opus-4.6', provider_only: ['amazon-bedrock'] } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), fakeSolJudge([{ decision: "recall" }]).judge, {
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
     max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
@@ -128,6 +129,7 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
     const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
     assert.equal(list.length,1);
+    assert.equal(list[0].context, undefined, 'saved quotes do not acquire chat context');
     assert.deepEqual({kind:list[0].kind,words:list[0].our_words,text:list[0].text,title:list[0].title,moods:list[0].mood_tags},
       {kind:'words',words:expectedWords,text:ITEM.event_text,title:'记忆库建成',moods:['开心','期待']});
     const before=caps.length;
@@ -299,4 +301,52 @@ test('existing OR cache trajectory gains its first memory only in the new tail',
     // SOL_RECALL_REFACTOR：SDK 现以 prompt 文本面承载同一冻结证据块
     assert.equal(supportsSurfacingTransport('claude-agent-sdk'),true);
   } finally {await ctx.svc.stop();ctx.db.close();}
+});
+
+test('turn list shows the exact confirmed raw context with its speakers', async () => {
+  const log: Array<Record<string, unknown>> = [];
+  const caps: string[] = [];
+  const quote = '我们周末见。';
+  const neighbors = [
+    { speaker: '用户', date: '2026-07-09 08:02', text: '是说周六，不是周日。' },
+    { speaker: '助手', date: '2026-07-09 08:03', text: '好，我周六等你。' },
+  ];
+  const range = (id: string, text: string) => ({ resource_ref: `source_msg:${id}`, content_version: '1',
+    start_char: 0, end_char: [...text].length });
+  const selected: SurfaceItem = { ...ITEM, kind: 'words', speaker: 'jiaming', quote_text: quote,
+    event_text: quote, raw_context_needs: ['ev_1'], coverage_ranges: [range('center', quote)],
+    source_context_parts: neighbors.map((part, index) => ({ ...part, coverage_ranges: [range(`neighbor-${index}`, part.text)] })) };
+  const unconfirmed = '这句原文未获本次投递授权。';
+  const rejected: SurfaceItem = { ...selected, detail_ref: 'sdr_unconfirmed', coverage_ranges: [range('rejected', quote)],
+    source_context_parts: [{ speaker: '用户', date: '2026-07-09 08:04', text: unconfirmed, coverage_ranges: [range('rejected-neighbor', unconfirmed)] }] };
+  const mariposa: MariposaTransport = async cap => {
+    caps.push(cap);
+    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
+    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_raw' } };
+    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_raw', items: [selected, rejected] } };
+    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [selected.detail_ref] } };
+    throw Error(cap);
+  };
+  const judge = fakeSolJudge([{ decision: 'recall', plan: { purpose: '核对当时的聊天前后文', route: 'words', breadth: 'single',
+    queries: [{ need_kind: 'words', need: '核对周末见的原始聊天', semantic: '周末见', keywords: ['周末'], source_mode: 'raw_context' }],
+  } }]).judge;
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(textBody('raw', '合成回复')) });
+  const ctx = compose(tempRoot('sf-raw-list-'), transport, mariposa, log, judge);
+  try {
+    const { turnId } = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1',
+      content: '能核对一下周末见的原话和前后文吗？', clientMessageId: 'raw-list', occurredAt: T0 });
+    ctx.supervisor.enqueue(turnId);
+    await ctx.supervisor.waitIdle();
+    const packet = (log[0]!.full as Array<{ content: unknown }>).flatMap(message => toBlocks(message.content))
+      .find(block => isRecollectionText(block.text ?? ''))!.text!;
+    const context = neighbors.map(({ speaker, date, text }) => `${speaker}(${date})：${text}`).join('\n');
+    assert.ok(packet.includes(`助手当时说：“${quote}”`));
+    assert.ok(packet.includes(`那时前后还说过这些话：\n${context}`));
+    assert.ok(!packet.includes(unconfirmed));
+    const readCount = caps.length;
+    assert.deepEqual(ctx.svc.visibleMemoriesForTurn('c1', turnId), [{ memory_ref: memoryRefFor(selected.detail_ref),
+      kind: 'words', date: ITEM.memory_date, text: quote, speaker: '助手', context }]);
+    assert.deepEqual(ctx.svc.visibleMemoriesForTurn('other', turnId), []);
+    assert.equal(caps.length, readCount, 'reading the turn list never contacts Mariposa again');
+  } finally { await ctx.svc.stop(); ctx.db.close(); }
 });

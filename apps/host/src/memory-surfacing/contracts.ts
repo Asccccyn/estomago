@@ -134,6 +134,15 @@ export function projectSurfacedMemory(item: SurfaceItem, labels?: SpeakerLabels)
 
 export type MissingQuote = { kind: 'raw_context' | 'words_only' | 'words'; status: 'no_match' | 'access_blocked' | 'incomplete' };
 
+export function readValidatedItems(json: string): { items: SurfaceItem[]; missing: MissingQuote[] } {
+  const saved: SurfaceItem[] | { items: SurfaceItem[]; missing?: MissingQuote[] } = JSON.parse(json);
+  if (Array.isArray(saved)) return { items: saved, missing: [] };
+  const missing = Array.isArray(saved.missing) ? saved.missing.filter(part =>
+    part && ['words_only', 'raw_context', 'words'].includes(part.kind)
+      && ['access_blocked', 'no_match', 'incomplete'].includes(part.status)) : [];
+  return { items: saved.items, missing };
+}
+
 const SINGLE_MEMORY = '你想起了一段往事。';
 const SEVERAL_MEMORIES = '你想起了几段往事。';
 const BUCKET_OPENING = '你想起了一件事';
