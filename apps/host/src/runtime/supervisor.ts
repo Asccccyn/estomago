@@ -24,6 +24,7 @@ import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from './capabilities.ts';
 import { subscriptionSdkOptions } from './build-options.ts';
 import { SubscriptionAccessRunner } from './subscription-access.ts';
+import { SDK_MODEL_OPTIONS } from './runtime-settings.ts';
 import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
 import type { RunnerSelection } from './runner.ts';
 import type { ReasoningService } from '../reasoning/service.ts';
@@ -688,7 +689,8 @@ export class TurnSupervisor {
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
-    const sdkDriver = this.drv()?.kind === 'claude-agent-sdk';
+    const driverKind = this.drv()?.kind;
+    const sdkDriver = driverKind === 'claude-agent-sdk';
     if (sdkDriver) {
       const messages = this.restoreSdkSelectionHistory(o.windowId, o.envelope.messages);
       if (messages !== o.envelope.messages) o = { ...o, envelope: { ...o.envelope, messages } };
@@ -701,7 +703,7 @@ export class TurnSupervisor {
       }
       return sdk;
     }
-    const transportKind = this.drv()?.kind === 'deepseek' ? 'deepseek' : 'openrouter';
+    const transportKind = driverKind === 'deepseek' ? 'deepseek' : 'openrouter';
     const orFallback = sdkDriver;
     if (orFallback && runner instanceof SubscriptionAccessRunner && !o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
     const requestToolset = storedToolset(d.db, o.windowId);
@@ -709,6 +711,12 @@ export class TurnSupervisor {
     const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
     let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
       reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
+    if (orFallback && d.media && hasAssetImage(envelope.messages) && !await this.modelSupportsImages(envelope.model, transportKind)) {
+      const code = 'MODEL_VISION_UNAVAILABLE';
+      d.logger.warn('media_gate_blocked', { turn_id: o.turnId, code, model: envelope.model, has_image: true });
+      return { result: { outcome: 'error', errorClassified: null, errorCode: code, errorMessage: code, sessionId: null, requestId: null },
+        finalMessages: null, lastSentMessages: null, toolSeen: [], pendingToolSeen: [] };
+    }
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
     // Signed reasoning belongs to the model/provider that produced it. Keep the
     // canonical ledger intact, but omit those opaque fields from earlier model
@@ -1079,7 +1087,7 @@ export class TurnSupervisor {
         // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
         // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
         // 图未随正文携带，模型不得声称已看图）
-        if (exec.ok && exec.imageRefs?.length && !await this.modelSupportsImages(envelope.model, transportKind)) {
+        if (exec.ok && exec.imageRefs?.length && !await this.modelSupportsImages(envelope.model, driverKind === 'mock' ? 'mock' : transportKind)) {
           exec = { ok: false, output: { error_code: 'MODEL_VISION_UNAVAILABLE', detail: '工具已执行，但当前型号未核实支持图片，图片未交付。' } };
         }
         if (exec.ok && batchRanges.length && exec.coverageProjection) {
@@ -1416,13 +1424,13 @@ export class TurnSupervisor {
   }
 
   private async modelSupportsImages(model: string, kind: string | undefined): Promise<boolean> {
-    const { config, runnerSelection } = this.d;
-    const { base_url: baseUrl, vision_supported_models: declared } = config.openrouter;
-    if (declared.includes(model) || (kind === 'claude-agent-sdk' && ['claude-fable-5-1', 'claude-fable-5-2'].includes(model))) return true;
+    const { base_url: baseUrl, vision_supported_models: declared } = this.d.config.openrouter;
+    // The selectable Claude SDK catalog supports native image input via SDKUserMessage.
+    if (kind === 'claude-agent-sdk' && SDK_MODEL_OPTIONS.some(option => option === model)) return true;
+    if (declared.includes(model)) return true;
     const cached = visionSupportCached(model, baseUrl);
     if (cached !== null) return cached;
-    return runnerSelection.status === 'ok' && runnerSelection.runner.kind === 'openrouter'
-      && await refreshVisionSupport(baseUrl, model) === true;
+    return kind === 'openrouter' && await refreshVisionSupport(baseUrl, model) === true;
   }
 
   private buildPayloadFrom(envelope: OrRequestEnvelope, kind = this.drv()?.kind): Record<string, unknown> {
@@ -3182,7 +3190,7 @@ export class TurnSupervisor {
     {
       // EXEC_V1 §03.6（WP3/M2）媒体门：当前输入无转写语音→不空输入唤起模型；
       // 含图但型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息已保存、零模型请求、不静默丢图/换模型）
-      const orHasImage = orMessages.some((m) => Array.isArray((m as { content: unknown }).content) && ((m as { content: Array<Record<string, unknown>> }).content.some((b) => b && b.type === 'asset_image')));
+      const orHasImage = hasAssetImage(orMessages);
       const tailVoiceBlocked = fallbackBuild ? fallbackBuild.hasVoiceWithoutTranscript : tailProjection.hasVoiceWithoutTranscript;
       let mediaBlockedCode: string | null = null;
       if (d.media) {
@@ -3441,6 +3449,10 @@ function assistantProtocolMessage(text: string, result: import('./runner.ts').Ru
   if (driver === 'deepseek' && typeof result.reasoningContent === 'string') message.reasoning_content = result.reasoningContent;
   if (driver === 'openrouter' && result.reasoningFrames?.length) message.reasoning_details = result.reasoningFrames.flatMap(f => Array.isArray(f) ? f : [f]);
   return message;
+}
+
+function hasAssetImage(messages: OrMessage[]): boolean {
+  return messages.some(message => Array.isArray(message.content) && message.content.some(block => block?.type === 'asset_image'));
 }
 
 function hasStorageImageRedaction(value: unknown): boolean {

@@ -12,7 +12,7 @@ import { EventService } from '../../apps/host/src/events/service.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
-import { RuntimeSettingsService } from '../../apps/host/src/runtime/runtime-settings.ts';
+import { RuntimeSettingsService, SDK_MODEL_OPTIONS } from '../../apps/host/src/runtime/runtime-settings.ts';
 import { SubscriptionAccessRunner } from '../../apps/host/src/runtime/subscription-access.ts';
 import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
@@ -107,13 +107,13 @@ const textEvents = () => [
   { type: 'assistant', message: { id: 'native-message', content: [{ type: 'text', text: 'SDK 合成回复' }] } },
 ];
 
-test('Fable 5.1/5.2：本轮图片通过 SDK 视觉门并以原生 image 块发送', async t => {
+test('所有可选 Claude SDK 型号均以原生 image 块发送聊天图片', async t => {
   const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
-  for (const model of ['claude-fable-5-1', 'claude-fable-5-2']) {
+  for (const model of SDK_MODEL_OPTIONS) {
     await t.test(model, async sub => {
       const f = fixture(sub, () => [...textEvents(), { type: 'result', subtype: 'success', session_id: randomUUID() }], { withMedia: true });
       f.settings.set('sdk_model', model);
-      const asset = await f.media!.saveBuffer({ bytes: png, purpose: 'chat_image', operationId: 'sdk-fable-image', createdBy: 'qiaosheng', origin: 'upload' });
+      const asset = await f.media!.saveBuffer({ bytes: png, purpose: 'chat_image', operationId: 'sdk-catalog-image', createdBy: 'qiaosheng', origin: 'upload' });
       assert.equal((await f.send('请看图片', [{ asset_id: asset.id, presentation: 'image' }])).state, 'completed');
       assert.equal(f.calls.sdk.length, 1, 'SDK 通道实际派发一次');
       assert.equal(f.calls.or.length, 0, '没有改走付费 API 通道');
@@ -125,6 +125,31 @@ test('Fable 5.1/5.2：本轮图片通过 SDK 视觉门并以原生 image 块发�
       const wire = f.db.prepare("SELECT payload_json FROM provider_requests WHERE purpose = 'chat' ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string } | undefined;
       assert.ok(wire?.payload_json.includes('asset_image'), '持久化只保留资产引用');
       assert.ok(!wire?.payload_json.includes(png.toString('base64')), 'Base64 仅在模型发送边界存在');
+    });
+  }
+});
+
+test('订阅额度拒绝后按 OpenRouter 实际接收图片的型号核实视觉能力', async t => {
+  const png = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010806000000', 'hex');
+  for (const [supportsImage, orModel] of [[true, 'anthropic/claude-opus-4.6'], [false, 'anthropic/claude-sonnet-4.6']] as const) {
+    await t.test(supportsImage ? '视觉型号送达原图' : '无视觉能力时不派发 API 请求', async sub => {
+      const catalog = sub.mock.method(globalThis, 'fetch', async () => Response.json({ data: [{
+        id: orModel, architecture: { input_modalities: supportsImage ? ['text', 'image'] : ['text'] },
+      }] }));
+      const f = fixture(sub, () => [limit()], { withMedia: true, orModel });
+      f.settings.set('sdk_model', 'claude-opus-5-5');
+      const asset = await f.media!.saveBuffer({ bytes: png, purpose: 'chat_image', operationId: 'sdk-api-image', createdBy: 'qiaosheng', origin: 'upload' });
+      assert.equal((await f.send('请看图片', [{ asset_id: asset.id, presentation: 'image' }])).state, supportsImage ? 'completed' : 'failed');
+      assert.equal(f.calls.sdk.length, 1);
+      assert.equal(catalog.mock.callCount(), 1);
+      assert.equal(f.calls.or.length, supportsImage ? 1 : 0);
+      if (supportsImage) {
+        assert.equal(f.calls.or[0].model, orModel);
+        const image = f.calls.or[0].messages.at(-1).content.find((block: any) => block.type === 'image');
+        assert.equal(image?.source?.data, png.toString('base64'));
+      } else {
+        assert.match(String(f.db.prepare('SELECT blocked_reason FROM attempts').get()?.blocked_reason), /^MODEL_VISION_UNAVAILABLE:/);
+      }
     });
   }
 });
