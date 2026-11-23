@@ -189,6 +189,6 @@
 - [开工前核查记录](PRECHECK.md)。
 - 提交：`4cf1fde`、`b20b41c`、`8f118b1`、`86f442c`，以及对应的索引提交 `a081104`、`ad754eb`、`8bb3531`。
 - 验证：上面的命令与结果；新增测试文件 `tests/unit/conversation-rest.test.ts`、`tests/integration/chat-draw.test.ts`、`tests/integration/heartbeat-note-views.test.ts`。
-- 随报告一并提交的还有对 `tests/integration/heartbeat-note-views.test.ts` 的一次补充（内容服务接受新投影形状）。
+- `tests/integration/heartbeat-note-views.test.ts` 里对“内容服务接受新投影形状”的补充，最终版本在 `30469b5`。`c1d7f55` 带入的那一版断言有误且从未运行过：当时该文件没有进入隔离导出树，跑的是旧版。更正后的全量结果以第 4 节为准。
 - 兼容结论表：本文第 3 节。
 - 生产只读核对：[核查记录](PRECHECK.md) 第 3 节。
