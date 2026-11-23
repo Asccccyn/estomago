@@ -115,6 +115,7 @@ export type HoldReceipt = {
   memory_id: string;
   version: number;
   binding_ids: string[];
+  plan_ids?: string[];
   committed_at: string;
   /** Durable M observation after a successful commit, an upper bound on its time. */
   commit_observed_at?: string;
@@ -178,12 +179,14 @@ function parseHoldReceiptShape(r0: Partial<HoldReceipt>): HoldReceipt | null {
   if (typeof r0.version !== 'number' || !Number.isSafeInteger(r0.version) || r0.version < 1) return null;
   if (typeof r0.committed_at !== 'string' || !validateAbsoluteIso(r0.committed_at).ok) return null;
   if (r0.binding_ids !== undefined && !Array.isArray(r0.binding_ids)) return null;
+  if (r0.plan_ids !== undefined && (!Array.isArray(r0.plan_ids) || r0.plan_ids.some(id => typeof id !== 'string' || !id))) return null;
   const observed = validateAbsoluteIso(r0.commit_observed_at);
   return {
     operation_id: r0.operation_id,
     memory_id: r0.memory_id,
     version: r0.version,
     binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [],
+    ...(r0.plan_ids?.length ? { plan_ids: r0.plan_ids } : {}),
     committed_at: r0.committed_at,
     ...(observed.ok && Date.parse(observed.iso) >= Date.parse(r0.committed_at) ? { commit_observed_at: observed.iso } : {}),
   };

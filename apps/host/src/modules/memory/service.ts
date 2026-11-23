@@ -17,6 +17,7 @@ import { memoryCoverageProjection } from './coverage-projection.ts';
 import { validateArgsAgainstSchema } from '../../capabilities/validation.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
 import { settleHeartbeatMemoryEffect, settleHeartbeatMemoryReceipt } from '../heartbeat/actions.ts';
+import { isVoiceCallActive } from '../voice/call-service.ts';
 import { memoryHoldOperationId } from './hold-operation-id.ts';
 
 type MatchedQuote = { messageId: string; revision: number; sequence: number; speaker: 'owner' | 'assistant'; content: string; fragment: string; start: number; end: number };
@@ -302,6 +303,11 @@ export class MemoryToolsService {
 
   async memoryHold(args: Record<string, unknown>, ctx: ToolExecContext): Promise<ToolExecResult> {
     if (!this.mariposa) return { ok: false, output: { error_code: 'MARIPOSA_CLIENT_UNAVAILABLE', error: '记忆服务未接线（能力缺口，如实拒绝）' } };
+    const createsPlan = Array.isArray(args.categories) && args.categories.includes('plan')
+      && (!Array.isArray(args.plan_ids) || args.plan_ids.length === 0);
+    if (ctx.turnId && createsPlan && isVoiceCallActive(this.db, ctx.roomId)) {
+      return { ok: false, output: { error_code: 'TOOL_UNAVAILABLE_IN_CALL', detail: '通话结束后可保存这条新计划。通话中可使用真实 plan_id 关联已有计划。' } };
+    }
     // R13/F16（2026-11-03）：取消信号随工具 ctx 贯通到远端 HTTP——取消只停止本地等待，不撤销已提交的远端写入
     const m = this.mariposa.withSignal(ctx.signal);
     // P04：全局 rawToolCallIdRef 不再随迁——新路径 tool_call_id 由执行外壳注入 args；
@@ -362,7 +368,7 @@ export class MemoryToolsService {
       // 不静默丢弃 plan_ids、E 不做第二套存在性校验（M 是唯一真实性判断者）
       if (r.code === 'PLAN_NOT_FOUND') {
         const invalidIds = Array.isArray(r.detail?.invalid_ids) ? r.detail.invalid_ids.filter((x): x is string => typeof x === 'string') : [];
-        return { ok: false, output: { error_code: 'PLAN_NOT_FOUND', invalid_ids: invalidIds, fix: 'Create or find the plan, then retry with its real plan_id.' } };
+        return { ok: false, output: { error_code: 'PLAN_NOT_FOUND', invalid_ids: invalidIds, fix: 'Read the existing plan and retry with its real plan_id. If recording a new plan, keep the plan category and omit plan_ids.' } };
       }
       return { ok: false, output: { error_code: unknown ? 'HOLD_OUTCOME_UNKNOWN' : `HOLD_${r.code}`, ...(unknown ? { detail: '结果未知；不要自行重复提交。宿主沿既有 holdStatus 机制核对。' } : {}) } };
     }
@@ -374,6 +380,7 @@ export class MemoryToolsService {
     }
     const result: ToolExecResult = { ok: true, output: {
       saved: true, memory_id: receipt.memory_id, version: receipt.version, source_status: 'unbound',
+      ...(receipt.plan_ids?.length ? { plan_ids: receipt.plan_ids } : {}),
       ...((args.source_ranges !== undefined || args.quotes !== undefined) ? {
         note: '记忆已保存；旧参数中的原文绑定和摘录未执行。原文关联由后台任务自动处理，不要重写这条记忆。',
       } : {}),

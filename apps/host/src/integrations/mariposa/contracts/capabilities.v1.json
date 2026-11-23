@@ -1,18 +1,20 @@
 {
   "contract_version": "1.1",
   "generated_from": "backend/mariposa/capabilities/registry.py",
-  "source_commit": "d4a13ce255218fcb28c37327f2de150271f650bc",
+  "source_commit": "7e4366f8f324391c0465b43793cd14f183e12ddc",
   "source_files": {
-    "backend/mariposa/capabilities/registry.py": "4729e64f7987f6eb9c6ee89b6e95535392d6c7b9e16c98fedf1734c2022df704",
-    "backend/mariposa/capabilities/input_schemas.py": "10c52d33cdd8c206b17dbb8a5f6aee196bfafd2f057fbc1deb702e8759e11b19",
+    "backend/mariposa/capabilities/registry.py": "447b073a8c6f4dd3adf947ddc5ee286ed9a5722fbe5fc9c804043f2bc7cdb7f7",
+    "backend/mariposa/capabilities/input_schemas.py": "89cc9a4fe2e809a0d066cabfc9040acb2e58a7158cf7e8a7ddef10e676504320",
     "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
-    "backend/mariposa/memory/service.py": "0917a261d231cea3547a325b59a6c5ca5163a63626e7d7d966b02c71f87a69c7",
+    "backend/mariposa/memory/service.py": "445e097e13d7698cd3e711baa2c1a4bf2a1a835269c3aa6ca0287d69bccc8d26",
     "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
+    "backend/mariposa/plans/service.py": "926efe757dba7a02dff6ab914b361d8f94817a8484f72678ca73942ad6836568",
+    "backend/mariposa/canonical.py": "ffbc168159027603e01a9426a56573065928f6fca518840007e90267e0372926",
     "backend/mariposa/recall/models.py": "ab36f6441608413c97818626672d38f1208646bf9de7edd9a81c9b0a254003b4",
     "backend/mariposa/retrieval/query_plan.py": "aeeb426055278665f23dcf74a02f38f8ba7f3d86ec1038c9045d8e7fd8d0d8e8",
     "backend/mariposa/recall/round2.py": "01f1f89ce4d2474573facec4bbec97d83888e427d5d9399e0da05086d0a7d85b",
     "backend/mariposa/config.py": "b79e208555ed24d5a1cb7667f73b710b1baffb92cffe9308b33d0bedeac94d02",
-    "scripts/export_contracts.py": "6784afdd659d7eed9447625547b3170c85b97c08f97dc55a11cf63d1b7d16099"
+    "scripts/export_contracts.py": "e1fe32f896cb576129d2f5d216eecb103c7ddd6d9243eacf6ff6e4402ab4addc"
   },
   "capabilities": [
     {
@@ -1597,7 +1599,8 @@
             "items": {
               "type": "string",
               "minLength": 1
-            }
+            },
+            "description": "关联已有计划时填写真实 plan_id。记录新计划时选 plan 分类并省略此字段，由服务端在保存记忆的同一事务创建并关联计划，需要 plan.create 权限。"
           },
           "mood": {
             "type": "object",

@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "2bc46048ea37ee65aa4dd1f1bda1ed2c2a2c894d",
+  "baselineCommit": "534ec686bcba8642db06109f48f7482ab57bfcb4",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -65,7 +65,7 @@
     "tool_invoke"
   ],
   "definitionIds": {
-    "memory_hold": "td_d14629ae9aab3c7bf2944c9c",
+    "memory_hold": "td_1eeb52372cbd0fe36ee6e10e",
     "memory_recall": "td_8025fb9c84eb581e0b9f2897",
     "memory_recall_next": "td_c159234fa8bf8cd32fcd9ad7",
     "memory_read_full": "td_5aa135ad50bcff5c497c94bf",
@@ -123,7 +123,7 @@
     "heartbeat_draw": "td_cdd2b5d2062733f663a80868",
     "wishstar_reply_star": "td_1a71d3204ef88faf1ce8b01c"
   },
-  "toolsSha256": "f090e73dec8004b1ee43c9640f19fc82b70f398d38a74f8cd850e0e938bbffb3",
+  "toolsSha256": "42cfabfc6f64d64542554c71fa3f21ddd33d797eff1e41cd7d74e4fce6911f75",
   "tools": [
     {
       "type": "function",
@@ -170,7 +170,7 @@
                 "type": "string",
                 "minLength": 1
               },
-              "description": "仅当 categories 选了 plan 分类时必填：真实服务端 plan_id（plans_read 或已有成功回执中的）。只能用已存在的真实 ID，不得编造；没有合适的真实计划时不要选 plan 分类（不必为分类新建计划）。"
+              "description": "关联已有计划时填写真实 plan_id。记录新计划时选 plan 分类并省略此字段，由服务端在保存记忆的同一事务创建并关联计划，需要 plan.create 权限。"
             },
             "creation_mode": {
               "type": "string",
