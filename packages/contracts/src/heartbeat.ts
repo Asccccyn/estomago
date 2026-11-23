@@ -40,7 +40,8 @@ export type HeartbeatProjection = {
 // Business receipts are references, not copies of private source prose. They
 // remain independent of the (possibly truncated) model result and chat.
 export const HEARTBEAT_ACTION_KINDS = [
-  'selection', 'star_reply', 'star_write', 'star_request', 'memory_hold', 'memory_update',
+  'selection', 'star_reply', 'star_write', 'star_request', 'star_respond', 'star_offer', 'star_accept',
+  'memory_hold', 'memory_update', 'relation_link', 'relation_correct',
   'anchor_write', 'plan_write', 'i_write', 'post', 'comment', 'album', 'creation', 'image', 'archive', 'wake', 'chat',
 ] as const;
 export type HeartbeatActionKind = (typeof HEARTBEAT_ACTION_KINDS)[number];

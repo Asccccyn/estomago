@@ -366,8 +366,11 @@ export class HeartbeatRuntime {
       manifest.push(...speech.manifest);
       eventRows.push(...speech.eventRows);
     }
+    // Chat tools publish under their own message identity, so formal speech is
+    // any published assistant message of this turn. Host notices of a draw turn
+    // are speaker=system; the exhausted ack never occurs in draw mode.
     const talked = input.completed && !delivered && Boolean(this.db.prepare(`SELECT 1 FROM messages
-      WHERE turn_id=? AND speaker='assistant' AND client_message_id LIKE ?`).get(input.turnId, `heartbeat:${input.runId}:reply:%`));
+      WHERE turn_id=? AND speaker='assistant' AND published_at IS NOT NULL`).get(input.turnId));
     const decline = input.completed && !delivered && !talked && !this.cards.hasClaimedDraw(input.runId)
       && readTurnCompletion(this.db, input.attemptId, input.turnId) === 'noop';
     if (decline) publish('decline', '[心跳唤醒] 本轮未抽卡');

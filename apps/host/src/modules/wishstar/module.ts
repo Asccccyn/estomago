@@ -265,12 +265,14 @@ export function registerWishstarCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_respond_request', baselineOrder: 43, definition: () => WISHSTARRESPONDREQUEST_DEFINITION, memoryOnlyAllowed: false, label: '回应开星请求',
+    heartbeatAction: 'star_respond',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_respond_request', input, ctx),
     toModel: (value) => projectWishstarToolResult('wishstar_respond_request',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_offer_star', baselineOrder: 44, definition: () => WISHSTAROFFERSTAR_DEFINITION, memoryOnlyAllowed: false, label: '递一颗星',
+    heartbeatAction: 'star_offer',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_offer_star', input, ctx),
     toModel: (value) => projectWishstarToolResult('wishstar_offer_star',value as Record<string,unknown>),
   }));
@@ -283,6 +285,7 @@ export function registerWishstarCapabilities(registry: { register(d: CapabilityD
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_accept_offer', baselineOrder: 46, definition: () => WISHSTARACCEPTOFFER_DEFINITION, memoryOnlyAllowed: false, label: '收下递来的星',
+    heartbeatAction: 'star_accept',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_accept_offer', input, ctx),
     toModel: (value) => projectWishstarToolResult('wishstar_accept_offer',value as Record<string,unknown>),
   }));

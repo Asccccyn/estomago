@@ -352,6 +352,35 @@ test('heartbeat publishes mixed-packet text and a final reply around a real tool
   for (const ordinary of [speech[0], speech[1], speech[3]]) assert.equal(replayed.filter(line => line === ordinary).length, 1);
 });
 
+for (const outcome of ['done', 'noop'] as const) {
+  test(`heartbeat: a chat-tool send on its own counts as speech when the turn completes with ${outcome}`, async t => {
+    const ctx = await fixture(t);
+    makeFixtureToolsResident(ctx.host.db, ['heartbeat_draw', 'background_complete', 'chat_send_text']);
+    await ctx.chat('建立当前会话');
+    ctx.elapsed();
+    const speech = '只经聊天工具发出的一句。';
+    ctx.replies.push({ tool: 'chat_send_text', id: 'send-text', args: { text: speech, idempotency_key: 'send-once' } },
+      { tool: 'background_complete', id: 'complete', args: { outcome } });
+    await ctx.scheduler.tick();
+    const run = ctx.latestRun();
+    assert.equal(run.result_code, `complete:${outcome}`);
+    assert.equal(ctx.cards.getDeliveredDraw(run.id), null);
+    const { db, messages, heartbeat } = ctx.host;
+    const projection = readHeartbeatProjection(JSON.parse(String(db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref)));
+    assert.equal(projection?.state, 'talked');
+    assert.deepEqual(projection?.terminal, { status: 'completed' });
+    const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
+      { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
+      { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
+    assert.deepEqual(feed.items[0]?.blocks.map(block => [block.source_label, block.text]), [
+      ['心跳状态', ctx.runtimeMessages(run.id)[0]!.content], ['本轮聊天', speech], ['结束状态', '本轮只说了话。']]);
+    await ctx.chat('接着说');
+    // The next turn neither republishes the send nor needs a second copy of it.
+    assert.equal(db.prepare("SELECT count(*) AS n FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=1 WHERE r.content=?")
+      .get(speech)?.n, 1);
+  });
+}
+
 test('T40: an incomplete candidate set ends without a request or a fake reply', async t => {
   const ctx = await fixture(t, CARDS.slice(0, 9));
   await ctx.chat('1');
@@ -577,6 +606,82 @@ test('silent heartbeat projects four committed domain actions and omits anchor r
     { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ source_label: string; text: string }> }> };
   assert.deepEqual(feed.items[0]?.blocks.filter(block => block.text.endsWith(' · 已完成。')).map(block => block.source_label),
     ['更新我们的锚点', '写计划', '更新 I', '请求对方开星']);
+});
+
+test('silent heartbeat projects star and relation writes by their source receipts and keeps reads, replays and failures apart', async t => {
+  const respondedAt = '2026-11-23T02:00:01Z', openedAt = '2026-11-23T02:00:02Z', offeredAt = '2026-11-23T02:00:03Z';
+  const opened = { id: 'star-opened', content: '合成递来的星正文', visibility: 'hidden', state: 'SHARED', opened_at: openedAt, opened_by: 'jiaming' };
+  let accepted = 0;
+  t.mock.method(WishstarClient.prototype, 'forward', async (method: string, path: string) => {
+    if (path === '/api/requests/req-incoming/respond') return { status: 200, body: { request: {
+      id: 'req-incoming', requester_id: 'qiaosheng', owner_id: 'jiaming', status: 'rejected', responded_at: respondedAt }, note: '现在先不给' } };
+    if (path === '/api/offers') return { status: 201, body: { id: 'off-outgoing', star_id: 'star-own', sender_id: 'jiaming',
+      recipient_id: 'qiaosheng', status: 'offered', offered_at: offeredAt } };
+    if (path === '/api/offers/off-odd/accept') return { status: 200, body: { ...opened, id: 'star-odd', opened_by: 'qiaosheng' } };
+    if (++accepted > 1) return { status: 409, body: { detail: '这颗星星已经被接住了' } };
+    return { status: 200, body: opened };
+  });
+  const ctx = await fixture(t, CARDS, 'available', 0, { maxModelRequests: 11, wishstar: true });
+  const { db, messages, heartbeat } = ctx.host;
+  makeFixtureToolsResident(db, ['heartbeat_draw', 'background_complete', 'wishstar_respond_request', 'wishstar_offer_star', 'wishstar_accept_offer',
+    'memory_relations', 'memory_correct']);
+  await ctx.chat('建立现有聊天窗');
+  let linked = 0, correctionOperation = '';
+  const remote = (heartbeat!.sources as unknown as { external: { memory: { transport: MariposaTransport } } }).external.memory;
+  remote.transport = async (name, args) => {
+    if (name === 'memory.relations.link') return { ok: true, result: { relation_id: 'rel-fixture', from: args.from_memory, to: args.to_memory,
+      relation_type: args.relation_type, ...(linked++ ? { deduplicated: true } : {}) } };
+    if (name === 'memory.relations.list') return { ok: true, result: { relations: [] } };
+    assert.equal(name, 'memory.relations.correct');
+    correctionOperation = String(args.operation_id);
+    return { ok: true, result: { correction_id: 'cor-fixture', removed_relation_id: args.relation_id, replacement_relation_id: null, action: 'remove_wrong_binding' } };
+  };
+  db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,?)")
+    .run(JSON.stringify(Object.fromEntries(['wishstar_respond_request', 'wishstar_offer_star', 'wishstar_accept_offer', 'memory_correct']
+      .map(name => [name, { max_cost_micro_usd: 1 }]))), new Date().toISOString());
+  const link = { action: 'link', from_memory: 'mem-a', to_memory: 'mem-b', relation_type: 'related_to' };
+  ctx.elapsed();
+  ctx.replies.push(
+    { tool: 'wishstar_respond_request', id: 'respond', args: { request_id: 'req-incoming', decision: 'not_now' } },
+    { tool: 'wishstar_accept_offer', id: 'accept', args: { offer_id: 'off-incoming' } },
+    { tool: 'wishstar_offer_star', id: 'offer', args: { star_id: 'star-own' } },
+    { tool: 'memory_relations', id: 'link', args: link },
+    { tool: 'memory_relations', id: 'link-again', args: link },
+    { tool: 'memory_relations', id: 'list', args: { action: 'list', memory_id: 'mem-a' } },
+    { tool: 'memory_correct', id: 'correct', args: { action: 'relation', relation_id: 'rel-fixture', correction_action: 'remove_wrong_binding' } },
+    { tool: 'wishstar_accept_offer', id: 'accept-again', args: { offer_id: 'off-incoming' } },
+    { tool: 'wishstar_accept_offer', id: 'accept-odd', args: { offer_id: 'off-odd' } },
+    noop());
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(run.state, 'noop', run.result_code);
+  assert.equal(accepted, 2);
+  const payload = String(db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref);
+  assert.equal(payload.includes(opened.content), false);
+  const projection = readHeartbeatProjection(JSON.parse(payload));
+  assert.ok(projection);
+  assert.equal(projection.state, 'declined', 'no card and no speech keep the decline');
+  assert.match(correctionOperation, /^es-cor-/);
+  assert.deepEqual(projection.actions?.map(action => [action.kind, action.status, action.operationId,
+    action.source?.namespace, action.source?.id, action.source?.revision, action.source?.parentId]), [
+    ['star_respond', 'committed', 'superposition:request:req-incoming', 'superposition:request', 'req-incoming', respondedAt, undefined],
+    ['star_accept', 'committed', 'superposition:offer:off-incoming', 'superposition:star', 'star-opened', openedAt, 'off-incoming'],
+    ['star_offer', 'committed', 'superposition:offer:off-outgoing', 'superposition:offer', 'off-outgoing', offeredAt, 'star-own'],
+    ['relation_link', 'committed', 'mariposa:relation:rel-fixture', 'mariposa:relation', 'rel-fixture', undefined, undefined],
+    ['relation_correct', 'committed', correctionOperation, 'mariposa:relation', 'rel-fixture', 'cor-fixture', undefined],
+    ['star_accept', 'failed', 'accept-again', undefined, undefined, undefined, undefined],
+    ['star_accept', 'unknown', 'accept-odd', undefined, undefined, undefined, undefined],
+  ]);
+  // A deduplicated link names an existing relation and a list is a read: neither keeps a row.
+  assert.deepEqual(db.prepare("SELECT json_extract(action_json,'$.kind') AS kind FROM heartbeat_actions WHERE run_id=? ORDER BY rowid")
+    .all(run.id).map((row: { kind: string }) => row.kind),
+    ['star_respond', 'star_accept', 'star_offer', 'relation_link', 'relation_correct', 'star_accept', 'star_accept']);
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
+    { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
+    { db, messages, heartbeat }) as { items: Array<{ blocks: Array<{ id: string; source_label: string; text: string }> }> };
+  assert.deepEqual(feed.items[0]?.blocks.filter(block => block.id.startsWith('action:')).map(block => block.text), [
+    '回应开星请求 · 已完成。', '收下递来的星 · 已完成。', '递一颗星 · 已完成。', '建立记忆关系 · 已完成。', '订正记忆关系 · 已完成。',
+    '收下递来的星 · 未成功。', '收下递来的星 · 结果待核，暂不能确认成功。']);
 });
 
 const ACTION_CRASH_TEST = 'heartbeat: a committed memory action is projected on restart without replaying the model';

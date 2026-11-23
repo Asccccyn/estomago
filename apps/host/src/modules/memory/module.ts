@@ -490,6 +490,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   registry.register(toolCapability({
     owner: 'memory',
     id: 'memory_correct', group: 'D', baselineOrder: 11, definition: () => MEMORYCORRECT_DEFINITION, memoryOnlyAllowed: true, label: '订正记忆',
+    heartbeatAction: input => input.action === 'relation' ? 'relation_correct' : undefined,
     run: (input: Record<string, unknown>, ctx) => svc.memoryCorrect(input as never, ctx),
     toModel: (value, input) => projectMemoryToolResult('memory_correct', input as Record<string, unknown>, value as Record<string, unknown>, labels),
   }));
@@ -526,6 +527,7 @@ export function registerMemoryCapabilities(registry: { register(d: CapabilityDes
   }));
   registry.register(toolCapability({owner:'memory',id:'memory_relations',baselineOrder:50,definition:MEMORYRELATIONS_DEFINITION,memoryOnlyAllowed:true,label:'记忆关系',
     quote:db=>quoteBackgroundTool(db,'memory_correct'),
+    heartbeatAction: input => input.action === 'link' ? 'relation_link' : undefined,
     run:(input:Record<string,unknown>,ctx)=>svc.memoryCorrect({...input,action:input.action==='list'?'relations':input.action},ctx),
     toModel:(value,input)=>projectMemoryToolResult('memory_correct',{...input,action:input.action==='list'?'relations':input.action},value as Record<string,unknown>),
   }));

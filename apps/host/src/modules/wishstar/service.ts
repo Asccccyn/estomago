@@ -18,6 +18,37 @@ function normalizedStarText(value: unknown): string | null {
     : null;
 }
 
+/** These three writes carry no caller key and Superposition keeps no replay
+ * record for them. As with a star request, the object this call returned is the
+ * authority for a confirmed write; any other 2xx body leaves it unknown. */
+function starWriteReceipt(name: string, args: Record<string, unknown>, body: Record<string, unknown>,
+  callId: string): HeartbeatReceipt | undefined {
+  const unknown: HeartbeatReceipt = { operationId: callId, status: 'unknown' };
+  const revision = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 256 ? { revision: value } : {};
+  const id = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
+  if (name === 'wishstar_respond_request') {
+    const request = body.request as Record<string, unknown> | null | undefined;
+    const requestId = id(args.request_id);
+    if (!requestId || request?.id !== requestId || request.owner_id !== 'jiaming'
+      || request.status !== 'approved' && request.status !== 'rejected') return unknown;
+    return { operationId: `superposition:request:${requestId}`, status: 'committed',
+      source: { namespace: 'superposition:request', id: requestId, ...revision(request.responded_at) } };
+  }
+  if (name === 'wishstar_offer_star') {
+    const offerId = id(body.id);
+    if (!offerId || body.star_id !== args.star_id || body.sender_id !== 'jiaming' || body.status !== 'offered') return unknown;
+    return { operationId: `superposition:offer:${offerId}`, status: 'committed',
+      source: { namespace: 'superposition:offer', id: offerId, ...revision(body.offered_at), parentId: String(args.star_id) } };
+  }
+  if (name === 'wishstar_accept_offer') {
+    const starId = id(body.id);
+    if (!starId || body.state !== 'SHARED' || body.opened_by !== 'jiaming') return unknown;
+    return { operationId: `superposition:offer:${args.offer_id}`, status: 'committed',
+      source: { namespace: 'superposition:star', id: starId, ...revision(body.opened_at), parentId: String(args.offer_id) } };
+  }
+  return undefined;
+}
+
 export class WishstarService {
   private readonly wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string, signal?: AbortSignal): Promise<{ status: number; body: Record<string, unknown> }> } | null;
 
@@ -111,7 +142,8 @@ export class WishstarService {
       } };
       return { ok: true, output: r.body, heartbeatReceipt };
     }
-    return { ok: true, output: r.body };
+    const heartbeatReceipt = ctx.recordHeartbeatReceipt && ctx.toolCallId ? starWriteReceipt(name, args, r.body, ctx.toolCallId) : undefined;
+    return { ok: true, output: r.body, ...(heartbeatReceipt ? { heartbeatReceipt } : {}) };
   }
 
 }

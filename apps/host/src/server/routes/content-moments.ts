@@ -52,7 +52,9 @@ const sourceLabels: Partial<Record<HeartbeatSource['kind'], string>> = {
 
 const actionLabels: Record<HeartbeatAction['kind'], string> = {
   selection: '选号', star_reply: '回应原星', star_write: '写星', star_request: '请求对方开星',
-  memory_hold: '写记忆', memory_update: '修订记忆', anchor_write: '更新我们的锚点', plan_write: '写计划', i_write: '更新 I', post: '发日常',
+  star_respond: '回应开星请求', star_offer: '递一颗星', star_accept: '收下递来的星',
+  memory_hold: '写记忆', memory_update: '修订记忆', relation_link: '建立记忆关系', relation_correct: '订正记忆关系',
+  anchor_write: '更新我们的锚点', plan_write: '写计划', i_write: '更新 I', post: '发日常',
   comment: '发表评论', album: '收藏图片', creation: '保存作品', image: '生成图片', archive: '保存对话存档',
   wake: '设置自主唤醒', chat: '发送聊天消息',
 };
