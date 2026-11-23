@@ -1141,3 +1141,62 @@ test('T-C04: 抽卡后安静结束只显示卡面和真实动作，不编造回�
   } }] }, { db: ctx.host.db, messages: ctx.host.messages, heartbeat: ctx.host.heartbeat }) as LayeredFeed;
   assert.deepEqual(older.items[0]!.blocks.map(block => [block.layer, block.source_label]), [['main', '5 号 · 日常'], ['detail', '心跳状态'], ['detail', '心跳状态']]);
 });
+
+test('T-B02/T-D01: 抽卡之后在同一逻辑轮里继续发话、写记忆、再发一句都合法；同一动作重传只发一次，另一句不同的话不被吞', async t => {
+  const ctx = await fixture(t, CARDS, 'available', 0, { maxModelRequests: 7 });
+  makeFixtureToolsResident(ctx.host.db, ['heartbeat_draw', 'background_complete', 'chat_send_text']);
+  await ctx.chat('建立当前会话');
+  const { db, messages, heartbeat } = ctx.host;
+  const memoryId = 'fixture-memory-after-draw';
+  const privateText = '抽卡之后写下的合成记忆，仅供隔离复验。';
+  let holds = 0;
+  const remote = (heartbeat!.sources as unknown as { external: { memory: { transport: MariposaTransport } } }).external.memory;
+  remote.transport = async (name, args) => {
+    assert.equal(name, 'memory.hold');
+    holds++;
+    return { ok: true, result: { operation_id: args.operation_id, memory_id: memoryId, version: 1,
+      binding_ids: [], committed_at: new Date().toISOString(), commit_observed_at: new Date().toISOString() } };
+  };
+  db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,?)")
+    .run(JSON.stringify({ memory_hold: { max_cost_micro_usd: 1 } }), new Date().toISOString());
+  ctx.elapsed();
+  const first = '回应卡面的第一句。';
+  const second = '随后另起的一句。';
+  ctx.replies.push(
+    draw(4),
+    { tool: 'chat_send_text', id: 'send-first', args: { text: first, idempotency_key: 'say-first' } },
+    // The same action retried under the same key and text: one message, not two.
+    { tool: 'chat_send_text', id: 'send-first-retry', args: { text: first, idempotency_key: 'say-first' } },
+    { tool: 'memory_hold', id: 'keep-after-draw', args: { original_title: '合成写入', text: privateText, categories: ['daily'], creation_mode: 'contemporaneous' } },
+    { tool: 'chat_send_text', id: 'send-second', args: { text: second, idempotency_key: 'say-second' } },
+    { tool: 'background_complete', id: 'finish', args: { outcome: 'done' } },
+  );
+  const revisionBefore = ctx.activity().activity_revision;
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(run.result_code, 'complete:done');
+  assert.equal(ctx.cards.getDeliveredDraw(run.id)?.cardNumber, 4);
+  assert.equal(holds, 1);
+  // Everything after the first sentence still ran inside the same run: speaking
+  // does not end the turn, nor does this run's own speech make it yield to itself.
+  const published = (db.prepare("SELECT id FROM messages WHERE turn_id=? AND speaker='assistant' ORDER BY sequence").all(run.turn_id) as Array<{ id: string }>)
+    .map(row => messages.getMessage(row.id)!);
+  assert.deepEqual(published.map(message => message.revision.content), [first, second]);
+  // Each call keeps its own receipt in the retained protocol of this single run.
+  const receipts = (ctx.trajectory.forWindow(ctx.windowId())!.messages as OrMessage[]).filter(message => message.role === 'tool')
+    .map(message => [message.tool_call_id, JSON.parse(text(message)) as Record<string, unknown>] as const);
+  const receipt = (id: string) => receipts.find(([callId]) => callId === id)?.[1];
+  assert.deepEqual(receipts.map(([callId]) => callId), ['draw-4', 'send-first', 'send-first-retry', 'keep-after-draw', 'send-second', 'finish']);
+  assert.deepEqual(receipt('send-first'), { message_id: published[0]!.id, published: true });
+  assert.deepEqual(receipt('send-first-retry'), { message_id: published[0]!.id, published: true }, '重传返回同一条消息的身份');
+  assert.deepEqual(receipt('send-second'), { message_id: published[1]!.id, published: true });
+  assert.equal(receipt('keep-after-draw')?.memory_id, memoryId);
+  assert.deepEqual(receipt('finish'), { completed: true, outcome: 'done' });
+  assert.equal(db.prepare("SELECT count(*) n FROM turns WHERE trigger='cache_keepalive'").get()?.n, 1, '一次心跳，没有第二轮');
+  assert.equal(ctx.activity().activity_revision, revisionBefore + 2, '两句话各自是真实活动；抽卡和写记忆不是');
+  const projection = readHeartbeatProjection(JSON.parse(String(db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref)));
+  assert.equal(projection?.state, 'drawn');
+  assert.deepEqual(projection?.actions?.map(action => [action.kind, action.status]), [['selection', 'committed'], ['memory_hold', 'committed']]);
+  assert.equal(String(db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref).includes(privateText), false);
+  void heartbeat;
+});

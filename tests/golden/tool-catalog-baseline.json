@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "534ec686bcba8642db06109f48f7482ab57bfcb4",
+  "baselineCommit": "ad754eb20c0becd96f44e841c270318400b7e7e4",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -86,7 +86,7 @@
     "creation_save_artifact": "td_7c1b28e11ed14c01132f915b",
     "wake_manage": "td_b2764e2e84d37e720c9b5687",
     "background_complete": "td_1b8e66dc7581261882524764",
-    "chat_send_text": "td_074393184cb1d6f44ce7c25e",
+    "chat_send_text": "td_5955ba0c62656c7eac2700e3",
     "media_import": "td_f18729a706ce71dfb7f7cb1d",
     "chat_send_attachment": "td_432364a99c960b7059b72954",
     "call_control": "td_610eb42436fd9ae3782336c6",
@@ -123,7 +123,7 @@
     "heartbeat_draw": "td_cdd2b5d2062733f663a80868",
     "wishstar_reply_star": "td_1a71d3204ef88faf1ce8b01c"
   },
-  "toolsSha256": "42cfabfc6f64d64542554c71fa3f21ddd33d797eff1e41cd7d74e4fce6911f75",
+  "toolsSha256": "6321242b94d8e89e1264b0eb3696ba4f43c2611e6dcd6c9acc92660aaef3e2a2",
   "tools": [
     {
       "type": "function",
@@ -1517,7 +1517,7 @@
       "type": "function",
       "function": {
         "name": "chat_send_text",
-        "description": "以你的身份向当前私聊正式发送一条文字消息。仅用于自主活动场景需要主动公开说话时（如预约到点、后台活动的主动汇报）；普通对话的最终回复由发布链自动发出，不需要、也不要用本工具重复发送。同一幂等键重试只发一次。",
+        "description": "以你的身份向当前私聊正式发送一条文字消息，发出后她会立刻看到。预约唤醒和自由活动这类后台轮不会自动发出正文，要说的话用本工具；普通聊天和心跳唤醒轮的回复正文会由宿主自动发出，不要再用本工具把同一句重发一遍。同一幂等键重试只发一次。",
         "parameters": {
           "type": "object",
           "properties": {

@@ -68,7 +68,7 @@ export const CHATSENDTEXT_DEFINITION: HostToolSpec = {
     type: 'function',
     function: {
       name: 'chat_send_text',
-      description: '以你的身份向当前私聊正式发送一条文字消息。仅用于自主活动场景需要主动公开说话时（如预约到点、后台活动的主动汇报）；普通对话的最终回复由发布链自动发出，不需要、也不要用本工具重复发送。同一幂等键重试只发一次。',
+      description: '以你的身份向当前私聊正式发送一条文字消息，发出后她会立刻看到。预约唤醒和自由活动这类后台轮不会自动发出正文，要说的话用本工具；普通聊天和心跳唤醒轮的回复正文会由宿主自动发出，不要再用本工具把同一句重发一遍。同一幂等键重试只发一次。',
       parameters: {
         type: 'object',
         properties: {
