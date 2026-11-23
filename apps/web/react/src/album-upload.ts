@@ -1,16 +1,16 @@
-import { Hash } from 'fast-sha256'
-
 export type PhotoAlbum = 'important_photos' | 'chat_screenshots'
 export type UploadAlbum = PhotoAlbum | 'stickers' | 'creations'
 
 type UploadRequest = { key: string; album: UploadAlbum; title?: string }
-export type AlbumUpload = UploadRequest & (
-  { fileDigest: string; file?: File; assetId?: never } | { assetId: string; file?: never; fileDigest?: never }
-)
+/** Awaiting a re-selected file after a reload, holding the picked file, or holding the
+ *  asset identity so that a retry never resends bytes. */
+export type AlbumUpload = UploadRequest & { file?: File; assetId?: string }
 
 const albums: ReadonlySet<unknown> = new Set<UploadAlbum>(['important_photos', 'chat_screenshots', 'stickers', 'creations'])
 
-// Store the original request and SHA-256 only, so a reload does not keep a second copy of the file.
+export const UPLOAD_TIMEOUT_MS = 180_000
+
+// Store the original request only, so a reload does not keep a second copy of the file.
 export function albumUploadReceipt(attempt: AlbumUpload): string {
   const { file, ...receipt } = attempt
   return JSON.stringify(receipt)
@@ -22,32 +22,21 @@ export function readAlbumUploadReceipt(raw: string | null): AlbumUpload | null {
     if (!saved || !albums.has(saved.album) || typeof saved.key !== 'string' || !saved.key || saved.key.length > 256) return null
     const request = { key: saved.key, album: saved.album as UploadAlbum,
       ...(typeof saved.title === 'string' ? { title: saved.title } : {}) }
+    // Receipts saved by earlier builds also carried a file digest. The upload key now
+    // carries that check on the server, so the digest is read but no longer used.
     if (typeof saved.assetId === 'string' && saved.assetId) return { ...request, assetId: saved.assetId }
-    if (typeof saved.fileDigest === 'string' && /^[0-9a-f]{64}$/.test(saved.fileDigest)) return { ...request, fileDigest: saved.fileDigest }
-    return null
+    return request
   } catch { return null }
 }
 
-async function digestFile(file: File): Promise<string> {
-  const hash = new Hash()
-  const reader = file.stream().getReader()
-  try {
-    for (;;) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      hash.update(chunk.value)
-    }
-    return Array.from(hash.digest(), byte => byte.toString(16).padStart(2, '0')).join('')
-  } finally { reader.releaseLock() }
+export function startAlbumUpload(request: UploadRequest, file: File): AlbumUpload {
+  // The file goes straight into the upload request. Reading it here first added nothing
+  // the server does not already check, and a stalled read left the panel on "uploading".
+  return { ...request, file }
 }
 
-export async function startAlbumUpload(request: UploadRequest, file: File): Promise<AlbumUpload> {
-  return { ...request, file, fileDigest: await digestFile(file) }
-}
-
-export async function reselectAlbumUpload(attempt: AlbumUpload, file: File): Promise<AlbumUpload> {
-  if (attempt.fileDigest !== await digestFile(file)) throw new Error('选中的文件内容与原文件不同。请重选原文件，或结束本次操作。')
-  return { ...attempt, file, fileDigest: attempt.fileDigest }
+export function reselectAlbumUpload(attempt: AlbumUpload, file: File): AlbumUpload {
+  return { key: attempt.key, album: attempt.album, ...(attempt.title === undefined ? {} : { title: attempt.title }), file }
 }
 
 type AssetReceipt = {
@@ -65,31 +54,51 @@ function failure(stage: string, response: Response, error?: AssetReceipt['error'
   return new Error(`${stage}失败（${error?.code ?? `HTTP ${response.status}`}）${error?.message ? ` ${error.message}` : ''}`)
 }
 
-/** 一旦收到资产身份，后续重试依据同一资产与关系操作键，不再提交文件字节。 */
+/** A request that never answers must not leave the panel on "uploading" forever. */
+async function send(request: typeof fetch, url: string, init: RequestInit, stage: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await request(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(`${stage}超时，网络可能较慢。重试会沿用本次操作，同一文件不会重复保存。`)
+    throw error
+  } finally { clearTimeout(timer) }
+}
+
+/** 每一步把可恢复的记录交回面板保存。一旦收到资产身份，后续重试依据同一资产与关系操作键，不再提交文件字节。 */
 export async function uploadAlbumEntry(
   attempt: AlbumUpload,
-  onAssetStored: (attempt: AlbumUpload) => void,
+  onRecord: (record: AlbumUpload) => void,
   request: typeof fetch = fetch,
+  timeoutMs: number = UPLOAD_TIMEOUT_MS,
 ): Promise<void> {
   let assetId = attempt.assetId
   let asset: AssetReceipt
   if (assetId !== undefined) {
-    const response = await request(`/api/v1/assets/${encodeURIComponent(assetId)}`)
+    const response = await send(request, `/api/v1/assets/${encodeURIComponent(assetId)}`, {}, `读取资产 ${assetId}`, timeoutMs)
     asset = (await response.json().catch(() => ({}))) as AssetReceipt
     if (!response.ok) throw failure(`读取资产 ${assetId}`, response, asset.error)
   } else {
     if (!attempt.file) throw new Error('请重选原文件以核对本次上传。')
     const purpose = attempt.album === 'creations' ? 'creation_work' : attempt.album === 'stickers' ? 'chat_sticker' : 'chat_image'
-    const response = await request(`/api/v1/assets?purpose=${purpose}`, {
+    const response = await send(request, `/api/v1/assets?purpose=${purpose}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': attempt.key },
       body: attempt.file,
-    })
+    }, '上传', timeoutMs)
     asset = (await response.json().catch(() => ({}))) as AssetReceipt
+    // After a lost receipt the same key is retried with a re-selected file. The server
+    // replays the original asset for the same bytes and refuses different bytes, which
+    // leaves the record awaiting the original file instead of the rejected one.
+    if (response.status === 409 && asset.error?.code === 'idempotency_conflict') {
+      onRecord({ key: attempt.key, album: attempt.album, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
+      throw new Error('选中的文件内容与原文件不同。请重选原文件，或结束此次操作。')
+    }
     if (!response.ok) throw failure('上传', response, asset.error)
     assetId = asset.asset_id
     if (!assetId) throw new Error('上传回执不完整。使用本次操作重试可核对原资产。')
-    onAssetStored({ key: attempt.key, album: attempt.album, assetId, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
+    onRecord({ key: attempt.key, album: attempt.album, assetId, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
   }
 
   if (asset.state !== 'available' || asset.m_sync_state !== 'synced') {
@@ -106,13 +115,13 @@ export async function uploadAlbumEntry(
   }
   const workKind = asset.mime_type === 'image/svg+xml' ? 'svg' : asset.mime_type === 'text/html' ? 'html' : undefined
   if (attempt.album === 'creations' && !workKind) throw new Error(`资产 ${assetId} 不是支持导入的 HTML/SVG 代码作品。图片请使用相册。`)
-  const response = await request(attempt.album === 'creations' ? '/api/v1/content/creations' : `/api/v1/content/albums/${attempt.album}/entries`, {
+  const response = await send(request, attempt.album === 'creations' ? '/api/v1/content/creations' : `/api/v1/content/albums/${attempt.album}/entries`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${attempt.key}:entry` },
     body: JSON.stringify(attempt.album === 'creations' ? {
       work_asset_id: assetId, work_kind: workKind, ...(attempt.title === undefined ? {} : { title: attempt.title }),
     } : { asset_id: assetId }),
-  })
+  }, `归类（资产 ${assetId}）`, timeoutMs)
   const entry = (await response.json().catch(() => ({}))) as EntryReceipt
   if (!response.ok) throw failure(`归类（资产 ${assetId}）`, response, entry.error)
   if (!entry.id) throw new Error(`归类回执不完整（资产 ${assetId}）。使用本次操作重试可核对原条目。`)

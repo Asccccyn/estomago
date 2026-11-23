@@ -222,7 +222,7 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => { if (!uploading) onClose() }}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/30 sm:items-center" onClick={() => { if (!uploadInFlight.current) onClose() }}>
       <div role="dialog" aria-label="相册" onClick={(e) => e.stopPropagation()}
         className="flex h-[78vh] w-full max-w-[560px] flex-col rounded-t-3xl bg-[#faf8f2] shadow-2xl sm:rounded-3xl">
         <div className="flex items-center justify-between px-5 pb-2 pt-4">
@@ -261,7 +261,7 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
               <option value="chat_screenshots">聊天截图</option>
             </select>
           </label>}
-          {busy && <p role="status" className="py-3 text-center text-[13px] text-[#a3a099]">{uploading ? (upload?.assetId ? '确认并入库…' : '上传中…') : '读取中…'}</p>}
+          {busy && <p role="status" className="py-3 text-center text-[13px] text-[#a3a099]">{uploading ? (upload?.assetId ? '确认并入库…' : '上传中…大图在手机网络上可能需要十几秒，请留在此页') : '读取中…'}</p>}
           {!busy && tab === 'creations' && <>
             <button disabled={upload !== null} onClick={() => pickFile('creations')}
               className="flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-black/15 px-3 py-2.5 text-[13px] text-[#5e5d59] hover:bg-black/5 disabled:opacity-50">
