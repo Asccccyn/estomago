@@ -36,7 +36,7 @@ const INTENTS: ReadonlyMap<string, ToolIntent> = new Map([
     phrases: ["要一颗星", "请求星星", "要颗星", "想要一颗她的星", "想要她的一颗星", "向她要星"],
   }],
   ['wishstar_reply_star', {
-    ability: '我可以回应这次心跳抽到的那颗星',
+    ability: '我可以回应这次抽到的那颗星',
     label: '回应本轮抽到的星',
     phrases: ['回复星星', '回应星星', '回复原星', '回应抽到的星', '回复星'],
   }],
@@ -281,9 +281,9 @@ const INTENTS: ReadonlyMap<string, ToolIntent> = new Map([
     phrases: ["结束本轮", "不回复", "拒绝抽卡", "完成自唤醒", "结束这次保温"],
   }],
   ['heartbeat_draw', {
-    ability: '我可以在心跳抽卡时选一个号码',
-    label: "我想从本轮心跳卡牌中选一个号码",
-    phrases: ["心跳抽卡", "心跳选号", "抽一张心跳牌", "选择心跳卡"],
+    ability: '我可以从今天的牌里抽一张',
+    label: "我想抽一张今天的牌，或看看还剩哪些号码",
+    phrases: ["心跳抽卡", "心跳选号", "抽一张心跳牌", "选择心跳卡", "抽卡", "抽牌", "抽一张", "还剩哪些号码", "可抽号码"],
   }],
   ['context_review_complete', {
     ability: '我可以在换窗回顾时确认回顾完成',

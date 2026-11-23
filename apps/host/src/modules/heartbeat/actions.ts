@@ -1,7 +1,7 @@
 import type { HeartbeatAction, HeartbeatActionKind } from '../../../../../packages/contracts/src/heartbeat.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 import type { Db } from '../../db/connection.ts';
-import { canDrawHeartbeat, HeartbeatCards } from './service.ts';
+import { canDrawHeartbeat, canStartChatDraw, drawRoundId, HeartbeatCards } from './service.ts';
 import { starReplyOperationId, starWriteOperationId } from '../wishstar/operation-ids.ts';
 import { memoryHoldOperationId } from '../memory/hold-operation-id.ts';
 import { wakeOperationIdentity, type WakeMutation } from '../wake/operation-id.ts';
@@ -12,8 +12,12 @@ import { readHeartbeatProjection } from '../../../../../packages/contracts/src/h
 // Persist a pre-handler unknown so a process stop doesn't claim no side effect.
 export function startHeartbeatAction(db: Db, ctx: ToolExecContext, kind: HeartbeatActionKind | undefined,
   input: unknown): ((outcome: CapabilityOutcome<unknown>) => void) | undefined {
-  if (!kind || !ctx.backgroundRunId || !ctx.toolCallId || !canDrawHeartbeat(db, ctx)) return;
-  const run = ctx.backgroundRunId, call = ctx.toolCallId;
+  const round = drawRoundId(ctx);
+  if (!kind || !round || !ctx.toolCallId) return;
+  // While chatting, a round opens with its first selection; every later action needs the open round.
+  const opening = !canDrawHeartbeat(db, ctx);
+  if (opening && !(kind === 'selection' && canStartChatDraw(db, ctx))) return;
+  const run = round, call = ctx.toolCallId;
   const args = input as Record<string, unknown>;
   if (kind === 'wake' && !['schedule','update','cancel'].includes(String(args.operation))) return;
   const after = db.prepare('SELECT COALESCE(MAX(sequence),0) AS n FROM messages WHERE turn_id=?')
@@ -33,9 +37,15 @@ export function startHeartbeatAction(db: Db, ctx: ToolExecContext, kind: Heartbe
     action.wakeOperation = args.operation as WakeMutation;
     action.operationId = wakeOperationIdentity(ctx.roomId, action.wakeOperation, String(args.operation_id ?? ''));
   }
-  db.prepare('INSERT OR IGNORE INTO heartbeat_actions(run_id,call_id,action_json) VALUES(?,?,?)')
+  const insert = () => db.prepare('INSERT OR IGNORE INTO heartbeat_actions(run_id,call_id,action_json) VALUES(?,?,?)')
     .run(run, call, JSON.stringify(action));
+  if (!opening) insert();
   return outcome => {
+    // The opening selection can only be written once its handler has opened the round.
+    // If it never did, there is nothing this call did that could need a receipt.
+    if (opening && outcome.heartbeatReceipt?.replayed) return;
+    if (opening && !db.prepare('SELECT 1 FROM heartbeat_runs WHERE run_id=?').get(run)) return;
+    if (opening) insert();
     const current = db.prepare('SELECT action_json FROM heartbeat_actions WHERE run_id=? AND call_id=?')
       .get(run, call) as { action_json: string };
     const fact = JSON.parse(current.action_json) as HeartbeatAction;

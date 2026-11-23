@@ -497,7 +497,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
         {items.map(entry => <article key={entry.id} className={`${cardClass} space-y-3 ${targetNote === entry.id ? 'ring-2 ring-[#85462f]' : ''}`}>
           {targetNote === entry.id && <p className={mutedClass}>从朋友圈定位的原留言</p>}
           <header className="flex flex-wrap items-center justify-between gap-2">
-            <span className={mutedClass}>{entry.kind === 'reference' ? '心跳' : authorLabel(entry.author)} · {dateLabel(entry.published_at ?? entry.created_at)}</span>
+            <span className={mutedClass}>{entry.kind === 'reference' ? entry.origin === 'chat' ? '聊天里抽的牌' : '心跳' : authorLabel(entry.author)} · {dateLabel(entry.published_at ?? entry.created_at)}</span>
             {entry.kind !== 'reference' && entry.revision > 1 && <span className={mutedClass}>已编辑</span>}
           </header>
           {entry.title && <h3 className="text-base font-medium">{entry.title}</h3>}

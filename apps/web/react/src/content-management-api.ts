@@ -9,6 +9,8 @@ export type ContentEntry = {
   updated_at: string
   asset_ids: string[]
   kind?: 'reference'
+  /** A Moments entry from a heartbeat run, or from a card drawn while chatting. */
+  origin?: 'heartbeat' | 'chat'
   deleted?: boolean
   blocks?: SourceBlock[]
   delivery_state?: DeliveryState

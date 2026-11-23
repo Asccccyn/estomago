@@ -25,6 +25,8 @@ export type HeartbeatSource = {
 
 export type HeartbeatProjection = {
   mode: 'draw';
+  /** chat = the model drew while replying to her in an ordinary turn; absent = a heartbeat run. */
+  origin?: 'chat';
   conversationId: string;
   businessDate: string;
   version: number;
@@ -134,6 +136,8 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
   }
   const actions: HeartbeatAction[] = [];
   const terminal = record(projection.terminal);
+  if (projection.origin !== undefined && projection.origin !== 'chat') return null;
+  if (projection.origin === 'chat' && (state === 'talked' || state === 'declined')) return null;
   if (projection.actions !== undefined) {
     if (!Array.isArray(projection.actions) || projection.actions.length > 1000) return null;
     for (const value of projection.actions) {
@@ -158,7 +162,8 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
   if (projection.terminal !== undefined && (!terminal || !['completed','declined','cancelled','failed','unknown'].includes(String(terminal.status))
     || terminal.reason !== undefined && !['budget','quote','sleep','rest','yield','delivery','other'].includes(String(terminal.reason)))) return null;
   return {
-    mode: 'draw', conversationId: projection.conversationId, businessDate: projection.businessDate,
+    mode: 'draw', ...(projection.origin === 'chat' ? { origin: 'chat' as const } : {}),
+    conversationId: projection.conversationId, businessDate: projection.businessDate,
     version: projection.version, state,
     card: card && source ? { number: card.number as number, source } : null,
     messages,

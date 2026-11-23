@@ -202,7 +202,7 @@ export function registerWishstarCapabilities(registry: { register(d: CapabilityD
     memoryOnlyAllowed: false, label: '回应抽到的许愿星',
     definition: { type: 'function', function: {
       name: 'wishstar_reply_star',
-      description: '回应本轮心跳已交付的共享星。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。',
+      description: '回应本轮抽到并已交付的共享星（心跳或聊天里抽到的那张）。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。',
       parameters: { type: 'object', properties: {
         reply_ref: { type: 'string', minLength: 1, maxLength: 256, description: '本轮星牌 heartbeat_card.reply_ref' },
         text: { type: 'string', minLength: 1, maxLength: 1000 },

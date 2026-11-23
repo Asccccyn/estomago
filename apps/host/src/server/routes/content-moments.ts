@@ -288,7 +288,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       text: projection.state === 'declined' ? '本轮未抽卡。' : '本轮没有留言。',
     });
   }
-  return { ...entry, blocks };
+  return { ...entry, origin: projection.origin === 'chat' ? 'chat' : 'heartbeat', blocks };
 }
 
 export async function decorateMomentResponse(url: URL, payload: unknown, deps: Deps): Promise<unknown> {

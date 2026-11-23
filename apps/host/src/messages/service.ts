@@ -575,7 +575,9 @@ function rowToDto(db: Db, r: MessageRow, includePublicationBreaks = false): Mess
   return {
     ...(breaks.length ? { publication_breaks: breaks } : {}),
     ...(heartbeat ? { heartbeat } : {}),
-    ...(heartbeatNotice?.[2] === 'card' ? { heartbeat_card: { run_id: heartbeatNotice[1]! } } : {}),
+    // A card revealed while chatting belongs to an ordinary turn, not to a heartbeat turn.
+    ...(heartbeatNotice?.[2] === 'card' ? { heartbeat_card: { run_id: heartbeatNotice[1]!,
+      ...(r.turn_trigger === 'cache_keepalive' ? {} : { origin: 'chat' as const }) } } : {}),
     id: r.id,
     conversation_id: r.conversation_id,
     sequence: r.sequence,

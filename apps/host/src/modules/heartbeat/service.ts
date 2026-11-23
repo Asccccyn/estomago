@@ -6,13 +6,43 @@ import type { ToolExecContext } from '../../capabilities/contracts.ts';
 export const HEARTBEAT_DRAW_TOOL = 'heartbeat_draw';
 export const RESERVED_NOTE_IDENTITY = 'content:reserved_note:';
 
+export function heartbeatBusinessDate(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+export type DrawOrigin = 'heartbeat' | 'chat';
+
+/** The logical round a draw belongs to: the heartbeat run, or the foreground turn the model is replying in. */
+export function drawRoundId(ctx: ToolExecContext): string | null {
+  if (ctx.purpose === 'cache_keepalive') return ctx.backgroundRunId ?? null;
+  return ctx.purpose === 'chat' ? ctx.turnId : null;
+}
+
+function chatTurnLive(db: Db, turnId: string): boolean {
+  return Boolean(db.prepare("SELECT 1 FROM turns WHERE id=? AND state='running'").get(turnId));
+}
+
+/** Only an ordinary reply to her may start a round while chatting. A self-wake or
+ *  free-activity run is a background task and keeps the heartbeat's own gates. */
+export function canStartChatDraw(db: Db, ctx: ToolExecContext): boolean {
+  const turnId = ctx.turnId;
+  return ctx.purpose === 'chat' && Boolean(ctx.toolCallId) && turnId !== null && chatTurnLive(db, turnId);
+}
+
 export function canDrawHeartbeat(db: Db, ctx: ToolExecContext): boolean {
-  if (ctx.purpose !== 'cache_keepalive' || !ctx.backgroundRunId || !ctx.turnId) return false;
+  const round = drawRoundId(ctx);
+  if (!round || !ctx.toolCallId) return false;
+  if (ctx.purpose === 'chat') {
+    // A round stored under a turn id is by construction a chat round.
+    return chatTurnLive(db, round)
+      && db.prepare("SELECT 1 FROM heartbeat_runs WHERE run_id=? AND mode='draw'").get(round) !== undefined;
+  }
+  if (ctx.purpose !== 'cache_keepalive' || !ctx.turnId) return false;
   return Boolean(db.prepare(`
     SELECT 1 FROM heartbeat_runs heartbeat JOIN background_runs run ON run.id=heartbeat.run_id
     WHERE heartbeat.mode='draw' AND run.id=? AND run.conversation_id=? AND run.window_id=?
       AND run.turn_id=? AND run.state='running' AND COALESCE(run.result_code,'') NOT LIKE 'complete:%'
-  `).get(ctx.backgroundRunId, ctx.roomId, ctx.windowId, ctx.turnId));
+  `).get(round, ctx.roomId, ctx.windowId, ctx.turnId));
 }
 export type { HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
 
@@ -25,7 +55,7 @@ export type HeartbeatMode = 'unprepared' | 'source_unavailable' | 'draw' | 'exha
  *  It never undoes a delivered card, a committed tool action or a recorded cost. */
 export type HeartbeatSpeechHold = 'sleep' | 'rest' | 'disabled';
 export type HeartbeatDeck = { id: string; availableNumbers: number[]; deliveredNumbers: number[]; exhausted: boolean };
-export type HeartbeatRun = { businessDate: string; mode: HeartbeatMode; deck: HeartbeatDeck | null };
+export type HeartbeatRun = { businessDate: string; mode: HeartbeatMode; deck: HeartbeatDeck | null; origin: DrawOrigin };
 type DrawPhase = 'claimed' | 'prepared' | 'dispatching' | 'delivered' | 'not_dispatched' | 'unknown';
 type DrawRejection = 'invalid_number' | 'used_number' | 'source_unavailable' | 'source_invalid' | 'corrections_exhausted';
 export type HeartbeatDraw =
@@ -79,7 +109,7 @@ export function invalidateHeartbeatContentSource(db: Db, kind: ContentSourceKind
 
 type RunRow = {
   run_id: string; deck_id: string | null; business_date: string; mode: HeartbeatMode;
-  corrections: number; live: number;
+  corrections: number; live: number; origin: DrawOrigin;
 };
 type CardRow = {
   deck_id: string; card_number: number; source_identity: string; source_kind: HeartbeatSource['kind'];
@@ -187,42 +217,65 @@ export class HeartbeatCards {
         WHERE id=? AND kind='keepwarm' AND state IN ('claimed','running')
           AND COALESCE(result_code,'') NOT LIKE 'complete:%'
       `).get(input.runId) as { conversation_id: string } | undefined;
-      if (!run) return null;
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)) throw new Error('HEARTBEAT_BUSINESS_DATE_INVALID');
-      let deckId = this.deckId(run.conversation_id, input.businessDate);
-      const candidates = input.candidates;
-      const keys = candidates?.flatMap(heartbeatSourceKeys);
-      if (deckId === null && candidates?.length === CARD_COUNT
-        && new Set(keys).size === keys?.length
-        && candidates.every(source => this.isSourceEligible(source))) {
-        deckId = genId('deck');
-        this.db.prepare('INSERT INTO heartbeat_decks(id,conversation_id,business_date) VALUES(?,?,?)')
-          .run(deckId, run.conversation_id, input.businessDate);
-        const insert = this.db.prepare(`
-          INSERT INTO heartbeat_cards(deck_id,card_number,source_identity,source_kind,source_ref_json,first_response_replay)
-          VALUES(?,?,?,?,?,?)
-        `);
-        candidates.forEach((source, index) => {
-          const { kind, namespace, id, revision, identity, mediaIdentity, permissionScope } = source;
-          const replay = kind === 'moments' && source.replay === 'first_reserved_response' ? source.replay : undefined;
-          const selection = source.selection ? {
-            attachmentIds: source.selection.attachmentIds,
-            start: source.selection.start,
-            end: source.selection.end,
-            voiceTranscriptRevision: source.selection.voiceTranscriptRevision,
-          } : undefined;
-          insert.run(deckId, index + 1, identity, kind,
-            JSON.stringify({ kind, namespace, id, revision, identity, mediaIdentity, permissionScope, selection, replay }), Number(Boolean(replay)));
-        });
-      }
-
-      const deck = deckId ? this.deck(deckId) : null;
-      const mode = deck === null ? 'unprepared' : deck.exhausted ? 'exhausted_keepwarm'
-        : deck.availableNumbers.length ? 'draw' : 'source_unavailable';
-      this.db.prepare('INSERT INTO heartbeat_runs(run_id,business_date,deck_id,mode) VALUES(?,?,?,?)')
-        .run(input.runId, input.businessDate, deckId, mode);
-      return { businessDate: input.businessDate, mode, deck };
+      return run ? this.openRound(input.runId, run.conversation_id, input, 'heartbeat') : null;
     });
+  }
+
+  /** An ordinary turn is its own round, opened by its first draw. It uses the
+   *  same fixed deck and consumption facts as the heartbeat. */
+  beginChat(input: { turnId: string; conversationId: string; businessDate: string; candidates?: readonly HeartbeatSource[] }): HeartbeatRun | null {
+    return tx(this.db, () => {
+      const existing = this.run(input.turnId);
+      if (existing) return existing.origin === 'chat' ? this.runView(existing) : null;
+      const live = this.db.prepare('SELECT 1 FROM turns WHERE id=? AND conversation_id=? AND state=?')
+        .get(input.turnId, input.conversationId, 'running');
+      return live ? this.openRound(input.turnId, input.conversationId, input, 'chat') : null;
+    });
+  }
+
+  private openRound(runId: string, conversationId: string, input: { businessDate: string; candidates?: readonly HeartbeatSource[] }, origin: DrawOrigin): HeartbeatRun {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)) throw new Error('HEARTBEAT_BUSINESS_DATE_INVALID');
+    let deckId = this.deckId(conversationId, input.businessDate);
+    const candidates = input.candidates;
+    const keys = candidates?.flatMap(heartbeatSourceKeys);
+    if (deckId === null && candidates?.length === CARD_COUNT
+      && new Set(keys).size === keys?.length
+      && candidates.every(source => this.isSourceEligible(source))) {
+      deckId = genId('deck');
+      this.db.prepare('INSERT INTO heartbeat_decks(id,conversation_id,business_date) VALUES(?,?,?)')
+        .run(deckId, conversationId, input.businessDate);
+      const insert = this.db.prepare(`
+        INSERT INTO heartbeat_cards(deck_id,card_number,source_identity,source_kind,source_ref_json,first_response_replay)
+        VALUES(?,?,?,?,?,?)
+      `);
+      candidates.forEach((source, index) => {
+        const { kind, namespace, id, revision, identity, mediaIdentity, permissionScope } = source;
+        const replay = kind === 'moments' && source.replay === 'first_reserved_response' ? source.replay : undefined;
+        const selection = source.selection ? {
+          attachmentIds: source.selection.attachmentIds,
+          start: source.selection.start,
+          end: source.selection.end,
+          voiceTranscriptRevision: source.selection.voiceTranscriptRevision,
+        } : undefined;
+        insert.run(deckId, index + 1, identity, kind,
+          JSON.stringify({ kind, namespace, id, revision, identity, mediaIdentity, permissionScope, selection, replay }), Number(Boolean(replay)));
+      });
+    }
+
+    const deck = deckId ? this.deck(deckId) : null;
+    const mode = deck === null ? 'unprepared' : deck.exhausted ? 'exhausted_keepwarm'
+      : deck.availableNumbers.length ? 'draw' : 'source_unavailable';
+    this.db.prepare('INSERT INTO heartbeat_runs(run_id,business_date,deck_id,mode) VALUES(?,?,?,?)')
+      .run(runId, input.businessDate, deckId, mode);
+    return { businessDate: input.businessDate, mode, deck, origin };
+  }
+
+  /** What the model may be told before choosing: today's remaining numbers, or
+   *  all ten while today's deck is not fixed yet (the first draw fixes it). */
+  deckStatus(conversationId: string, businessDate: string): { state: 'not_built' | 'draw' | 'exhausted' | 'source_unavailable'; availableNumbers: number[] } {
+    const deck = this.getDeck(conversationId, businessDate);
+    if (!deck) return { state: 'not_built', availableNumbers: Array.from({ length: CARD_COUNT }, (_, index) => index + 1) };
+    return { state: deck.exhausted ? 'exhausted' : deck.availableNumbers.length ? 'draw' : 'source_unavailable', availableNumbers: deck.availableNumbers };
   }
 
   claim(input: HeartbeatOperation & { cardNumber: unknown }): HeartbeatDraw {
@@ -371,22 +424,43 @@ export class HeartbeatCards {
     return Boolean(this.db.prepare('SELECT 1 FROM heartbeat_draw_operations WHERE run_id=? AND card_number IS NOT NULL').get(runId));
   }
 
-  /** Call after normal background-run recovery has classified the interrupted runs. */
+  /** Call after normal background-run and turn recovery have classified the
+   *  interrupted runs and turns. */
   recoverClosedRuns(): void {
     const pending = this.db.prepare(`
-      SELECT o.run_id FROM heartbeat_draw_operations o LEFT JOIN background_runs b ON b.id=o.run_id
-      WHERE o.state IN ('claimed','prepared','dispatching') AND
-        (b.id IS NULL OR b.state NOT IN ('claimed','running') OR b.result_code LIKE 'complete:%')
+      SELECT o.run_id FROM heartbeat_draw_operations o
+      LEFT JOIN background_runs b ON b.id=o.run_id
+      WHERE o.state IN ('claimed','prepared','dispatching') AND (
+        (EXISTS (SELECT 1 FROM turns t WHERE t.id=o.run_id)
+          AND NOT EXISTS (SELECT 1 FROM turns t WHERE t.id=o.run_id AND t.state='running'))
+        OR (NOT EXISTS (SELECT 1 FROM turns t WHERE t.id=o.run_id)
+          AND (b.id IS NULL OR b.state NOT IN ('claimed','running') OR b.result_code LIKE 'complete:%')))
     `).all() as Array<{ run_id: string }>;
     pending.forEach(row => this.closeRun(row.run_id));
   }
 
+  /** A round is a chat round exactly when its id is the id of a turn. Heartbeat
+   *  runs carry their own run ids, so the two never meet and no column is needed. */
+  private isChatRound(runId: string): boolean {
+    return this.db.prepare('SELECT 1 FROM turns WHERE id=?').get(runId) !== undefined;
+  }
+
   private run(runId: string): RunRow | undefined {
-    return this.db.prepare(`
-      SELECT h.*, CASE WHEN b.kind='keepwarm' AND b.state IN ('claimed','running')
-        AND COALESCE(b.result_code,'') NOT LIKE 'complete:%' THEN 1 ELSE 0 END AS live
+    const chat = this.isChatRound(runId);
+    const row = this.db.prepare(`
+      SELECT h.*, CASE
+        WHEN ? THEN EXISTS(SELECT 1 FROM turns t WHERE t.id=h.run_id AND t.state='running')
+        WHEN b.kind='keepwarm' AND b.state IN ('claimed','running')
+          AND COALESCE(b.result_code,'') NOT LIKE 'complete:%' THEN 1
+        ELSE 0 END AS live
       FROM heartbeat_runs h LEFT JOIN background_runs b ON b.id=h.run_id WHERE h.run_id=?
-    `).get(runId) as RunRow | undefined;
+    `).get(chat ? 1 : 0, runId) as Omit<RunRow, 'origin'> | undefined;
+    return row ? { ...row, origin: chat ? 'chat' as const : 'heartbeat' as const } : undefined;
+  }
+
+  /** A chat round lives as long as its turn; its evidence is any request of that turn. */
+  private requestScope(runId: string): { column: 'background_run_id' | 'turn_id'; purpose: string } {
+    return this.isChatRound(runId) ? { column: 'turn_id', purpose: 'chat' } : { column: 'background_run_id', purpose: 'cache_keepalive' };
   }
 
   private deckId(conversationId: string, businessDate: string): string | null {
@@ -412,7 +486,7 @@ export class HeartbeatCards {
   }
 
   private runView(run: RunRow): HeartbeatRun {
-    return { businessDate: run.business_date, mode: run.mode, deck: run.deck_id ? this.deck(run.deck_id) : null };
+    return { businessDate: run.business_date, mode: run.mode, deck: run.deck_id ? this.deck(run.deck_id) : null, origin: run.origin };
   }
 
   private card(deckId: string, cardNumber: number): CardRow | undefined {
@@ -487,8 +561,9 @@ export class HeartbeatCards {
   }
 
   private deliveredRequest(input: HeartbeatOperation): { requestId: string; sentAt: string } | null {
+    const scope = this.requestScope(input.runId);
     const rows = this.db.prepare(`
-      SELECT id FROM provider_requests WHERE background_run_id=? AND purpose='cache_keepalive'
+      SELECT id FROM provider_requests WHERE ${scope.column}=? AND purpose='${scope.purpose}'
         AND sent_at IS NOT NULL ORDER BY sent_at,id
     `).all(input.runId) as Array<{ id: string }>;
     for (const row of rows) {
@@ -499,9 +574,10 @@ export class HeartbeatCards {
   }
 
   private requestCarriedCard(input: HeartbeatOperation & { providerRequestId: string }, requireSent: boolean): string | boolean {
+    const scope = this.requestScope(input.runId);
     const request = this.db.prepare(`
       SELECT payload_json,payload_wire_json,sent_at
-      FROM provider_requests WHERE id=? AND background_run_id=? AND purpose='cache_keepalive'
+      FROM provider_requests WHERE id=? AND ${scope.column}=? AND purpose='${scope.purpose}'
         AND dispatch_started_at IS NOT NULL
     `).get(input.providerRequestId, input.runId) as {
       payload_json: string | null; payload_wire_json: string | null; sent_at: string | null;

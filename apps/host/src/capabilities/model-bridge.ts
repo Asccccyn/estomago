@@ -5,7 +5,7 @@
 import { isVoiceCallActive } from '../modules/voice/call-service.ts';
 import type { Db } from '../db/connection.ts';
 import { ContractError } from '../runtime/or-contract.ts';
-import { canDrawHeartbeat, HEARTBEAT_DRAW_TOOL } from '../modules/heartbeat/service.ts';
+import { canDrawHeartbeat, canStartChatDraw, HEARTBEAT_DRAW_TOOL, HeartbeatCards, heartbeatBusinessDate } from '../modules/heartbeat/service.ts';
 import { modelFailure } from '../runtime/model-results.ts';
 import { buildDeferredTools, compactNativeTool, storedToolset, definitionId, definitionWasSeen, modelDefinitionAfterBindingRetirement, type WindowToolset } from '../runtime/tool-discovery.ts';
 import { searchToolCatalog, toolCatalogIntent } from '../runtime/tool-catalog-search.ts';
@@ -204,9 +204,9 @@ export class ModelToolBridge {
       if (set.protocol === 'deferred' && !this.taskScopeAllows(spec.function.name, ctx)) return deny('TOOL_NOT_IN_ALLOWLIST');
       this.admitBackgroundTool(name, ctx);
       if (set.onDemand && set.groups[spec.function.name] === 'D' && !set.tools.some(tool => tool.function.name === spec.function.name)) return this.selectMapTool(ctx, set, spec);
-      if (set.summaries) return { ok: true, output: { ...spec.function } };
-      if (definitionWasSeen(this.db,ctx,spec)) return {ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}};
-      return {ok:true,output:{definition_id:definitionId(spec),...spec.function}};
+      if (set.summaries) return this.withDeckNumbers({ ok: true, output: { ...spec.function } }, ctx, spec);
+      if (definitionWasSeen(this.db,ctx,spec)) return this.withDeckNumbers({ok:true,output:{name:spec.function.name,definition_id:definitionId(spec),already_available:true}}, ctx, spec);
+      return this.withDeckNumbers({ok:true,output:{definition_id:definitionId(spec),...spec.function}}, ctx, spec);
     }
     // P6（四仓审计 20261106，U01/R11）：定义阅读凭证不再是授权——tool_invoke 不带
     // definition_id 也直接执行（参数仍按冻结 schema 完整校验；registry 决定真实权限）。
@@ -238,6 +238,8 @@ export class ModelToolBridge {
       case TURN_COMPLETION_TOOL:
         return canDiscoverTurnCompletion(this.db, ctx);
       case HEARTBEAT_DRAW_TOOL:
+        // Heartbeat rounds, and any ordinary reply to her; never a self-wake or free-activity run.
+        return canDrawHeartbeat(this.db, ctx) || canStartChatDraw(this.db, ctx);
       case 'wishstar_reply_star':
         return canDrawHeartbeat(this.db, ctx);
       default:
@@ -253,9 +255,22 @@ export class ModelToolBridge {
         WHERE window_id=? AND activated_tools_json IS NOT NULL
         AND NOT EXISTS (SELECT 1 FROM json_each(activated_tools_json) WHERE value=?)`).run(name, ctx.windowId, name);
     }
-    if (set.summaries) return { ok: true, activatedTool: compactNativeTool(spec), output: { ...spec.function } };
-    return { ok: true, activatedTool: spec, output: { state: 'ready', name, definition_id: definitionId(spec),
-      hint: '下一步可按原名直接填写参数。' } };
+    if (set.summaries) return this.withDeckNumbers({ ok: true, activatedTool: compactNativeTool(spec), output: { ...spec.function } }, ctx, spec);
+    return this.withDeckNumbers({ ok: true, activatedTool: spec, output: { state: 'ready', name, definition_id: definitionId(spec),
+      hint: '下一步可按原名直接填写参数。' } }, ctx, spec);
+  }
+
+  /** Reading the draw tool's definition is also how the model sees which numbers
+   *  remain, in a heartbeat and while chatting alike. Before today's deck is fixed
+   *  every number is open; the first draw fixes the deck. */
+  private withDeckNumbers(result: ToolExecResult, ctx: ToolExecContext, spec: HostToolSpec): ToolExecResult {
+    if (spec.function.name !== HEARTBEAT_DRAW_TOOL || !result.ok || !(canDrawHeartbeat(this.db, ctx) || canStartChatDraw(this.db, ctx))) return result;
+    const deck = new HeartbeatCards(this.db).deckStatus(ctx.roomId, heartbeatBusinessDate());
+    // Only for windows whose frozen definition predates drawing while chatting.
+    // This note leaves with the last such window.
+    const frozenBeforeChatDraws = !spec.function.description.includes('平时聊天');
+    return { ...result, output: { ...result.output, deck_state: deck.state, available_card_numbers: deck.availableNumbers,
+      ...(frozenBeforeChatDraws ? { note: '这份定义冻结于开放聊天抽牌之前：普通聊天里也可以直接调用本工具，不限于心跳邀请；夜间、休息和心跳开关只限制自动唤醒，不限制聊天里的抽牌。' } : {}) } };
   }
 
   /** Standard tools use exactly the window's native wire definition. Task

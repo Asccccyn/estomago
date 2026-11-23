@@ -7,7 +7,9 @@ export type Attachment = { id: string; file: Blob; name: string; kind: 'image' |
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
 type Json = Record<string, any>
-const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat || message.heartbeat_card?.run_id)
+// A card drawn while chatting does not turn that ordinary turn into a heartbeat turn.
+const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat
+  || (message.heartbeat_card?.run_id && message.heartbeat_card.origin !== 'chat'))
 class LifecycleEnded extends Error {}
 const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
 type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => EventSource; redirect?: () => void }

@@ -5,7 +5,8 @@ import fs from 'node:fs';
 import { makeDb } from '../helpers.ts';
 import { associateMomentEdit, recoverMomentEdits } from '../../apps/host/src/integrations/content/moment-edit-outbox.ts';
 import type { IncomingMessage } from 'node:http';
-import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference } from '../../apps/host/src/server/routes/content-moments.ts';
+import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference, listFutureNotes } from '../../apps/host/src/server/routes/content-moments.ts';
+import { readHeartbeatProjection } from '../../packages/contracts/src/heartbeat.ts';
 
 const path = 'http://est.test/api/v1/content/moment-references/photo-post/blocks/card';
 
@@ -194,4 +195,43 @@ test('projection CAS conflict and deletion are terminal association outcomes', a
   assert.equal(writes, 2);
   const states = db.prepare("SELECT state FROM outbox WHERE target='content.moment_display_edit'").all().map(row => row.state);
   assert.deepEqual(states, ['failed', 'failed']);
+});
+
+test('聊天里抽的牌的朋友圈记录：合同只认 origin=chat，展示标出聊天来源，主体是卡面和揭牌后的真实回复', async t => {
+  const { db, root } = makeDb();
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const card = { number: 6, source: { kind: 'moments', namespace: 'content', id: 'post-6', revision: 3, identity: 'content:moments:post-6', permissionScope: 'primary' } };
+  const projection = {
+    mode: 'draw', origin: 'chat', conversationId: 'primary', businessDate: '2026-11-24', version: 2, state: 'drawn', card,
+    messages: [{ messageId: 'reveal', revision: 1, sequence: 5 }, { messageId: 'reply', revision: 2, sequence: 6 }],
+    actions: [{ operationId: 'draw-6', kind: 'selection', afterSequence: 4, status: 'committed', cardNumber: 6 },
+      { operationId: 'keep', kind: 'memory_hold', afterSequence: 6, status: 'committed' }],
+    terminal: { status: 'completed' },
+  };
+  assert.equal(readHeartbeatProjection(projection)?.origin, 'chat');
+  assert.equal(readHeartbeatProjection({ ...projection, origin: 'background' }), null, '未知的来源不被接受');
+  assert.equal(readHeartbeatProjection({ ...projection, state: 'talked' }), null, '聊天抽牌的记录不会是“只说了话”');
+  assert.equal(readHeartbeatProjection({ ...projection, origin: undefined, state: 'talked' })?.origin, undefined, '没有来源字段的记录仍按心跳读取');
+  const said = {
+    reveal: { speaker: 'system', sequence: 5, heartbeat_card: { run_id: 'turn-1' }, revision: { content: '[抽牌] 抽到了 6 号牌。', attachments: [] } },
+    reply: { speaker: 'assistant', sequence: 6, revision: { content: '六号牌给你看。', attachments: [] } },
+  } as never;
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'), { items: [{ id: 'chat-draw', kind: 'reference', revision: 1, reference: projection }] },
+    { db, messages: { getMessageAtRevision: (_conversation: string, id: string) => (said as Record<string, unknown>)[id] } as never } as never) as
+    { items: Array<{ origin: string; blocks: Array<{ id: string; layer: string; source_label: string; text?: string; outcome?: string }> }> };
+  assert.equal(feed.items[0]!.origin, 'chat');
+  assert.deepEqual(feed.items[0]!.blocks.map(block => [block.id, block.layer]), [
+    ['action:0', 'detail'], ['message:reveal', 'detail'], ['card', 'main'], ['message:reply', 'main'], ['action:1', 'detail'], ['outcome', 'detail'],
+  ]);
+  assert.deepEqual(feed.items[0]!.blocks.filter(block => block.layer === 'main').map(block => block.text), [undefined, '六号牌给你看。']);
+  assert.deepEqual(feed.items[0]!.blocks.filter(block => block.outcome === 'committed').map(block => block.source_label), ['选号', '写记忆']);
+});
+
+test('留言列表在内容服务不可达时如实返回不可用，不返回空列表', async () => {
+  const reply = await listFutureNotes(new URL('http://est.test/api/v1/content/future-notes'), { db: null as never, contentClient: null, contentOps: null, messages: null as never });
+  assert.deepEqual(reply, { status: 503, body: { error: { code: 'content_unavailable', message: '内容服务未启用或不可达（聊天不受影响）' } } });
+  for (const query of ['view=bogus', 'limit=101', 'limit=0', 'limit=abc', 'cursor=%40%40']) {
+    const rejected = await listFutureNotes(new URL('http://est.test/api/v1/content/future-notes?' + query), { db: null as never, contentClient: {}, contentOps: null, messages: null as never });
+    assert.equal(rejected.status, 400, query);
+  }
 });

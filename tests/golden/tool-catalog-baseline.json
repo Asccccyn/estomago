@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "ad754eb20c0becd96f44e841c270318400b7e7e4",
+  "baselineCommit": "8bb3531cf781b4dffb79657aec3385a38893ee02",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -120,10 +120,10 @@
     "media_view": "td_f72b71bbef701e3714320c82",
     "content_creations_read": "td_439172e960f2ab11a08f7703",
     "archives_search": "td_249b4a683b8cc293ef4a3163",
-    "heartbeat_draw": "td_cdd2b5d2062733f663a80868",
-    "wishstar_reply_star": "td_1a71d3204ef88faf1ce8b01c"
+    "heartbeat_draw": "td_fe22190ad1926fb33f2eb9a1",
+    "wishstar_reply_star": "td_a374234a9f86d35d9ebb0a78"
   },
-  "toolsSha256": "6321242b94d8e89e1264b0eb3696ba4f43c2611e6dcd6c9acc92660aaef3e2a2",
+  "toolsSha256": "1c4848fc7339b3e2fee3deb90d82cc2ed8ec2ecf03f4498b5675f5ff53520baf",
   "tools": [
     {
       "type": "function",
@@ -2817,7 +2817,7 @@
       "type": "function",
       "function": {
         "name": "heartbeat_draw",
-        "description": "仅在本轮收到心跳抽卡邀请时选择一个可用号码。1 号揭 1 号牌。普通发言的数字不选号。",
+        "description": "从今天的牌里抽一张：填一个可抽号码，1 号揭 1 号牌；每个逻辑回合最多成功抽一张，已抽过的号码当天不能再抽。心跳邀请里列出了可抽号码；平时聊天里想抽、或想看还剩哪些号码时，重新读取本工具的定义（tool_define 或 tool_catalog），结果会带上当前可抽号码。普通发言里的数字不选号。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2836,7 +2836,7 @@
       "type": "function",
       "function": {
         "name": "wishstar_reply_star",
-        "description": "回应本轮心跳已交付的共享星。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。",
+        "description": "回应本轮抽到并已交付的共享星（心跳或聊天里抽到的那张）。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。",
         "parameters": {
           "type": "object",
           "properties": {

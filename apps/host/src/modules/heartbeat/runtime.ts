@@ -17,7 +17,9 @@ import { modelClockText } from '../../time/context.ts';
 import { genId } from '../../util/id.ts';
 import type { ArchiveService } from '../archives/service.ts';
 import { OidoSourceRepository } from '../oido/source-repository.ts';
-import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, RESERVED_NOTE_IDENTITY, type HeartbeatMode, type HeartbeatSpeechHold } from './service.ts';
+import { canDrawHeartbeat, canStartChatDraw, drawRoundId, heartbeatBusinessDate, heartbeatContentKindAtPath, heartbeatContentSourcePath,
+  HEARTBEAT_DRAW_TOOL, HeartbeatCards, RESERVED_NOTE_IDENTITY, type HeartbeatMode, type HeartbeatRun, type HeartbeatSpeechHold } from './service.ts';
+export { heartbeatBusinessDate } from './service.ts';
 import { HeartbeatSources } from './sources.ts';
 import { heartbeatActions } from './actions.ts';
 
@@ -29,10 +31,6 @@ const PROJECTION_TARGET = 'content_heartbeat_projection';
 function wakeEvent(now: Date | undefined, body: readonly string[]): string {
   // The leading marker is the stable host-source label; only the clock after it changes per run.
   return [`[心跳唤醒] ${modelClockText((now ?? new Date()).toISOString(), 'Asia/Shanghai')}`, ...body].join('\n');
-}
-
-export function heartbeatBusinessDate(now = new Date()): string {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 }
 
 function plainText(message: OrMessage | undefined): string {
@@ -103,9 +101,7 @@ export class HeartbeatRuntime {
   }> {
     const businessDate = heartbeatBusinessDate();
     const unavailable: HeartbeatSource['kind'][] = [];
-    const candidates = this.cards.getDeck(input.conversationId, businessDate) ? undefined
-      : await this.sources.choose(input.conversationId, source => this.cards.isSourceEligible(source),
-        AbortSignal.any([input.signal, AbortSignal.timeout(2800)]), unavailable, businessDate);
+    const candidates = await this.todayCandidates(input.conversationId, businessDate, input.signal, unavailable);
     if (input.signal.aborted) return { mode: 'unprepared', hostText: '' };
     const run = this.cards.begin({ runId: input.runId, businessDate, candidates });
     if (!run || run.mode === 'unprepared' || run.mode === 'source_unavailable') {
@@ -122,11 +118,98 @@ export class HeartbeatRuntime {
     return { mode: run.mode, hostText };
   }
 
+  /** Today's fixed deck, or the ten candidates to fix it with when it does not exist yet. */
+  private async todayCandidates(conversationId: string, businessDate: string, signal: AbortSignal, unavailable: HeartbeatSource['kind'][] = []) {
+    return this.cards.getDeck(conversationId, businessDate) ? undefined
+      : await this.sources.choose(conversationId, source => this.cards.isSourceEligible(source),
+        AbortSignal.any([signal, AbortSignal.timeout(2800)]), unavailable, businessDate);
+  }
+
+  private async openChatRound(ctx: ToolExecContext): Promise<HeartbeatRun | null> {
+    const businessDate = heartbeatBusinessDate();
+    const candidates = await this.todayCandidates(ctx.roomId, businessDate, ctx.signal ?? new AbortController().signal);
+    return this.cards.beginChat({ turnId: ctx.turnId!, conversationId: ctx.roomId, businessDate, candidates });
+  }
+
+  /** The ordinary turn that drew has ended. Settle what is still open and record
+   *  the card with what was said to her about it; committed work is kept. */
+  closeChatRound(turnId: string): void {
+    const round = this.cards.getRun(turnId);
+    if (round?.origin !== 'chat') return;
+    this.cards.closeRun(turnId);
+    tx(this.db, () => this.projectChatRound(turnId, round.businessDate));
+  }
+
+  /** Main-channel text the model wrote in the very message that asked for the card. */
+  private speechWithDrawRequest(delivered: NonNullable<ReturnType<HeartbeatCards['getDeliveredDraw']>>): string {
+    const request = this.db.prepare('SELECT payload_wire_json,payload_json FROM provider_requests WHERE id=?')
+      .get(delivered.providerRequestId) as { payload_wire_json: string | null; payload_json: string | null } | undefined;
+    const payload = request?.payload_wire_json ?? request?.payload_json;
+    if (!payload) return '';
+    try {
+      const packet = (JSON.parse(payload) as { messages?: OrMessage[] }).messages?.find(message => message.role === 'assistant'
+        && Array.isArray(message.tool_calls) && message.tool_calls.some(call => call.id === delivered.operationId));
+      return packet ? plainText(packet).trim() : '';
+    } catch { return ''; }
+  }
+
+  /** Only the card and what followed its reveal belong in Moments; the rest of
+   *  the turn's conversation is not a response to the card. */
+  private projectChatRound(turnId: string, businessDate: string): void {
+    if (this.db.prepare('SELECT 1 FROM outbox WHERE operation_key=?').get(`heartbeat-moment:${turnId}`)) return;
+    const scope = this.roundScope(turnId);
+    if (!scope) return;
+    const delivered = this.cards.getDeliveredDraw(turnId);
+    const unknown = this.db.prepare("SELECT 1 FROM heartbeat_draw_operations WHERE run_id=? AND state='unknown'").get(turnId);
+    if (!delivered && !unknown) return;
+    const reveal = this.db.prepare('SELECT id,current_revision,sequence FROM messages WHERE conversation_id=? AND client_message_id=?')
+      .get(scope.conversation_id, `heartbeat:${turnId}:card`) as { id: string; current_revision: number; sequence: number } | undefined;
+    if (!reveal) return;
+    const projectionRef = (message: { id: string; current_revision: number; sequence: number }) => ({ messageId: message.id, revision: message.current_revision, sequence: message.sequence });
+    // A bubble first published before the reveal may also carry earlier topics, so it is left out.
+    const after = delivered ? (this.db.prepare(`
+      SELECT m.id, m.current_revision, m.sequence, r.content FROM messages m
+      JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      WHERE m.turn_id=? AND m.conversation_id=? AND m.speaker='assistant' AND m.published_at IS NOT NULL AND m.sequence>? ORDER BY m.sequence
+    `).all(turnId, scope.conversation_id, reveal.sequence) as Array<{ id: string; current_revision: number; sequence: number; content: string }>) : [];
+    // Words asked alongside the draw are not about the card. A bubble that opens with them is left out.
+    const opener = delivered ? this.speechWithDrawRequest(delivered) : '';
+    const replies = after.filter(message => !(opener && message.content.startsWith(opener))).map(projectionRef);
+    const turn = this.db.prepare('SELECT state FROM turns WHERE id=?').get(turnId) as { state: string } | undefined;
+    const projection: HeartbeatProjection = {
+      mode: 'draw', origin: 'chat', conversationId: scope.conversation_id, businessDate, version: 2,
+      state: delivered ? (replies.length ? 'drawn' : 'drawn_no_comment') : 'interrupted',
+      card: delivered ? { number: delivered.cardNumber, source: delivered.source } : null,
+      messages: [projectionRef(reveal), ...replies],
+      ...(delivered?.source.kind === 'reserved_note' ? { reservedReplyMessages: replies } : {}),
+      actions: heartbeatActions(this.db, turnId),
+      terminal: unknown && !delivered ? { status: 'unknown' } : turn?.state === 'completed' ? { status: 'completed' } : { status: 'failed' },
+    };
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      INSERT OR IGNORE INTO outbox(id,operation_key,target,payload_ref,state,created_at,updated_at)
+      VALUES(?,?,?,?, 'pending',?,?)
+    `).run(genId('ob'), `heartbeat-moment:${turnId}`, PROJECTION_TARGET, JSON.stringify(projection), now, now);
+  }
+
   async draw(cardNumber: unknown, ctx: ToolExecContext): Promise<ToolExecResult> {
-    if (!ctx.backgroundRunId || !ctx.toolCallId || !canDrawHeartbeat(this.db, ctx)) {
+    if (!ctx.toolCallId) return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } };
+    if (ctx.purpose === 'chat') {
+      // An ordinary reply to her draws from the same daily deck. The night
+      // window, rest and the heartbeat switch only gate automatic wakes.
+      if (!canStartChatDraw(this.db, ctx)) return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } };
+      const turnId = ctx.turnId!;
+      const round = this.cards.getRun(turnId)?.origin === 'chat' ? this.cards.getRun(turnId) : await this.openChatRound(ctx);
+      if (!round) return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } };
+      if (round.mode !== 'draw') {
+        const exhausted = round.mode === 'exhausted_keepwarm';
+        return { ok: false, output: { error_code: exhausted ? 'HEARTBEAT_DECK_EXHAUSTED' : 'HEARTBEAT_SOURCE_UNAVAILABLE',
+          detail: exhausted ? '今天十张牌已经全部抽完。' : '今天已没有可抽的牌。', remaining_numbers: [], retry_allowed: false } };
+      }
+    } else if (!canDrawHeartbeat(this.db, ctx)) {
       return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_NOT_ACTIVE' } };
     }
-    const operation = { runId: ctx.backgroundRunId, operationId: ctx.toolCallId };
+    const operation = { runId: drawRoundId(ctx)!, operationId: ctx.toolCallId };
     let result = this.cards.claim({ ...operation, cardNumber });
     if (result.status === 'claimed' || result.status === 'prepared') {
       const signal = AbortSignal.any([ctx.signal ?? new AbortController().signal, AbortSignal.timeout(2000)]);
@@ -148,7 +231,11 @@ export class HeartbeatRuntime {
     }
     if (result.status === 'already_started') {
       return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_ALREADY_STARTED',
-        heartbeat_draw_receipt: { operation_id: result.operationId, card_number: result.cardNumber, delivery_state: result.phase } } };
+        heartbeat_draw_receipt: { operation_id: result.operationId, card_number: result.cardNumber, delivery_state: result.phase } },
+        // Asking again for the number this round already drew repeats that selection;
+        // asking for another number is a second, refused selection.
+        ...(cardNumber === result.cardNumber ? { heartbeatReceipt: { operationId: result.operationId, replayed: true as const,
+          status: result.phase === 'delivered' ? 'committed' as const : result.phase === 'unknown' || result.phase === 'dispatching' ? 'unknown' as const : 'failed' as const } } : {}) };
     }
     if ('cardNumber' in result) {
       const receipt = { heartbeat_draw_receipt: {
@@ -158,6 +245,16 @@ export class HeartbeatRuntime {
       return { ok: false, output: { ...receipt, error_code: 'HEARTBEAT_DRAW_' + result.status.toUpperCase() } };
     }
     return { ok: false, output: { error_code: 'HEARTBEAT_DRAW_' + result.status.toUpperCase() } };
+  }
+
+  /** The continuation request of an ordinary turn is about to leave with a card
+   *  result in it. Mark the dispatch; the next step proves delivery. */
+  beforeChatDispatch(turnId: string, providerRequestId: string, messages: OrMessage[]): void {
+    for (const operationId of cardOperations(messages)) {
+      const operation = { runId: turnId, operationId };
+      const draw = this.cards.getDraw(operation);
+      if (draw?.status === 'prepared') this.cards.startDispatch({ ...operation, providerRequestId });
+    }
   }
 
   async beforeDispatch(runId: string, providerRequestId: string, messages: OrMessage[], signal: AbortSignal): Promise<void> {
@@ -171,9 +268,9 @@ export class HeartbeatRuntime {
       const deck = this.cards.getDraw(operation);
       if (deck?.status === 'dispatching') throw new ContractError('HEARTBEAT_CARD_DISPATCH_UNKNOWN');
       if (!deck || deck.status !== 'prepared') continue;
-      const run = this.db.prepare('SELECT conversation_id FROM background_runs WHERE id=?').get(runId) as { conversation_id: string } | undefined;
+      const conversationId = this.roundScope(runId)?.conversation_id;
       const recheck = async (): Promise<void> => {
-        const payload = run ? await this.sources.resolve(deck.source, run.conversation_id, signal) : { status: 'unavailable' as const };
+        const payload = conversationId ? await this.sources.resolve(deck.source, conversationId, signal) : { status: 'unavailable' as const };
         if (payload.status !== 'available' || signal.aborted) {
           if (payload.status === 'deleted' || payload.status === 'forbidden' || payload.status === 'revision_unavailable') {
             this.cards.recordSource({ ...operation, result: 'invalid' });
@@ -220,8 +317,9 @@ export class HeartbeatRuntime {
   }
 
   async replyTarget(ref: string, ctx: ToolExecContext): Promise<HeartbeatSource | null> {
-    if (!ctx.backgroundRunId || !canDrawHeartbeat(this.db, ctx)) return null;
-    const draw = this.cards.getDeliveredDraw(ctx.backgroundRunId);
+    const round = drawRoundId(ctx);
+    if (!round || !canDrawHeartbeat(this.db, ctx)) return null;
+    const draw = this.cards.getDeliveredDraw(round);
     if (!draw || draw.operationId !== ref || draw.source.kind !== 'wishstar'
       || draw.source.namespace !== 'superposition' || draw.source.permissionScope !== ctx.roomId) return null;
     const signal = AbortSignal.any([ctx.signal ?? new AbortController().signal, AbortSignal.timeout(2000)]);
@@ -229,11 +327,24 @@ export class HeartbeatRuntime {
     return source.status === 'available' && !signal.aborted ? draw.source : null;
   }
 
-  observeDelivery(runId: string, providerRequestId: string, messages: OrMessage[], hostText?: string): void {
-    const run = this.db.prepare(`SELECT b.conversation_id,b.turn_id,a.id AS attempt_id
-      FROM background_runs b JOIN attempts a ON a.turn_id=b.turn_id WHERE b.id=?`).get(runId) as
+  /** Where a round's messages belong: the heartbeat run's turn, or the ordinary turn itself. */
+  private roundScope(runId: string): { conversation_id: string; turn_id: string; attempt_id: string } | undefined {
+    return (this.db.prepare(`SELECT b.conversation_id,b.turn_id,a.id AS attempt_id
+      FROM background_runs b JOIN attempts a ON a.turn_id=b.turn_id WHERE b.id=?`).get(runId)
+      ?? this.db.prepare(`SELECT t.conversation_id,t.id AS turn_id,a.id AS attempt_id
+        FROM turns t JOIN attempts a ON a.turn_id=t.id WHERE t.id=? ORDER BY a.attempt_no DESC LIMIT 1`).get(runId)) as
       { conversation_id: string; turn_id: string; attempt_id: string } | undefined;
-    const mode = this.cards.getRun(runId)?.mode;
+  }
+
+  /** A request of an ordinary turn that carried a card result was confirmed sent. */
+  observeChatDelivery(turnId: string, providerRequestId: string, messages: OrMessage[]): void {
+    if (this.cards.getRun(turnId)?.origin === 'chat') this.observeDelivery(turnId, providerRequestId, messages);
+  }
+
+  observeDelivery(runId: string, providerRequestId: string, messages: OrMessage[], hostText?: string): void {
+    const run = this.roundScope(runId);
+    const round = this.cards.getRun(runId);
+    const mode = round?.mode;
     if (run && (mode === 'draw' || mode === 'exhausted_keepwarm') && hostText) {
       this.publishObserved(runId, run, 'invite', hostText);
     }
@@ -242,7 +353,8 @@ export class HeartbeatRuntime {
     }
     const delivered = this.cards.getDeliveredDraw(runId);
     if (run && mode === 'draw' && delivered) {
-      this.publishObserved(runId, run, 'card', `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
+      this.publishObserved(runId, run, 'card', round?.origin === 'chat'
+        ? `[抽牌] 抽到了 ${delivered.cardNumber} 号牌。` : `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
     }
   }
 
@@ -415,6 +527,14 @@ export class HeartbeatRuntime {
       }));
       this.dispatchEvents(recovered.eventRows);
     }
+    // A turn that drew while chatting and ended before its Moments entry was written.
+    const chatRounds = this.db.prepare(`
+      SELECT h.run_id,h.business_date FROM heartbeat_runs h
+      WHERE EXISTS (SELECT 1 FROM turns t WHERE t.id=h.run_id AND t.state<>'running')
+        AND EXISTS (SELECT 1 FROM heartbeat_draw_operations o WHERE o.run_id=h.run_id AND o.state IN ('delivered','unknown'))
+        AND NOT EXISTS (SELECT 1 FROM outbox WHERE operation_key='heartbeat-moment:'||h.run_id)
+    `).all() as Array<{ run_id: string; business_date: string }>;
+    for (const row of chatRounds) tx(this.db, () => this.projectChatRound(row.run_id, row.business_date));
   }
 
   status(conversationId: string) {
@@ -485,7 +605,7 @@ export function registerHeartbeatDrawCapability(registry: CapabilityRegistry, ru
     heartbeatAction: 'selection',
     label: '心跳选号', silent: false,
     definition: () => ({ type: 'function', function: {
-      name: HEARTBEAT_DRAW_TOOL, description: '仅在本轮收到心跳抽卡邀请时选择一个可用号码。1 号揭 1 号牌。普通发言的数字不选号。',
+      name: HEARTBEAT_DRAW_TOOL, description: '从今天的牌里抽一张：填一个可抽号码，1 号揭 1 号牌；每个逻辑回合最多成功抽一张，已抽过的号码当天不能再抽。心跳邀请里列出了可抽号码；平时聊天里想抽、或想看还剩哪些号码时，重新读取本工具的定义（tool_define 或 tool_catalog），结果会带上当前可抽号码。普通发言里的数字不选号。',
       parameters: { type: 'object', properties: { card_number: { type: 'integer' } }, required: ['card_number'], additionalProperties: false },
     } }),
     run: (args, context) => runtime.draw(args.card_number, context),

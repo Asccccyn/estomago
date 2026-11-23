@@ -230,6 +230,10 @@ export class TurnSupervisor {
       } finally {
         this.d.surfacing?.finishTurn?.(turnId);
         this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
+        // An ordinary turn that drew closes here, the same way whether it completed, failed or was interrupted.
+        // Its turn is already final; a failing Moments entry must not take the serialized chain down with it.
+        try { this.d.heartbeat?.closeChatRound(turnId); }
+        catch (error) { this.d.logger.error('chat_draw_round_close_failed', { turn_id: turnId, code: stableCode(error) }); }
       }
     });
   }
@@ -608,7 +612,7 @@ export class TurnSupervisor {
   }
 
   private confirmModelRequest(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
-    'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>, input: {
+    'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>, input: {
     requestId: string; round: number; attemptIndex: number; generationId: string | null;
     messages: OrMessage[]; confirmedSeen: ManifestEntry[];
   }): void {
@@ -631,6 +635,8 @@ export class TurnSupervisor {
     }
     if (o.background?.kind === 'keepwarm') {
       heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
+    } else if (o.purpose === 'chat' && o.turnId) {
+      heartbeat?.observeChatDelivery(o.turnId, requestId, messages);
     }
   }
 
@@ -894,6 +900,8 @@ export class TurnSupervisor {
         }
         if (o.background?.kind === 'keepwarm') {
           await this.admitHeartbeatDispatch(o.background.runId, lastPrqId, bgDispatchId, envelope.messages, o.controller.signal);
+        } else if (o.purpose === 'chat' && o.turnId) {
+          d.heartbeat?.beforeChatDispatch(o.turnId, lastPrqId, envelope.messages);
         }
         dispatched = true;
         lastSentMessages = envelope.messages;
@@ -1267,6 +1275,8 @@ export class TurnSupervisor {
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           if (o.background?.kind === 'keepwarm') {
             await this.admitHeartbeatDispatch(o.background.runId, requestId, dispatchId, messages, o.controller.signal);
+          } else if (o.purpose === 'chat' && o.turnId) {
+            d.heartbeat?.beforeChatDispatch(o.turnId, requestId, messages);
           }
           lastSentMessages = structuredClone(messages);
           if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
