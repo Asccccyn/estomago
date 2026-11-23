@@ -184,8 +184,9 @@ test('T-C02/T-C03: 已交付的留言离开待用列表并在已使用视图中�
   assert.equal(cards.getDeck('primary', heartbeatBusinessDate(new Date(due)))!.availableNumbers.includes(uncertainCard.card_number), false, '结果未知不会重新可抽');
 
   // 宿主发出的投影能被同一版本的内容服务接受并保存为朋友圈记录，包括新增的 rest 结束原因和聊天来源。
-  const deliveredSource = cards.getDeliveredDraw(drawId)!.source;
-  const baseProjection = JSON.parse(String(host.db.prepare("SELECT payload_ref FROM outbox WHERE operation_key='heartbeat-moment:sleep-run'").get()?.payload_ref));
+  const heartbeatRunId = (host.db.prepare('SELECT run_id FROM heartbeat_draw_operations WHERE operation_id=?').get(drawId) as { run_id: string }).run_id;
+  const deliveredSource = cards.getDeliveredDraw(heartbeatRunId)!.source;
+  const baseProjection = JSON.parse(String(host.db.prepare("SELECT payload_ref FROM outbox WHERE operation_key=?").get(`heartbeat-moment:${heartbeatRunId}`)?.payload_ref));
   const DAY = heartbeatBusinessDate(new Date(due));
   const extra = [
     ['heartbeat-moment:fixture-rest', { ...baseProjection, terminal: { status: 'cancelled', reason: 'rest' } }],
@@ -193,12 +194,12 @@ test('T-C02/T-C03: 已交付的留言离开待用列表并在已使用视图中�
       card: { number: 3, source: deliveredSource }, messages: [{ messageId: 'fixture-chat-reveal', revision: 1, sequence: 1 }], actions: [], terminal: { status: 'completed' } }],
   ] as const;
   for (const [key, projection] of extra) host.db.prepare(`
-    INSERT INTO outbox(id,operation_key,target,payload_ref,state,created_at,updated_at) VALUES(?,?,?,'pending',?,?,?)`)
+    INSERT INTO outbox(id,operation_key,target,payload_ref,state,created_at,updated_at) VALUES(?,?,?,?,'pending',?,?)`)
     .run(`ob_${key.slice('heartbeat-moment:'.length)}`, key, 'content_heartbeat_projection', JSON.stringify(projection), stamp, stamp);
   await host.heartbeat!.recoverProjections(10);
   assert.deepEqual((host.db.prepare("SELECT operation_key,state FROM outbox WHERE target='content_heartbeat_projection' ORDER BY operation_key").all() as Array<Record<string, unknown>>)
-    .map(row => [row.operation_key, row.state]),
-  [['heartbeat-moment:fixture-chat', 'acked'], ['heartbeat-moment:fixture-rest', 'acked'], ['heartbeat-moment:sleep-run', 'acked']]);
+    .map(row => [row.operation_key, row.state]).sort(),
+  [[`heartbeat-moment:${heartbeatRunId}`, 'acked'], ['heartbeat-moment:fixture-chat', 'acked'], ['heartbeat-moment:fixture-rest', 'acked']]);
   const feed = await request('/content/posts?include_references=1');
   assert.equal(feed.status, 200);
   const references = (feed.body.items as Array<Record<string, unknown>>).filter(item => item.kind === 'reference');
