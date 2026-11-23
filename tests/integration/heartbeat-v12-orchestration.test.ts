@@ -1070,3 +1070,74 @@ test('T-A06: 休息跨重启保留；晚安前已排队的心跳在执行时读�
   assert.equal(reopened.wire.length, 2, '恢复后是一次普通聊天和一次正常心跳');
   assert.equal(new BackgroundSettingsService(reopened.host.db, reopened.host.config).effective().keepwarm.enabled, true, '总开关保持原样');
 });
+
+type LayeredFeed = { items: Array<{ blocks: Array<{ id: string; layer: string; source_label: string; text?: string; outcome?: string }> }> };
+async function layers(ctx: Awaited<ReturnType<typeof fixture>>, projectionSource: { payload_ref: string } | undefined, messages = ctx.host.messages) {
+  const projection = readHeartbeatProjection(JSON.parse(String(projectionSource?.payload_ref)));
+  assert.ok(projection);
+  const feed = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'),
+    { items: [{ id: 'heartbeat-test', kind: 'reference', revision: 1, reference: projection }] },
+    { db: ctx.host.db, messages, heartbeat: ctx.host.heartbeat }) as LayeredFeed;
+  const blocks = feed.items[0]!.blocks;
+  return { main: blocks.filter(block => block.layer === 'main'), detail: blocks.filter(block => block.layer === 'detail') };
+}
+const projectionOf = (ctx: Awaited<ReturnType<typeof fixture>>) => ctx.host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection' ORDER BY rowid DESC LIMIT 1").get() as { payload_ref: string } | undefined;
+
+test('T-C04: 朋友圈主体是卡面和同轮真实发出的话，按正式消息顺序；邀请、揭牌、选号和结束状态收进详情', async t => {
+  const ctx = await fixture(t);
+  makeFixtureToolsResident(ctx.host.db, ['heartbeat_draw', 'background_complete', 'chat_send_text']);
+  await ctx.chat('建立当前会话');
+  ctx.elapsed();
+  const speech = ['先看这张。', '回应卡面的话', '最后再说一句。'];
+  ctx.replies.push(
+    draw(3),
+    { tool: 'tool_define', id: 'define-chat', args: { name: 'chat_send_text' }, speech: speech[0] },
+    { tool: 'chat_send_text', id: 'send-card-reply', args: { text: speech[1]!, idempotency_key: 'card-reply' } },
+    asMessage(speech[2]!),
+  );
+  await ctx.scheduler.tick();
+  const run = ctx.latestRun();
+  assert.equal(ctx.cards.getDeliveredDraw(run.id)?.cardNumber, 3);
+  const { main, detail } = await layers(ctx, projectionOf(ctx));
+  const published = (ctx.host.db.prepare("SELECT id FROM messages WHERE turn_id=? AND speaker='assistant' ORDER BY sequence").all(run.turn_id) as Array<{ id: string }>).map(row => row.id);
+  assert.equal(published.length, 3);
+  assert.deepEqual(main.map(block => [block.id, block.source_label, block.text ?? null]), [
+    ['card', '3 号 · 日常', `${REVEAL}/fixture-3`],
+    ...speech.map((line, index) => [`message:${published[index]}`, '本轮聊天', line]),
+  ]);
+  // Nothing after the first reply is cut off: three separately published messages are all attached.
+  // Details keep the real order: invitation, the choice, the reveal notice, then the end state.
+  assert.deepEqual(detail.map(block => block.source_label), ['心跳状态', '选号', '心跳状态', '结束状态']);
+  assert.equal(detail.find(block => block.id.startsWith('action:'))?.outcome, 'committed');
+  assert.equal(ctx.host.db.prepare("SELECT count(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(run.turn_id)?.n, 3);
+});
+
+test('T-C04: 抽卡后安静结束只显示卡面和真实动作，不编造回复；拒抽和被拦的轮次没有主体', async t => {
+  const ctx = await fixture(t);
+  await ctx.chat('建立当前会话');
+  const quiet = async (replies: Reply[]) => {
+    ctx.elapsed();
+    ctx.replies.push(...replies);
+    await ctx.scheduler.tick();
+    return layers(ctx, projectionOf(ctx));
+  };
+  const drawn = await quiet([draw(2), noop()]);
+  assert.deepEqual(drawn.main.map(block => block.id), ['card']);
+  assert.deepEqual(drawn.detail.map(block => [block.source_label, block.text ?? null]), [
+    ['心跳状态', ctx.runtimeMessages(ctx.latestRun().id)[0]!.content], ['选号', '选择 2 号牌 · 已选中。'],
+    ['心跳状态', '[心跳唤醒] 揭开了 2 号牌。'], ['结束状态', '本轮结束，没有另发聊天留言。'],
+  ]);
+  assert.equal(ctx.host.db.prepare("SELECT count(*) n FROM messages WHERE turn_id=? AND speaker='assistant'").get(ctx.latestRun().turn_id)?.n, 0);
+
+  const declined = await quiet([noop()]);
+  assert.deepEqual(declined.main, []);
+  assert.deepEqual(declined.detail.map(block => block.source_label), ['心跳状态', '心跳状态', '结束状态'], '未抽卡：只有邀请、未抽卡提示和结束状态');
+
+  // 早先版本的朋友圈记录没有动作明细：仍按卡面与真实回复展示，不补造动作。
+  const older = await decorateMomentResponse(new URL('http://est.test/api/v1/content/posts?include_references=1'), { items: [{ id: 'older', kind: 'reference', revision: 1, reference: {
+    mode: 'draw', conversationId: 'primary', businessDate: ctx.date, version: 1, state: 'drawn',
+    card: { number: 5, source: { kind: 'moments', namespace: 'content', id: 'fixture-5', revision: 2, identity: 'content:moments:fixture-5', permissionScope: 'primary' } },
+    messages: drawn.detail.filter(block => block.id.startsWith('message:')).map((block, index) => ({ messageId: block.id.slice('message:'.length), revision: 1, sequence: index + 1 })),
+  } }] }, { db: ctx.host.db, messages: ctx.host.messages, heartbeat: ctx.host.heartbeat }) as LayeredFeed;
+  assert.deepEqual(older.items[0]!.blocks.map(block => [block.layer, block.source_label]), [['main', '5 号 · 日常'], ['detail', '心跳状态'], ['detail', '心跳状态']]);
+});

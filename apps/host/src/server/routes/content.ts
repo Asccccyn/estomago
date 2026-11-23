@@ -6,7 +6,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import { contentForward } from '../../integrations/content/client.ts';
 import type { RequestDeps } from '../http.ts';
-import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference } from './content-moments.ts';
+import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference, listFutureNotes } from './content-moments.ts';
 
 /** EXEC_V1 §06.4/5（WP5）：content 薄代理——浏览器经 est 认证→派生 qiaosheng→转发 loopback。 */
 export async function handleContentProxy(req: IncomingMessage, res: ServerResponse, d: RequestDeps, url: URL): Promise<void> {
@@ -22,6 +22,10 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
   const reference = await handleMomentReference(req, url, d, fwdHeaders);
   if (reference) return json(res, reference.status, reference.body);
   if (method === 'GET') {
+    if (url.pathname === '/api/v1/content/future-notes') {
+      const list = await listFutureNotes(url, d);
+      return json(res, list.status, list.body);
+    }
     const result = await contentForward(d.contentClient, { method, path: url.pathname + url.search, actor });
     if (result.status >= 200 && result.status < 300 && result.bodyFailed) {
       return json(res, 502, { error: { code: 'content_response_incomplete', message: '内容服务响应不完整（正文传输失败）' } });

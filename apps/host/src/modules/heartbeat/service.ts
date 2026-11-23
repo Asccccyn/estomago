@@ -4,6 +4,7 @@ import { genId, sha256Hex } from '../../util/id.ts';
 import type { ToolExecContext } from '../../capabilities/contracts.ts';
 
 export const HEARTBEAT_DRAW_TOOL = 'heartbeat_draw';
+export const RESERVED_NOTE_IDENTITY = 'content:reserved_note:';
 
 export function canDrawHeartbeat(db: Db, ctx: ToolExecContext): boolean {
   if (ctx.purpose !== 'cache_keepalive' || !ctx.backgroundRunId || !ctx.turnId) return false;
@@ -148,6 +149,20 @@ export class HeartbeatCards {
         AND o.state IN ('dispatching','delivered','unknown')
     `).get(sourceIdentity) as { state: Exclude<ReservedNoteDeliveryStatus, 'undelivered'> } | undefined;
     return row?.state ?? 'undelivered';
+  }
+
+  /** Every reserved note that has left the waiting list, keyed by note id. */
+  reservedNoteUsage(): Map<string, Exclude<ReservedNoteDeliveryStatus, 'undelivered'>> {
+    const rows = this.db.prepare(`
+      SELECT o.source_identity, o.state FROM heartbeat_draw_operations o
+      JOIN heartbeat_cards c ON c.deck_id=o.deck_id AND c.card_number=o.card_number
+      WHERE c.source_kind='reserved_note' AND o.source_identity LIKE ?
+        AND o.state IN ('dispatching','delivered','unknown')
+      ORDER BY o.state = 'delivered' DESC
+    `).all(RESERVED_NOTE_IDENTITY + '%') as Array<{ source_identity: string; state: Exclude<ReservedNoteDeliveryStatus, 'undelivered'> }>;
+    const usage = new Map<string, Exclude<ReservedNoteDeliveryStatus, 'undelivered'>>();
+    for (const row of rows) usage.set(row.source_identity.slice(RESERVED_NOTE_IDENTITY.length), row.state);
+    return usage;
   }
 
   isSourceEligible(source: HeartbeatSource): boolean {

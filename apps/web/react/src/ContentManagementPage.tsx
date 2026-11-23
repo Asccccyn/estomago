@@ -4,7 +4,7 @@ import { EstomagoClient } from './chat-client'
 import { keepwarmStatusText, type KeepwarmStatus } from './background-controls-model'
 import {
   assetPath, ContentRequestError, operationKey, readContent, referencePath, writeContent,
-  type AssetInfo, type ContentEntry, type ContentPage, type DeliveryState, type HeartbeatState, type SourceBlock,
+  type AssetInfo, type ContentEntry, type ContentPage, type DeliveryState, type HeartbeatState, type NoteView, type SourceBlock,
 } from './content-management-api'
 
 const actionClass = 'inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#d9cdbd] bg-white px-3 py-2 text-sm text-[#574633] hover:bg-[#f4eadb] disabled:opacity-50'
@@ -19,7 +19,7 @@ const dateLabel = (value: string) => Number.isFinite(Date.parse(value)) ? displa
 const authorLabel = (author?: string | null) => author === ownerActor ? '乔乔' : author === 'jiaming' ? 'char' : author
 const errorMessage = (error: unknown) => error instanceof Error ? error.message : '请求暂未确认，请重试。'
 const deliveryDescriptions: Record<DeliveryState, string> = {
-  pending: '待投递', dispatching: '投递中', delivered: '已投递', unknown: '投递结果待核',
+  pending: '待用', dispatching: '投递中', delivered: '已使用', unknown: '结果待确认',
 }
 const unreadable: Record<Exclude<SourceBlock['status'], 'available'>, string> = {
   deleted: '来源已删除', forbidden: '当前没有读取权限', revision_unavailable: '当时的修订已不可读', unavailable: '来源暂时不可用',
@@ -96,12 +96,46 @@ function ReferenceHistory({ postId, block }: { postId: string; block: SourceBloc
   </div>
 }
 
+// The state comes from the server's delivery ledger. A note that is saved but not drawn is still waiting;
+// nothing here promises which note the next draw picks.
 function noteState(entry: ContentEntry): string {
   if (!entry.delivery_state) return '投递状态暂不可用'
   const state = deliveryDescriptions[entry.delivery_state]
-  if (!entry.frozen_card) return state
   const card = entry.frozen_card
-  return `${state} · 今日 ${card.number} 号${!card.available && entry.delivery_state === 'pending' ? '已不可用' : card.available && card.revision !== entry.revision ? '仍使用已固定的旧修订' : ''}`
+  if (!card) return entry.delivery_state === 'pending' ? `${state}，尚未进入今日牌组` : state
+  if (!card.available && entry.delivery_state === 'pending') return `${state} · 今日 ${card.number} 号已不可用`
+  return `${state} · 今日 ${card.number} 号${card.revision !== entry.revision ? '（按已固定的旧修订）' : ''}`
+}
+
+/** One heartbeat in Moments: the card and the replies she could read come first; how the turn ran stays folded. */
+function HeartbeatReference({ entry, busy, openEdit }: { entry: ContentEntry; busy: boolean; openEdit: (entry: ContentEntry, block: SourceBlock) => Promise<void> }) {
+  const blocks = entry.blocks ?? []
+  if (!blocks.length) return <p className={mutedClass}>暂时读不到原文。</p>
+  const main = blocks.filter(block => block.layer !== 'detail')
+  const detail = blocks.filter(block => block.layer === 'detail')
+  const done = [...new Set(detail.filter(block => block.outcome === 'committed' && block.source_label !== '选号').map(block => block.source_label))]
+  const renderBlock = (block: SourceBlock) => (
+    <section key={block.id} className="space-y-2 border-l border-[#e1d5c6] pl-3">
+      <p className={mutedClass}>{block.source_label}{block.author ? ` · ${authorLabel(block.author)}` : ''}
+        {block.display_revision !== undefined && block.display_revision !== block.observed_revision
+          ? ` · ${block.editor ? authorLabel(block.editor) : ''}已编辑` : ''}</p>
+      {block.status === 'available' ? <>
+        {block.text && <p className="whitespace-pre-wrap break-words">{block.text}</p>}
+        <Attachments ids={block.asset_ids ?? []} />
+      </> : <p className={mutedClass}>{unreadable[block.status]}</p>}
+      {block.id === 'card' && block.observed_revision !== undefined && block.display_revision !== undefined
+        && block.observed_revision !== block.display_revision && <ReferenceHistory postId={entry.id} block={block} />}
+      {block.management_href ? <a className={actionClass} href={block.management_href}>前往心跳页面管理原留言</a> : block.editable ? <button type="button" className={actionClass} disabled={busy} onClick={() => void openEdit(entry, block)}><Pencil size={14} />编辑来源</button> : block.status === 'available' && <p className={mutedClass}>此来源只读。</p>}
+    </section>)
+  return <>
+    {!main.length && <p className={mutedClass}>这次心跳没有可显示的卡面，也没有发出的回复。</p>}
+    <div className="space-y-3">{main.map(renderBlock)}</div>
+    {done.length > 0 && <p className={mutedClass}>还做了：{done.join('、')}</p>}
+    {detail.length > 0 && <details className="rounded-lg bg-[#f8f1e6] px-3 py-2">
+      <summary className="cursor-pointer text-sm text-[#675a4c]">过程与动作（{detail.length}）</summary>
+      <div className="mt-2 space-y-3">{detail.map(renderBlock)}</div>
+    </details>}
+  </>
 }
 
 const background = new EstomagoClient()
@@ -212,6 +246,8 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
   const noun = notes ? '留言' : '帖子'
   const path = notes ? '/api/v1/content/future-notes' : '/api/v1/content/posts'
   const [layer, setLayer] = useState<Layer>('daily')
+  const [noteView, setNoteView] = useState<NoteView>('pending')
+  const [noteCounts, setNoteCounts] = useState<{ pending: number; used: number; uncertain: number } | null>(null)
   const [items, setItems] = useState<ContentEntry[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -229,7 +265,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
     const generation = ++readGeneration.current
     setLoading(true)
     setListError(null)
-    const params = new URLSearchParams({ limit: '20', ...(notes ? {} : { include_references: '1' }) })
+    const params = new URLSearchParams({ limit: '20', ...(notes ? { view: noteView } : { include_references: '1' }) })
     if (pageCursor) params.set('cursor', pageCursor)
     try {
       const data = await readContent<ContentPage>(`${path}?${params}`)
@@ -247,17 +283,27 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
       if (generation !== readGeneration.current) return
       setItems(previous => pageCursor ? [...previous, ...data.items.filter(item => !previous.some(old => old.id === item.id))] : data.items)
       setCursor(data.has_more ? data.next_cursor ?? null : null)
+      if (data.counts) setNoteCounts(data.counts)
     } catch (readError) {
       if (generation === readGeneration.current) setListError(errorMessage(readError))
     } finally {
       if (generation === readGeneration.current) setLoading(false)
     }
-  }, [notes, path, targetNote])
+  }, [notes, path, targetNote, noteView])
 
   useEffect(() => {
     void load()
     return () => { readGeneration.current++ }
   }, [load])
+  // Back on this page, read the current state again: a heartbeat may have used a note meanwhile. Nothing is sent.
+  useEffect(() => {
+    if (!notes) return
+    const onVisible = (): void => {
+      if (document.visibilityState === 'visible' && !editor && !busy) { setStatusRefresh(version => version + 1); void load() }
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [notes, load, editor, busy])
 
   async function upload(attempt: PendingUpload) {
     setBusy(true)
@@ -402,7 +448,11 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
       {layer === 'living-room' && <LivingRoomMoments />}
       {daily && <>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          {notes && <h2 className="font-medium">预留留言</h2>}
+          {notes ? <nav aria-label="留言视图" className="flex gap-2">
+            {([['pending', '待用'], ['used', '已使用']] as const).map(([view, label]) =>
+              <button key={view} type="button" aria-pressed={noteView === view} disabled={Boolean(editor) || busy}
+                className={noteView === view ? primaryClass : actionClass} onClick={() => setNoteView(view)}>{label}{noteCounts ? `（${noteCounts[view]}${view === 'pending' && noteCounts.uncertain ? `，其中 ${noteCounts.uncertain} 条待确认` : ''}）` : ''}</button>)}
+          </nav> : null}
           <div className="flex gap-2">
             {!editor && <button type="button" className={primaryClass} disabled={busy} onClick={() => {
               setEditor({ draft: { title: '', body: '', assetIds: [] } })
@@ -443,7 +493,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
           </div>
         </form>}
         {loading && <p role="status" className={mutedClass}>读取中…</p>}
-        {!loading && !listError && !items.length && <p className={mutedClass}>{notes ? '还没有预留留言。' : '这里还没有日常。'}</p>}
+        {!loading && !listError && !items.length && <p className={mutedClass}>{notes ? noteView === 'used' ? '还没有已使用的留言。' : '还没有待用的留言。' : '这里还没有日常。'}</p>}
         {items.map(entry => <article key={entry.id} className={`${cardClass} space-y-3 ${targetNote === entry.id ? 'ring-2 ring-[#85462f]' : ''}`}>
           {targetNote === entry.id && <p className={mutedClass}>从朋友圈定位的原留言</p>}
           <header className="flex flex-wrap items-center justify-between gap-2">
@@ -453,19 +503,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
           {entry.title && <h3 className="text-base font-medium">{entry.title}</h3>}
           {notes && <p className={mutedClass}>{noteState(entry)}</p>}
           {entry.kind === 'reference' ? (
-            entry.blocks?.length ? <div className="space-y-3">{entry.blocks.map(block =>
-              <section key={block.id} className="space-y-2 border-l border-[#e1d5c6] pl-3">
-                <p className={mutedClass}>{block.source_label}{block.author ? ` · ${authorLabel(block.author)}` : ''}
-                  {block.display_revision !== undefined && block.display_revision !== block.observed_revision
-                    ? ` · ${block.editor ? authorLabel(block.editor) : ''}已编辑` : ''}</p>
-                {block.status === 'available' ? <>
-                  {block.text && <p className="whitespace-pre-wrap break-words">{block.text}</p>}
-                  <Attachments ids={block.asset_ids ?? []} />
-                </> : <p className={mutedClass}>{unreadable[block.status]}</p>}
-                {block.id === 'card' && block.observed_revision !== undefined && block.display_revision !== undefined
-                  && block.observed_revision !== block.display_revision && <ReferenceHistory postId={entry.id} block={block} />}
-                {block.management_href ? <a className={actionClass} href={block.management_href}>前往心跳页面管理原留言</a> : block.editable ? <button type="button" className={actionClass} disabled={busy || Boolean(editor)} onClick={() => void openEdit(entry, block)}><Pencil size={14} />编辑来源</button> : block.status === 'available' && <p className={mutedClass}>此来源只读。</p>}
-              </section>)}</div> : <p className={mutedClass}>暂时读不到原文。</p>
+            <HeartbeatReference entry={entry} busy={busy || Boolean(editor)} openEdit={openEdit} />
           ) : <>
             {entry.body && <p className="whitespace-pre-wrap break-words">{entry.body}</p>}
             <Attachments ids={entry.asset_ids ?? []} />

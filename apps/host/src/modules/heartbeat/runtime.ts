@@ -17,7 +17,7 @@ import { modelClockText } from '../../time/context.ts';
 import { genId } from '../../util/id.ts';
 import type { ArchiveService } from '../archives/service.ts';
 import { OidoSourceRepository } from '../oido/source-repository.ts';
-import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode, type HeartbeatSpeechHold } from './service.ts';
+import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, RESERVED_NOTE_IDENTITY, type HeartbeatMode, type HeartbeatSpeechHold } from './service.ts';
 import { HeartbeatSources } from './sources.ts';
 import { heartbeatActions } from './actions.ts';
 
@@ -435,18 +435,21 @@ export class HeartbeatRuntime {
     };
   }
 
+  /** Delivery state of every reserved note that has left the waiting list, keyed by note id. */
+  reservedNoteUsage(): ReturnType<HeartbeatCards['reservedNoteUsage']> { return this.cards.reservedNoteUsage(); }
+
   noteStatus(id: string, conversationId: string, sourceDeleted = false) {
     if (sourceDeleted) this.db.prepare(`
       UPDATE heartbeat_cards SET invalid_reason='source_deleted'
       WHERE source_kind='reserved_note' AND source_identity=?
-    `).run('content:reserved_note:' + id);
-    const state = this.cards.reservedNoteDeliveryStatus('content:reserved_note:' + id);
+    `).run(RESERVED_NOTE_IDENTITY + id);
+    const state = this.cards.reservedNoteDeliveryStatus(RESERVED_NOTE_IDENTITY + id);
     const date = heartbeatBusinessDate();
     const card = this.db.prepare(`
       SELECT c.card_number,c.invalid_reason,json_extract(c.source_ref_json,'$.revision') AS revision
       FROM heartbeat_decks d JOIN heartbeat_cards c ON c.deck_id=d.id
       WHERE d.conversation_id=? AND d.business_date=? AND c.source_kind='reserved_note' AND c.source_identity=?
-    `).get(conversationId, date, 'content:reserved_note:' + id) as { card_number: number; invalid_reason: string | null; revision: number } | undefined;
+    `).get(conversationId, date, RESERVED_NOTE_IDENTITY + id) as { card_number: number; invalid_reason: string | null; revision: number } | undefined;
     return {
       delivery_state: state === 'undelivered' ? 'pending' : state,
       ...(card ? { frozen_card: { number: card.card_number, revision: card.revision, available: card.invalid_reason === null } } : {}),

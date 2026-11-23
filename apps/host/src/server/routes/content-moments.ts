@@ -1,6 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import { readHeartbeatProjection, type HeartbeatAction, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
-import { contentForward, resolveContentOperation, type ContentClient } from '../../integrations/content/client.ts';
+import { contentForward, readAllContentPages, resolveContentOperation, type ContentClient } from '../../integrations/content/client.ts';
 import type { ContentWriteResult } from '../../integrations/content/coordinator.ts';
 import { associateMomentEdit } from '../../integrations/content/moment-edit-outbox.ts';
 import type { HeartbeatRuntime } from '../../modules/heartbeat/runtime.ts';
@@ -26,6 +26,8 @@ type ContentRow = {
 
 type ResolvedBlock = {
   id: string;
+  /** main = the card face and what was actually said to her; detail = how the turn ran. */
+  layer: 'main' | 'detail';
   source_label: string;
   author?: string | null;
   status: SourceStatus | 'available';
@@ -37,11 +39,13 @@ type ResolvedBlock = {
   editor?: string;
   management_href?: string;
   editable: boolean;
+  outcome?: HeartbeatAction['status'];
 };
 
 type Deps = Pick<RequestDeps, 'contentClient' | 'contentOps' | 'messages' | 'db'> & {
   heartbeat?: Pick<HeartbeatRuntime, 'sources'> & {
     noteStatus?(id: string, conversationId: string, sourceDeleted?: boolean): ReturnType<HeartbeatRuntime['noteStatus']>;
+    reservedNoteUsage?(): ReturnType<HeartbeatRuntime['reservedNoteUsage']>;
   };
 };
 
@@ -87,8 +91,8 @@ function actionBlock(action: HeartbeatAction, index: number): ResolvedBlock {
     committed: action.kind === 'selection' ? '已选中' : '已完成',
     partial: '部分完成，仍有步骤待确认', failed: '未成功', cancelled: action.kind === 'selection' ? '卡面未送达' : '已取消或未派发', unknown: '结果待核，暂不能确认成功',
   }[action.status];
-  return { id: `action:${index}`, source_label: label, status: 'available', editable: false,
-    text: `${verb} · ${phrase}。` };
+  return { id: `action:${index}`, layer: 'detail', source_label: label, status: 'available', editable: false,
+    outcome: action.status, text: `${verb} · ${phrase}。` };
 }
 
 const fail = (status: number, code: string, message: string, details: Record<string, unknown> = {}): ContentWriteResult =>
@@ -146,6 +150,49 @@ function noteResponse(value: unknown, deps: Deps): unknown {
   return status ? { ...row, ...status } : value;
 }
 
+/** The waiting list and the used list are two views of the same notes. Which view
+ *  a note belongs to comes from the delivery ledger alone: nothing is stored on
+ *  the note, older notes need no backfill, and leaving the waiting list never
+ *  deletes or rewrites the source. Paging happens after the view is applied. */
+export async function listFutureNotes(url: URL, deps: Deps): Promise<{ status: number; body: unknown }> {
+  const unavailable = { status: 503, body: { error: { code: 'content_unavailable', message: '内容服务未启用或不可达（聊天不受影响）' } } };
+  if (!deps.contentClient) return unavailable;
+  const view = url.searchParams.get('view') ?? 'pending';
+  const rawLimit = url.searchParams.get('limit');
+  const limit = rawLimit === null ? 20 : Number(rawLimit);
+  if (view !== 'pending' && view !== 'used') return { status: 400, body: { error: { code: 'view_invalid', message: 'view 只能是 pending 或 used' } } };
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) return { status: 400, body: { error: { code: 'limit_invalid', message: 'limit 必须为 1..100 的整数' } } };
+  const cursor = url.searchParams.get('cursor');
+  let after: { after: string; id: string } | null = null;
+  if (cursor) {
+    try {
+      const value = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { after?: unknown; id?: unknown } | null;
+      if (typeof value?.after !== 'string' || typeof value.id !== 'string') throw new Error('shape');
+      after = { after: value.after, id: value.id };
+    } catch { return { status: 400, body: { error: { code: 'cursor_invalid', message: '留言游标无效' } } }; }
+  }
+  const all = await readAllContentPages<ContentRow & { created_at: string }>(deps.contentClient, {
+    actor: ACTOR, buildPath: next => `/api/v1/content/future-notes?limit=100${next ? '&cursor=' + encodeURIComponent(next) : ''}`,
+  });
+  if (!all.ok) return unavailable;
+  const usage = deps.heartbeat?.reservedNoteUsage?.() ?? new Map();
+  const used = (row: ContentRow & { created_at: string }) => usage.get(row.id) === 'delivered';
+  const counts = { pending: 0, used: 0, uncertain: 0 };
+  for (const row of all.items) {
+    if (used(row)) counts.used++;
+    else { counts.pending++; if (usage.has(row.id)) counts.uncertain++; }
+  }
+  const page = all.items.filter(row => used(row) === (view === 'used')
+    && (!after || row.created_at < after.after || (row.created_at === after.after && row.id < after.id)));
+  const items = page.slice(0, limit);
+  const hasMore = page.length > limit;
+  const last = items.at(-1);
+  return { status: 200, body: {
+    items: items.map(item => noteResponse(item, deps)), has_more: hasMore, view, counts,
+    next_cursor: hasMore && last ? Buffer.from(JSON.stringify({ after: last.created_at, id: last.id })).toString('base64url') : null,
+  } };
+}
+
 export function decorateFutureNoteResponse(path: string, payload: unknown, deps: Deps): unknown {
   if (!noteRoute.test(path)) return payload;
   const page = payload as { items?: unknown[] } | null;
@@ -174,7 +221,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
     const managed = reserved && current?.status === 'available' && current.row.id === source.id && canEditSource(current.row);
     const display = managed ? current.row.revision : Number.isSafeInteger(edit?.revision) ? edit!.revision : undefined;
     const base: ResolvedBlock = {
-      id: 'card', source_label: `${projection.card.number} 号 · ${sourceLabels[source.kind] ?? '扩展来源'}`,
+      id: 'card', layer: 'main', source_label: `${projection.card.number} 号 · ${sourceLabels[source.kind] ?? '扩展来源'}`,
       status: 'unavailable', editable: false, observed_revision: observed,
       ...(display !== undefined ? { display_revision: display, editor: managed ? ACTOR : edit?.editor } : {}),
       ...(managed ? { management_href: `/home/heartbeat?note=${encodeURIComponent(source.id)}` } : {}),
@@ -207,7 +254,8 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
     const message = deps.messages.getMessageAtRevision(projection.conversationId, ref.messageId, ref.revision);
     if (message?.speaker === 'system' && message.revision.content === '[心跳唤醒] 本轮未抽卡') publishedDecline = true;
     blocks.push({
-      id: `message:${ref.messageId}`, source_label: message?.speaker === 'system' ? '心跳状态' : '本轮聊天', observed_revision: ref.revision,
+      id: `message:${ref.messageId}`, layer: message?.speaker === 'assistant' ? 'main' : 'detail',
+      source_label: message?.speaker === 'system' ? '心跳状态' : '本轮聊天', observed_revision: ref.revision,
       ...(message ? {
         status: 'available', author: message.speaker === 'assistant' ? 'jiaming' : message.speaker === 'owner' ? ACTOR : null,
         text: message.revision.content, asset_ids: message.revision.attachments.map(attachment => attachment.asset_id),
@@ -233,10 +281,10 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       : terminal.status === 'failed' ? '本轮未能正常完成。'
       : projection.state === 'talked' ? '本轮只说了话。'
       : projection.state === 'drawn_no_comment' ? '本轮结束，没有另发聊天留言。' : '本轮结束。';
-    blocks.push({ id: 'outcome', source_label: '结束状态', status: 'available', editable: false, text: end });
+    blocks.push({ id: 'outcome', layer: 'detail', source_label: '结束状态', status: 'available', editable: false, text: end });
   } else if ((projection.state === 'declined' && !publishedDecline) || projection.state === 'drawn_no_comment') {
     blocks.push({
-      id: 'outcome', source_label: '[心跳唤醒]', status: 'available', editable: false,
+      id: 'outcome', layer: 'detail', source_label: '[心跳唤醒]', status: 'available', editable: false,
       text: projection.state === 'declined' ? '本轮未抽卡。' : '本轮没有留言。',
     });
   }
@@ -348,7 +396,7 @@ export async function handleMomentReference(
     if (source.status !== 'available') return sourceUnavailable(source.status);
     if (source.row.id !== card.id || observed !== null && String(source.row.revision) !== observed) return sourceUnavailable('revision_unavailable');
     const body: ResolvedBlock = {
-      id: 'card', source_label: sourceLabels[card.kind] ?? '扩展来源', status: 'available',
+      id: 'card', layer: 'main', source_label: sourceLabels[card.kind] ?? '扩展来源', status: 'available',
       text: source.row.body, asset_ids: source.row.asset_ids ?? [], author: source.row.author,
       current_revision: source.row.revision, editable: card.kind !== 'reserved_note' && observed === null && canEditSource(source.row),
       ...(card.kind === 'reserved_note' && canEditSource(source.row) ? { management_href: `/home/heartbeat?note=${encodeURIComponent(card.id)}` } : {}),

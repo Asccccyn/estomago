@@ -15,10 +15,14 @@ export type ContentEntry = {
   frozen_card?: { number: number; revision: number; available: boolean }
 }
 
+export type NoteView = 'pending' | 'used'
+
 export type DeliveryState = 'pending' | 'dispatching' | 'delivered' | 'unknown'
 
 export type SourceBlock = {
   id: string
+  /** main = the card face and what was actually said to her; detail = how the turn ran. */
+  layer?: 'main' | 'detail'
   source_label: string
   author?: string | null
   status: 'available' | 'deleted' | 'forbidden' | 'revision_unavailable' | 'unavailable'
@@ -30,6 +34,7 @@ export type SourceBlock = {
   editor?: string
   management_href?: string
   editable: boolean
+  outcome?: 'committed' | 'partial' | 'failed' | 'cancelled' | 'unknown'
 }
 
 export type HeartbeatState = {
@@ -45,6 +50,9 @@ export type ContentPage = {
   items: ContentEntry[]
   has_more: boolean
   next_cursor?: string | null
+  /** Reserved notes only: which view this page is and how many notes each view holds. */
+  view?: NoteView
+  counts?: { pending: number; used: number; uncertain: number }
 }
 
 export type AssetInfo = {
