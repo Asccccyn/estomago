@@ -8,6 +8,7 @@
 // 不静默丢图、不切模型）。语音：无转写不空输入唤起模型（MEDIA_TRANSCRIPTION_FAILED）。
 import type { ToolExecResult } from '../capabilities/contracts.ts';
 import type { MediaService } from './assets.ts';
+import { modelImageView } from './model-view.ts';
 
 /** 内部引用块（不直接传给 Provider；持久形态） */
 export type AssetImageRefBlock = { type: 'asset_image'; asset_id: string; projection_version: 'v1' };
@@ -113,7 +114,8 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
       continue;
     }
-    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）。
+    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——位图在
+    // 像素预算内即原件，超出时为缩小视图；GIF 不改）。
     // 相册重构 P5（宿主用户 2026-11-08 裁定，撤销 2026-10-18 textOnly）：选集/历史图片一律
     // 真实携带（asset_image 块）；携带上限由装配层合并规划（context/carry-images.ts）。
     hasImage = true;
@@ -129,7 +131,9 @@ export type ModelImageBlock = { type: 'image'; source: { type:'base64'; media_ty
 export async function materializeImage(assetId: string, readImage: ReadModelImage): Promise<ModelImageBlock> {
   const { bytes, mime } = await readImage(assetId);
   if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/gif' && mime !== 'image/webp') throw Error('ASSET_TYPE_UNSUPPORTED');
-  return { type:'image', source:{type:'base64',media_type:mime,data:bytes.toString('base64')} };
+  // The stored original stays the record; the model sees it within the pixel budget.
+  const view = await modelImageView(assetId, { bytes, mime });
+  return { type:'image', source:{type:'base64',media_type:view.mime as ModelImageBlock['source']['media_type'],data:view.bytes.toString('base64')} };
 }
 
 /** Persist only references; image bytes belong to SDK/API send boundaries. */

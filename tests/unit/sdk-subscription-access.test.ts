@@ -37,6 +37,9 @@ import { SystemAlertService } from '../../apps/host/src/observability/system-ale
 import { buildRecordSnapshot } from '../../apps/host/src/server/records.ts';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { MODEL_IMAGE_MAX_PIXELS, clearModelViewCache } from '../../apps/host/src/media/model-view.ts';
+import { clearVisionSupportCache } from '../../apps/host/src/media/model-input.ts';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 
 const account = { apiProvider: 'firstParty', subscriptionType: 'Claude Max' } as const;
 const usage = { subscription_type: 'max', rate_limits_available: true, rate_limits: { extra_usage: { is_enabled: false } } } as any;
@@ -127,6 +130,57 @@ test('所有可选 Claude SDK 型号均以原生 image 块发送聊天图片', a
       assert.ok(!wire?.payload_json.includes(png.toString('base64')), 'Base64 仅在模型发送边界存在');
     });
   }
+});
+
+test('超过像素预算的照片在 SDK 与 API 两条通道都以缩小视图发送，API 通道的后续请求沿用同一份', async t => {
+  const canvas = createCanvas(3000, 2250);
+  const context = canvas.getContext('2d');
+  const gradient = context.createLinearGradient(0, 0, 3000, 2250);
+  gradient.addColorStop(0, '#274a8f');
+  gradient.addColorStop(1, '#e8a33d');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 3000, 2250);
+  context.fillStyle = 'rgba(255,255,255,0.35)';
+  for (let y = 0; y < 2250; y += 7) context.fillRect(0, y, 3000, 1);
+  const photo = Buffer.from(await canvas.encode('jpeg', 90));
+  // Vision evidence is cached per model across the process; leave the later catalog test its first lookup.
+  clearVisionSupportCache();
+  t.after(() => { clearVisionSupportCache(); clearModelViewCache(); });
+  const imagesOf = (messages: any[]) => messages.flatMap(message => Array.isArray(message.content) ? message.content : [])
+    .filter(block => block.type === 'image').map(block => block.source);
+  const assertView = async (source: any) => {
+    assert.equal(source.media_type, 'image/jpeg');
+    assert.notEqual(source.data, photo.toString('base64'), '模型收到的是缩小视图而不是原照片');
+    const view = Buffer.from(source.data, 'base64');
+    assert.ok(view.byteLength < photo.byteLength / 4);
+    const image = await loadImage(view);
+    assert.ok(image.width * image.height <= MODEL_IMAGE_MAX_PIXELS);
+  };
+  await t.test('sdk', async sub => {
+    const f = fixture(sub, () => [...textEvents(), { type: 'result', subtype: 'success', session_id: randomUUID() }], { withMedia: true });
+    f.settings.set('sdk_model', 'claude-opus-5-5');
+    const asset = await f.media!.saveBuffer({ bytes: photo, purpose: 'chat_image', operationId: 'large-sdk', createdBy: 'qiaosheng', origin: 'upload' });
+    assert.equal((await f.send('请看照片', [{ asset_id: asset.id, presentation: 'image' }])).state, 'completed');
+    assert.equal(f.calls.or.length, 0, '没有改走付费 API 通道');
+    const sent = imagesOf(f.calls.sdk[0].capturedPrompt.map((part: any) => part.message));
+    assert.equal(sent.length, 1);
+    await assertView(sent[0]);
+  });
+  await t.test('or', async sub => {
+    sub.mock.method(globalThis, 'fetch', async () => Response.json({ data: [{
+      id: 'anthropic/claude-opus-4.6', architecture: { input_modalities: ['text', 'image'] } }] }));
+    const f = fixture(sub, () => [limit()], { withMedia: true, orModel: 'anthropic/claude-opus-4.6' });
+    f.settings.set('sdk_model', 'claude-opus-5-5');
+    const asset = await f.media!.saveBuffer({ bytes: photo, purpose: 'chat_image', operationId: 'large-or', createdBy: 'qiaosheng', origin: 'upload' });
+    assert.equal((await f.send('请看照片', [{ asset_id: asset.id, presentation: 'image' }])).state, 'completed');
+    assert.equal((await f.send('照片里是什么？')).state, 'completed', '携带同一张照片历史的第二次请求正常完成');
+    const sent = f.calls.or.map((call: any) => imagesOf(call.messages));
+    assert.equal(sent.length, 2);
+    assert.equal(sent[0].length, 1);
+    await assertView(sent[0][0]);
+    assert.equal(sent[1].length, 1);
+    assert.equal(sent[1][0].data, sent[0][0].data, '后一请求沿用同一份视图');
+  });
 });
 
 test('订阅额度拒绝后按 OpenRouter 实际接收图片的型号核实视觉能力', async t => {
